@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -53,22 +54,44 @@ def _norm_browser(browser: str) -> str:
     raise HTTPException(status.HTTP_400_BAD_REQUEST, "browser must be 'Safari' or 'Google Chrome'.")
 
 
-def _run_osascript(script: str, timeout_s: int = 30) -> str:
+def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) -> None:
+    if proc.poll() is not None:
+        return
     try:
-        p = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-        )
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + grace_s
+    while proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _run_osascript(script: str, timeout_s: int = 30) -> str:
+    timeout_s = max(1, min(int(timeout_s), 120))
+    proc = subprocess.Popen(
+        ["osascript", "-e", script],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
+        _terminate_process_group(proc)
+        proc.wait()
         raise HTTPException(status.HTTP_408_REQUEST_TIMEOUT, "AppleScript timed out.")
 
-    if p.returncode != 0:
-        msg = (p.stderr or p.stdout or "AppleScript error").strip()
+    if proc.returncode != 0:
+        msg = (stderr or stdout or "AppleScript error").strip()
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, msg)
-    return (p.stdout or "").strip()
-
+    return (stdout or "").strip()
 
 def browser_open_url(
     settings: Settings,

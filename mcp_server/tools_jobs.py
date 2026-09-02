@@ -24,6 +24,8 @@ DEFAULT_JOB_ENV = {
 
 _PROCS: Dict[str, subprocess.Popen[str]] = {}
 _LOCK = threading.RLock()
+_DEFAULT_WAIT_TIMEOUT_S = 60
+_MAX_WAIT_TIMEOUT_S = 600
 
 
 def _now() -> float:
@@ -86,6 +88,69 @@ def _is_pid_alive(pid: Optional[int]) -> bool:
         return True
 
 
+def _terminate_process(proc: subprocess.Popen[str], signal_name: int = signal.SIGTERM,
+                       grace_s: float = 1.0) -> None:
+    """Terminate a job's process group and never leave its descendants behind."""
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal_name)
+    except ProcessLookupError:
+        return
+
+    if signal_name == signal.SIGKILL:
+        return
+
+    deadline = time.monotonic() + max(0.0, grace_s)
+    while proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _terminate_pid_group(pid: int, signal_name: int = signal.SIGTERM,
+                         grace_s: float = 1.0) -> None:
+    """Best-effort cleanup for jobs created before this server process started."""
+    try:
+        os.killpg(pid, signal_name)
+    except ProcessLookupError:
+        return
+    if signal_name == signal.SIGKILL:
+        return
+
+    deadline = time.monotonic() + max(0.0, grace_s)
+    while _is_pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if _is_pid_alive(pid):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _normalize_timeout(value: Optional[int], field_name: str) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return min(_MAX_WAIT_TIMEOUT_S, max(1, int(value)))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            f"{field_name} must be a positive integer") from exc
+
+
+def _wait_timeout(settings: Settings, timeout_s: Optional[int]) -> int:
+    if timeout_s is None:
+        return _DEFAULT_WAIT_TIMEOUT_S
+    try:
+        return min(_MAX_WAIT_TIMEOUT_S, max(1, int(timeout_s)))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "timeout_s must be a positive integer") from exc
+
+
 def _append_stream(job_id: str, stream, filename: str) -> None:
     path = _job_dir(job_id) / filename
     with path.open("a", encoding="utf-8", errors="replace") as log_file:
@@ -106,36 +171,39 @@ def _watch_process(job_id: str, timeout_s: Optional[int], no_output_timeout_s: O
     if proc is None:
         return
 
-    deadline = _now() + timeout_s if timeout_s else None
+    deadline = _now() + timeout_s if timeout_s is not None else None
+    termination_reason: Optional[str] = None
     while proc.poll() is None:
         with _LOCK:
             meta = _read_meta(job_id)
             last_output_at = float(meta.get("last_output_at") or meta.get("started_at") or _now())
-            if no_output_timeout_s and _now() - last_output_at >= no_output_timeout_s:
-                meta["status"] = "stalled"
-                meta["updated_at"] = _now()
+            now = _now()
+            if no_output_timeout_s is not None and now - last_output_at >= no_output_timeout_s:
+                meta["status"] = "stopping"
+                meta["stop_reason"] = "stalled"
+                meta["updated_at"] = now
                 _write_meta(job_id, meta)
-            if deadline and _now() >= deadline:
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                time.sleep(1)
-                if proc.poll() is None:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                break
+                termination_reason = "stalled"
+            elif deadline is not None and now >= deadline:
+                meta["status"] = "stopping"
+                meta["stop_reason"] = "timeout"
+                meta["updated_at"] = now
+                _write_meta(job_id, meta)
+                termination_reason = "timeout"
+        if termination_reason:
+            _terminate_process(proc)
+            break
         time.sleep(0.5)
 
     exit_code = proc.wait()
     with _LOCK:
         meta = _read_meta(job_id)
-        if deadline and _now() >= deadline and exit_code != 0:
-            final_status = "timeout"
-        elif meta.get("status") == "killed":
+        if meta.get("status") == "killed":
             final_status = "killed"
+        elif termination_reason == "stalled" or meta.get("stop_reason") == "stalled" or meta.get("status") == "stalled":
+            final_status = "stalled"
+        elif termination_reason == "timeout" or meta.get("stop_reason") == "timeout" or meta.get("status") == "timeout":
+            final_status = "timeout"
         else:
             final_status = "completed" if exit_code == 0 else "failed"
         meta.update({
@@ -151,11 +219,15 @@ def _watch_process(job_id: str, timeout_s: Optional[int], no_output_timeout_s: O
 
 def _normalize_status(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     status_value = meta.get("status")
-    if status_value in {"running", "stalled"}:
+    if status_value in {"running", "stalled", "stopping"}:
         proc = _PROCS.get(job_id)
         if proc is not None and proc.poll() is not None:
             exit_code = proc.returncode
-            meta["status"] = "completed" if exit_code == 0 else "failed"
+            if status_value == "stopping":
+                stop_reason = meta.get("stop_reason")
+                meta["status"] = stop_reason if stop_reason in {"stalled", "timeout"} else "failed"
+            elif status_value not in {"killed", "stalled", "timeout"}:
+                meta["status"] = "completed" if exit_code == 0 else "failed"
             meta["exit_code"] = exit_code
             meta["ended_at"] = _now()
             meta["updated_at"] = _now()
@@ -163,12 +235,19 @@ def _normalize_status(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
             _write_meta(job_id, meta)
             _PROCS.pop(job_id, None)
         elif proc is None and not _is_pid_alive(meta.get("pid")):
-            meta["status"] = "failed"
+            if meta.get("ended_at"):
+                return meta
+            if status_value == "stopping":
+                stop_reason = meta.get("stop_reason")
+                meta["status"] = stop_reason if stop_reason in {"stalled", "timeout"} else "failed"
+            elif status_value not in {"killed", "stalled", "timeout"}:
+                meta["status"] = "failed"
             meta["exit_code"] = None
             meta["ended_at"] = _now()
             meta["updated_at"] = _now()
             meta["duration_ms"] = int((_now() - float(meta.get("started_at", _now()))) * 1000)
-            meta["note"] = "Process ended while bridge was not tracking it; exit code is unavailable."
+            if status_value not in {"killed", "stalled", "timeout"}:
+                meta["note"] = "Process ended while bridge was not tracking it; exit code is unavailable."
             _write_meta(job_id, meta)
     return meta
 
@@ -191,13 +270,18 @@ def start_background_job(
     if not command or not command.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "command is required.")
 
+    timeout_s = _normalize_timeout(timeout_s, "timeout_s")
+    if timeout_s is None:
+        timeout_s = _DEFAULT_WAIT_TIMEOUT_S
+    no_output_timeout_s = _normalize_timeout(no_output_timeout_s, "no_output_timeout_s")
+
     job_id = uuid.uuid4().hex[:12]
     job_path = _job_dir(job_id)
     job_path.mkdir(parents=True, exist_ok=True)
     (job_path / "stdout.log").touch()
     (job_path / "stderr.log").touch()
 
-    workdir = Path(cwd).expanduser().resolve() if cwd else Path.home()
+    workdir = Path(cwd).expanduser().resolve() if cwd else settings.workdir
     if not workdir.exists() or not workdir.is_dir():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"cwd does not exist or is not a directory: {workdir}")
 
@@ -305,7 +389,7 @@ def stop_job(settings: Settings, job_id: str, signal_name: str = "TERM") -> Dict
 
     with _LOCK:
         meta = _normalize_status(job_id, _read_meta(job_id))
-        if meta.get("status") not in {"running", "stalled", "starting"}:
+        if meta.get("status") not in {"running", "stalled", "stopping", "starting"}:
             return {"ok": True, "job_id": job_id, "status": meta.get("status"), "message": "Job is not running."}
         meta["status"] = "killed"
         meta["updated_at"] = _now()
@@ -313,10 +397,11 @@ def stop_job(settings: Settings, job_id: str, signal_name: str = "TERM") -> Dict
 
     pid = meta.get("pid")
     if pid:
-        try:
-            os.killpg(int(pid), allowed[sig_name])
-        except ProcessLookupError:
-            pass
+        proc = _PROCS.get(job_id)
+        if proc is not None:
+            _terminate_process(proc, allowed[sig_name], grace_s=1.5)
+        else:
+            _terminate_pid_group(int(pid), allowed[sig_name], grace_s=1.5)
     return {"ok": True, "job_id": job_id, "status": "killed", "signal": sig_name}
 
 
@@ -328,14 +413,18 @@ def wait_jobs(
 ) -> Dict[str, Any]:
     if not job_ids:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "job_ids is required.")
-    deadline = _now() + timeout_s if timeout_s else None
-    terminal = {"completed", "failed", "timeout", "killed"}
+    wait_timeout = _wait_timeout(settings, timeout_s)
+    deadline = time.monotonic() + wait_timeout
+    terminal = {"completed", "failed", "timeout", "killed", "stalled"}
+
+    def is_finished(item: Dict[str, Any]) -> bool:
+        return item.get("status") in terminal and bool(item.get("ended_at"))
 
     while True:
         statuses = [get_job_status(settings, job_id) for job_id in job_ids]
-        if all(s.get("status") in terminal for s in statuses):
+        if all(is_finished(s) for s in statuses):
             break
-        if deadline and _now() >= deadline:
+        if time.monotonic() >= deadline:
             break
         time.sleep(0.25)
 
@@ -345,7 +434,7 @@ def wait_jobs(
             item["stdout"] = output.get("stdout", "")
             item["stderr"] = output.get("stderr", "")
 
-    return {"ok": True, "jobs": statuses, "completed": all(s.get("status") in terminal for s in statuses)}
+    return {"ok": True, "jobs": statuses, "completed": all(is_finished(s) for s in statuses)}
 
 
 def run_commands_parallel(
@@ -357,10 +446,11 @@ def run_commands_parallel(
 ) -> Dict[str, Any]:
     if not commands:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "commands is required.")
+    effective_timeout = _wait_timeout(settings, timeout_s)
     starts = [
-        start_background_job(settings, command=command, cwd=cwd, timeout_s=timeout_s)
+        start_background_job(settings, command=command, cwd=cwd, timeout_s=effective_timeout)
         for command in commands
     ]
-    waited = wait_jobs(settings, [j["job_id"] for j in starts], timeout_s=timeout_s, return_output=return_output)
+    waited = wait_jobs(settings, [j["job_id"] for j in starts], timeout_s=effective_timeout, return_output=return_output)
     waited["started"] = starts
     return waited

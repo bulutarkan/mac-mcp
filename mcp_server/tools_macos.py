@@ -1,20 +1,50 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
+import signal
 import subprocess
+import time
 from typing import Any, Dict, Optional
 
 from .security import Settings, truncate
 
 
-def _run_apple(script: str, timeout: int = 30) -> Dict[str, Any]:
+def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) -> None:
+    if proc.poll() is not None:
+        return
     try:
-        proc = subprocess.run(["osascript", "-e", script],
-                              capture_output=True, text=True, timeout=timeout)
-        stdout, _ = truncate(proc.stdout.strip(), 10_000)
-        stderr, _ = truncate(proc.stderr.strip(), 10_000)
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + grace_s
+    while proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _run_apple(script: str, timeout: int = 30) -> Dict[str, Any]:
+    timeout = max(1, min(int(timeout), 120))
+    proc = subprocess.Popen(
+        ["osascript", "-e", script],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout_raw, stderr_raw = proc.communicate(timeout=timeout)
+        stdout, _ = truncate((stdout_raw or "").strip(), 10_000)
+        stderr, _ = truncate((stderr_raw or "").strip(), 10_000)
         return {"ok": proc.returncode == 0, "stdout": stdout, "stderr": stderr, "exit_code": proc.returncode}
     except subprocess.TimeoutExpired:
+        _terminate_process_group(proc)
+        proc.wait()
         return {"ok": False, "error": f"AppleScript timed out after {timeout}s"}
     except Exception as e:
         return {"ok": False, "error": str(e)}

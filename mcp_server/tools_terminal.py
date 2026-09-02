@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import signal
 import subprocess
 import time
 from typing import Any, Dict, Optional
@@ -15,6 +16,24 @@ def _timeout(settings: Settings, timeout_s: Optional[int]) -> int:
     if timeout_s is None:
         return settings.default_command_timeout_s
     return min(max(1, int(timeout_s)), settings.max_command_timeout_s)
+
+
+def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) -> None:
+    """Stop the shell and any descendants after a command timeout."""
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + grace_s
+    while proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def run_command(settings: Settings, command: str, timeout_s: Optional[int] = None) -> Dict[str, Any]:
@@ -32,18 +51,27 @@ def run_command(settings: Settings, command: str, timeout_s: Optional[int] = Non
 
     argv = ["/bin/zsh", "-lc", command] if settings.allow_shell else command.split()
     start = time.perf_counter()
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        cwd=str(settings.workdir),
+        start_new_session=True,
+    )
     try:
-        proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=timeout, check=False, env=env,
-            cwd=str(Path.home()),
-        )
+        stdout_raw, stderr_raw = proc.communicate(timeout=timeout)
         duration_ms = int((time.perf_counter() - start) * 1000)
     except subprocess.TimeoutExpired as e:
+        _terminate_process_group(proc)
+        proc.wait()
         raise HTTPException(status.HTTP_408_REQUEST_TIMEOUT,
                             f"Command timed out after {timeout}s") from e
 
-    stdout, _ = truncate(proc.stdout or "", settings.max_output_chars)
-    stderr, _ = truncate(proc.stderr or "", settings.max_output_chars)
+    stdout, _ = truncate(stdout_raw or "", settings.max_output_chars)
+    stderr, _ = truncate(stderr_raw or "", settings.max_output_chars)
     return {
         "ok": proc.returncode == 0,
         "exit_code": proc.returncode,

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -30,6 +31,7 @@ from .tools_macos import (
     open_app, open_url, set_volume, get_volume, set_brightness,
     screenshot, set_reminder, get_running_apps,
 )
+from .tools_ui import observe_ui, act_ui
 from .tools_search import search_files, spotlight_search
 from .tools_http import http_request
 from .tools_browser import (
@@ -69,9 +71,8 @@ def create_app():
         instructions=(
             "You are connected to the user's local Mac through Mac MCP. "
             "Default home directory is the current user's home. "
-            "run_command ile her shell komutunu calistirabilirsin. "
-            "macOS kontrolu icin run_applescript veya ozel macOS toollarini kullan. "
-            "Verimli ol: mumkun oldugunda tek bir tool cagrisiyla isi bitir."
+            "Use run_command for shell work and the dedicated macOS/browser/UI tools when they fit better. "
+            "Prefer the smallest number of tool calls that safely completes and verifies the task."
         ),
         streamable_http_path="/mcp",
         stateless_http=True,
@@ -119,7 +120,11 @@ def create_app():
         return _log(audit_logger, "get_system_info", lambda: get_system_info(settings))
 
     @mcp.tool(name="start_background_job",
-              description="Start a long-running shell command and return immediately with job_id. Use for npm install, builds, downloads, dev servers, docker, tests.")
+              description=(
+                  "Start a shell command and return immediately with job_id. "
+                  "Default timeout is 60 seconds; set timeout_s explicitly (up to 600) for longer npm installs, "
+                  "builds, downloads, dev servers, docker, or tests."
+              ))
     def _start_background_job(command: str, cwd: Optional[str] = None,
                               env: Optional[Dict[str, str]] = None,
                               timeout_s: Optional[int] = None,
@@ -156,7 +161,10 @@ def create_app():
                     lambda: list_jobs(settings, status_filter=status_filter))
 
     @mcp.tool(name="wait_jobs",
-              description="Wait for background jobs to finish, optionally returning output.")
+              description=(
+                  "Wait for background jobs to finish, optionally returning output. "
+                  "timeout_s defaults to 60 seconds; a bounded response is returned if jobs are still running."
+              ))
     def _wait_jobs(job_ids: List[str], timeout_s: Optional[int] = None,
                    return_output: bool = False) -> Dict[str, Any]:
         return _log(audit_logger, "wait_jobs",
@@ -164,7 +172,10 @@ def create_app():
                                       return_output=return_output))
 
     @mcp.tool(name="run_commands_parallel",
-              description="Run multiple shell commands in parallel and collect results. Best for independent checks like tests, lint, rg, scripts.")
+              description=(
+                  "Run multiple shell commands in parallel and collect results. Best for independent checks "
+                  "like tests, lint, rg, scripts. timeout_s defaults to a bounded 60 seconds."
+              ))
     def _run_commands_parallel(commands: List[str], cwd: Optional[str] = None,
                                timeout_s: Optional[int] = None,
                                return_output: bool = True) -> Dict[str, Any]:
@@ -315,6 +326,86 @@ def create_app():
               description="Get list of currently running macOS applications (visible apps only).")
     def _get_running_apps() -> Dict[str, Any]:
         return _log(audit_logger, "get_running_apps", lambda: get_running_apps(settings))
+
+    # ── Unified macOS UI tools ──────────────────────────────────────────────
+    @mcp.tool(
+        name="mac_observe",
+        title="Observe macOS UI",
+        description=(
+            "Read the frontmost or named macOS application's current UI state. "
+            "Returns an observation_id, Accessibility tree nodes with element_id, role, "
+            "title, value, position, enabled state and supported actions, plus a screen "
+            "image when include_screenshot=true. Use ocr=true only when Accessibility "
+            "text is insufficient. Pass the observation_id to mac_act for safe targeting."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+        structured_output=False,
+    )
+    def _mac_observe(
+        app: Optional[str] = None,
+        window_index: int = 1,
+        max_depth: int = 5,
+        max_children: int = 30,
+        include_screenshot: bool = True,
+        ocr: bool = False,
+    ) -> Any:
+        return _log(
+            audit_logger,
+            "mac_observe",
+            lambda: observe_ui(
+                settings,
+                app=app,
+                window_index=window_index,
+                max_depth=max_depth,
+                max_children=max_children,
+                include_screenshot=include_screenshot,
+                ocr=ocr,
+            ),
+        )
+
+    @mcp.tool(
+        name="mac_act",
+        title="Act on macOS UI",
+        description=(
+            "Perform one or more bounded macOS UI actions using element_id values from "
+            "mac_observe, then return a fresh state by default. Supported action types: "
+            "click/double_click, scroll, type, paste, key/shortcut, drag, and "
+            "accessibility_action/menu. Use observation_id to prevent stale element paths. "
+            "Potentially consequential clicks require allow_risky=true explicitly. "
+            "The complete action batch has a 60-second safety budget."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=True,
+            idempotentHint=False,
+            openWorldHint=False,
+        ),
+        structured_output=False,
+    )
+    def _mac_act(
+        actions: List[Dict[str, Any]],
+        observation_id: Optional[str] = None,
+        app: Optional[str] = None,
+        return_state: bool = True,
+        allow_risky: bool = False,
+    ) -> Any:
+        return _log(
+            audit_logger,
+            "mac_act",
+            lambda: act_ui(
+                settings,
+                actions=actions,
+                observation_id=observation_id,
+                app=app,
+                return_state=return_state,
+                allow_risky=allow_risky,
+            ),
+        )
 
     # ── Search tools ────────────────────────────────────────────────────────
     @mcp.tool(name="search_files",

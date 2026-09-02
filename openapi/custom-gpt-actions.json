@@ -2,7 +2,7 @@
   "openapi": "3.1.1",
   "info": {
     "title": "Mac MCP Server",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "OpenAPI schema for connecting Mac MCP Server to Custom GPT Actions."
   },
   "servers": [
@@ -154,11 +154,11 @@
                   },
                   "timeout_s": {
                     "type": "integer",
-                    "description": "Optional timeout in seconds."
+                    "description": "Background job timeout in seconds. Defaults to 60 when omitted and is capped at 600."
                   },
                   "no_output_timeout_s": {
                     "type": "integer",
-                    "description": "If no output is produced for this many seconds, the job is marked as stalled."
+                    "description": "If no output is produced for this many seconds, the job is terminated and marked as stalled."
                   }
                 }
               }
@@ -333,7 +333,7 @@
                   },
                   "timeout_s": {
                     "type": "integer",
-                    "description": "Optional timeout in seconds."
+                    "description": "Wait timeout in seconds. Defaults to 60 when omitted and is capped at 600."
                   },
                   "return_output": {
                     "type": "boolean",
@@ -379,7 +379,7 @@
                   },
                   "timeout_s": {
                     "type": "integer",
-                    "description": "Optional timeout in seconds."
+                    "description": "Per-command job and wait timeout in seconds. Defaults to 60 when omitted and is capped at 600."
                   },
                   "return_output": {
                     "type": "boolean",
