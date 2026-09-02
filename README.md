@@ -46,7 +46,7 @@ The new `mac_observe` and `mac_act` tools are currently exposed through the MCP 
 - macOS
 - Python 3.10+
 - Git
-- ngrok account only if you want a public HTTPS URL for Custom GPT Actions
+- ngrok account only if you want a public HTTPS URL for Custom GPT Actions or ChatGPT Developer Mode
 
 Install the core tools:
 
@@ -217,6 +217,78 @@ run_commands_parallel -> parallel jobs + bounded collection
 ```
 
 A `no_output_timeout_s` can be used to stop commands that stop producing output; these jobs end in the `stalled` state.
+
+## ChatGPT Plus: Custom MCP plugin with Developer Mode
+
+ChatGPT Plus users who have Developer Mode available can connect a running Mac MCP instance to ChatGPT web as a developer-mode custom MCP plugin. In the current ChatGPT UI, this is a remote MCP connection created from the Plugins area. It is separate from Custom GPT Actions:
+
+- **Developer Mode MCP plugin:** connects to the Streamable HTTP `/mcp` endpoint and discovers the server's MCP tools.
+- **Custom GPT Actions:** imports `openapi/custom-gpt-actions.json` and uses the REST `/api/*` operations.
+
+Developer Mode and custom connections can depend on account or workspace policy. If the setting or Plugins area is not available, the feature may not be enabled for that account or workspace yet.
+
+### 1. Start Mac MCP and the public tunnel
+
+Run Mac MCP with ngrok and copy the HTTPS URL printed by the command:
+
+```bash
+mac-mcp start --ngrok
+mac-mcp status
+```
+
+The URL must include the MCP path:
+
+```text
+https://your-domain.ngrok-free.dev/mcp
+```
+
+If you use a domain explicitly, configure it in `mcp_server/.env` or pass it on the command line:
+
+```bash
+mac-mcp start --ngrok --ngrok-domain your-domain.ngrok-free.dev
+```
+
+Use the complete public **HTTPS** URL ending in `/mcp`. Do not paste the local URL (`127.0.0.1`), the ngrok root URL without `/mcp`, or a REST URL under `/api/*`. The Mac MCP process and ngrok tunnel must remain running while ChatGPT uses the connection. If a temporary/free ngrok URL changes after a restart, update the connection URL and refresh it; a stable ngrok domain avoids that extra step.
+
+### 2. Enable Developer Mode in ChatGPT
+
+1. Open [ChatGPT](https://chatgpt.com) and go to **Settings**.
+2. Open **Security and login**.
+3. Turn on **Developer mode**.
+4. Open the [ChatGPT Plugins](https://chatgpt.com/plugins) page and select **`+`**.
+5. Enter a display name such as `Mac MCP` and a short description.
+6. Under **Connection**, choose the public endpoint option and paste the full URL, including `/mcp`.
+7. Create the connection and review the discovered tools and metadata.
+
+### 3. Enable it in a conversation
+
+Start a new conversation, open the **Tools** menu, and add/select the `Mac MCP` connection. Begin with a read-only test such as:
+
+```text
+Use mac_observe on Safari's first window with include_screenshot=true and ocr=false. Only observe; do not click or type.
+```
+
+The `mac_observe` and `mac_act` results are designed for this connector flow. Screenshots are returned as bounded JPEG image content so large full-resolution images do not leave the request waiting indefinitely.
+
+### 4. Refresh after server or tool changes
+
+After restarting Mac MCP or changing tool names, descriptions, schemas, annotations, authentication, or UI resources:
+
+1. Open the connection again from the Plugins page.
+2. Select **Refresh**.
+3. Confirm that the advertised metadata/tool list changed.
+4. Start a new conversation and rerun the affected test.
+
+### Security and sharing
+
+This server can read and modify files, run shell commands, and control the desktop. A public ngrok URL is therefore a remote-control channel to **one specific Mac**:
+
+- Never share your Mac's URL with other users. Each person should install Mac MCP, run it on their own Mac, and use their own tunnel URL.
+- Keep `MCP_ALLOW_NO_AUTH=false` for network-exposed deployments whenever possible, and never put `MCP_API_KEY` in the URL, README, screenshots, or chat messages.
+- The repository's `MCP_API_KEY` is a local bearer-token setting; it is not the same as ChatGPT's OAuth-based user-linking flow. A real multi-user or published plugin should implement OAuth 2.1 and enforce authorization on the server.
+- For personal Developer Mode testing, only connect a Mac you own and keep the tunnel private to your account. Developer Mode access is not a substitute for server-side authentication.
+
+Official references: [Connect and test your plugin](https://developers.openai.com/plugins/deploy/connect-chatgpt), [Model Context Protocol](https://learn.chatgpt.com/docs/extend/mcp), and [Authentication](https://developers.openai.com/plugins/build/auth).
 
 ## Custom GPT Actions
 
