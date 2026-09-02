@@ -26,6 +26,23 @@ Version 1.1 includes 57 MCP tools covering shell execution, files, processes, ba
 - Background jobs have bounded waits, cleaner stalled/timeout states, reliable process-group termination, and a 60-second default timeout when none is supplied.
 
 The new `mac_observe` and `mac_act` tools are currently exposed through the MCP endpoint. The Custom GPT REST/OpenAPI surface remains the existing 17 REST operations.
+## Benefits and usage strategy: ChatGPT Chat vs ChatGPT Work vs Codex
+
+Mac MCP can be used from ordinary ChatGPT conversations, ChatGPT Work, and Codex. The connector and the MCP tools are the same; the useful surface depends on whether the task is primarily conversation, workspace work, or repository implementation.
+
+### Why ChatGPT Chat becomes especially powerful with Mac MCP
+
+**ChatGPT Chat + Mac MCP is not limited to ordinary question-and-answer use.** Once the connector is enabled, **ChatGPT Chat can act as a long-working, coding-capable, agentic workspace for the Mac**: it can plan a task, inspect the Accessibility tree with `mac_observe`, operate applications with `mac_act`, read and modify project files, run commands, start bounded background jobs, and inspect the results in the same conversation. This makes **long-working tasks, coding workflows, research, troubleshooting, and desktop automation** available from one natural-language interface.
+
+The key benefit is the combination of **ChatGPT Chat's reasoning and conversation flow** with **Mac MCP's local execution layer**. The MCP server supplies the Mac-side capabilities; the ChatGPT surface supplies the planning, iteration, and explanation. Use the smallest safe tool call for each step and keep the server's authentication and tunnel private.
+
+| Surface | Best for | Benefit with Mac MCP | Official usage picture |
+| --- | --- | --- | --- |
+| **ChatGPT Chat** (cloud chat) | Conversational planning, explanations, research, summaries | **With Mac MCP, we turn this conversational surface into an agentic workspace for long-working tasks, coding, research, troubleshooting, and desktop automation: inspect, act, run bounded jobs, edit files, test, and iterate in one thread.** | OpenAI says cloud chats on ChatGPT plans use GPT-5.6 Sol and may use more allowance than local messages. Local messages and cloud chats share a five-hour window; additional weekly limits may apply. |
+| **ChatGPT Work** | Workspace conversations, longer knowledge-work tasks, and collaboration | Useful when the Mac action is part of a broader workspace task | Work and Codex share the same pricing, credits, and usage limits. Work should not be treated as a separately documented unlimited pool. |
+| **Codex** (local, CLI/IDE, or cloud) | Repository changes, coding, tests, and repeatable engineering workflows | Best fit for making and verifying code changes while Mac MCP handles local UI or system actions | For ChatGPT Plus, OpenAI publishes approximate local-message ranges per five-hour window: Sol **10–100**, Terra **25–200**, and Luna **250–2,000**. These are estimates, not guaranteed caps. |
+
+Official references: [Models](https://learn.chatgpt.com/docs/models) and [Pricing, credits, and usage limits](https://learn.chatgpt.com/docs/pricing).
 
 ## Tool coverage
 
