@@ -27,6 +27,9 @@ _MAX_ACTIONS = 20
 _MAX_TEXT_CHARS = 100_000
 _OBSERVE_BUDGET_S = 30
 _ACTION_BUDGET_S = 60
+_SCREENSHOT_FORMAT = "jpeg"
+_SCREENSHOT_MAX_DIMENSION = 1600
+_SCREENSHOT_MAX_BYTES = 600_000
 
 _KEY_CODES: Dict[str, int] = {
     "return": 36,
@@ -111,6 +114,32 @@ def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) 
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+
+
+def _resize_screenshot(path: str, timeout_s: float) -> Optional[str]:
+    """Resize screenshots before returning them to MCP clients."""
+    executable = shutil.which("sips") or "/usr/bin/sips"
+    if not Path(executable).exists():
+        return "sips is not available to resize the screenshot"
+    proc = subprocess.Popen(
+        [executable, "-Z", str(_SCREENSHOT_MAX_DIMENSION), path],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        _, stderr = proc.communicate(timeout=max(0.1, timeout_s))
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(proc)
+        proc.wait()
+        return f"screenshot resize timed out after {timeout_s}s"
+    except Exception as exc:
+        return f"Could not resize screenshot: {exc}"
+    if proc.returncode != 0:
+        return (stderr or "sips failed").strip()
+    return None
 
 
 def _run_osascript(script: str, timeout_s: float = 30) -> Tuple[bool, str, str]:
@@ -401,24 +430,40 @@ return outputText
 
 
 def _capture_screen(timeout_s: float = 15) -> Tuple[Optional[bytes], Optional[str]]:
-    fd, path = tempfile.mkstemp(prefix="mac-mcp-screen-", suffix=".png")
+    fd, path = tempfile.mkstemp(prefix="mac-mcp-screen-", suffix=".jpg")
     os.close(fd)
+    started = time.monotonic()
     try:
-        proc = subprocess.run(
-            ["/usr/sbin/screencapture", "-x", "-t", "png", path],
-            capture_output=True,
+        proc = subprocess.Popen(
+            ["/usr/sbin/screencapture", "-x", "-t", _SCREENSHOT_FORMAT, path],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=_operation_timeout(None, timeout_s),
+            start_new_session=True,
         )
+        try:
+            _, stderr = proc.communicate(timeout=_operation_timeout(None, timeout_s))
+        except subprocess.TimeoutExpired:
+            _terminate_process_group(proc)
+            proc.wait()
+            return None, f"screencapture timed out after {timeout_s}s"
         if proc.returncode != 0:
-            message = proc.stderr.strip() or "screencapture failed"
+            message = (stderr or "").strip() or "screencapture failed"
             return None, message
+
+        remaining = timeout_s - (time.monotonic() - started)
+        if remaining > 0.1:
+            _resize_screenshot(path, min(5.0, remaining))
         data = Path(path).read_bytes()
         if not data:
             return None, "screencapture returned an empty image"
+        if len(data) > _SCREENSHOT_MAX_BYTES:
+            return None, (
+                f"screenshot omitted because its encoded size ({len(data)} bytes) "
+                f"exceeds the {_SCREENSHOT_MAX_BYTES}-byte connector safety limit"
+            )
         return data, None
-    except subprocess.TimeoutExpired:
-        return None, f"screencapture timed out after {timeout_s}s"
     except Exception as exc:
         return None, f"Could not capture screen: {exc}"
     finally:
@@ -433,7 +478,7 @@ def _ocr_image(image_data: bytes, timeout_s: float = 20) -> Tuple[Optional[str],
     if not tesseract:
         return None, "OCR unavailable: tesseract is not installed"
 
-    fd, path = tempfile.mkstemp(prefix="mac-mcp-ocr-", suffix=".png")
+    fd, path = tempfile.mkstemp(prefix="mac-mcp-ocr-", suffix=".jpg")
     os.close(fd)
     try:
         Path(path).write_bytes(image_data)
@@ -514,7 +559,7 @@ def _get_observation(observation_id: str) -> Optional[Dict[str, Any]]:
 def _format_result(payload: Dict[str, Any], image_data: Optional[bytes] = None) -> Any:
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     if image_data:
-        return [text, Image(data=image_data, format="png")]
+        return [text, Image(data=image_data, format=_SCREENSHOT_FORMAT)]
     return text
 
 
@@ -569,7 +614,7 @@ def _collect_observation(
         "screenshot": {
             "requested": include_screenshot,
             "included_as_image_content": bool(image_data and include_screenshot),
-            "mime_type": "image/png" if image_data and include_screenshot else None,
+            "mime_type": f"image/{_SCREENSHOT_FORMAT}" if image_data and include_screenshot else None,
         },
     }
     if screenshot_error:

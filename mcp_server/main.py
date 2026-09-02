@@ -335,8 +335,9 @@ def create_app():
             "Read the frontmost or named macOS application's current UI state. "
             "Returns an observation_id, Accessibility tree nodes with element_id, role, "
             "title, value, position, enabled state and supported actions, plus a screen "
-            "image when include_screenshot=true. Use ocr=true only when Accessibility "
-            "text is insufficient. Pass the observation_id to mac_act for safe targeting."
+            "image when include_screenshot=true. Screenshots are returned as connector-safe "
+            "JPEG image content. Use ocr=true only when Accessibility text is insufficient. "
+            "Pass the observation_id to mac_act for safe targeting."
         ),
         annotations=ToolAnnotations(
             readOnlyHint=True,

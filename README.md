@@ -20,6 +20,7 @@ Version 1.1 includes 57 MCP tools covering shell execution, files, processes, ba
 - Observation IDs expire and can be passed to `mac_act` to reduce stale-target mistakes.
 - Potentially consequential UI clicks are gated behind `allow_risky=true`.
 - Optional OCR is available when Accessibility text is insufficient.
+- UI screenshots are returned as connector-safe JPEG image content (max 1600 px and 600 KB); if capture/compression cannot stay within the limit, the text observation still returns with a diagnostic instead of blocking the MCP response.
 - Shell, AppleScript, browser automation, and interactive dialogs now terminate their process groups on timeout instead of leaving descendants behind.
 - Background jobs have bounded waits, cleaner stalled/timeout states, reliable process-group termination, and a 60-second default timeout when none is supplied.
 
