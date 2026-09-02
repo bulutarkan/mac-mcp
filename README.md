@@ -3,8 +3,9 @@
 ## Screenshots
 
 <p align="center">
-  <img src="assets/screenshots/mac-mcp-system-info.png" alt="Mac MCP checking CPU, RAM, battery, and disk from a Custom GPT" width="48%">
-  <img src="assets/screenshots/mac-mcp-git-commits.png" alt="Mac MCP listing latest Git commits from a local repository" width="48%">
+  <img src="assets/screenshots/mac-mcp-system-info.png" alt="Mac MCP checking CPU, RAM, battery, and disk from a Custom GPT" width="33%">
+  <img src="assets/screenshots/mac-mcp-system-info-detailed.png" alt="Mac MCP checking CPU, RAM, battery, and disk from a Custom GPT" width="33%">
+  <img src="assets/screenshots/mac-mcp-git-commits.png" alt="Mac MCP listing latest Git commits from a local repository" width="33%">
 </p>
 
 Mac MCP is a local macOS control server for AI agents. It exposes the same Mac through a native MCP endpoint and a REST/OpenAPI surface for clients such as Custom GPT Actions.
