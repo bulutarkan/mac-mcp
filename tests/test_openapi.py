@@ -37,6 +37,9 @@ class OpenAPICoverageTests(unittest.TestCase):
 
         self.assertEqual(59, len(schema["paths"]))
         self.assertEqual(EXPECTED_TOOLS, operation_ids)
+        choice_schema = schema["paths"]["/api/interactive/choice"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+        self.assertEqual(2, choice_schema["properties"]["choices"]["minItems"])
+        self.assertEqual(3, choice_schema["properties"]["choices"]["maxItems"])
         self.assertNotIn("/api/files", schema["paths"])
         self.assertNotIn("/api/macos", schema["paths"])
         self.assertNotIn("/api/browser", schema["paths"])
@@ -56,6 +59,10 @@ class OpenAPICoverageTests(unittest.TestCase):
 
         self.assertEqual(59, len(operations))
         self.assertEqual(EXPECTED_TOOLS, operation_ids)
+        self.assertEqual(
+            3,
+            schema["components"]["schemas"]["ChoiceRequest"]["properties"]["choices"]["maxItems"],
+        )
 
         published = json.loads(
             (Path(__file__).parents[1] / "openapi" / "custom-gpt-actions.json").read_text()

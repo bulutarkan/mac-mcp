@@ -14,7 +14,10 @@ _MAX_QUESTION_LENGTH = 800
 _MAX_SENDER_LENGTH = 50
 _MAX_BUTTON_LENGTH = 80
 _MIN_CHOICES = 2
-_MAX_CHOICES = 6
+# macOS display dialog accepts at most three total buttons. Two choices leave
+# one slot for Cancel; three choices use all slots and window-close remains the
+# cancellation path.
+_MAX_CHOICES = 3
 
 _TIMEOUT_SENTINEL = "__MAC_MCP_TIMEOUT__"
 _CANCELLED_SENTINEL = "__MAC_MCP_CANCELLED__"
@@ -275,8 +278,10 @@ def ask_choice(
     normalized_choices, default_label = validated_choices
     question_display, sender_display = common
 
-    buttons = ["Cancel", *normalized_choices]
-    default_button = default_label or "Cancel"
+    has_cancel_button = len(normalized_choices) < _MAX_CHOICES
+    buttons = (["Cancel", *normalized_choices]
+               if has_cancel_button else normalized_choices)
+    default_button = default_label or ("Cancel" if has_cancel_button else normalized_choices[0])
     script = f"""
 set q_text to "{_escape_applescript_text(question_display)}"
 set s_name to "{_escape_applescript_text(sender_display)}"

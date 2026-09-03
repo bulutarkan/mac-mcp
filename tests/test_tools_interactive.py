@@ -52,6 +52,30 @@ class InteractiveToolTests(unittest.TestCase):
         self.assertIn('buttons {"Cancel", "Deploy", "Review"}', script)
         self.assertIn('default button "Review"', script)
 
+    def test_three_choices_use_all_native_buttons_without_extra_cancel(self):
+        process = FakeProcess("Ship\n")
+        with patch.object(tools_interactive.subprocess, "Popen", return_value=process) as popen:
+            result = tools_interactive.ask_choice(
+                None,
+                question="What should we do?",
+                choices=["Wait", "Review", "Ship"],
+            )
+
+        self.assertEqual(
+            {
+                "ok": True,
+                "choice": "Ship",
+                "choice_index": 2,
+                "cancelled": False,
+                "timed_out": False,
+            },
+            result,
+        )
+        script = popen.call_args.args[0][2]
+        self.assertIn('buttons {"Wait", "Review", "Ship"}', script)
+        self.assertNotIn('buttons {"Cancel", "Wait", "Review", "Ship"}', script)
+        self.assertIn('default button "Wait"', script)
+
     def test_ask_confirmation_only_explicit_yes_confirms(self):
         process = FakeProcess("Yes\n")
         with patch.object(tools_interactive.subprocess, "Popen", return_value=process) as popen:
@@ -99,7 +123,15 @@ class InteractiveToolTests(unittest.TestCase):
             result = tools_interactive.ask_choice(None, "Pick one", ["Only one"])
 
         self.assertFalse(result["ok"])
-        self.assertIn("between 2 and 6", result["error"])
+        self.assertIn("between 2 and 3", result["error"])
+        popen.assert_not_called()
+
+    def test_four_choices_are_rejected_before_launching_dialog(self):
+        with patch.object(tools_interactive.subprocess, "Popen") as popen:
+            result = tools_interactive.ask_choice(None, "Pick one", ["A", "B", "C", "D"])
+
+        self.assertFalse(result["ok"])
+        self.assertIn("between 2 and 3", result["error"])
         popen.assert_not_called()
 
     def test_second_dialog_is_rejected_while_one_is_active(self):

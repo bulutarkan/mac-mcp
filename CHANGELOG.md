@@ -2,6 +2,7 @@
 
 ## [1.1.1] - 2026-09-03
 
+- Fixed `ask_choice` so three choices fit macOS's three-button native dialog limit; two-choice dialogs retain a visible Cancel button and four-or-more choices are rejected clearly.
 - Added native `ask_choice` and `ask_confirmation` human-in-the-loop tools with bounded, fail-closed dialog handling.
 - Prevented concurrent native prompts from stacking by returning `prompt_busy` immediately when a dialog is already active.
 - Hardened timeout cleanup for AppleScript, browser, shell, and interactive subprocesses so descendants do not remain stuck in the background.

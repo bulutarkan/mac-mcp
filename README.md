@@ -241,7 +241,7 @@ A `no_output_timeout_s` can be used to stop commands that stop producing output;
 Mac MCP exposes three native-dialog tools for controlled interaction with the local user:
 
 - `ask_user`: collect a free-form text answer while preserving the existing interface.
-- `ask_choice`: present 2-6 labeled native buttons and return the selected label and index.
+- `ask_choice`: present 2-3 labeled native buttons and return the selected label and index. Two-choice dialogs include `Cancel`; three-choice dialogs use all three native buttons and window-close remains cancellation.
 - `ask_confirmation`: present explicit Yes/No buttons and return `confirmed=true` only after an affirmative click.
 
 All three tools use one shared dialog lock, so concurrent agents do not stack invisible dialogs. If another prompt is already open, the new call returns `prompt_busy` immediately. Timeouts are capped at 300 seconds; cancellation, window close, or timeout never counts as confirmation.

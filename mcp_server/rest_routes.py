@@ -9,7 +9,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .security import Settings, authenticate, load_settings
 from .tools_terminal import run_command, process_list, kill_process, get_system_info
@@ -159,7 +159,7 @@ class InteractiveRequest(BaseModel):
 
 class ChoiceRequest(BaseModel):
     question: str
-    choices: List[str]
+    choices: List[str] = Field(..., min_length=2, max_length=3)
     sender: Optional[str] = "AI"
     timeout_s: Optional[int] = 60
     default_choice: Optional[str] = None

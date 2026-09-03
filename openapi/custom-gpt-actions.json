@@ -2410,9 +2410,9 @@
                       "type": "string",
                       "description": "Button label."
                     },
-                    "description": "Two to six button labels.",
+                    "description": "Two to three native button labels.",
                     "minItems": 2,
-                    "maxItems": 6
+                    "maxItems": 3
                   },
                   "sender": {
                     "type": "string",

@@ -602,8 +602,9 @@ def create_app():
         name="ask_choice",
         title="Ask the user to choose",
         description=(
-            "Open a native macOS dialog with 2-6 labeled choices and wait for the local user's selection. "
-            "Returns the selected choice and index. Cancel or timeout returns no choice. "
+            "Open a native macOS dialog with 2-3 labeled choices and wait for the local user's selection. "
+            "Two-choice dialogs show a Cancel button; three-choice dialogs use all three native buttons, "
+            "and closing the window still cancels. Returns the selected choice and index. Timeout returns no choice. "
             "Use for preferences and reversible decisions; use ask_confirmation for explicit Yes/No approval."
         ),
         annotations=ToolAnnotations(
