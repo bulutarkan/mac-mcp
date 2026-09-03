@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 import json
 import time
@@ -41,7 +42,7 @@ from .tools_browser import (
     browser_screenshot, browser_scroll, browser_press_key,
     browser_coordinate_click, browser_get_snapshot,
 )
-from .tools_interactive import ask_user
+from .tools_interactive import ask_choice, ask_confirmation, ask_user
 
 
 def _log(audit_logger, tool: str, fn):
@@ -585,14 +586,90 @@ def create_app():
             "Use this to get approval, preferences, or missing information without stopping an autonomous task."
         ),
     )
-    def _ask_user(
+    async def _ask_user(
         question: str,
         sender: str = "AI",
         timeout_s: int = 60,
     ) -> Dict[str, Any]:
-        return _log(
-            audit_logger, "ask_user",
+        return await asyncio.to_thread(
+            _log,
+            audit_logger,
+            "ask_user",
             lambda: ask_user(settings, question=question, sender=sender, timeout_s=timeout_s),
+        )
+
+    @mcp.tool(
+        name="ask_choice",
+        title="Ask the user to choose",
+        description=(
+            "Open a native macOS dialog with 2-6 labeled choices and wait for the local user's selection. "
+            "Returns the selected choice and index. Cancel or timeout returns no choice. "
+            "Use for preferences and reversible decisions; use ask_confirmation for explicit Yes/No approval."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+        structured_output=False,
+    )
+    async def _ask_choice(
+        question: str,
+        choices: List[str],
+        sender: str = "AI",
+        timeout_s: int = 60,
+        default_choice: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log,
+            audit_logger,
+            "ask_choice",
+            lambda: ask_choice(
+                settings,
+                question=question,
+                choices=choices,
+                sender=sender,
+                timeout_s=timeout_s,
+                default_choice=default_choice,
+            ),
+        )
+
+    @mcp.tool(
+        name="ask_confirmation",
+        title="Ask the user for confirmation",
+        description=(
+            "Open a native macOS Yes/No confirmation dialog. "
+            "Only an explicit confirm button produces confirmed=true; deny, cancel, close, or timeout is false. "
+            "Use before consequential or destructive actions."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+        structured_output=False,
+    )
+    async def _ask_confirmation(
+        question: str,
+        sender: str = "AI",
+        timeout_s: int = 60,
+        confirm_label: str = "Yes",
+        deny_label: str = "No",
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log,
+            audit_logger,
+            "ask_confirmation",
+            lambda: ask_confirmation(
+                settings,
+                question=question,
+                sender=sender,
+                timeout_s=timeout_s,
+                confirm_label=confirm_label,
+                deny_label=deny_label,
+            ),
         )
 
     # ── App setup ────────────────────────────────────────────────────────────

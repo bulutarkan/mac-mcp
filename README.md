@@ -10,7 +10,7 @@
 
 Mac MCP is a local macOS control server for AI agents. It exposes the same Mac through a native MCP endpoint and a REST/OpenAPI surface for clients such as Custom GPT Actions.
 
-Version 1.1 includes 57 MCP tools covering shell execution, files, processes, background jobs, macOS automation, browser control, screenshots, HTTP requests, search, interactive questions, and a new unified macOS UI observation/action layer.
+Version 1.1 includes 59 MCP tools covering shell execution, files, processes, background jobs, macOS automation, browser control, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
 
 > **Security:** Mac MCP can execute shell commands, read and modify files, and control your desktop. Keep authentication enabled whenever the server is reachable outside localhost. Use a strong `MCP_API_KEY`, keep `MCP_ALLOW_NO_AUTH=false`, and only expose the server to clients you trust.
 
@@ -25,7 +25,7 @@ Version 1.1 includes 57 MCP tools covering shell execution, files, processes, ba
 - Shell, AppleScript, browser automation, and interactive dialogs now terminate their process groups on timeout instead of leaving descendants behind.
 - Background jobs have bounded waits, cleaner stalled/timeout states, reliable process-group termination, and a 60-second default timeout when none is supplied.
 
-The new `mac_observe` and `mac_act` tools are currently exposed through the MCP endpoint. The Custom GPT REST/OpenAPI surface remains the existing 17 REST operations.
+All 59 tools are available through the MCP endpoint. The Custom GPT REST/OpenAPI surface now mirrors them one-to-one as named operations, including `mac_observe`, `mac_act`, `ask_choice`, and `ask_confirmation`; the older grouped REST routes remain available for compatibility but are not published in the schema.
 ## Benefits and usage strategy: ChatGPT Chat vs ChatGPT Work vs Codex
 
 Mac MCP can be used from ordinary ChatGPT conversations, ChatGPT Work, and Codex. The connector and the MCP tools are the same; the useful surface depends on whether the task is primarily conversation, workspace work, or repository implementation.
@@ -56,8 +56,8 @@ Official references: [Models](https://learn.chatgpt.com/docs/models) and [Pricin
 | Search | 2 | recursive grep, Spotlight |
 | HTTP | 1 | outbound HTTP requests with validation |
 | Browser | 15 | tabs, JS, selectors, HTML, downloads, screenshots, scrolling, keys, coordinate clicks, DOM snapshot |
-| Interactive | 1 | native macOS question/answer dialog |
-| **Total** | **57** | |
+| Interactive | 3 | native question/answer, choice, and confirmation dialogs |
+| **Total** | **59** | |
 
 ## Requirements
 
@@ -169,7 +169,7 @@ REST:   http://127.0.0.1:8000/api/*
 Health: http://127.0.0.1:8000/health
 ```
 
-MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 57 tools.
+MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 59 tools.
 
 Example REST request:
 
@@ -235,6 +235,16 @@ run_commands_parallel -> parallel jobs + bounded collection
 ```
 
 A `no_output_timeout_s` can be used to stop commands that stop producing output; these jobs end in the `stalled` state.
+
+## Human-in-the-loop tools
+
+Mac MCP exposes three native-dialog tools for controlled interaction with the local user:
+
+- `ask_user`: collect a free-form text answer while preserving the existing interface.
+- `ask_choice`: present 2-6 labeled native buttons and return the selected label and index.
+- `ask_confirmation`: present explicit Yes/No buttons and return `confirmed=true` only after an affirmative click.
+
+All three tools use one shared dialog lock, so concurrent agents do not stack invisible dialogs. If another prompt is already open, the new call returns `prompt_busy` immediately. Timeouts are capped at 300 seconds; cancellation, window close, or timeout never counts as confirmation.
 
 ## ChatGPT Plus: Custom MCP plugin with Developer Mode
 
@@ -316,7 +326,7 @@ Custom GPT Actions use the included schema:
 openapi/custom-gpt-actions.json
 ```
 
-The schema exposes 17 REST operations:
+The schema exposes all 59 MCP tools as one-to-one REST operations. Each operation's `operationId` matches the MCP tool name, so Custom GPT Actions can discover and call the same tool surface. The core endpoints retain their established paths:
 
 ```text
 POST /api/run                 -> run_command
@@ -330,15 +340,24 @@ POST /api/jobs/stop           -> stop_job
 POST /api/jobs/list           -> list_jobs
 POST /api/jobs/wait           -> wait_jobs
 POST /api/run_parallel        -> run_commands_parallel
-POST /api/files               -> files_operation
-POST /api/macos               -> macos_operation
-POST /api/browser             -> browser_operation
-POST /api/search              -> search_operation
 POST /api/http                -> http_request
 POST /api/interactive         -> ask_user
+POST /api/interactive/choice  -> ask_choice
+POST /api/interactive/confirmation -> ask_confirmation
 ```
 
-Before importing the schema, replace its placeholder server URL with your static ngrok domain.
+The file, macOS, unified UI, search, and browser tools use one-to-one aliases such as:
+
+```text
+POST /api/write_file          -> write_file
+POST /api/run_applescript     -> run_applescript
+POST /api/mac_observe         -> mac_observe
+POST /api/mac_act             -> mac_act
+POST /api/browser_get_snapshot -> browser_get_snapshot
+```
+
+The complete 59-operation definition is maintained in [`openapi/custom-gpt-actions.json`](openapi/custom-gpt-actions.json). Replace its placeholder server URL with your static ngrok domain before importing it.
+
 
 ### Static ngrok domain
 
@@ -428,7 +447,7 @@ mcp_server/
   tools_browser.py        Safari/Chrome automation
   tools_search.py         grep/Spotlight search
   tools_http.py           outbound HTTP
-  tools_interactive.py    native user question dialog
+  tools_interactive.py    native question, choice, and confirmation dialogs
 openapi/custom-gpt-actions.json
 assets/screenshots/
 pyproject.toml

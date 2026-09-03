@@ -8,7 +8,7 @@ from pathlib import Path
 import os
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from .security import Settings, authenticate, load_settings
@@ -36,7 +36,8 @@ from .tools_browser import (
     browser_screenshot, browser_scroll, browser_press_key,
     browser_coordinate_click, browser_get_snapshot,
 )
-from .tools_interactive import ask_user
+from .tools_interactive import ask_choice, ask_confirmation, ask_user
+from .tools_ui import act_ui, observe_ui
 
 _settings: Optional[Settings] = None
 
@@ -156,6 +157,20 @@ class InteractiveRequest(BaseModel):
     sender: Optional[str] = "AI"
     timeout_s: Optional[int] = 60
 
+class ChoiceRequest(BaseModel):
+    question: str
+    choices: List[str]
+    sender: Optional[str] = "AI"
+    timeout_s: Optional[int] = 60
+    default_choice: Optional[str] = None
+
+class ConfirmationRequest(BaseModel):
+    question: str
+    sender: Optional[str] = "AI"
+    timeout_s: Optional[int] = 60
+    confirm_label: Optional[str] = "Yes"
+    deny_label: Optional[str] = "No"
+
 class StartJobRequest(BaseModel):
     command: str
     cwd: Optional[str] = None
@@ -194,27 +209,27 @@ class RunParallelRequest(BaseModel):
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@router.post("/run")
+@router.post("/run", operation_id="run_command")
 def api_run(req: RunCommandRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     return run_command(settings, command=req.command, timeout_s=req.timeout_s)
 
 
-@router.post("/system_info")
+@router.post("/system_info", operation_id="get_system_info")
 def api_system_info(settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     return get_system_info(settings)
 
 
-@router.post("/process_list")
+@router.post("/process_list", operation_id="process_list")
 def api_process_list(req: ProcessListRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     return process_list(settings, filter=req.filter)
 
 
-@router.post("/kill_process")
+@router.post("/kill_process", operation_id="kill_process")
 def api_kill_process(req: KillProcessRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     return kill_process(settings, pid=req.pid, signal=req.signal)
 
 
-@router.post("/jobs/start")
+@router.post("/jobs/start", operation_id="start_background_job")
 def api_jobs_start(req: StartJobRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     return start_background_job(
         settings,
@@ -226,12 +241,12 @@ def api_jobs_start(req: StartJobRequest, settings: Settings = Depends(get_settin
     )
 
 
-@router.post("/jobs/status")
+@router.post("/jobs/status", operation_id="get_job_status")
 def api_jobs_status(req: JobStatusRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     return get_job_status(settings, job_id=req.job_id)
 
 
-@router.post("/jobs/output")
+@router.post("/jobs/output", operation_id="get_job_output")
 def api_jobs_output(req: JobOutputRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     return get_job_output(
         settings,
@@ -242,17 +257,17 @@ def api_jobs_output(req: JobOutputRequest, settings: Settings = Depends(get_sett
     )
 
 
-@router.post("/jobs/stop")
+@router.post("/jobs/stop", operation_id="stop_job")
 def api_jobs_stop(req: StopJobRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     return stop_job(settings, job_id=req.job_id, signal_name=req.signal or "TERM")
 
 
-@router.post("/jobs/list")
+@router.post("/jobs/list", operation_id="list_jobs")
 def api_jobs_list(req: ListJobsRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     return list_jobs(settings, status_filter=req.status_filter)
 
 
-@router.post("/jobs/wait")
+@router.post("/jobs/wait", operation_id="wait_jobs")
 def api_jobs_wait(req: WaitJobsRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     return wait_jobs(
         settings,
@@ -262,7 +277,7 @@ def api_jobs_wait(req: WaitJobsRequest, settings: Settings = Depends(get_setting
     )
 
 
-@router.post("/run_parallel")
+@router.post("/run_parallel", operation_id="run_commands_parallel")
 def api_run_parallel(req: RunParallelRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     return run_commands_parallel(
         settings,
@@ -273,7 +288,7 @@ def api_run_parallel(req: RunParallelRequest, settings: Settings = Depends(get_s
     )
 
 
-@router.post("/files")
+@router.post("/files", include_in_schema=False)
 def api_files(req: FilesRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     t = req.tool
     if t == "read_file":
@@ -308,7 +323,7 @@ def api_files(req: FilesRequest, settings: Settings = Depends(get_settings)) -> 
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown file tool: {t}")
 
 
-@router.post("/macos")
+@router.post("/macos", include_in_schema=False)
 def api_macos(req: MacOSRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     t = req.tool
     if t == "run_applescript":
@@ -340,7 +355,7 @@ def api_macos(req: MacOSRequest, settings: Settings = Depends(get_settings)) -> 
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown macOS tool: {t}")
 
 
-@router.post("/browser")
+@router.post("/browser", include_in_schema=False)
 def api_browser(req: BrowserRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     t = req.tool
     if t == "browser_open_url":
@@ -396,7 +411,7 @@ def api_browser(req: BrowserRequest, settings: Settings = Depends(get_settings))
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown browser tool: {t}")
 
 
-@router.post("/search")
+@router.post("/search", include_in_schema=False)
 def api_search(req: SearchRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     t = req.tool
     if t == "search_files":
@@ -408,13 +423,13 @@ def api_search(req: SearchRequest, settings: Settings = Depends(get_settings)) -
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown search tool: {t}")
 
 
-@router.post("/http")
+@router.post("/http", operation_id="http_request")
 def api_http(req: HttpRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     return http_request(settings, url=req.url, method=req.method or "GET",
                         headers=req.headers, body=req.body)
 
 
-@router.post("/interactive")
+@router.post("/interactive", operation_id="ask_user")
 def api_interactive(req: InteractiveRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     return ask_user(
         settings,
@@ -423,3 +438,159 @@ def api_interactive(req: InteractiveRequest, settings: Settings = Depends(get_se
         timeout_s=req.timeout_s or 60,
     )
 
+
+@router.post("/interactive/choice", operation_id="ask_choice")
+def api_interactive_choice(req: ChoiceRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
+    return ask_choice(
+        settings,
+        question=req.question,
+        choices=req.choices,
+        sender=req.sender or "AI",
+        timeout_s=req.timeout_s or 60,
+        default_choice=req.default_choice,
+    )
+
+
+@router.post("/interactive/confirmation", operation_id="ask_confirmation")
+def api_interactive_confirmation(req: ConfirmationRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
+    return ask_confirmation(
+        settings,
+        question=req.question,
+        sender=req.sender or "AI",
+        timeout_s=req.timeout_s or 60,
+        confirm_label=req.confirm_label or "Yes",
+        deny_label=req.deny_label or "No",
+    )
+
+
+# ── One-to-one OpenAPI aliases ───────────────────────────────────────────────
+# Keep the original grouped endpoints above for compatibility, while exposing
+# one stable REST operation per MCP tool to Custom GPT Actions.
+
+_FILE_ALIAS_TOOLS = (
+    "write_file", "write_files_batch", "read_file", "read_multiple_files",
+    "edit_file", "move_file", "copy_file", "delete_path", "list_directory",
+    "directory_tree", "create_directory", "get_file_info", "find_files",
+)
+_MACOS_ALIAS_TOOLS = (
+    "run_applescript", "send_notification", "clipboard_get", "clipboard_set",
+    "open_app", "open_url", "set_volume", "get_volume", "set_brightness",
+    "screenshot", "set_reminder", "get_running_apps",
+)
+_BROWSER_ALIAS_TOOLS = (
+    "browser_open_url", "browser_list_tabs", "browser_activate_tab",
+    "browser_close_tab", "browser_execute_js", "browser_click_selector",
+    "browser_type_selector", "browser_wait_for_selector", "browser_get_html",
+    "browser_wait_for_download", "browser_screenshot", "browser_scroll",
+    "browser_press_key", "browser_coordinate_click", "browser_get_snapshot",
+)
+_SEARCH_ALIAS_TOOLS = ("search_files", "spotlight_search")
+
+
+def _request_payload(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    return dict(payload or {})
+
+
+def _make_group_alias(handler: Any, request_model: Any, tool_name: str) -> Any:
+    def endpoint(
+        payload: Optional[Dict[str, Any]] = Body(default=None),
+        settings: Settings = Depends(get_settings),
+    ) -> Dict[str, Any]:
+        data = _request_payload(payload)
+        data["tool"] = tool_name
+        return handler(request_model(**data), settings)
+
+    endpoint.__name__ = f"api_{tool_name}"
+    endpoint.__qualname__ = endpoint.__name__
+    return endpoint
+
+
+def _payload_value(data: Dict[str, Any], key: str, default: Any) -> Any:
+    value = data.get(key)
+    return default if value is None else value
+
+
+def _api_mac_observe_alias(
+    payload: Optional[Dict[str, Any]] = Body(default=None),
+    settings: Settings = Depends(get_settings),
+) -> Any:
+    data = _request_payload(payload)
+    return observe_ui(
+        settings,
+        app=data.get("app"),
+        window_index=_payload_value(data, "window_index", 1),
+        max_depth=_payload_value(data, "max_depth", 5),
+        max_children=_payload_value(data, "max_children", 30),
+        include_screenshot=_payload_value(data, "include_screenshot", True),
+        ocr=_payload_value(data, "ocr", False),
+    )
+
+
+def _api_mac_act_alias(
+    payload: Optional[Dict[str, Any]] = Body(default=None),
+    settings: Settings = Depends(get_settings),
+) -> Any:
+    data = _request_payload(payload)
+    actions = data.get("actions")
+    if not isinstance(actions, list):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "mac_act requires an 'actions' array")
+    return act_ui(
+        settings,
+        actions=actions,
+        observation_id=data.get("observation_id"),
+        app=data.get("app"),
+        return_state=_payload_value(data, "return_state", True),
+        allow_risky=_payload_value(data, "allow_risky", False),
+    )
+
+
+for _tool_name in _FILE_ALIAS_TOOLS:
+    router.add_api_route(
+        f"/{_tool_name}",
+        _make_group_alias(api_files, FilesRequest, _tool_name),
+        methods=["POST"],
+        name=_tool_name,
+        operation_id=_tool_name,
+    )
+
+for _tool_name in _MACOS_ALIAS_TOOLS:
+    router.add_api_route(
+        f"/{_tool_name}",
+        _make_group_alias(api_macos, MacOSRequest, _tool_name),
+        methods=["POST"],
+        name=_tool_name,
+        operation_id=_tool_name,
+    )
+
+for _tool_name in _BROWSER_ALIAS_TOOLS:
+    router.add_api_route(
+        f"/{_tool_name}",
+        _make_group_alias(api_browser, BrowserRequest, _tool_name),
+        methods=["POST"],
+        name=_tool_name,
+        operation_id=_tool_name,
+    )
+
+for _tool_name in _SEARCH_ALIAS_TOOLS:
+    router.add_api_route(
+        f"/{_tool_name}",
+        _make_group_alias(api_search, SearchRequest, _tool_name),
+        methods=["POST"],
+        name=_tool_name,
+        operation_id=_tool_name,
+    )
+
+router.add_api_route(
+    "/mac_observe",
+    _api_mac_observe_alias,
+    methods=["POST"],
+    name="mac_observe",
+    operation_id="mac_observe",
+)
+router.add_api_route(
+    "/mac_act",
+    _api_mac_act_alias,
+    methods=["POST"],
+    name="mac_act",
+    operation_id="mac_act",
+)

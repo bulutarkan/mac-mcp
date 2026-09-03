@@ -2,8 +2,8 @@
   "openapi": "3.1.1",
   "info": {
     "title": "Mac MCP Server",
-    "version": "1.1.0",
-    "description": "OpenAPI schema for connecting Mac MCP Server to Custom GPT Actions."
+    "version": "1.1.1",
+    "description": "OpenAPI schema for connecting Mac MCP Server to Custom GPT Actions. Every MCP tool is exposed as one named REST operation; legacy grouped REST endpoints remain available for compatibility but are intentionally omitted from this published schema."
   },
   "servers": [
     {
@@ -17,15 +17,14 @@
         "operationId": "run_command",
         "x-openai-isConsequential": false,
         "summary": "Run a shell command on macOS using zsh",
+        "description": "Runs a local command and returns bounded output and timing information.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "command"
-                ],
+                "additionalProperties": false,
                 "properties": {
                   "command": {
                     "type": "string",
@@ -35,6 +34,38 @@
                     "type": "integer",
                     "description": "Optional timeout in seconds."
                   }
+                },
+                "required": [
+                  "command"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/process_list": {
+      "post": {
+        "operationId": "process_list",
+        "x-openai-isConsequential": false,
+        "summary": "List running processes",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "filter": {
+                    "type": "string",
+                    "description": "Optional name substring filter."
+                  }
                 }
               }
             }
@@ -42,7 +73,50 @@
         },
         "responses": {
           "200": {
-            "description": "Successful response."
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/kill_process": {
+      "post": {
+        "operationId": "kill_process",
+        "x-openai-isConsequential": true,
+        "summary": "Terminate a process by PID",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "pid": {
+                    "type": "integer",
+                    "description": "Process ID.",
+                    "minimum": 1
+                  },
+                  "signal": {
+                    "type": "string",
+                    "description": "Signal to send.",
+                    "enum": [
+                      "TERM",
+                      "KILL",
+                      "INT",
+                      "HUP"
+                    ]
+                  }
+                },
+                "required": [
+                  "pid"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
           }
         }
       }
@@ -54,69 +128,7 @@
         "summary": "Get macOS system information",
         "responses": {
           "200": {
-            "description": "Successful response."
-          }
-        }
-      }
-    },
-    "/api/process_list": {
-      "post": {
-        "operationId": "process_list",
-        "x-openai-isConsequential": false,
-        "summary": "List running processes",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "filter": {
-                    "type": "string",
-                    "description": "Optional name filter."
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful response."
-          }
-        }
-      }
-    },
-    "/api/kill_process": {
-      "post": {
-        "operationId": "kill_process",
-        "x-openai-isConsequential": false,
-        "summary": "Terminate a process by PID",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "pid"
-                ],
-                "properties": {
-                  "pid": {
-                    "type": "integer",
-                    "description": "Process ID."
-                  },
-                  "signal": {
-                    "type": "string",
-                    "description": "Signal to send, such as TERM, KILL, INT, or HUP."
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful response."
+            "description": "Tool result returned as JSON."
           }
         }
       }
@@ -124,18 +136,16 @@
     "/api/jobs/start": {
       "post": {
         "operationId": "start_background_job",
-        "x-openai-isConsequential": false,
+        "x-openai-isConsequential": true,
         "summary": "Start a long-running background job",
-        "description": "Use this for long-running tasks such as package installs, builds, tests, downloads, Docker commands, and development servers. Logs are stored in the jobs directory.",
+        "description": "Returns immediately with a job_id. Use get_job_status, get_job_output, and stop_job to manage it.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "command"
-                ],
+                "additionalProperties": false,
                 "properties": {
                   "command": {
                     "type": "string",
@@ -143,31 +153,34 @@
                   },
                   "cwd": {
                     "type": "string",
-                    "description": "Working directory. Defaults to the configured home/work directory."
+                    "description": "Working directory."
                   },
                   "env": {
                     "type": "object",
+                    "description": "Additional environment variables.",
                     "additionalProperties": {
                       "type": "string"
-                    },
-                    "description": "Additional environment variables."
+                    }
                   },
                   "timeout_s": {
                     "type": "integer",
-                    "description": "Background job timeout in seconds. Defaults to 60 when omitted and is capped at 600."
+                    "description": "Maximum runtime in seconds; capped by the server."
                   },
                   "no_output_timeout_s": {
                     "type": "integer",
-                    "description": "If no output is produced for this many seconds, the job is terminated and marked as stalled."
+                    "description": "Terminate if no output is produced for this many seconds."
                   }
-                }
+                },
+                "required": [
+                  "command"
+                ]
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Successful response."
+            "description": "Tool result returned as JSON."
           }
         }
       }
@@ -183,22 +196,23 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "job_id"
-                ],
+                "additionalProperties": false,
                 "properties": {
                   "job_id": {
                     "type": "string",
                     "description": "Background job ID."
                   }
-                }
+                },
+                "required": [
+                  "job_id"
+                ]
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Successful response."
+            "description": "Tool result returned as JSON."
           }
         }
       }
@@ -208,16 +222,13 @@
         "operationId": "get_job_output",
         "x-openai-isConsequential": false,
         "summary": "Get background job output",
-        "description": "Use tail_lines for recent logs, since_offset for incremental output, and stream as stdout, stderr, or both.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "job_id"
-                ],
+                "additionalProperties": false,
                 "properties": {
                   "job_id": {
                     "type": "string",
@@ -233,16 +244,24 @@
                   },
                   "stream": {
                     "type": "string",
-                    "description": "stdout, stderr, or both. Default: both."
+                    "description": "Which stream to read.",
+                    "enum": [
+                      "stdout",
+                      "stderr",
+                      "both"
+                    ]
                   }
-                }
+                },
+                "required": [
+                  "job_id"
+                ]
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Successful response."
+            "description": "Tool result returned as JSON."
           }
         }
       }
@@ -250,7 +269,7 @@
     "/api/jobs/stop": {
       "post": {
         "operationId": "stop_job",
-        "x-openai-isConsequential": false,
+        "x-openai-isConsequential": true,
         "summary": "Stop a background job",
         "requestBody": {
           "required": true,
@@ -258,9 +277,7 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "job_id"
-                ],
+                "additionalProperties": false,
                 "properties": {
                   "job_id": {
                     "type": "string",
@@ -268,16 +285,25 @@
                   },
                   "signal": {
                     "type": "string",
-                    "description": "Signal to send, such as TERM, KILL, INT, or HUP."
+                    "description": "Signal to send.",
+                    "enum": [
+                      "TERM",
+                      "KILL",
+                      "INT",
+                      "HUP"
+                    ]
                   }
-                }
+                },
+                "required": [
+                  "job_id"
+                ]
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Successful response."
+            "description": "Tool result returned as JSON."
           }
         }
       }
@@ -288,14 +314,24 @@
         "x-openai-isConsequential": false,
         "summary": "List background jobs",
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
                   "status_filter": {
                     "type": "string",
-                    "description": "Filter by status: running, stalled, completed, failed, timeout, or killed."
+                    "description": "Optional status filter.",
+                    "enum": [
+                      "running",
+                      "stalled",
+                      "completed",
+                      "failed",
+                      "timeout",
+                      "killed"
+                    ]
                   }
                 }
               }
@@ -304,7 +340,7 @@
         },
         "responses": {
           "200": {
-            "description": "Successful response."
+            "description": "Tool result returned as JSON."
           }
         }
       }
@@ -313,40 +349,45 @@
       "post": {
         "operationId": "wait_jobs",
         "x-openai-isConsequential": false,
-        "summary": "Wait for one or more jobs to finish",
+        "summary": "Wait for background jobs to finish",
+        "description": "Returns a bounded response even when a job is still running.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "job_ids"
-                ],
+                "additionalProperties": false,
                 "properties": {
                   "job_ids": {
                     "type": "array",
                     "items": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Job ID."
                     },
-                    "description": "List of background job IDs."
+                    "description": "Background job IDs.",
+                    "minItems": 1
                   },
                   "timeout_s": {
                     "type": "integer",
-                    "description": "Wait timeout in seconds. Defaults to 60 when omitted and is capped at 600."
+                    "description": "Maximum wait in seconds; the response is bounded."
                   },
                   "return_output": {
                     "type": "boolean",
-                    "description": "If true, include stdout/stderr output."
+                    "description": "Include captured output.",
+                    "default": false
                   }
-                }
+                },
+                "required": [
+                  "job_ids"
+                ]
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Successful response."
+            "description": "Tool result returned as JSON."
           }
         }
       }
@@ -354,94 +395,246 @@
     "/api/run_parallel": {
       "post": {
         "operationId": "run_commands_parallel",
-        "x-openai-isConsequential": false,
-        "summary": "Run multiple shell commands in parallel",
+        "x-openai-isConsequential": true,
+        "summary": "Run independent shell commands in parallel",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "commands"
-                ],
+                "additionalProperties": false,
                 "properties": {
                   "commands": {
                     "type": "array",
                     "items": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Shell command."
                     },
-                    "description": "Shell commands to run in parallel."
+                    "description": "Commands to run.",
+                    "minItems": 1
                   },
                   "cwd": {
                     "type": "string",
-                    "description": "Working directory. Defaults to the configured home/work directory."
+                    "description": "Working directory."
                   },
                   "timeout_s": {
                     "type": "integer",
-                    "description": "Per-command job and wait timeout in seconds. Defaults to 60 when omitted and is capped at 600."
+                    "description": "Maximum runtime in seconds."
                   },
                   "return_output": {
                     "type": "boolean",
-                    "description": "If true, include stdout/stderr output."
+                    "description": "Include command output.",
+                    "default": true
                   }
-                }
+                },
+                "required": [
+                  "commands"
+                ]
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Successful response."
+            "description": "Tool result returned as JSON."
           }
         }
       }
     },
-    "/api/files": {
+    "/api/write_file": {
       "post": {
-        "operationId": "files_operation",
-        "x-openai-isConsequential": false,
-        "summary": "Perform file operations",
-        "description": "Choose the operation with the tool parameter: read_file, read_multiple_files, write_file, write_files_batch, edit_file, move_file, copy_file, delete_path, list_directory, directory_tree, create_directory, get_file_info, or find_files.",
+        "operationId": "write_file",
+        "x-openai-isConsequential": true,
+        "summary": "Write content to a file",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "tool"
-                ],
+                "additionalProperties": false,
                 "properties": {
-                  "tool": {
-                    "type": "string",
-                    "description": "Operation to perform."
-                  },
                   "path": {
                     "type": "string",
-                    "description": "File or directory path."
+                    "description": "File path."
                   },
                   "content": {
                     "type": "string",
-                    "description": "Content to write or clipboard content, depending on the selected operation."
-                  },
-                  "paths": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "description": "Multiple file paths."
-                  },
+                    "description": "Text content to write."
+                  }
+                },
+                "required": [
+                  "path",
+                  "content"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/write_files_batch": {
+      "post": {
+        "operationId": "write_files_batch",
+        "x-openai-isConsequential": true,
+        "summary": "Write multiple files in one call",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
                   "files": {
                     "type": "array",
                     "items": {
-                      "type": "object"
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "description": "File path."
+                        },
+                        "content": {
+                          "type": "string",
+                          "description": "Text content."
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "content"
+                      ]
                     },
-                    "description": "List of file objects with path and content fields."
+                    "description": "Objects containing path and content.",
+                    "minItems": 1
+                  },
+                  "atomic": {
+                    "type": "boolean",
+                    "description": "Attempt an atomic batch operation.",
+                    "default": true
+                  }
+                },
+                "required": [
+                  "files"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/read_file": {
+      "post": {
+        "operationId": "read_file",
+        "x-openai-isConsequential": false,
+        "summary": "Read a file",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "File path."
+                  },
+                  "offset": {
+                    "type": "integer",
+                    "description": "Starting line offset.",
+                    "minimum": 0,
+                    "default": 0
+                  },
+                  "length": {
+                    "type": "integer",
+                    "description": "Maximum number of lines to return.",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/read_multiple_files": {
+      "post": {
+        "operationId": "read_multiple_files",
+        "x-openai-isConsequential": false,
+        "summary": "Read multiple files in one call",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "paths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "description": "File path."
+                    },
+                    "description": "File paths.",
+                    "minItems": 1
+                  }
+                },
+                "required": [
+                  "paths"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/edit_file": {
+      "post": {
+        "operationId": "edit_file",
+        "x-openai-isConsequential": true,
+        "summary": "Find and replace text in a file",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "File path."
                   },
                   "old_string": {
                     "type": "string",
-                    "description": "Text to search for."
+                    "description": "Text to replace."
                   },
                   "new_string": {
                     "type": "string",
@@ -449,123 +642,610 @@
                   },
                   "expected_replacements": {
                     "type": "integer",
-                    "description": "Expected number of replacements. Default: 1."
-                  },
+                    "description": "Required occurrence count.",
+                    "minimum": 1,
+                    "default": 1
+                  }
+                },
+                "required": [
+                  "path",
+                  "old_string",
+                  "new_string"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/move_file": {
+      "post": {
+        "operationId": "move_file",
+        "x-openai-isConsequential": true,
+        "summary": "Move or rename a file or directory",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
                   "source": {
                     "type": "string",
-                    "description": "Source path."
+                    "description": "Existing path."
+                  },
+                  "destination": {
+                    "type": "string",
+                    "description": "New path."
+                  }
+                },
+                "required": [
+                  "source",
+                  "destination"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/copy_file": {
+      "post": {
+        "operationId": "copy_file",
+        "x-openai-isConsequential": true,
+        "summary": "Copy a file or directory",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "source": {
+                    "type": "string",
+                    "description": "Existing path."
                   },
                   "destination": {
                     "type": "string",
                     "description": "Destination path."
+                  }
+                },
+                "required": [
+                  "source",
+                  "destination"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/delete_path": {
+      "post": {
+        "operationId": "delete_path",
+        "x-openai-isConsequential": true,
+        "summary": "Delete a file or directory",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Path to delete."
                   },
                   "recursive": {
                     "type": "boolean",
-                    "description": "Set true for recursive directory deletion."
-                  },
-                  "pattern": {
+                    "description": "Required for directory deletion.",
+                    "default": false
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/list_directory": {
+      "post": {
+        "operationId": "list_directory",
+        "x-openai-isConsequential": false,
+        "summary": "List files and directories",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
                     "type": "string",
-                    "description": "Glob, text, or regex pattern depending on the selected operation."
-                  },
-                  "file_type": {
+                    "description": "Directory path."
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/directory_tree": {
+      "post": {
+        "operationId": "directory_tree",
+        "x-openai-isConsequential": false,
+        "summary": "Show a directory tree",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
                     "type": "string",
-                    "description": "file, dir, or any."
+                    "description": "Root directory path."
                   },
                   "depth": {
                     "type": "integer",
-                    "description": "Directory tree depth. Default: 3."
-                  },
-                  "offset": {
-                    "type": "integer",
-                    "description": "Starting line offset."
-                  },
-                  "length": {
-                    "type": "integer",
-                    "description": "Number of lines to read."
+                    "description": "Traversal depth.",
+                    "minimum": 1,
+                    "default": 3
                   }
-                }
+                },
+                "required": [
+                  "path"
+                ]
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Successful response."
+            "description": "Tool result returned as JSON."
           }
         }
       }
     },
-    "/api/macos": {
+    "/api/create_directory": {
       "post": {
-        "operationId": "macos_operation",
-        "x-openai-isConsequential": false,
-        "summary": "Control macOS system features",
-        "description": "Choose the operation with the tool parameter: run_applescript, send_notification, clipboard_get, clipboard_set, open_app, open_url, set_volume, get_volume, set_brightness, screenshot, set_reminder, or get_running_apps.",
+        "operationId": "create_directory",
+        "x-openai-isConsequential": true,
+        "summary": "Create a directory and its parents",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "tool"
-                ],
+                "additionalProperties": false,
                 "properties": {
-                  "tool": {
+                  "path": {
                     "type": "string",
-                    "description": "Operation to perform."
-                  },
-                  "script": {
+                    "description": "Directory path."
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/get_file_info": {
+      "post": {
+        "operationId": "get_file_info",
+        "x-openai-isConsequential": false,
+        "summary": "Get file or directory metadata",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
                     "type": "string",
-                    "description": "AppleScript code to run."
-                  },
-                  "title": {
+                    "description": "Path to inspect."
+                  }
+                },
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/find_files": {
+      "post": {
+        "operationId": "find_files",
+        "x-openai-isConsequential": false,
+        "summary": "Find files by name pattern",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "pattern": {
                     "type": "string",
-                    "description": "Notification or reminder title."
-                  },
-                  "message": {
-                    "type": "string",
-                    "description": "Notification message."
-                  },
-                  "sound": {
-                    "type": "string",
-                    "description": "Notification sound. Default: Pop."
-                  },
-                  "content": {
-                    "type": "string",
-                    "description": "Content to write or clipboard content, depending on the selected operation."
-                  },
-                  "app_name": {
-                    "type": "string",
-                    "description": "Application name to open, such as Safari or Finder."
-                  },
-                  "url": {
-                    "type": "string",
-                    "description": "Target URL."
-                  },
-                  "level": {
-                    "type": "integer",
-                    "description": "Level from 0 to 100."
+                    "description": "Glob pattern such as *.py or report*."
                   },
                   "path": {
                     "type": "string",
-                    "description": "File or directory path."
+                    "description": "Root directory; defaults to the current user's home."
                   },
-                  "window": {
-                    "type": "boolean",
-                    "description": "Whether to select a window for screenshot."
-                  },
-                  "notes": {
+                  "file_type": {
                     "type": "string",
-                    "description": "Reminder notes."
-                  },
-                  "due_date": {
+                    "description": "What to match.",
+                    "enum": [
+                      "file",
+                      "dir",
+                      "any"
+                    ]
+                  }
+                },
+                "required": [
+                  "pattern"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/run_applescript": {
+      "post": {
+        "operationId": "run_applescript",
+        "x-openai-isConsequential": true,
+        "summary": "Run AppleScript on macOS",
+        "description": "The server terminates timed-out AppleScript process groups.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "script": {
                     "type": "string",
-                    "description": "Reminder due date, for example MM/DD/YYYY HH:MM AM/PM."
+                    "description": "AppleScript source."
                   },
                   "timeout_s": {
                     "type": "integer",
-                    "description": "Optional timeout in seconds."
+                    "description": "Timeout in seconds; hard-capped by the server.",
+                    "minimum": 1,
+                    "maximum": 300,
+                    "default": 30
+                  }
+                },
+                "required": [
+                  "script"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/send_notification": {
+      "post": {
+        "operationId": "send_notification",
+        "x-openai-isConsequential": true,
+        "summary": "Send a macOS notification",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "description": "Notification title."
+                  },
+                  "message": {
+                    "type": "string",
+                    "description": "Notification body."
+                  },
+                  "sound": {
+                    "type": "string",
+                    "description": "Notification sound.",
+                    "default": "Pop"
+                  }
+                },
+                "required": [
+                  "title",
+                  "message"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/clipboard_get": {
+      "post": {
+        "operationId": "clipboard_get",
+        "x-openai-isConsequential": false,
+        "summary": "Read the current Mac clipboard",
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/clipboard_set": {
+      "post": {
+        "operationId": "clipboard_set",
+        "x-openai-isConsequential": true,
+        "summary": "Write text to the Mac clipboard",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "content": {
+                    "type": "string",
+                    "description": "Text to place on the clipboard."
+                  }
+                },
+                "required": [
+                  "content"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/open_app": {
+      "post": {
+        "operationId": "open_app",
+        "x-openai-isConsequential": true,
+        "summary": "Open a macOS application",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "app_name": {
+                    "type": "string",
+                    "description": "Application name, such as Safari or Finder."
+                  }
+                },
+                "required": [
+                  "app_name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/open_url": {
+      "post": {
+        "operationId": "open_url",
+        "x-openai-isConsequential": true,
+        "summary": "Open a URL in the default browser",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "description": "URL to open.",
+                    "format": "uri"
+                  }
+                },
+                "required": [
+                  "url"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/set_volume": {
+      "post": {
+        "operationId": "set_volume",
+        "x-openai-isConsequential": true,
+        "summary": "Set system volume",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "level": {
+                    "type": "integer",
+                    "description": "Volume percentage.",
+                    "minimum": 0,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "level"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/get_volume": {
+      "post": {
+        "operationId": "get_volume",
+        "x-openai-isConsequential": false,
+        "summary": "Get current system volume",
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/set_brightness": {
+      "post": {
+        "operationId": "set_brightness",
+        "x-openai-isConsequential": true,
+        "summary": "Set screen brightness",
+        "description": "Requires the brightness command-line utility.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "level": {
+                    "type": "integer",
+                    "description": "Brightness percentage.",
+                    "minimum": 0,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "level"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/screenshot": {
+      "post": {
+        "operationId": "screenshot",
+        "x-openai-isConsequential": true,
+        "summary": "Take a macOS screenshot",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "Optional output path."
+                  },
+                  "window": {
+                    "type": "boolean",
+                    "description": "Capture a selected window.",
+                    "default": false
                   }
                 }
               }
@@ -574,54 +1254,623 @@
         },
         "responses": {
           "200": {
-            "description": "Successful response."
+            "description": "Tool result returned as JSON."
           }
         }
       }
     },
-    "/api/browser": {
+    "/api/set_reminder": {
       "post": {
-        "operationId": "browser_operation",
-        "x-openai-isConsequential": false,
-        "summary": "Control Safari or Google Chrome",
-        "description": "Choose the operation with the tool parameter. Browser operations include browser_open_url, browser_list_tabs, browser_activate_tab, browser_close_tab, browser_execute_js, browser_click_selector, browser_type_selector, browser_wait_for_selector, browser_get_html, browser_wait_for_download, browser_screenshot, browser_scroll, browser_press_key, browser_coordinate_click, and browser_get_snapshot.",
+        "operationId": "set_reminder",
+        "x-openai-isConsequential": true,
+        "summary": "Add a reminder to macOS Reminders",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "tool"
-                ],
+                "additionalProperties": false,
                 "properties": {
-                  "tool": {
+                  "title": {
                     "type": "string",
-                    "description": "Operation to perform."
+                    "description": "Reminder title."
                   },
-                  "browser": {
+                  "notes": {
                     "type": "string",
-                    "description": "Safari or Google Chrome."
+                    "description": "Optional reminder notes."
                   },
-                  "url": {
+                  "due_date": {
                     "type": "string",
-                    "description": "Target URL."
-                  },
-                  "new_tab": {
-                    "type": "boolean",
-                    "description": "Open in a new tab. Default: true."
+                    "description": "Optional date such as month/day/year HH:MM AM/PM."
+                  }
+                },
+                "required": [
+                  "title"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/get_running_apps": {
+      "post": {
+        "operationId": "get_running_apps",
+        "x-openai-isConsequential": false,
+        "summary": "List visible running macOS applications",
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/mac_observe": {
+      "post": {
+        "operationId": "mac_observe",
+        "x-openai-isConsequential": false,
+        "summary": "Observe the macOS UI",
+        "description": "Returns an observation_id and Accessibility nodes with element_id values for mac_act.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "app": {
+                    "type": "string",
+                    "description": "Optional application; defaults to the frontmost app."
                   },
                   "window_index": {
                     "type": "integer",
-                    "description": "Browser window index. Default: 1."
+                    "description": "Window index.",
+                    "minimum": 1,
+                    "default": 1
+                  },
+                  "max_depth": {
+                    "type": "integer",
+                    "description": "Accessibility tree depth.",
+                    "minimum": 1,
+                    "default": 5
+                  },
+                  "max_children": {
+                    "type": "integer",
+                    "description": "Maximum children per node.",
+                    "minimum": 1,
+                    "default": 30
+                  },
+                  "include_screenshot": {
+                    "type": "boolean",
+                    "description": "Include connector-safe JPEG screenshot content.",
+                    "default": true
+                  },
+                  "ocr": {
+                    "type": "boolean",
+                    "description": "Use OCR only when Accessibility text is insufficient.",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/mac_act": {
+      "post": {
+        "operationId": "mac_act",
+        "x-openai-isConsequential": true,
+        "summary": "Act on the macOS UI",
+        "description": "Use observation_id for safe targeting. The complete batch has a bounded safety budget.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "actions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "description": "Action object; supported types include click, double_click, scroll, type, paste, key, shortcut, drag, accessibility_action, and menu."
+                    },
+                    "description": "Bounded UI action list.",
+                    "minItems": 1
+                  },
+                  "observation_id": {
+                    "type": "string",
+                    "description": "Observation ID returned by mac_observe."
+                  },
+                  "app": {
+                    "type": "string",
+                    "description": "Optional application name."
+                  },
+                  "return_state": {
+                    "type": "boolean",
+                    "description": "Return a fresh UI state after acting.",
+                    "default": true
+                  },
+                  "allow_risky": {
+                    "type": "boolean",
+                    "description": "Explicitly allow potentially consequential clicks.",
+                    "default": false
+                  }
+                },
+                "required": [
+                  "actions"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/search_files": {
+      "post": {
+        "operationId": "search_files",
+        "x-openai-isConsequential": false,
+        "summary": "Search file contents",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "pattern": {
+                    "type": "string",
+                    "description": "Text or regular expression to search for."
+                  },
+                  "path": {
+                    "type": "string",
+                    "description": "Root directory; defaults to the current user's home."
+                  },
+                  "include_extensions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "description": "Extension such as py or js."
+                    },
+                    "description": "Optional extensions."
+                  },
+                  "case_sensitive": {
+                    "type": "boolean",
+                    "description": "Use case-sensitive matching.",
+                    "default": false
+                  }
+                },
+                "required": [
+                  "pattern"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/spotlight_search": {
+      "post": {
+        "operationId": "spotlight_search",
+        "x-openai-isConsequential": false,
+        "summary": "Search file names with macOS Spotlight",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string",
+                    "description": "Name or metadata query."
+                  },
+                  "max_results": {
+                    "type": "integer",
+                    "description": "Maximum result count.",
+                    "minimum": 1,
+                    "default": 50
+                  }
+                },
+                "required": [
+                  "query"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/http": {
+      "post": {
+        "operationId": "http_request",
+        "x-openai-isConsequential": true,
+        "summary": "Make an HTTP request",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "description": "Target URL.",
+                    "format": "uri"
+                  },
+                  "method": {
+                    "type": "string",
+                    "description": "HTTP method.",
+                    "enum": [
+                      "GET",
+                      "POST",
+                      "PUT",
+                      "PATCH",
+                      "DELETE",
+                      "HEAD"
+                    ]
+                  },
+                  "headers": {
+                    "type": "object",
+                    "description": "Optional request headers.",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "body": {
+                    "type": "string",
+                    "description": "Optional request body."
+                  }
+                },
+                "required": [
+                  "url"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/browser_open_url": {
+      "post": {
+        "operationId": "browser_open_url",
+        "x-openai-isConsequential": true,
+        "summary": "Open a URL in Safari or Google Chrome",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "browser": {
+                    "type": "string",
+                    "description": "Browser application.",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
+                  },
+                  "url": {
+                    "type": "string",
+                    "description": "URL to open.",
+                    "format": "uri"
+                  },
+                  "new_tab": {
+                    "type": "boolean",
+                    "description": "Open in a new tab.",
+                    "default": true
+                  }
+                },
+                "required": [
+                  "browser",
+                  "url"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/browser_list_tabs": {
+      "post": {
+        "operationId": "browser_list_tabs",
+        "x-openai-isConsequential": false,
+        "summary": "List browser tabs",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "browser": {
+                    "type": "string",
+                    "description": "Browser application.",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
+                  }
+                },
+                "required": [
+                  "browser"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/browser_activate_tab": {
+      "post": {
+        "operationId": "browser_activate_tab",
+        "x-openai-isConsequential": true,
+        "summary": "Activate a browser tab",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "browser": {
+                    "type": "string",
+                    "description": "Browser application.",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
+                  },
+                  "window_index": {
+                    "type": "integer",
+                    "description": "Window index.",
+                    "minimum": 1,
+                    "default": 1
                   },
                   "tab_index": {
                     "type": "integer",
-                    "description": "Browser tab index."
+                    "description": "Tab index.",
+                    "minimum": 1,
+                    "default": 1
+                  }
+                },
+                "required": [
+                  "browser"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/browser_close_tab": {
+      "post": {
+        "operationId": "browser_close_tab",
+        "x-openai-isConsequential": true,
+        "summary": "Close a browser tab",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "browser": {
+                    "type": "string",
+                    "description": "Browser application.",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
+                  },
+                  "window_index": {
+                    "type": "integer",
+                    "description": "Window index.",
+                    "minimum": 1,
+                    "default": 1
+                  },
+                  "tab_index": {
+                    "type": "integer",
+                    "description": "Tab index.",
+                    "minimum": 1,
+                    "default": 1
+                  }
+                },
+                "required": [
+                  "browser"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/browser_execute_js": {
+      "post": {
+        "operationId": "browser_execute_js",
+        "x-openai-isConsequential": true,
+        "summary": "Execute JavaScript in a browser tab",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "browser": {
+                    "type": "string",
+                    "description": "Browser application.",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
                   },
                   "js": {
                     "type": "string",
-                    "description": "JavaScript code to execute."
+                    "description": "JavaScript source."
+                  },
+                  "window_index": {
+                    "type": "integer",
+                    "description": "Window index.",
+                    "minimum": 1,
+                    "default": 1
+                  },
+                  "tab_index": {
+                    "type": "integer",
+                    "description": "Optional tab index.",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "browser",
+                  "js"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/browser_click_selector": {
+      "post": {
+        "operationId": "browser_click_selector",
+        "x-openai-isConsequential": true,
+        "summary": "Click a browser element by CSS selector",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "browser": {
+                    "type": "string",
+                    "description": "Browser application.",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
+                  },
+                  "css_selector": {
+                    "type": "string",
+                    "description": "CSS selector."
+                  },
+                  "window_index": {
+                    "type": "integer",
+                    "description": "Window index.",
+                    "minimum": 1,
+                    "default": 1
+                  },
+                  "tab_index": {
+                    "type": "integer",
+                    "description": "Optional tab index.",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "browser",
+                  "css_selector"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/browser_type_selector": {
+      "post": {
+        "operationId": "browser_type_selector",
+        "x-openai-isConsequential": true,
+        "summary": "Type text into a browser element",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "browser": {
+                    "type": "string",
+                    "description": "Browser application.",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
                   },
                   "css_selector": {
                     "type": "string",
@@ -633,181 +1882,461 @@
                   },
                   "clear": {
                     "type": "boolean",
-                    "description": "Clear before typing. Default: true."
+                    "description": "Clear the field first.",
+                    "default": true
+                  },
+                  "window_index": {
+                    "type": "integer",
+                    "description": "Window index.",
+                    "minimum": 1,
+                    "default": 1
+                  },
+                  "tab_index": {
+                    "type": "integer",
+                    "description": "Optional tab index.",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "browser",
+                  "css_selector",
+                  "text"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/browser_wait_for_selector": {
+      "post": {
+        "operationId": "browser_wait_for_selector",
+        "x-openai-isConsequential": false,
+        "summary": "Wait for a browser selector",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "browser": {
+                    "type": "string",
+                    "description": "Browser application.",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
+                  },
+                  "css_selector": {
+                    "type": "string",
+                    "description": "CSS selector."
                   },
                   "timeout_s": {
                     "type": "integer",
-                    "description": "Optional timeout in seconds."
+                    "description": "Maximum wait in seconds.",
+                    "minimum": 1,
+                    "default": 20
+                  },
+                  "window_index": {
+                    "type": "integer",
+                    "description": "Window index.",
+                    "minimum": 1,
+                    "default": 1
+                  },
+                  "tab_index": {
+                    "type": "integer",
+                    "description": "Optional tab index.",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "browser",
+                  "css_selector"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/browser_get_html": {
+      "post": {
+        "operationId": "browser_get_html",
+        "x-openai-isConsequential": false,
+        "summary": "Get browser page HTML",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "browser": {
+                    "type": "string",
+                    "description": "Browser application.",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
                   },
                   "max_chars": {
                     "type": "integer",
-                    "description": "Maximum number of characters to return."
+                    "description": "Optional output character limit.",
+                    "minimum": 1
                   },
+                  "window_index": {
+                    "type": "integer",
+                    "description": "Window index.",
+                    "minimum": 1,
+                    "default": 1
+                  },
+                  "tab_index": {
+                    "type": "integer",
+                    "description": "Optional tab index.",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "browser"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/browser_wait_for_download": {
+      "post": {
+        "operationId": "browser_wait_for_download",
+        "x-openai-isConsequential": false,
+        "summary": "Wait for a browser download",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
                   "filename_contains": {
                     "type": "string",
-                    "description": "Download filename filter."
+                    "description": "Optional filename substring."
+                  },
+                  "timeout_s": {
+                    "type": "integer",
+                    "description": "Maximum wait in seconds.",
+                    "minimum": 1,
+                    "default": 60
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/browser_screenshot": {
+      "post": {
+        "operationId": "browser_screenshot",
+        "x-openai-isConsequential": false,
+        "summary": "Capture a browser window screenshot",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "browser": {
+                    "type": "string",
+                    "description": "Browser application.",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
                   },
                   "path": {
                     "type": "string",
-                    "description": "File or directory path."
+                    "description": "Optional output path."
+                  },
+                  "window_index": {
+                    "type": "integer",
+                    "description": "Window index.",
+                    "minimum": 1,
+                    "default": 1
                   },
                   "return_base64": {
                     "type": "boolean",
-                    "description": "Return screenshot as base64. Default: true."
+                    "description": "Return base64 PNG data.",
+                    "default": true
+                  }
+                },
+                "required": [
+                  "browser"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/browser_scroll": {
+      "post": {
+        "operationId": "browser_scroll",
+        "x-openai-isConsequential": true,
+        "summary": "Scroll a browser page",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "browser": {
+                    "type": "string",
+                    "description": "Browser application.",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
                   },
                   "dx": {
                     "type": "integer",
-                    "description": "Horizontal scroll amount in pixels."
+                    "description": "Horizontal pixels.",
+                    "default": 0
                   },
                   "dy": {
                     "type": "integer",
-                    "description": "Vertical scroll amount in pixels. Positive is down; negative is up."
+                    "description": "Vertical pixels.",
+                    "default": 300
                   },
                   "selector": {
                     "type": "string",
-                    "description": "CSS selector of the element to scroll."
+                    "description": "Optional scrollable element selector."
+                  },
+                  "window_index": {
+                    "type": "integer",
+                    "description": "Window index.",
+                    "minimum": 1,
+                    "default": 1
+                  },
+                  "tab_index": {
+                    "type": "integer",
+                    "description": "Optional tab index.",
+                    "minimum": 1
+                  }
+                },
+                "required": [
+                  "browser"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/browser_press_key": {
+      "post": {
+        "operationId": "browser_press_key",
+        "x-openai-isConsequential": true,
+        "summary": "Press a key in a browser",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "browser": {
+                    "type": "string",
+                    "description": "Browser application.",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
                   },
                   "key": {
                     "type": "string",
-                    "description": "Key to press, such as return, escape, tab, space, or delete."
+                    "description": "Key name or character."
                   },
                   "modifiers": {
                     "type": "array",
                     "items": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Modifier such as cmd or shift."
                     },
-                    "description": "Modifier keys, such as cmd or shift."
+                    "description": "Optional modifiers."
+                  },
+                  "window_index": {
+                    "type": "integer",
+                    "description": "Window index.",
+                    "minimum": 1,
+                    "default": 1
+                  }
+                },
+                "required": [
+                  "browser",
+                  "key"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/browser_coordinate_click": {
+      "post": {
+        "operationId": "browser_coordinate_click",
+        "x-openai-isConsequential": true,
+        "summary": "Click browser screen coordinates",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "browser": {
+                    "type": "string",
+                    "description": "Browser application.",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
                   },
                   "x": {
                     "type": "integer",
-                    "description": "X coordinate in pixels."
+                    "description": "Screen X coordinate."
                   },
                   "y": {
                     "type": "integer",
-                    "description": "Y coordinate in pixels."
+                    "description": "Screen Y coordinate."
                   },
                   "double_click": {
                     "type": "boolean",
-                    "description": "Whether to double-click. Default: false."
+                    "description": "Double-click instead of single click.",
+                    "default": false
+                  },
+                  "window_index": {
+                    "type": "integer",
+                    "description": "Window index.",
+                    "minimum": 1,
+                    "default": 1
+                  }
+                },
+                "required": [
+                  "browser",
+                  "x",
+                  "y"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/browser_get_snapshot": {
+      "post": {
+        "operationId": "browser_get_snapshot",
+        "x-openai-isConsequential": false,
+        "summary": "Read the visible browser DOM tree",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "browser": {
+                    "type": "string",
+                    "description": "Browser application.",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
+                  },
+                  "window_index": {
+                    "type": "integer",
+                    "description": "Window index.",
+                    "minimum": 1,
+                    "default": 1
+                  },
+                  "tab_index": {
+                    "type": "integer",
+                    "description": "Optional tab index.",
+                    "minimum": 1
                   },
                   "max_depth": {
                     "type": "integer",
-                    "description": "DOM tree depth. Default: 6."
+                    "description": "DOM traversal depth.",
+                    "minimum": 1,
+                    "default": 6
                   },
                   "max_children": {
                     "type": "integer",
-                    "description": "Maximum children per DOM node. Default: 25."
+                    "description": "Maximum children per node.",
+                    "minimum": 1,
+                    "default": 25
                   }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful response."
-          }
-        }
-      }
-    },
-    "/api/search": {
-      "post": {
-        "operationId": "search_operation",
-        "x-openai-isConsequential": false,
-        "summary": "Search files or Spotlight",
-        "description": "Choose the operation with the tool parameter: search_files for recursive content search, or spotlight_search for fast filename search.",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
+                },
                 "required": [
-                  "tool"
-                ],
-                "properties": {
-                  "tool": {
-                    "type": "string",
-                    "description": "Operation to perform."
-                  },
-                  "pattern": {
-                    "type": "string",
-                    "description": "Glob, text, or regex pattern depending on the selected operation."
-                  },
-                  "query": {
-                    "type": "string",
-                    "description": "Search query."
-                  },
-                  "path": {
-                    "type": "string",
-                    "description": "File or directory path."
-                  },
-                  "include_extensions": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    },
-                    "description": "Optional extension filter, such as py or js."
-                  },
-                  "case_sensitive": {
-                    "type": "boolean",
-                    "description": "Case-sensitive search. Default: false."
-                  },
-                  "max_results": {
-                    "type": "integer",
-                    "description": "Maximum number of results. Default: 50."
-                  }
-                }
+                  "browser"
+                ]
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Successful response."
-          }
-        }
-      }
-    },
-    "/api/http": {
-      "post": {
-        "operationId": "http_request",
-        "x-openai-isConsequential": false,
-        "summary": "Send an HTTP request from the Mac",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "url"
-                ],
-                "properties": {
-                  "url": {
-                    "type": "string",
-                    "description": "Target URL."
-                  },
-                  "method": {
-                    "type": "string",
-                    "description": "HTTP method. Default: GET."
-                  },
-                  "headers": {
-                    "type": "object",
-                    "description": "HTTP headers."
-                  },
-                  "body": {
-                    "type": "string",
-                    "description": "Request body."
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful response."
+            "description": "Tool result returned as JSON."
           }
         }
       }
@@ -817,62 +2346,157 @@
         "operationId": "ask_user",
         "x-openai-isConsequential": false,
         "summary": "Ask the local user an interactive question",
-        "description": "Use this during autonomous tasks to ask the local Mac user a question in a native dialog and wait for a response or timeout.",
+        "description": "Use during autonomous tasks when a local answer or missing information is needed.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "question"
-                ],
+                "additionalProperties": false,
                 "properties": {
                   "question": {
                     "type": "string",
-                    "description": "Question or message shown to the user."
+                    "description": "Question shown in a native macOS dialog."
                   },
                   "sender": {
                     "type": "string",
-                    "description": "Sender name shown in the dialog title. Default: AI."
+                    "description": "Dialog sender label.",
+                    "default": "AI"
                   },
                   "timeout_s": {
                     "type": "integer",
-                    "description": "Optional timeout in seconds."
+                    "description": "Maximum wait in seconds.",
+                    "minimum": 1,
+                    "maximum": 300,
+                    "default": 60
                   }
-                }
+                },
+                "required": [
+                  "question"
+                ]
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Successful response.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "ok": {
-                      "type": "boolean",
-                      "description": "Whether the operation succeeded."
-                    },
-                    "response": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/interactive/choice": {
+      "post": {
+        "operationId": "ask_choice",
+        "x-openai-isConsequential": false,
+        "summary": "Ask the user to choose from native buttons",
+        "description": "Cancel and timeout return a bounded result without leaving a background process.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "question": {
+                    "type": "string",
+                    "description": "Question shown in the native dialog."
+                  },
+                  "choices": {
+                    "type": "array",
+                    "items": {
                       "type": "string",
-                      "description": "Text entered by the user, or null when skipped/timed out."
+                      "description": "Button label."
                     },
-                    "skipped": {
-                      "type": "boolean",
-                      "description": "True if the user skipped the dialog."
-                    },
-                    "timed_out": {
-                      "type": "boolean",
-                      "description": "True if the dialog timed out."
-                    }
+                    "description": "Two to six button labels.",
+                    "minItems": 2,
+                    "maxItems": 6
+                  },
+                  "sender": {
+                    "type": "string",
+                    "description": "Dialog sender label.",
+                    "default": "AI"
+                  },
+                  "timeout_s": {
+                    "type": "integer",
+                    "description": "Maximum wait in seconds.",
+                    "minimum": 1,
+                    "maximum": 300,
+                    "default": 60
+                  },
+                  "default_choice": {
+                    "type": "string",
+                    "description": "Optional initially selected choice."
                   }
-                }
+                },
+                "required": [
+                  "question",
+                  "choices"
+                ]
               }
             }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
+          }
+        }
+      }
+    },
+    "/api/interactive/confirmation": {
+      "post": {
+        "operationId": "ask_confirmation",
+        "x-openai-isConsequential": false,
+        "summary": "Ask the user for explicit Yes/No confirmation",
+        "description": "Only an explicit confirm button produces confirmed=true; deny, cancel, close, and timeout are false.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "question": {
+                    "type": "string",
+                    "description": "Question shown in the native dialog."
+                  },
+                  "sender": {
+                    "type": "string",
+                    "description": "Dialog sender label.",
+                    "default": "AI"
+                  },
+                  "timeout_s": {
+                    "type": "integer",
+                    "description": "Maximum wait in seconds.",
+                    "minimum": 1,
+                    "maximum": 300,
+                    "default": 60
+                  },
+                  "confirm_label": {
+                    "type": "string",
+                    "description": "Affirmative button label.",
+                    "default": "Yes"
+                  },
+                  "deny_label": {
+                    "type": "string",
+                    "description": "Negative button label.",
+                    "default": "No"
+                  }
+                },
+                "required": [
+                  "question"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON."
           }
         }
       }
