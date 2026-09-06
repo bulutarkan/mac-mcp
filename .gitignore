@@ -23,3 +23,5 @@ jobs/
 .idea/
 
 mcp_server/agents/
+
+mcp_server/agent_teams/

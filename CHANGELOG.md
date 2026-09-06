@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.3.0] - 2026-09-06
+
+- Added `spawn_agents` for one-call parallel teams of up to 10 agents with persistent `team_id` state and enforced shared provider/model/reasoning/access configuration.
+- Added `wait_agents` with bounded `all`, `any`, and `majority` completion modes to replace repeated status polling.
+- Added progress/timing telemetry including phase, first-event latency, idle time, step/tool counts, and last tool.
+- Added `idle_timeout_s` and automatic same-model retries; teams default to one retry with a short backoff, and never implicitly fall back to another model.
+- Extended `list_agents` with team filtering and `agent_action` with team-level cancel/retry/despawn and cancellation cascade.
+- Kept team wait output compact (2,000 characters per child handoff) to protect parent-chat context.
+- MCP tool count is now 66. The existing 59-operation REST/OpenAPI surface remains unchanged; agent orchestration remains MCP-only.
+
 ## [1.2.0] - 2026-09-06
 
 - Added five MCP-native agent delegation tools: `agent_catalog`, `spawn_agent`, `list_agents`, `get_agent`, and `agent_action`.

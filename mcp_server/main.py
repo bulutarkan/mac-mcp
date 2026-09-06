@@ -23,7 +23,8 @@ from .tools_jobs import (
     stop_job, list_jobs, wait_jobs, run_commands_parallel,
 )
 from .tools_agents import (
-    agent_catalog, spawn_agent, list_agents, get_agent, agent_action,
+    agent_catalog, spawn_agent, spawn_agents, wait_agents,
+    list_agents, get_agent, agent_action,
 )
 from .tools_files import (
     write_file, write_files_batch, read_file, read_multiple_files,
@@ -203,32 +204,67 @@ def create_app():
     @mcp.tool(
         name="spawn_agent",
         description=(
-            "Delegate a task to OpenCode or Codex in a non-blocking background process. "
-            "Returns agent_id immediately; concise final handoff is the default."
+            "Delegate one task to OpenCode or Codex in a non-blocking background process. "
+            "Supports idle timeout and same-model retries; concise final handoff is the default."
         ),
     )
     def _spawn_agent(provider: str, prompt: str, model: Optional[str] = None,
                      reasoning: Optional[str] = None, cwd: Optional[str] = None,
                      timeout_s: Optional[int] = None, title: Optional[str] = None,
-                     result_style: str = "concise",
-                     access_mode: str = "workspace_write") -> Dict[str, Any]:
+                     result_style: str = "concise", access_mode: str = "workspace_write",
+                     idle_timeout_s: Optional[int] = None, retries: int = 0) -> Dict[str, Any]:
         return _log(audit_logger, "spawn_agent",
                     lambda: spawn_agent(settings, provider=provider, prompt=prompt, model=model,
                                         reasoning=reasoning, cwd=cwd, timeout_s=timeout_s,
-                                        title=title, result_style=result_style,
-                                        access_mode=access_mode))
+                                        title=title, result_style=result_style, access_mode=access_mode,
+                                        idle_timeout_s=idle_timeout_s, retries=retries))
+
+    @mcp.tool(
+        name="spawn_agents",
+        description=(
+            "Spawn 1-10 background agents as one team in a single call. All children inherit the same "
+            "provider, model, reasoning and access_mode. Returns immediately with team_id and agent_ids."
+        ),
+    )
+    def _spawn_agents(tasks: List[Dict[str, Any]], provider: str, model: Optional[str] = None,
+                      reasoning: Optional[str] = None, cwd: Optional[str] = None,
+                      timeout_s: Optional[int] = None, idle_timeout_s: Optional[int] = None,
+                      retries: int = 1, result_style: str = "concise",
+                      access_mode: str = "read_only", title: Optional[str] = None) -> Dict[str, Any]:
+        return _log(audit_logger, "spawn_agents",
+                    lambda: spawn_agents(settings, tasks=tasks, provider=provider, model=model,
+                                         reasoning=reasoning, cwd=cwd, timeout_s=timeout_s,
+                                         idle_timeout_s=idle_timeout_s, retries=retries,
+                                         result_style=result_style, access_mode=access_mode, title=title))
+
+    @mcp.tool(
+        name="wait_agents",
+        description=(
+            "Bounded wait for a team or explicit agent_ids. mode: all, any, majority. "
+            "Returns concise results for agents that finished, avoiding repeated polling."
+        ),
+    )
+    async def _wait_agents(team_id: Optional[str] = None, agent_ids: Optional[List[str]] = None,
+                           mode: str = "all", timeout_s: int = 30,
+                           include_results: bool = True) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "wait_agents",
+            lambda: wait_agents(settings, team_id=team_id, agent_ids=agent_ids,
+                                mode=mode, timeout_s=timeout_s, include_results=include_results),
+        )
 
     @mcp.tool(
         name="list_agents",
-        description="List delegated agents with compact status and result previews.",
+        description="List delegated agents with compact status/result previews.",
     )
-    def _list_agents(status_filter: Optional[str] = None, limit: int = 20) -> Dict[str, Any]:
+    def _list_agents(status_filter: Optional[str] = None, limit: int = 20,
+                     team_id: Optional[str] = None) -> Dict[str, Any]:
         return _log(audit_logger, "list_agents",
-                    lambda: list_agents(settings, status_filter=status_filter, limit=limit))
+                    lambda: list_agents(settings, status_filter=status_filter, limit=limit, team_id=team_id))
 
     @mcp.tool(
         name="get_agent",
-        description="Get one delegated agent status and concise final handoff. Set include_logs=true only for debugging.",
+        description="Get one delegated agent status and concise final result. Set include_logs=true only for debugging.",
     )
     def _get_agent(agent_id: str, include_logs: bool = False,
                    tail_lines: int = 40) -> Dict[str, Any]:
@@ -238,12 +274,15 @@ def create_app():
 
     @mcp.tool(
         name="agent_action",
-        description="Control a delegated agent. action: cancel, message (resume), retry, or despawn.",
+        description=(
+            "Control one agent or a whole team. action: cancel, retry, despawn; message is available "
+            "for individual resumable agent sessions. Team cancel cascades to all children."
+        ),
     )
-    def _agent_action(agent_id: str, action: str, message: Optional[str] = None,
-                      signal: str = "TERM") -> Dict[str, Any]:
+    def _agent_action(action: str, agent_id: Optional[str] = None, team_id: Optional[str] = None,
+                      message: Optional[str] = None, signal: str = "TERM") -> Dict[str, Any]:
         return _log(audit_logger, "agent_action",
-                    lambda: agent_action(settings, agent_id=agent_id, action=action,
+                    lambda: agent_action(settings, action=action, agent_id=agent_id, team_id=team_id,
                                          message=message, signal=signal))
 
     # ── File tools ──────────────────────────────────────────────────────────

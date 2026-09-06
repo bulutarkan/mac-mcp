@@ -10,7 +10,7 @@
 
 Mac MCP is a local macOS control server for AI agents. It exposes the same Mac through a native MCP endpoint and a REST/OpenAPI surface for clients such as Custom GPT Actions.
 
-Version 1.2 includes 64 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
+Version 1.3 includes 66 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
 
 > **Security:** Mac MCP can execute shell commands, read and modify files, and control your desktop. Keep authentication enabled whenever the server is reachable outside localhost. Use a strong `MCP_API_KEY`, keep `MCP_ALLOW_NO_AUTH=false`, and only expose the server to clients you trust.
 
@@ -51,7 +51,7 @@ Official references: [Models](https://learn.chatgpt.com/docs/models) and [Pricin
 | --- | ---: | --- |
 | Terminal & system | 4 | shell commands, process list/kill, system info |
 | Background jobs | 7 | start/status/output/stop/list/wait/parallel |
-| Agent delegation | 5 | OpenCode/Codex catalog, spawn, status/result, lifecycle control |
+| Agent delegation | 7 | OpenCode/Codex catalog, single/team spawn, bounded wait, status/result, lifecycle control |
 | Files | 13 | read/write/edit/copy/move/delete/tree/search-by-name |
 | macOS | 12 | AppleScript, apps, clipboard, notifications, reminders, screenshots, volume/brightness |
 | Unified UI | 2 | `mac_observe`, `mac_act` |
@@ -59,7 +59,7 @@ Official references: [Models](https://learn.chatgpt.com/docs/models) and [Pricin
 | HTTP | 1 | outbound HTTP requests with validation |
 | Browser | 15 | tabs, JS, selectors, HTML, downloads, screenshots, scrolling, keys, coordinate clicks, DOM snapshot |
 | Interactive | 3 | native question/answer, choice, and confirmation dialogs |
-| **Total** | **64** | |
+| **Total** | **66** | |
 
 ## Requirements
 
@@ -171,7 +171,7 @@ REST:   http://127.0.0.1:8000/api/*
 Health: http://127.0.0.1:8000/health
 ```
 
-MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 64 tools.
+MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 66 tools.
 
 Example REST request:
 
@@ -242,23 +242,26 @@ A `no_output_timeout_s` can be used to stop commands that stop producing output;
 
 Use delegated agents for tasks that would otherwise consume a large amount of parent-chat context or block the main agent while research, coding, or analysis runs. `spawn_agent` returns immediately; the OpenCode or Codex process continues independently.
 
+For parallel work, `spawn_agents` creates a persistent team and enforces one shared provider/model/reasoning/access configuration across all children. `wait_agents` replaces repeated polling with a bounded `all`, `any`, or `majority` wait. Progress metadata includes first-event latency, phase, idle time, steps, tool count, and last tool. `idle_timeout_s` plus same-model retries can recover transient provider stalls/errors; teams default to one retry and never fall back to another model implicitly.
+
 ```text
 agent_catalog  -> choose provider/model/reasoning
-spawn_agent    -> agent_id immediately
-list_agents    -> compact running/completed overview
-get_agent      -> concise final handoff (logs only when requested)
-agent_action   -> cancel / message / retry / despawn
+spawn_agent    -> one agent_id immediately
+spawn_agents   -> one team_id + child agent_ids immediately
+wait_agents    -> bounded all / any / majority collection
+list_agents    -> compact overview, optionally by team_id
+get_agent      -> progress telemetry + concise final handoff
+agent_action   -> agent/team cancel / retry / despawn; agent message/resume
 ```
 
 Typical flow:
 
 ```text
 Parent ChatGPT
-  ├─ spawn_agent(OpenCode, ... )
-  ├─ spawn_agent(Codex, ... )
+  ├─ spawn_agents(same model × N) → team_id
   └─ continues other work
           ↓
-     get_agent(agent_id)
+     wait_agents(team_id) → compact handoffs
           ↓
      concise handoff only
 ```

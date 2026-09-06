@@ -18,15 +18,21 @@ from fastapi import HTTPException, status
 from .security import BASE_DIR, Settings, truncate
 
 AGENTS_DIR = BASE_DIR / "agents"
-TERMINAL_STATUSES = {"completed", "failed", "timeout", "cancelled"}
+TEAMS_DIR = BASE_DIR / "agent_teams"
+TERMINAL_STATUSES = {"completed", "failed", "timeout", "stalled", "cancelled"}
 DEFAULT_AGENT_TIMEOUT_S = 1800
 MAX_AGENT_TIMEOUT_S = 7200
 DEFAULT_RESULT_LIMIT = 6000
 DETAILED_RESULT_LIMIT = 20000
+TEAM_RESULT_LIMIT = 2000
+DEFAULT_WAIT_TIMEOUT_S = 30
+MAX_WAIT_TIMEOUT_S = 300
+MAX_TEAM_SIZE = 10
 
 _PROVIDER_NAMES = {"opencode", "codex"}
 _ACCESS_MODES = {"read_only", "workspace_write", "full"}
 _RESULT_STYLES = {"concise", "detailed"}
+_WAIT_MODES = {"all", "any", "majority"}
 _WORKERS: Dict[str, subprocess.Popen] = {}
 _WORKERS_LOCK = threading.RLock()
 
@@ -61,6 +67,71 @@ def _write_meta(agent_id: str, meta: Dict[str, Any]) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     tmp.replace(path)
+
+
+def _team_dir(team_id: str) -> Path:
+    if not team_id or "/" in team_id or ".." in team_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid team_id.")
+    return TEAMS_DIR / team_id
+
+
+def _team_meta_path(team_id: str) -> Path:
+    return _team_dir(team_id) / "meta.json"
+
+
+def _read_team(team_id: str) -> Dict[str, Any]:
+    path = _team_meta_path(team_id)
+    if not path.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Agent team not found: {team_id}")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Corrupt team metadata: {team_id}") from exc
+
+
+def _write_team(team_id: str, meta: Dict[str, Any]) -> None:
+    path = _team_meta_path(team_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    team = dict(meta or _read_team(team_id))
+    agent_ids = list(team.get("agent_ids") or [])
+    counts: Dict[str, int] = {}
+    for agent_id in agent_ids:
+        try:
+            agent_meta = _normalize(agent_id, _read_meta(agent_id))
+        except HTTPException:
+            counts["missing"] = counts.get("missing", 0) + 1
+            continue
+        public = _public_meta(agent_id, agent_meta)
+        state = str(public.get("status") or "unknown")
+        counts[state] = counts.get(state, 0) + 1
+    terminal_count = sum(counts.get(state, 0) for state in TERMINAL_STATUSES)
+    if agent_ids and counts.get("completed", 0) == len(agent_ids):
+        team_status = "completed"
+    elif agent_ids and terminal_count >= len(agent_ids):
+        team_status = "completed_with_failures"
+    else:
+        team_status = "running"
+    return {
+        "team_id": team_id,
+        "status": team_status,
+        "title": team.get("title"),
+        "provider": team.get("provider"),
+        "model": team.get("model"),
+        "reasoning": team.get("reasoning"),
+        "access_mode": team.get("access_mode"),
+        "created_at": team.get("created_at"),
+        "agent_ids": agent_ids,
+        "count": len(agent_ids),
+        "status_counts": counts,
+        "terminal_count": terminal_count,
+        "parent_team_id": team.get("parent_team_id"),
+    }
 
 
 def _tail_text(path: Path, max_lines: int = 40, max_chars: int = 6000) -> str:
@@ -276,11 +347,18 @@ def _handoff_instruction(result_style: str) -> str:
 
 
 def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
-    now = float(meta.get("ended_at") or _now())
+    current = _now()
+    now = float(meta.get("ended_at") or current)
     started = float(meta.get("started_at") or now)
+    last_activity = float(meta.get("last_activity_at") or started)
+    first_event = meta.get("first_event_at")
+    spawn_requested = float(meta.get("spawn_requested_at") or started)
+    usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else None
     return {
         "agent_id": agent_id,
+        "team_id": meta.get("team_id"),
         "status": meta.get("status"),
+        "phase": meta.get("phase"),
         "title": meta.get("title"),
         "provider": meta.get("provider"),
         "model": meta.get("model"),
@@ -290,12 +368,29 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "started_at": meta.get("started_at"),
         "ended_at": meta.get("ended_at"),
         "duration_ms": int(max(0.0, now - started) * 1000),
+        "spawn_requested_at": meta.get("spawn_requested_at"),
+        "worker_started_at": meta.get("worker_started_at"),
+        "provider_started_at": meta.get("provider_started_at"),
+        "first_event_at": first_event,
+        "first_tool_at": meta.get("first_tool_at"),
+        "last_activity_at": meta.get("last_activity_at"),
+        "idle_seconds": round(max(0.0, current - last_activity), 3) if meta.get("status") not in TERMINAL_STATUSES else 0.0,
+        "first_event_latency_ms": int(max(0.0, float(first_event) - spawn_requested) * 1000) if first_event else None,
+        "step_count": int(meta.get("step_count") or 0),
+        "tool_call_count": int(meta.get("tool_call_count") or 0),
+        "last_tool": meta.get("last_tool"),
+        "last_tool_duration_ms": meta.get("last_tool_duration_ms"),
+        "last_event_type": meta.get("last_event_type"),
+        "idle_timeout_s": meta.get("idle_timeout_s"),
+        "retries": int(meta.get("retries") or 0),
+        "retry_count": int(meta.get("retry_count") or 0),
         "session_id": meta.get("session_id"),
         "parent_agent_id": meta.get("parent_agent_id"),
         "attempt": meta.get("attempt", 1),
         "exit_code": meta.get("exit_code"),
         "note": meta.get("note"),
-        "usage": meta.get("usage"),
+        "usage": usage,
+        "output_tokens": usage.get("output") if usage else None,
     }
 
 
@@ -330,6 +425,9 @@ def _spawn_internal(
     parent_agent_id: Optional[str] = None,
     resume_session_id: Optional[str] = None,
     attempt: int = 1,
+    team_id: Optional[str] = None,
+    idle_timeout_s: Optional[int] = None,
+    retries: int = 0,
 ) -> Dict[str, Any]:
     provider = provider.lower().strip()
     if provider not in _PROVIDER_NAMES:
@@ -346,11 +444,18 @@ def _spawn_internal(
 
     workdir = _resolve_cwd(cwd)
     effective_timeout = min(max(10, int(timeout_s or DEFAULT_AGENT_TIMEOUT_S)), MAX_AGENT_TIMEOUT_S)
+    effective_idle_timeout = None if idle_timeout_s is None else min(max(5, int(idle_timeout_s)), 3600)
+    effective_retries = min(max(0, int(retries)), 3)
     agent_id = "agt_" + uuid.uuid4().hex[:10]
     path = _agent_dir(agent_id)
     path.mkdir(parents=True, exist_ok=False)
     user_prompt = prompt.strip()
-    effective_prompt = user_prompt + "\n\n" + _handoff_instruction(result_style)
+    access_instruction = (
+        "This task is read-only. Do not modify files, configuration, services, repositories, or external state. "
+        "Use only inspection/read commands and tools."
+        if access_mode == "read_only" else ""
+    )
+    effective_prompt = user_prompt + ("\n\n" + access_instruction if access_instruction else "") + "\n\n" + _handoff_instruction(result_style)
     (path / "prompt.txt").write_text(user_prompt, encoding="utf-8")
     (path / "effective_prompt.txt").write_text(effective_prompt, encoding="utf-8")
     (path / "stdout.log").touch()
@@ -361,6 +466,7 @@ def _spawn_internal(
     started = _now()
     meta: Dict[str, Any] = {
         "agent_id": agent_id,
+        "team_id": team_id,
         "title": (title or user_prompt.splitlines()[0][:100]).strip(),
         "provider": provider,
         "binary": binary,
@@ -370,7 +476,11 @@ def _spawn_internal(
         "access_mode": access_mode,
         "result_style": result_style,
         "timeout_s": effective_timeout,
+        "idle_timeout_s": effective_idle_timeout,
+        "retries": effective_retries,
+        "retry_count": 0,
         "status": "starting",
+        "phase": "starting",
         "worker_pid": None,
         "provider_pid": None,
         "session_id": None,
@@ -379,6 +489,17 @@ def _spawn_internal(
         "attempt": attempt,
         "exit_code": None,
         "started_at": started,
+        "spawn_requested_at": started,
+        "worker_started_at": None,
+        "provider_started_at": None,
+        "first_event_at": None,
+        "first_tool_at": None,
+        "last_activity_at": started,
+        "last_event_type": None,
+        "step_count": 0,
+        "tool_call_count": 0,
+        "last_tool": None,
+        "last_tool_duration_ms": None,
         "updated_at": started,
         "ended_at": None,
     }
@@ -421,14 +542,103 @@ def spawn_agent(
     title: Optional[str] = None,
     result_style: str = "concise",
     access_mode: str = "workspace_write",
+    idle_timeout_s: Optional[int] = None,
+    retries: int = 0,
 ) -> Dict[str, Any]:
     return _spawn_internal(
         settings, provider, prompt, model, reasoning, cwd, timeout_s, title,
-        result_style, access_mode,
+        result_style, access_mode, idle_timeout_s=idle_timeout_s, retries=retries,
     )
 
 
-def list_agents(settings: Settings, status_filter: Optional[str] = None, limit: int = 20) -> Dict[str, Any]:
+def spawn_agents(
+    settings: Settings,
+    tasks: List[Dict[str, Any]],
+    provider: str,
+    model: Optional[str] = None,
+    reasoning: Optional[str] = None,
+    cwd: Optional[str] = None,
+    timeout_s: Optional[int] = None,
+    idle_timeout_s: Optional[int] = None,
+    retries: int = 1,
+    result_style: str = "concise",
+    access_mode: str = "read_only",
+    title: Optional[str] = None,
+    parent_team_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    if not tasks or not isinstance(tasks, list):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tasks is required.")
+    if len(tasks) > MAX_TEAM_SIZE:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"A team can contain at most {MAX_TEAM_SIZE} agents.")
+    forbidden = {"provider", "model", "reasoning", "access_mode", "result_style"}
+    normalized: List[Dict[str, str]] = []
+    for index, task in enumerate(tasks, start=1):
+        if not isinstance(task, dict):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}] must be an object.")
+        mixed = sorted(forbidden.intersection(task.keys()))
+        if mixed:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Team child settings {mixed} must be supplied once at team level so every agent uses the same configuration.",
+            )
+        prompt = str(task.get("prompt") or task.get("task") or "").strip()
+        if not prompt:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].prompt is required.")
+        normalized.append({"prompt": prompt, "title": str(task.get("title") or f"Agent {index}").strip()})
+
+    team_id = "team_" + uuid.uuid4().hex[:10]
+    created = _now()
+    team_meta: Dict[str, Any] = {
+        "team_id": team_id,
+        "title": (title or f"{provider} team ({len(normalized)} agents)").strip(),
+        "provider": provider,
+        "model": model,
+        "reasoning": reasoning,
+        "cwd": str(_resolve_cwd(cwd)),
+        "timeout_s": timeout_s,
+        "idle_timeout_s": idle_timeout_s,
+        "retries": min(max(0, int(retries)), 3),
+        "result_style": result_style,
+        "access_mode": access_mode,
+        "created_at": created,
+        "updated_at": created,
+        "parent_team_id": parent_team_id,
+        "agent_ids": [],
+    }
+    _write_team(team_id, team_meta)
+    spawned: List[Dict[str, Any]] = []
+    try:
+        for task in normalized:
+            item = _spawn_internal(
+                settings=settings, provider=provider, prompt=task["prompt"], model=model,
+                reasoning=reasoning, cwd=cwd, timeout_s=timeout_s, title=task["title"],
+                result_style=result_style, access_mode=access_mode, team_id=team_id,
+                idle_timeout_s=idle_timeout_s, retries=retries,
+            )
+            spawned.append(item)
+            team_meta["agent_ids"].append(item["agent_id"])
+            team_meta["updated_at"] = _now()
+            _write_team(team_id, team_meta)
+    except Exception:
+        for item in spawned:
+            try:
+                _agent_action_single(settings, item["agent_id"], "cancel")
+            except Exception:
+                pass
+        team_meta["updated_at"] = _now()
+        team_meta["spawn_error"] = True
+        _write_team(team_id, team_meta)
+        raise
+    summary = _team_summary(team_id, team_meta)
+    summary["spawned"] = [
+        {"agent_id": item["agent_id"], "title": item.get("title"), "status": item.get("status")}
+        for item in spawned
+    ]
+    return {"ok": True, **summary}
+
+
+def list_agents(settings: Settings, status_filter: Optional[str] = None, limit: int = 20,
+                team_id: Optional[str] = None) -> Dict[str, Any]:
     AGENTS_DIR.mkdir(parents=True, exist_ok=True)
     items: List[Dict[str, Any]] = []
     for path in sorted(AGENTS_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -436,6 +646,8 @@ def list_agents(settings: Settings, status_filter: Optional[str] = None, limit: 
             continue
         meta = _normalize(path.name, _read_meta(path.name))
         if status_filter and meta.get("status") != status_filter:
+            continue
+        if team_id and meta.get("team_id") != team_id:
             continue
         public = _public_meta(path.name, meta)
         result_path = path / "result.txt"
@@ -445,7 +657,79 @@ def list_agents(settings: Settings, status_filter: Optional[str] = None, limit: 
         items.append(public)
         if len(items) >= max(1, min(int(limit), 200)):
             break
-    return {"ok": True, "count": len(items), "agents": items}
+    result: Dict[str, Any] = {"ok": True, "count": len(items), "agents": items}
+    if team_id:
+        result["team"] = _team_summary(team_id)
+    return result
+
+
+def _wait_condition(terminal_count: int, total: int, mode: str) -> bool:
+    if mode == "all":
+        return terminal_count >= total
+    if mode == "any":
+        return terminal_count >= 1
+    return terminal_count >= (total // 2 + 1)
+
+
+def wait_agents(
+    settings: Settings,
+    team_id: Optional[str] = None,
+    agent_ids: Optional[List[str]] = None,
+    mode: str = "all",
+    timeout_s: int = DEFAULT_WAIT_TIMEOUT_S,
+    include_results: bool = True,
+) -> Dict[str, Any]:
+    mode = mode.lower().strip()
+    if mode not in _WAIT_MODES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "mode must be all, any, or majority.")
+    if bool(team_id) == bool(agent_ids):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Provide exactly one of team_id or agent_ids.")
+    ids = list(_read_team(team_id).get("agent_ids") or []) if team_id else list(agent_ids or [])
+    if not ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No agents to wait for.")
+    bounded_timeout = min(max(0, int(timeout_s)), MAX_WAIT_TIMEOUT_S)
+    deadline = time.monotonic() + bounded_timeout
+    condition_met = False
+    states: List[Dict[str, Any]] = []
+    while True:
+        states = [get_agent(settings, agent_id, include_logs=False) for agent_id in ids]
+        terminal_count = sum(1 for item in states if item.get("status") in TERMINAL_STATUSES)
+        condition_met = _wait_condition(terminal_count, len(ids), mode)
+        if condition_met or time.monotonic() >= deadline:
+            break
+        time.sleep(0.25)
+    compact: List[Dict[str, Any]] = []
+    for item in states:
+        row = {
+            "agent_id": item.get("agent_id"),
+            "title": item.get("title"),
+            "status": item.get("status"),
+            "phase": item.get("phase"),
+            "provider": item.get("provider"),
+            "model": item.get("model"),
+            "duration_ms": item.get("duration_ms"),
+            "first_event_latency_ms": item.get("first_event_latency_ms"),
+            "idle_seconds": item.get("idle_seconds"),
+            "tool_call_count": item.get("tool_call_count"),
+            "last_tool": item.get("last_tool"),
+            "retry_count": item.get("retry_count"),
+        }
+        if include_results and "result" in item:
+            row["result"] = truncate(str(item.get("result") or ""), TEAM_RESULT_LIMIT)[0]
+        compact.append(row)
+    response: Dict[str, Any] = {
+        "ok": True,
+        "team_id": team_id,
+        "mode": mode,
+        "condition_met": condition_met,
+        "timed_out": not condition_met,
+        "count": len(ids),
+        "terminal_count": sum(1 for item in states if item.get("status") in TERMINAL_STATUSES),
+        "agents": compact,
+    }
+    if team_id:
+        response["team"] = _team_summary(team_id)
+    return response
 
 
 def get_agent(
@@ -470,7 +754,7 @@ def get_agent(
     return result
 
 
-def agent_action(
+def _agent_action_single(
     settings: Settings,
     agent_id: str,
     action: str,
@@ -527,6 +811,8 @@ def agent_action(
             access_mode=meta.get("access_mode", "workspace_write"),
             parent_agent_id=agent_id,
             attempt=int(meta.get("attempt", 1)) + 1,
+            idle_timeout_s=meta.get("idle_timeout_s"),
+            retries=int(meta.get("retries") or 0),
         )
 
     if not message or not message.strip():
@@ -550,7 +836,68 @@ def agent_action(
         parent_agent_id=agent_id,
         resume_session_id=session_id,
         attempt=int(meta.get("attempt", 1)) + 1,
+        idle_timeout_s=meta.get("idle_timeout_s"),
+        retries=int(meta.get("retries") or 0),
     )
+
+
+def agent_action(
+    settings: Settings,
+    action: str,
+    agent_id: Optional[str] = None,
+    team_id: Optional[str] = None,
+    message: Optional[str] = None,
+    signal: str = "TERM",
+) -> Dict[str, Any]:
+    if bool(agent_id) == bool(team_id):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Provide exactly one of agent_id or team_id.")
+    if agent_id:
+        return _agent_action_single(settings, agent_id=agent_id, action=action, message=message, signal=signal)
+
+    team = _read_team(str(team_id))
+    ids = list(team.get("agent_ids") or [])
+    normalized_action = action.lower().strip()
+    if normalized_action == "message":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "message is only supported for an individual agent session.")
+    if normalized_action == "cancel":
+        results = []
+        for child_id in ids:
+            try:
+                results.append(_agent_action_single(settings, child_id, "cancel", signal=signal))
+            except HTTPException as exc:
+                results.append({"agent_id": child_id, "ok": False, "error": str(exc.detail)})
+        team["updated_at"] = _now()
+        _write_team(str(team_id), team)
+        return {"ok": True, "action": "cancel", "team": _team_summary(str(team_id)), "results": results}
+    if normalized_action == "despawn":
+        summary = _team_summary(str(team_id), team)
+        if summary["terminal_count"] < summary["count"]:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Cancel or wait for all team agents before despawn.")
+        results = []
+        for child_id in ids:
+            try:
+                results.append(_agent_action_single(settings, child_id, "despawn"))
+            except HTTPException as exc:
+                results.append({"agent_id": child_id, "ok": False, "error": str(exc.detail)})
+        shutil.rmtree(_team_dir(str(team_id)))
+        return {"ok": True, "team_id": team_id, "status": "despawned", "results": results}
+    if normalized_action == "retry":
+        tasks = []
+        for index, child_id in enumerate(ids, start=1):
+            prompt_path = _agent_dir(child_id) / "prompt.txt"
+            child = _read_meta(child_id)
+            tasks.append({
+                "prompt": prompt_path.read_text(encoding="utf-8", errors="replace"),
+                "title": child.get("title") or f"Agent {index}",
+            })
+        return spawn_agents(
+            settings=settings, tasks=tasks, provider=team["provider"], model=team.get("model"),
+            reasoning=team.get("reasoning"), cwd=team.get("cwd"), timeout_s=team.get("timeout_s"),
+            idle_timeout_s=team.get("idle_timeout_s"), retries=int(team.get("retries") or 0),
+            result_style=team.get("result_style", "concise"), access_mode=team.get("access_mode", "read_only"),
+            title=f"Retry: {team.get('title') or team_id}", parent_team_id=str(team_id),
+        )
+    raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be cancel, message, retry, or despawn.")
 
 
 def _extract_opencode(path: Path) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
@@ -658,6 +1005,118 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
     return cmd
 
 
+def _record_provider_event(agent_id: str, raw_line: str) -> None:
+    now = _now()
+    try:
+        event = json.loads(raw_line)
+    except json.JSONDecodeError:
+        event = {"type": "output"}
+    try:
+        meta = _read_meta(agent_id)
+    except HTTPException:
+        return
+    if meta.get("status") == "cancelled":
+        return
+    event_type = str(event.get("type") or "output")
+    part = event.get("part") if isinstance(event.get("part"), dict) else {}
+    if not meta.get("first_event_at"):
+        meta["first_event_at"] = now
+    meta["last_activity_at"] = now
+    meta["last_event_type"] = event_type
+    if event_type == "step_start":
+        meta["step_count"] = int(meta.get("step_count") or 0) + 1
+        meta["phase"] = "reasoning"
+    elif event_type == "tool_use":
+        meta["tool_call_count"] = int(meta.get("tool_call_count") or 0) + 1
+        meta["last_tool"] = part.get("tool")
+        if not meta.get("first_tool_at"):
+            meta["first_tool_at"] = now
+        timing = part.get("time") if isinstance(part.get("time"), dict) else {}
+        start_ms, end_ms = timing.get("start"), timing.get("end")
+        if isinstance(start_ms, (int, float)) and isinstance(end_ms, (int, float)):
+            meta["last_tool_duration_ms"] = max(0, int(end_ms - start_ms))
+        meta["phase"] = "tool"
+    elif event_type == "text":
+        meta["phase"] = "finalizing"
+    elif event_type == "step_finish":
+        reason = part.get("reason")
+        meta["phase"] = "finalizing" if reason == "stop" else "reasoning"
+    else:
+        meta["phase"] = meta.get("phase") or "working"
+    meta["updated_at"] = now
+    _write_meta(agent_id, meta)
+
+
+def _capture_provider_stream(agent_id: str, stream, path: Path, parse_events: bool) -> None:
+    with path.open("a", encoding="utf-8", errors="replace") as handle:
+        for line in iter(stream.readline, ""):
+            if not line:
+                break
+            handle.write(line)
+            handle.flush()
+            if parse_events:
+                _record_provider_event(agent_id, line)
+    try:
+        stream.close()
+    except Exception:
+        pass
+
+
+def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, attempt_index: int) -> Tuple[int, Optional[str]]:
+    path = _agent_dir(agent_id)
+    stdout_path = path / "stdout.log"
+    stderr_path = path / "stderr.log"
+    result_path = path / "result.txt"
+    if meta.get("provider") == "codex":
+        result_path.write_text("", encoding="utf-8")
+    marker = f"\n--- provider attempt {attempt_index + 1} ---\n"
+    with stdout_path.open("a", encoding="utf-8") as handle:
+        handle.write(marker)
+    with stderr_path.open("a", encoding="utf-8") as handle:
+        handle.write(marker)
+    cmd = _build_provider_command(meta, prompt, result_path)
+    proc = subprocess.Popen(
+        cmd, cwd=meta["cwd"], env=_base_env(), stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, start_new_session=True,
+    )
+    now = _now()
+    latest = _read_meta(agent_id)
+    if latest.get("status") == "cancelled":
+        _kill_group(proc.pid, signal_module.SIGTERM)
+        return proc.wait(), "cancelled"
+    latest.update({
+        "provider_pid": proc.pid, "provider_started_at": now, "last_activity_at": now,
+        "phase": "provider_starting", "updated_at": now, "retry_count": attempt_index,
+    })
+    _write_meta(agent_id, latest)
+    out_thread = threading.Thread(target=_capture_provider_stream, args=(agent_id, proc.stdout, stdout_path, True), daemon=True)
+    err_thread = threading.Thread(target=_capture_provider_stream, args=(agent_id, proc.stderr, stderr_path, False), daemon=True)
+    out_thread.start(); err_thread.start()
+    attempt_started = time.monotonic()
+    stop_reason: Optional[str] = None
+    timeout_s = int(meta.get("timeout_s") or DEFAULT_AGENT_TIMEOUT_S)
+    idle_timeout_s = meta.get("idle_timeout_s")
+    while proc.poll() is None:
+        latest = _read_meta(agent_id)
+        if latest.get("status") == "cancelled":
+            stop_reason = "cancelled"
+        elif time.monotonic() - attempt_started >= timeout_s:
+            stop_reason = "timeout"
+        elif idle_timeout_s and _now() - float(latest.get("last_activity_at") or latest.get("provider_started_at") or _now()) >= int(idle_timeout_s):
+            stop_reason = "stalled"
+        if stop_reason:
+            _kill_group(proc.pid, signal_module.SIGTERM)
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                _kill_group(proc.pid, signal_module.SIGKILL)
+            break
+        time.sleep(0.2)
+    exit_code = proc.wait()
+    out_thread.join(timeout=2); err_thread.join(timeout=2)
+    return exit_code, stop_reason
+
+
 def _worker(agent_id: str) -> int:
     meta = _read_meta(agent_id)
     path = _agent_dir(agent_id)
@@ -665,41 +1124,40 @@ def _worker(agent_id: str) -> int:
     stdout_path = path / "stdout.log"
     stderr_path = path / "stderr.log"
     result_path = path / "result.txt"
-    cmd = _build_provider_command(meta, prompt, result_path)
-    meta.update({"status": "running", "updated_at": _now()})
+    now = _now()
+    meta.update({"status": "running", "phase": "worker_starting", "worker_started_at": now, "last_activity_at": now, "updated_at": now})
     _write_meta(agent_id, meta)
 
-    timed_out = False
+    final_reason: Optional[str] = None
+    exit_code = 1
+    max_attempts = int(meta.get("retries") or 0) + 1
     try:
-        with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open("w", encoding="utf-8") as stderr_file:
-            proc = subprocess.Popen(
-                cmd,
-                cwd=meta["cwd"],
-                env=_base_env(),
-                stdin=subprocess.DEVNULL,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                text=True,
-                start_new_session=True,
-            )
-            meta = _read_meta(agent_id)
-            meta.update({"provider_pid": proc.pid, "updated_at": _now()})
-            _write_meta(agent_id, meta)
-            try:
-                exit_code = proc.wait(timeout=int(meta.get("timeout_s") or DEFAULT_AGENT_TIMEOUT_S))
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                _kill_group(proc.pid, signal_module.SIGTERM)
-                try:
-                    exit_code = proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    _kill_group(proc.pid, signal_module.SIGKILL)
-                    exit_code = proc.wait()
+        for attempt_index in range(max_attempts):
+            latest = _read_meta(agent_id)
+            if latest.get("status") == "cancelled":
+                return 0
+            if attempt_index > 0:
+                latest.update({
+                    "phase": "retrying", "retry_count": attempt_index, "provider_pid": None,
+                    "provider_started_at": None, "last_activity_at": _now(),
+                    "note": f"Retrying same model after {final_reason or 'provider_error'}.", "updated_at": _now(),
+                })
+                _write_meta(agent_id, latest)
+                time.sleep(min(2.0, 0.75 * attempt_index))
+            exit_code, stop_reason = _run_provider_attempt(agent_id, latest, prompt, attempt_index)
+            final_reason = stop_reason
+            latest = _read_meta(agent_id)
+            if latest.get("status") == "cancelled" or stop_reason == "cancelled":
+                return 0
+            if exit_code == 0 and stop_reason is None:
+                break
+            if attempt_index + 1 >= max_attempts:
+                break
     except Exception as exc:
         meta = _read_meta(agent_id)
         if meta.get("status") != "cancelled":
             meta.update({
-                "status": "failed", "exit_code": None, "ended_at": _now(), "updated_at": _now(),
+                "status": "failed", "phase": "failed", "exit_code": None, "ended_at": _now(), "updated_at": _now(),
                 "note": f"Agent worker error: {exc}",
             })
             result_path.write_text(f"Agent worker error: {exc}", encoding="utf-8")
@@ -722,27 +1180,25 @@ def _worker(agent_id: str) -> int:
 
     if not result:
         error_tail = _tail_text(stderr_path, max_lines=30, max_chars=3000)
-        if error_tail:
-            result = error_tail
-        else:
-            result = "Agent finished without a final handoff. Check logs with get_agent(include_logs=true)."
+        result = error_tail or "Agent finished without a final handoff. Check logs with get_agent(include_logs=true)."
 
     limit = DETAILED_RESULT_LIMIT if meta.get("result_style") == "detailed" else DEFAULT_RESULT_LIMIT
     result, was_truncated = truncate(result, limit)
     result_path.write_text(result, encoding="utf-8")
-    final_status = "timeout" if timed_out else ("completed" if exit_code == 0 else "failed")
+    if final_reason == "timeout":
+        final_status = "timeout"
+    elif final_reason == "stalled":
+        final_status = "stalled"
+    else:
+        final_status = "completed" if exit_code == 0 else "failed"
     meta.update({
-        "status": final_status,
-        "exit_code": exit_code,
-        "ended_at": _now(),
-        "updated_at": _now(),
-        "session_id": session_id or meta.get("resume_session_id"),
-        "usage": usage,
-        "result_truncated": was_truncated,
-        "result_chars": len(result),
+        "status": final_status, "phase": "completed" if final_status == "completed" else final_status,
+        "exit_code": exit_code, "ended_at": _now(), "updated_at": _now(),
+        "session_id": session_id or meta.get("resume_session_id"), "usage": usage,
+        "result_truncated": was_truncated, "result_chars": len(result), "provider_pid": None,
     })
     if final_status != "completed":
-        meta["note"] = f"Provider exited with code {exit_code}."
+        meta["note"] = f"Provider ended as {final_status} with code {exit_code}."
     _write_meta(agent_id, meta)
     return 0 if final_status == "completed" else 1
 
