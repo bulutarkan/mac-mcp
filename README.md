@@ -10,22 +10,23 @@
 
 Mac MCP is a local macOS control server for AI agents. It exposes the same Mac through a native MCP endpoint and a REST/OpenAPI surface for clients such as Custom GPT Actions.
 
-Version 1.1 includes 59 MCP tools covering shell execution, files, processes, background jobs, macOS automation, browser control, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
+Version 1.2 includes 64 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
 
 > **Security:** Mac MCP can execute shell commands, read and modify files, and control your desktop. Keep authentication enabled whenever the server is reachable outside localhost. Use a strong `MCP_API_KEY`, keep `MCP_ALLOW_NO_AUTH=false`, and only expose the server to clients you trust.
 
-## What's new in v1.1
+## What's new in v1.2
 
-- `mac_observe`: reads the frontmost or named app through macOS Accessibility, returns stable `element_id` values, window metadata, UI roles/values/actions, and optionally a screenshot.
-- `mac_act`: performs bounded UI action batches using the latest observation, including click, double-click, scroll, type, paste, keys/shortcuts, drag, and Accessibility/menu actions.
-- Observation IDs expire and can be passed to `mac_act` to reduce stale-target mistakes.
-- Potentially consequential UI clicks are gated behind `allow_risky=true`.
-- Optional OCR is available when Accessibility text is insufficient.
-- UI screenshots are returned as connector-safe JPEG image content (max 1600 px and 600 KB); if capture/compression cannot stay within the limit, the text observation still returns with a diagnostic instead of blocking the MCP response.
-- Shell, AppleScript, browser automation, and interactive dialogs now terminate their process groups on timeout instead of leaving descendants behind.
-- Background jobs have bounded waits, cleaner stalled/timeout states, reliable process-group termination, and a 60-second default timeout when none is supplied.
+- `agent_catalog`: discover available OpenCode/Codex providers, models, free OpenCode models, and reasoning options without starting work.
+- `spawn_agent`: delegate a task to OpenCode or Codex and get an `agent_id` back immediately while the work continues in a separate background process.
+- `get_agent` and `list_agents`: retrieve compact state and the concise final handoff without importing the delegated agent working context into the parent conversation.
+- `agent_action`: cancel, retry, despawn, or send a follow-up message that resumes the provider session.
+- Agent state and final results persist on disk across Mac MCP restarts.
+- OpenCode supports model plus provider-specific `reasoning`/`--variant`; Codex supports model plus `model_reasoning_effort`.
+- `access_mode` supports `read_only`, `workspace_write`, and `full` for Codex sandbox selection.
+- Agent final output is concise by default; raw stdout/stderr is opt-in through `get_agent(include_logs=true)` for debugging.
 
-All 59 tools are available through the MCP endpoint. The Custom GPT REST/OpenAPI surface now mirrors them one-to-one as named operations, including `mac_observe`, `mac_act`, `ask_choice`, and `ask_confirmation`; the older grouped REST routes remain available for compatibility but are not published in the schema.
+The five agent-delegation tools are MCP-native and are not added to the legacy Custom GPT REST/OpenAPI schema. The existing 59 REST operations remain stable for backwards compatibility.
+
 ## Benefits and usage strategy: ChatGPT Chat vs ChatGPT Work vs Codex
 
 Mac MCP can be used from ordinary ChatGPT conversations, ChatGPT Work, and Codex. The connector and the MCP tools are the same; the useful surface depends on whether the task is primarily conversation, workspace work, or repository implementation.
@@ -50,6 +51,7 @@ Official references: [Models](https://learn.chatgpt.com/docs/models) and [Pricin
 | --- | ---: | --- |
 | Terminal & system | 4 | shell commands, process list/kill, system info |
 | Background jobs | 7 | start/status/output/stop/list/wait/parallel |
+| Agent delegation | 5 | OpenCode/Codex catalog, spawn, status/result, lifecycle control |
 | Files | 13 | read/write/edit/copy/move/delete/tree/search-by-name |
 | macOS | 12 | AppleScript, apps, clipboard, notifications, reminders, screenshots, volume/brightness |
 | Unified UI | 2 | `mac_observe`, `mac_act` |
@@ -57,7 +59,7 @@ Official references: [Models](https://learn.chatgpt.com/docs/models) and [Pricin
 | HTTP | 1 | outbound HTTP requests with validation |
 | Browser | 15 | tabs, JS, selectors, HTML, downloads, screenshots, scrolling, keys, coordinate clicks, DOM snapshot |
 | Interactive | 3 | native question/answer, choice, and confirmation dialogs |
-| **Total** | **59** | |
+| **Total** | **64** | |
 
 ## Requirements
 
@@ -169,7 +171,7 @@ REST:   http://127.0.0.1:8000/api/*
 Health: http://127.0.0.1:8000/health
 ```
 
-MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 59 tools.
+MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 64 tools.
 
 Example REST request:
 
@@ -235,6 +237,35 @@ run_commands_parallel -> parallel jobs + bounded collection
 ```
 
 A `no_output_timeout_s` can be used to stop commands that stop producing output; these jobs end in the `stalled` state.
+
+## Agent delegation
+
+Use delegated agents for tasks that would otherwise consume a large amount of parent-chat context or block the main agent while research, coding, or analysis runs. `spawn_agent` returns immediately; the OpenCode or Codex process continues independently.
+
+```text
+agent_catalog  -> choose provider/model/reasoning
+spawn_agent    -> agent_id immediately
+list_agents    -> compact running/completed overview
+get_agent      -> concise final handoff (logs only when requested)
+agent_action   -> cancel / message / retry / despawn
+```
+
+Typical flow:
+
+```text
+Parent ChatGPT
+  ├─ spawn_agent(OpenCode, ... )
+  ├─ spawn_agent(Codex, ... )
+  └─ continues other work
+          ↓
+     get_agent(agent_id)
+          ↓
+     concise handoff only
+```
+
+`provider` is currently `opencode` or `codex`. `model`, `reasoning`, `cwd`, `timeout_s`, `result_style`, and `access_mode` are optional controls. The default `result_style=concise` asks the delegated model to do the full task but return only verified findings/results, material caveats, and the next useful action to the parent agent.
+
+Agent metadata lives under `mcp_server/agents/` and is ignored by Git. This allows completed results and provider session IDs to survive a Mac MCP restart. Use `include_logs=true` only when debugging a failed or suspicious run.
 
 ## Human-in-the-loop tools
 
@@ -326,7 +357,7 @@ Custom GPT Actions use the included schema:
 openapi/custom-gpt-actions.json
 ```
 
-The schema exposes all 59 MCP tools as one-to-one REST operations. Each operation's `operationId` matches the MCP tool name, so Custom GPT Actions can discover and call the same tool surface. The core endpoints retain their established paths:
+The REST schema exposes the original 59 core MCP tools as one-to-one operations. The five agent-delegation tools are MCP-only in v1.2. Each operation's `operationId` matches the MCP tool name, so Custom GPT Actions can discover and call the same tool surface. The core endpoints retain their established paths:
 
 ```text
 POST /api/run                 -> run_command
@@ -441,6 +472,7 @@ mcp_server/
   rest_routes.py          REST API used by Custom GPT Actions
   tools_terminal.py       shell/process/system tools
   tools_jobs.py           background jobs and parallel commands
+  tools_agents.py         persistent OpenCode/Codex agent delegation
   tools_files.py          file operations
   tools_macos.py          AppleScript and macOS utilities
   tools_ui.py             Accessibility/screenshot based UI observation + actions
