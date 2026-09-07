@@ -46,6 +46,7 @@ from .tools_browser import (
     browser_screenshot, browser_scroll, browser_press_key,
     browser_coordinate_click, browser_get_snapshot,
 )
+from .tools_browser_agent import browser_observe, browser_find, browser_act
 from .tools_interactive import ask_choice, ask_confirmation, ask_user
 
 
@@ -561,6 +562,57 @@ def create_app():
     def _browser_close_tab(browser: str, window_index: int = 1, tab_index: int = 1) -> Dict[str, Any]:
         return _log(audit_logger, "browser_close_tab",
                     lambda: browser_close_tab(settings, browser=browser, window_index=window_index, tab_index=tab_index))
+
+    @mcp.tool(
+        name="browser_observe",
+        description=(
+            "High-level browser observation. Returns a compact visible/interactable DOM with stable e1/e2 IDs, "
+            "URL/title/scroll, viewport and best-effort screen coordinates. visual: none, viewport, or element."
+        ),
+    )
+    async def _browser_observe(browser: str, window_index: int = 1, tab_index: Optional[int] = None,
+                               scope: str = "interactive", max_elements: int = 120,
+                               visual: str = "none", element_id: Optional[str] = None) -> Any:
+        return await asyncio.to_thread(
+            _log, audit_logger, "browser_observe",
+            lambda: browser_observe(settings, browser=browser, window_index=window_index,
+                                    tab_index=tab_index, scope=scope, max_elements=max_elements,
+                                    visual=visual, element_id=element_id),
+        )
+
+    @mcp.tool(
+        name="browser_find",
+        description=(
+            "Find a visible browser element semantically by query/text/role and return ranked stable element IDs. "
+            "Use the best_match element_id with browser_act."
+        ),
+    )
+    async def _browser_find(browser: str, query: str, role: Optional[str] = None,
+                            text: Optional[str] = None, window_index: int = 1,
+                            tab_index: Optional[int] = None, max_results: int = 5) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "browser_find",
+            lambda: browser_find(settings, browser=browser, query=query, role=role, text=text,
+                                  window_index=window_index, tab_index=tab_index, max_results=max_results),
+        )
+
+    @mcp.tool(
+        name="browser_act",
+        description=(
+            "Perform up to 20 browser actions in one MCP call using stable element IDs. Supports click, double_click, "
+            "type, select, scroll, key and wait conditions (selector, text, url_change, dom_stable, element_removed, network_idle). "
+            "return_state: none, compact, or full."
+        ),
+    )
+    async def _browser_act(browser: str, actions: List[Dict[str, Any]],
+                           observation_id: Optional[str] = None, window_index: int = 1,
+                           tab_index: Optional[int] = None, return_state: str = "compact") -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "browser_act",
+            lambda: browser_act(settings, browser=browser, actions=actions,
+                                 observation_id=observation_id, window_index=window_index,
+                                 tab_index=tab_index, return_state=return_state),
+        )
 
     @mcp.tool(name="browser_execute_js",
               description="Execute JavaScript in a browser tab and return the result.")

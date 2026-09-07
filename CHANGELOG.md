@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.0] - 2026-09-07
+
+- Added three MCP-only high-level browser tools: `browser_observe`, `browser_find`, and `browser_act`; existing browser tools remain unchanged.
+- Added compact visible/actionable DOM observations with stable page-scoped element IDs, robust base64-encoded JSON transport, viewport coordinates and best-effort screen coordinates.
+- Added optional optimized JPEG viewport/element visual observations instead of requiring full-window PNG/base64 screenshots.
+- Added semantic/fuzzy target ranking across text, ARIA labels, placeholders, roles, names, and titles.
+- Added one-call batch browser actions for click, type, select, key, scroll, and bounded wait conditions with compact post-action state.
+- Added stale observation/element checks and page-context persistence without modifying page DOM attributes.
+- MCP tool count is now 69. The existing 59-operation REST/OpenAPI surface remains unchanged; the new browser-agent layer is MCP-only.
+
 ## [1.3.0] - 2026-09-06
 
 - Added `spawn_agents` for one-call parallel teams of up to 10 agents with persistent `team_id` state and enforced shared provider/model/reasoning/access configuration.

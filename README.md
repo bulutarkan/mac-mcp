@@ -10,7 +10,7 @@
 
 Mac MCP is a local macOS control server for AI agents. It exposes the same Mac through a native MCP endpoint and a REST/OpenAPI surface for clients such as Custom GPT Actions.
 
-Version 1.3 includes 66 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
+Version 1.4 includes 69 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
 
 > **Security:** Mac MCP can execute shell commands, read and modify files, and control your desktop. Keep authentication enabled whenever the server is reachable outside localhost. Use a strong `MCP_API_KEY`, keep `MCP_ALLOW_NO_AUTH=false`, and only expose the server to clients you trust.
 
@@ -57,9 +57,9 @@ Official references: [Models](https://learn.chatgpt.com/docs/models) and [Pricin
 | Unified UI | 2 | `mac_observe`, `mac_act` |
 | Search | 2 | recursive grep, Spotlight |
 | HTTP | 1 | outbound HTTP requests with validation |
-| Browser | 15 | tabs, JS, selectors, HTML, downloads, screenshots, scrolling, keys, coordinate clicks, DOM snapshot |
+| Browser | 18 | tabs, JS, selectors, compact visual DOM, semantic find, batch actions, screenshots, scrolling, coordinate fallback |
 | Interactive | 3 | native question/answer, choice, and confirmation dialogs |
-| **Total** | **66** | |
+| **Total** | **69** | |
 
 ## Requirements
 
@@ -171,7 +171,7 @@ REST:   http://127.0.0.1:8000/api/*
 Health: http://127.0.0.1:8000/health
 ```
 
-MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 66 tools.
+MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 69 tools.
 
 Example REST request:
 
@@ -237,6 +237,18 @@ run_commands_parallel -> parallel jobs + bounded collection
 ```
 
 A `no_output_timeout_s` can be used to stop commands that stop producing output; these jobs end in the `stalled` state.
+
+## High-level browser control
+
+For Safari/Chrome computer-use, prefer the three high-level MCP-only tools before falling back to low-level selectors, Accessibility, or raw coordinates:
+
+```text
+browser_observe -> compact visible/actionable DOM + stable e1/e2 IDs + optional viewport/element JPEG
+browser_find    -> fuzzy text/role target ranking -> stable element_id
+browser_act     -> batch click/type/select/key/scroll/wait actions in one MCP call
+```
+
+`browser_act` keeps parent round-trips low, supports bounded internal waits, returns a compact post-action state by default, and detects stale observations/elements. Existing browser tools remain unchanged for backwards compatibility and fallback. The recommended execution order is DOM -> visual DOM -> Accessibility -> coordinate fallback.
 
 ## Agent delegation
 
