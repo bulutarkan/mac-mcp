@@ -48,6 +48,7 @@ from .tools_browser import (
 )
 from .tools_browser_agent import browser_observe, browser_find, browser_act
 from .tools_interactive import ask_choice, ask_confirmation, ask_user
+from .tools_update import mac_mcp_update
 
 
 def _log(audit_logger, tool: str, fn):
@@ -728,6 +729,20 @@ def create_app():
                     lambda: browser_get_snapshot(settings, browser=browser, window_index=window_index,
                                                  tab_index=tab_index, max_depth=max_depth,
                                                  max_children=max_children))
+
+    @mcp.tool(
+        name="mac_mcp_update",
+        description=(
+            "Check for or start a safe commit-based Mac MCP update. check_only=true only fetches and compares "
+            "the deployed commit with origin/main. check_only=false starts a detached updater that preserves "
+            "runtime customizations, backs up managed files, restarts Mac MCP, and rolls the runtime back if health fails."
+        ),
+    )
+    async def _mac_mcp_update(check_only: bool = True, branch: str = "main") -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "mac_mcp_update",
+            lambda: mac_mcp_update(check_only=check_only, branch=branch),
+        )
 
     # ── Interactive tools ─────────────────────────────────────────────────────
     @mcp.tool(

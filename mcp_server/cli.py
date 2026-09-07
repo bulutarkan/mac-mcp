@@ -11,6 +11,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .update_helper import UpdateError, apply_update, check_update, format_check
+
 APP_MODULE = "mcp_server.main:app"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = "8000"
@@ -222,6 +224,24 @@ def restart(args: argparse.Namespace) -> int:
     return start(args)
 
 
+def update(args: argparse.Namespace) -> int:
+    try:
+        if args.check:
+            info = check_update(args.repo, args.runtime, branch=args.branch, remote=args.remote, fetch=True)
+            print(format_check(info))
+            return 2 if info.dirty else 0
+        apply_update(
+            repo=args.repo, runtime=args.runtime, branch=args.branch, remote=args.remote,
+            launchd_label=os.getenv("MAC_MCP_LAUNCHD_LABEL", "mac-mcp-uvicorn"),
+            skip_restart=getattr(args, "skip_restart", False),
+            skip_deps=getattr(args, "skip_deps", False),
+        )
+        return 0
+    except UpdateError as exc:
+        print(f"mac-mcp update failed: {exc}", file=sys.stderr)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     _load_env()
     parser = argparse.ArgumentParser(description="Manage the Mac MCP local server.")
@@ -251,6 +271,16 @@ def main(argv: list[str] | None = None) -> int:
 
     p_status = sub.add_parser("status", help="Show server and ngrok status.")
     p_status.set_defaults(func=status)
+
+    p_update = sub.add_parser("update", help="Update Mac MCP from the latest commit on a Git branch.")
+    p_update.add_argument("--check", action="store_true", help="Check for updates without changing files.")
+    p_update.add_argument("--repo", default=None, help="Git repository path. Defaults to ~/Projects/mac-mcp.")
+    p_update.add_argument("--runtime", default=None, help="Runtime path. Defaults to ~/mac-mcp.")
+    p_update.add_argument("--branch", default="main", help="Git branch to follow. Defaults to main.")
+    p_update.add_argument("--remote", default="origin", help="Git remote to follow. Defaults to origin.")
+    p_update.add_argument("--skip-restart", action="store_true", help=argparse.SUPPRESS)
+    p_update.add_argument("--skip-deps", action="store_true", help=argparse.SUPPRESS)
+    p_update.set_defaults(func=update)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

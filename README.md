@@ -10,7 +10,7 @@
 
 Mac MCP is a local macOS control server for AI agents. It exposes the same Mac through a native MCP endpoint and a REST/OpenAPI surface for clients such as Custom GPT Actions.
 
-Version 1.4.1 includes 69 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
+Version 1.5.0 includes 70 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, self-updates, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
 
 > **Security:** Mac MCP can execute shell commands, read and modify files, and control your desktop. Keep authentication enabled whenever the server is reachable outside localhost. Use a strong `MCP_API_KEY`, keep `MCP_ALLOW_NO_AUTH=false`, and only expose the server to clients you trust.
 
@@ -59,7 +59,8 @@ Official references: [Models](https://learn.chatgpt.com/docs/models) and [Pricin
 | HTTP | 1 | outbound HTTP requests with validation |
 | Browser | 18 | tabs, JS, selectors, compact visual DOM, semantic find, batch actions, screenshots, scrolling, coordinate fallback |
 | Interactive | 3 | native question/answer, choice, and confirmation dialogs |
-| **Total** | **69** | |
+| Self-update | 1 | commit-based update check/apply with runtime overlay preservation, backup, restart, health check, rollback |
+| **Total** | **70** | |
 
 ## Requirements
 
@@ -149,6 +150,38 @@ mac-mcp start --reload
 mac-mcp stop --force
 ```
 
+## Updating Mac MCP
+
+Mac MCP follows commits on `origin/main`; GitHub Releases are not required. Check first, then update:
+
+```bash
+mac-mcp update --check
+mac-mcp update
+```
+
+The same workflow is available to MCP clients through the single `mac_mcp_update` tool:
+
+```text
+mac_mcp_update(check_only=true)   -> fetch + compare only
+mac_mcp_update(check_only=false)  -> start the safe detached updater
+```
+
+The updater supports both a single checkout and the recommended split layout where the Git repository and running runtime are separate (for example `~/Projects/mac-mcp` and `~/mac-mcp`). For split installations it treats the runtime as a local overlay: it stages the currently deployed commit, applies runtime customizations, merges the latest `origin/main`, and only deploys if that merge is clean.
+
+Safety behavior:
+
+- A dirty Git repository blocks the update; the updater never force-resets user work.
+- Runtime-only files such as `.env`, agent/team state, logs, workspace data, credentials, and other untracked files are not overwritten.
+- Managed runtime files are backed up under `~/mac-mcp/backups/updates/` before deployment.
+- If runtime customizations conflict with upstream changes, the update stops before touching the real repository/runtime.
+- Dependency installation runs only when `mcp_server/requirements.txt` changed.
+- Mac MCP restarts automatically after deployment. The updater verifies `/health`; if health fails, the previous runtime files are restored and restarted.
+- The deployed commit is stored in `~/mac-mcp/.mac-mcp-deployed-commit`, so a failed runtime deployment can be retried even if the Git checkout already fast-forwarded.
+
+Defaults can be overridden with `MAC_MCP_REPO`, `MAC_MCP_RUNTIME`, and `MAC_MCP_LAUNCHD_LABEL` when a different layout or service label is used.
+
+> **Existing installations older than v1.5.0:** perform one normal `git pull --ff-only` / install refresh once to obtain the updater. Future updates can use `mac-mcp update` or `mac_mcp_update`.
+
 Logs are written to:
 
 ```text
@@ -171,7 +204,7 @@ REST:   http://127.0.0.1:8000/api/*
 Health: http://127.0.0.1:8000/health
 ```
 
-MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 69 tools.
+MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 70 tools.
 
 Example REST request:
 
