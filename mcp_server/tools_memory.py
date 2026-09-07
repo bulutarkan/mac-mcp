@@ -5,8 +5,10 @@ import json
 import math
 import os
 import re
+import select
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import unicodedata
@@ -34,8 +36,9 @@ APPLE_VECTOR_BACKEND = "apple_nl_en_v1"
 MULTILINGUAL_VECTOR_BACKEND = "fastembed_multilingual_minilm_v1"
 MULTILINGUAL_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 MULTILINGUAL_DIMS = 384
-_FASTEMBED_MODELS: Dict[str, Any] = {}
-_FASTEMBED_LOCK = threading.Lock()
+_FASTEMBED_WORKER: Optional[subprocess.Popen[str]] = None
+_FASTEMBED_WORKER_CACHE: Optional[str] = None
+_FASTEMBED_WORKER_LOCK = threading.RLock()
 INDEX_NAME = "memory-index.sqlite3"
 ENTRY_END = "<!-- /memory -->"
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -306,43 +309,137 @@ def _fastembed_cache(root: Path) -> Path:
     return cache
 
 
-def _fastembed_model(root: Path, *, allow_download: bool) -> Optional[Any]:
-    mode = os.getenv("MAC_MCP_MEMORY_EMBEDDING", "auto").strip().lower()
-    if mode in {"apple", "feature", "feature_hash", "off", "disabled"}:
-        return None
-    cache = _fastembed_cache(root)
-    if not allow_download and next(cache.rglob("*.onnx"), None) is None:
-        return None
+def _fastembed_idle_seconds() -> float:
+    raw = os.getenv("MAC_MCP_MEMORY_MODEL_IDLE_SECONDS", "60").strip()
     try:
-        from fastembed import TextEmbedding
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = 60.0
+    return max(0.0, min(value, 3600.0))
+
+
+def _close_worker_pipes(proc: subprocess.Popen[str]) -> None:
+    for stream in (proc.stdin, proc.stdout):
+        try:
+            if stream is not None:
+                stream.close()
+        except Exception:
+            pass
+
+
+def _discard_fastembed_worker_locked(*, terminate: bool = False) -> None:
+    global _FASTEMBED_WORKER, _FASTEMBED_WORKER_CACHE
+    proc = _FASTEMBED_WORKER
+    _FASTEMBED_WORKER = None
+    _FASTEMBED_WORKER_CACHE = None
+    if proc is None:
+        return
+    if terminate and proc.poll() is None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    _close_worker_pipes(proc)
+
+
+def _live_fastembed_worker_locked(cache_key: str) -> Optional[subprocess.Popen[str]]:
+    proc = _FASTEMBED_WORKER
+    if proc is None:
+        return None
+    if proc.poll() is not None or _FASTEMBED_WORKER_CACHE != cache_key:
+        _discard_fastembed_worker_locked(terminate=proc.poll() is None)
+        return None
+    return proc
+
+
+def _start_fastembed_worker_locked(root: Path) -> Optional[subprocess.Popen[str]]:
+    global _FASTEMBED_WORKER, _FASTEMBED_WORKER_CACHE
+    cache = _fastembed_cache(root)
+    cache_key = str(cache)
+    live = _live_fastembed_worker_locked(cache_key)
+    if live is not None:
+        return live
+    worker = Path(__file__).with_name("memory_fastembed_worker.py")
+    if not worker.exists():
+        return None
+    env = os.environ.copy()
+    env["MAC_MCP_MEMORY_MODEL_CACHE"] = cache_key
+    env["MAC_MCP_MEMORY_MODEL_IDLE_SECONDS"] = str(_fastembed_idle_seconds())
+    env["MAC_MCP_MEMORY_MODEL"] = MULTILINGUAL_MODEL
+    env["MAC_MCP_MEMORY_MODEL_DIMS"] = str(MULTILINGUAL_DIMS)
+    env.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, str(worker)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
     except Exception:
         return None
+    _FASTEMBED_WORKER = proc
+    _FASTEMBED_WORKER_CACHE = cache_key
+    return proc
 
-    key = str(cache)
-    cached = _FASTEMBED_MODELS.get(key)
-    if cached is not None:
-        return cached
 
-    with _FASTEMBED_LOCK:
-        cached = _FASTEMBED_MODELS.get(key)
-        if cached is not None:
-            return cached
-        try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r"The model .* now uses mean pooling instead of CLS embedding.*",
-                )
-                model = TextEmbedding(
-                    model_name=MULTILINGUAL_MODEL,
-                    cache_dir=str(cache),
-                    threads=max(1, min(4, os.cpu_count() or 1)),
-                    local_files_only=not allow_download,
-                )
-        except Exception:
+def _fastembed_worker_vectors(
+    root: Path,
+    texts: Sequence[str],
+    *,
+    allow_start: bool,
+) -> Optional[List[List[float]]]:
+    if not texts:
+        return []
+    acquired = _FASTEMBED_WORKER_LOCK.acquire(blocking=allow_start)
+    if not acquired:
+        return None
+    try:
+        cache_key = str(_fastembed_cache(root))
+        proc = _live_fastembed_worker_locked(cache_key)
+        if proc is None:
+            if not allow_start:
+                return None
+            proc = _start_fastembed_worker_locked(root)
+        if proc is None or proc.stdin is None or proc.stdout is None:
             return None
-        _FASTEMBED_MODELS[key] = model
-        return model
+
+        for attempt in range(2 if allow_start else 1):
+            try:
+                proc.stdin.write(json.dumps({"texts": list(texts)}, ensure_ascii=False) + "\n")
+                proc.stdin.flush()
+                timeout = 120.0 if allow_start else 20.0
+                ready, _, _ = select.select([proc.stdout], [], [], timeout)
+                if not ready:
+                    _discard_fastembed_worker_locked(terminate=True)
+                    return None
+                line = proc.stdout.readline()
+                if not line:
+                    raise BrokenPipeError("FastEmbed worker exited before returning a vector.")
+                payload = json.loads(line)
+                vectors = payload.get("vectors") if isinstance(payload, dict) and payload.get("ok") else None
+                if not isinstance(vectors, list) or len(vectors) != len(texts):
+                    return None
+                normalized = [_normalize_vector(vector) for vector in vectors if isinstance(vector, list)]
+                if len(normalized) != len(texts) or any(len(vector) != MULTILINGUAL_DIMS for vector in normalized):
+                    return None
+                return normalized
+            except Exception:
+                _discard_fastembed_worker_locked(terminate=True)
+                if not allow_start or attempt > 0:
+                    return None
+                proc = _start_fastembed_worker_locked(root)
+                if proc is None or proc.stdin is None or proc.stdout is None:
+                    return None
+        return None
+    finally:
+        _FASTEMBED_WORKER_LOCK.release()
 
 
 def _multilingual_vectors(
@@ -351,22 +448,7 @@ def _multilingual_vectors(
     *,
     allow_download: bool,
 ) -> Optional[List[List[float]]]:
-    if not texts:
-        return []
-    model = _fastembed_model(root, allow_download=allow_download)
-    if model is None:
-        return None
-    try:
-        vectors = list(model.embed(list(texts)))
-        if len(vectors) != len(texts):
-            return None
-        normalized = [_normalize_vector(vector.tolist() if hasattr(vector, "tolist") else vector) for vector in vectors]
-        if not normalized or any(len(vector) != MULTILINGUAL_DIMS for vector in normalized):
-            return None
-        return normalized
-    except Exception:
-        return None
-
+    return _fastembed_worker_vectors(root, texts, allow_start=allow_download)
 
 def _apple_helper(root: Path) -> Optional[Path]:
     mode = os.getenv("MAC_MCP_MEMORY_EMBEDDING", "auto").strip().lower()

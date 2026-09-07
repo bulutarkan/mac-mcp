@@ -19,8 +19,11 @@ class MemoryToolTests(unittest.TestCase):
         self.root = Path(self.temp.name) / "memory"
         self.old_env = os.environ.get("MAC_MCP_MEMORY_DIR")
         self.old_embed = os.environ.get("MAC_MCP_MEMORY_EMBEDDING")
+        self.old_model_cache = os.environ.get("MAC_MCP_MEMORY_MODEL_CACHE")
+        self.old_idle = os.environ.get("MAC_MCP_MEMORY_MODEL_IDLE_SECONDS")
         os.environ["MAC_MCP_MEMORY_DIR"] = str(self.root)
         os.environ["MAC_MCP_MEMORY_EMBEDDING"] = "feature_hash"
+        os.environ["MAC_MCP_MEMORY_MODEL_CACHE"] = str(Path(self.temp.name) / "model-cache")
 
     def tearDown(self):
         if self.old_env is None:
@@ -31,6 +34,16 @@ class MemoryToolTests(unittest.TestCase):
             os.environ.pop("MAC_MCP_MEMORY_EMBEDDING", None)
         else:
             os.environ["MAC_MCP_MEMORY_EMBEDDING"] = self.old_embed
+        if self.old_model_cache is None:
+            os.environ.pop("MAC_MCP_MEMORY_MODEL_CACHE", None)
+        else:
+            os.environ["MAC_MCP_MEMORY_MODEL_CACHE"] = self.old_model_cache
+        if self.old_idle is None:
+            os.environ.pop("MAC_MCP_MEMORY_MODEL_IDLE_SECONDS", None)
+        else:
+            os.environ["MAC_MCP_MEMORY_MODEL_IDLE_SECONDS"] = self.old_idle
+        with memory._FASTEMBED_WORKER_LOCK:
+            memory._discard_fastembed_worker_locked(terminate=True)
         self.temp.cleanup()
 
     def add_at(self, dt, content, **kwargs):
@@ -196,6 +209,23 @@ class MemoryToolTests(unittest.TestCase):
         self.assertEqual(target["memory_id"], found["results"][0]["memory_id"])
         self.assertEqual(0.0, found["results"][0]["lexical_score"])
         self.assertGreater(found["results"][0]["semantic_score"], 0.9)
+
+    def test_non_query_memory_work_does_not_start_fastembed_worker(self):
+        os.environ["MAC_MCP_MEMORY_EMBEDDING"] = "auto"
+        with patch("mcp_server.tools_memory.subprocess.Popen") as popen:
+            vectors = memory._fastembed_worker_vectors(self.root, ["hello"], allow_start=False)
+        self.assertIsNone(vectors)
+        popen.assert_not_called()
+
+    def test_fastembed_idle_seconds_is_bounded_and_configurable(self):
+        os.environ["MAC_MCP_MEMORY_MODEL_IDLE_SECONDS"] = "0"
+        self.assertEqual(0.0, memory._fastembed_idle_seconds())
+        os.environ["MAC_MCP_MEMORY_MODEL_IDLE_SECONDS"] = "12.5"
+        self.assertEqual(12.5, memory._fastembed_idle_seconds())
+        os.environ["MAC_MCP_MEMORY_MODEL_IDLE_SECONDS"] = "99999"
+        self.assertEqual(3600.0, memory._fastembed_idle_seconds())
+
+
 
     def test_date_validation(self):
         with self.assertRaises(HTTPException):
