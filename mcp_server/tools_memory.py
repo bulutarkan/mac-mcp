@@ -8,8 +8,10 @@ import re
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import unicodedata
 import uuid
+import warnings
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date as date_cls, datetime, timedelta, timezone
@@ -29,6 +31,11 @@ VALID_IMPORTANCE = {"low", "normal", "high", "critical"}
 FEATURE_VECTOR_DIMS = 256
 FEATURE_VECTOR_BACKEND = "feature_hash_v1"
 APPLE_VECTOR_BACKEND = "apple_nl_en_v1"
+MULTILINGUAL_VECTOR_BACKEND = "fastembed_multilingual_minilm_v1"
+MULTILINGUAL_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+MULTILINGUAL_DIMS = 384
+_FASTEMBED_MODELS: Dict[str, Any] = {}
+_FASTEMBED_LOCK = threading.Lock()
 INDEX_NAME = "memory-index.sqlite3"
 ENTRY_END = "<!-- /memory -->"
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -291,6 +298,76 @@ def _normalize_vector(vector: Sequence[float]) -> List[float]:
     return [v / length for v in values] if length else values
 
 
+def _fastembed_cache(root: Path) -> Path:
+    raw = os.getenv("MAC_MCP_MEMORY_MODEL_CACHE", "").strip()
+    cache = Path(raw).expanduser() if raw else (Path.home() / ".mac-mcp" / "cache" / "fastembed")
+    cache = cache.resolve()
+    cache.mkdir(parents=True, exist_ok=True)
+    return cache
+
+
+def _fastembed_model(root: Path, *, allow_download: bool) -> Optional[Any]:
+    mode = os.getenv("MAC_MCP_MEMORY_EMBEDDING", "auto").strip().lower()
+    if mode in {"apple", "feature", "feature_hash", "off", "disabled"}:
+        return None
+    cache = _fastembed_cache(root)
+    if not allow_download and next(cache.rglob("*.onnx"), None) is None:
+        return None
+    try:
+        from fastembed import TextEmbedding
+    except Exception:
+        return None
+
+    key = str(cache)
+    cached = _FASTEMBED_MODELS.get(key)
+    if cached is not None:
+        return cached
+
+    with _FASTEMBED_LOCK:
+        cached = _FASTEMBED_MODELS.get(key)
+        if cached is not None:
+            return cached
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"The model .* now uses mean pooling instead of CLS embedding.*",
+                )
+                model = TextEmbedding(
+                    model_name=MULTILINGUAL_MODEL,
+                    cache_dir=str(cache),
+                    threads=max(1, min(4, os.cpu_count() or 1)),
+                    local_files_only=not allow_download,
+                )
+        except Exception:
+            return None
+        _FASTEMBED_MODELS[key] = model
+        return model
+
+
+def _multilingual_vectors(
+    root: Path,
+    texts: Sequence[str],
+    *,
+    allow_download: bool,
+) -> Optional[List[List[float]]]:
+    if not texts:
+        return []
+    model = _fastembed_model(root, allow_download=allow_download)
+    if model is None:
+        return None
+    try:
+        vectors = list(model.embed(list(texts)))
+        if len(vectors) != len(texts):
+            return None
+        normalized = [_normalize_vector(vector.tolist() if hasattr(vector, "tolist") else vector) for vector in vectors]
+        if not normalized or any(len(vector) != MULTILINGUAL_DIMS for vector in normalized):
+            return None
+        return normalized
+    except Exception:
+        return None
+
+
 def _apple_helper(root: Path) -> Optional[Path]:
     mode = os.getenv("MAC_MCP_MEMORY_EMBEDDING", "auto").strip().lower()
     if mode in {"feature", "feature_hash", "off", "disabled"}:
@@ -345,9 +422,18 @@ def _apple_vectors(root: Path, texts: Sequence[str]) -> Optional[List[List[float
         return None
 
 
-def _semantic_vectors(root: Path, texts: Sequence[str]) -> Tuple[str, int, List[List[float]]]:
+def _semantic_vectors(
+    root: Path,
+    texts: Sequence[str],
+    *,
+    allow_download: bool = False,
+) -> Tuple[str, int, List[List[float]]]:
     mode = os.getenv("MAC_MCP_MEMORY_EMBEDDING", "auto").strip().lower()
-    if mode not in {"feature", "feature_hash", "off", "disabled"}:
+    if mode in {"auto", "multilingual", "fastembed"}:
+        multilingual = _multilingual_vectors(root, texts, allow_download=allow_download)
+        if multilingual:
+            return MULTILINGUAL_VECTOR_BACKEND, len(multilingual[0]), multilingual
+    if mode in {"auto", "apple", "multilingual", "fastembed"}:
         apple = _apple_vectors(root, texts)
         if apple:
             return APPLE_VECTOR_BACKEND, len(apple[0]), apple
@@ -425,7 +511,7 @@ def _index_file(conn: sqlite3.Connection, root: Path, path: Path) -> None:
         conn.execute("DELETE FROM memory_fts WHERE memory_id=?", (memory_id,))
     conn.execute("DELETE FROM memories WHERE file_path=?", (rel,))
     vector_texts = [" ".join([entry.content, " ".join(entry.tags), entry.source or ""]) for entry in entries]
-    vector_backend, _, vectors = _semantic_vectors(root, vector_texts) if entries else (FEATURE_VECTOR_BACKEND, FEATURE_VECTOR_DIMS, [])
+    vector_backend, _, vectors = _semantic_vectors(root, vector_texts, allow_download=False) if entries else (FEATURE_VECTOR_BACKEND, FEATURE_VECTOR_DIMS, [])
     for entry, vector in zip(entries, vectors):
         conn.execute(
             """INSERT OR REPLACE INTO memories
@@ -480,6 +566,21 @@ def _sync_index(root: Path, conn: sqlite3.Connection) -> Dict[str, int]:
         _index_file(conn, root, path)
         reindexed += 1
     return {"reindexed_files": reindexed, "removed_files": removed}
+
+
+def _ensure_vector_backend(root: Path, conn: sqlite3.Connection, backend: str) -> int:
+    rows = conn.execute(
+        "SELECT DISTINCT file_path FROM memories WHERE vector_backend<>? ORDER BY file_path",
+        (backend,),
+    ).fetchall()
+    reindexed = 0
+    for row in rows:
+        path = root / str(row["file_path"])
+        if not path.exists():
+            continue
+        _index_file(conn, root, path)
+        reindexed += 1
+    return reindexed
 
 
 def _row_entry(row: sqlite3.Row) -> MemoryEntry:
@@ -615,6 +716,18 @@ def memory_search(
     root = _memory_root()
     with closing(_connect(root)) as conn:
         sync = _sync_index(root, conn)
+
+        query_backend: Optional[str] = None
+        query_dims = 0
+        query_vector: Optional[List[float]] = None
+        if q:
+            query_backend, query_dims, query_vectors = _semantic_vectors(root, [q], allow_download=True)
+            query_vector = query_vectors[0] if query_vectors else None
+            if query_backend and query_vector:
+                vector_reindexed = _ensure_vector_backend(root, conn, query_backend)
+                if vector_reindexed:
+                    sync["vector_reindexed_files"] = vector_reindexed
+
         rows = _select_rows(conn, start, end)
         entries = [_row_entry(row) for row in rows]
         entries = [entry for entry in entries if _tag_match(entry, clean_tags)]
@@ -633,8 +746,7 @@ def memory_search(
         allowed = {entry.memory_id for entry in entries}
         fts = _fts_scores(conn, q, allowed)
         q_feature = _feature_vector(q)
-        apple_query = _apple_vectors(root, [q])
-        q_apple = apple_query[0] if apple_query else None
+        q_apple: Optional[List[float]] = None
         scored: List[Tuple[float, float, float, float, MemoryEntry]] = []
         row_map = {row["memory_id"]: row for row in rows}
         for entry in entries:
@@ -644,7 +756,12 @@ def memory_search(
             except Exception:
                 vector = _feature_vector(entry.content)
             backend = str(row["vector_backend"] or FEATURE_VECTOR_BACKEND)
-            if backend == APPLE_VECTOR_BACKEND and q_apple is not None:
+            if query_vector is not None and backend == query_backend:
+                semantic = _cosine(query_vector, vector)
+            elif backend == APPLE_VECTOR_BACKEND:
+                if q_apple is None:
+                    apple_query = _apple_vectors(root, [q])
+                    q_apple = apple_query[0] if apple_query else []
                 semantic = _cosine(q_apple, vector)
             elif backend == FEATURE_VECTOR_BACKEND:
                 semantic = _cosine(q_feature, vector)
@@ -653,7 +770,6 @@ def memory_search(
             lexical = max(_lexical_similarity(q, entry), fts.get(entry.memory_id, 0.0))
             recency = _recency_score(entry.date)
             score = (semantic * 0.50) + (lexical * 0.45) + (recency * 0.05)
-            # Avoid returning completely unrelated memories merely due to recency.
             if semantic < 0.05 and lexical < 0.05:
                 continue
             scored.append((score, semantic, lexical, recency, entry))
@@ -671,11 +787,20 @@ def memory_search(
                 "lexical_score": round(lexical, 4), "recency_score": round(recency, 4),
             })
             results.append(item)
+        backend_info: Dict[str, Any] = {
+            "fts": "sqlite_fts5",
+            "vector": query_backend or FEATURE_VECTOR_BACKEND,
+            "dimensions": query_dims or FEATURE_VECTOR_DIMS,
+            "fallback": [APPLE_VECTOR_BACKEND, FEATURE_VECTOR_BACKEND],
+        }
+        if query_backend == MULTILINGUAL_VECTOR_BACKEND:
+            backend_info["model"] = MULTILINGUAL_MODEL
+            backend_info["multilingual"] = True
         return {
             "ok": True, "query": q, "mode": "hybrid_search", "sort": sort,
             "date_from": start, "date_to": end, "count": len(results),
             "total_matches": len(scored), "results": results,
-            "search_backend": {"fts": "sqlite_fts5", "vector": APPLE_VECTOR_BACKEND if q_apple is not None else FEATURE_VECTOR_BACKEND, "dimensions": len(q_apple) if q_apple is not None else FEATURE_VECTOR_DIMS, "fallback": FEATURE_VECTOR_BACKEND},
+            "search_backend": backend_info,
             "index_sync": sync,
         }
 

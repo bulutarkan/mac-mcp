@@ -10,7 +10,7 @@
 
 Mac MCP is a local macOS control server for AI agents. It exposes the same Mac through a native MCP endpoint and a REST/OpenAPI surface for clients such as Custom GPT Actions.
 
-Version 1.6.0 includes 75 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, persistent AI memory, self-updates, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
+Version 1.6.1 includes 75 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, persistent AI memory, self-updates, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
 
 > **Security:** Mac MCP can execute shell commands, read and modify files, and control your desktop. Keep authentication enabled whenever the server is reachable outside localhost. Use a strong `MCP_API_KEY`, keep `MCP_ALLOW_NO_AUTH=false`, and only expose the server to clients you trust.
 
@@ -212,7 +212,9 @@ memory_update(date="2026-09-07")
 memory_delete(date_from="2026-09-01", date_to="2026-09-07")
 ```
 
-A rebuildable SQLite index is stored at `~/.mac-mcp/memory/memory-index.sqlite3`. Search combines SQLite FTS5 with local vector similarity. On supported macOS installations Mac MCP uses Apple's on-device NaturalLanguage sentence embedding (512 dimensions, no network/model download); otherwise it falls back to a dependency-free feature-hash vector. Manual Markdown edits are detected and re-indexed automatically. Override the storage location with `MAC_MCP_MEMORY_DIR`; set `MAC_MCP_MEMORY_EMBEDDING=feature_hash` to disable the Apple embedding helper.
+A rebuildable SQLite index is stored at `~/.mac-mcp/memory/memory-index.sqlite3`. Search combines SQLite FTS5 with multilingual semantic vectors. The default semantic backend is FastEmbed with `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions, multilingual). The model is downloaded lazily on the first query-based `memory_search` and cached separately under `~/.mac-mcp/cache/fastembed` (roughly 240 MB of model data); `memory_add`, `memory_update`, and queryless date/range listings never trigger that download. When the multilingual backend becomes available, existing Apple/feature-hash SQLite vectors are automatically rebuilt from the Markdown source of truth.
+
+If FastEmbed or the model is unavailable, Mac MCP falls back to Apple's on-device NaturalLanguage English sentence embedding (512 dimensions), then to the dependency-free feature-hash vector. Manual Markdown edits are detected and re-indexed automatically. Override the storage location with `MAC_MCP_MEMORY_DIR` and the model cache with `MAC_MCP_MEMORY_MODEL_CACHE`. `MAC_MCP_MEMORY_EMBEDDING` supports `auto` (default), `multilingual`/`fastembed`, `apple`, or `feature_hash`.
 
 Logs are written to:
 

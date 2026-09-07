@@ -127,6 +127,76 @@ class MemoryToolTests(unittest.TestCase):
         self.assertEqual(item["memory_id"], result["results"][0]["memory_id"])
         self.assertIn("Manually edited", memory.memory_get(item["memory_id"])["content"])
 
+
+    def test_multilingual_search_reindexes_existing_vectors(self):
+        tea = self.add_at(
+            datetime(2026, 9, 7, 15, 0, tzinfo=IST),
+            "Earl Grey çayını bergamot aroması belirgin olduğu için seviyorum.",
+            tags=["tea"],
+        )
+        self.add_at(
+            datetime(2026, 9, 7, 15, 5, tzinfo=IST),
+            "Antalya'da denize yakın sakin kafelerde oturmayı seviyorum.",
+            tags=["travel"],
+        )
+        os.environ["MAC_MCP_MEMORY_EMBEDDING"] = "auto"
+
+        def fake_multilingual(root, texts, *, allow_download):
+            vectors = []
+            for text in texts:
+                value = text.casefold()
+                if "bergamot" in value or "siyah çay" in value or "earl grey" in value:
+                    vectors.append([1.0, 0.0, 0.0])
+                elif "antalya" in value or "kafe" in value:
+                    vectors.append([0.0, 1.0, 0.0])
+                else:
+                    vectors.append([0.0, 0.0, 1.0])
+            return vectors
+
+        with patch("mcp_server.tools_memory._multilingual_vectors", side_effect=fake_multilingual):
+            found = memory.memory_search(query="bergamot aromalı siyah çay tercihim")
+
+        self.assertEqual(tea["memory_id"], found["results"][0]["memory_id"])
+        self.assertEqual(memory.MULTILINGUAL_VECTOR_BACKEND, found["search_backend"]["vector"])
+        self.assertTrue(found["search_backend"]["multilingual"])
+        self.assertGreaterEqual(found["index_sync"].get("vector_reindexed_files", 0), 1)
+
+        import sqlite3
+        conn = sqlite3.connect(self.root / "memory-index.sqlite3")
+        try:
+            backends = {row[0] for row in conn.execute("SELECT DISTINCT vector_backend FROM memories")}
+        finally:
+            conn.close()
+        self.assertEqual({memory.MULTILINGUAL_VECTOR_BACKEND}, backends)
+
+    def test_cross_language_multilingual_ranking_without_fts_overlap(self):
+        target = self.add_at(
+            datetime(2026, 9, 7, 16, 0, tzinfo=IST),
+            "I prefer brutalist architecture and exposed concrete buildings.",
+        )
+        self.add_at(
+            datetime(2026, 9, 7, 16, 5, tzinfo=IST),
+            "I usually drink espresso without sugar in the morning.",
+        )
+        os.environ["MAC_MCP_MEMORY_EMBEDDING"] = "auto"
+
+        def fake_multilingual(root, texts, *, allow_download):
+            vectors = []
+            for text in texts:
+                value = text.casefold()
+                if "brutalist" in value or "concrete" in value or "beton" in value or "mimari" in value:
+                    vectors.append([0.95, 0.05])
+                else:
+                    vectors.append([0.05, 0.95])
+            return vectors
+
+        with patch("mcp_server.tools_memory._multilingual_vectors", side_effect=fake_multilingual):
+            found = memory.memory_search(query="ham beton ve betonarme yapılar hoşuma gidiyor")
+
+        self.assertEqual(target["memory_id"], found["results"][0]["memory_id"])
+        self.assertEqual(0.0, found["results"][0]["lexical_score"])
+        self.assertGreater(found["results"][0]["semantic_score"], 0.9)
+
     def test_date_validation(self):
         with self.assertRaises(HTTPException):
             memory.memory_search(date="2026-09-07", date_from="2026-09-01")
