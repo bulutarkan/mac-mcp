@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mac-mcp"
-version = "1.5.0"
+version = "1.6.0"
 description = "Local macOS control server for MCP clients and Custom GPT Actions"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,3 +24,6 @@ mac-mcp = "mcp_server.cli:main"
 [tool.setuptools]
 packages = ["mcp_server"]
 include-package-data = true
+
+[tool.setuptools.package-data]
+mcp_server = ["*.swift"]

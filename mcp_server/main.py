@@ -49,6 +49,7 @@ from .tools_browser import (
 from .tools_browser_agent import browser_observe, browser_find, browser_act
 from .tools_interactive import ask_choice, ask_confirmation, ask_user
 from .tools_update import mac_mcp_update
+from .tools_memory import memory_add, memory_search, memory_get, memory_update, memory_delete
 
 
 def _log(audit_logger, tool: str, fn):
@@ -742,6 +743,82 @@ def create_app():
         return await asyncio.to_thread(
             _log, audit_logger, "mac_mcp_update",
             lambda: mac_mcp_update(check_only=check_only, branch=branch),
+        )
+
+    # ── Memory tools ──────────────────────────────────────────────────────────
+    @mcp.tool(
+        name="memory_add",
+        description=(
+            "Append a timestamped memory to today's Europe/Istanbul Markdown journal. "
+            "The server creates ~/.mac-mcp/memory/YYYY/MM/YYYY-MM-DD.md automatically and updates the SQLite search index."
+        ),
+    )
+    async def _memory_add(content: str, tags: Optional[List[str]] = None,
+                          importance: str = "normal", source: Optional[str] = None) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "memory_add",
+            lambda: memory_add(content=content, tags=tags, importance=importance, source=source),
+        )
+
+    @mcp.tool(
+        name="memory_search",
+        description=(
+            "Search or list Mac MCP memories. query enables hybrid SQLite FTS5 + local vector search; "
+            "date/date_from/date_to filter time ranges. Query can be omitted to list memories chronologically."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    )
+    async def _memory_search(query: Optional[str] = None, date: Optional[str] = None,
+                             date_from: Optional[str] = None, date_to: Optional[str] = None,
+                             tags: Optional[List[str]] = None, importance: Optional[str] = None,
+                             sort: str = "relevance", limit: int = 20) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "memory_search",
+            lambda: memory_search(query=query, date=date, date_from=date_from, date_to=date_to,
+                                  tags=tags, importance=importance, sort=sort, limit=limit),
+        )
+
+    @mcp.tool(
+        name="memory_get",
+        description="Get one exact memory by stable memory_id without running semantic search.",
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    )
+    async def _memory_get(memory_id: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(_log, audit_logger, "memory_get", lambda: memory_get(memory_id))
+
+    @mcp.tool(
+        name="memory_update",
+        description=(
+            "Update an exact memory by memory_id. Without memory_id, use date/date_from/date_to to list timestamped "
+            "candidate memories for selection without changing anything."
+        ),
+    )
+    async def _memory_update(memory_id: Optional[str] = None, content: Optional[str] = None,
+                             tags: Optional[List[str]] = None, importance: Optional[str] = None,
+                             source: Optional[str] = None, date: Optional[str] = None,
+                             date_from: Optional[str] = None, date_to: Optional[str] = None,
+                             limit: int = 50) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "memory_update",
+            lambda: memory_update(memory_id=memory_id, content=content, tags=tags, importance=importance,
+                                  source=source, date=date, date_from=date_from, date_to=date_to, limit=limit),
+        )
+
+    @mcp.tool(
+        name="memory_delete",
+        description=(
+            "Delete a memory by memory_id only when confirm=true. Without memory_id, date/date_from/date_to lists "
+            "timestamped candidates for selection and does not delete anything."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+    )
+    async def _memory_delete(memory_id: Optional[str] = None, confirm: bool = False,
+                             date: Optional[str] = None, date_from: Optional[str] = None,
+                             date_to: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "memory_delete",
+            lambda: memory_delete(memory_id=memory_id, confirm=confirm, date=date,
+                                  date_from=date_from, date_to=date_to, limit=limit),
         )
 
     # ── Interactive tools ─────────────────────────────────────────────────────

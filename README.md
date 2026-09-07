@@ -10,7 +10,7 @@
 
 Mac MCP is a local macOS control server for AI agents. It exposes the same Mac through a native MCP endpoint and a REST/OpenAPI surface for clients such as Custom GPT Actions.
 
-Version 1.5.0 includes 70 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, self-updates, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
+Version 1.6.0 includes 75 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, persistent AI memory, self-updates, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
 
 > **Security:** Mac MCP can execute shell commands, read and modify files, and control your desktop. Keep authentication enabled whenever the server is reachable outside localhost. Use a strong `MCP_API_KEY`, keep `MCP_ALLOW_NO_AUTH=false`, and only expose the server to clients you trust.
 
@@ -59,8 +59,9 @@ Official references: [Models](https://learn.chatgpt.com/docs/models) and [Pricin
 | HTTP | 1 | outbound HTTP requests with validation |
 | Browser | 18 | tabs, JS, selectors, compact visual DOM, semantic find, batch actions, screenshots, scrolling, coordinate fallback |
 | Interactive | 3 | native question/answer, choice, and confirmation dialogs |
+| Memory | 5 | Markdown-backed persistent memory with exact get, hybrid search, date/range selection, update, delete |
 | Self-update | 1 | commit-based update check/apply with runtime overlay preservation, backup, restart, health check, rollback |
-| **Total** | **70** | |
+| **Total** | **75** | |
 
 ## Requirements
 
@@ -182,6 +183,37 @@ Defaults can be overridden with `MAC_MCP_REPO`, `MAC_MCP_RUNTIME`, and `MAC_MCP_
 
 > **Existing installations older than v1.5.0:** perform one normal `git pull --ff-only` / install refresh once to obtain the updater. Future updates can use `mac-mcp update` or `mac_mcp_update`.
 
+## Persistent memory
+
+Mac MCP can keep AI-authored notes in human-readable Markdown while exposing them to agents only through dedicated memory tools. The Markdown files are the source of truth and live outside the repo/runtime by default:
+
+```text
+~/.mac-mcp/memory/
+└── 2026/
+    └── 09/
+        └── 2026-09-07.md
+```
+
+`memory_add` derives the current date/time inside MCP using the `Europe/Istanbul` timezone (UTC+3), creates the year/month/day path automatically, assigns a stable `memory_id`, and appends a timestamped entry. The five tools are:
+
+```text
+memory_add      append a new timestamped memory
+memory_search   hybrid search or queryless date/range listing
+memory_get      fetch one exact memory_id
+memory_update   edit one memory_id, or list candidates by date/date_from/date_to
+memory_delete   list candidates, preview a deletion, then delete only with confirm=true
+```
+
+Examples:
+
+```text
+memory_search(query="browser automation", date_from="2026-09-01", date_to="2026-09-07")
+memory_update(date="2026-09-07")
+memory_delete(date_from="2026-09-01", date_to="2026-09-07")
+```
+
+A rebuildable SQLite index is stored at `~/.mac-mcp/memory/memory-index.sqlite3`. Search combines SQLite FTS5 with local vector similarity. On supported macOS installations Mac MCP uses Apple's on-device NaturalLanguage sentence embedding (512 dimensions, no network/model download); otherwise it falls back to a dependency-free feature-hash vector. Manual Markdown edits are detected and re-indexed automatically. Override the storage location with `MAC_MCP_MEMORY_DIR`; set `MAC_MCP_MEMORY_EMBEDDING=feature_hash` to disable the Apple embedding helper.
+
 Logs are written to:
 
 ```text
@@ -204,7 +236,7 @@ REST:   http://127.0.0.1:8000/api/*
 Health: http://127.0.0.1:8000/health
 ```
 
-MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 70 tools.
+MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 75 tools.
 
 Example REST request:
 
