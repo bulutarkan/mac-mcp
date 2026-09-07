@@ -566,8 +566,8 @@ def create_app():
     @mcp.tool(
         name="browser_observe",
         description=(
-            "High-level browser observation. Returns a compact visible/interactable DOM with stable e1/e2 IDs, "
-            "URL/title/scroll, viewport and best-effort screen coordinates. visual: none, viewport, or element."
+            "High-level browser observation. Returns compact DOM with stable e1/e2 IDs and optional JPEG visual. "
+            "scope: interactive, visible, content, or leaf; visual: none, viewport, or element."
         ),
     )
     async def _browser_observe(browser: str, window_index: int = 1, tab_index: Optional[int] = None,
@@ -583,24 +583,26 @@ def create_app():
     @mcp.tool(
         name="browser_find",
         description=(
-            "Find a visible browser element semantically by query/text/role and return ranked stable element IDs. "
-            "Use the best_match element_id with browser_act."
+            "Find a rendered browser element with exact-first ranking and hard role/text constraints. "
+            "Set actionable_only=false to include labels/cards; use best_match with browser_act."
         ),
     )
     async def _browser_find(browser: str, query: str, role: Optional[str] = None,
                             text: Optional[str] = None, window_index: int = 1,
-                            tab_index: Optional[int] = None, max_results: int = 5) -> Dict[str, Any]:
+                            tab_index: Optional[int] = None, max_results: int = 5,
+                            actionable_only: bool = False) -> Dict[str, Any]:
         return await asyncio.to_thread(
             _log, audit_logger, "browser_find",
             lambda: browser_find(settings, browser=browser, query=query, role=role, text=text,
-                                  window_index=window_index, tab_index=tab_index, max_results=max_results),
+                                  window_index=window_index, tab_index=tab_index, max_results=max_results,
+                                  actionable_only=actionable_only),
         )
 
     @mcp.tool(
         name="browser_act",
         description=(
-            "Perform up to 20 browser actions in one MCP call using stable element IDs. Supports click, double_click, "
-            "type, select, scroll, key and wait conditions (selector, text, url_change, dom_stable, element_removed, network_idle). "
+            "Perform up to 20 browser actions in one MCP call. Actions can target stable element_id or semantic "
+            "query/text_match/role. Supports click, type, async custom select, scroll, key and waits; "
             "return_state: none, compact, or full."
         ),
     )

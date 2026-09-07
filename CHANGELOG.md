@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.1] - 2026-09-07
+
+- Fixed `browser_find` ranking so exact text/role targets beat prefixes/substrings; role/text constraints are hard filters and short tokens no longer match inside unrelated words.
+- Added consistent Turkish/Unicode normalization between Python ranking and in-page JavaScript matching.
+- Made custom `select` actions wait for asynchronously injected dropdown options and settle after selection instead of failing immediately.
+- Added `content` / `leaf` observation scopes that prune large ancestor wrappers and prioritize controls, headings, meaningful leaf text, cards, rows, and images.
+- Made `browser_find` and `browser_act(return_state="full")` adaptively reduce dense payloads instead of surfacing 413 truncation failures.
+- `browser_act` can now resolve semantic targets (`query`, `text_match`, `role`) internally, allowing multi-filter flows to run in one MCP call without separate find calls.
+- Real Safari/Sahibinden validation completed a full Antalya -> Konyaaltı -> 2+1 -> Search -> navigation/stability flow in about 5 seconds with one parent MCP call. Tool count remains 69.
+
 ## [1.4.0] - 2026-09-07
 
 - Added three MCP-only high-level browser tools: `browser_observe`, `browser_find`, and `browser_act`; existing browser tools remain unchanged.

@@ -10,7 +10,7 @@
 
 Mac MCP is a local macOS control server for AI agents. It exposes the same Mac through a native MCP endpoint and a REST/OpenAPI surface for clients such as Custom GPT Actions.
 
-Version 1.4 includes 69 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
+Version 1.4.1 includes 69 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
 
 > **Security:** Mac MCP can execute shell commands, read and modify files, and control your desktop. Keep authentication enabled whenever the server is reachable outside localhost. Use a strong `MCP_API_KEY`, keep `MCP_ALLOW_NO_AUTH=false`, and only expose the server to clients you trust.
 
@@ -243,9 +243,9 @@ A `no_output_timeout_s` can be used to stop commands that stop producing output;
 For Safari/Chrome computer-use, prefer the three high-level MCP-only tools before falling back to low-level selectors, Accessibility, or raw coordinates:
 
 ```text
-browser_observe -> compact visible/actionable DOM + stable e1/e2 IDs + optional viewport/element JPEG
-browser_find    -> fuzzy text/role target ranking -> stable element_id
-browser_act     -> batch click/type/select/key/scroll/wait actions in one MCP call
+browser_observe -> interactive/visible/content/leaf DOM + stable e1/e2 IDs + optional viewport/element JPEG
+browser_find    -> exact-first semantic ranking with hard role/text constraints
+browser_act     -> batch click/type/async-select/key/scroll/wait; target by element_id or query/text/role
 ```
 
 `browser_act` keeps parent round-trips low, supports bounded internal waits, returns a compact post-action state by default, and detects stale observations/elements. Existing browser tools remain unchanged for backwards compatibility and fallback. The recommended execution order is DOM -> visual DOM -> Accessibility -> coordinate fallback.

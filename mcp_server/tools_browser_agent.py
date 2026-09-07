@@ -111,6 +111,9 @@ function __mcpActionable(el){
   if(['a','button','input','textarea','select','summary','details'].indexOf(tag)>=0) return true;
   if(['button','link','checkbox','radio','tab','menuitem','option','combobox','textbox','searchbox','switch','slider'].indexOf(role)>=0) return true;
   if(el.isContentEditable || el.hasAttribute('onclick')) return true;
+  var cls=String(el.className||'');
+  if(/collapseTitle|collapse-title|dropdown-toggle|select-trigger|clickable|toggle/i.test(cls)) return true;
+  try{if(getComputedStyle(el).cursor==='pointer') return true;}catch(e){}
   var ti=el.getAttribute('tabindex');
   return ti!==null && Number(ti)>=0;
 }
@@ -156,7 +159,7 @@ function __mcpDescribe(el,s){
   var rect=__mcpRect(el);
   var out={
     element_id:__mcpId(el,s),tag:tag,role:__mcpRole(el),text:__mcpText(el),
-    viewport_rect:rect.viewport,screen_rect:rect.screen
+    viewport_rect:rect.viewport,screen_rect:rect.screen,actionable:__mcpActionable(el)
   };
   var aria=el.getAttribute('aria-label')||'', ph=el.getAttribute('placeholder')||'', name=el.getAttribute('name')||'', title=el.getAttribute('title')||'';
   if(aria) out.aria_label=aria.slice(0,120);
@@ -181,6 +184,26 @@ def _observe_js(scope: str, max_elements: int) -> str:
     return f'''(function(){{
 {_browser_state_bootstrap()}
 function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+function __mcpOwnText(el){{
+  var out=[];
+  try{{Array.from(el.childNodes||[]).forEach(function(n){{if(n.nodeType===3){{var t=String(n.textContent||'').replace(/\\s+/g,' ').trim();if(t)out.push(t);}}}});}}catch(e){{}}
+  return out.join(' ').trim().slice(0,240);
+}}
+function __mcpContentCandidate(el,actionable){{
+  if(actionable) return true;
+  var tag=(el.tagName||'').toLowerCase();
+  if(/^h[1-6]$/.test(tag)) return true;
+  if(tag==='img' && (el.getAttribute('alt')||'').trim()) return true;
+  var own=__mcpOwnText(el);
+  if(own.length>=2) return true;
+  var cls=String(el.className||'').toLowerCase(), id=String(el.id||'').toLowerCase();
+  var cardish=/(^|[-_ ])(card|item|listing|result|row|advert|product|property)([-_ ]|$)/.test(cls+' '+id);
+  if((tag==='article'||tag==='tr'||tag==='li'||cardish)){{
+    var txt=__mcpText(el);
+    if(txt.length>=2 && txt.length<=700) return true;
+  }}
+  return false;
+}}
 var s=__mcpState();
 Object.keys(s.elements).forEach(function(k){{var e=s.elements[k];if(!e||!e.isConnected)delete s.elements[k];}});
 var scope={scope_js};
@@ -195,7 +218,14 @@ for(var i=0;i<all.length && elements.length<{max_elements};i++){{
     var txt=__mcpText(el);
     if(!txt || txt.length<2) continue;
   }}
-  elements.push(__mcpDescribe(el,s));
+  if((scope==='content'||scope==='leaf') && !__mcpContentCandidate(el,actionable)) continue;
+  var desc=__mcpDescribe(el,s);
+  if((scope==='content'||scope==='leaf') && !actionable){{
+    var own=__mcpOwnText(el);
+    if(own) desc.text=own;
+    if(!desc.text && (el.getAttribute('alt')||'')) desc.text=String(el.getAttribute('alt')).slice(0,240);
+  }}
+  elements.push(desc);
 }}
 var obs='bobs_'+s.pageToken+'_'+Date.now().toString(36);
 s.observations[obs]=s.mutationRevision;
@@ -293,8 +323,8 @@ def browser_observe(
     """Compact DOM observation with stable element IDs and optional viewport/element image."""
     _norm_browser(browser)
     scope = str(scope or "interactive").lower().strip()
-    if scope not in {"interactive", "visible"}:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "scope must be interactive or visible.")
+    if scope not in {"interactive", "visible", "content", "leaf"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "scope must be interactive, visible, content, or leaf.")
     visual = str(visual or "none").lower().strip()
     if visual not in _VISUAL_MODES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "visual must be none, viewport, or element.")
@@ -348,50 +378,122 @@ def _normalize_text(value: Any) -> str:
     return re.sub(r"[^a-z0-9çğıöşü]+", " ", text).strip()
 
 
+def _match_level(actual: Any, wanted: Any) -> int:
+    a = _normalize_text(actual)
+    w = _normalize_text(wanted)
+    if not a or not w:
+        return 0
+    if a == w:
+        return 5
+    if a.startswith(w + " ") or a.startswith(w + "-"):
+        return 4
+    a_tokens = a.split()
+    w_tokens = w.split()
+    if w_tokens and all(token in a_tokens for token in w_tokens):
+        return 3
+    if len(w) >= 4 and w in a:
+        return 2
+    return 0
+
+
 def _score_candidate(element: Dict[str, Any], query: str, role: Optional[str], text: Optional[str]) -> float:
-    option_text = " ".join(
-        f"{item.get('text', '')} {item.get('value', '')}"
-        for item in (element.get("options") or []) if isinstance(item, dict)
-    )
-    fields = [
+    element_role = _normalize_text(element.get("role"))
+    if role and element_role != _normalize_text(role):
+        return 0.0
+
+    primary = [
         element.get("text"), element.get("aria_label"), element.get("placeholder"),
-        element.get("name"), element.get("title"), element.get("role"), element.get("tag"),
-        option_text,
+        element.get("name"), element.get("title"),
     ]
-    hay = _normalize_text(" ".join(str(v or "") for v in fields))
-    q = _normalize_text(query)
-    raw_tokens = [t for t in q.split() if t not in _GENERIC_QUERY_WORDS]
-    q_tokens = [t for t in raw_tokens if len(t) >= 2 or not t.isdigit()]
-    score = 0.0
-    if q and q in hay:
-        score += 0.58
-    if q_tokens:
-        matched = sum(1 for t in q_tokens if t in hay)
-        ratio = matched / len(q_tokens)
-        score += 0.36 * ratio
-        if ratio == 1.0:
-            score += 0.20
     if text:
-        wanted = _normalize_text(text)
-        actual = _normalize_text(element.get("text") or element.get("aria_label") or element.get("placeholder"))
-        if wanted == actual:
-            score += 0.35
-        elif wanted and wanted in actual:
-            score += 0.22
-    if role:
-        if _normalize_text(element.get("role")) == _normalize_text(role):
-            score += 0.22
-        else:
-            score -= 0.15
-    if element.get("actionable"):
-        score += 0.08
+        text_levels = [_match_level(value, text) for value in primary]
+        best_text = max(text_levels or [0])
+        if best_text == 0:
+            return 0.0
     else:
+        best_text = 0
+
+    option_values: List[str] = []
+    for item in (element.get("options") or []):
+        if isinstance(item, dict):
+            option_values.extend([str(item.get("text") or ""), str(item.get("value") or "")])
+
+    q_raw = _normalize_text(query)
+    q_tokens = [token for token in q_raw.split() if token not in _GENERIC_QUERY_WORDS]
+    q = " ".join(q_tokens) if q_tokens else q_raw
+    query_levels = [_match_level(value, q) for value in primary + option_values] if q else [0]
+    best_query = max(query_levels or [0])
+
+    combined_tokens = set(_normalize_text(" ".join(str(v or "") for v in primary + option_values)).split())
+    token_ratio = (sum(1 for token in q_tokens if token in combined_tokens) / len(q_tokens)) if q_tokens else 0.0
+
+    level_score = {0: 0.0, 2: 0.48, 3: 0.68, 4: 0.84, 5: 0.98}
+    score = max(level_score.get(best_query, 0.0), level_score.get(best_text, 0.0))
+    if token_ratio == 1.0 and q_tokens:
+        score = max(score, 0.86)
+    elif token_ratio >= 0.5:
+        score = max(score, 0.64)
+    if text:
+        score = max(score, {2: 0.62, 3: 0.78, 4: 0.90, 5: 1.0}.get(best_text, 0.0))
+    if role:
+        score += 0.04
+    tag = str(element.get("tag") or "").lower()
+    if element.get("actionable"):
+        score += 0.03
+    if tag in {"a", "button", "input", "select", "summary"}:
+        score += 0.03
+    elif tag in {"dt", "label"}:
+        score += 0.02
+    elif tag in {"html", "body", "main", "section", "div", "dl", "ul"}:
         score -= 0.12
-        if str(element.get("tag") or "").lower() in {"html", "body", "main", "section", "article", "div"}:
-            score -= 0.16
-        if len(str(element.get("text") or "")) > 160:
-            score -= 0.12
     return max(0.0, min(1.0, score))
+
+
+def _find_candidates_js(query: str, role: Optional[str], text: Optional[str], max_candidates: int = 80, actionable_only: bool = False) -> str:
+    q_raw = _normalize_text(query)
+    q_tokens = [token for token in q_raw.split() if token not in _GENERIC_QUERY_WORDS]
+    q = " ".join(q_tokens) if q_tokens else q_raw
+    q_js = json.dumps(q)
+    role_js = json.dumps(_normalize_text(role) if role else "")
+    text_js = json.dumps(_normalize_text(text) if text else "")
+    actionable_js = "true" if actionable_only else "false"
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+function norm(v){{return String(v||'').normalize('NFKD').toLowerCase().replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9çğıöşü]+/g,' ').replace(/\\s+/g,' ').trim();}}
+function rendered(el){{
+  if(!el||el.nodeType!==1) return false;
+  var st=getComputedStyle(el); if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0) return false;
+  var r=el.getBoundingClientRect(); return r.width>0&&r.height>0;
+}}
+function level(actual,wanted){{
+  var a=norm(actual),w=norm(wanted); if(!a||!w)return 0;
+  if(a===w)return 5;
+  if(a.indexOf(w+' ')===0||a.indexOf(w+'-')===0)return 4;
+  var at=a.split(' '),wt=w.split(' '); if(wt.length&&wt.every(function(t){{return at.indexOf(t)>=0;}}))return 3;
+  if(w.length>=4&&a.indexOf(w)>=0)return 2;
+  return 0;
+}}
+var s=__mcpState(), q={q_js}, wantedRole={role_js}, wantedText={text_js}, actionableOnly={actionable_js};
+var out=[];
+var all=Array.from(document.querySelectorAll('*'));
+for(var i=0;i<all.length&&out.length<{max_candidates};i++){{
+  var el=all[i]; if(!rendered(el))continue;
+  var d=__mcpDescribe(el,s); d.actionable=__mcpActionable(el);
+  if(actionableOnly && !d.actionable)continue;
+  if(wantedRole&&norm(d.role)!==wantedRole)continue;
+  var fields=[d.text||'',d.aria_label||'',d.placeholder||'',d.name||'',d.title||''];
+  if(wantedText){{var tl=0;fields.forEach(function(v){{tl=Math.max(tl,level(v,wantedText));}});if(!tl)continue;}}
+  if(q){{
+    var ql=0;fields.forEach(function(v){{ql=Math.max(ql,level(v,q));}});
+    if(d.options){{d.options.forEach(function(o){{ql=Math.max(ql,level(o.text||'',q),level(o.value||'',q));}});}}
+    if(!ql)continue;
+  }}
+  out.push(d);
+}}
+var obs='bobs_'+s.pageToken+'_'+Date.now().toString(36);s.observations[obs]=s.mutationRevision;
+return __mcpB64({{ok:true,observation_id:obs,dom_revision:s.mutationRevision,url:location.href,title:document.title,elements:out}});
+}})()'''
 
 
 def browser_find(
@@ -403,34 +505,49 @@ def browser_find(
     window_index: int = 1,
     tab_index: Optional[int] = None,
     max_results: int = 5,
+    actionable_only: bool = False,
 ) -> Dict[str, Any]:
-    """Find a visible DOM target by fuzzy text/role semantics and return stable element IDs."""
+    """Find a rendered DOM target with exact-first ranking and hard role/text constraints."""
     if not str(query or "").strip() and not text and not role:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "query, text, or role is required.")
     started = time.perf_counter()
     max_results = max(1, min(int(max_results), 10))
+    candidate_limit = 60
+    payload_limited = False
+    while True:
+        try:
+            payload = _run_json_js(
+                settings, browser, _find_candidates_js(
+                    str(query or ""), role, text, candidate_limit, actionable_only=actionable_only
+                ),
+                window_index=window_index, tab_index=tab_index,
+            )
+            break
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_413_REQUEST_ENTITY_TOO_LARGE or candidate_limit <= 10:
+                raise
+            candidate_limit = max(10, candidate_limit // 2)
+            payload_limited = True
+    scored: List[Tuple[float, Dict[str, Any]]] = []
+    for element in payload.get("elements", []):
+        score = _score_candidate(element, str(query or ""), role, text)
+        if score >= 0.30:
+            scored.append((score, element))
+    def control_priority(element: Dict[str, Any]) -> int:
+        tag = str(element.get("tag") or "").lower()
+        role_name = str(element.get("role") or "").lower()
+        if tag in {"a", "button", "input", "select", "summary"} or role_name in {"button", "link", "combobox", "option", "menuitem"}:
+            return 4
+        if tag in {"dt", "label"}:
+            return 3
+        if element.get("actionable"):
+            return 2
+        return 1
 
-    def rank(payload: Dict[str, Any]) -> List[Tuple[float, Dict[str, Any]]]:
-        scored: List[Tuple[float, Dict[str, Any]]] = []
-        for element in payload.get("elements", []):
-            score = _score_candidate(element, str(query or ""), role, text)
-            if score >= 0.30:
-                scored.append((score, element))
-        scored.sort(key=lambda item: item[0], reverse=True)
-        return scored
-
-    payload = _observe_payload(
-        settings, browser, "interactive", 180, window_index=window_index, tab_index=tab_index,
+    scored.sort(
+        key=lambda item: (item[0], control_priority(item[1]), -len(str(item[1].get("text") or ""))),
+        reverse=True,
     )
-    scored = rank(payload)
-    search_scope = "interactive"
-    if not scored:
-        payload = _observe_payload(
-            settings, browser, "visible", 180, window_index=window_index, tab_index=tab_index,
-        )
-        scored = rank(payload)
-        search_scope = "visible_fallback"
-
     matches = []
     for score, element in scored[:max_results]:
         matches.append({
@@ -440,7 +557,7 @@ def browser_find(
             "text": element.get("text"), "aria_label": element.get("aria_label"),
             "placeholder": element.get("placeholder"), "value": element.get("value"),
             "href": element.get("href"), "viewport_rect": element.get("viewport_rect"),
-            "screen_rect": element.get("screen_rect"),
+            "screen_rect": element.get("screen_rect"), "actionable": element.get("actionable"),
         })
     return {
         "ok": True,
@@ -449,7 +566,10 @@ def browser_find(
         "url": payload.get("url"),
         "title": payload.get("title"),
         "query": query,
-        "search_scope": search_scope,
+        "search_scope": "targeted_scan",
+        "actionable_only": actionable_only,
+        "candidate_limit": candidate_limit,
+        "payload_limited": payload_limited,
         "best_match": matches[0] if matches else None,
         "matches": matches,
         "duration_ms": int((time.perf_counter() - started) * 1000),
@@ -478,14 +598,18 @@ for(var i=0;i<actions.length;i++){{
     if(type==='click'||type==='double_click'){{
       if(!el) throw new Error('element_id is required');
       el.scrollIntoView({{block:'center',inline:'nearest'}});
+      var tag=(el.tagName||'').toLowerCase(), href=String(el.getAttribute('href')||'');
+      var inputType=String(el.getAttribute('type')||'').toLowerCase();
+      var mayNavigate=(tag==='a' && href && href!=='#' && !href.endsWith('#')) || ((tag==='button'||tag==='input') && inputType==='submit');
+      var shouldDefer=(type==='click'&&i===actions.length-1&&mayNavigate);
       if(type==='double_click') {{
         el.dispatchEvent(new MouseEvent('dblclick',{{bubbles:true,cancelable:true,view:window}}));
-      }} else if(i===actions.length-1) {{
+      }} else if(shouldDefer) {{
         setTimeout(function(){{try{{el.click();}}catch(e){{}}}},0);
       }} else {{
         el.click();
       }}
-      results.push({{index:i,type:type,element_id:a.element_id,ok:true,deferred:(type==='click'&&i===actions.length-1)}});
+      results.push({{index:i,type:type,element_id:a.element_id,ok:true,deferred:shouldDefer}});
     }} else if(type==='type'||type==='type_text'||type==='paste'){{
       if(!el) throw new Error('element_id is required');
       el.focus();
@@ -523,6 +647,133 @@ for(var i=0;i<actions.length;i++){{
 }}
 return __mcpB64({{ok:results.every(function(r){{return r.ok;}}),actions:results,dom_changed_since_observe:changed,dom_revision:s.mutationRevision,url:location.href,title:document.title,scroll:{{x:scrollX,y:scrollY}}}});
 }})()'''
+
+
+def _select_prepare_js(element_id: str, observation_id: Optional[str], option: Any) -> str:
+    eid = json.dumps(str(element_id or ""))
+    obs = json.dumps(observation_id)
+    wanted = json.dumps(str(option if option is not None else ""))
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+function norm(v){{return String(v||'').normalize('NFKD').toLowerCase().replace(/[\u0300-\u036f]/g,'').replace(/\\s+/g,' ').trim();}}
+var s=__mcpState(), expected={obs}, eid={eid}, wanted=norm({wanted});
+if(expected && !(expected in s.observations)) return __mcpB64({{ok:false,error:'stale_observation',observe_again:true}});
+var el=s.elements[eid];
+if(!el||!el.isConnected) return __mcpB64({{ok:false,error:'stale_element',observe_again:true,element_id:eid}});
+if((el.tagName||'').toLowerCase()==='select'){{
+  var opts=Array.from(el.options||[]);
+  var chosen=opts.find(function(o){{return norm(o.value)===wanted||norm(o.text)===wanted;}}) ||
+             opts.find(function(o){{var t=norm(o.text);return t.indexOf(wanted+' ')===0;}}) ||
+             opts.find(function(o){{return norm(o.text).split(' ').indexOf(wanted)>=0;}});
+  if(!chosen) return __mcpB64({{ok:false,error:'option_not_found',native:true,element_id:eid}});
+  el.value=chosen.value;
+  try{{el.dispatchEvent(new Event('input',{{bubbles:true}}));el.dispatchEvent(new Event('change',{{bubbles:true}}));}}catch(e){{}}
+  return __mcpB64({{ok:true,native:true,selected:String(chosen.text||chosen.value),element_id:eid}});
+}}
+el.scrollIntoView({{block:'center',inline:'nearest'}});
+el.click();
+return __mcpB64({{ok:true,native:false,needs_option_wait:true,element_id:eid,revision:s.mutationRevision}});
+}})()'''
+
+
+def _select_option_js(element_id: str, option: Any) -> str:
+    eid = json.dumps(str(element_id or ""))
+    wanted = json.dumps(str(option if option is not None else ""))
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+function norm(v){{return String(v||'').normalize('NFKD').toLowerCase().replace(/[\u0300-\u036f]/g,'').replace(/\\s+/g,' ').trim();}}
+function rendered(el){{
+  if(!el||el.nodeType!==1) return false;
+  var st=getComputedStyle(el); if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0) return false;
+  var r=el.getBoundingClientRect(); return r.width>0&&r.height>0;
+}}
+var s=__mcpState(), origin=s.elements[{eid}], wanted=norm({wanted});
+var originRect=origin&&origin.getBoundingClientRect?origin.getBoundingClientRect():{{left:0,top:0,width:0,height:0}};
+var selectors='[role="option"],[role="menuitem"],option,li,[class*="option"],[class*="suggest"],[class*="dropdown"] a,[class*="menu"] a,button,a';
+var all=Array.from(document.querySelectorAll(selectors)).filter(rendered);
+function label(el){{return norm(__mcpText(el)||el.getAttribute('aria-label')||el.getAttribute('title')||'');}}
+function clickPriority(el){{
+  var tag=(el.tagName||'').toLowerCase(), role=(el.getAttribute('role')||'').toLowerCase();
+  if(tag==='a'||tag==='button'||tag==='option'||role==='option'||role==='menuitem') return 5;
+  if(typeof el.onclick==='function'||el.hasAttribute('onclick')) return 4;
+  if(tag==='li' && el.querySelector('a,button,[role="option"],[role="menuitem"]')) return 0;
+  return 1;
+}}
+function openBoost(el){{return el.closest('.active,.open,.show,[aria-expanded="true"],.address-pane.active,.select2-container--open,.dropdown-menu')?3:0;}}
+function distance(el){{var r=el.getBoundingClientRect();return Math.abs((r.left+r.width/2)-(originRect.left+originRect.width/2))+Math.abs((r.top+r.height/2)-(originRect.top+originRect.height/2));}}
+function best(arr){{return arr.sort(function(a,b){{var d=(clickPriority(b)+openBoost(b))-(clickPriority(a)+openBoost(a));if(d)return d;var da=distance(a),db=distance(b);if(da!==db)return da-db;return label(a).length-label(b).length;}})[0]||null;}}
+var exact=all.filter(function(el){{return label(el)===wanted;}});
+var prefix=all.filter(function(el){{var t=label(el);return t.indexOf(wanted+' ')===0||t.indexOf(wanted+' (')===0;}});
+var chosen=(best(exact)||best(prefix)||null);
+if(!chosen) return __mcpB64({{ok:true,found:false,candidate_count:all.length}});
+var txt=__mcpText(chosen);
+chosen.scrollIntoView({{block:'nearest',inline:'nearest'}});
+chosen.click();
+return __mcpB64({{ok:true,found:true,selected:txt,tag:(chosen.tagName||'').toLowerCase(),role:chosen.getAttribute('role')||''}});
+}})()'''
+
+
+def _select_action(
+    settings: Settings,
+    browser: str,
+    action: Dict[str, Any],
+    observation_id: Optional[str],
+    window_index: int,
+    tab_index: Optional[int],
+) -> Dict[str, Any]:
+    element_id = str(action.get("element_id") or "")
+    if not element_id:
+        return {"ok": False, "type": "select", "error": "element_id is required", "_js_calls": 0}
+    option = action.get("option")
+    timeout_s = max(0.2, min(float(action.get("timeout_s", 2.0)), 5.0))
+    poll_s = max(0.05, min(float(action.get("poll_ms", 100)) / 1000.0, 0.5))
+    started = time.perf_counter()
+    js_calls = 0
+    prep = _run_json_js(
+        settings, browser, _select_prepare_js(element_id, observation_id, option),
+        window_index, tab_index,
+    )
+    js_calls += 1
+    if not prep.get("ok"):
+        prep.update({"type": "select", "_js_calls": js_calls, "duration_ms": int((time.perf_counter()-started)*1000)})
+        return prep
+    if prep.get("native"):
+        return {
+            "ok": True, "type": "select", "element_id": element_id,
+            "selected": prep.get("selected"), "native": True,
+            "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
+        }
+    while time.perf_counter() - started < timeout_s:
+        found = _run_json_js(settings, browser, _select_option_js(element_id, option), window_index, tab_index)
+        js_calls += 1
+        if found.get("found"):
+            stable_ms = max(100, min(int(action.get("stable_ms", 250)), 1000))
+            settle_deadline = min(started + timeout_s, time.perf_counter() + 1.0)
+            last_revision = None
+            stable_since = time.perf_counter()
+            while time.perf_counter() < settle_deadline:
+                state = _run_json_js(settings, browser, _light_state_js(), window_index, tab_index)
+                js_calls += 1
+                revision = state.get("dom_revision")
+                if revision != last_revision:
+                    last_revision = revision
+                    stable_since = time.perf_counter()
+                elif (time.perf_counter() - stable_since) * 1000 >= stable_ms:
+                    break
+                time.sleep(0.06)
+            return {
+                "ok": True, "type": "select", "element_id": element_id,
+                "selected": found.get("selected"), "native": False,
+                "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
+            }
+        time.sleep(poll_s)
+    return {
+        "ok": False, "type": "select", "element_id": element_id,
+        "error": "option_not_found", "timed_out": True, "native": False,
+        "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
+    }
 
 
 def _light_state_js() -> str:
@@ -612,7 +863,7 @@ def browser_act(
     tab_index: Optional[int] = None,
     return_state: str = "compact",
 ) -> Dict[str, Any]:
-    """Perform a batch of stable-ID DOM actions with internal waits and compact post-state."""
+    """Perform batched browser actions; targets may use element_id or semantic query/text/role."""
     if not isinstance(actions, list) or not actions:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "actions must be a non-empty list.")
     if len(actions) > _MAX_ACTIONS:
@@ -624,6 +875,7 @@ def browser_act(
     started = time.perf_counter()
     results: List[Dict[str, Any]] = []
     internal_js_calls = 0
+    current_observation_id = observation_id
     needs_initial_url = any(
         isinstance(a, dict) and str(a.get("type") or "").lower().replace("-", "_") == "wait"
         and str(a.get("for") or a.get("condition") or "").lower().strip() == "url_change"
@@ -637,11 +889,35 @@ def browser_act(
     pending: List[Dict[str, Any]] = []
     compact_state_candidate: Optional[Dict[str, Any]] = None
 
+    def resolve_target(action: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+        nonlocal internal_js_calls
+        if action.get("element_id"):
+            return dict(action), None
+        query = str(action.get("query") or action.get("target") or "").strip()
+        role = action.get("role")
+        match_text = action.get("text_match") or action.get("target_text")
+        if not query and not role and not match_text:
+            return dict(action), None
+        found = browser_find(
+            settings, browser, query=query, role=role, text=match_text,
+            window_index=window_index, tab_index=tab_index, max_results=1,
+        )
+        internal_js_calls += 1
+        best = found.get("best_match")
+        if not best:
+            return dict(action), {
+                "ok": False, "error": "target_not_found", "query": query,
+                "role": role, "text": match_text,
+            }
+        resolved = dict(action)
+        resolved["element_id"] = best.get("element_id")
+        return resolved, best
+
     def flush_pending() -> bool:
-        nonlocal pending, internal_js_calls
+        nonlocal pending, internal_js_calls, current_observation_id
         if not pending:
             return True
-        out = _run_json_js(settings, browser, _batch_js(pending, observation_id), window_index, tab_index)
+        out = _run_json_js(settings, browser, _batch_js(pending, current_observation_id), window_index, tab_index)
         internal_js_calls += 1
         if not out.get("ok") and out.get("error") == "stale_observation":
             results.append({"ok": False, "error": "stale_observation", "observe_again": True})
@@ -649,16 +925,40 @@ def browser_act(
             return False
         results.extend(out.get("actions") or [])
         pending = []
+        if out.get("ok"):
+            current_observation_id = None
         return bool(out.get("ok"))
 
     for action in actions:
         if not isinstance(action, dict):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Each action must be an object.")
         typ = str(action.get("type") or "").lower().replace("-", "_")
-        if typ in {"wait", "key", "keyboard", "shortcut"}:
+        resolved_target: Optional[Dict[str, Any]] = None
+        work_action = dict(action)
+        if typ not in {"wait", "key", "keyboard", "shortcut"}:
+            work_action, resolved_target = resolve_target(action)
+            if isinstance(resolved_target, dict) and resolved_target.get("ok") is False:
+                results.append({"type": typ, **resolved_target})
+                break
+
+        if typ in {"wait", "key", "keyboard", "shortcut", "select"}:
             if not flush_pending():
                 break
-            if typ == "wait":
+            if typ == "select":
+                select_result = _select_action(
+                    settings, browser, work_action, current_observation_id, window_index, tab_index,
+                )
+                internal_js_calls += int(select_result.pop("_js_calls", 0))
+                if resolved_target:
+                    select_result["resolved_target"] = {
+                        k: resolved_target.get(k)
+                        for k in ("element_id", "text", "role", "tag", "confidence")
+                    }
+                results.append(select_result)
+                if not select_result.get("ok"):
+                    break
+                current_observation_id = None
+            elif typ == "wait":
                 wait_result = _wait_action(settings, browser, action, window_index, tab_index, initial_url)
                 compact_state_candidate = wait_result.pop("_compact_state", None)
                 internal_js_calls += int(wait_result.pop("_js_calls", 0))
@@ -666,23 +966,30 @@ def browser_act(
                 if not wait_result.get("matched") and action.get("required", True):
                     break
             else:
-                eid = action.get("element_id")
+                key_action = dict(action)
+                if not key_action.get("element_id") and any(key_action.get(k) for k in ("query", "target", "role", "text_match", "target_text")):
+                    key_action, resolved_target = resolve_target(key_action)
+                    if isinstance(resolved_target, dict) and resolved_target.get("ok") is False:
+                        results.append({"type": "key", **resolved_target})
+                        break
+                eid = key_action.get("element_id")
                 if eid:
                     focus_result = _run_json_js(
-                        settings, browser, _batch_js([{"type": "focus", "element_id": eid}], observation_id),
+                        settings, browser, _batch_js([{"type": "focus", "element_id": eid}], current_observation_id),
                         window_index, tab_index,
                     )
                     internal_js_calls += 1
                     if not focus_result.get("ok"):
                         results.extend(focus_result.get("actions") or [{"ok": False, "error": "could_not_focus"}])
                         break
+                    current_observation_id = None
                 key_result = browser_press_key(
                     settings, browser=browser, key=str(action.get("key") or ""),
                     modifiers=action.get("modifiers") or [], window_index=window_index,
                 )
                 results.append({"type": "key", "ok": bool(key_result.get("ok")), "key": action.get("key")})
         else:
-            pending.append(action)
+            pending.append(work_action)
     else:
         flush_pending()
     if pending:
@@ -703,7 +1010,17 @@ def browser_act(
             response["state"] = _run_json_js(settings, browser, _light_state_js(), window_index, tab_index)
             response["internal_js_calls"] += 1
     elif return_state == "full":
-        full = _run_json_js(settings, browser, _observe_js("interactive", 80), window_index, tab_index)
-        response["state"] = full
-        response["internal_js_calls"] += 1
+        try:
+            full = _observe_payload(
+                settings, browser, "content", 120, window_index=window_index, tab_index=tab_index,
+            )
+            response["state"] = full
+            response["internal_js_calls"] += 1
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_413_REQUEST_ENTITY_TOO_LARGE:
+                raise
+            response["state"] = _run_json_js(settings, browser, _light_state_js(), window_index, tab_index)
+            response["state_fallback"] = "compact"
+            response["full_state_error"] = "payload_too_large"
+            response["internal_js_calls"] += 1
     return response

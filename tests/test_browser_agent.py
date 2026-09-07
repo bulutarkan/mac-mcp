@@ -28,6 +28,34 @@ class BrowserAgentLayerTests(unittest.TestCase):
         }
         self.assertGreaterEqual(_score_candidate(element, 'Ara button control', 'button', None), 0.8)
 
+    def test_exact_text_beats_prefix_match(self):
+        exact = {
+            'text': 'Emlak', 'aria_label': '', 'placeholder': '', 'name': '',
+            'title': '', 'role': 'link', 'tag': 'a', 'actionable': True,
+        }
+        prefix = {
+            'text': 'Emlak360', 'aria_label': '', 'placeholder': '', 'name': '',
+            'title': '', 'role': 'link', 'tag': 'a', 'actionable': True,
+        }
+        self.assertGreater(
+            _score_candidate(exact, 'Emlak', 'link', None),
+            _score_candidate(prefix, 'Emlak', 'link', None),
+        )
+
+    def test_role_is_a_hard_filter(self):
+        wrong_role = {
+            'text': 'Ara', 'aria_label': '', 'placeholder': '', 'name': '',
+            'title': '', 'role': 'link', 'tag': 'a', 'actionable': True,
+        }
+        self.assertEqual(0.0, _score_candidate(wrong_role, 'Ara', 'button', 'Ara'))
+
+    def test_short_text_does_not_match_inside_word(self):
+        search = {
+            'text': '', 'aria_label': '', 'placeholder': 'Kelime, ilan no...', 'name': '',
+            'title': '', 'role': 'textbox', 'tag': 'input', 'actionable': True,
+        }
+        self.assertEqual(0.0, _score_candidate(search, 'İl', 'textbox', 'İl'))
+
 
 if __name__ == '__main__':
     unittest.main()
