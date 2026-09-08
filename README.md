@@ -22,7 +22,7 @@ Version 1.8.0 includes 81 MCP tools covering shell execution, files, processes, 
 
 - Added `ask_user_voice`: the agent can speak a short question through the Mac, listen for the local user's spoken answer, transcribe it, and continue the same MCP task without a text dialog.
 - Default Turkish speech uses the free `tr-TR-AhmetNeural` Edge neural voice; transcription uses Groq `whisper-large-v3-turbo`. The Groq key can be supplied directly or read from an existing macOS UserDefaults domain without copying the secret into source code.
-- Voice prompts default to the built-in Mac speakers with automatic output restoration and fall back from a silent default microphone to the built-in microphone. Native helper binaries are compiled lazily into `~/.mac-mcp/cache/voice` and do not stay resident in RAM.
+- Voice prompts follow the current macOS system audio output by default (for example AirPods when connected) and fall back from a silent default microphone to the built-in microphone. Native helper binaries are compiled lazily into `~/.mac-mcp/cache/voice` and do not stay resident in RAM.
 
 Previous v1.7.0 additions (local operations dashboard) remain unchanged.
 

@@ -21,7 +21,7 @@ from .tools_interactive import _DIALOG_LOCK, _normalize_timeout, _validate_quest
 _DEFAULT_VOICE = "tr-TR-AhmetNeural"
 _DEFAULT_LANGUAGE = "auto"
 _DEFAULT_INPUT_MODE = "auto"
-_DEFAULT_OUTPUT_MODE = "built-in"
+_DEFAULT_OUTPUT_MODE = "system"
 _DEFAULT_RATE = "-5%"
 _GROQ_TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 _GROQ_TRANSCRIPTION_MODEL = "whisper-large-v3-turbo"
