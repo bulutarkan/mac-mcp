@@ -19,7 +19,7 @@
     connection: $("connectionState"), version: $("versionLabel"), uptime: $("uptimeLabel"),
     activeNow: $("activeNow"), lastTool: $("lastTool"), lastLatency: $("lastLatency"), traceBars: $("traceBars"),
     calls: $("metricCalls"), success: $("metricSuccess"), errors: $("metricErrors"), average: $("metricAverage"), p95: $("metricP95"), window: $("metricWindow"),
-    rows: $("eventRows"), empty: $("emptyState"), topTools: $("topTools"), sourceMix: $("sourceMix"), agentCount: $("agentCount"), agentList: $("agentList"),
+    rows: $("eventRows"), empty: $("emptyState"), activeStrip: $("activeStrip"), activeStripCount: $("activeStripCount"), topTools: $("topTools"), sourceMix: $("sourceMix"), agentCount: $("agentCount"), agentList: $("agentList"),
     toolFilter: $("toolFilter"), sourceFilter: $("sourceFilter"), statusFilter: $("statusFilter"),
     drawer: $("detailDrawer"), backdrop: $("drawerBackdrop"), drawerClose: $("drawerClose"), drawerStatus: $("drawerStatus"), drawerTitle: $("drawerTitle"), drawerMeta: $("drawerMeta"),
     drawerRequest: $("drawerRequest"), drawerResult: $("drawerResult"), drawerError: $("drawerError"), resultSize: $("resultSize"), resultSection: $("resultSection"), errorSection: $("errorSection"),
@@ -80,7 +80,7 @@
       renderTopTools(data.top_tools || []);
       const mix = (data.sources || []).map((item) => `${String(item.source).toUpperCase()} ${item.calls}`).join(" / ");
       els.sourceMix.textContent = mix || "No calls";
-      els.agentCount.textContent = data.active_agents ? `${data.active_agents} active` : `${data.agent_count || 0}`;
+      els.agentCount.textContent = `${number(data.active_agents || 0)} active`;
     } catch (error) {
       markOffline(error);
     }
@@ -118,7 +118,7 @@
       return;
     }
     const max = Math.max(...tools.map((item) => Number(item.calls || 0)), 1);
-    els.topTools.innerHTML = tools.map((item) => `
+    els.topTools.innerHTML = tools.slice(0, 4).map((item) => `
       <div class="top-tool">
         <strong title="${esc(item.tool)}">${esc(item.tool)}</strong>
         <span>${number(item.calls)} calls</span>
@@ -131,19 +131,33 @@
       els.agentList.innerHTML = `<div class="no-agents">No delegated agents yet. Spawned OpenCode or Codex workers will appear here live.</div>`;
       return;
     }
-    els.agentList.innerHTML = agents.slice(0, 8).map((agent) => {
+    const activeStatuses = new Set(["starting", "running"]);
+    const hiddenStatuses = new Set(["stalled"]);
+    const active = agents.filter((agent) => activeStatuses.has(agent.status)).slice(0, 4);
+    const recent = agents
+      .filter((agent) => !activeStatuses.has(agent.status) && !hiddenStatuses.has(agent.status))
+      .slice(0, Math.max(0, 8 - active.length));
+    const card = (agent) => {
       const status = agent.status || "unknown";
       const phase = agent.phase || status;
       const model = [agent.provider, agent.model].filter(Boolean).join(" · ") || "Provider unavailable";
       const last = agent.last_tool ? `Last tool <b>${esc(agent.last_tool)}</b>` : `${number(agent.step_count)} steps`;
+      const avatar = String(agent.provider || "AI").slice(0, 2);
       return `<div class="agent-card" data-status="${esc(status)}">
-        <div class="agent-card-head">
-          <strong title="${esc(agent.title || agent.agent_id)}">${esc(agent.title || agent.agent_id)}</strong>
-          <span class="agent-phase">${esc(phase)}</span>
+        <div class="agent-avatar" aria-hidden="true">${esc(avatar)}</div>
+        <div class="agent-content">
+          <div class="agent-card-head">
+            <strong title="${esc(agent.title || agent.agent_id)}">${esc(agent.title || agent.agent_id)}</strong>
+            <span class="agent-phase">${esc(phase)}</span>
+          </div>
+          <div class="agent-meta">${esc(model)}<br>${last} · ${number(agent.tool_call_count)} calls · ${duration(agent.duration_ms)}</div>
         </div>
-        <div class="agent-meta">${esc(model)}<br>${last} · ${number(agent.tool_call_count)} calls · ${duration(agent.duration_ms)}</div>
       </div>`;
-    }).join("");
+    };
+    const groups = [];
+    if (active.length) groups.push(`<div class="agent-group-label"><strong>Active</strong><span>${active.length}</span></div>${active.map(card).join("")}`);
+    if (recent.length) groups.push(`<div class="agent-group-label"><strong>Recent</strong><span>latest ${recent.length}</span></div>${recent.map(card).join("")}`);
+    els.agentList.innerHTML = groups.join("");
   }
 
   function visibleEvents() {
@@ -226,18 +240,42 @@
     const max = Math.max(250, ...data.map((item) => item.duration));
     const width = 560 / Math.max(data.length, 1);
     els.traceBars.innerHTML = data.map((item, index) => {
-      const h = item.duration ? Math.max(5, Math.min(64, item.duration / max * 64)) : 2;
+      const h = item.duration ? Math.max(4, Math.min(48, item.duration / max * 48)) : 2;
       const x = index * width + 1;
-      const y = 72 - h;
+      const y = 58 - h;
       const recent = index >= data.length - 3 ? " recent" : "";
       const error = item.error ? " error" : "";
       return `<rect class="trace-bar${recent}${error}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${Math.max(2, width - 3).toFixed(1)}" height="${h.toFixed(1)}" rx="1"/>`;
     }).join("");
   }
 
+  function renderActiveStrip() {
+    const calls = Array.from(state.active.values())
+      .sort((a, b) => Number(b.started_at || b.timestamp) - Number(a.started_at || a.timestamp))
+      .slice(0, 6);
+    const total = state.active.size;
+    els.activeStripCount.textContent = `${total} running`;
+    if (!calls.length) {
+      els.activeStrip.innerHTML = `<div class="active-empty">No tools are running right now.</div>`;
+      return;
+    }
+    const now = Date.now() / 1000;
+    els.activeStrip.innerHTML = calls.map((event) => {
+      const started = Number(event.started_at || event.timestamp || now);
+      const elapsed = Math.max(0, (now - started) * 1000);
+      return `<button class="active-call" type="button" data-event-id="${esc(event.event_id)}" aria-label="Inspect running ${esc(event.tool)} call">
+        <strong>${esc(event.tool || "Tool call")}</strong>
+        <small>${esc(compactToolDetail(event))}</small>
+        <time>${duration(elapsed)}</time>
+      </button>`;
+    }).join("");
+    els.activeStrip.querySelectorAll(".active-call").forEach((item) => item.addEventListener("click", () => openDrawer(item.dataset.eventId)));
+  }
+
   function renderActiveCount() {
     const count = state.active.size;
     els.activeNow.textContent = `${count} active`;
+    renderActiveStrip();
   }
 
   function handleTelemetry(event) {
@@ -329,5 +367,6 @@
   Promise.all([refreshSummary(), refreshEvents(), refreshAgents()]).finally(connectStream);
   window.setInterval(refreshSummary, 5000);
   window.setInterval(refreshAgents, 2200);
+  window.setInterval(() => { if (state.active.size) renderActiveStrip(); }, 1000);
   window.setInterval(() => { if (!document.hidden) refreshEvents(); }, 20000);
 })();

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
   <title>Mac MCP — Operations</title>
   <link rel="stylesheet" href="/dashboard/assets/dashboard.css">
@@ -13,7 +13,7 @@
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32" role="img"><path d="M6 8.5 16 3l10 5.5v15L16 29 6 23.5z"/><path d="m11 12 5-3 5 3v8l-5 3-5-3z"/></svg>
+          <svg viewBox="0 0 32 32"><path d="M6 8.5 16 3l10 5.5v15L16 29 6 23.5z"/><path d="m11 12 5-3 5 3v8l-5 3-5-3z"/></svg>
         </span>
         <div>
           <strong>Mac MCP</strong>
@@ -31,19 +31,39 @@
       </div>
     </header>
 
-    <main>
-      <section class="signal-header" aria-labelledby="pageTitle">
-        <div class="signal-copy">
-          <h1 id="pageTitle">Execution, as it happens.</h1>
-          <p>Every MCP call, its sanitized payload, latency, result and delegated agent state — recorded locally on this Mac.</p>
+    <main class="app-main">
+      <section class="overview" aria-labelledby="pageTitle">
+        <div class="overview-copy">
+          <div class="overview-heading">
+            <div>
+              <h1 id="pageTitle">Operations</h1>
+              <p>Live execution telemetry, tool payloads and delegated agent state on this Mac.</p>
+            </div>
+            <span class="recording-chip"><i></i> Recording locally</span>
+          </div>
         </div>
-        <div class="signal-monitor" aria-label="Live activity monitor">
+
+        <div class="signal-monitor surface-card" aria-label="Live latency monitor">
           <div class="monitor-head">
-            <span>Call activity</span>
+            <div>
+              <span>Latency pulse</span>
+              <small>Newest completed calls</small>
+            </div>
             <strong id="activeNow">0 active</strong>
           </div>
-          <svg id="activityTrace" viewBox="0 0 560 92" preserveAspectRatio="none" aria-hidden="true">
-            <line x1="0" y1="72" x2="560" y2="72" class="trace-baseline"/>
+          <svg id="activityTrace" viewBox="0 0 560 76" preserveAspectRatio="none" aria-hidden="true">
+            <defs>
+              <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#78c6ff"/>
+                <stop offset="1" stop-color="#3a78a7"/>
+              </linearGradient>
+              <linearGradient id="barGradientRecent" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#b1dcff"/>
+                <stop offset="1" stop-color="#559fd7"/>
+              </linearGradient>
+            </defs>
+            <line x1="0" y1="58" x2="560" y2="58" class="trace-grid trace-baseline"/>
+            <line x1="0" y1="30" x2="560" y2="30" class="trace-grid"/>
             <g id="traceBars"></g>
           </svg>
           <div class="monitor-foot">
@@ -53,35 +73,35 @@
         </div>
       </section>
 
-      <section class="metric-strip" aria-label="Telemetry summary">
-        <div class="metric">
-          <span>Tool calls</span>
+      <section class="metric-grid" aria-label="Telemetry summary">
+        <div class="metric-card surface-card">
+          <div class="metric-label"><span class="metric-dot metric-dot-blue"></span>Tool calls</div>
           <strong id="metricCalls">0</strong>
           <small id="metricWindow">last 24 hours</small>
         </div>
-        <div class="metric">
-          <span>Success</span>
+        <div class="metric-card surface-card">
+          <div class="metric-label"><span class="metric-dot metric-dot-green"></span>Success</div>
           <strong id="metricSuccess">100%</strong>
           <small id="metricErrors">0 errors</small>
         </div>
-        <div class="metric">
-          <span>Average pace</span>
+        <div class="metric-card surface-card">
+          <div class="metric-label"><span class="metric-dot metric-dot-slate"></span>Average latency</div>
           <strong id="metricAverage">0 ms</strong>
-          <small>average latency</small>
+          <small>completed calls</small>
         </div>
-        <div class="metric metric-emphasis">
-          <span>P95 latency</span>
+        <div class="metric-card metric-card-emphasis surface-card">
+          <div class="metric-label"><span class="metric-dot metric-dot-amber"></span>P95 latency</div>
           <strong id="metricP95">0 ms</strong>
           <small>slow-path signal</small>
         </div>
       </section>
 
       <section class="workspace">
-        <article class="activity-panel" id="activity">
-          <div class="section-head">
+        <article class="activity-panel surface-card" id="activity">
+          <div class="panel-head">
             <div>
-              <h2>Activity</h2>
-              <p>Newest calls appear first. Select a row to inspect its payload.</p>
+              <h2>Tool activity</h2>
+              <p>Live calls stay pinned. Completed calls appear newest first.</p>
             </div>
             <div class="window-switch" role="group" aria-label="Time range">
               <button type="button" data-hours="1">1h</button>
@@ -89,6 +109,16 @@
               <button type="button" data-hours="168">7d</button>
             </div>
           </div>
+
+          <section class="active-zone" aria-label="Active tool calls">
+            <div class="active-zone-head">
+              <div><span class="live-indicator"></span><strong>Active calls</strong></div>
+              <span id="activeStripCount">0 running</span>
+            </div>
+            <div id="activeStrip" class="active-strip">
+              <div class="active-empty">No tools are running right now.</div>
+            </div>
+          </section>
 
           <div class="filters">
             <label class="search-box">
@@ -114,15 +144,15 @@
             </label>
           </div>
 
-          <div class="activity-table" role="table" aria-label="Tool activity">
-            <div class="activity-header" role="row">
-              <span role="columnheader">Time</span>
-              <span role="columnheader">Tool</span>
-              <span role="columnheader">Source</span>
-              <span role="columnheader">Duration</span>
-              <span role="columnheader">Status</span>
+          <div class="activity-table" aria-label="Tool activity">
+            <div class="activity-header" aria-hidden="true">
+              <span>Time</span>
+              <span>Tool</span>
+              <span>Source</span>
+              <span>Duration</span>
+              <span>Status</span>
             </div>
-            <div id="eventRows" class="event-rows" role="rowgroup" aria-live="polite"></div>
+            <div id="eventRows" class="event-rows" aria-live="polite"></div>
             <div id="emptyState" class="empty-state" hidden>
               <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M8 14h32M8 24h21M8 34h14"/><circle cx="36" cy="31" r="7"/></svg>
               <strong>No calls in this view</strong>
@@ -132,38 +162,36 @@
         </article>
 
         <aside class="right-rail" aria-label="Operational context">
-          <section class="rail-section">
+          <section class="rail-card hot-tools-card surface-card">
             <div class="rail-title">
-              <h2>Hot tools</h2>
+              <div>
+                <h2>Hot tools</h2>
+                <p>Most frequently used in this window.</p>
+              </div>
               <span id="sourceMix">—</span>
             </div>
             <div id="topTools" class="top-tools"></div>
           </section>
 
-          <section class="rail-section agents-section">
-            <div class="rail-title">
-              <h2>Delegated agents</h2>
+          <section class="rail-card agents-section surface-card">
+            <div class="rail-title agents-title">
+              <div>
+                <h2>Delegated agents</h2>
+                <p>Active first, then the most recent workers.</p>
+              </div>
               <span id="agentCount">0</span>
             </div>
             <div id="agentList" class="agent-list"></div>
           </section>
 
-          <section class="rail-section recorder-note">
-            <div class="recorder-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
-            </div>
-            <div>
-              <strong>Local flight recorder</strong>
-              <p>Telemetry is stored in SQLite under <code>~/.mac-mcp/dashboard</code>. Secrets and binary payloads are redacted before persistence.</p>
-            </div>
-          </section>
+
         </aside>
       </section>
     </main>
   </div>
 
   <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
-  <aside class="detail-drawer" id="detailDrawer" aria-hidden="true" aria-labelledby="drawerTitle">
+  <aside class="detail-drawer" id="detailDrawer" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="drawerTitle">
     <div class="drawer-head">
       <div>
         <span id="drawerStatus" class="status-badge">Success</span>
