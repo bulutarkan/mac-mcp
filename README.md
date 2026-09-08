@@ -14,11 +14,17 @@
 
 Mac MCP is a local macOS control server for AI agents. It exposes the same Mac through a native MCP endpoint and a REST/OpenAPI surface for clients such as Custom GPT Actions.
 
-Version 1.7.0 includes 80 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, background-first browser control with stable tab handles, persistent AI memory, reusable Agent Skills, self-updates, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer. It also adds a local observability dashboard without increasing the MCP tool count.
+Version 1.8.0 includes 81 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, background-first browser control with stable tab handles, persistent AI memory, reusable Agent Skills, self-updates, screenshots, HTTP requests, search, text and voice interaction, choices/confirmations, and a unified macOS UI observation/action layer. The local observability dashboard remains available without adding a separate service.
 
 > **Security:** Mac MCP can execute shell commands, read and modify files, and control your desktop. Keep authentication enabled whenever the server is reachable outside localhost. Use a strong `MCP_API_KEY`, keep `MCP_ALLOW_NO_AUTH=false`, and only expose the server to clients you trust. The operations dashboard is additionally restricted to loopback access and is not served through the ngrok tunnel.
 
-## What's new in v1.7.0
+## What's new in v1.8.0
+
+- Added `ask_user_voice`: the agent can speak a short question through the Mac, listen for the local user's spoken answer, transcribe it, and continue the same MCP task without a text dialog.
+- Default Turkish speech uses the free `tr-TR-AhmetNeural` Edge neural voice; transcription uses Groq `whisper-large-v3-turbo`. The Groq key can be supplied directly or read from an existing macOS UserDefaults domain without copying the secret into source code.
+- Voice prompts default to the built-in Mac speakers with automatic output restoration and fall back from a silent default microphone to the built-in microphone. Native helper binaries are compiled lazily into `~/.mac-mcp/cache/voice` and do not stay resident in RAM.
+
+Previous v1.7.0 additions (local operations dashboard) remain unchanged.
 
 - Added a live **Mac MCP Operations** dashboard at `http://localhost:<port>/dashboard`. It runs on the same port as the MCP server; no second dashboard service or port is required.
 - Every MCP protocol tool call is observed centrally through `ObservedFastMCP`, so current and future tools automatically appear with status, latency, sanitized arguments, sanitized result previews, and errors without per-tool telemetry wiring.
@@ -39,7 +45,7 @@ Previous v1.6.3 additions (Agent Skills and shared embeddings) remain unchanged.
 - `memory_search` and `skill_search` now share one on-demand FastEmbed/MiniLM worker, model cache, and idle timer instead of creating separate model processes.
 - Preserved the Mac-specific semantic fallback chain: multilingual MiniLM → Apple NaturalLanguage → dependency-free feature hash.
 - Added shared embedding environment names (`MAC_MCP_EMBEDDING*`) while keeping existing `MAC_MCP_MEMORY_*` embedding variables as backward-compatible aliases.
-- MCP tool count is now 80; the legacy REST/OpenAPI surface remains stable for backwards compatibility.
+- MCP tool count is now 81; the legacy REST/OpenAPI surface remains stable for backwards compatibility.
 
 ## Benefits and usage strategy: ChatGPT Chat vs ChatGPT Work vs Codex
 
@@ -72,17 +78,18 @@ Official references: [Models](https://learn.chatgpt.com/docs/models) and [Pricin
 | Search | 2 | recursive grep, Spotlight |
 | HTTP | 1 | outbound HTTP requests with validation |
 | Browser | 18 | tabs, JS, selectors, compact visual DOM, semantic find, batch actions, screenshots, scrolling, coordinate fallback |
-| Interactive | 3 | native question/answer, choice, and confirmation dialogs |
+| Interactive | 4 | native text question/answer, voice question/answer, choice, and confirmation |
 | Memory | 5 | Markdown-backed persistent memory with exact get, hybrid search, date/range selection, update, delete |
 | Agent Skills | 5 | SKILL.md discovery, hybrid search, progressive load, external registration, index refresh |
 | Self-update | 1 | commit-based update check/apply with runtime overlay preservation, backup, restart, health check, rollback |
-| **Total** | **80** | |
+| **Total** | **81** | |
 
 ## Requirements
 
 - macOS
 - Python 3.10+
 - Git
+- Xcode Command Line Tools (`swiftc`) for the lazily compiled voice microphone helper
 - ngrok account only if you want a public HTTPS URL for Custom GPT Actions or ChatGPT Developer Mode
 
 Install the core tools:
@@ -292,7 +299,7 @@ mac-mcp dashboard
 
 Optional telemetry settings are documented in `mcp_server/.env.example`.
 
-MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 80 tools.
+MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 81 tools.
 
 Example REST request:
 
@@ -429,9 +436,10 @@ Agent metadata lives under `mcp_server/agents/` and is ignored by Git. This allo
 
 ## Human-in-the-loop tools
 
-Mac MCP exposes three native-dialog tools for controlled interaction with the local user:
+Mac MCP exposes four human-in-the-loop tools for controlled interaction with the local user:
 
 - `ask_user`: collect a free-form text answer while preserving the existing interface.
+- `ask_user_voice`: speak a concise question, listen for the local spoken answer, transcribe it, and return the response to the calling agent. Default voice: `tr-TR-AhmetNeural`; exact spoken `atla`, `iptal`, `boşver`, or `vazgeç` skips.
 - `ask_choice`: present 2-3 labeled native buttons and return the selected label and index. Two-choice dialogs include `Cancel`; three-choice dialogs use all three native buttons and window-close remains cancellation.
 - `ask_confirmation`: present explicit Yes/No buttons and return `confirmed=true` only after an affirmative click.
 

@@ -49,6 +49,7 @@ from .tools_browser import (
 )
 from .tools_browser_agent import browser_observe, browser_find, browser_act
 from .tools_interactive import ask_choice, ask_confirmation, ask_user
+from .tools_voice import ask_user_voice
 from .tools_update import mac_mcp_update
 from .tools_memory import memory_add, memory_search, memory_get, memory_update, memory_delete
 from .tools_skills import skill_list, skill_search, skill_get, skill_register, skill_update_index
@@ -950,6 +951,43 @@ def create_app():
             audit_logger,
             "ask_user",
             lambda: ask_user(settings, question=question, sender=sender, timeout_s=timeout_s),
+        )
+
+    @mcp.tool(
+        name="ask_user_voice",
+        title="Ask the user by voice",
+        description=(
+            "Speak a short natural question aloud on the local Mac, listen for the user's spoken answer, "
+            "transcribe it, and return the response without opening a text dialog. "
+            "Prefer one concise conversational sentence (roughly 15 words or fewer). "
+            "The default Turkish neural voice is tr-TR-AhmetNeural; saying 'atla', 'iptal', 'boşver', or 'vazgeç' skips. "
+            "Use this when hands-free human input is useful during an autonomous task."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+        structured_output=False,
+    )
+    async def _ask_user_voice(
+        question: str,
+        sender: str = "AI",
+        timeout_s: int = 45,
+        voice: str = "tr-TR-AhmetNeural",
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log,
+            audit_logger,
+            "ask_user_voice",
+            lambda: ask_user_voice(
+                settings,
+                question=question,
+                sender=sender,
+                timeout_s=timeout_s,
+                voice=voice,
+            ),
         )
 
     @mcp.tool(

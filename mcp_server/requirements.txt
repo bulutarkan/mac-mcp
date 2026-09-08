@@ -5,3 +5,4 @@ python-dotenv==1.0.1
 mcp[cli]==1.27.2
 fastembed==0.7.4
 PyYAML==6.0.3
+edge-tts==7.2.8

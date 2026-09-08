@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mac-mcp"
-version = "1.7.0"
+version = "1.8.0"
 description = "Local macOS control server for MCP clients and Custom GPT Actions"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,7 +17,8 @@ dependencies = [
   "python-dotenv==1.0.1",
   "mcp[cli]==1.27.2",
   "fastembed==0.7.4",
-  "PyYAML==6.0.3"
+  "PyYAML==6.0.3",
+  "edge-tts==7.2.8"
 ]
 
 [project.scripts]
