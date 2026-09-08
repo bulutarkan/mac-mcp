@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+import webbrowser
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -124,6 +125,8 @@ def _start_server(args: argparse.Namespace) -> int:
         return proc.returncode or 1
 
     print(f"mac-mcp started on {_local_url(args.host, args.port)} (pid {proc.pid}).")
+    dashboard_host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
+    print(f"dashboard: {_local_url(dashboard_host, args.port)}/dashboard")
     print(f"mac-mcp log: {LOG_FILE}")
     return 0
 
@@ -224,6 +227,28 @@ def restart(args: argparse.Namespace) -> int:
     return start(args)
 
 
+def dashboard(args: argparse.Namespace) -> int:
+    _load_env()
+    server_pid = _read_pid(PID_FILE)
+    if not server_pid or not _pid_alive(server_pid):
+        PID_FILE.unlink(missing_ok=True)
+        print("mac-mcp is not running. Start it first with: mac-mcp start")
+        return 1
+    host = os.getenv("MAC_MCP_HOST", DEFAULT_HOST).strip() or DEFAULT_HOST
+    if host in {"0.0.0.0", "::"}:
+        host = "127.0.0.1"
+    try:
+        port = int(os.getenv("MAC_MCP_PORT", DEFAULT_PORT))
+    except ValueError:
+        port = int(DEFAULT_PORT)
+    url = f"{_local_url(host, port)}/dashboard"
+    opened = webbrowser.open(url)
+    print(f"dashboard: {url}")
+    if not opened:
+        print("The browser did not open automatically; paste the dashboard URL into a local browser.")
+    return 0
+
+
 def update(args: argparse.Namespace) -> int:
     try:
         if args.check:
@@ -271,6 +296,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p_status = sub.add_parser("status", help="Show server and ngrok status.")
     p_status.set_defaults(func=status)
+
+    p_dashboard = sub.add_parser("dashboard", help="Open the local Mac MCP operations dashboard.")
+    p_dashboard.set_defaults(func=dashboard)
 
     p_update = sub.add_parser("update", help="Update Mac MCP from the latest commit on a Git branch.")
     p_update.add_argument("--check", action="store_true", help="Check for updates without changing files.")

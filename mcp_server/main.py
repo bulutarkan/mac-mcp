@@ -8,7 +8,6 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
-from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -17,6 +16,8 @@ from starlette.routing import Route, Mount
 
 from mcp.server.transport_security import TransportSecuritySettings
 from .security import RateLimiter, Settings, authenticate, client_ip, load_settings, rate_limit, setup_audit_logger
+from .observability import ObservedFastMCP, TelemetryManager
+from .dashboard_routes import create_dashboard_routes, rest_telemetry_middleware
 from .tools_terminal import run_command, process_list, kill_process, get_system_info
 from .tools_jobs import (
     start_background_job, get_job_status, get_job_output,
@@ -74,8 +75,10 @@ def create_app():
     settings = load_settings()
     limiter = RateLimiter(settings.rate_limit_per_minute)
     audit_logger = setup_audit_logger()
+    telemetry = TelemetryManager()
 
-    mcp = FastMCP(
+    mcp = ObservedFastMCP(
+        telemetry=telemetry,
         name="mac-mcp",
         instructions=(
             "You are connected to the user's local Mac through Mac MCP. "
@@ -1032,11 +1035,17 @@ def create_app():
         return JSONResponse({"ok": True, "server": "mac-mcp", "workdir": str(settings.workdir)})
 
     app.router.routes.append(Route("/health", health, methods=["GET"]))
+    app.router.routes.extend(create_dashboard_routes(telemetry, settings))
 
     # REST API — FastAPI sub-app mounted at /api
     from fastapi import FastAPI
     from .rest_routes import router as rest_router
     rest_app = FastAPI()
+
+    @rest_app.middleware("http")
+    async def _capture_rest_telemetry(request: Request, call_next):
+        return await rest_telemetry_middleware(request, call_next, telemetry)
+
     rest_app.include_router(rest_router)
     app.mount("/api", rest_app)
 

@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Mac MCP — Operations</title>
+  <link rel="stylesheet" href="/dashboard/assets/dashboard.css">
+</head>
+<body>
+  <a class="skip-link" href="#activity">Skip to activity</a>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" role="img"><path d="M6 8.5 16 3l10 5.5v15L16 29 6 23.5z"/><path d="m11 12 5-3 5 3v8l-5 3-5-3z"/></svg>
+        </span>
+        <div>
+          <strong>Mac MCP</strong>
+          <span class="brand-subtitle">Operations</span>
+        </div>
+      </div>
+      <div class="topbar-status">
+        <span class="local-pill">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.25 16 4.7v4.75c0 3.9-2.45 6.7-6 8.3-3.55-1.6-6-4.4-6-8.3V4.7z"/><path d="m7.2 9.8 1.75 1.75 3.85-4.1"/></svg>
+          Local only
+        </span>
+        <span class="connection" id="connectionState"><span class="pulse-dot"></span>Live</span>
+        <span class="topbar-meta" id="versionLabel">v—</span>
+        <span class="topbar-meta" id="uptimeLabel">Uptime —</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="signal-header" aria-labelledby="pageTitle">
+        <div class="signal-copy">
+          <h1 id="pageTitle">Execution, as it happens.</h1>
+          <p>Every MCP call, its sanitized payload, latency, result and delegated agent state — recorded locally on this Mac.</p>
+        </div>
+        <div class="signal-monitor" aria-label="Live activity monitor">
+          <div class="monitor-head">
+            <span>Call activity</span>
+            <strong id="activeNow">0 active</strong>
+          </div>
+          <svg id="activityTrace" viewBox="0 0 560 92" preserveAspectRatio="none" aria-hidden="true">
+            <line x1="0" y1="72" x2="560" y2="72" class="trace-baseline"/>
+            <g id="traceBars"></g>
+          </svg>
+          <div class="monitor-foot">
+            <span id="lastTool">Waiting for a tool call</span>
+            <span id="lastLatency">—</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="metric-strip" aria-label="Telemetry summary">
+        <div class="metric">
+          <span>Tool calls</span>
+          <strong id="metricCalls">0</strong>
+          <small id="metricWindow">last 24 hours</small>
+        </div>
+        <div class="metric">
+          <span>Success</span>
+          <strong id="metricSuccess">100%</strong>
+          <small id="metricErrors">0 errors</small>
+        </div>
+        <div class="metric">
+          <span>Average pace</span>
+          <strong id="metricAverage">0 ms</strong>
+          <small>average latency</small>
+        </div>
+        <div class="metric metric-emphasis">
+          <span>P95 latency</span>
+          <strong id="metricP95">0 ms</strong>
+          <small>slow-path signal</small>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <article class="activity-panel" id="activity">
+          <div class="section-head">
+            <div>
+              <h2>Activity</h2>
+              <p>Newest calls appear first. Select a row to inspect its payload.</p>
+            </div>
+            <div class="window-switch" role="group" aria-label="Time range">
+              <button type="button" data-hours="1">1h</button>
+              <button type="button" data-hours="24" class="is-active">24h</button>
+              <button type="button" data-hours="168">7d</button>
+            </div>
+          </div>
+
+          <div class="filters">
+            <label class="search-box">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.8" cy="8.8" r="5.4"/><path d="m12.8 12.8 4 4"/></svg>
+              <span class="sr-only">Filter by tool name</span>
+              <input id="toolFilter" type="search" placeholder="Filter tools" autocomplete="off">
+            </label>
+            <label>
+              <span class="sr-only">Source</span>
+              <select id="sourceFilter">
+                <option value="all">All sources</option>
+                <option value="mcp">MCP</option>
+                <option value="rest">REST</option>
+              </select>
+            </label>
+            <label>
+              <span class="sr-only">Status</span>
+              <select id="statusFilter">
+                <option value="all">All statuses</option>
+                <option value="success">Success</option>
+                <option value="error">Error</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="activity-table" role="table" aria-label="Tool activity">
+            <div class="activity-header" role="row">
+              <span role="columnheader">Time</span>
+              <span role="columnheader">Tool</span>
+              <span role="columnheader">Source</span>
+              <span role="columnheader">Duration</span>
+              <span role="columnheader">Status</span>
+            </div>
+            <div id="eventRows" class="event-rows" role="rowgroup" aria-live="polite"></div>
+            <div id="emptyState" class="empty-state" hidden>
+              <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M8 14h32M8 24h21M8 34h14"/><circle cx="36" cy="31" r="7"/></svg>
+              <strong>No calls in this view</strong>
+              <span>Change the filters or run a Mac MCP tool to create a signal.</span>
+            </div>
+          </div>
+        </article>
+
+        <aside class="right-rail" aria-label="Operational context">
+          <section class="rail-section">
+            <div class="rail-title">
+              <h2>Hot tools</h2>
+              <span id="sourceMix">—</span>
+            </div>
+            <div id="topTools" class="top-tools"></div>
+          </section>
+
+          <section class="rail-section agents-section">
+            <div class="rail-title">
+              <h2>Delegated agents</h2>
+              <span id="agentCount">0</span>
+            </div>
+            <div id="agentList" class="agent-list"></div>
+          </section>
+
+          <section class="rail-section recorder-note">
+            <div class="recorder-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+            </div>
+            <div>
+              <strong>Local flight recorder</strong>
+              <p>Telemetry is stored in SQLite under <code>~/.mac-mcp/dashboard</code>. Secrets and binary payloads are redacted before persistence.</p>
+            </div>
+          </section>
+        </aside>
+      </section>
+    </main>
+  </div>
+
+  <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+  <aside class="detail-drawer" id="detailDrawer" aria-hidden="true" aria-labelledby="drawerTitle">
+    <div class="drawer-head">
+      <div>
+        <span id="drawerStatus" class="status-badge">Success</span>
+        <h2 id="drawerTitle">Tool call</h2>
+        <p id="drawerMeta">—</p>
+      </div>
+      <button class="icon-button" id="drawerClose" type="button" aria-label="Close call details">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg>
+      </button>
+    </div>
+    <div class="drawer-body">
+      <section>
+        <div class="payload-title"><h3>Request</h3><span>Sanitized</span></div>
+        <pre id="drawerRequest"><code>{}</code></pre>
+      </section>
+      <section id="resultSection">
+        <div class="payload-title"><h3>Result</h3><span id="resultSize">—</span></div>
+        <pre id="drawerResult"><code>{}</code></pre>
+      </section>
+      <section id="errorSection" hidden>
+        <div class="payload-title"><h3>Error</h3><span>Captured</span></div>
+        <pre class="error-pre" id="drawerError"><code></code></pre>
+      </section>
+    </div>
+  </aside>
+
+  <script src="/dashboard/assets/dashboard.js" defer></script>
+</body>
+</html>

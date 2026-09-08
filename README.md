@@ -10,18 +10,23 @@
 
 Mac MCP is a local macOS control server for AI agents. It exposes the same Mac through a native MCP endpoint and a REST/OpenAPI surface for clients such as Custom GPT Actions.
 
-Version 1.6.4 includes 80 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, background-first browser control with stable tab handles, persistent AI memory, reusable Agent Skills, self-updates, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
+Version 1.7.0 includes 80 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, background-first browser control with stable tab handles, persistent AI memory, reusable Agent Skills, self-updates, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer. It also adds a local observability dashboard without increasing the MCP tool count.
 
-> **Security:** Mac MCP can execute shell commands, read and modify files, and control your desktop. Keep authentication enabled whenever the server is reachable outside localhost. Use a strong `MCP_API_KEY`, keep `MCP_ALLOW_NO_AUTH=false`, and only expose the server to clients you trust.
+> **Security:** Mac MCP can execute shell commands, read and modify files, and control your desktop. Keep authentication enabled whenever the server is reachable outside localhost. Use a strong `MCP_API_KEY`, keep `MCP_ALLOW_NO_AUTH=false`, and only expose the server to clients you trust. The operations dashboard is additionally restricted to loopback access and is not served through the ngrok tunnel.
 
-## What's new in v1.6.4
+## What's new in v1.7.0
 
-- Browser tabs now have stable `tab_handle` identifiers. Chrome handles are backed by Chrome's native tab ID; Safari uses a Mac MCP registry keyed primarily by the tab's WebContent PID, so user-created/reordered tabs no longer invalidate agent targets.
-- `browser_open_url` opens new tabs in the background by default and returns the new `tab_handle`; it no longer activates Safari/Chrome or switches the current tab unless `background=false` is explicitly requested.
-- `browser_observe`, `browser_find`, `browser_act`, `browser_execute_js`, selector/type/wait/get-html/scroll/snapshot tools accept `tab_handle` while preserving `window_index` / `tab_index` for backwards compatibility.
-- DOM-based click/type/select/scroll/wait flows remain background-safe. Native keyboard actions now return `foreground_required` unless `allow_foreground=true`; coordinate clicks and explicit tab activation remain foreground-only fallbacks.
-- Native browser screenshots no longer activate the browser first. They warn that an obscured window may not yield reliable pixels and recommend DOM/protocol-level observation when possible.
-- Live Safari validation kept the user's active fourth tab unchanged while two background test tabs were opened and manipulated. After closing the first test tab, the second shifted from index 6 to 5 while its handle stayed stable and its DOM state remained intact.
+- Added a live **Mac MCP Operations** dashboard at `http://localhost:<port>/dashboard`. It runs on the same port as the MCP server; no second dashboard service or port is required.
+- Every MCP protocol tool call is observed centrally through `ObservedFastMCP`, so current and future tools automatically appear with status, latency, sanitized arguments, sanitized result previews, and errors without per-tool telemetry wiring.
+- Added REST telemetry, live Server-Sent Events, 1h/24h/7d filtering, tool/source/status filters, hot-tool frequency, delegated OpenCode/Codex agent visibility, and an inspectable call-detail drawer.
+- Added a persistent local flight recorder at `~/.mac-mcp/dashboard/telemetry.sqlite3` with 7-day / 20,000-event defaults, WAL mode, restart persistence, and schema recovery.
+- Added credential/token/cookie/private-key redaction, binary/base64 summarization, bounded previews, and loopback-only dashboard enforcement so `/dashboard` remains local even when `/mcp` is reachable through ngrok.
+- Added `mac-mcp dashboard` to open the dashboard locally and startup output that prints the local dashboard URL.
+
+Previous v1.6.4 additions (stable browser tab handles and background-first browser automation) remain unchanged.
+
+- Browser tabs have stable `tab_handle` identifiers. Chrome handles use Chrome's native tab ID; Safari uses a Mac MCP registry that survives tab-index shifts.
+- `browser_open_url` opens new tabs in the background by default and high-level observe/find/act flows can target stable handles without stealing foreground focus.
 
 Previous v1.6.3 additions (Agent Skills and shared embeddings) remain unchanged.
 
@@ -263,10 +268,25 @@ uvicorn mcp_server.main:app --host 127.0.0.1 --port 8000
 Local endpoints:
 
 ```text
-MCP:    http://127.0.0.1:8000/mcp
-REST:   http://127.0.0.1:8000/api/*
-Health: http://127.0.0.1:8000/health
+MCP:       http://127.0.0.1:8000/mcp
+REST:      http://127.0.0.1:8000/api/*
+Health:    http://127.0.0.1:8000/health
+Dashboard: http://127.0.0.1:8000/dashboard
 ```
+
+### Local operations dashboard
+
+Mac MCP includes a live, local-only operations dashboard at `/dashboard`. It records MCP and legacy REST tool activity, sanitized request/result previews, duration and errors, plus delegated-agent state. Live updates use Server-Sent Events; completed call history is stored in SQLite at `~/.mac-mcp/dashboard/telemetry.sqlite3` by default.
+
+The dashboard intentionally rejects forwarded/non-loopback clients, so exposing `/mcp` through ngrok does **not** expose the dashboard. Secret-like fields, bearer tokens, credentials, large encoded payloads, and image data are redacted or summarized before persistence. Retention defaults to 7 days / 20,000 completed events.
+
+Open it from a local browser or run:
+
+```bash
+mac-mcp dashboard
+```
+
+Optional telemetry settings are documented in `mcp_server/.env.example`.
 
 MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 80 tools.
 

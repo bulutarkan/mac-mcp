@@ -1,0 +1,233 @@
+from __future__ import annotations
+
+import asyncio
+import ipaddress
+import json
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from starlette.requests import Request
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from starlette.routing import Route
+
+from .observability import TelemetryManager, sanitize_value
+from .security import Settings
+from .tools_agents import list_agents
+from .version import __version__
+
+DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
+REST_TOOL_ALIASES = {
+    "/run": "run_command",
+    "/system_info": "get_system_info",
+    "/process_list": "process_list",
+    "/kill_process": "kill_process",
+    "/jobs/start": "start_background_job",
+    "/jobs/status": "get_job_status",
+    "/jobs/output": "get_job_output",
+    "/jobs/stop": "stop_job",
+    "/jobs/list": "list_jobs",
+    "/jobs/wait": "wait_jobs",
+    "/run_parallel": "run_commands_parallel",
+    "/http": "http_request",
+    "/interactive": "ask_user",
+    "/interactive/choice": "ask_choice",
+    "/interactive/confirmation": "ask_confirmation",
+}
+
+
+def _client_address(request: Request) -> str:
+    # A tunnel/proxy must not be able to make a remote client look local. If a
+    # forwarding header exists, the original first-hop address is authoritative.
+    for header in ("cf-connecting-ip", "x-forwarded-for", "x-real-ip"):
+        raw = request.headers.get(header)
+        if raw:
+            return raw.split(",", 1)[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _is_loopback(address: str) -> bool:
+    if address in {"localhost", "testclient"}:
+        return True
+    try:
+        return ipaddress.ip_address(address).is_loopback
+    except ValueError:
+        return False
+
+
+def _local_only(request: Request) -> Optional[Response]:
+    if _is_loopback(_client_address(request)):
+        return None
+    if request.url.path.startswith("/dashboard/api/") or request.url.path == "/dashboard/events":
+        return JSONResponse({"detail": "The Mac MCP dashboard is available on localhost only."}, status_code=403)
+    return HTMLResponse("Dashboard is available on localhost only.", status_code=403)
+
+
+def _float_query(request: Request, key: str, default: float) -> float:
+    try:
+        return float(request.query_params.get(key, str(default)))
+    except ValueError:
+        return default
+
+
+def _int_query(request: Request, key: str, default: int) -> int:
+    try:
+        return int(request.query_params.get(key, str(default)))
+    except ValueError:
+        return default
+
+
+def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings) -> list[Route]:
+    async def index(request: Request) -> Response:
+        denied = _local_only(request)
+        if denied:
+            return denied
+        path = DASHBOARD_DIR / "index.html"
+        return FileResponse(path, media_type="text/html; charset=utf-8")
+
+    async def asset(request: Request) -> Response:
+        denied = _local_only(request)
+        if denied:
+            return denied
+        name = request.path_params.get("name", "")
+        allowed = {"dashboard.css": "text/css; charset=utf-8", "dashboard.js": "text/javascript; charset=utf-8"}
+        if name not in allowed:
+            return Response(status_code=404)
+        return FileResponse(DASHBOARD_DIR / name, media_type=allowed[name])
+
+    async def summary(request: Request) -> Response:
+        denied = _local_only(request)
+        if denied:
+            return denied
+        hours = _float_query(request, "hours", 24)
+        payload = telemetry.summary(hours)
+        try:
+            agents = list_agents(settings, limit=50).get("agents", [])
+        except Exception:
+            agents = []
+        payload.update({
+            "server": "Mac MCP",
+            "version": __version__,
+            "local_only": True,
+            "agent_count": len(agents),
+            "active_agents": sum(1 for agent in agents if agent.get("status") in {"starting", "running"}),
+        })
+        return JSONResponse(payload)
+
+    async def events(request: Request) -> Response:
+        denied = _local_only(request)
+        if denied:
+            return denied
+        payload = telemetry.query_events(
+            hours=_float_query(request, "hours", 24),
+            limit=_int_query(request, "limit", 120),
+            source=request.query_params.get("source"),
+            status=request.query_params.get("status"),
+            tool=request.query_params.get("tool"),
+        )
+        return JSONResponse({"events": payload, "active": telemetry.active_calls()})
+
+    async def agents(request: Request) -> Response:
+        denied = _local_only(request)
+        if denied:
+            return denied
+        try:
+            data = list_agents(settings, limit=max(1, min(_int_query(request, "limit", 20), 100)))
+        except Exception as exc:
+            return JSONResponse({"ok": False, "count": 0, "agents": [], "error": str(sanitize_value(exc))})
+        public_agents = []
+        for item in data.get("agents", []):
+            public_agents.append({
+                key: item.get(key) for key in (
+                    "agent_id", "team_id", "status", "phase", "title", "provider", "model", "reasoning",
+                    "access_mode", "started_at", "ended_at", "duration_ms", "first_event_latency_ms",
+                    "idle_seconds", "step_count", "tool_call_count", "last_tool", "last_tool_duration_ms",
+                    "retry_count", "output_tokens", "result_preview",
+                )
+            })
+        return JSONResponse({"ok": True, "count": len(public_agents), "agents": public_agents})
+
+    async def stream(request: Request) -> Response:
+        denied = _local_only(request)
+        if denied:
+            return denied
+        queue = telemetry.subscribe()
+
+        async def generator():
+            try:
+                hello = {"kind": "connected", "active": telemetry.active_calls()}
+                yield "event: telemetry\ndata: " + json.dumps(hello, ensure_ascii=False) + "\n\n"
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=15)
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                        continue
+                    yield "event: telemetry\ndata: " + json.dumps(event, ensure_ascii=False) + "\n\n"
+            finally:
+                telemetry.unsubscribe(queue)
+
+        return StreamingResponse(
+            generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-store",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
+
+    return [
+        Route("/dashboard", index, methods=["GET"]),
+        Route("/dashboard/assets/{name}", asset, methods=["GET"]),
+        Route("/dashboard/api/summary", summary, methods=["GET"]),
+        Route("/dashboard/api/events", events, methods=["GET"]),
+        Route("/dashboard/api/agents", agents, methods=["GET"]),
+        Route("/dashboard/events", stream, methods=["GET"]),
+    ]
+
+
+async def rest_telemetry_middleware(request: Request, call_next, telemetry: TelemetryManager):
+    """Capture legacy REST/OpenAPI usage without changing route handlers."""
+    raw_body = await request.body()
+    payload: Dict[str, Any] = {}
+    if raw_body:
+        try:
+            parsed = json.loads(raw_body)
+            payload = parsed if isinstance(parsed, dict) else {"body": parsed}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            payload = {"body": raw_body.decode("utf-8", errors="replace")}
+
+    rest_path = request.url.path.removeprefix("/api").rstrip("/") or "/"
+    path_tool = rest_path.rsplit("/", 1)[-1] or "rest"
+    tool_name = str(payload.get("tool") or REST_TOOL_ALIASES.get(rest_path) or path_tool)
+    arguments = dict(payload)
+    arguments["http_method"] = request.method
+    arguments["path"] = request.url.path
+    event_id = telemetry.start_call("rest", tool_name, arguments)
+
+    # Starlette's BaseHTTP middleware consumes request.body(); replay it once for FastAPI.
+    sent = False
+    async def receive():
+        nonlocal sent
+        if sent:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        sent = True
+        return {"type": "http.request", "body": raw_body, "more_body": False}
+    request._receive = receive  # type: ignore[attr-defined]
+
+    try:
+        response = await call_next(request)
+    except BaseException as exc:
+        telemetry.finish_call(event_id, error=exc)
+        raise
+    telemetry.finish_call(
+        event_id,
+        result={
+            "http_status": response.status_code,
+            "content_type": response.headers.get("content-type"),
+        },
+        error=None if response.status_code < 400 else f"HTTP {response.status_code}",
+    )
+    return response
