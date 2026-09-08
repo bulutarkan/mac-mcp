@@ -1,5 +1,9 @@
 # Mac MCP
 
+<p> align="center">
+  <img src="assets/screenshots/mac-mcp.png">
+</p>
+
 ## Screenshots
 
 <p align="center">
