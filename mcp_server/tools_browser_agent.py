@@ -17,6 +17,7 @@ from mcp.server.fastmcp.utilities.types import Image
 from .security import Settings
 from .tools_browser import (
     _norm_browser,
+    _resolve_tab_target,
     browser_execute_js,
     browser_press_key,
 )
@@ -315,6 +316,7 @@ def browser_observe(
     browser: str,
     window_index: int = 1,
     tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
     scope: str = "interactive",
     max_elements: int = _DEFAULT_OBSERVE_ELEMENTS,
     visual: str = "none",
@@ -322,6 +324,7 @@ def browser_observe(
 ) -> Any:
     """Compact DOM observation with stable element IDs and optional viewport/element image."""
     _norm_browser(browser)
+    window_index, tab_index = _resolve_tab_target(browser, tab_handle, window_index, tab_index)
     scope = str(scope or "interactive").lower().strip()
     if scope not in {"interactive", "visible", "content", "leaf"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "scope must be interactive, visible, content, or leaf.")
@@ -504,10 +507,12 @@ def browser_find(
     text: Optional[str] = None,
     window_index: int = 1,
     tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
     max_results: int = 5,
     actionable_only: bool = False,
 ) -> Dict[str, Any]:
     """Find a rendered DOM target with exact-first ranking and hard role/text constraints."""
+    window_index, tab_index = _resolve_tab_target(browser, tab_handle, window_index, tab_index)
     if not str(query or "").strip() and not text and not role:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "query, text, or role is required.")
     started = time.perf_counter()
@@ -861,7 +866,9 @@ def browser_act(
     observation_id: Optional[str] = None,
     window_index: int = 1,
     tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
     return_state: str = "compact",
+    allow_foreground: bool = False,
 ) -> Dict[str, Any]:
     """Perform batched browser actions; targets may use element_id or semantic query/text/role."""
     if not isinstance(actions, list) or not actions:
@@ -871,6 +878,8 @@ def browser_act(
     return_state = str(return_state or "compact").lower().strip()
     if return_state not in _RETURN_STATE_MODES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")
+
+    window_index, tab_index = _resolve_tab_target(browser, tab_handle, window_index, tab_index)
 
     started = time.perf_counter()
     results: List[Dict[str, Any]] = []
@@ -986,8 +995,17 @@ def browser_act(
                 key_result = browser_press_key(
                     settings, browser=browser, key=str(action.get("key") or ""),
                     modifiers=action.get("modifiers") or [], window_index=window_index,
+                    allow_foreground=allow_foreground,
                 )
-                results.append({"type": "key", "ok": bool(key_result.get("ok")), "key": action.get("key")})
+                results.append({
+                    "type": "key",
+                    "ok": bool(key_result.get("ok")),
+                    "key": action.get("key"),
+                    "foreground_required": bool(key_result.get("foreground_required")),
+                    "reason": key_result.get("reason"),
+                })
+                if not key_result.get("ok"):
+                    break
         else:
             pending.append(work_action)
     else:

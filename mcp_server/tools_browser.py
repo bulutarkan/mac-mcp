@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException, status
 
 from .security import Settings, truncate, validate_url as _http_validate_url
+from . import browser_tabs
 
 
 def validate_url(settings: Settings, url: str) -> None:
@@ -52,6 +53,21 @@ def _norm_browser(browser: str) -> str:
     if key in BROWSERS:
         return BROWSERS[key]
     raise HTTPException(status.HTTP_400_BAD_REQUEST, "browser must be 'Safari' or 'Google Chrome'.")
+
+
+def _resolve_tab_target(
+    browser: str,
+    tab_handle: Optional[str],
+    window_index: int,
+    tab_index: Optional[int],
+) -> Tuple[int, Optional[int]]:
+    if not tab_handle:
+        return window_index, tab_index
+    try:
+        wi, ti, _ = browser_tabs.resolve_tab(browser, tab_handle)
+        return wi, ti
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 
 
 def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) -> None:
@@ -98,116 +114,97 @@ def browser_open_url(
     browser: str,
     url: str,
     new_tab: bool = True,
-    activate: bool = True,
+    background: bool = True,
+    activate: Optional[bool] = None,
 ) -> Dict[str, Any]:
     b = _norm_browser(browser)
     validate_url(settings, url)
 
+    if activate is not None:
+        background = not bool(activate)
+    activate_line = "" if background else "activate"
+
     if b == "Safari":
-        # Safari: make new document if no window exists
         script = f'''
         tell application "Safari"
-            activate
             if (count of windows) = 0 then
                 make new document
             end if
+            {activate_line}
             if {str(new_tab).lower()} then
                 tell window 1
                     set newTab to make new tab with properties {{URL:"{url}"}}
-                    set current tab to newTab
+                    set newIndex to index of newTab
+                    if {str(not background).lower()} then set current tab to newTab
                 end tell
+                return newIndex
             else
                 set URL of current tab of window 1 to "{url}"
+                return index of current tab of window 1
             end if
         end tell
         '''
-        _run_osascript(script, timeout_s=30)
-        return {"ok": True, "browser": b, "url": url}
+    else:
+        script = f'''
+        tell application "Google Chrome"
+            if (count of windows) = 0 then
+                make new window
+            end if
+            {activate_line}
+            if {str(new_tab).lower()} then
+                tell window 1
+                    set newTab to make new tab with properties {{URL:"{url}"}}
+                    set newIndex to count of tabs
+                    if {str(not background).lower()} then set active tab index to newIndex
+                end tell
+                return newIndex
+            else
+                set URL of active tab of window 1 to "{url}"
+                return active tab index of window 1
+            end if
+        end tell
+        '''
 
-    # Chrome
-    script = f'''
-    tell application "Google Chrome"
-        activate
-        if (count of windows) = 0 then
-            make new window
-        end if
-        if {str(new_tab).lower()} then
-            tell window 1
-                set newTab to make new tab with properties {{URL:"{url}"}}
-                set active tab index to (index of newTab)
-            end tell
-        else
-            set URL of active tab of window 1 to "{url}"
-        end if
-    end tell
-    '''
-    _run_osascript(script, timeout_s=30)
-    return {"ok": True, "browser": b, "url": url}
+    raw = _run_osascript(script, timeout_s=30)
+    try:
+        tab_index = int(str(raw).strip())
+    except Exception:
+        tab_index = 1
+    created = browser_tabs.find_created(b, 1, tab_index)
+    return {
+        "ok": True,
+        "browser": b,
+        "url": url,
+        "background": bool(background),
+        "window_index": 1,
+        "tab_index": tab_index,
+        "tab_handle": created.get("tab_handle") if created else None,
+        "foreground_forced": False if background else True,
+    }
 
 
 def browser_list_tabs(settings: Settings, browser: str) -> Dict[str, Any]:
     b = _norm_browser(browser)
-
-    if b == "Safari":
-        script = r'''
-        set out to ""
-        tell application "Safari"
-            set wCount to count of windows
-            repeat with wi from 1 to wCount
-                tell window wi
-                    set tCount to count of tabs
-                    set cur to index of current tab
-                    repeat with ti from 1 to tCount
-                        set t to tab ti
-                        set isActive to (ti = cur)
-                        set out to out & wi & "\t" & ti & "\t" & isActive & "\t" & (name of t) & "\t" & (URL of t) & "\n"
-                    end repeat
-                end tell
-            end repeat
-        end tell
-        return out
-        '''
-        raw = _run_osascript(script, timeout_s=30)
-
-    else:
-        script = r'''
-        set out to ""
-        tell application "Google Chrome"
-            set wCount to count of windows
-            repeat with wi from 1 to wCount
-                tell window wi
-                    set cur to active tab index
-                    set tCount to count of tabs
-                    repeat with ti from 1 to tCount
-                        set t to tab ti
-                        set isActive to (ti = cur)
-                        set out to out & wi & "\t" & ti & "\t" & isActive & "\t" & (title of t) & "\t" & (URL of t) & "\n"
-                    end repeat
-                end tell
-            end repeat
-        end tell
-        return out
-        '''
-        raw = _run_osascript(script, timeout_s=30)
-
-    tabs: List[Dict[str, Any]] = []
-    for line in raw.splitlines():
-        parts = line.split("\t")
-        if len(parts) < 5:
-            continue
-        wi, ti, active, title, url = parts[0], parts[1], parts[2], parts[3], parts[4]
-        tabs.append({
-            "window_index": int(wi),
-            "tab_index": int(ti),
-            "active": active.strip().lower() == "true",
-            "title": title,
-            "url": url,
-        })
+    try:
+        tabs = browser_tabs.list_tabs(b)
+    except Exception as exc:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"Could not enumerate browser tabs: {exc}",
+        ) from exc
     return {"ok": True, "browser": b, "tabs": tabs}
 
 
-def browser_activate_tab(settings: Settings, browser: str, window_index: int = 1, tab_index: int = 1) -> Dict[str, Any]:
+def browser_activate_tab(
+    settings: Settings,
+    browser: str,
+    window_index: int = 1,
+    tab_index: int = 1,
+    tab_handle: Optional[str] = None,
+) -> Dict[str, Any]:
     b = _norm_browser(browser)
+    window_index, resolved_tab = _resolve_tab_target(b, tab_handle, window_index, tab_index)
+    tab_index = int(resolved_tab or tab_index)
     if window_index < 1 or tab_index < 1:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "window_index and tab_index must be >= 1")
 
@@ -230,11 +227,26 @@ def browser_activate_tab(settings: Settings, browser: str, window_index: int = 1
         end tell
         '''
     _run_osascript(script, timeout_s=30)
-    return {"ok": True, "browser": b, "window_index": window_index, "tab_index": tab_index}
+    return {
+        "ok": True,
+        "browser": b,
+        "window_index": window_index,
+        "tab_index": tab_index,
+        "tab_handle": tab_handle,
+        "foreground_required": True,
+    }
 
 
-def browser_close_tab(settings: Settings, browser: str, window_index: int = 1, tab_index: int = 1) -> Dict[str, Any]:
+def browser_close_tab(
+    settings: Settings,
+    browser: str,
+    window_index: int = 1,
+    tab_index: int = 1,
+    tab_handle: Optional[str] = None,
+) -> Dict[str, Any]:
     b = _norm_browser(browser)
+    window_index, resolved_tab = _resolve_tab_target(b, tab_handle, window_index, tab_index)
+    tab_index = int(resolved_tab or tab_index)
     if window_index < 1 or tab_index < 1:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "window_index and tab_index must be >= 1")
 
@@ -255,7 +267,14 @@ def browser_close_tab(settings: Settings, browser: str, window_index: int = 1, t
         end tell
         '''
     _run_osascript(script, timeout_s=30)
-    return {"ok": True, "browser": b, "window_index": window_index, "tab_index": tab_index}
+    browser_tabs.forget(tab_handle)
+    return {
+        "ok": True,
+        "browser": b,
+        "window_index": window_index,
+        "tab_index": tab_index,
+        "tab_handle": tab_handle,
+    }
 
 
 def _js_escape(js: str) -> str:
@@ -269,8 +288,10 @@ def browser_execute_js(
     js: str,
     window_index: int = 1,
     tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     b = _norm_browser(browser)
+    window_index, tab_index = _resolve_tab_target(b, tab_handle, window_index, tab_index)
     js_escaped = _js_escape(js)
 
     if window_index < 1:
@@ -322,10 +343,18 @@ def browser_click_selector(
     css_selector: str,
     window_index: int = 1,
     tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     sel = json.dumps(css_selector)
     js = f"(function(){{var el=document.querySelector({sel}); if(!el) return 'NOT_FOUND'; el.click(); return 'OK';}})()"
-    return browser_execute_js(settings, browser, js, window_index=window_index, tab_index=tab_index)
+    return browser_execute_js(
+        settings,
+        browser,
+        js,
+        window_index=window_index,
+        tab_index=tab_index,
+        tab_handle=tab_handle,
+    )
 
 
 def browser_type_selector(
@@ -336,6 +365,7 @@ def browser_type_selector(
     clear: bool = True,
     window_index: int = 1,
     tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     sel = json.dumps(css_selector)
     txt = json.dumps(text)
@@ -351,7 +381,14 @@ def browser_type_selector(
         "return 'OK';"
         "})()"
     )
-    return browser_execute_js(settings, browser, js, window_index=window_index, tab_index=tab_index)
+    return browser_execute_js(
+        settings,
+        browser,
+        js,
+        window_index=window_index,
+        tab_index=tab_index,
+        tab_handle=tab_handle,
+    )
 
 
 def browser_wait_for_selector(
@@ -362,6 +399,7 @@ def browser_wait_for_selector(
     poll_ms: int = 250,
     window_index: int = 1,
     tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     if timeout_s < 1:
         timeout_s = 1
@@ -372,7 +410,14 @@ def browser_wait_for_selector(
     start = time.time()
     while True:
         js = f"(function(){{return !!document.querySelector({sel});}})()"
-        res = browser_execute_js(settings, browser, js, window_index=window_index, tab_index=tab_index)
+        res = browser_execute_js(
+            settings,
+            browser,
+            js,
+            window_index=window_index,
+            tab_index=tab_index,
+            tab_handle=tab_handle,
+        )
         ok = (str(res.get("result", "")).strip().lower() in {"true", "1", "ok"})
         if ok:
             return {"ok": True, "found": True, "elapsed_s": round(time.time() - start, 3)}
@@ -387,10 +432,18 @@ def browser_get_html(
     max_chars: Optional[int] = None,
     window_index: int = 1,
     tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     lim = settings.max_html_chars if max_chars is None else max(1, min(max_chars, 2_000_000))
     js = "document.documentElement.outerHTML"
-    res = browser_execute_js(settings, browser, js, window_index=window_index, tab_index=tab_index)
+    res = browser_execute_js(
+        settings,
+        browser,
+        js,
+        window_index=window_index,
+        tab_index=tab_index,
+        tab_handle=tab_handle,
+    )
     html = res.get("result", "")
     html, truncated = truncate(html, lim)
     return {"ok": True, "html": html, "truncated": truncated}
@@ -456,14 +509,10 @@ def browser_screenshot(
     # Get window bounds with AppleScript
     if b == "Safari":
         bounds_script = f'tell application "Safari" to return bounds of window {window_index}'
-        activate_script = f'tell application "Safari" to activate'
     else:
         bounds_script = f'tell application "Google Chrome" to return bounds of window {window_index}'
-        activate_script = f'tell application "Google Chrome" to activate'
 
     bounds_raw = _run_osascript(bounds_script)
-    _run_osascript(activate_script)
-    time.sleep(0.25)
 
     # bounds_raw: "x, y, right, bottom"
     try:
@@ -482,7 +531,16 @@ def browser_screenshot(
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
                             f"screencapture failed: {proc.stderr.strip()}")
 
-    result: Dict[str, Any] = {"ok": True, "path": path, "bounds": {"x": x, "y": y, "w": w, "h": h}}
+    result: Dict[str, Any] = {
+        "ok": True,
+        "path": path,
+        "bounds": {"x": x, "y": y, "w": w, "h": h},
+        "foreground_forced": False,
+        "warning": (
+            "Native region capture no longer raises the browser. If it is obscured, "
+            "prefer DOM observation or a protocol-level screenshot for reliable pixels."
+        ),
+    }
     if return_base64:
         try:
             with open(path, "rb") as f:
@@ -510,6 +568,7 @@ def browser_scroll(
     selector: Optional[str] = None,
     window_index: int = 1,
     tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Scroll the page. If selector is provided, scroll that element; otherwise scroll by dx/dy."""
     if selector:
@@ -525,7 +584,14 @@ def browser_scroll(
     else:
         js = f"(function(){{window.scrollBy({dx},{dy});return 'OK';}})()"
 
-    return browser_execute_js(settings, browser, js, window_index=window_index, tab_index=tab_index)
+    return browser_execute_js(
+        settings,
+        browser,
+        js,
+        window_index=window_index,
+        tab_index=tab_index,
+        tab_handle=tab_handle,
+    )
 
 
 # macOS key code table
@@ -558,10 +624,20 @@ def browser_press_key(
     key: str,
     modifiers: Optional[List[str]] = None,
     window_index: int = 1,
+    allow_foreground: bool = False,
 ) -> Dict[str, Any]:
     """Send a keyboard key. Examples: 'return', 'escape', 'a', 'tab'.
     modifiers is an optional list such as ['cmd'] or ['shift']."""
     b = _norm_browser(browser)
+    if not allow_foreground:
+        return {
+            "ok": False,
+            "foreground_required": True,
+            "reason": (
+                "Native keyboard events require focusing the browser. "
+                "Retry with allow_foreground=true only when focus stealing is acceptable."
+            ),
+        }
     process_name = "Safari" if b == "Safari" else "Google Chrome"
 
     mod_strs = []
@@ -703,13 +779,21 @@ def browser_get_snapshot(
     browser: str,
     window_index: int = 1,
     tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
     max_depth: int = 6,
     max_children: int = 25,
 ) -> Dict[str, Any]:
     """Return the visible DOM tree. Each element includes coordinates (rect).
     You can use these coordinates with browser_coordinate_click."""
     js = _SNAPSHOT_JS.replace("MAX_DEPTH", str(max_depth)).replace("MAX_CHILDREN", str(max_children))
-    raw = browser_execute_js(settings, browser, js, window_index=window_index, tab_index=tab_index)
+    raw = browser_execute_js(
+        settings,
+        browser,
+        js,
+        window_index=window_index,
+        tab_index=tab_index,
+        tab_handle=tab_handle,
+    )
     result_str = raw.get("result", "")
     if not result_str:
         return {"ok": False, "error": "Empty snapshot"}

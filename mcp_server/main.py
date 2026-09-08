@@ -543,28 +543,37 @@ def create_app():
 
     # ── Browser tools ────────────────────────────────────────────────────────
     @mcp.tool(name="browser_open_url",
-              description="Open a URL in Safari or Google Chrome. browser: 'Safari' or 'Google Chrome'.")
-    def _browser_open_url(browser: str, url: str, new_tab: bool = True) -> Dict[str, Any]:
+              description=(
+                  "Open a URL in Safari or Google Chrome. New tabs open in the background by default and return "
+                  "a stable tab_handle; set background=false only when foreground activation is explicitly wanted."
+              ))
+    def _browser_open_url(browser: str, url: str, new_tab: bool = True,
+                          background: bool = True) -> Dict[str, Any]:
         return _log(audit_logger, "browser_open_url",
-                    lambda: browser_open_url(settings, browser=browser, url=url, new_tab=new_tab))
+                    lambda: browser_open_url(settings, browser=browser, url=url,
+                                             new_tab=new_tab, background=background))
 
     @mcp.tool(name="browser_list_tabs",
-              description="List all open tabs in Safari or Google Chrome.")
+              description="List all open tabs with stable tab_handle values that survive tab index shifts.")
     def _browser_list_tabs(browser: str) -> Dict[str, Any]:
         return _log(audit_logger, "browser_list_tabs",
                     lambda: browser_list_tabs(settings, browser=browser))
 
     @mcp.tool(name="browser_activate_tab",
               description="Switch to a specific tab by window_index and tab_index.")
-    def _browser_activate_tab(browser: str, window_index: int = 1, tab_index: int = 1) -> Dict[str, Any]:
+    def _browser_activate_tab(browser: str, window_index: int = 1, tab_index: int = 1,
+                              tab_handle: Optional[str] = None) -> Dict[str, Any]:
         return _log(audit_logger, "browser_activate_tab",
-                    lambda: browser_activate_tab(settings, browser=browser, window_index=window_index, tab_index=tab_index))
+                    lambda: browser_activate_tab(settings, browser=browser, window_index=window_index,
+                                                tab_index=tab_index, tab_handle=tab_handle))
 
     @mcp.tool(name="browser_close_tab",
               description="Close a tab by window_index and tab_index.")
-    def _browser_close_tab(browser: str, window_index: int = 1, tab_index: int = 1) -> Dict[str, Any]:
+    def _browser_close_tab(browser: str, window_index: int = 1, tab_index: int = 1,
+                           tab_handle: Optional[str] = None) -> Dict[str, Any]:
         return _log(audit_logger, "browser_close_tab",
-                    lambda: browser_close_tab(settings, browser=browser, window_index=window_index, tab_index=tab_index))
+                    lambda: browser_close_tab(settings, browser=browser, window_index=window_index,
+                                             tab_index=tab_index, tab_handle=tab_handle))
 
     @mcp.tool(
         name="browser_observe",
@@ -574,12 +583,14 @@ def create_app():
         ),
     )
     async def _browser_observe(browser: str, window_index: int = 1, tab_index: Optional[int] = None,
+                               tab_handle: Optional[str] = None,
                                scope: str = "interactive", max_elements: int = 120,
                                visual: str = "none", element_id: Optional[str] = None) -> Any:
         return await asyncio.to_thread(
             _log, audit_logger, "browser_observe",
             lambda: browser_observe(settings, browser=browser, window_index=window_index,
-                                    tab_index=tab_index, scope=scope, max_elements=max_elements,
+                                    tab_index=tab_index, tab_handle=tab_handle,
+                                    scope=scope, max_elements=max_elements,
                                     visual=visual, element_id=element_id),
         )
 
@@ -592,12 +603,14 @@ def create_app():
     )
     async def _browser_find(browser: str, query: str, role: Optional[str] = None,
                             text: Optional[str] = None, window_index: int = 1,
-                            tab_index: Optional[int] = None, max_results: int = 5,
+                            tab_index: Optional[int] = None, tab_handle: Optional[str] = None,
+                            max_results: int = 5,
                             actionable_only: bool = False) -> Dict[str, Any]:
         return await asyncio.to_thread(
             _log, audit_logger, "browser_find",
             lambda: browser_find(settings, browser=browser, query=query, role=role, text=text,
-                                  window_index=window_index, tab_index=tab_index, max_results=max_results,
+                                  window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
+                                  max_results=max_results,
                                   actionable_only=actionable_only),
         )
 
@@ -611,53 +624,65 @@ def create_app():
     )
     async def _browser_act(browser: str, actions: List[Dict[str, Any]],
                            observation_id: Optional[str] = None, window_index: int = 1,
-                           tab_index: Optional[int] = None, return_state: str = "compact") -> Dict[str, Any]:
+                           tab_index: Optional[int] = None, tab_handle: Optional[str] = None,
+                           return_state: str = "compact", allow_foreground: bool = False) -> Dict[str, Any]:
         return await asyncio.to_thread(
             _log, audit_logger, "browser_act",
             lambda: browser_act(settings, browser=browser, actions=actions,
                                  observation_id=observation_id, window_index=window_index,
-                                 tab_index=tab_index, return_state=return_state),
+                                 tab_index=tab_index, tab_handle=tab_handle,
+                                 return_state=return_state, allow_foreground=allow_foreground),
         )
 
     @mcp.tool(name="browser_execute_js",
               description="Execute JavaScript in a browser tab and return the result.")
     def _browser_execute_js(browser: str, js: str, window_index: int = 1,
-                             tab_index: Optional[int] = None) -> Dict[str, Any]:
+                             tab_index: Optional[int] = None,
+                             tab_handle: Optional[str] = None) -> Dict[str, Any]:
         return _log(audit_logger, "browser_execute_js",
                     lambda: browser_execute_js(settings, browser=browser, js=js,
-                                               window_index=window_index, tab_index=tab_index))
+                                               window_index=window_index, tab_index=tab_index,
+                                               tab_handle=tab_handle))
 
     @mcp.tool(name="browser_click_selector",
               description="Click an element by CSS selector in a browser tab.")
     def _browser_click_selector(browser: str, css_selector: str, window_index: int = 1,
-                                 tab_index: Optional[int] = None) -> Dict[str, Any]:
+                                 tab_index: Optional[int] = None,
+                                 tab_handle: Optional[str] = None) -> Dict[str, Any]:
         return _log(audit_logger, "browser_click_selector",
                     lambda: browser_click_selector(settings, browser=browser, css_selector=css_selector,
-                                                   window_index=window_index, tab_index=tab_index))
+                                                   window_index=window_index, tab_index=tab_index,
+                                                   tab_handle=tab_handle))
 
     @mcp.tool(name="browser_type_selector",
               description="Type text into an element by CSS selector. clear=true clears first.")
     def _browser_type_selector(browser: str, css_selector: str, text: str, clear: bool = True,
-                                window_index: int = 1, tab_index: Optional[int] = None) -> Dict[str, Any]:
+                                window_index: int = 1, tab_index: Optional[int] = None,
+                                tab_handle: Optional[str] = None) -> Dict[str, Any]:
         return _log(audit_logger, "browser_type_selector",
                     lambda: browser_type_selector(settings, browser=browser, css_selector=css_selector,
-                                                  text=text, clear=clear, window_index=window_index, tab_index=tab_index))
+                                                  text=text, clear=clear, window_index=window_index,
+                                                  tab_index=tab_index, tab_handle=tab_handle))
 
     @mcp.tool(name="browser_wait_for_selector",
               description="Wait until a CSS selector appears in the page. Returns found=true/false.")
     def _browser_wait_for_selector(browser: str, css_selector: str, timeout_s: int = 20,
-                                    window_index: int = 1, tab_index: Optional[int] = None) -> Dict[str, Any]:
+                                    window_index: int = 1, tab_index: Optional[int] = None,
+                                    tab_handle: Optional[str] = None) -> Dict[str, Any]:
         return _log(audit_logger, "browser_wait_for_selector",
                     lambda: browser_wait_for_selector(settings, browser=browser, css_selector=css_selector,
-                                                      timeout_s=timeout_s, window_index=window_index, tab_index=tab_index))
+                                                      timeout_s=timeout_s, window_index=window_index,
+                                                      tab_index=tab_index, tab_handle=tab_handle))
 
     @mcp.tool(name="browser_get_html",
               description="Get the full HTML of the current page in a browser tab.")
     def _browser_get_html(browser: str, max_chars: Optional[int] = None,
-                          window_index: int = 1, tab_index: Optional[int] = None) -> Dict[str, Any]:
+                          window_index: int = 1, tab_index: Optional[int] = None,
+                          tab_handle: Optional[str] = None) -> Dict[str, Any]:
         return _log(audit_logger, "browser_get_html",
                     lambda: browser_get_html(settings, browser=browser, max_chars=max_chars,
-                                             window_index=window_index, tab_index=tab_index))
+                                             window_index=window_index, tab_index=tab_index,
+                                             tab_handle=tab_handle))
 
     @mcp.tool(name="browser_wait_for_download",
               description="Wait for a new file to appear in ~/Downloads. filename_contains filters by name.")
@@ -685,10 +710,12 @@ def create_app():
               ))
     def _browser_scroll(browser: str, dx: int = 0, dy: int = 300,
                         selector: Optional[str] = None, window_index: int = 1,
-                        tab_index: Optional[int] = None) -> Dict[str, Any]:
+                        tab_index: Optional[int] = None,
+                        tab_handle: Optional[str] = None) -> Dict[str, Any]:
         return _log(audit_logger, "browser_scroll",
                     lambda: browser_scroll(settings, browser=browser, dx=dx, dy=dy,
-                                           selector=selector, window_index=window_index, tab_index=tab_index))
+                                           selector=selector, window_index=window_index,
+                                           tab_index=tab_index, tab_handle=tab_handle))
 
     @mcp.tool(name="browser_press_key",
               description=(
@@ -699,10 +726,12 @@ def create_app():
                   "Example: key='a', modifiers=['cmd'] sends Cmd+A."
               ))
     def _browser_press_key(browser: str, key: str, modifiers: Optional[List[str]] = None,
-                            window_index: int = 1) -> Dict[str, Any]:
+                            window_index: int = 1,
+                            allow_foreground: bool = False) -> Dict[str, Any]:
         return _log(audit_logger, "browser_press_key",
                     lambda: browser_press_key(settings, browser=browser, key=key,
-                                              modifiers=modifiers, window_index=window_index))
+                                              modifiers=modifiers, window_index=window_index,
+                                              allow_foreground=allow_foreground))
 
     @mcp.tool(name="browser_coordinate_click",
               description=(
@@ -726,10 +755,12 @@ def create_app():
               ))
     def _browser_get_snapshot(browser: str, window_index: int = 1,
                                tab_index: Optional[int] = None,
+                               tab_handle: Optional[str] = None,
                                max_depth: int = 6, max_children: int = 25) -> Dict[str, Any]:
         return _log(audit_logger, "browser_get_snapshot",
                     lambda: browser_get_snapshot(settings, browser=browser, window_index=window_index,
-                                                 tab_index=tab_index, max_depth=max_depth,
+                                                 tab_index=tab_index, tab_handle=tab_handle,
+                                                 max_depth=max_depth,
                                                  max_children=max_children))
 
     @mcp.tool(

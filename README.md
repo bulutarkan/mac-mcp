@@ -10,11 +10,20 @@
 
 Mac MCP is a local macOS control server for AI agents. It exposes the same Mac through a native MCP endpoint and a REST/OpenAPI surface for clients such as Custom GPT Actions.
 
-Version 1.6.3 includes 80 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, persistent AI memory, reusable Agent Skills, self-updates, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
+Version 1.6.4 includes 80 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, background-first browser control with stable tab handles, persistent AI memory, reusable Agent Skills, self-updates, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
 
 > **Security:** Mac MCP can execute shell commands, read and modify files, and control your desktop. Keep authentication enabled whenever the server is reachable outside localhost. Use a strong `MCP_API_KEY`, keep `MCP_ALLOW_NO_AUTH=false`, and only expose the server to clients you trust.
 
-## What's new in v1.6.3
+## What's new in v1.6.4
+
+- Browser tabs now have stable `tab_handle` identifiers. Chrome handles are backed by Chrome's native tab ID; Safari uses a Mac MCP registry keyed primarily by the tab's WebContent PID, so user-created/reordered tabs no longer invalidate agent targets.
+- `browser_open_url` opens new tabs in the background by default and returns the new `tab_handle`; it no longer activates Safari/Chrome or switches the current tab unless `background=false` is explicitly requested.
+- `browser_observe`, `browser_find`, `browser_act`, `browser_execute_js`, selector/type/wait/get-html/scroll/snapshot tools accept `tab_handle` while preserving `window_index` / `tab_index` for backwards compatibility.
+- DOM-based click/type/select/scroll/wait flows remain background-safe. Native keyboard actions now return `foreground_required` unless `allow_foreground=true`; coordinate clicks and explicit tab activation remain foreground-only fallbacks.
+- Native browser screenshots no longer activate the browser first. They warn that an obscured window may not yield reliable pixels and recommend DOM/protocol-level observation when possible.
+- Live Safari validation kept the user's active fourth tab unchanged while two background test tabs were opened and manipulated. After closing the first test tab, the second shifted from index 6 to 5 while its handle stayed stable and its DOM state remained intact.
+
+Previous v1.6.3 additions (Agent Skills and shared embeddings) remain unchanged.
 
 - Added five MCP-native Agent Skills tools: `skill_list`, `skill_search`, `skill_get`, `skill_register`, and `skill_update_index`.
 - Added open `SKILL.md` support with YAML `name`/`description`, managed skills under `~/.mac-mcp/skills`, optional `scripts/`, `references/`, `assets/`, external skill registration, and progressive disclosure.
@@ -336,7 +345,18 @@ browser_find    -> exact-first semantic ranking with hard role/text constraints
 browser_act     -> batch click/type/async-select/key/scroll/wait; target by element_id or query/text/role
 ```
 
-`browser_act` keeps parent round-trips low, supports bounded internal waits, returns a compact post-action state by default, and detects stale observations/elements. Existing browser tools remain unchanged for backwards compatibility and fallback. The recommended execution order is DOM -> visual DOM -> Accessibility -> coordinate fallback.
+For multi-tab work, call `browser_list_tabs` or use the `tab_handle` returned by `browser_open_url`, then keep targeting that handle instead of remembering mutable tab indexes. This is especially important when the user is simultaneously opening, closing, or reordering their own tabs.
+
+New tabs are background-first by default. A typical parallel workflow is:
+
+```text
+browser_open_url(..., background=true) -> tab_handle
+browser_find(..., tab_handle=...)
+browser_act(..., tab_handle=...)
+browser_execute_js(..., tab_handle=...)
+```
+
+`browser_act` keeps parent round-trips low, supports bounded internal waits, returns a compact post-action state by default, and detects stale observations/elements. DOM-based click/type/select/scroll/wait actions do not need to focus the browser. Native keyboard actions refuse to steal focus unless `allow_foreground=true`; coordinate clicks and explicit tab activation remain foreground fallbacks. Existing `window_index` / `tab_index` arguments remain supported for backwards compatibility.
 
 ## Agent delegation
 
