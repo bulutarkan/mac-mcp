@@ -18,6 +18,8 @@ from .security import Settings
 from .tools_browser import (
     _norm_browser,
     _resolve_tab_target,
+    _run_osascript,
+    _js_escape,
     browser_execute_js,
     browser_press_key,
 )
@@ -25,8 +27,15 @@ from .tools_browser import (
 _MAX_OBSERVE_ELEMENTS = 240
 _DEFAULT_OBSERVE_ELEMENTS = 120
 _MAX_ACTIONS = 20
-_VISUAL_MODES = {"none", "viewport", "element"}
+_VISUAL_MODES = {"none", "viewport", "element", "full_page"}
 _RETURN_STATE_MODES = {"none", "compact", "full"}
+_DOM_RASTERIZER_PATH = Path(__file__).resolve().parent / "vendor" / "html2canvas.min.js"
+_DOM_CAPTURE_STATE = "__macMcpVisualCapture"
+_DOM_RASTERIZER_GLOBAL = "__macMcpHtml2Canvas"
+_DOM_CAPTURE_VIEWPORT_TIMEOUT_S = 18.0
+_DOM_CAPTURE_FULL_PAGE_TIMEOUT_S = 30.0
+_DOM_CAPTURE_MAX_CSS_HEIGHT = 20_000
+_DOM_CAPTURE_MAX_DATA_URL_CHARS = 1_800_000
 _GENERIC_QUERY_WORDS = {
     "button", "link", "input", "field", "select", "dropdown", "combobox", "option",
     "filter", "control", "element", "box", "menu", "tab", "checkbox", "radio",
@@ -60,6 +69,285 @@ def _run_json_js(
         settings, browser=browser, js=js, window_index=window_index, tab_index=tab_index,
     )
     return _decode_js_payload(raw)
+
+
+def _execute_js_unbounded(
+    browser: str,
+    js: str,
+    window_index: int = 1,
+    tab_index: Optional[int] = None,
+    timeout_s: int = 30,
+) -> str:
+    """Execute JS without the normal model-facing result truncation.
+
+    This is intentionally private to the browser visual pipeline so a compressed image
+    data URL can cross the local AppleEvent boundary once, then be decoded to MCP image
+    content. The data URL is never returned in the text payload.
+    """
+    b = _norm_browser(browser)
+    js_escaped = _js_escape(js)
+    if b == "Safari":
+        target = (
+            f"current tab of window {window_index}"
+            if tab_index is None
+            else f"tab {int(tab_index)} of window {window_index}"
+        )
+        script = f'''tell application "Safari"
+    set r to do JavaScript "{js_escaped}" in {target}
+    return r
+end tell'''
+    else:
+        target = (
+            f"active tab of window {window_index}"
+            if tab_index is None
+            else f"tab {int(tab_index)} of window {window_index}"
+        )
+        script = f'''tell application "Google Chrome"
+    set r to execute javascript "{js_escaped}" in {target}
+    return r
+end tell'''
+    return _run_osascript(script, timeout_s=max(1, min(int(timeout_s), 60)))
+
+
+def _ensure_dom_rasterizer(
+    browser: str,
+    window_index: int,
+    tab_index: Optional[int],
+) -> None:
+    marker = _execute_js_unbounded(
+        browser,
+        f"typeof window.{_DOM_RASTERIZER_GLOBAL}",
+        window_index=window_index,
+        tab_index=tab_index,
+        timeout_s=10,
+    )
+    if marker.strip() == "function":
+        return
+    if not _DOM_RASTERIZER_PATH.exists():
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"DOM screenshot rasterizer is missing: {_DOM_RASTERIZER_PATH}",
+        )
+
+    b = _norm_browser(browser)
+    path_literal = json.dumps(str(_DOM_RASTERIZER_PATH))
+    pre = _js_escape(
+        "window.__macMcpHadHtml2Canvas=Object.prototype.hasOwnProperty.call(window,'html2canvas');"
+        "window.__macMcpPreviousHtml2Canvas=window.html2canvas;"
+    )
+    post = _js_escape(
+        f"window.{_DOM_RASTERIZER_GLOBAL}=window.html2canvas;"
+        "if(window.__macMcpHadHtml2Canvas){window.html2canvas=window.__macMcpPreviousHtml2Canvas;}"
+        "else{try{delete window.html2canvas;}catch(e){window.html2canvas=undefined;}}"
+        "delete window.__macMcpHadHtml2Canvas;delete window.__macMcpPreviousHtml2Canvas;"
+        f"typeof window.{_DOM_RASTERIZER_GLOBAL};"
+    )
+    if b == "Safari":
+        target = (
+            f"current tab of window {window_index}"
+            if tab_index is None
+            else f"tab {int(tab_index)} of window {window_index}"
+        )
+        script = f'''set js to read POSIX file {path_literal} as «class utf8»
+tell application "Safari"
+    do JavaScript "{pre}" in {target}
+    do JavaScript js in {target}
+    set r to do JavaScript "{post}" in {target}
+    return r
+end tell'''
+    else:
+        target = (
+            f"active tab of window {window_index}"
+            if tab_index is None
+            else f"tab {int(tab_index)} of window {window_index}"
+        )
+        script = f'''set js to read POSIX file {path_literal} as «class utf8»
+tell application "Google Chrome"
+    execute javascript "{pre}" in {target}
+    execute javascript js in {target}
+    set r to execute javascript "{post}" in {target}
+    return r
+end tell'''
+    loaded = _run_osascript(script, timeout_s=30)
+    if loaded.strip() != "function":
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Could not initialize the DOM screenshot rasterizer in the target tab.",
+        )
+
+
+def _dom_capture_start_js(mode: str, element_id: Optional[str]) -> str:
+    mode_js = json.dumps(mode)
+    element_js = json.dumps(element_id)
+    return f'''(function(){{
+var h2c=window.{_DOM_RASTERIZER_GLOBAL};
+var stateKey={json.dumps(_DOM_CAPTURE_STATE)};
+if(typeof h2c!=="function") return JSON.stringify({{ok:false,error:"rasterizer_unavailable"}});
+var mode={mode_js}, elementId={element_js};
+var agent=window.__macMcpBrowserAgent;
+var target=document.documentElement;
+if(mode==="element"){{
+  target=agent&&agent.elements&&elementId?agent.elements[elementId]:null;
+  if(!target||!target.isConnected) return JSON.stringify({{ok:false,error:"element_not_available",element_id:elementId}});
+}}
+var de=document.documentElement, body=document.body||de;
+var fullW=Math.max(de.scrollWidth,de.clientWidth,body.scrollWidth,body.clientWidth,innerWidth);
+var fullH=Math.max(de.scrollHeight,de.clientHeight,body.scrollHeight,body.clientHeight,innerHeight);
+var rect=mode==="element"?target.getBoundingClientRect():null;
+var sourceW=mode==="element"?Math.max(1,Math.ceil(rect.width)):(mode==="viewport"?Math.max(1,innerWidth):Math.max(1,fullW));
+var actualH=mode==="element"?Math.max(1,Math.ceil(rect.height)):(mode==="viewport"?Math.max(1,innerHeight):Math.max(1,fullH));
+var sourceH=mode==="full_page"?Math.min(actualH,{_DOM_CAPTURE_MAX_CSS_HEIGHT}):actualH;
+var truncated=mode==="full_page"&&actualH>sourceH;
+var pixelBudget=7500000;
+var maxOutputWidth=mode==="viewport"?1100:1280;
+var scale=Math.min(1,maxOutputWidth/sourceW,Math.sqrt(pixelBudget/Math.max(1,sourceW*sourceH)));
+scale=Math.max(0.20,scale);
+var bg=getComputedStyle(de).backgroundColor;
+if(!bg||bg==="rgba(0, 0, 0, 0)"||bg==="transparent") bg=getComputedStyle(body).backgroundColor;
+if(!bg||bg==="rgba(0, 0, 0, 0)"||bg==="transparent") bg="#ffffff";
+var started=Date.now();
+window[stateKey]={{status:"running",meta:{{mode:mode,capture_method:"dom_rasterizer",background_safe:true,tab_activated:false,disk_write:false,source_width:sourceW,source_height:sourceH,actual_height:actualH,truncated:truncated,scale:scale}}}};
+var opts={{
+  logging:false,useCORS:true,allowTaint:false,imageTimeout:mode==="full_page"?1500:700,removeContainer:true,
+  foreignObjectRendering:false,backgroundColor:bg,scale:scale,
+  windowWidth:innerWidth,windowHeight:innerHeight,
+  scrollX:mode==="full_page"?0:window.scrollX,
+  scrollY:mode==="full_page"?0:window.scrollY,
+  ignoreElements:function(el){{
+    if(mode!=="viewport") return false;
+    try{{
+      var r=el.getBoundingClientRect();
+      return r.bottom < -120 || r.top > innerHeight+120 || r.right < -120 || r.left > innerWidth+120;
+    }}catch(e){{return false;}}
+  }},
+  onclone:function(doc){{
+    try{{
+      var st=doc.createElement("style");
+      st.textContent="*,*::before,*::after{{animation:none!important;transition:none!important;caret-color:transparent!important;}}";
+      (doc.head||doc.documentElement).appendChild(st);
+    }}catch(e){{}}
+  }}
+}};
+if(mode==="viewport"){{opts.x=window.scrollX;opts.y=window.scrollY;opts.width=sourceW;opts.height=sourceH;}}
+if(mode==="full_page"){{opts.x=0;opts.y=0;opts.width=sourceW;opts.height=sourceH;}}
+h2c(target,opts).then(function(canvas){{
+  try{{
+    var output=canvas;
+    var data=output.toDataURL("image/jpeg",0.58);
+    var limit={_DOM_CAPTURE_MAX_DATA_URL_CHARS};
+    if(data.length>limit&&output.width>320&&output.height>240){{
+      var factor=Math.max(0.35,Math.min(0.92,Math.sqrt(limit/data.length)*0.90));
+      var resized=document.createElement("canvas");
+      resized.width=Math.max(1,Math.round(output.width*factor));
+      resized.height=Math.max(1,Math.round(output.height*factor));
+      var ctx=resized.getContext("2d",{{alpha:false}});
+      ctx.fillStyle=bg;ctx.fillRect(0,0,resized.width,resized.height);
+      ctx.drawImage(output,0,0,resized.width,resized.height);
+      output=resized;
+      data=output.toDataURL("image/jpeg",0.52);
+    }}
+    var meta=window[stateKey].meta;
+    meta.output_width=output.width;meta.output_height=output.height;meta.elapsed_ms=Date.now()-started;meta.data_url_chars=data.length;
+    window[stateKey]={{status:"done",meta:meta,data:data}};
+  }}catch(e){{window[stateKey]={{status:"error",error:String(e&&e.message||e)}};}}
+}}).catch(function(e){{window[stateKey]={{status:"error",error:String(e&&e.message||e)}};}});
+return JSON.stringify({{ok:true,status:"running",mode:mode,source_width:sourceW,source_height:sourceH,scale:scale,truncated:truncated}});
+}})()'''
+
+
+def _capture_dom_visual(
+    browser: str,
+    mode: str,
+    element_id: Optional[str],
+    window_index: int,
+    tab_index: Optional[int],
+) -> Tuple[Optional[bytes], Optional[str], Dict[str, Any]]:
+    meta: Dict[str, Any] = {
+        "mode": mode,
+        "capture_method": "dom_rasterizer",
+        "background_safe": True,
+        "tab_activated": False,
+        "disk_write": False,
+    }
+    try:
+        _ensure_dom_rasterizer(browser, window_index, tab_index)
+        started_raw = _execute_js_unbounded(
+            browser,
+            _dom_capture_start_js(mode, element_id),
+            window_index=window_index,
+            tab_index=tab_index,
+            timeout_s=15,
+        )
+        try:
+            started = json.loads(started_raw or "{}")
+        except json.JSONDecodeError:
+            started = {}
+        if started.get("ok") is False:
+            return None, str(started.get("error") or "Could not start DOM screenshot capture."), meta
+
+        timeout_s = (
+            _DOM_CAPTURE_FULL_PAGE_TIMEOUT_S
+            if mode == "full_page"
+            else _DOM_CAPTURE_VIEWPORT_TIMEOUT_S
+        )
+        deadline = time.monotonic() + timeout_s
+        status_js = (
+            f"(function(){{var s=window.{_DOM_CAPTURE_STATE};"
+            "return JSON.stringify(s?{status:s.status,error:s.error||'',meta:s.meta||{},data_length:s.data?s.data.length:0}:{status:'missing'});})()"
+        )
+        finished: Dict[str, Any] = {}
+        while time.monotonic() < deadline:
+            raw = _execute_js_unbounded(
+                browser, status_js, window_index=window_index, tab_index=tab_index, timeout_s=10
+            )
+            try:
+                finished = json.loads(raw or "{}")
+            except json.JSONDecodeError:
+                finished = {}
+            state = str(finished.get("status") or "")
+            if state == "done":
+                break
+            if state in {"error", "missing"}:
+                return None, str(finished.get("error") or f"DOM screenshot state became {state}."), meta
+            time.sleep(0.12)
+        else:
+            return None, f"DOM screenshot timed out after {timeout_s:.0f}s.", meta
+
+        if isinstance(finished.get("meta"), dict):
+            meta.update(finished["meta"])
+        data_url = _execute_js_unbounded(
+            browser,
+            f"(window.{_DOM_CAPTURE_STATE}&&window.{_DOM_CAPTURE_STATE}.data)||''",
+            window_index=window_index,
+            tab_index=tab_index,
+            timeout_s=30,
+        )
+        prefix = "data:image/jpeg;base64,"
+        if not data_url.startswith(prefix):
+            return None, "DOM screenshot did not return a JPEG data URL.", meta
+        try:
+            image_data = base64.b64decode(data_url[len(prefix):], validate=False)
+        except Exception as exc:
+            return None, f"Could not decode DOM screenshot: {exc}", meta
+        if not image_data:
+            return None, "DOM screenshot returned empty image data.", meta
+        meta["bytes"] = len(image_data)
+        return image_data, None, meta
+    except HTTPException as exc:
+        return None, str(exc.detail), meta
+    except Exception as exc:
+        return None, f"Could not capture DOM screenshot: {exc}", meta
+    finally:
+        try:
+            _execute_js_unbounded(
+                browser,
+                f"try{{if(window.{_DOM_CAPTURE_STATE}){{window.{_DOM_CAPTURE_STATE}.data=null;delete window.{_DOM_CAPTURE_STATE};}}}}catch(e){{}}'cleaned'",
+                window_index=window_index,
+                tab_index=tab_index,
+                timeout_s=10,
+            )
+        except Exception:
+            pass
 
 
 def _b64_return(expression: str) -> str:
@@ -305,10 +593,21 @@ def _capture_region(rect: Dict[str, Any], max_dimension: int = 1280) -> Tuple[Op
 
 
 def _format_observation(payload: Dict[str, Any], image_data: Optional[bytes]) -> Any:
-    text = json.dumps(payload, ensure_ascii=False, indent=2)
     if image_data:
+        visual = payload.get("visual") or {}
+        compact = {
+            "ok": bool(payload.get("ok")),
+            "observation_id": payload.get("observation_id"),
+            "visual": {
+                "mode": visual.get("mode"),
+                "w": visual.get("output_width"),
+                "h": visual.get("output_height"),
+                "truncated": visual.get("truncated"),
+            },
+        }
+        text = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
         return [text, Image(data=image_data, format="jpeg")]
-    return text
+    return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def browser_observe(
@@ -322,7 +621,7 @@ def browser_observe(
     visual: str = "none",
     element_id: Optional[str] = None,
 ) -> Any:
-    """Compact DOM observation with stable element IDs and optional viewport/element image."""
+    """Compact DOM observation with stable element IDs and optional background-safe page image."""
     _norm_browser(browser)
     window_index, tab_index = _resolve_tab_target(browser, tab_handle, window_index, tab_index)
     scope = str(scope or "interactive").lower().strip()
@@ -330,7 +629,7 @@ def browser_observe(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "scope must be interactive, visible, content, or leaf.")
     visual = str(visual or "none").lower().strip()
     if visual not in _VISUAL_MODES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "visual must be none, viewport, or element.")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "visual must be none, viewport, element, or full_page.")
     max_elements = max(1, min(int(max_elements), _MAX_OBSERVE_ELEMENTS))
     started = time.perf_counter()
     payload = _observe_payload(
@@ -340,36 +639,45 @@ def browser_observe(
 
     image_data: Optional[bytes] = None
     if visual != "none":
-        metrics = payload.get("window_metrics") or {}
-        ox = max(0, int(metrics.get("outerWidth") or 0) - int(metrics.get("innerWidth") or 0))
-        oy = max(0, int(metrics.get("outerHeight") or 0) - int(metrics.get("innerHeight") or 0))
-        viewport_rect = {
-            "x": int(metrics.get("screenX") or 0) + int(round(ox / 2)),
-            "y": int(metrics.get("screenY") or 0) + oy,
-            "w": int(metrics.get("innerWidth") or 1),
-            "h": int(metrics.get("innerHeight") or 1),
-        }
-        target_rect = viewport_rect
+        target_rect: Optional[Dict[str, Any]] = None
         if visual == "element":
             if not element_id:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "element_id is required when visual='element'.")
             match = next((e for e in payload.get("elements", []) if e.get("element_id") == element_id), None)
             if not match:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, f"element_id not found in this observation: {element_id}")
-            r = match.get("screen_rect") or {}
+            target_rect = match.get("viewport_rect") or None
+        elif visual == "viewport":
             target_rect = {
-                "x": max(viewport_rect["x"], int(r.get("x") or viewport_rect["x"])),
-                "y": max(viewport_rect["y"], int(r.get("y") or viewport_rect["y"])),
-                "w": min(int(r.get("w") or 1), viewport_rect["w"]),
-                "h": min(int(r.get("h") or 1), viewport_rect["h"]),
+                "x": 0,
+                "y": 0,
+                "w": int((payload.get("viewport") or {}).get("w") or 1),
+                "h": int((payload.get("viewport") or {}).get("h") or 1),
             }
-        image_data, image_error = _capture_region(target_rect)
+
+        image_data, image_error, capture_meta = _capture_dom_visual(
+            browser=browser,
+            mode=visual,
+            element_id=element_id,
+            window_index=window_index,
+            tab_index=tab_index,
+        )
         payload["visual"] = {
             "mode": visual,
             "ok": image_data is not None,
             "rect": target_rect,
             "mime_type": "image/jpeg" if image_data else None,
+            "capture_method": capture_meta.get("capture_method"),
+            "background_safe": bool(capture_meta.get("background_safe", True)),
+            "tab_activated": bool(capture_meta.get("tab_activated", False)),
+            "disk_write": bool(capture_meta.get("disk_write", False)),
         }
+        for key in (
+            "source_width", "source_height", "actual_height", "output_width", "output_height",
+            "scale", "truncated", "elapsed_ms", "bytes",
+        ):
+            if key in capture_meta:
+                payload["visual"][key] = capture_meta[key]
         if image_error:
             payload["visual"]["error"] = image_error
     return _format_observation(payload, image_data)

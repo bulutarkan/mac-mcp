@@ -81,6 +81,8 @@ def create_app():
             "You are connected to the user's local Mac through Mac MCP. "
             "Default home directory is the current user's home. "
             "Use run_command for shell work and the dedicated macOS/browser/UI tools when they fit better. "
+            "For browser visual grounding, prefer one browser_observe call with visual='viewport' or visual='full_page'; "
+            "it can target a background tab and returns compact DOM plus MCP image content without focusing the browser. "
             "Prefer the smallest number of tool calls that safely completes and verifies the task."
         ),
         streamable_http_path="/mcp",
@@ -580,17 +582,27 @@ def create_app():
 
     @mcp.tool(
         name="browser_observe",
+        title="Observe browser tab",
         description=(
             "High-level browser observation. Returns compact DOM with stable e1/e2 IDs and optional JPEG visual. "
-            "scope: interactive, visible, content, or leaf; visual: none, viewport, or element."
+            "scope: interactive, visible, content, or leaf; visual: none, viewport, element, or full_page. "
+            "Visual capture is rendered inside the target tab DOM and returned as MCP image content without "
+            "activating Safari/Chrome, switching tabs, scrolling the page, or leaving screenshot files on disk."
         ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+        structured_output=False,
     )
-    async def _browser_observe(browser: str, window_index: int = 1, tab_index: Optional[int] = None,
-                               tab_handle: Optional[str] = None,
-                               scope: str = "interactive", max_elements: int = 120,
-                               visual: str = "none", element_id: Optional[str] = None) -> Any:
-        return await asyncio.to_thread(
-            _log, audit_logger, "browser_observe",
+    def _browser_observe(browser: str, window_index: int = 1, tab_index: Optional[int] = None,
+                         tab_handle: Optional[str] = None,
+                         scope: str = "interactive", max_elements: int = 120,
+                         visual: str = "none", element_id: Optional[str] = None) -> Any:
+        return _log(
+            audit_logger, "browser_observe",
             lambda: browser_observe(settings, browser=browser, window_index=window_index,
                                     tab_index=tab_index, tab_handle=tab_handle,
                                     scope=scope, max_elements=max_elements,
@@ -696,8 +708,9 @@ def create_app():
 
     @mcp.tool(name="browser_screenshot",
               description=(
-                  "Captures only the browser window, not the full screen. "
-                  "Use return_base64=true to return a base64 PNG. Use path to choose the output file."
+                  "Legacy raw browser-window pixel capture. It does not target a specific background tab and may be "
+                  "unreliable when the window is obscured. For AI visual grounding, background tabs, or full-page "
+                  "capture, prefer browser_observe with visual='viewport', 'element', or 'full_page'."
               ))
     def _browser_screenshot(browser: str, path: Optional[str] = None,
                              window_index: int = 1, return_base64: bool = True) -> Dict[str, Any]:

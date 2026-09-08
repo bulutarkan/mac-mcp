@@ -345,6 +345,19 @@ browser_find    -> exact-first semantic ranking with hard role/text constraints
 browser_act     -> batch click/type/async-select/key/scroll/wait; target by element_id or query/text/role
 ```
 
+`browser_observe` also supports `visual="full_page"`. `viewport`, `element`, and `full_page` visuals are
+rasterized inside the explicitly targeted tab's DOM, so the capture does not need to activate the browser,
+select that tab, or scroll it through the page. The screenshot bytes are returned as MCP `ImageContent` next
+to the compact DOM response rather than being embedded as base64 in model-facing JSON. Capture buffers stay
+in memory and are cleared immediately after the image is read; no temporary screenshot file is left behind.
+This makes one `browser_observe` call suitable for low-round-trip visual grounding while the user continues
+working in another app or another Safari/Chrome tab. Cross-origin iframes and protected media may be omitted
+by the DOM rasterizer when the page does not expose those pixels to web content.
+
+For agent workflows, prefer this visual `browser_observe` path over the older `browser_screenshot` tool.
+`browser_screenshot` remains available for backwards compatibility when raw browser-window pixels are
+specifically wanted, but it is not the background-tab visual grounding path.
+
 For multi-tab work, call `browser_list_tabs` or use the `tab_handle` returned by `browser_open_url`, then keep targeting that handle instead of remembering mutable tab indexes. This is especially important when the user is simultaneously opening, closing, or reordering their own tabs.
 
 New tabs are background-first by default. A typical parallel workflow is:

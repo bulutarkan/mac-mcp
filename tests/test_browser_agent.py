@@ -1,6 +1,11 @@
 import unittest
 
-from mcp_server.tools_browser_agent import _score_candidate, _normalize_text
+from mcp_server.tools_browser_agent import (
+    _VISUAL_MODES,
+    _dom_capture_start_js,
+    _score_candidate,
+    _normalize_text,
+)
 
 
 class BrowserAgentLayerTests(unittest.TestCase):
@@ -55,6 +60,21 @@ class BrowserAgentLayerTests(unittest.TestCase):
             'title': '', 'role': 'textbox', 'tag': 'input', 'actionable': True,
         }
         self.assertEqual(0.0, _score_candidate(search, 'İl', 'textbox', 'İl'))
+
+    def test_full_page_is_a_supported_visual_mode(self):
+        self.assertIn('full_page', _VISUAL_MODES)
+
+    def test_full_page_dom_capture_does_not_scroll_or_activate_tabs(self):
+        script = _dom_capture_start_js('full_page', None)
+        self.assertNotIn('scrollTo(', script)
+        self.assertNotIn('current tab', script.lower())
+        self.assertIn('capture_method:"dom_rasterizer"', script)
+        self.assertIn('tab_activated:false', script)
+
+    def test_dom_capture_keeps_image_data_out_of_text_metadata(self):
+        script = _dom_capture_start_js('viewport', None)
+        self.assertIn('window[stateKey]={status:"done",meta:meta,data:data}', script)
+        self.assertNotIn('base64,${', script)
 
 
 if __name__ == '__main__':

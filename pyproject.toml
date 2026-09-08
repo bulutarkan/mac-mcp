@@ -28,4 +28,4 @@ packages = ["mcp_server"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-mcp_server = ["*.swift"]
+mcp_server = ["*.swift", "vendor/*.js"]
