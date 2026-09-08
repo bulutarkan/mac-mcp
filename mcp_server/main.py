@@ -50,6 +50,7 @@ from .tools_browser_agent import browser_observe, browser_find, browser_act
 from .tools_interactive import ask_choice, ask_confirmation, ask_user
 from .tools_update import mac_mcp_update
 from .tools_memory import memory_add, memory_search, memory_get, memory_update, memory_delete
+from .tools_skills import skill_list, skill_search, skill_get, skill_register, skill_update_index
 
 
 def _log(audit_logger, tool: str, fn):
@@ -820,6 +821,60 @@ def create_app():
             lambda: memory_delete(memory_id=memory_id, confirm=confirm, date=date,
                                   date_from=date_from, date_to=date_to, limit=limit),
         )
+
+    # ── Agent Skills tools ───────────────────────────────────────────────────
+    @mcp.tool(
+        name="skill_list",
+        description=(
+            "List indexed Agent Skills without loading full SKILL.md bodies. Returns name, description, and location "
+            "for progressive disclosure."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    )
+    async def _skill_list(limit: int = 100) -> Dict[str, Any]:
+        return await asyncio.to_thread(_log, audit_logger, "skill_list", lambda: skill_list(limit=limit))
+
+    @mcp.tool(
+        name="skill_search",
+        description=(
+            "Search Agent Skills with hybrid SQLite FTS5 + the same shared multilingual embedding worker used by memory_search. "
+            "Returns skill metadata and SKILL.md paths; call skill_get to activate one."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    )
+    async def _skill_search(query: str, limit: int = 10) -> Dict[str, Any]:
+        return await asyncio.to_thread(_log, audit_logger, "skill_search", lambda: skill_search(query=query, limit=limit))
+
+    @mcp.tool(
+        name="skill_get",
+        description=(
+            "Load one Agent Skill by name or SKILL.md path. Returns full SKILL.md content, skill directory, and bundled "
+            "scripts/references/assets paths without eagerly loading resource contents."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    )
+    async def _skill_get(name: Optional[str] = None, path: Optional[str] = None, resource_limit: int = 200) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "skill_get",
+            lambda: skill_get(name=name, path=path, resource_limit=resource_limit),
+        )
+
+    @mcp.tool(
+        name="skill_register",
+        description=(
+            "Validate and register an existing Agent Skill directory or SKILL.md path. Managed skills under "
+            "~/.mac-mcp/skills are discovered automatically; external skill paths can be registered explicitly."
+        ),
+    )
+    async def _skill_register(path: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(_log, audit_logger, "skill_register", lambda: skill_register(path=path))
+
+    @mcp.tool(
+        name="skill_update_index",
+        description="Rescan managed and registered SKILL.md files and rebuild changed skill index entries without starting FastEmbed.",
+    )
+    async def _skill_update_index() -> Dict[str, Any]:
+        return await asyncio.to_thread(_log, audit_logger, "skill_update_index", skill_update_index)
 
     # ── Interactive tools ─────────────────────────────────────────────────────
     @mcp.tool(

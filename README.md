@@ -10,22 +10,18 @@
 
 Mac MCP is a local macOS control server for AI agents. It exposes the same Mac through a native MCP endpoint and a REST/OpenAPI surface for clients such as Custom GPT Actions.
 
-Version 1.6.2 includes 75 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, persistent AI memory, self-updates, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
+Version 1.6.3 includes 80 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, browser control, persistent AI memory, reusable Agent Skills, self-updates, screenshots, HTTP requests, search, interactive questions/choices/confirmations, and a unified macOS UI observation/action layer.
 
 > **Security:** Mac MCP can execute shell commands, read and modify files, and control your desktop. Keep authentication enabled whenever the server is reachable outside localhost. Use a strong `MCP_API_KEY`, keep `MCP_ALLOW_NO_AUTH=false`, and only expose the server to clients you trust.
 
-## What's new in v1.2
+## What's new in v1.6.3
 
-- `agent_catalog`: discover available OpenCode/Codex providers, models, free OpenCode models, and reasoning options without starting work.
-- `spawn_agent`: delegate a task to OpenCode or Codex and get an `agent_id` back immediately while the work continues in a separate background process.
-- `get_agent` and `list_agents`: retrieve compact state and the concise final handoff without importing the delegated agent working context into the parent conversation.
-- `agent_action`: cancel, retry, despawn, or send a follow-up message that resumes the provider session.
-- Agent state and final results persist on disk across Mac MCP restarts.
-- OpenCode supports model plus provider-specific `reasoning`/`--variant`; Codex supports model plus `model_reasoning_effort`.
-- `access_mode` supports `read_only`, `workspace_write`, and `full` for Codex sandbox selection.
-- Agent final output is concise by default; raw stdout/stderr is opt-in through `get_agent(include_logs=true)` for debugging.
-
-The five agent-delegation tools are MCP-native and are not added to the legacy Custom GPT REST/OpenAPI schema. The existing 59 REST operations remain stable for backwards compatibility.
+- Added five MCP-native Agent Skills tools: `skill_list`, `skill_search`, `skill_get`, `skill_register`, and `skill_update_index`.
+- Added open `SKILL.md` support with YAML `name`/`description`, managed skills under `~/.mac-mcp/skills`, optional `scripts/`, `references/`, `assets/`, external skill registration, and progressive disclosure.
+- `memory_search` and `skill_search` now share one on-demand FastEmbed/MiniLM worker, model cache, and idle timer instead of creating separate model processes.
+- Preserved the Mac-specific semantic fallback chain: multilingual MiniLM → Apple NaturalLanguage → dependency-free feature hash.
+- Added shared embedding environment names (`MAC_MCP_EMBEDDING*`) while keeping existing `MAC_MCP_MEMORY_*` embedding variables as backward-compatible aliases.
+- MCP tool count is now 80; the legacy REST/OpenAPI surface remains stable for backwards compatibility.
 
 ## Benefits and usage strategy: ChatGPT Chat vs ChatGPT Work vs Codex
 
@@ -60,8 +56,9 @@ Official references: [Models](https://learn.chatgpt.com/docs/models) and [Pricin
 | Browser | 18 | tabs, JS, selectors, compact visual DOM, semantic find, batch actions, screenshots, scrolling, coordinate fallback |
 | Interactive | 3 | native question/answer, choice, and confirmation dialogs |
 | Memory | 5 | Markdown-backed persistent memory with exact get, hybrid search, date/range selection, update, delete |
+| Agent Skills | 5 | SKILL.md discovery, hybrid search, progressive load, external registration, index refresh |
 | Self-update | 1 | commit-based update check/apply with runtime overlay preservation, backup, restart, health check, rollback |
-| **Total** | **75** | |
+| **Total** | **80** | |
 
 ## Requirements
 
@@ -214,7 +211,31 @@ memory_delete(date_from="2026-09-01", date_to="2026-09-07")
 
 A rebuildable SQLite index is stored at `~/.mac-mcp/memory/memory-index.sqlite3`. Search combines SQLite FTS5 with multilingual semantic vectors. The default semantic backend is FastEmbed with `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions, multilingual). The model is downloaded lazily on the first query-based `memory_search` and cached separately on disk under `~/.mac-mcp/cache/fastembed` (roughly 240 MB of model data). `memory_add`, `memory_update`, and queryless date/range listings do not load FastEmbed from disk; they only reuse it if a recent semantic search already has it warm in RAM. When the multilingual backend becomes available, existing Apple/feature-hash SQLite vectors are automatically rebuilt from the Markdown source of truth.
 
-FastEmbed/ONNX inference runs in a separate on-demand worker process rather than inside the main Mac MCP server. Query-based semantic `memory_search` starts that worker when needed; searches within the warm window reuse it, and after 60 seconds without an embedding request the worker exits completely so macOS can reclaim the model RAM. The main MCP process therefore stays lightweight when memory search is idle. Set `MAC_MCP_MEMORY_MODEL_IDLE_SECONDS` to change the warm window (`0` exits the worker immediately after its first request). `memory_add`, `memory_update`, delete/index maintenance, and queryless listings do not start the worker. If FastEmbed or the model is unavailable, Mac MCP falls back to Apple's on-device NaturalLanguage English sentence embedding (512 dimensions), then to the dependency-free feature-hash vector. Manual Markdown edits are detected and re-indexed automatically. Override the storage location with `MAC_MCP_MEMORY_DIR` and the model cache with `MAC_MCP_MEMORY_MODEL_CACHE`. `MAC_MCP_MEMORY_EMBEDDING` supports `auto` (default), `multilingual`/`fastembed`, `apple`, or `feature_hash`.
+FastEmbed/ONNX inference runs in a separate on-demand worker process rather than inside the main Mac MCP server. Query-based semantic `memory_search` starts that worker when needed; searches within the warm window reuse it, and after 60 seconds without an embedding request the worker exits completely so macOS can reclaim the model RAM. The main MCP process therefore stays lightweight when memory search is idle. The same worker is shared by `memory_search` and `skill_search`; only one MiniLM/ONNX process can be warm at a time. Set `MAC_MCP_EMBEDDING_IDLE_SECONDS` to change the warm window (`0` exits the worker immediately after its first request). `memory_add`, `memory_update`, skill index maintenance, delete/index maintenance, and queryless listings do not start FastEmbed. If FastEmbed or the model is unavailable, Mac MCP falls back to Apple's on-device NaturalLanguage English sentence embedding (512 dimensions), then to the dependency-free feature-hash vector. Manual Markdown edits are detected and re-indexed automatically. Override memory storage with `MAC_MCP_MEMORY_DIR`, skills storage with `MAC_MCP_SKILLS_DIR`, and the shared model cache with `MAC_MCP_EMBEDDING_MODEL_CACHE`. `MAC_MCP_EMBEDDING` supports `auto` (default), `multilingual`/`fastembed`, `apple`, or `feature_hash`. Existing `MAC_MCP_MEMORY_MODEL_CACHE`, `MAC_MCP_MEMORY_MODEL_IDLE_SECONDS`, and `MAC_MCP_MEMORY_EMBEDDING` remain supported as compatibility aliases.
+
+## Agent Skills
+
+Mac MCP supports reusable Agent Skills using the open `SKILL.md` directory format. Managed skills live under:
+
+```text
+~/.mac-mcp/skills/<skill-name>/
+├── SKILL.md
+├── scripts/       # optional
+├── references/    # optional
+└── assets/        # optional
+```
+
+`SKILL.md` must begin with YAML frontmatter containing a lowercase/hyphenated `name` and a non-empty `description`. Discovery is progressive: `skill_list` and `skill_search` return metadata and paths first; `skill_get` loads the full `SKILL.md` and lists bundled resources without eagerly loading their contents. Relative resource paths resolve from the skill directory.
+
+```text
+skill_list          list indexed skill metadata
+skill_search        hybrid FTS5 + shared semantic search
+skill_get           load one SKILL.md + resource paths
+skill_register      register an external skill directory/SKILL.md
+skill_update_index  rescan managed/registered skills
+```
+
+The rebuildable index lives at `~/.mac-mcp/skills/skills-index.sqlite3`. `skill_search` shares the exact same FastEmbed worker/cache/model and idle timer as `memory_search`, so Skills do not create a second model process or duplicate the model cache.
 
 Logs are written to:
 
@@ -238,7 +259,7 @@ REST:   http://127.0.0.1:8000/api/*
 Health: http://127.0.0.1:8000/health
 ```
 
-MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 75 tools.
+MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 80 tools.
 
 Example REST request:
 
@@ -292,7 +313,7 @@ Use `ocr=true` only when the Accessibility tree does not provide enough text. OC
 
 ## Background jobs
 
-Use background jobs for commands that should not block the current MCP request. Version 1.1 defaults background job execution/wait timeouts to 60 seconds; pass `timeout_s` explicitly for longer tasks, up to 600 seconds.
+Use background jobs for commands that should not block the current MCP request. Background job execution/wait timeouts default to 60 seconds; pass `timeout_s` explicitly for longer tasks, up to 600 seconds.
 
 ```text
 start_background_job -> job_id
@@ -439,7 +460,7 @@ Custom GPT Actions use the included schema:
 openapi/custom-gpt-actions.json
 ```
 
-The REST schema exposes the original 59 core MCP tools as one-to-one operations. The five agent-delegation tools are MCP-only in v1.2. Each operation's `operationId` matches the MCP tool name, so Custom GPT Actions can discover and call the same tool surface. The core endpoints retain their established paths:
+The REST schema exposes the original 59 core operations and remains stable for backwards compatibility. Newer MCP-native extensions such as agent orchestration, persistent memory, Agent Skills, self-update, and the high-level browser-agent layer are intentionally discovered through `/mcp` rather than added to the legacy REST schema. Each REST operation's `operationId` retains its established MCP-compatible name. The core endpoints retain their established paths:
 
 ```text
 POST /api/run                 -> run_command
