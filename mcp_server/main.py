@@ -560,12 +560,15 @@ def create_app():
                     lambda: browser_list_tabs(settings, browser=browser))
 
     @mcp.tool(name="browser_activate_tab",
-              description="Switch to a specific tab by window_index and tab_index.")
+              description=("Select a specific browser tab by stable tab_handle or index without raising the browser by default. "
+                           "Set allow_foreground=true only when bringing the browser app to the front is explicitly wanted."))
     def _browser_activate_tab(browser: str, window_index: int = 1, tab_index: int = 1,
-                              tab_handle: Optional[str] = None) -> Dict[str, Any]:
+                              tab_handle: Optional[str] = None,
+                              allow_foreground: bool = False) -> Dict[str, Any]:
         return _log(audit_logger, "browser_activate_tab",
                     lambda: browser_activate_tab(settings, browser=browser, window_index=window_index,
-                                                tab_index=tab_index, tab_handle=tab_handle))
+                                                tab_index=tab_index, tab_handle=tab_handle,
+                                                allow_foreground=allow_foreground))
 
     @mcp.tool(name="browser_close_tab",
               description="Close a tab by window_index and tab_index.")
@@ -736,15 +739,17 @@ def create_app():
     @mcp.tool(name="browser_coordinate_click",
               description=(
                   "Clicks an absolute X/Y screen coordinate. "
-                  "Use rect.x and rect.y values from browser_get_snapshot. "
-                  "Set double_click=true to double-click."
+                  "This is a foreground fallback and refuses to steal focus unless allow_foreground=true. "
+                  "Prefer browser_act or selector-based clicks."
               ))
     def _browser_coordinate_click(browser: str, x: int, y: int,
                                    double_click: bool = False,
-                                   window_index: int = 1) -> Dict[str, Any]:
+                                   window_index: int = 1,
+                                   allow_foreground: bool = False) -> Dict[str, Any]:
         return _log(audit_logger, "browser_coordinate_click",
                     lambda: browser_coordinate_click(settings, browser=browser, x=x, y=y,
-                                                     double_click=double_click, window_index=window_index))
+                                                     double_click=double_click, window_index=window_index,
+                                                     allow_foreground=allow_foreground))
 
     @mcp.tool(name="browser_get_snapshot",
               description=(

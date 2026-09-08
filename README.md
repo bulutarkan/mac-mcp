@@ -356,7 +356,7 @@ browser_act(..., tab_handle=...)
 browser_execute_js(..., tab_handle=...)
 ```
 
-`browser_act` keeps parent round-trips low, supports bounded internal waits, returns a compact post-action state by default, and detects stale observations/elements. DOM-based click/type/select/scroll/wait actions do not need to focus the browser. Native keyboard actions refuse to steal focus unless `allow_foreground=true`; coordinate clicks and explicit tab activation remain foreground fallbacks. Existing `window_index` / `tab_index` arguments remain supported for backwards compatibility.
+`browser_act` keeps parent round-trips low, supports bounded internal waits, returns a compact post-action state by default, and detects stale observations/elements. DOM-based click/type/select/scroll/wait actions do not need to focus the browser. Native keyboard and coordinate actions refuse to steal focus unless `allow_foreground=true`; explicit tab selection stays background-safe unless foreground activation is explicitly allowed. Existing `window_index` / `tab_index` arguments remain supported for backwards compatibility.
 
 ## Agent delegation
 

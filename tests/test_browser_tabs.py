@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from mcp_server import browser_tabs
-from mcp_server.tools_browser import browser_press_key
+from mcp_server.tools_browser import browser_activate_tab, browser_coordinate_click, browser_press_key
 
 
 class BrowserTabHandleTests(unittest.TestCase):
@@ -53,6 +53,25 @@ class BrowserTabHandleTests(unittest.TestCase):
         result = browser_press_key(None, browser="Safari", key="return")
         self.assertFalse(result["ok"])
         self.assertTrue(result["foreground_required"])
+
+    def test_coordinate_click_refuses_focus_by_default(self):
+        result = browser_coordinate_click(None, browser="Safari", x=10, y=10)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["foreground_required"])
+
+    def test_activate_tab_does_not_raise_browser_by_default(self):
+        scripts = []
+
+        def fake_script(script, timeout_s=30):
+            scripts.append(script)
+            return ""
+
+        with patch("mcp_server.tools_browser._run_osascript", side_effect=fake_script):
+            result = browser_activate_tab(None, browser="Safari", window_index=1, tab_index=2)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["foreground_forced"])
+        self.assertNotIn("activate", scripts[0])
+        self.assertIn("set current tab to tab 2", scripts[0])
 
 
 if __name__ == "__main__":

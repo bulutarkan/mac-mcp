@@ -201,6 +201,7 @@ def browser_activate_tab(
     window_index: int = 1,
     tab_index: int = 1,
     tab_handle: Optional[str] = None,
+    allow_foreground: bool = False,
 ) -> Dict[str, Any]:
     b = _norm_browser(browser)
     window_index, resolved_tab = _resolve_tab_target(b, tab_handle, window_index, tab_index)
@@ -211,7 +212,7 @@ def browser_activate_tab(
     if b == "Safari":
         script = f'''
         tell application "Safari"
-            activate
+            {"activate" if allow_foreground else ""}
             tell window {window_index}
                 set current tab to tab {tab_index}
             end tell
@@ -220,7 +221,7 @@ def browser_activate_tab(
     else:
         script = f'''
         tell application "Google Chrome"
-            activate
+            {"activate" if allow_foreground else ""}
             tell window {window_index}
                 set active tab index to {tab_index}
             end tell
@@ -233,7 +234,7 @@ def browser_activate_tab(
         "window_index": window_index,
         "tab_index": tab_index,
         "tab_handle": tab_handle,
-        "foreground_required": True,
+        "foreground_forced": bool(allow_foreground),
     }
 
 
@@ -676,12 +677,22 @@ def browser_coordinate_click(
     y: int,
     double_click: bool = False,
     window_index: int = 1,
+    allow_foreground: bool = False,
 ) -> Dict[str, Any]:
     """Click an absolute X/Y screen coordinate, usually using rect values from browser_get_snapshot."""
     b = _norm_browser(browser)
+    if not allow_foreground:
+        return {
+            "ok": False,
+            "foreground_required": True,
+            "reason": (
+                "Native coordinate clicks require focusing the browser. "
+                "Prefer browser_act/browser_click_selector, or retry with allow_foreground=true only when focus stealing is acceptable."
+            ),
+        }
     process_name = "Safari" if b == "Safari" else "Google Chrome"
 
-    # Bring the browser to the front first
+    # Explicit opt-in only: native screen coordinates require the browser to be frontmost.
     _run_osascript(f'tell application "{b}" to activate')
     time.sleep(0.2)
 
