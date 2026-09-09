@@ -5,6 +5,8 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -32,6 +34,7 @@ from mcp_server.tools_agents import (
     _provider_env,
     _scope_prompt,
 )
+from mcp_server.tools_browser import browser_execute_js
 from mcp_server.tools_terminal import run_command
 import mcp_server.tools_agents as agents
 
@@ -205,6 +208,87 @@ class BrowserConcurrencyTests(unittest.TestCase):
             with browser_tabs.tab_lease("Safari", tab_handle=handle) as target:
                 self.assertEqual(3, target.tab_index)
                 self.assertEqual("3002", target.native_id)
+
+    def test_busy_tab_fails_fast_with_retryable_409_and_recovers(self) -> None:
+        rows = [{
+            "browser": "Safari", "window_index": 1, "tab_index": 1, "active": True,
+            "native_id": "4001", "title": "Busy", "url": "https://example.com/busy",
+        }]
+        entered = threading.Event()
+        release = threading.Event()
+
+        with patch("mcp_server.browser_tabs._scan", return_value=rows):
+            handle = browser_tabs.list_tabs("Safari")[0]["tab_handle"]
+
+            def holder() -> None:
+                with browser_tabs.tab_lease("Safari", tab_handle=handle):
+                    entered.set()
+                    release.wait(timeout=2)
+
+            thread = threading.Thread(target=holder)
+            thread.start()
+            self.assertTrue(entered.wait(timeout=1))
+
+            started = time.perf_counter()
+            with self.assertRaises(HTTPException) as ctx:
+                with browser_tabs.tab_lease("Safari", tab_handle=handle):
+                    pass
+            elapsed = time.perf_counter() - started
+
+            self.assertLess(elapsed, 0.25)
+            self.assertEqual(409, ctx.exception.status_code)
+            self.assertEqual("tab_busy", ctx.exception.detail["error"])
+            self.assertTrue(ctx.exception.detail["retryable"])
+            self.assertEqual(1000, ctx.exception.detail["retry_after_ms"])
+            self.assertEqual(handle, ctx.exception.detail["tab_handle"])
+            self.assertEqual("1", ctx.exception.headers["Retry-After"])
+
+            release.set()
+            thread.join(timeout=1)
+            self.assertFalse(thread.is_alive())
+
+            with browser_tabs.tab_lease("Safari", tab_handle=handle) as target:
+                self.assertEqual(handle, target.tab_handle)
+
+    def test_same_thread_reentry_and_different_tab_remain_allowed(self) -> None:
+        rows = [
+            {"browser": "Safari", "window_index": 1, "tab_index": 1, "active": True,
+             "native_id": "5001", "title": "A", "url": "https://example.com/a"},
+            {"browser": "Safari", "window_index": 1, "tab_index": 2, "active": False,
+             "native_id": "5002", "title": "B", "url": "https://example.com/b"},
+        ]
+        with patch("mcp_server.browser_tabs._scan", return_value=rows):
+            handles = [row["tab_handle"] for row in browser_tabs.list_tabs("Safari")]
+            with browser_tabs.tab_lease("Safari", tab_handle=handles[0]):
+                with browser_tabs.tab_lease("Safari", tab_handle=handles[0]) as nested:
+                    self.assertEqual(handles[0], nested.tab_handle)
+                with browser_tabs.tab_lease("Safari", tab_handle=handles[1]) as other:
+                    self.assertEqual(handles[1], other.tab_handle)
+
+    def test_browser_execute_js_propagates_tab_busy_before_browser_execution(self) -> None:
+        rows = [{
+            "browser": "Safari", "window_index": 1, "tab_index": 1, "active": True,
+            "native_id": "6001", "title": "Busy", "url": "https://example.com/busy",
+        }]
+        errors = []
+        with patch("mcp_server.browser_tabs._scan", return_value=rows):
+            handle = browser_tabs.list_tabs("Safari")[0]["tab_handle"]
+            with browser_tabs.tab_lease("Safari", tab_handle=handle):
+                def contender() -> None:
+                    try:
+                        browser_execute_js(load_settings(), "Safari", "location.href", tab_handle=handle)
+                    except Exception as exc:
+                        errors.append(exc)
+
+                thread = threading.Thread(target=contender)
+                thread.start()
+                thread.join(timeout=1)
+                self.assertFalse(thread.is_alive())
+
+        self.assertEqual(1, len(errors))
+        self.assertIsInstance(errors[0], HTTPException)
+        self.assertEqual(409, errors[0].status_code)
+        self.assertEqual("tab_busy", errors[0].detail["error"])
 
 
 class NgrokDiscoveryTests(unittest.TestCase):

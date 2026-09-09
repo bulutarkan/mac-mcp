@@ -9,6 +9,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from fastapi import HTTPException, status
+
 
 _LOCK = threading.RLock()
 _REGISTRY: Dict[str, Dict[str, Any]] = {}
@@ -243,11 +245,11 @@ def tab_lease(
     window_index: int = 1,
     tab_index: Optional[int] = None,
 ) -> Iterator[TabTarget]:
-    """Serialize work for one logical tab and refresh its location after waiting.
+    """Exclusively lease one logical tab without queueing competing callers.
 
     Index-only callers are first bound to the stable handle currently occupying that
-    location. Once the per-handle lock is acquired, the handle is resolved again so a
-    tab move while waiting cannot redirect the operation to its old index.
+    location. Re-entrant acquisition from the same thread is allowed for nested browser
+    helpers, while another thread fails immediately with a retryable ``tab_busy`` 409.
     """
     handle = str(tab_handle or "").strip()
     if not handle:
@@ -255,9 +257,25 @@ def tab_lease(
         handle = str(row["tab_handle"])
 
     lock = _resource_lock(browser, handle)
-    with lock:
+    acquired = lock.acquire(blocking=False)
+    if not acquired:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "ok": False,
+                "error": "tab_busy",
+                "retryable": True,
+                "retry_after_ms": 1000,
+                "tab_handle": handle,
+                "message": "This browser tab is currently in use by another caller.",
+            },
+            headers={"Retry-After": "1"},
+        )
+    try:
         _, _, row = resolve_tab(browser, handle)
         yield _target_from_row(row)
+    finally:
+        lock.release()
 
 
 def handle_for_location(browser: str, window_index: int, tab_index: int) -> Optional[str]:
