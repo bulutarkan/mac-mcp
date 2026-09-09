@@ -1,6 +1,7 @@
 import inspect
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -107,6 +108,38 @@ class AgentOrchestrationTests(unittest.TestCase):
                 provider="opencode", model="opencode/muse-spark-1.2-contributor-free",
             )
         self.assertEqual(400, ctx.exception.status_code)
+
+    def test_codex_progress_events_normalize_tool_and_usage(self):
+        with tempfile.TemporaryDirectory() as td:
+            old_agents = agents.AGENTS_DIR
+            agents.AGENTS_DIR = Path(td)
+            self.addCleanup(setattr, agents, "AGENTS_DIR", old_agents)
+            agent_id = "agt_codexprogress"
+            meta = {
+                "agent_id": agent_id, "provider": "codex", "status": "running", "phase": "provider_starting",
+                "started_at": time.time(), "spawn_requested_at": time.time(), "last_activity_at": time.time(),
+                "step_count": 0, "tool_call_count": 0,
+            }
+            agents._write_meta(agent_id, meta)
+            events = [
+                {"type": "thread.started", "thread_id": "thread-test"},
+                {"type": "turn.started"},
+                {"type": "item.started", "item": {"id": "item_1", "type": "command_execution", "command": "pwd", "status": "in_progress"}},
+                {"type": "item.completed", "item": {"id": "item_1", "type": "command_execution", "command": "pwd", "status": "completed"}},
+                {"type": "item.completed", "item": {"id": "item_2", "type": "agent_message", "text": "Done"}},
+                {"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 12, "reasoning_output_tokens": 3}},
+            ]
+            for event in events:
+                agents._record_provider_event(agent_id, json.dumps(event))
+            saved = agents._read_meta(agent_id)
+            self.assertEqual(1, saved["step_count"])
+            self.assertEqual(1, saved["tool_call_count"])
+            self.assertEqual("command_execution", saved["last_tool"])
+            self.assertEqual("finalizing", saved["phase"])
+            self.assertEqual("turn.completed", saved["last_event_type"])
+            self.assertEqual(12, saved["usage"]["output"])
+            self.assertEqual(3, saved["usage"]["reasoning"])
+            self.assertEqual("thread-test", saved["session_id"])
 
     def test_public_meta_has_progress_fields(self):
         meta = {

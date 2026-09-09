@@ -40,21 +40,40 @@ struct AgentInfo: Decodable, Identifiable {
     let title: String?
     let provider: String?
     let model: String?
+    let reasoning: String?
     let lastTool: String?
     let toolCallCount: Int?
+    let retryCount: Int?
     let durationMS: Int?
     var id: String { agentID }
     var isActive: Bool { status == "starting" || status == "running" }
     enum CodingKeys: String, CodingKey {
         case agentID = "agent_id"
-        case status, phase, title, provider, model
+        case status, phase, title, provider, model, reasoning
         case lastTool = "last_tool"
         case toolCallCount = "tool_call_count"
+        case retryCount = "retry_count"
         case durationMS = "duration_ms"
     }
 }
 
 struct AgentsEnvelope: Decodable { let agents: [AgentInfo] }
+
+struct ActionNotice: Identifiable, Equatable {
+    enum Kind { case info, success, error, update }
+    let id = UUID()
+    let kind: Kind
+    let message: String
+
+    var symbolName: String {
+        switch kind {
+        case .info: return "info.circle.fill"
+        case .success: return "checkmark.circle.fill"
+        case .error: return "exclamationmark.triangle.fill"
+        case .update: return "arrow.down.circle.fill"
+        }
+    }
+}
 
 @MainActor
 final class AppState: ObservableObject {
@@ -67,17 +86,17 @@ final class AppState: ObservableObject {
     @Published var recentEvents: [ToolEvent] = []
     @Published var agents: [AgentInfo] = []
     @Published var busyAction: String?
-    @Published var actionMessage = ""
-    @Published var actionIsError = false
+    @Published var actionNotice: ActionNotice?
     @Published var pulse = false
 
     let settings = SettingsStore()
     private var pollTask: Task<Void, Never>?
     private var pulseTask: Task<Void, Never>?
+    private var noticeTask: Task<Void, Never>?
     private var consecutiveRefreshFailures = 0
 
     init() { startTasks() }
-    deinit { pollTask?.cancel(); pulseTask?.cancel() }
+    deinit { pollTask?.cancel(); pulseTask?.cancel(); noticeTask?.cancel() }
 
     var dashboardURL: URL? { URL(string: "http://127.0.0.1:\(settings.serverPort)/dashboard") }
 
@@ -146,18 +165,64 @@ final class AppState: ObservableObject {
     private func runAction(title: String, args: [String]) {
         guard busyAction == nil else { return }
         busyAction = title
-        actionMessage = ""
-        actionIsError = false
+        actionNotice = nil
+        noticeTask?.cancel()
         let cliPath = settings.cliPath
         let settingsPath = settings.path.path
         Task {
             let result = await Self.runCLI(args: args, configuredPath: cliPath, settingsPath: settingsPath)
             busyAction = nil
-            actionIsError = result.code != 0 && !(args == ["update", "--check"] && result.code == 2)
-            let cleaned = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
-            actionMessage = cleaned.isEmpty ? (actionIsError ? "Command failed" : "Done") : String(cleaned.suffix(500))
+            showNotice(Self.notice(for: args, result: result))
             try? await Task.sleep(nanoseconds: 800_000_000)
             await refresh()
+        }
+    }
+
+    private func showNotice(_ notice: ActionNotice) {
+        actionNotice = notice
+        noticeTask?.cancel()
+        let noticeID = notice.id
+        let delay: UInt64 = notice.kind == .error ? 8_000_000_000 : 5_000_000_000
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled, let self, self.actionNotice?.id == noticeID else { return }
+            self.actionNotice = nil
+        }
+    }
+
+    nonisolated private static func notice(for args: [String], result: (code: Int32, output: String)) -> ActionNotice {
+        let output = result.output.lowercased()
+        let updateCheck = args == ["update", "--check"]
+        let failed = result.code != 0 && !(updateCheck && result.code == 2)
+        if failed {
+            let message: String
+            switch args.first {
+            case "start": message = "Couldn’t start the server."
+            case "stop": message = "Couldn’t stop the server."
+            case "restart": message = "Couldn’t restart the server."
+            case "update": message = "Update failed."
+            default: message = "Action failed."
+            }
+            return ActionNotice(kind: .error, message: message)
+        }
+
+        if updateCheck {
+            if output.contains("update available") { return ActionNotice(kind: .update, message: "Update available.") }
+            if output.contains("blocked") { return ActionNotice(kind: .error, message: "Update is blocked by local changes.") }
+            return ActionNotice(kind: .success, message: "Mac MCP is up to date.")
+        }
+        switch args.first {
+        case "start":
+            return output.contains("already running")
+                ? ActionNotice(kind: .info, message: "Server is already running.")
+                : ActionNotice(kind: .success, message: "Server started.")
+        case "stop":
+            return output.contains("not running")
+                ? ActionNotice(kind: .info, message: "Server is already stopped.")
+                : ActionNotice(kind: .success, message: "Server stopped.")
+        case "restart": return ActionNotice(kind: .success, message: "Server restarted.")
+        case "update": return ActionNotice(kind: .success, message: "Mac MCP updated successfully.")
+        default: return ActionNotice(kind: .success, message: "Done.")
         }
     }
 

@@ -9,6 +9,7 @@ struct MenuBarView: View {
     @State private var settingsMessage = ""
     @State private var showVoice = false
     @State private var showAdvanced = false
+    @State private var lastActiveAgentID: String? = nil
 
     var body: some View {
         ScrollView {
@@ -30,6 +31,10 @@ struct MenuBarView: View {
 
     private var displayAgents: [AgentInfo] {
         state.agents.filter(\.isActive) + state.agents.filter { !$0.isActive }
+    }
+
+    private var firstActiveAgentID: String? {
+        state.agents.first(where: \.isActive)?.id
     }
 
     private var header: some View {
@@ -78,10 +83,22 @@ struct MenuBarView: View {
                     Button { Task { await state.refresh() } } label: { Image(systemName: "arrow.triangle.2.circlepath") }.help("Refresh")
                 }
                 if let action = state.busyAction {
-                    HStack(spacing: 8) { ProgressView().controlSize(.small); Text(action).font(.caption).foregroundStyle(.secondary); Spacer() }
-                } else if !state.actionMessage.isEmpty {
-                    Text(state.actionMessage).font(.caption2.monospaced()).foregroundStyle(state.actionIsError ? .red : .secondary)
-                        .lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(action).font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                } else if let notice = state.actionNotice {
+                    HStack(spacing: 8) {
+                        Image(systemName: notice.symbolName)
+                            .foregroundStyle(noticeColor(notice.kind))
+                        Text(notice.message).font(.caption.weight(.medium))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 9).padding(.vertical, 7)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .animation(.easeInOut(duration: 0.2), value: state.actionNotice?.id)
                 }
             }.padding(2)
         } label: { Label("Server", systemImage: "server.rack") }
@@ -92,44 +109,89 @@ struct MenuBarView: View {
             VStack(spacing: 8) {
                 if state.activeAgents > 0 {
                     HStack(spacing: 10) {
-                        RobotRunner(active: true).frame(width: 44, height: 38)
+                        RobotRunner(active: true).frame(width: 44, height: 46)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("\(state.activeAgents) delegated agent\(state.activeAgents == 1 ? "" : "s") working")
+                            Text("\(state.activeAgents) Agent\(state.activeAgents == 1 ? "" : "s") Active")
                                 .font(.caption.weight(.semibold))
-                            Text("Live from /dashboard/api/agents").font(.caption2).foregroundStyle(.secondary)
+                            Text("Working in background").font(.caption2).foregroundStyle(.secondary)
                         }
                         Spacer()
                     }
                 }
-                ScrollView(.vertical) {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(displayAgents.enumerated()), id: \.element.id) { index, agent in
-                            agentRow(agent)
-                            if index < displayAgents.count - 1 { Divider() }
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(displayAgents.enumerated()), id: \.element.id) { index, agent in
+                                agentRow(agent).id(agent.id)
+                                if index < displayAgents.count - 1 { Divider() }
+                            }
+                        }
+                    }
+                    .frame(height: CGFloat(min(max(state.agents.count, 1), 3)) * 61)
+                    .onAppear {
+                        lastActiveAgentID = firstActiveAgentID
+                        if let id = firstActiveAgentID { proxy.scrollTo(id, anchor: .top) }
+                    }
+                    .onChange(of: firstActiveAgentID) { id in
+                        guard id != lastActiveAgentID else { return }
+                        lastActiveAgentID = id
+                        if let id {
+                            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .top) }
                         }
                     }
                 }
-                .frame(height: CGFloat(min(max(state.agents.count, 1), 3)) * 57)
             }
         } label: {
-            Label(state.activeAgents > 0 ? "Delegated Agents — Active & Recent" : "Delegated Agents — Recent", systemImage: "cpu")
+            Label("Delegated Agents", systemImage: "cpu")
         }
     }
 
     private func agentRow(_ agent: AgentInfo) -> some View {
         HStack(spacing: 9) {
-            Image(systemName: agent.isActive ? "bolt.circle.fill" : "clock.arrow.circlepath")
-                .foregroundStyle(agent.isActive ? Color.green : Color.secondary).frame(width: 18)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
+            Image(systemName: agentPhaseSymbol(agent))
+                .foregroundStyle(agentPhaseColor(agent))
+                .frame(width: 18)
+                .help(agentPhaseLabel(agent))
+                .accessibilityLabel(agentPhaseLabel(agent))
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
                     Text(agent.title ?? agent.agentID).font(.caption.weight(.semibold)).lineLimit(1)
                     Spacer()
-                    Text(agent.phase ?? agent.status ?? "unknown").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    if let duration = agent.durationMS { Text(compactDuration(duration)).font(.caption2).foregroundStyle(.tertiary) }
                 }
-                Text([agent.provider, agent.model].compactMap { $0 }.joined(separator: " · "))
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                Text(agent.lastTool.map { "Last: \($0) · \(agent.toolCallCount ?? 0) calls" } ?? "\(agent.toolCallCount ?? 0) tool calls")
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+
+                HStack(spacing: 6) {
+                    Text(providerName(agent.provider)).font(.caption2).foregroundStyle(.secondary)
+                    Text("·").font(.caption2).foregroundStyle(.tertiary)
+                    Text(modelName(agent.model)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    if let reasoning = agent.reasoning, !reasoning.isEmpty {
+                        HStack(spacing: 3) {
+                            Image(systemName: "brain").font(.system(size: 8, weight: .semibold))
+                            Text(reasoningBadge(reasoning)).font(.system(size: 9, weight: .semibold))
+                        }
+                        .padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(.quaternary, in: Capsule())
+                        .help("Reasoning: \(reasoningBadge(reasoning))")
+                    }
+                }
+
+                HStack(spacing: 5) {
+                    if let tool = agent.lastTool, !tool.isEmpty {
+                        Image(systemName: toolSymbol(tool)).font(.caption2).foregroundStyle(.secondary)
+                        Text(cleanToolName(tool)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    } else {
+                        Image(systemName: "ellipsis.circle").font(.caption2).foregroundStyle(.tertiary)
+                        Text(agent.isActive ? "Waiting for first tool" : "No tool calls").font(.caption2).foregroundStyle(.tertiary)
+                    }
+                    Spacer()
+                    Image(systemName: "wrench.and.screwdriver.fill").font(.system(size: 8)).foregroundStyle(.tertiary)
+                    Text("\(agent.toolCallCount ?? 0)").font(.caption2).foregroundStyle(.secondary)
+                    if let retries = agent.retryCount, retries > 0 {
+                        Image(systemName: "arrow.clockwise").font(.system(size: 8)).foregroundStyle(.orange)
+                        Text("\(retries)").font(.caption2).foregroundStyle(.orange)
+                    }
+                }
             }
         }.padding(.vertical, 5)
     }
@@ -147,14 +209,17 @@ struct MenuBarView: View {
                     LazyVStack(spacing: 0) {
                         ForEach(Array(state.recentEvents.enumerated()), id: \.element.id) { index, event in
                             HStack(spacing: 8) {
-                                Image(systemName: event.status == "success" ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                                    .foregroundStyle(event.status == "success" ? Color.green : Color.orange).font(.caption)
+                                Image(systemName: toolSymbol(event.tool))
+                                    .foregroundStyle(.secondary).font(.caption).frame(width: 16)
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text(event.tool).font(.caption.weight(.medium)).lineLimit(1)
+                                    Text(cleanToolName(event.tool)).font(.caption.weight(.medium)).lineLimit(1)
                                     Text("\(event.source.uppercased()) · \(event.durationMS ?? 0) ms · \(relativeTime(event.timestamp))")
                                         .font(.caption2).foregroundStyle(.secondary)
                                 }
                                 Spacer()
+                                Image(systemName: eventStatusSymbol(event.status))
+                                    .foregroundStyle(eventStatusColor(event.status)).font(.caption)
+                                    .help(event.status.capitalized)
                             }.padding(.vertical, 5)
                             if index < state.recentEvents.count - 1 { Divider() }
                         }
@@ -262,6 +327,161 @@ struct MenuBarView: View {
 
     private func metric(title: String, value: String) -> some View {
         VStack(spacing: 2) { Text(value).font(.subheadline.weight(.semibold)); Text(title).font(.caption2).foregroundStyle(.secondary) }.frame(maxWidth: .infinity)
+    }
+
+    private func agentPhaseKey(_ agent: AgentInfo) -> String {
+        let terminalStatus = agent.status?.lowercased()
+        if let terminalStatus, ["completed", "failed", "cancelled", "timeout", "stalled"].contains(terminalStatus) {
+            return terminalStatus
+        }
+        let raw = (agent.phase ?? agent.status ?? "unknown").lowercased()
+        switch raw {
+        case "worker_starting", "provider_starting", "starting": return "starting"
+        case "reasoning", "working": return "reasoning"
+        case "tool": return "tool"
+        case "finalizing": return "finalizing"
+        case "retrying": return "retrying"
+        case "completed": return "completed"
+        case "failed": return "failed"
+        case "cancelled": return "cancelled"
+        case "timeout": return "timeout"
+        case "stalled": return "stalled"
+        default: return agent.status?.lowercased() ?? raw
+        }
+    }
+
+    private func agentPhaseSymbol(_ agent: AgentInfo) -> String {
+        switch agentPhaseKey(agent) {
+        case "starting": return "hourglass"
+        case "reasoning": return "brain"
+        case "tool": return "hammer.fill"
+        case "finalizing": return "text.bubble.fill"
+        case "retrying": return "arrow.clockwise.circle.fill"
+        case "completed": return "checkmark.circle.fill"
+        case "failed": return "xmark.octagon.fill"
+        case "cancelled": return "stop.circle.fill"
+        case "timeout": return "clock.badge.exclamationmark"
+        case "stalled": return "pause.circle.fill"
+        default: return "questionmark.circle"
+        }
+    }
+
+    private func agentPhaseLabel(_ agent: AgentInfo) -> String {
+        switch agentPhaseKey(agent) {
+        case "starting": return "Starting"
+        case "reasoning": return "Reasoning"
+        case "tool": return "Using a tool"
+        case "finalizing": return "Finalizing"
+        case "retrying": return "Retrying"
+        case "completed": return "Completed"
+        case "failed": return "Failed"
+        case "cancelled": return "Cancelled"
+        case "timeout": return "Timed out"
+        case "stalled": return "Stalled"
+        default: return "Unknown status"
+        }
+    }
+
+    private func agentPhaseColor(_ agent: AgentInfo) -> Color {
+        switch agentPhaseKey(agent) {
+        case "completed": return .green
+        case "failed": return .red
+        case "timeout", "stalled", "retrying": return .orange
+        case "cancelled": return .secondary
+        case "starting", "reasoning", "tool", "finalizing": return .accentColor
+        default: return .secondary
+        }
+    }
+
+    private func providerName(_ provider: String?) -> String {
+        switch provider?.lowercased() {
+        case "opencode": return "OpenCode"
+        case "codex": return "Codex"
+        case .some(let value): return value.capitalized
+        case .none: return "AI"
+        }
+    }
+
+    private func modelName(_ model: String?) -> String {
+        guard var value = model, !value.isEmpty else { return "Default model" }
+        if let slash = value.lastIndex(of: "/") { value = String(value[value.index(after: slash)...]) }
+        value = value.replacingOccurrences(of: "-contributor-free", with: "")
+        let lower = value.lowercased()
+        if lower.hasPrefix("muse-spark-") {
+            return "Muse Spark " + value.dropFirst("muse-spark-".count).replacingOccurrences(of: "-", with: ".")
+        }
+        if lower.hasPrefix("gpt-") {
+            let parts = value.split(separator: "-")
+            if parts.count >= 3 {
+                let version = parts[1]
+                let suffix = parts.dropFirst(2).map { String($0).capitalized }.joined(separator: " ")
+                return "GPT-\(version) \(suffix)"
+            }
+            return value.uppercased()
+        }
+        return value.replacingOccurrences(of: "-", with: " ").capitalized
+    }
+
+    private func reasoningBadge(_ value: String) -> String {
+        switch value.lowercased() {
+        case "xhigh": return "XHigh"
+        case "none": return "None"
+        default: return value.capitalized
+        }
+    }
+
+    private func cleanToolName(_ tool: String) -> String {
+        var value = tool
+        for prefix in ["mac-mcp_", "mac_mcp_", "mcp_"] where value.hasPrefix(prefix) { value.removeFirst(prefix.count) }
+        if value == "command_execution" { return "Terminal command" }
+        return value
+    }
+
+    private func toolSymbol(_ tool: String) -> String {
+        let value = cleanToolName(tool).lowercased()
+        if value.contains("browser") || value.contains("safari") || value.contains("chrome") { return "safari.fill" }
+        if value.contains("execute_js") || value.contains("javascript") { return "chevron.left.forwardslash.chevron.right" }
+        if value.contains("command") || value.contains("terminal") || value == "bash" || value.contains("applescript") { return "terminal.fill" }
+        if value.contains("read") || value.contains("write") || value.contains("edit") || value.contains("file") { return "doc.text.fill" }
+        if value.contains("search") || value.contains("find") { return "magnifyingglass" }
+        if value.contains("agent") { return "cpu" }
+        if value.contains("memory") { return "brain" }
+        if value.contains("http") || value.contains("web") || value.contains("network") { return "network" }
+        if value.contains("observe") || value.contains("ui") || value.contains("screen") { return "rectangle.and.hand.point.up.left.fill" }
+        return "wrench.and.screwdriver.fill"
+    }
+
+    private func eventStatusSymbol(_ status: String) -> String {
+        switch status.lowercased() {
+        case "success": return "checkmark.circle.fill"
+        case "error": return "xmark.circle.fill"
+        default: return "ellipsis.circle.fill"
+        }
+    }
+
+    private func eventStatusColor(_ status: String) -> Color {
+        switch status.lowercased() {
+        case "success": return .green
+        case "error": return .red
+        default: return .orange
+        }
+    }
+
+    private func noticeColor(_ kind: ActionNotice.Kind) -> Color {
+        switch kind {
+        case .success: return .green
+        case .error: return .red
+        case .update: return .accentColor
+        case .info: return .secondary
+        }
+    }
+
+    private func compactDuration(_ milliseconds: Int) -> String {
+        let seconds = max(0, milliseconds / 1000)
+        if seconds < 60 { return "\(seconds)s" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)m" }
+        return "\(minutes / 60)h \(minutes % 60)m"
     }
 
     private func persistSettings() { do { try settings.save(); settingsMessage = "Saved" } catch { settingsMessage = error.localizedDescription } }

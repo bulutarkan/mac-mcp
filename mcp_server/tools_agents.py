@@ -320,7 +320,7 @@ def agent_catalog(
             "models": models,
             "default_model": default_model,
             "default_reasoning": default_reasoning,
-            "reasoning_values": ["minimal", "low", "medium", "high", "max"],
+            "reasoning_values": ["none", "low", "medium", "high", "xhigh", "max"],
         }
     return {"ok": True, "providers": providers}
 
@@ -1005,6 +1005,14 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
     return cmd
 
 
+def _codex_tool_name(item: Dict[str, Any]) -> Optional[str]:
+    item_type = str(item.get("type") or "").strip()
+    if item_type not in {"command_execution", "mcp_tool_call", "file_change", "web_search"}:
+        return None
+    explicit = item.get("name") or item.get("tool")
+    return str(explicit).strip() if explicit else item_type
+
+
 def _record_provider_event(agent_id: str, raw_line: str) -> None:
     now = _now()
     try:
@@ -1017,35 +1025,81 @@ def _record_provider_event(agent_id: str, raw_line: str) -> None:
         return
     if meta.get("status") == "cancelled":
         return
+
     event_type = str(event.get("type") or "output")
+    provider = str(meta.get("provider") or "opencode").lower()
     part = event.get("part") if isinstance(event.get("part"), dict) else {}
     if not meta.get("first_event_at"):
         meta["first_event_at"] = now
     meta["last_activity_at"] = now
     meta["last_event_type"] = event_type
-    if event_type == "step_start":
-        meta["step_count"] = int(meta.get("step_count") or 0) + 1
-        meta["phase"] = "reasoning"
-    elif event_type == "tool_use":
-        meta["tool_call_count"] = int(meta.get("tool_call_count") or 0) + 1
-        meta["last_tool"] = part.get("tool")
-        if not meta.get("first_tool_at"):
-            meta["first_tool_at"] = now
-        timing = part.get("time") if isinstance(part.get("time"), dict) else {}
-        start_ms, end_ms = timing.get("start"), timing.get("end")
-        if isinstance(start_ms, (int, float)) and isinstance(end_ms, (int, float)):
-            meta["last_tool_duration_ms"] = max(0, int(end_ms - start_ms))
-        meta["phase"] = "tool"
-    elif event_type == "text":
-        meta["phase"] = "finalizing"
-    elif event_type == "step_finish":
-        reason = part.get("reason")
-        meta["phase"] = "finalizing" if reason == "stop" else "reasoning"
+
+    if provider == "codex":
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        if event_type == "thread.started":
+            meta["phase"] = "starting"
+            thread_id = event.get("thread_id")
+            if thread_id:
+                meta["session_id"] = thread_id
+        elif event_type == "turn.started":
+            meta["step_count"] = int(meta.get("step_count") or 0) + 1
+            meta["phase"] = "reasoning"
+        elif event_type == "item.started":
+            tool_name = _codex_tool_name(item)
+            if tool_name:
+                meta["tool_call_count"] = int(meta.get("tool_call_count") or 0) + 1
+                meta["last_tool"] = tool_name
+                if not meta.get("first_tool_at"):
+                    meta["first_tool_at"] = now
+                meta["phase"] = "tool"
+            elif item.get("type") == "agent_message":
+                meta["phase"] = "finalizing"
+            else:
+                meta["phase"] = "reasoning"
+        elif event_type == "item.completed":
+            item_type = str(item.get("type") or "")
+            if item_type == "agent_message":
+                meta["phase"] = "finalizing"
+            elif _codex_tool_name(item):
+                meta["phase"] = "reasoning"
+        elif event_type == "turn.completed":
+            usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
+            if usage:
+                meta["usage"] = {
+                    "input": int(usage.get("input_tokens") or 0),
+                    "output": int(usage.get("output_tokens") or 0),
+                    "reasoning": int(usage.get("reasoning_output_tokens") or 0),
+                    "cache": {"read": int(usage.get("cached_input_tokens") or 0), "write": int(usage.get("cache_write_input_tokens") or 0)},
+                }
+            meta["phase"] = "finalizing"
+        elif event_type in {"turn.failed", "error"}:
+            meta["phase"] = "failed"
+        else:
+            meta["phase"] = meta.get("phase") or "reasoning"
     else:
-        meta["phase"] = meta.get("phase") or "working"
+        if event_type == "step_start":
+            meta["step_count"] = int(meta.get("step_count") or 0) + 1
+            meta["phase"] = "reasoning"
+        elif event_type == "tool_use":
+            meta["tool_call_count"] = int(meta.get("tool_call_count") or 0) + 1
+            meta["last_tool"] = part.get("tool")
+            if not meta.get("first_tool_at"):
+                meta["first_tool_at"] = now
+            timing = part.get("time") if isinstance(part.get("time"), dict) else {}
+            start_ms, end_ms = timing.get("start"), timing.get("end")
+            if isinstance(start_ms, (int, float)) and isinstance(end_ms, (int, float)):
+                meta["last_tool_duration_ms"] = max(0, int(end_ms - start_ms))
+            meta["phase"] = "tool"
+        elif event_type == "text":
+            meta["phase"] = "finalizing"
+        elif event_type == "step_finish":
+            reason = part.get("reason")
+            meta["phase"] = "finalizing" if reason == "stop" else "reasoning"
+        else:
+            meta["phase"] = meta.get("phase") or "working"
+
     meta["updated_at"] = now
     _write_meta(agent_id, meta)
-
 
 def _capture_provider_stream(agent_id: str, stream, path: Path, parse_events: bool) -> None:
     with path.open("a", encoding="utf-8", errors="replace") as handle:
@@ -1175,6 +1229,7 @@ def _worker(agent_id: str) -> int:
         result, session_id, usage = _extract_opencode(stdout_path)
     else:
         session_id = _extract_codex_session(stdout_path)
+        usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else None
         if result_path.exists():
             result = result_path.read_text(encoding="utf-8", errors="replace").strip()
 
