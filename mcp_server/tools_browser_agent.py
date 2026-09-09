@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import time
 import unicodedata
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,10 +17,13 @@ from mcp.server.fastmcp.utilities.types import Image
 
 from .security import Settings
 from .tools_browser import (
+    _execute_js_for_target,
     _norm_browser,
     _resolve_tab_target,
     _run_osascript,
     _js_escape,
+    _tab_identity_guard,
+    _tab_lease,
     browser_execute_js,
     browser_press_key,
 )
@@ -30,7 +34,7 @@ _MAX_ACTIONS = 20
 _VISUAL_MODES = {"none", "viewport", "element", "full_page"}
 _RETURN_STATE_MODES = {"none", "compact", "full"}
 _DOM_RASTERIZER_PATH = Path(__file__).resolve().parent / "vendor" / "html2canvas.min.js"
-_DOM_CAPTURE_STATE = "__macMcpVisualCapture"
+_DOM_CAPTURE_STATE_PREFIX = "__macMcpVisualCapture"
 _DOM_RASTERIZER_GLOBAL = "__macMcpHtml2Canvas"
 _DOM_CAPTURE_VIEWPORT_TIMEOUT_S = 18.0
 _DOM_CAPTURE_FULL_PAGE_TIMEOUT_S = 30.0
@@ -64,9 +68,15 @@ def _run_json_js(
     js: str,
     window_index: int = 1,
     tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     raw = browser_execute_js(
-        settings, browser=browser, js=js, window_index=window_index, tab_index=tab_index,
+        settings,
+        browser=browser,
+        js=js,
+        window_index=window_index,
+        tab_index=tab_index,
+        tab_handle=tab_handle,
     )
     return _decode_js_payload(raw)
 
@@ -76,6 +86,7 @@ def _execute_js_unbounded(
     js: str,
     window_index: int = 1,
     tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
     timeout_s: int = 30,
 ) -> str:
     """Execute JS without the normal model-facing result truncation.
@@ -85,40 +96,27 @@ def _execute_js_unbounded(
     content. The data URL is never returned in the text payload.
     """
     b = _norm_browser(browser)
-    js_escaped = _js_escape(js)
-    if b == "Safari":
-        target = (
-            f"current tab of window {window_index}"
-            if tab_index is None
-            else f"tab {int(tab_index)} of window {window_index}"
+    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+        return _execute_js_for_target(
+            b,
+            js,
+            target,
+            timeout_s=max(1, min(int(timeout_s), 60)),
         )
-        script = f'''tell application "Safari"
-    set r to do JavaScript "{js_escaped}" in {target}
-    return r
-end tell'''
-    else:
-        target = (
-            f"active tab of window {window_index}"
-            if tab_index is None
-            else f"tab {int(tab_index)} of window {window_index}"
-        )
-        script = f'''tell application "Google Chrome"
-    set r to execute javascript "{js_escaped}" in {target}
-    return r
-end tell'''
-    return _run_osascript(script, timeout_s=max(1, min(int(timeout_s), 60)))
 
 
 def _ensure_dom_rasterizer(
     browser: str,
     window_index: int,
     tab_index: Optional[int],
+    tab_handle: Optional[str] = None,
 ) -> None:
     marker = _execute_js_unbounded(
         browser,
         f"typeof window.{_DOM_RASTERIZER_GLOBAL}",
         window_index=window_index,
         tab_index=tab_index,
+        tab_handle=tab_handle,
         timeout_s=10,
     )
     if marker.strip() == "function":
@@ -142,33 +140,31 @@ def _ensure_dom_rasterizer(
         "delete window.__macMcpHadHtml2Canvas;delete window.__macMcpPreviousHtml2Canvas;"
         f"typeof window.{_DOM_RASTERIZER_GLOBAL};"
     )
-    if b == "Safari":
-        target = (
-            f"current tab of window {window_index}"
-            if tab_index is None
-            else f"tab {int(tab_index)} of window {window_index}"
-        )
-        script = f'''set js to read POSIX file {path_literal} as «class utf8»
+    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+        guard = _tab_identity_guard(target)
+        if b == "Safari":
+            script = f'''set js to read POSIX file {path_literal} as «class utf8»
 tell application "Safari"
-    do JavaScript "{pre}" in {target}
-    do JavaScript js in {target}
-    set r to do JavaScript "{post}" in {target}
-    return r
+    tell window {target.window_index}
+        {guard}
+        do JavaScript "{pre}" in targetTab
+        do JavaScript js in targetTab
+        set r to do JavaScript "{post}" in targetTab
+        return r
+    end tell
 end tell'''
-    else:
-        target = (
-            f"active tab of window {window_index}"
-            if tab_index is None
-            else f"tab {int(tab_index)} of window {window_index}"
-        )
-        script = f'''set js to read POSIX file {path_literal} as «class utf8»
+        else:
+            script = f'''set js to read POSIX file {path_literal} as «class utf8»
 tell application "Google Chrome"
-    execute javascript "{pre}" in {target}
-    execute javascript js in {target}
-    set r to execute javascript "{post}" in {target}
-    return r
+    tell window {target.window_index}
+        {guard}
+        execute javascript "{pre}" in targetTab
+        execute javascript js in targetTab
+        set r to execute javascript "{post}" in targetTab
+        return r
+    end tell
 end tell'''
-    loaded = _run_osascript(script, timeout_s=30)
+        loaded = _run_osascript(script, timeout_s=30)
     if loaded.strip() != "function":
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -176,12 +172,17 @@ end tell'''
         )
 
 
-def _dom_capture_start_js(mode: str, element_id: Optional[str]) -> str:
+def _dom_capture_start_js(
+    mode: str,
+    element_id: Optional[str],
+    state_key: Optional[str] = None,
+) -> str:
+    state_key = state_key or f"{_DOM_CAPTURE_STATE_PREFIX}_{uuid.uuid4().hex}"
     mode_js = json.dumps(mode)
     element_js = json.dumps(element_id)
     return f'''(function(){{
 var h2c=window.{_DOM_RASTERIZER_GLOBAL};
-var stateKey={json.dumps(_DOM_CAPTURE_STATE)};
+var stateKey={json.dumps(state_key)};
 if(typeof h2c!=="function") return JSON.stringify({{ok:false,error:"rasterizer_unavailable"}});
 var mode={mode_js}, elementId={element_js};
 var agent=window.__macMcpBrowserAgent;
@@ -261,6 +262,26 @@ def _capture_dom_visual(
     element_id: Optional[str],
     window_index: int,
     tab_index: Optional[int],
+    tab_handle: Optional[str] = None,
+) -> Tuple[Optional[bytes], Optional[str], Dict[str, Any]]:
+    with _tab_lease(browser, tab_handle, window_index, tab_index) as target:
+        return _capture_dom_visual_locked(
+            browser=target.browser,
+            mode=mode,
+            element_id=element_id,
+            window_index=target.window_index,
+            tab_index=target.tab_index,
+            tab_handle=target.tab_handle,
+        )
+
+
+def _capture_dom_visual_locked(
+    browser: str,
+    mode: str,
+    element_id: Optional[str],
+    window_index: int,
+    tab_index: Optional[int],
+    tab_handle: str,
 ) -> Tuple[Optional[bytes], Optional[str], Dict[str, Any]]:
     meta: Dict[str, Any] = {
         "mode": mode,
@@ -269,13 +290,21 @@ def _capture_dom_visual(
         "tab_activated": False,
         "disk_write": False,
     }
+    state_key = f"{_DOM_CAPTURE_STATE_PREFIX}_{uuid.uuid4().hex}"
+    state_key_js = json.dumps(state_key)
     try:
-        _ensure_dom_rasterizer(browser, window_index, tab_index)
+        _ensure_dom_rasterizer(
+            browser,
+            window_index,
+            tab_index,
+            tab_handle=tab_handle,
+        )
         started_raw = _execute_js_unbounded(
             browser,
-            _dom_capture_start_js(mode, element_id),
+            _dom_capture_start_js(mode, element_id, state_key),
             window_index=window_index,
             tab_index=tab_index,
+            tab_handle=tab_handle,
             timeout_s=15,
         )
         try:
@@ -292,13 +321,18 @@ def _capture_dom_visual(
         )
         deadline = time.monotonic() + timeout_s
         status_js = (
-            f"(function(){{var s=window.{_DOM_CAPTURE_STATE};"
+            f"(function(){{var s=window[{state_key_js}];"
             "return JSON.stringify(s?{status:s.status,error:s.error||'',meta:s.meta||{},data_length:s.data?s.data.length:0}:{status:'missing'});})()"
         )
         finished: Dict[str, Any] = {}
         while time.monotonic() < deadline:
             raw = _execute_js_unbounded(
-                browser, status_js, window_index=window_index, tab_index=tab_index, timeout_s=10
+                browser,
+                status_js,
+                window_index=window_index,
+                tab_index=tab_index,
+                tab_handle=tab_handle,
+                timeout_s=10,
             )
             try:
                 finished = json.loads(raw or "{}")
@@ -317,9 +351,10 @@ def _capture_dom_visual(
             meta.update(finished["meta"])
         data_url = _execute_js_unbounded(
             browser,
-            f"(window.{_DOM_CAPTURE_STATE}&&window.{_DOM_CAPTURE_STATE}.data)||''",
+            f"(window[{state_key_js}]&&window[{state_key_js}].data)||''",
             window_index=window_index,
             tab_index=tab_index,
+            tab_handle=tab_handle,
             timeout_s=30,
         )
         prefix = "data:image/jpeg;base64,"
@@ -341,9 +376,10 @@ def _capture_dom_visual(
         try:
             _execute_js_unbounded(
                 browser,
-                f"try{{if(window.{_DOM_CAPTURE_STATE}){{window.{_DOM_CAPTURE_STATE}.data=null;delete window.{_DOM_CAPTURE_STATE};}}}}catch(e){{}}'cleaned'",
+                f"try{{if(window[{state_key_js}]){{window[{state_key_js}].data=null;delete window[{state_key_js}];}}}}catch(e){{}}'cleaned'",
                 window_index=window_index,
                 tab_index=tab_index,
+                tab_handle=tab_handle,
                 timeout_s=10,
             )
         except Exception:
@@ -530,7 +566,7 @@ return __mcpB64({{
 
 def _observe_payload(
     settings: Settings, browser: str, scope: str, max_elements: int,
-    window_index: int, tab_index: Optional[int],
+    window_index: int, tab_index: Optional[int], tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     requested = max_elements
     attempt = max_elements
@@ -538,7 +574,7 @@ def _observe_payload(
         try:
             payload = _run_json_js(
                 settings, browser, _observe_js(scope, attempt),
-                window_index=window_index, tab_index=tab_index,
+                window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
             )
             payload["requested_max_elements"] = requested
             if attempt != requested:
@@ -622,6 +658,32 @@ def browser_observe(
     element_id: Optional[str] = None,
 ) -> Any:
     """Compact DOM observation with stable element IDs and optional background-safe page image."""
+    b = _norm_browser(browser)
+    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+        return _browser_observe_locked(
+            settings=settings,
+            browser=target.browser,
+            window_index=target.window_index,
+            tab_index=target.tab_index,
+            tab_handle=target.tab_handle,
+            scope=scope,
+            max_elements=max_elements,
+            visual=visual,
+            element_id=element_id,
+        )
+
+
+def _browser_observe_locked(
+    settings: Settings,
+    browser: str,
+    window_index: int = 1,
+    tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
+    scope: str = "interactive",
+    max_elements: int = _DEFAULT_OBSERVE_ELEMENTS,
+    visual: str = "none",
+    element_id: Optional[str] = None,
+) -> Any:
     _norm_browser(browser)
     window_index, tab_index = _resolve_tab_target(browser, tab_handle, window_index, tab_index)
     scope = str(scope or "interactive").lower().strip()
@@ -633,7 +695,13 @@ def browser_observe(
     max_elements = max(1, min(int(max_elements), _MAX_OBSERVE_ELEMENTS))
     started = time.perf_counter()
     payload = _observe_payload(
-        settings, browser, scope, max_elements, window_index=window_index, tab_index=tab_index,
+        settings,
+        browser,
+        scope,
+        max_elements,
+        window_index=window_index,
+        tab_index=tab_index,
+        tab_handle=tab_handle,
     )
     payload["duration_ms"] = int((time.perf_counter() - started) * 1000)
 
@@ -661,6 +729,7 @@ def browser_observe(
             element_id=element_id,
             window_index=window_index,
             tab_index=tab_index,
+            tab_handle=tab_handle,
         )
         payload["visual"] = {
             "mode": visual,
@@ -833,7 +902,7 @@ def browser_find(
                 settings, browser, _find_candidates_js(
                     str(query or ""), role, text, candidate_limit, actionable_only=actionable_only
                 ),
-                window_index=window_index, tab_index=tab_index,
+                window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
             )
             break
         except HTTPException as exc:
@@ -1035,6 +1104,7 @@ def _select_action(
     observation_id: Optional[str],
     window_index: int,
     tab_index: Optional[int],
+    tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     element_id = str(action.get("element_id") or "")
     if not element_id:
@@ -1046,7 +1116,7 @@ def _select_action(
     js_calls = 0
     prep = _run_json_js(
         settings, browser, _select_prepare_js(element_id, observation_id, option),
-        window_index, tab_index,
+        window_index, tab_index, tab_handle,
     )
     js_calls += 1
     if not prep.get("ok"):
@@ -1059,7 +1129,10 @@ def _select_action(
             "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
         }
     while time.perf_counter() - started < timeout_s:
-        found = _run_json_js(settings, browser, _select_option_js(element_id, option), window_index, tab_index)
+        found = _run_json_js(
+            settings, browser, _select_option_js(element_id, option),
+            window_index, tab_index, tab_handle,
+        )
         js_calls += 1
         if found.get("found"):
             stable_ms = max(100, min(int(action.get("stable_ms", 250)), 1000))
@@ -1067,7 +1140,9 @@ def _select_action(
             last_revision = None
             stable_since = time.perf_counter()
             while time.perf_counter() < settle_deadline:
-                state = _run_json_js(settings, browser, _light_state_js(), window_index, tab_index)
+                state = _run_json_js(
+                    settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+                )
                 js_calls += 1
                 revision = state.get("dom_revision")
                 if revision != last_revision:
@@ -1130,6 +1205,7 @@ def _wait_action(
     window_index: int,
     tab_index: Optional[int],
     initial_url: str,
+    tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     kind = str(action.get("for") or action.get("condition") or "selector").lower().strip()
     timeout_s = max(0.1, min(float(action.get("timeout_s", 10)), 60.0))
@@ -1141,7 +1217,9 @@ def _wait_action(
         last_revision = None
         stable_since = time.perf_counter()
         while time.perf_counter() - started < timeout_s:
-            state = _run_json_js(settings, browser, _light_state_js(), window_index, tab_index)
+            state = _run_json_js(
+                settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+            )
             js_calls += 1
             rev = state.get("dom_revision")
             if rev != last_revision:
@@ -1154,7 +1232,14 @@ def _wait_action(
 
     while time.perf_counter() - started < timeout_s:
         try:
-            state = _run_json_js(settings, browser, _condition_js(action, initial_url), window_index, tab_index)
+            state = _run_json_js(
+                settings,
+                browser,
+                _condition_js(action, initial_url),
+                window_index,
+                tab_index,
+                tab_handle,
+            )
             js_calls += 1
         except HTTPException:
             if kind == "url_change":
@@ -1178,7 +1263,41 @@ def browser_act(
     return_state: str = "compact",
     allow_foreground: bool = False,
 ) -> Dict[str, Any]:
-    """Perform batched browser actions; targets may use element_id or semantic query/text/role."""
+    """Perform one serialized action transaction against a single logical tab."""
+    if not isinstance(actions, list) or not actions:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "actions must be a non-empty list.")
+    if len(actions) > _MAX_ACTIONS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"actions may contain at most {_MAX_ACTIONS} items.")
+    normalized_return_state = str(return_state or "compact").lower().strip()
+    if normalized_return_state not in _RETURN_STATE_MODES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")
+    b = _norm_browser(browser)
+    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+        return _browser_act_locked(
+            settings=settings,
+            browser=target.browser,
+            actions=actions,
+            observation_id=observation_id,
+            window_index=target.window_index,
+            tab_index=target.tab_index,
+            tab_handle=target.tab_handle,
+            return_state=normalized_return_state,
+            allow_foreground=allow_foreground,
+        )
+
+
+def _browser_act_locked(
+    settings: Settings,
+    browser: str,
+    actions: List[Dict[str, Any]],
+    observation_id: Optional[str] = None,
+    window_index: int = 1,
+    tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
+    return_state: str = "compact",
+    allow_foreground: bool = False,
+) -> Dict[str, Any]:
+    """Perform batched browser actions while the caller holds the tab lease."""
     if not isinstance(actions, list) or not actions:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "actions must be a non-empty list.")
     if len(actions) > _MAX_ACTIONS:
@@ -1200,7 +1319,9 @@ def browser_act(
     )
     initial_url = ""
     if needs_initial_url:
-        initial_state = _run_json_js(settings, browser, _light_state_js(), window_index, tab_index)
+        initial_state = _run_json_js(
+            settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+        )
         internal_js_calls += 1
         initial_url = str(initial_state.get("url") or "")
     pending: List[Dict[str, Any]] = []
@@ -1217,7 +1338,7 @@ def browser_act(
             return dict(action), None
         found = browser_find(
             settings, browser, query=query, role=role, text=match_text,
-            window_index=window_index, tab_index=tab_index, max_results=1,
+            window_index=window_index, tab_index=tab_index, tab_handle=tab_handle, max_results=1,
         )
         internal_js_calls += 1
         best = found.get("best_match")
@@ -1234,7 +1355,14 @@ def browser_act(
         nonlocal pending, internal_js_calls, current_observation_id
         if not pending:
             return True
-        out = _run_json_js(settings, browser, _batch_js(pending, current_observation_id), window_index, tab_index)
+        out = _run_json_js(
+            settings,
+            browser,
+            _batch_js(pending, current_observation_id),
+            window_index,
+            tab_index,
+            tab_handle,
+        )
         internal_js_calls += 1
         if not out.get("ok") and out.get("error") == "stale_observation":
             results.append({"ok": False, "error": "stale_observation", "observe_again": True})
@@ -1263,7 +1391,13 @@ def browser_act(
                 break
             if typ == "select":
                 select_result = _select_action(
-                    settings, browser, work_action, current_observation_id, window_index, tab_index,
+                    settings,
+                    browser,
+                    work_action,
+                    current_observation_id,
+                    window_index,
+                    tab_index,
+                    tab_handle,
                 )
                 internal_js_calls += int(select_result.pop("_js_calls", 0))
                 if resolved_target:
@@ -1276,7 +1410,15 @@ def browser_act(
                     break
                 current_observation_id = None
             elif typ == "wait":
-                wait_result = _wait_action(settings, browser, action, window_index, tab_index, initial_url)
+                wait_result = _wait_action(
+                    settings,
+                    browser,
+                    action,
+                    window_index,
+                    tab_index,
+                    initial_url,
+                    tab_handle,
+                )
                 compact_state_candidate = wait_result.pop("_compact_state", None)
                 internal_js_calls += int(wait_result.pop("_js_calls", 0))
                 results.append(wait_result)
@@ -1293,7 +1435,7 @@ def browser_act(
                 if eid:
                     focus_result = _run_json_js(
                         settings, browser, _batch_js([{"type": "focus", "element_id": eid}], current_observation_id),
-                        window_index, tab_index,
+                        window_index, tab_index, tab_handle,
                     )
                     internal_js_calls += 1
                     if not focus_result.get("ok"):
@@ -1333,19 +1475,29 @@ def browser_act(
         if compact_state_candidate is not None:
             response["state"] = compact_state_candidate
         else:
-            response["state"] = _run_json_js(settings, browser, _light_state_js(), window_index, tab_index)
+            response["state"] = _run_json_js(
+                settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+            )
             response["internal_js_calls"] += 1
     elif return_state == "full":
         try:
             full = _observe_payload(
-                settings, browser, "content", 120, window_index=window_index, tab_index=tab_index,
+                settings,
+                browser,
+                "content",
+                120,
+                window_index=window_index,
+                tab_index=tab_index,
+                tab_handle=tab_handle,
             )
             response["state"] = full
             response["internal_js_calls"] += 1
         except HTTPException as exc:
             if exc.status_code != status.HTTP_413_REQUEST_ENTITY_TOO_LARGE:
                 raise
-            response["state"] = _run_json_js(settings, browser, _light_state_js(), window_index, tab_index)
+            response["state"] = _run_json_js(
+                settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+            )
             response["state_fallback"] = "compact"
             response["full_state_error"] = "payload_too_large"
             response["internal_js_calls"] += 1

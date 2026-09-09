@@ -21,6 +21,18 @@ Mac MCP is a local macOS control server for AI agents. It exposes your Mac throu
 - Runtime settings are read live from `~/.mac-mcp/settings.json`; voice changes do not require an MCP restart.
 - The updater now carries the native `menu_app/` runtime alongside `mcp_server/` and refreshes an already-installed menu app after updates.
 
+## Browser automation that doesn't hijack your Mac
+
+Mac MCP can inspect and interact with Safari and Chrome tabs in the background while you keep working in another app or browser tab.
+
+- New browser tabs open in the background by default and return a stable `tab_handle`.
+- Stable tab handles survive tab-index changes, so long-running tasks keep targeting the intended Safari or Chrome tab even as other tabs open, close, or move.
+- `browser_observe` can return compact DOM context plus viewport, element, or full-page visuals without activating the browser, switching tabs, scrolling the user's page, or leaving screenshot files on disk.
+- High-level browser actions can target a specific background tab directly by handle, which makes parallel research and delegated-agent workflows practical without constant focus stealing.
+- Foreground-only fallbacks such as native key presses and absolute coordinate clicks fail closed unless foreground access is explicitly requested.
+
+This is designed for workflows where an AI agent keeps working in one or more background browser tabs while the Mac remains usable normally.
+
 ## Requirements
 
 - macOS 13+

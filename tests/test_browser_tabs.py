@@ -71,7 +71,9 @@ class BrowserTabHandleTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertFalse(result["foreground_forced"])
         self.assertNotIn("activate", scripts[0])
-        self.assertIn("set current tab to tab 2", scripts[0])
+        self.assertIn("set targetTab to tab 2", scripts[0])
+        self.assertIn("set current tab to targetTab", scripts[0])
+        self.assertIn("MAC_MCP_TAB_IDENTITY_CHANGED", scripts[0])
 
 
 if __name__ == "__main__":

@@ -11,7 +11,18 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from .security import Settings, authenticate, load_settings
+from .security import Settings, load_settings
+from .scoped_auth import resolve_request_identity
+from .policy import (
+    RISK_REGISTRY,
+    evaluate_profile,
+    evaluate_tool_scope,
+    filter_scoped_result,
+    policy_metadata,
+    profile_denied_result,
+    resolve_risk,
+    scope_denied_result,
+)
 from .tools_terminal import run_command, process_list, kill_process, get_system_info
 from .tools_jobs import (
     start_background_job, get_job_status, get_job_output,
@@ -50,11 +61,57 @@ def get_settings() -> Settings:
 
 
 def require_auth(request: Request) -> str:
-    settings = get_settings()
-    return authenticate(settings, request.headers.get("authorization"))
+    rate_key, context = resolve_request_identity(get_settings(), request.headers.get("authorization"))
+    request.state.policy_context = context
+    return rate_key
 
 
-router = APIRouter(dependencies=[Depends(require_auth)])
+def _authorize_rest_tool(request: Request, tool: str, arguments: Dict[str, Any]) -> None:
+    context = getattr(request.state, "policy_context", None)
+    if context is None:
+        _, context = resolve_request_identity(get_settings(), request.headers.get("authorization"))
+        request.state.policy_context = context
+    declared, effective = resolve_risk(tool, arguments)
+    decision = evaluate_profile(context.profile, effective)
+    request.state.policy_tool = tool
+    request.state.policy_metadata = policy_metadata(context, declared, effective, decision)
+    if not decision.allowed:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            detail=profile_denied_result(tool, decision, declared, effective),
+        )
+    scope_decision = evaluate_tool_scope(context.scope, tool, arguments, effective)
+    if not scope_decision.allowed and context.scope is not None:
+        request.state.policy_metadata["policy_decision"] = "scope_denied"
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            detail=scope_denied_result(tool, scope_decision, context.scope),
+        )
+
+
+def _filter_rest_result(request: Request, tool: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    context = getattr(request.state, "policy_context", None)
+    return filter_scoped_result(context.scope if context is not None else None, tool, result)
+
+
+async def require_policy(request: Request) -> None:
+    """Use the selected REST route, never a caller-supplied tool field, as identity."""
+
+    route = request.scope.get("route")
+    operation_id = str(getattr(route, "operation_id", "") or "")
+    if operation_id not in RISK_REGISTRY:
+        # Legacy grouped routes authorize after their validated dispatcher has
+        # selected one of the fixed operations below.
+        return
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    arguments = payload if isinstance(payload, dict) else {}
+    _authorize_rest_tool(request, operation_id, arguments)
+
+
+router = APIRouter(dependencies=[Depends(require_auth), Depends(require_policy)])
 
 
 # ── Request models ────────────────────────────────────────────────────────────
@@ -263,8 +320,8 @@ def api_jobs_stop(req: StopJobRequest, settings: Settings = Depends(get_settings
 
 
 @router.post("/jobs/list", operation_id="list_jobs")
-def api_jobs_list(req: ListJobsRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
-    return list_jobs(settings, status_filter=req.status_filter)
+def api_jobs_list(req: ListJobsRequest, request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
+    return _filter_rest_result(request, "list_jobs", list_jobs(settings, status_filter=req.status_filter))
 
 
 @router.post("/jobs/wait", operation_id="wait_jobs")
@@ -289,8 +346,11 @@ def api_run_parallel(req: RunParallelRequest, settings: Settings = Depends(get_s
 
 
 @router.post("/files", include_in_schema=False)
-def api_files(req: FilesRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
+def api_files(req: FilesRequest, request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     t = req.tool
+    if t not in _FILE_ALIAS_TOOLS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown file tool: {t}")
+    _authorize_rest_tool(request, t, req.model_dump())
     if t == "read_file":
         return read_file(settings, path=req.path, offset=req.offset or 0, length=req.length)
     elif t == "read_multiple_files":
@@ -324,8 +384,11 @@ def api_files(req: FilesRequest, settings: Settings = Depends(get_settings)) -> 
 
 
 @router.post("/macos", include_in_schema=False)
-def api_macos(req: MacOSRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
+def api_macos(req: MacOSRequest, request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     t = req.tool
+    if t not in _MACOS_ALIAS_TOOLS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown macOS tool: {t}")
+    _authorize_rest_tool(request, t, req.model_dump())
     if t == "run_applescript":
         return run_applescript(settings, script=req.script, timeout_s=req.timeout_s or 30)
     elif t == "send_notification":
@@ -356,12 +419,15 @@ def api_macos(req: MacOSRequest, settings: Settings = Depends(get_settings)) -> 
 
 
 @router.post("/browser", include_in_schema=False)
-def api_browser(req: BrowserRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
+def api_browser(req: BrowserRequest, request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     t = req.tool
+    if t not in _BROWSER_ALIAS_TOOLS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown browser tool: {t}")
+    _authorize_rest_tool(request, t, req.model_dump())
     if t == "browser_open_url":
         return browser_open_url(settings, browser=req.browser, url=req.url, new_tab=req.new_tab)
     elif t == "browser_list_tabs":
-        return browser_list_tabs(settings, browser=req.browser)
+        return _filter_rest_result(request, t, browser_list_tabs(settings, browser=req.browser))
     elif t == "browser_activate_tab":
         return browser_activate_tab(settings, browser=req.browser,
                                     window_index=req.window_index or 1, tab_index=req.tab_index or 1)
@@ -412,8 +478,11 @@ def api_browser(req: BrowserRequest, settings: Settings = Depends(get_settings))
 
 
 @router.post("/search", include_in_schema=False)
-def api_search(req: SearchRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
+def api_search(req: SearchRequest, request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
     t = req.tool
+    if t not in _SEARCH_ALIAS_TOOLS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown search tool: {t}")
+    _authorize_rest_tool(request, t, req.model_dump())
     if t == "search_files":
         return search_files(settings, pattern=req.pattern, path=req.path or str(Path.home()),
                             include_extensions=req.include_extensions, case_sensitive=req.case_sensitive)
@@ -493,12 +562,13 @@ def _request_payload(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 def _make_group_alias(handler: Any, request_model: Any, tool_name: str) -> Any:
     def endpoint(
+        request: Request,
         payload: Optional[Dict[str, Any]] = Body(default=None),
         settings: Settings = Depends(get_settings),
     ) -> Dict[str, Any]:
         data = _request_payload(payload)
         data["tool"] = tool_name
-        return handler(request_model(**data), settings)
+        return handler(request_model(**data), request, settings)
 
     endpoint.__name__ = f"api_{tool_name}"
     endpoint.__qualname__ = endpoint.__name__

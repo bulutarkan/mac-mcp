@@ -6,8 +6,9 @@ import os
 import signal
 import subprocess
 import time
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from fastapi import HTTPException, status
 
@@ -47,6 +48,8 @@ BROWSERS = {
     "google chrome": "Google Chrome",
 }
 
+_TAB_IDENTITY_CHANGED = "MAC_MCP_TAB_IDENTITY_CHANGED"
+
 
 def _norm_browser(browser: str) -> str:
     key = (browser or "").strip().lower()
@@ -68,6 +71,54 @@ def _resolve_tab_target(
         return wi, ti
     except KeyError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+
+
+@contextmanager
+def _tab_lease(
+    browser: str,
+    tab_handle: Optional[str],
+    window_index: int,
+    tab_index: Optional[int],
+) -> Iterator[browser_tabs.TabTarget]:
+    with ExitStack() as stack:
+        try:
+            target = stack.enter_context(
+                browser_tabs.tab_lease(
+                    browser,
+                    tab_handle=tab_handle,
+                    window_index=window_index,
+                    tab_index=tab_index,
+                )
+            )
+        except KeyError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        yield target
+
+
+def _tab_identity_guard(target: browser_tabs.TabTarget) -> str:
+    """Resolve and validate the native tab inside the same AppleScript as its action."""
+    native_id = _js_escape(target.native_id)
+    url = _js_escape(target.url)
+    title = _js_escape(target.title)
+    lines = [f"set targetTab to tab {target.tab_index}"]
+    if native_id and native_id != "0":
+        native_property = "id" if target.browser == "Google Chrome" else "pid"
+        lines.extend(
+            [
+                'set actualNativeId to ""',
+                f"try\nset actualNativeId to ({native_property} of targetTab) as text\nend try",
+                f'if actualNativeId is not "{native_id}" then error "{_TAB_IDENTITY_CHANGED}"',
+            ]
+        )
+    else:
+        title_property = "title" if target.browser == "Google Chrome" else "name"
+        lines.extend(
+            [
+                f'if ((URL of targetTab) as text) is not "{url}" then error "{_TAB_IDENTITY_CHANGED}"',
+                f'if (({title_property} of targetTab) as text) is not "{title}" then error "{_TAB_IDENTITY_CHANGED}"',
+            ]
+        )
+    return "\n".join(lines)
 
 
 def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) -> None:
@@ -106,6 +157,11 @@ def _run_osascript(script: str, timeout_s: int = 30) -> str:
 
     if proc.returncode != 0:
         msg = (stderr or stdout or "AppleScript error").strip()
+        if _TAB_IDENTITY_CHANGED in msg:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Target tab identity changed before the operation; resolve or observe the tab again.",
+            )
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, msg)
     return (stdout or "").strip()
 
@@ -204,36 +260,38 @@ def browser_activate_tab(
     allow_foreground: bool = False,
 ) -> Dict[str, Any]:
     b = _norm_browser(browser)
-    window_index, resolved_tab = _resolve_tab_target(b, tab_handle, window_index, tab_index)
-    tab_index = int(resolved_tab or tab_index)
-    if window_index < 1 or tab_index < 1:
+    if not tab_handle and (window_index < 1 or tab_index < 1):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "window_index and tab_index must be >= 1")
 
-    if b == "Safari":
-        script = f'''
-        tell application "Safari"
-            {"activate" if allow_foreground else ""}
-            tell window {window_index}
-                set current tab to tab {tab_index}
+    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+        guard = _tab_identity_guard(target)
+        if b == "Safari":
+            script = f'''
+            tell application "Safari"
+                {"activate" if allow_foreground else ""}
+                tell window {target.window_index}
+                    {guard}
+                    set current tab to targetTab
+                end tell
             end tell
-        end tell
-        '''
-    else:
-        script = f'''
-        tell application "Google Chrome"
-            {"activate" if allow_foreground else ""}
-            tell window {window_index}
-                set active tab index to {tab_index}
+            '''
+        else:
+            script = f'''
+            tell application "Google Chrome"
+                {"activate" if allow_foreground else ""}
+                tell window {target.window_index}
+                    {guard}
+                    set active tab index to {target.tab_index}
+                end tell
             end tell
-        end tell
-        '''
-    _run_osascript(script, timeout_s=30)
+            '''
+        _run_osascript(script, timeout_s=30)
     return {
         "ok": True,
         "browser": b,
-        "window_index": window_index,
-        "tab_index": tab_index,
-        "tab_handle": tab_handle,
+        "window_index": target.window_index,
+        "tab_index": target.tab_index,
+        "tab_handle": target.tab_handle,
         "foreground_forced": bool(allow_foreground),
     }
 
@@ -246,41 +304,60 @@ def browser_close_tab(
     tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     b = _norm_browser(browser)
-    window_index, resolved_tab = _resolve_tab_target(b, tab_handle, window_index, tab_index)
-    tab_index = int(resolved_tab or tab_index)
-    if window_index < 1 or tab_index < 1:
+    if not tab_handle and (window_index < 1 or tab_index < 1):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "window_index and tab_index must be >= 1")
 
-    if b == "Safari":
+    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+        guard = _tab_identity_guard(target)
         script = f'''
-        tell application "Safari"
-            tell window {window_index}
-                close tab {tab_index}
+        tell application "{b}"
+            tell window {target.window_index}
+                {guard}
+                close targetTab
             end tell
         end tell
         '''
-    else:
-        script = f'''
-        tell application "Google Chrome"
-            tell window {window_index}
-                close tab {tab_index}
-            end tell
-        end tell
-        '''
-    _run_osascript(script, timeout_s=30)
-    browser_tabs.forget(tab_handle)
+        _run_osascript(script, timeout_s=30)
+        browser_tabs.forget(target.tab_handle)
     return {
         "ok": True,
         "browser": b,
-        "window_index": window_index,
-        "tab_index": tab_index,
-        "tab_handle": tab_handle,
+        "window_index": target.window_index,
+        "tab_index": target.tab_index,
+        "tab_handle": target.tab_handle,
     }
 
 
 def _js_escape(js: str) -> str:
     # Safe AppleScript string literal: escape backslashes and quotes
     return (js or "").replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _execute_js_for_target(
+    browser: str,
+    js: str,
+    target: browser_tabs.TabTarget,
+    timeout_s: int,
+) -> str:
+    js_escaped = _js_escape(js)
+    guard = _tab_identity_guard(target)
+    if browser == "Safari":
+        script = f'''tell application "Safari"
+    tell window {target.window_index}
+        {guard}
+        set r to do JavaScript "{js_escaped}" in targetTab
+        return r
+    end tell
+end tell'''
+    else:
+        script = f'''tell application "Google Chrome"
+    tell window {target.window_index}
+        {guard}
+        set r to execute javascript "{js_escaped}" in targetTab
+        return r
+    end tell
+end tell'''
+    return _run_osascript(script, timeout_s=timeout_s)
 
 
 def browser_execute_js(
@@ -292,48 +369,18 @@ def browser_execute_js(
     tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     b = _norm_browser(browser)
-    window_index, tab_index = _resolve_tab_target(b, tab_handle, window_index, tab_index)
-    js_escaped = _js_escape(js)
-
-    if window_index < 1:
+    if not tab_handle and window_index < 1:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "window_index must be >= 1")
+    if not tab_handle and tab_index is not None and tab_index < 1:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "tab_index must be >= 1")
 
-    if b == "Safari":
-        if tab_index is None:
-            script = f'''
-            tell application "Safari"
-                set r to do JavaScript "{js_escaped}" in current tab of window {window_index}
-                return r
-            end tell
-            '''
-        else:
-            if tab_index < 1:
-                raise HTTPException(status.HTTP_400_BAD_REQUEST, "tab_index must be >= 1")
-            script = f'''
-            tell application "Safari"
-                set r to do JavaScript "{js_escaped}" in tab {tab_index} of window {window_index}
-                return r
-            end tell
-            '''
-    else:
-        if tab_index is None:
-            script = f'''
-            tell application "Google Chrome"
-                set r to execute javascript "{js_escaped}" in active tab of window {window_index}
-                return r
-            end tell
-            '''
-        else:
-            if tab_index < 1:
-                raise HTTPException(status.HTTP_400_BAD_REQUEST, "tab_index must be >= 1")
-            script = f'''
-            tell application "Google Chrome"
-                set r to execute javascript "{js_escaped}" in tab {tab_index} of window {window_index}
-                return r
-            end tell
-            '''
-
-    raw = _run_osascript(script, timeout_s=min(60, settings.max_wait_s))
+    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+        raw = _execute_js_for_target(
+            b,
+            js,
+            target,
+            timeout_s=min(60, settings.max_wait_s),
+        )
     raw, truncated = truncate(raw, settings.max_js_result_chars)
     return {"ok": True, "browser": b, "result": raw, "truncated": truncated}
 

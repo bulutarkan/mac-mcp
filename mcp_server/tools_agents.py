@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -7,14 +8,21 @@ import shutil
 import signal as signal_module
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from fastapi import HTTPException, status
 
+from .policy import PROFILES, narrow_child_profile
+from .policy_scope import (
+    ResourceScope, access_mode_allows, child_scope, normalize_access_mode, scope_contains,
+)
+from .scoped_auth import get_scoped_credential_store
 from .security import BASE_DIR, Settings, truncate
 
 AGENTS_DIR = BASE_DIR / "agents"
@@ -35,6 +43,8 @@ _RESULT_STYLES = {"concise", "detailed"}
 _WAIT_MODES = {"all", "any", "majority"}
 _WORKERS: Dict[str, subprocess.Popen] = {}
 _WORKERS_LOCK = threading.RLock()
+_META_LOCKS: Dict[str, threading.RLock] = {}
+_META_LOCKS_GUARD = threading.Lock()
 
 
 def _now() -> float:
@@ -51,7 +61,32 @@ def _meta_path(agent_id: str) -> Path:
     return _agent_dir(agent_id) / "meta.json"
 
 
-def _read_meta(agent_id: str) -> Dict[str, Any]:
+def _meta_thread_lock(agent_id: str) -> threading.RLock:
+    with _META_LOCKS_GUARD:
+        return _META_LOCKS.setdefault(agent_id, threading.RLock())
+
+
+@contextmanager
+def _locked_meta(agent_id: str, *, create_parent: bool = False) -> Iterator[None]:
+    """Serialize one agent's metadata across both threads and worker processes."""
+    path = _meta_path(agent_id)
+    thread_lock = _meta_thread_lock(agent_id)
+    with thread_lock:
+        if create_parent:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.parent.exists():
+            yield
+            return
+        lock_path = path.parent / ".meta.lock"
+        with lock_path.open("a", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _read_meta_unlocked(agent_id: str) -> Dict[str, Any]:
     path = _meta_path(agent_id)
     if not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Agent not found: {agent_id}")
@@ -61,12 +96,41 @@ def _read_meta(agent_id: str) -> Dict[str, Any]:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Corrupt agent metadata: {agent_id}") from exc
 
 
-def _write_meta(agent_id: str, meta: Dict[str, Any]) -> None:
+def _write_meta_unlocked(agent_id: str, meta: Dict[str, Any]) -> None:
     path = _meta_path(agent_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
+    fd, tmp_name = tempfile.mkstemp(prefix=".meta.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _read_meta(agent_id: str) -> Dict[str, Any]:
+    with _locked_meta(agent_id):
+        return _read_meta_unlocked(agent_id)
+
+
+def _write_meta(agent_id: str, meta: Dict[str, Any]) -> None:
+    with _locked_meta(agent_id, create_parent=True):
+        _write_meta_unlocked(agent_id, meta)
+
+
+def _update_meta(
+    agent_id: str,
+    update: Callable[[Dict[str, Any]], Optional[bool]],
+) -> Dict[str, Any]:
+    """Atomically update one agent; return False from update to skip the write."""
+    with _locked_meta(agent_id):
+        meta = _read_meta_unlocked(agent_id)
+        if update(meta) is not False:
+            _write_meta_unlocked(agent_id, meta)
+        return meta
 
 
 def _team_dir(team_id: str) -> Path:
@@ -100,6 +164,9 @@ def _write_team(team_id: str, meta: Dict[str, Any]) -> None:
 def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     team = dict(meta or _read_team(team_id))
     agent_ids = list(team.get("agent_ids") or [])
+    provider = str(team.get("provider") or "opencode").lower()
+    access_mode = str(team.get("access_mode") or "workspace_write")
+    access_info = _access_mode_info(provider, access_mode)
     counts: Dict[str, int] = {}
     for agent_id in agent_ids:
         try:
@@ -125,6 +192,10 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         "model": team.get("model"),
         "reasoning": team.get("reasoning"),
         "access_mode": team.get("access_mode"),
+        "permission_profile": team.get("permission_profile"),
+        "scope": team.get("scope"),
+        "access_mode_enforced": access_info["enforced"],
+        "access_mode_note": access_info["note"],
         "created_at": team.get("created_at"),
         "agent_ids": agent_ids,
         "count": len(agent_ids),
@@ -175,6 +246,25 @@ def _reap_worker(agent_id: str, proc: subprocess.Popen) -> None:
             _WORKERS.pop(agent_id, None)
 
 
+def _keychain_secret(service: str, account: str) -> Optional[str]:
+    if not service or not account:
+        return None
+    try:
+        result = subprocess.run(
+            ["/usr/bin/security", "find-generic-password", "-s", service, "-a", account, "-w"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = (result.stdout or "").strip()
+    return value or None
+
+
 def _base_env() -> Dict[str, str]:
     env = os.environ.copy()
     home = Path.home()
@@ -208,7 +298,74 @@ def _base_env() -> Dict[str, str]:
     root = str(BASE_DIR.parent)
     existing_pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = root + (":" + existing_pythonpath if existing_pythonpath else "")
+
+    if not env.get("OPENROUTER_API_KEY"):
+        service = os.getenv("MAC_MCP_OPENROUTER_KEYCHAIN_SERVICE", "openrouter-api-key").strip()
+        account = os.getenv("MAC_MCP_OPENROUTER_KEYCHAIN_ACCOUNT", user).strip()
+        key = _keychain_secret(service, account)
+        if key:
+            env["OPENROUTER_API_KEY"] = key
     return env
+
+
+def _provider_env(agent_id: str, meta: Dict[str, Any], scoped_token: str) -> Tuple[Dict[str, str], Optional[Path]]:
+    env = _base_env()
+    env["MAC_MCP_AGENT_TOKEN"] = scoped_token
+    cleanup_root: Optional[Path] = None
+    if str(meta.get("provider") or "").lower() == "opencode":
+        cleanup_root = _agent_dir(agent_id) / "provider_config"
+        config_dir = cleanup_root / "opencode"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            cleanup_root.chmod(0o700)
+            config_dir.chmod(0o700)
+        except OSError:
+            pass
+        config_path = config_dir / "opencode.jsonc"
+        payload: Dict[str, Any] = {
+            "$schema": "https://opencode.ai/config.json",
+            "mcp": {
+                "mac-mcp": {
+                    "type": "remote",
+                    "url": str(meta.get("mcp_endpoint") or "http://127.0.0.1:8765/mcp"),
+                    "headers": {"Authorization": f"Bearer {scoped_token}"},
+                }
+            },
+        }
+        selected_model = str(meta.get("model") or "").strip()
+        if selected_model.startswith("openrouter/"):
+            model_id = selected_model.removeprefix("openrouter/")
+            small_model = selected_model
+            models: Dict[str, Any] = {model_id: {}}
+            if model_id == "nex-agi/nex-n2.5-pro:free":
+                small_model = "openrouter/nex-agi/nex-n2.5-mini:free"
+                models["nex-agi/nex-n2.5-mini:free"] = {}
+            payload["provider"] = {
+                "openrouter": {
+                    "options": {"apiKey": "{env:OPENROUTER_API_KEY}"},
+                    "models": models,
+                }
+            }
+            payload["small_model"] = small_model
+        config_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        config_path.chmod(0o600)
+        env["XDG_CONFIG_HOME"] = str(cleanup_root)
+    return env, cleanup_root
+
+
+def _cleanup_provider_config(path: Optional[Path]) -> None:
+    if path is not None:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _codex_scoped_mcp_args(meta: Dict[str, Any]) -> List[str]:
+    if not meta.get("scoped_mcp"):
+        return []
+    endpoint = str(meta.get("mcp_endpoint") or "http://127.0.0.1:8765/mcp")
+    return [
+        "--config", f"mcp_servers.mac-mcp.url={json.dumps(endpoint)}",
+        "--config", 'mcp_servers.mac-mcp.bearer_token_env_var="MAC_MCP_AGENT_TOKEN"',
+    ]
 
 
 def _find_binary(provider: str) -> Optional[str]:
@@ -280,6 +437,93 @@ def _codex_known_models() -> Tuple[List[str], Optional[str], Optional[str]]:
     return models, default_model, default_reasoning_match.group(1) if default_reasoning_match else None
 
 
+def _access_mode_info(provider: str, access_mode: str) -> Dict[str, Any]:
+    if provider == "codex":
+        return {
+            "enforced": True,
+            "note": "Codex sandbox and approval policy are explicitly applied on initial and resumed runs.",
+        }
+    if access_mode == "read_only":
+        return {
+            "enforced": False,
+            "note": "OpenCode CLI has no enforceable read-only sandbox; this mode is refused.",
+        }
+    return {
+        "enforced": False,
+        "note": (
+            "OpenCode access_mode is not a hard filesystem sandbox; --auto uses OpenCode's permission model "
+            "and may allow access beyond cwd."
+        ),
+    }
+
+
+def _validate_provider_access_mode(provider: str, access_mode: str) -> None:
+    if provider == "opencode" and access_mode == "read_only":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "OpenCode read_only is unavailable: the installed CLI exposes no enforceable read-only sandbox. "
+            "The request was refused instead of relying on prompt instructions or --auto; use provider=codex.",
+        )
+
+
+def _requested_agent_scope(
+    workdir: Path,
+    access_mode: str,
+    raw_scope: Optional[Dict[str, Any]],
+    parent_scope: Optional[ResourceScope],
+    parent_profile: str,
+) -> Tuple[ResourceScope, str]:
+    try:
+        mode = normalize_access_mode(access_mode)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    profile = PROFILES.get(str(parent_profile or "trusted").strip().lower())
+    if profile is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Unknown parent permission profile.")
+    if not access_mode_allows(profile.access_mode_ceiling, mode):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Requested agent access_mode exceeds the parent permission profile.")
+
+    data: Dict[str, Any] = dict(raw_scope or {})
+    if "access_mode" in data:
+        try:
+            scoped_mode = normalize_access_mode(data["access_mode"])
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        if scoped_mode != mode:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "scope.access_mode must match access_mode.")
+    data["access_mode"] = mode.value
+    if "path_roots" not in data and mode.value != "full":
+        data["path_roots"] = [str(workdir)]
+    try:
+        requested = ResourceScope.from_dict(data)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid scope: {exc}") from exc
+
+    parent = parent_scope or ResourceScope.unrestricted()
+    if not scope_contains(parent, requested):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "scope_denied: child scope cannot widen the parent scope.")
+    effective = child_scope(parent, requested)
+    return effective, narrow_child_profile(profile.name, mode)
+
+
+def _scope_prompt(scope: ResourceScope, profile: str, provider: str) -> str:
+    scope_json = json.dumps(scope.to_dict(), ensure_ascii=False, sort_keys=True)
+    base = (
+        "This delegated agent has a server-enforced Mac MCP scope. Do not attempt to work around it. "
+        f"Permission profile: {profile}. Scope: {scope_json}. "
+        "Use only the resources and tool families inside this scope."
+    )
+    if provider == "opencode":
+        return (
+            base
+            + " OpenCode's native bash/filesystem tools are not constrained by the Mac MCP server scope. "
+              "Treat the same scope as a mandatory behavioral boundary for native OpenCode tools too: "
+              "do not read, write, inspect, execute, or navigate outside the allowed path roots/resources. "
+              "Mac MCP tool calls are enforced server-side and will fail closed outside scope."
+        )
+    return base
+
+
 def agent_catalog(
     settings: Settings,
     provider: Optional[str] = None,
@@ -310,6 +554,11 @@ def agent_catalog(
             "models_truncated": len(matched) > limit,
             "free_models": free_models[:50],
             "reasoning": "Pass a model-supported OpenCode --variant value such as minimal/low/medium/high/max.",
+            "access_modes": {
+                "read_only": {"supported": False, **_access_mode_info("opencode", "read_only")},
+                "workspace_write": {"supported": True, **_access_mode_info("opencode", "workspace_write")},
+                "full": {"supported": True, **_access_mode_info("opencode", "full")},
+            },
         }
     if not requested or requested == "codex":
         binary = _find_binary("codex")
@@ -321,6 +570,10 @@ def agent_catalog(
             "default_model": default_model,
             "default_reasoning": default_reasoning,
             "reasoning_values": ["none", "low", "medium", "high", "xhigh", "max"],
+            "access_modes": {
+                mode: {"supported": True, **_access_mode_info("codex", mode)}
+                for mode in sorted(_ACCESS_MODES)
+            },
         }
     return {"ok": True, "providers": providers}
 
@@ -354,6 +607,9 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     first_event = meta.get("first_event_at")
     spawn_requested = float(meta.get("spawn_requested_at") or started)
     usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else None
+    provider = str(meta.get("provider") or "opencode").lower()
+    access_mode = str(meta.get("access_mode") or "workspace_write")
+    access_info = _access_mode_info(provider, access_mode)
     return {
         "agent_id": agent_id,
         "team_id": meta.get("team_id"),
@@ -365,6 +621,11 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "reasoning": meta.get("reasoning"),
         "cwd": meta.get("cwd"),
         "access_mode": meta.get("access_mode"),
+        "permission_profile": meta.get("permission_profile"),
+        "scope": meta.get("scope"),
+        "scoped_mcp": bool(meta.get("scoped_mcp")),
+        "access_mode_enforced": access_info["enforced"],
+        "access_mode_note": access_info["note"],
         "started_at": meta.get("started_at"),
         "ended_at": meta.get("ended_at"),
         "duration_ms": int(max(0.0, now - started) * 1000),
@@ -401,13 +662,21 @@ def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
             provider_pid = meta.get("provider_pid")
             if provider_pid and _is_pid_alive(provider_pid):
                 _kill_group(provider_pid, signal_module.SIGTERM)
-            meta.update({
-                "status": "failed",
-                "ended_at": _now(),
-                "updated_at": _now(),
-                "note": "Agent worker exited before recording a terminal result.",
-            })
-            _write_meta(agent_id, meta)
+            def mark_failed(current: Dict[str, Any]) -> Optional[bool]:
+                current_worker_pid = current.get("worker_pid")
+                if current.get("status") not in {"starting", "running"}:
+                    return False
+                if not current_worker_pid or _is_pid_alive(current_worker_pid):
+                    return False
+                current.update({
+                    "status": "failed",
+                    "ended_at": _now(),
+                    "updated_at": _now(),
+                    "note": "Agent worker exited before recording a terminal result.",
+                })
+                return True
+
+            meta = _update_meta(agent_id, mark_failed)
     return meta
 
 
@@ -422,6 +691,8 @@ def _spawn_internal(
     title: Optional[str],
     result_style: str,
     access_mode: str,
+    scope: ResourceScope,
+    permission_profile: str,
     parent_agent_id: Optional[str] = None,
     resume_session_id: Optional[str] = None,
     attempt: int = 1,
@@ -441,6 +712,7 @@ def _spawn_internal(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"result_style must be one of: {', '.join(sorted(_RESULT_STYLES))}")
     if access_mode not in _ACCESS_MODES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"access_mode must be one of: {', '.join(sorted(_ACCESS_MODES))}")
+    _validate_provider_access_mode(provider, access_mode)
 
     workdir = _resolve_cwd(cwd)
     effective_timeout = min(max(10, int(timeout_s or DEFAULT_AGENT_TIMEOUT_S)), MAX_AGENT_TIMEOUT_S)
@@ -455,7 +727,13 @@ def _spawn_internal(
         "Use only inspection/read commands and tools."
         if access_mode == "read_only" else ""
     )
-    effective_prompt = user_prompt + ("\n\n" + access_instruction if access_instruction else "") + "\n\n" + _handoff_instruction(result_style)
+    scope_instruction = _scope_prompt(scope, permission_profile, provider)
+    effective_prompt = (
+        user_prompt
+        + ("\n\n" + access_instruction if access_instruction else "")
+        + "\n\n" + scope_instruction
+        + "\n\n" + _handoff_instruction(result_style)
+    )
     (path / "prompt.txt").write_text(user_prompt, encoding="utf-8")
     (path / "effective_prompt.txt").write_text(effective_prompt, encoding="utf-8")
     (path / "stdout.log").touch()
@@ -474,6 +752,10 @@ def _spawn_internal(
         "reasoning": reasoning,
         "cwd": str(workdir),
         "access_mode": access_mode,
+        "permission_profile": permission_profile,
+        "scope": scope.to_dict(),
+        "scoped_mcp": True,
+        "mcp_endpoint": os.getenv("MAC_MCP_AGENT_ENDPOINT", "http://127.0.0.1:8765/mcp"),
         "result_style": result_style,
         "timeout_s": effective_timeout,
         "idle_timeout_s": effective_idle_timeout,
@@ -519,15 +801,22 @@ def _spawn_internal(
         )
     except OSError as exc:
         worker_log.close()
-        meta.update({"status": "failed", "ended_at": _now(), "updated_at": _now(), "note": str(exc)})
-        _write_meta(agent_id, meta)
+        def mark_spawn_failed(current: Dict[str, Any]) -> None:
+            current.update({"status": "failed", "ended_at": _now(), "updated_at": _now(), "note": str(exc)})
+
+        _update_meta(agent_id, mark_spawn_failed)
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Could not start agent worker: {exc}") from exc
     worker_log.close()
     with _WORKERS_LOCK:
         _WORKERS[agent_id] = proc
     threading.Thread(target=_reap_worker, args=(agent_id, proc), daemon=True).start()
-    meta.update({"worker_pid": proc.pid, "status": "running", "updated_at": _now()})
-    _write_meta(agent_id, meta)
+    def record_worker(current: Dict[str, Any]) -> None:
+        current["worker_pid"] = proc.pid
+        if current.get("status") == "starting":
+            current["status"] = "running"
+        current["updated_at"] = _now()
+
+    meta = _update_meta(agent_id, record_worker)
     return {"ok": True, **_public_meta(agent_id, meta)}
 
 
@@ -544,10 +833,18 @@ def spawn_agent(
     access_mode: str = "workspace_write",
     idle_timeout_s: Optional[int] = None,
     retries: int = 0,
+    scope: Optional[Dict[str, Any]] = None,
+    parent_scope: Optional[ResourceScope] = None,
+    parent_profile: str = "trusted",
 ) -> Dict[str, Any]:
+    workdir = _resolve_cwd(cwd)
+    effective_scope, permission_profile = _requested_agent_scope(
+        workdir, access_mode, scope, parent_scope, parent_profile
+    )
     return _spawn_internal(
-        settings, provider, prompt, model, reasoning, cwd, timeout_s, title,
-        result_style, access_mode, idle_timeout_s=idle_timeout_s, retries=retries,
+        settings, provider, prompt, model, reasoning, str(workdir), timeout_s, title,
+        result_style, access_mode, effective_scope, permission_profile,
+        idle_timeout_s=idle_timeout_s, retries=retries,
     )
 
 
@@ -565,13 +862,16 @@ def spawn_agents(
     access_mode: str = "read_only",
     title: Optional[str] = None,
     parent_team_id: Optional[str] = None,
+    scope: Optional[Dict[str, Any]] = None,
+    parent_scope: Optional[ResourceScope] = None,
+    parent_profile: str = "trusted",
 ) -> Dict[str, Any]:
     if not tasks or not isinstance(tasks, list):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "tasks is required.")
     if len(tasks) > MAX_TEAM_SIZE:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"A team can contain at most {MAX_TEAM_SIZE} agents.")
     forbidden = {"provider", "model", "reasoning", "access_mode", "result_style"}
-    normalized: List[Dict[str, str]] = []
+    normalized: List[Dict[str, Any]] = []
     for index, task in enumerate(tasks, start=1):
         if not isinstance(task, dict):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}] must be an object.")
@@ -584,8 +884,19 @@ def spawn_agents(
         prompt = str(task.get("prompt") or task.get("task") or "").strip()
         if not prompt:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].prompt is required.")
-        normalized.append({"prompt": prompt, "title": str(task.get("title") or f"Agent {index}").strip()})
+        child_scope_raw = task.get("scope")
+        if child_scope_raw is not None and not isinstance(child_scope_raw, dict):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].scope must be an object.")
+        normalized.append({
+            "prompt": prompt,
+            "title": str(task.get("title") or f"Agent {index}").strip(),
+            "scope": child_scope_raw,
+        })
 
+    workdir = _resolve_cwd(cwd)
+    team_scope, team_profile = _requested_agent_scope(
+        workdir, access_mode, scope, parent_scope, parent_profile
+    )
     team_id = "team_" + uuid.uuid4().hex[:10]
     created = _now()
     team_meta: Dict[str, Any] = {
@@ -594,12 +905,14 @@ def spawn_agents(
         "provider": provider,
         "model": model,
         "reasoning": reasoning,
-        "cwd": str(_resolve_cwd(cwd)),
+        "cwd": str(workdir),
         "timeout_s": timeout_s,
         "idle_timeout_s": idle_timeout_s,
         "retries": min(max(0, int(retries)), 3),
         "result_style": result_style,
         "access_mode": access_mode,
+        "permission_profile": team_profile,
+        "scope": team_scope.to_dict(),
         "created_at": created,
         "updated_at": created,
         "parent_team_id": parent_team_id,
@@ -609,10 +922,39 @@ def spawn_agents(
     spawned: List[Dict[str, Any]] = []
     try:
         for task in normalized:
+            if task.get("scope") is None:
+                effective_scope, permission_profile = team_scope, team_profile
+            else:
+                child_data = dict(task["scope"])
+                if "access_mode" in child_data:
+                    try:
+                        child_mode = normalize_access_mode(child_data["access_mode"])
+                    except ValueError as exc:
+                        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+                    if child_mode.value != access_mode:
+                        raise HTTPException(
+                            status.HTTP_400_BAD_REQUEST,
+                            "task.scope.access_mode must match the team access_mode.",
+                        )
+                child_data["access_mode"] = access_mode
+                if "path_roots" not in child_data and access_mode != "full":
+                    child_data["path_roots"] = [str(workdir)]
+                try:
+                    requested_child = ResourceScope.from_dict(child_data)
+                except (TypeError, ValueError) as exc:
+                    raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid task scope: {exc}") from exc
+                if not scope_contains(team_scope, requested_child):
+                    raise HTTPException(
+                        status.HTTP_403_FORBIDDEN,
+                        "scope_denied: task scope cannot widen the team scope.",
+                    )
+                effective_scope = child_scope(team_scope, requested_child)
+                permission_profile = team_profile
             item = _spawn_internal(
                 settings=settings, provider=provider, prompt=task["prompt"], model=model,
-                reasoning=reasoning, cwd=cwd, timeout_s=timeout_s, title=task["title"],
-                result_style=result_style, access_mode=access_mode, team_id=team_id,
+                reasoning=reasoning, cwd=str(workdir), timeout_s=timeout_s, title=task["title"],
+                result_style=result_style, access_mode=access_mode, scope=effective_scope,
+                permission_profile=permission_profile, team_id=team_id,
                 idle_timeout_s=idle_timeout_s, retries=retries,
             )
             spawned.append(item)
@@ -773,6 +1115,18 @@ def _agent_action_single(
         allowed = {"TERM": signal_module.SIGTERM, "KILL": signal_module.SIGKILL, "INT": signal_module.SIGINT}
         if sig_name not in allowed:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "signal must be TERM, KILL, or INT.")
+        def mark_cancelled(current: Dict[str, Any]) -> None:
+            now = _now()
+            current.update({
+                "status": "cancelled",
+                "phase": "cancelled",
+                "ended_at": now,
+                "updated_at": now,
+                "note": f"Cancelled with {sig_name}.",
+            })
+
+        meta = _update_meta(agent_id, mark_cancelled)
+        get_scoped_credential_store().revoke_agent(agent_id)
         _kill_group(meta.get("provider_pid"), allowed[sig_name])
         _kill_group(meta.get("worker_pid"), allowed[sig_name])
         with _WORKERS_LOCK:
@@ -786,13 +1140,12 @@ def _agent_action_single(
                     worker_proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     pass
-        meta.update({"status": "cancelled", "ended_at": _now(), "updated_at": _now(), "note": f"Cancelled with {sig_name}."})
-        _write_meta(agent_id, meta)
         return {"ok": True, **_public_meta(agent_id, meta)}
 
     if action == "despawn":
         if meta.get("status") not in TERMINAL_STATUSES:
             raise HTTPException(status.HTTP_409_CONFLICT, "Cancel a running agent before despawn.")
+        get_scoped_credential_store().revoke_agent(agent_id)
         shutil.rmtree(_agent_dir(agent_id))
         return {"ok": True, "agent_id": agent_id, "status": "despawned"}
 
@@ -809,6 +1162,8 @@ def _agent_action_single(
             title=f"Retry: {meta.get('title') or agent_id}",
             result_style=meta.get("result_style", "concise"),
             access_mode=meta.get("access_mode", "workspace_write"),
+            scope=ResourceScope.from_dict(meta.get("scope")),
+            permission_profile=str(meta.get("permission_profile") or "trusted"),
             parent_agent_id=agent_id,
             attempt=int(meta.get("attempt", 1)) + 1,
             idle_timeout_s=meta.get("idle_timeout_s"),
@@ -833,6 +1188,8 @@ def _agent_action_single(
         title=f"Follow-up: {meta.get('title') or agent_id}",
         result_style=meta.get("result_style", "concise"),
         access_mode=meta.get("access_mode", "workspace_write"),
+        scope=ResourceScope.from_dict(meta.get("scope")),
+        permission_profile=str(meta.get("permission_profile") or "trusted"),
         parent_agent_id=agent_id,
         resume_session_id=session_id,
         attempt=int(meta.get("attempt", 1)) + 1,
@@ -896,6 +1253,7 @@ def agent_action(
             idle_timeout_s=team.get("idle_timeout_s"), retries=int(team.get("retries") or 0),
             result_style=team.get("result_style", "concise"), access_mode=team.get("access_mode", "read_only"),
             title=f"Retry: {team.get('title') or team_id}", parent_team_id=str(team_id),
+            scope=team.get("scope"), parent_profile="trusted",
         )
     raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be cancel, message, retry, or despawn.")
 
@@ -968,8 +1326,10 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
     model = meta.get("model")
     reasoning = meta.get("reasoning")
     resume_session_id = meta.get("resume_session_id")
+    access_mode = meta.get("access_mode", "workspace_write")
 
     if provider == "opencode":
+        _validate_provider_access_mode(provider, access_mode)
         cmd = [binary, "run", "--format", "json", "--auto", "--dir", meta["cwd"]]
         if model:
             cmd += ["--model", model]
@@ -982,6 +1342,12 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
 
     if resume_session_id:
         cmd = [binary, "exec", "resume", "--json", "--skip-git-repo-check", "-o", str(result_path)]
+        sandbox_map = {"read_only": "read-only", "workspace_write": "workspace-write", "full": "danger-full-access"}
+        cmd += [
+            "--config", 'approval_policy="never"',
+            "--config", f'sandbox_mode="{sandbox_map[access_mode]}"',
+        ]
+        cmd += _codex_scoped_mcp_args(meta)
         if model:
             cmd += ["--model", model]
         if reasoning:
@@ -994,9 +1360,9 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
         "-C", meta["cwd"], "-o", str(result_path),
         "--config", 'approval_policy="never"',
     ]
-    access_mode = meta.get("access_mode", "workspace_write")
     sandbox_map = {"read_only": "read-only", "workspace_write": "workspace-write", "full": "danger-full-access"}
     cmd += ["--sandbox", sandbox_map[access_mode]]
+    cmd += _codex_scoped_mcp_args(meta)
     if model:
         cmd += ["--model", model]
     if reasoning:
@@ -1013,19 +1379,9 @@ def _codex_tool_name(item: Dict[str, Any]) -> Optional[str]:
     return str(explicit).strip() if explicit else item_type
 
 
-def _record_provider_event(agent_id: str, raw_line: str) -> None:
-    now = _now()
-    try:
-        event = json.loads(raw_line)
-    except json.JSONDecodeError:
-        event = {"type": "output"}
-    try:
-        meta = _read_meta(agent_id)
-    except HTTPException:
-        return
+def _apply_provider_event(meta: Dict[str, Any], event: Dict[str, Any], now: float) -> Optional[bool]:
     if meta.get("status") == "cancelled":
-        return
-
+        return False
     event_type = str(event.get("type") or "output")
     provider = str(meta.get("provider") or "opencode").lower()
     part = event.get("part") if isinstance(event.get("part"), dict) else {}
@@ -1099,7 +1455,19 @@ def _record_provider_event(agent_id: str, raw_line: str) -> None:
             meta["phase"] = meta.get("phase") or "working"
 
     meta["updated_at"] = now
-    _write_meta(agent_id, meta)
+    return True
+
+
+def _record_provider_event(agent_id: str, raw_line: str) -> None:
+    now = _now()
+    try:
+        event = json.loads(raw_line)
+    except json.JSONDecodeError:
+        event = {"type": "output"}
+    try:
+        _update_meta(agent_id, lambda meta: _apply_provider_event(meta, event, now))
+    except HTTPException:
+        return
 
 def _capture_provider_stream(agent_id: str, stream, path: Path, parse_events: bool) -> None:
     with path.open("a", encoding="utf-8", errors="replace") as handle:
@@ -1128,47 +1496,88 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
         handle.write(marker)
     with stderr_path.open("a", encoding="utf-8") as handle:
         handle.write(marker)
-    cmd = _build_provider_command(meta, prompt, result_path)
-    proc = subprocess.Popen(
-        cmd, cwd=meta["cwd"], env=_base_env(), stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, start_new_session=True,
+
+    scope = ResourceScope.from_dict(meta.get("scope"))
+    store = get_scoped_credential_store()
+    scoped_token, credential_id = store.issue(
+        agent_id=agent_id,
+        team_id=meta.get("team_id"),
+        profile=str(meta.get("permission_profile") or "trusted"),
+        scope=scope,
+        ttl_s=int(meta.get("timeout_s") or DEFAULT_AGENT_TIMEOUT_S) + 300,
     )
-    now = _now()
-    latest = _read_meta(agent_id)
-    if latest.get("status") == "cancelled":
-        _kill_group(proc.pid, signal_module.SIGTERM)
-        return proc.wait(), "cancelled"
-    latest.update({
-        "provider_pid": proc.pid, "provider_started_at": now, "last_activity_at": now,
-        "phase": "provider_starting", "updated_at": now, "retry_count": attempt_index,
-    })
-    _write_meta(agent_id, latest)
-    out_thread = threading.Thread(target=_capture_provider_stream, args=(agent_id, proc.stdout, stdout_path, True), daemon=True)
-    err_thread = threading.Thread(target=_capture_provider_stream, args=(agent_id, proc.stderr, stderr_path, False), daemon=True)
-    out_thread.start(); err_thread.start()
-    attempt_started = time.monotonic()
-    stop_reason: Optional[str] = None
-    timeout_s = int(meta.get("timeout_s") or DEFAULT_AGENT_TIMEOUT_S)
-    idle_timeout_s = meta.get("idle_timeout_s")
-    while proc.poll() is None:
-        latest = _read_meta(agent_id)
-        if latest.get("status") == "cancelled":
-            stop_reason = "cancelled"
-        elif time.monotonic() - attempt_started >= timeout_s:
-            stop_reason = "timeout"
-        elif idle_timeout_s and _now() - float(latest.get("last_activity_at") or latest.get("provider_started_at") or _now()) >= int(idle_timeout_s):
-            stop_reason = "stalled"
-        if stop_reason:
+
+    def record_credential(current: Dict[str, Any]) -> None:
+        current["scoped_credential_id"] = credential_id
+        current["updated_at"] = _now()
+
+    _update_meta(agent_id, record_credential)
+    env, cleanup_root = _provider_env(agent_id, meta, scoped_token)
+    try:
+        cmd = _build_provider_command(meta, prompt, result_path)
+        proc = subprocess.Popen(
+            cmd, cwd=meta["cwd"], env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, start_new_session=True,
+        )
+        now = _now()
+        cancelled_at_start = False
+
+        def record_provider_start(current: Dict[str, Any]) -> Optional[bool]:
+            nonlocal cancelled_at_start
+            if current.get("status") == "cancelled":
+                cancelled_at_start = True
+                return False
+            current.update({
+                "provider_pid": proc.pid, "provider_started_at": now, "last_activity_at": now,
+                "phase": "provider_starting", "updated_at": now, "retry_count": attempt_index,
+            })
+            return True
+
+        latest = _update_meta(agent_id, record_provider_start)
+        if cancelled_at_start:
             _kill_group(proc.pid, signal_module.SIGTERM)
-            try:
-                proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                _kill_group(proc.pid, signal_module.SIGKILL)
-            break
-        time.sleep(0.2)
-    exit_code = proc.wait()
-    out_thread.join(timeout=2); err_thread.join(timeout=2)
-    return exit_code, stop_reason
+            return proc.wait(), "cancelled"
+        out_thread = threading.Thread(target=_capture_provider_stream, args=(agent_id, proc.stdout, stdout_path, True), daemon=True)
+        err_thread = threading.Thread(target=_capture_provider_stream, args=(agent_id, proc.stderr, stderr_path, False), daemon=True)
+        out_thread.start(); err_thread.start()
+        attempt_started = time.monotonic()
+        stop_reason: Optional[str] = None
+        timeout_s = int(meta.get("timeout_s") or DEFAULT_AGENT_TIMEOUT_S)
+        idle_timeout_s = meta.get("idle_timeout_s")
+        while proc.poll() is None:
+            latest = _read_meta(agent_id)
+            if latest.get("status") == "cancelled":
+                stop_reason = "cancelled"
+            elif time.monotonic() - attempt_started >= timeout_s:
+                stop_reason = "timeout"
+            elif idle_timeout_s and _now() - float(latest.get("last_activity_at") or latest.get("provider_started_at") or _now()) >= int(idle_timeout_s):
+                stop_reason = "stalled"
+            if stop_reason:
+                _kill_group(proc.pid, signal_module.SIGTERM)
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    _kill_group(proc.pid, signal_module.SIGKILL)
+                break
+            time.sleep(0.2)
+        exit_code = proc.wait()
+        out_thread.join(timeout=2); err_thread.join(timeout=2)
+        return exit_code, stop_reason
+    finally:
+        store.revoke_token_id(credential_id)
+        _cleanup_provider_config(cleanup_root)
+
+        def clear_credential(current: Dict[str, Any]) -> Optional[bool]:
+            if current.get("scoped_credential_id") == credential_id:
+                current["scoped_credential_id"] = None
+                current["updated_at"] = _now()
+                return True
+            return False
+
+        try:
+            _update_meta(agent_id, clear_credential)
+        except HTTPException:
+            pass
 
 
 def _worker(agent_id: str) -> int:
@@ -1179,8 +1588,19 @@ def _worker(agent_id: str) -> int:
     stderr_path = path / "stderr.log"
     result_path = path / "result.txt"
     now = _now()
-    meta.update({"status": "running", "phase": "worker_starting", "worker_started_at": now, "last_activity_at": now, "updated_at": now})
-    _write_meta(agent_id, meta)
+
+    def record_worker_start(current: Dict[str, Any]) -> Optional[bool]:
+        if current.get("status") == "cancelled":
+            return False
+        current.update({
+            "status": "running", "phase": "worker_starting", "worker_started_at": now,
+            "last_activity_at": now, "updated_at": now,
+        })
+        return True
+
+    meta = _update_meta(agent_id, record_worker_start)
+    if meta.get("status") == "cancelled":
+        return 0
 
     final_reason: Optional[str] = None
     exit_code = 1
@@ -1191,12 +1611,20 @@ def _worker(agent_id: str) -> int:
             if latest.get("status") == "cancelled":
                 return 0
             if attempt_index > 0:
-                latest.update({
-                    "phase": "retrying", "retry_count": attempt_index, "provider_pid": None,
-                    "provider_started_at": None, "last_activity_at": _now(),
-                    "note": f"Retrying same model after {final_reason or 'provider_error'}.", "updated_at": _now(),
-                })
-                _write_meta(agent_id, latest)
+                def record_retry(current: Dict[str, Any]) -> Optional[bool]:
+                    if current.get("status") == "cancelled":
+                        return False
+                    now = _now()
+                    current.update({
+                        "phase": "retrying", "retry_count": attempt_index, "provider_pid": None,
+                        "provider_started_at": None, "last_activity_at": now,
+                        "note": f"Retrying same model after {final_reason or 'provider_error'}.", "updated_at": now,
+                    })
+                    return True
+
+                latest = _update_meta(agent_id, record_retry)
+                if latest.get("status") == "cancelled":
+                    return 0
                 time.sleep(min(2.0, 0.75 * attempt_index))
             exit_code, stop_reason = _run_provider_attempt(agent_id, latest, prompt, attempt_index)
             final_reason = stop_reason
@@ -1208,14 +1636,19 @@ def _worker(agent_id: str) -> int:
             if attempt_index + 1 >= max_attempts:
                 break
     except Exception as exc:
-        meta = _read_meta(agent_id)
-        if meta.get("status") != "cancelled":
-            meta.update({
-                "status": "failed", "phase": "failed", "exit_code": None, "ended_at": _now(), "updated_at": _now(),
+        def record_worker_failure(current: Dict[str, Any]) -> Optional[bool]:
+            if current.get("status") == "cancelled":
+                return False
+            now = _now()
+            current.update({
+                "status": "failed", "phase": "failed", "exit_code": None, "ended_at": now, "updated_at": now,
                 "note": f"Agent worker error: {exc}",
             })
+            return True
+
+        meta = _update_meta(agent_id, record_worker_failure)
+        if meta.get("status") != "cancelled":
             result_path.write_text(f"Agent worker error: {exc}", encoding="utf-8")
-            _write_meta(agent_id, meta)
         return 1
 
     meta = _read_meta(agent_id)
@@ -1246,15 +1679,23 @@ def _worker(agent_id: str) -> int:
         final_status = "stalled"
     else:
         final_status = "completed" if exit_code == 0 else "failed"
-    meta.update({
-        "status": final_status, "phase": "completed" if final_status == "completed" else final_status,
-        "exit_code": exit_code, "ended_at": _now(), "updated_at": _now(),
-        "session_id": session_id or meta.get("resume_session_id"), "usage": usage,
-        "result_truncated": was_truncated, "result_chars": len(result), "provider_pid": None,
-    })
-    if final_status != "completed":
-        meta["note"] = f"Provider ended as {final_status} with code {exit_code}."
-    _write_meta(agent_id, meta)
+    def record_completion(current: Dict[str, Any]) -> Optional[bool]:
+        if current.get("status") == "cancelled":
+            return False
+        now = _now()
+        current.update({
+            "status": final_status, "phase": "completed" if final_status == "completed" else final_status,
+            "exit_code": exit_code, "ended_at": now, "updated_at": now,
+            "session_id": session_id or current.get("resume_session_id"), "usage": usage,
+            "result_truncated": was_truncated, "result_chars": len(result), "provider_pid": None,
+        })
+        if final_status != "completed":
+            current["note"] = f"Provider ended as {final_status} with code {exit_code}."
+        return True
+
+    meta = _update_meta(agent_id, record_completion)
+    if meta.get("status") == "cancelled":
+        return 0
     return 0 if final_status == "completed" else 1
 
 

@@ -11,6 +11,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Respon
 from starlette.routing import Route
 
 from .observability import TelemetryManager, sanitize_value
+from .policy import RISK_REGISTRY
 from .security import Settings
 from .tools_agents import list_agents
 from .version import __version__
@@ -201,7 +202,11 @@ async def rest_telemetry_middleware(request: Request, call_next, telemetry: Tele
 
     rest_path = request.url.path.removeprefix("/api").rstrip("/") or "/"
     path_tool = rest_path.rsplit("/", 1)[-1] or "rest"
-    tool_name = str(payload.get("tool") or REST_TOOL_ALIASES.get(rest_path) or path_tool)
+    # One-to-one aliases and operation paths are authoritative. Grouped legacy
+    # endpoints are renamed after their validated dispatcher selects a tool.
+    tool_name = str(REST_TOOL_ALIASES.get(rest_path) or (
+        path_tool if path_tool in RISK_REGISTRY else f"rest{rest_path.replace('/', '.')}"
+    ))
     arguments = dict(payload)
     arguments["http_method"] = request.method
     arguments["path"] = request.url.path
@@ -222,12 +227,22 @@ async def rest_telemetry_middleware(request: Request, call_next, telemetry: Tele
     except BaseException as exc:
         telemetry.finish_call(event_id, error=exc)
         raise
+    policy_tool = getattr(request.state, "policy_tool", None)
+    policy_fields = getattr(request.state, "policy_metadata", None)
+    telemetry.update_context(event_id, tool=policy_tool, metadata=policy_fields)
+    policy_denied = bool(
+        isinstance(policy_fields, dict)
+        and policy_fields.get("policy_decision") == "profile_denied"
+    )
+    result = {
+        "http_status": response.status_code,
+        "content_type": response.headers.get("content-type"),
+    }
+    if policy_denied:
+        result.update({"ok": False, "denied": True, "error": "profile_denied"})
     telemetry.finish_call(
         event_id,
-        result={
-            "http_status": response.status_code,
-            "content_type": response.headers.get("content-type"),
-        },
-        error=None if response.status_code < 400 else f"HTTP {response.status_code}",
+        result=result,
+        error=None if response.status_code < 400 or policy_denied else f"HTTP {response.status_code}",
     )
     return response

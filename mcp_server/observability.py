@@ -10,9 +10,23 @@ import time
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
+
+from .policy import (
+    PolicyContext,
+    annotations_for_tool,
+    current_policy_context,
+    evaluate_profile,
+    evaluate_tool_scope,
+    filter_scoped_result,
+    policy_metadata,
+    profile_denied_result,
+    resolve_risk,
+    scope_denied_result,
+)
 
 
 DEFAULT_TELEMETRY_DIR = Path.home() / ".mac-mcp" / "dashboard"
@@ -135,6 +149,67 @@ def _parse_json(text: Optional[str]) -> Any:
         return text
 
 
+_TELEMETRY_METADATA_COLUMNS = {
+    "declared_risk": "declared_risk_json",
+    "effective_risk": "effective_risk_json",
+    "profile": "profile",
+    "policy_decision": "policy_decision",
+    "actor": "actor",
+    "agent_id": "agent_id",
+    "team_id": "team_id",
+    "resource": "resource_json",
+    "scope": "scope_json",
+    "lock": "lock_json",
+}
+_JSON_METADATA_FIELDS = {"declared_risk", "effective_risk", "resource", "scope", "lock"}
+
+
+def _mapping_failure_status(value: Any) -> Optional[str]:
+    if hasattr(value, "model_dump"):
+        try:
+            value = value.model_dump()
+        except Exception:
+            return None
+    if not isinstance(value, dict):
+        return None
+    marker = str(value.get("error") or value.get("code") or "").strip().lower()
+    state = str(value.get("status") or value.get("state") or "").strip().lower()
+    if value.get("denied") is True or marker in {"denied", "profile_denied", "scope_denied"} or state == "denied":
+        return "denied"
+    if value.get("blocked") is True or marker == "blocked" or state == "blocked":
+        return "blocked"
+    if value.get("ok") is False or state in {"error", "failed", "failure", "cancelled"}:
+        return "error"
+    return None
+
+
+def normalize_result_status(result: Any, error: Optional[BaseException | str] = None) -> str:
+    """Normalize tool-shaped failures even when no exception was raised."""
+
+    if error is not None:
+        return "error"
+    direct = _mapping_failure_status(result)
+    if direct is not None:
+        return direct
+    if isinstance(result, (list, tuple)):
+        for item in result:
+            item_status = _mapping_failure_status(item)
+            if item_status is not None:
+                return item_status
+            if hasattr(item, "model_dump"):
+                try:
+                    payload = item.model_dump()
+                except Exception:
+                    continue
+                text = payload.get("text") if isinstance(payload, dict) else None
+                if isinstance(text, str):
+                    parsed = _parse_json(text)
+                    text_status = _mapping_failure_status(parsed)
+                    if text_status is not None:
+                        return text_status
+    return "success"
+
+
 class TelemetryManager:
     def __init__(
         self,
@@ -193,10 +268,24 @@ class TelemetryManager:
                 arguments_json TEXT,
                 result_json TEXT,
                 result_size INTEGER NOT NULL DEFAULT 0,
-                error TEXT
+                error TEXT,
+                declared_risk_json TEXT,
+                effective_risk_json TEXT,
+                profile TEXT,
+                policy_decision TEXT,
+                actor TEXT,
+                agent_id TEXT,
+                team_id TEXT,
+                resource_json TEXT,
+                scope_json TEXT,
+                lock_json TEXT
             )
             """
         )
+        existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(tool_events)").fetchall()}
+        for column in _TELEMETRY_METADATA_COLUMNS.values():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE tool_events ADD COLUMN {column} TEXT")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tool_events_time ON tool_events(timestamp DESC)"
         )
@@ -217,7 +306,7 @@ class TelemetryManager:
             self._recent.append(self._row_to_event(row))
 
     def _row_to_event(self, row: sqlite3.Row) -> Dict[str, Any]:
-        return {
+        event = {
             "kind": "call_finished",
             "event_id": row["event_id"],
             "timestamp": row["timestamp"],
@@ -232,6 +321,11 @@ class TelemetryManager:
             "result_size": row["result_size"],
             "error": row["error"],
         }
+        columns = set(row.keys())
+        for field, column in _TELEMETRY_METADATA_COLUMNS.items():
+            raw = row[column] if column in columns else None
+            event[field] = _parse_json(raw) if field in _JSON_METADATA_FIELDS else raw
+        return event
 
     def _publish(self, event: Dict[str, Any]) -> None:
         with self._lock:
@@ -260,7 +354,14 @@ class TelemetryManager:
         with self._lock:
             self._subscribers = [(loop, q) for loop, q in self._subscribers if q is not queue]
 
-    def start_call(self, source: str, tool: str, arguments: Optional[Dict[str, Any]] = None) -> str:
+    def start_call(
+        self,
+        source: str,
+        tool: str,
+        arguments: Optional[Dict[str, Any]] = None,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
         now = time.time()
         event_id = "evt_" + uuid.uuid4().hex[:14]
         event = {
@@ -273,6 +374,8 @@ class TelemetryManager:
             "started_at": now,
             "arguments": sanitize_value(arguments or {}, preview_chars=self.preview_chars),
         }
+        for field in _TELEMETRY_METADATA_COLUMNS:
+            event[field] = sanitize_value((metadata or {}).get(field), preview_chars=self.preview_chars)
         with self._lock:
             self._active[event_id] = event
         self._publish(event)
@@ -284,7 +387,31 @@ class TelemetryManager:
             if event is not None:
                 event["arguments"] = sanitize_value(arguments, preview_chars=self.preview_chars)
 
-    def finish_call(self, event_id: str, *, result: Any = None, error: Optional[BaseException | str] = None) -> Dict[str, Any]:
+    def update_context(
+        self,
+        event_id: str,
+        *,
+        tool: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        with self._lock:
+            event = self._active.get(event_id)
+            if event is None:
+                return
+            if tool:
+                event["tool"] = str(tool)
+            for field in _TELEMETRY_METADATA_COLUMNS:
+                if field in (metadata or {}):
+                    event[field] = sanitize_value(metadata[field], preview_chars=self.preview_chars)
+
+    def finish_call(
+        self,
+        event_id: str,
+        *,
+        result: Any = None,
+        error: Optional[BaseException | str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         ended = time.time()
         with self._lock:
             started_event = self._active.pop(event_id, None)
@@ -306,7 +433,7 @@ class TelemetryManager:
             "timestamp": ended,
             "source": started_event["source"],
             "tool": started_event["tool"],
-            "status": "error" if error is not None else "success",
+            "status": normalize_result_status(result, error),
             "started_at": started_event["started_at"],
             "ended_at": ended,
             "duration_ms": max(0, int((ended - float(started_event["started_at"])) * 1000)),
@@ -315,6 +442,9 @@ class TelemetryManager:
             "result_size": len(result_text.encode("utf-8")),
             "error": safe_error,
         }
+        for field in _TELEMETRY_METADATA_COLUMNS:
+            value = (metadata or {}).get(field, started_event.get(field))
+            event[field] = sanitize_value(value, preview_chars=self.preview_chars)
         self._insert_event(event)
         with self._lock:
             self._recent.append(event)
@@ -327,14 +457,20 @@ class TelemetryManager:
                 """
                 INSERT OR REPLACE INTO tool_events (
                     event_id, timestamp, source, tool, status, started_at, ended_at,
-                    duration_ms, arguments_json, result_json, result_size, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    duration_ms, arguments_json, result_json, result_size, error,
+                    declared_risk_json, effective_risk_json, profile, policy_decision,
+                    actor, agent_id, team_id, resource_json, scope_json, lock_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event["event_id"], event["timestamp"], event["source"], event["tool"],
                     event["status"], event["started_at"], event["ended_at"], event["duration_ms"],
                     _json_text(event.get("arguments")), _json_text(event.get("result")),
                     int(event.get("result_size") or 0), event.get("error"),
+                    _json_text(event.get("declared_risk")), _json_text(event.get("effective_risk")),
+                    event.get("profile"), event.get("policy_decision"), event.get("actor"),
+                    event.get("agent_id"), event.get("team_id"), _json_text(event.get("resource")),
+                    _json_text(event.get("scope")), _json_text(event.get("lock")),
                 ),
             )
         self._writes += 1
@@ -404,7 +540,7 @@ class TelemetryManager:
                 """
                 SELECT COUNT(*) AS total,
                        SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) AS success,
-                       SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors,
+                       SUM(CASE WHEN status<>'success' THEN 1 ELSE 0 END) AS errors,
                        AVG(duration_ms) AS avg_duration
                 FROM tool_events WHERE timestamp >= ?
                 """,
@@ -420,7 +556,7 @@ class TelemetryManager:
                     """
                     SELECT tool, COUNT(*) AS calls,
                            ROUND(AVG(duration_ms)) AS avg_duration_ms,
-                           SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS errors
+                           SUM(CASE WHEN status<>'success' THEN 1 ELSE 0 END) AS errors
                     FROM tool_events WHERE timestamp >= ?
                     GROUP BY tool ORDER BY calls DESC, tool ASC LIMIT 8
                     """,
@@ -460,18 +596,68 @@ class TelemetryManager:
 
 
 class ObservedFastMCP(FastMCP):
-    """FastMCP with one central telemetry hook for every protocol tool call."""
+    """FastMCP with central registration hints, enforcement, and telemetry."""
 
-    def __init__(self, *args: Any, telemetry: TelemetryManager, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        telemetry: TelemetryManager,
+        policy_context_provider: Callable[[], PolicyContext] = current_policy_context,
+        **kwargs: Any,
+    ) -> None:
         self.telemetry = telemetry
+        self._policy_context_provider = policy_context_provider
         super().__init__(*args, **kwargs)
 
+    def tool(
+        self,
+        name: Optional[str] = None,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        annotations: Any = None,
+        icons: Any = None,
+        meta: Optional[dict[str, Any]] = None,
+        structured_output: Optional[bool] = None,
+    ):
+        def register(fn: Any):
+            effective_name = name or fn.__name__
+            central_annotations = annotations_for_tool(effective_name)
+            return super(ObservedFastMCP, self).tool(
+                name=name,
+                title=title,
+                description=description,
+                annotations=central_annotations,
+                icons=icons,
+                meta=meta,
+                structured_output=structured_output,
+            )(fn)
+        return register
+
     async def call_tool(self, name: str, arguments: dict[str, Any]):
-        event_id = self.telemetry.start_call("mcp", name, arguments)
+        declared, effective = resolve_risk(name, arguments)
+        context = self._policy_context_provider()
+        decision = evaluate_profile(context.profile, effective)
+        metadata = policy_metadata(context, declared, effective, decision)
+        event_id = self.telemetry.start_call("mcp", name, arguments, metadata=metadata)
+        if not decision.allowed:
+            result = profile_denied_result(name, decision, declared, effective)
+            self.telemetry.finish_call(event_id, result=result)
+            raise ToolError(
+                f"profile_denied: tool={name}; profile={decision.profile}; reason={decision.reason}"
+            )
+        scope_decision = evaluate_tool_scope(context.scope, name, arguments, effective)
+        if not scope_decision.allowed and context.scope is not None:
+            result = scope_denied_result(name, scope_decision, context.scope)
+            self.telemetry.finish_call(
+                event_id, result=result, metadata={"policy_decision": "scope_denied"}
+            )
+            reasons = ",".join(scope_decision.reasons) or "scope_rejected"
+            raise ToolError(f"scope_denied: tool={name}; reasons={reasons}")
         try:
             result = await super().call_tool(name, arguments)
         except BaseException as exc:
             self.telemetry.finish_call(event_id, error=exc)
             raise
+        result = filter_scoped_result(context.scope, name, result)
         self.telemetry.finish_call(event_id, result=result)
         return result

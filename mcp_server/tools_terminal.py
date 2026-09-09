@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import HTTPException, status
 
-from .security import Settings, truncate
+from .security import Settings, require_shell_enabled, truncate
 
 
 def _timeout(settings: Settings, timeout_s: Optional[int]) -> int:
@@ -38,6 +38,7 @@ def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) 
 
 def run_command(settings: Settings, command: str, timeout_s: Optional[int] = None) -> Dict[str, Any]:
     """Run any shell command in zsh login mode."""
+    require_shell_enabled(settings)
     timeout = _timeout(settings, timeout_s)
     env = os.environ.copy()
     env.update({
@@ -49,7 +50,7 @@ def run_command(settings: Settings, command: str, timeout_s: Optional[int] = Non
         "LC_ALL": "en_US.UTF-8",
     })
 
-    argv = ["/bin/zsh", "-lc", command] if settings.allow_shell else command.split()
+    argv = ["/bin/zsh", "-lc", command]
     start = time.perf_counter()
     proc = subprocess.Popen(
         argv,

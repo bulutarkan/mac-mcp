@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
 
-from .security import BASE_DIR, Settings, truncate
+from .security import BASE_DIR, Settings, require_shell_enabled, truncate
 
 JOBS_DIR = BASE_DIR / "jobs"
 DEFAULT_JOB_ENV = {
@@ -267,6 +267,7 @@ def start_background_job(
     timeout_s: Optional[int] = None,
     no_output_timeout_s: Optional[int] = None,
 ) -> Dict[str, Any]:
+    require_shell_enabled(settings)
     if not command or not command.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "command is required.")
 
@@ -285,7 +286,7 @@ def start_background_job(
     if not workdir.exists() or not workdir.is_dir():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"cwd does not exist or is not a directory: {workdir}")
 
-    argv = ["/bin/zsh", "-lc", command] if settings.allow_shell else command.split()
+    argv = ["/bin/zsh", "-lc", command]
     started_at = _now()
     meta = {
         "job_id": job_id,
@@ -444,6 +445,7 @@ def run_commands_parallel(
     timeout_s: Optional[int] = None,
     return_output: bool = True,
 ) -> Dict[str, Any]:
+    require_shell_enabled(settings)
     if not commands:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "commands is required.")
     effective_timeout = _wait_timeout(settings, timeout_s)

@@ -158,6 +158,20 @@ def _start_server(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_ngrok_binary(configured: str | None = None) -> str | None:
+    candidates = [
+        configured,
+        os.getenv("NGROK_BIN"),
+        shutil.which("ngrok"),
+        "/opt/homebrew/bin/ngrok",
+        "/usr/local/bin/ngrok",
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return str(Path(candidate))
+    return None
+
+
 def _start_ngrok(args: argparse.Namespace) -> int:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     _remove_stale_pid(NGROK_PID_FILE)
@@ -174,8 +188,7 @@ def _start_ngrok(args: argparse.Namespace) -> int:
         print("NGROK_DOMAIN is not set. Add it to mcp_server/.env or pass --ngrok-domain your-domain.ngrok-free.dev")
         return 2
 
-    ngrok_bin = args.ngrok_bin or os.getenv("NGROK_BIN", "ngrok")
-    ngrok_path = shutil.which(ngrok_bin)
+    ngrok_path = _resolve_ngrok_binary(args.ngrok_bin)
     if ngrok_path is None:
         print("ngrok was not found. Install it with Homebrew or set NGROK_BIN in mcp_server/.env")
         return 2

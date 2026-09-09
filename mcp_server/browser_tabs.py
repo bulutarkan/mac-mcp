@@ -4,11 +4,29 @@ import hashlib
 import subprocess
 import threading
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+import weakref
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 
 _LOCK = threading.RLock()
 _REGISTRY: Dict[str, Dict[str, Any]] = {}
+_RESOURCE_LOCKS_LOCK = threading.Lock()
+_RESOURCE_LOCKS: weakref.WeakValueDictionary[Tuple[str, str], threading.RLock] = (
+    weakref.WeakValueDictionary()
+)
+
+
+@dataclass(frozen=True)
+class TabTarget:
+    browser: str
+    window_index: int
+    tab_index: int
+    tab_handle: str
+    native_id: str
+    title: str
+    url: str
 
 
 def _osascript(script: str) -> str:
@@ -30,6 +48,16 @@ def _browser_key(browser: str) -> str:
     if key in {"chrome", "google chrome"}:
         return "Google Chrome"
     return browser
+
+
+def _resource_lock(browser: str, tab_handle: str) -> threading.RLock:
+    key = (_browser_key(browser), str(tab_handle))
+    with _RESOURCE_LOCKS_LOCK:
+        lock = _RESOURCE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _RESOURCE_LOCKS[key] = lock
+        return lock
 
 
 def _scan(browser: str) -> List[Dict[str, Any]]:
@@ -166,6 +194,70 @@ def resolve_tab(browser: str, tab_handle: str) -> Tuple[int, int, Dict[str, Any]
         if row.get("tab_handle") == handle:
             return int(row["window_index"]), int(row["tab_index"]), row
     raise KeyError(f"Unknown or closed tab_handle: {handle}")
+
+
+def resolve_location(
+    browser: str,
+    window_index: int,
+    tab_index: Optional[int],
+) -> Tuple[int, int, Dict[str, Any]]:
+    wi = int(window_index)
+    rows = list_tabs(browser)
+    if tab_index is None:
+        match = next(
+            (row for row in rows if int(row["window_index"]) == wi and bool(row.get("active"))),
+            None,
+        )
+    else:
+        ti = int(tab_index)
+        match = next(
+            (
+                row
+                for row in rows
+                if int(row["window_index"]) == wi and int(row["tab_index"]) == ti
+            ),
+            None,
+        )
+    if match is None:
+        target = "active tab" if tab_index is None else f"tab {tab_index}"
+        raise KeyError(f"Unknown or closed {target} in window {window_index}")
+    return int(match["window_index"]), int(match["tab_index"]), match
+
+
+def _target_from_row(row: Dict[str, Any]) -> TabTarget:
+    return TabTarget(
+        browser=_browser_key(str(row.get("browser") or "")),
+        window_index=int(row["window_index"]),
+        tab_index=int(row["tab_index"]),
+        tab_handle=str(row["tab_handle"]),
+        native_id=str(row.get("native_id") or ""),
+        title=str(row.get("title") or ""),
+        url=str(row.get("url") or ""),
+    )
+
+
+@contextmanager
+def tab_lease(
+    browser: str,
+    tab_handle: Optional[str] = None,
+    window_index: int = 1,
+    tab_index: Optional[int] = None,
+) -> Iterator[TabTarget]:
+    """Serialize work for one logical tab and refresh its location after waiting.
+
+    Index-only callers are first bound to the stable handle currently occupying that
+    location. Once the per-handle lock is acquired, the handle is resolved again so a
+    tab move while waiting cannot redirect the operation to its old index.
+    """
+    handle = str(tab_handle or "").strip()
+    if not handle:
+        _, _, row = resolve_location(browser, window_index, tab_index)
+        handle = str(row["tab_handle"])
+
+    lock = _resource_lock(browser, handle)
+    with lock:
+        _, _, row = resolve_tab(browser, handle)
+        yield _target_from_row(row)
 
 
 def handle_for_location(browser: str, window_index: int, tab_index: int) -> Optional[str]:

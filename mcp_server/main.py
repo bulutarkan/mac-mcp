@@ -17,6 +17,8 @@ from starlette.routing import Route, Mount
 from mcp.server.transport_security import TransportSecuritySettings
 from .security import RateLimiter, Settings, authenticate, client_ip, load_settings, rate_limit, setup_audit_logger
 from .observability import ObservedFastMCP, TelemetryManager
+from .policy import current_policy_context, reset_policy_context, set_policy_context
+from .scoped_auth import resolve_request_identity
 from .dashboard_routes import create_dashboard_routes, rest_telemetry_middleware
 from .tools_terminal import run_command, process_list, kill_process, get_system_info
 from .tools_jobs import (
@@ -105,11 +107,18 @@ def create_app():
                 })
             if request.url.path.startswith("/mcp"):
                 try:
-                    token = authenticate(settings, request.headers.get("authorization"))
+                    rate_key, policy_context = resolve_request_identity(
+                        settings, request.headers.get("authorization")
+                    )
                     ip = client_ip(request)
-                    rate_limit(limiter, token, ip)
+                    rate_limit(limiter, rate_key, ip)
                 except HTTPException as exc:
                     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+                context_token = set_policy_context(policy_context)
+                try:
+                    return await call_next(request)
+                finally:
+                    reset_policy_context(context_token)
             return await call_next(request)
 
     # ── Terminal tools ──────────────────────────────────────────────────────
@@ -217,37 +226,45 @@ def create_app():
         name="spawn_agent",
         description=(
             "Delegate one task to OpenCode or Codex in a non-blocking background process. "
-            "Supports idle timeout and same-model retries; concise final handoff is the default."
+            "Supports idle timeout and same-model retries; concise final handoff is the default. "
+            "Codex enforces access_mode; OpenCode read_only is refused and its other modes are not a hard sandbox."
         ),
     )
     def _spawn_agent(provider: str, prompt: str, model: Optional[str] = None,
                      reasoning: Optional[str] = None, cwd: Optional[str] = None,
                      timeout_s: Optional[int] = None, title: Optional[str] = None,
                      result_style: str = "concise", access_mode: str = "workspace_write",
-                     idle_timeout_s: Optional[int] = None, retries: int = 0) -> Dict[str, Any]:
+                     idle_timeout_s: Optional[int] = None, retries: int = 0,
+                     scope: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        context = current_policy_context()
         return _log(audit_logger, "spawn_agent",
                     lambda: spawn_agent(settings, provider=provider, prompt=prompt, model=model,
                                         reasoning=reasoning, cwd=cwd, timeout_s=timeout_s,
                                         title=title, result_style=result_style, access_mode=access_mode,
-                                        idle_timeout_s=idle_timeout_s, retries=retries))
+                                        idle_timeout_s=idle_timeout_s, retries=retries, scope=scope,
+                                        parent_scope=context.scope, parent_profile=context.profile))
 
     @mcp.tool(
         name="spawn_agents",
         description=(
             "Spawn 1-10 background agents as one team in a single call. All children inherit the same "
-            "provider, model, reasoning and access_mode. Returns immediately with team_id and agent_ids."
+            "provider, model, reasoning and access_mode. Codex enforces access_mode; OpenCode read_only is refused "
+            "and its other modes are not a hard sandbox. Returns immediately with team_id and agent_ids."
         ),
     )
     def _spawn_agents(tasks: List[Dict[str, Any]], provider: str, model: Optional[str] = None,
                       reasoning: Optional[str] = None, cwd: Optional[str] = None,
                       timeout_s: Optional[int] = None, idle_timeout_s: Optional[int] = None,
                       retries: int = 1, result_style: str = "concise",
-                      access_mode: str = "read_only", title: Optional[str] = None) -> Dict[str, Any]:
+                      access_mode: str = "read_only", title: Optional[str] = None,
+                      scope: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        context = current_policy_context()
         return _log(audit_logger, "spawn_agents",
                     lambda: spawn_agents(settings, tasks=tasks, provider=provider, model=model,
                                          reasoning=reasoning, cwd=cwd, timeout_s=timeout_s,
                                          idle_timeout_s=idle_timeout_s, retries=retries,
-                                         result_style=result_style, access_mode=access_mode, title=title))
+                                         result_style=result_style, access_mode=access_mode, title=title,
+                                         scope=scope, parent_scope=context.scope, parent_profile=context.profile))
 
     @mcp.tool(
         name="wait_agents",

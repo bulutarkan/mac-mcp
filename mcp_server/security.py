@@ -96,6 +96,15 @@ def load_settings() -> Settings:
     )
 
 
+def require_shell_enabled(settings: Settings) -> None:
+    """Fail closed before any command execution when shell tools are disabled."""
+    if not settings.allow_shell:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Shell execution is disabled by MCP_ALLOW_SHELL=false.",
+        )
+
+
 # ── Path resolution (full filesystem access) ───────────────────────────────
 def resolve_path(user_path: str) -> Path:
     """Resolve any path. Absolute paths are used as-is if they exist.
