@@ -110,6 +110,27 @@ class VoiceToolTests(unittest.TestCase):
         self.assertEqual("prompt_busy", result["error"])
         speak.assert_not_called()
 
+    def test_disabled_voice_tool_returns_fallback_before_key_or_audio(self):
+        with patch.object(tools_voice, "tool_enabled", return_value=False), \
+             patch.object(tools_voice, "_resolve_groq_api_key") as key, \
+             patch.object(tools_voice, "_speak_question") as speak:
+            result = tools_voice.ask_user_voice(None, "Cevap verir misin?")
+        self.assertFalse(result["ok"])
+        self.assertEqual("experimental_tool_disabled", result["error"])
+        self.assertEqual("ask_user", result["fallback_tool"])
+        key.assert_not_called(); speak.assert_not_called()
+
+    def test_keychain_groq_key_is_used_after_environment(self):
+        with patch.dict(tools_voice.os.environ, {"MAC_MCP_VOICE_GROQ_API_KEY": "", "GROQ_API_KEY": ""}, clear=False), \
+             patch.object(tools_voice, "keychain_password", return_value="keychain-secret"):
+            self.assertEqual("keychain-secret", tools_voice._resolve_groq_api_key())
+
+    def test_environment_groq_key_keeps_precedence_over_keychain(self):
+        with patch.dict(tools_voice.os.environ, {"MAC_MCP_VOICE_GROQ_API_KEY": "env-secret"}, clear=False), \
+             patch.object(tools_voice, "keychain_password") as keychain:
+            self.assertEqual("env-secret", tools_voice._resolve_groq_api_key())
+        keychain.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

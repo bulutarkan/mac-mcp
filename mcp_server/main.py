@@ -961,6 +961,8 @@ def create_app():
             "transcribe it, and return the response without opening a text dialog. "
             "Prefer one concise conversational sentence (roughly 15 words or fewer). "
             "The default Turkish neural voice is tr-TR-AhmetNeural; saying 'atla', 'iptal', 'boşver', or 'vazgeç' skips. "
+            "This tool is experimental and the local user can disable it at runtime; if it returns "
+            "experimental_tool_disabled, immediately fall back to ask_user. "
             "Use this when hands-free human input is useful during an autonomous task."
         ),
         annotations=ToolAnnotations(
@@ -974,8 +976,8 @@ def create_app():
     async def _ask_user_voice(
         question: str,
         sender: str = "AI",
-        timeout_s: int = 45,
-        voice: str = "tr-TR-AhmetNeural",
+        timeout_s: Optional[int] = None,
+        voice: Optional[str] = None,
     ) -> Dict[str, Any]:
         return await asyncio.to_thread(
             _log,

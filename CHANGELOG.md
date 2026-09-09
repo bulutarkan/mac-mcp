@@ -1,3 +1,14 @@
+## [2.0.0] - 2026-09-09
+
+- Added the native SwiftUI `Mac MCP.app` menu bar controller with no Dock icon and independent server lifecycle.
+- Added menu bar Start/Stop/Restart/Update/Dashboard controls plus live server, ngrok, tool-call, success-rate, and delegated-agent status.
+- Added compact internal scrolling for delegated-agent history and tool usage (five visible tool rows), plus an active-agent robot animation and pulsing status icon.
+- Added a collapsed-by-default Voice disclosure panel with live `ask_user_voice` enable/disable behavior and explicit `ask_user` fallback when disabled.
+- Added macOS Keychain Groq credential storage and CoreAudio input/output device selection.
+- Added live runtime settings under `~/.mac-mcp/settings.json` without requiring server restart for voice changes.
+- Extended the safe updater to carry `menu_app/` alongside `mcp_server/` and refresh an installed menu app on successful updates.
+- Updated runtime/package versions to 2.0.0 and simplified the README around the current 2.0 architecture.
+
 # Changelog
 
 ## [1.8.0] - 2026-09-08

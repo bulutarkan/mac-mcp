@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
+from .runtime_settings import keychain_password, tool_enabled, voice_setting
 from .security import Settings
 from .tools_interactive import _DIALOG_LOCK, _normalize_timeout, _validate_question_and_sender
 
@@ -166,6 +167,10 @@ def _resolve_groq_api_key() -> Optional[str]:
     )
     if direct:
         return direct
+
+    keychain_value = keychain_password()
+    if keychain_value:
+        return keychain_value
 
     domain = os.getenv("MAC_MCP_VOICE_GROQ_DEFAULTS_DOMAIN", "").strip()
     if not domain:
@@ -353,11 +358,20 @@ def ask_user_voice(
     settings: Settings,
     question: str,
     sender: str = "AI",
-    timeout_s: int = 45,
-    voice: str = _DEFAULT_VOICE,
+    timeout_s: Optional[int] = None,
+    voice: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Speak a short question, record the local user's answer, and return its transcript."""
-    total_timeout = _normalize_timeout(timeout_s)
+    if not tool_enabled("ask_user_voice", default=True):
+        return {
+            "ok": False,
+            "error": "experimental_tool_disabled",
+            "message": "ask_user_voice is experimental and temporarily disabled by the local user. Use ask_user instead.",
+            "fallback_tool": "ask_user",
+        }
+
+    configured_timeout = voice_setting("timeout_s", 45)
+    total_timeout = _normalize_timeout(timeout_s if timeout_s is not None else configured_timeout)
     if total_timeout is None:
         return {"ok": False, "error": "timeout_s must be a positive integer"}
 
@@ -366,9 +380,11 @@ def ask_user_voice(
         return common
     question_display, sender_display = common
 
-    if not isinstance(voice, str) or not voice.strip():
+    configured_voice = voice_setting("voice", _DEFAULT_VOICE)
+    effective_voice = voice if isinstance(voice, str) and voice.strip() else configured_voice
+    if not isinstance(effective_voice, str) or not effective_voice.strip():
         return {"ok": False, "error": "voice must be a non-empty string"}
-    voice = voice.strip()[:100]
+    voice = effective_voice.strip()[:100]
 
     if not _DIALOG_LOCK.acquire(blocking=False):
         return {
@@ -388,10 +404,10 @@ def ask_user_voice(
             ),
         }
 
-    language = os.getenv("MAC_MCP_VOICE_LANGUAGE", _DEFAULT_LANGUAGE).strip() or _DEFAULT_LANGUAGE
-    input_mode = os.getenv("MAC_MCP_VOICE_INPUT_DEVICE", _DEFAULT_INPUT_MODE).strip() or _DEFAULT_INPUT_MODE
-    output_mode = os.getenv("MAC_MCP_VOICE_OUTPUT_DEVICE", _DEFAULT_OUTPUT_MODE).strip() or _DEFAULT_OUTPUT_MODE
-    rate = os.getenv("MAC_MCP_VOICE_TTS_RATE", _DEFAULT_RATE).strip() or _DEFAULT_RATE
+    language = str(voice_setting("language", os.getenv("MAC_MCP_VOICE_LANGUAGE", _DEFAULT_LANGUAGE)) or _DEFAULT_LANGUAGE).strip() or _DEFAULT_LANGUAGE
+    input_mode = str(voice_setting("input_device", os.getenv("MAC_MCP_VOICE_INPUT_DEVICE", _DEFAULT_INPUT_MODE)) or _DEFAULT_INPUT_MODE).strip() or _DEFAULT_INPUT_MODE
+    output_mode = str(voice_setting("output_device", os.getenv("MAC_MCP_VOICE_OUTPUT_DEVICE", _DEFAULT_OUTPUT_MODE)) or _DEFAULT_OUTPUT_MODE).strip() or _DEFAULT_OUTPUT_MODE
+    rate = str(voice_setting("tts_rate", os.getenv("MAC_MCP_VOICE_TTS_RATE", _DEFAULT_RATE)) or _DEFAULT_RATE).strip() or _DEFAULT_RATE
 
     try:
         with tempfile.TemporaryDirectory(prefix="mac-mcp-voice-") as temp_root:

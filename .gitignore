@@ -23,5 +23,7 @@ jobs/
 .idea/
 
 mcp_server/agents/
-
 mcp_server/agent_teams/
+
+# Native menu bar app build output
+menu_app/build/

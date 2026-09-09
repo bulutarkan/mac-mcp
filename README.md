@@ -1,98 +1,34 @@
-# Mac MCP
-
 <p align="center">
-  <img src="assets/screenshots/mac-mcp.png">
+  <img src="assets/screenshots/mac-mcp.png" alt="Mac MCP" width="760">
 </p>
 
-## Screenshots
+# Mac MCP 2.0
 
-<p align="center">
-  <img src="assets/screenshots/mac-mcp-system-info.png" alt="Mac MCP checking CPU, RAM, battery, and disk from a Custom GPT" width="33%">
-  <img src="assets/screenshots/mac-mcp-system-info-detailed.png" alt="Mac MCP checking CPU, RAM, battery, and disk from a Custom GPT" width="33%">
-  <img src="assets/screenshots/mac-mcp-git-commits.png" alt="Mac MCP listing latest Git commits from a local repository" width="33%">
-</p>
+Mac MCP is a local macOS control server for AI agents. It exposes your Mac through a native MCP endpoint and a REST/OpenAPI surface, with shell, files, browser automation, macOS UI control, delegated OpenCode/Codex agents, memory, Agent Skills, voice interaction, self-update tooling, and a local operations dashboard.
 
-Mac MCP is a local macOS control server for AI agents. It exposes the same Mac through a native MCP endpoint and a REST/OpenAPI surface for clients such as Custom GPT Actions.
+> **Security:** Mac MCP can execute commands, read/write files, and control desktop apps. Keep authentication enabled whenever the service is reachable outside localhost and expose it only to clients you trust. The operations dashboard is loopback-only.
 
-Version 1.8.0 includes 81 MCP tools covering shell execution, files, processes, background jobs, delegated OpenCode/Codex agents, macOS automation, background-first browser control with stable tab handles, persistent AI memory, reusable Agent Skills, self-updates, screenshots, HTTP requests, search, text and voice interaction, choices/confirmations, and a unified macOS UI observation/action layer. The local observability dashboard remains available without adding a separate service.
+## What's new in 2.0
 
-> **Security:** Mac MCP can execute shell commands, read and modify files, and control your desktop. Keep authentication enabled whenever the server is reachable outside localhost. Use a strong `MCP_API_KEY`, keep `MCP_ALLOW_NO_AUTH=false`, and only expose the server to clients you trust. The operations dashboard is additionally restricted to loopback access and is not served through the ngrok tunnel.
-
-## What's new in v1.8.0
-
-- Added `ask_user_voice`: the agent can speak a short question through the Mac, listen for the local user's spoken answer, transcribe it, and continue the same MCP task without a text dialog.
-- Default Turkish speech uses the free `tr-TR-AhmetNeural` Edge neural voice; transcription uses Groq `whisper-large-v3-turbo`. The Groq key can be supplied directly or read from an existing macOS UserDefaults domain without copying the secret into source code.
-- Voice prompts follow the current macOS system audio output by default (for example AirPods when connected) and fall back from a silent default microphone to the built-in microphone. Native helper binaries are compiled lazily into `~/.mac-mcp/cache/voice` and do not stay resident in RAM.
-
-Previous v1.7.0 additions (local operations dashboard) remain unchanged.
-
-- Added a live **Mac MCP Operations** dashboard at `http://localhost:<port>/dashboard`. It runs on the same port as the MCP server; no second dashboard service or port is required.
-- Every MCP protocol tool call is observed centrally through `ObservedFastMCP`, so current and future tools automatically appear with status, latency, sanitized arguments, sanitized result previews, and errors without per-tool telemetry wiring.
-- Added REST telemetry, live Server-Sent Events, 1h/24h/7d filtering, tool/source/status filters, hot-tool frequency, delegated OpenCode/Codex agent visibility, and an inspectable call-detail drawer.
-- Added a persistent local flight recorder at `~/.mac-mcp/dashboard/telemetry.sqlite3` with 7-day / 20,000-event defaults, WAL mode, restart persistence, and schema recovery.
-- Added credential/token/cookie/private-key redaction, binary/base64 summarization, bounded previews, and loopback-only dashboard enforcement so `/dashboard` remains local even when `/mcp` is reachable through ngrok.
-- Added `mac-mcp dashboard` to open the dashboard locally and startup output that prints the local dashboard URL.
-
-Previous v1.6.4 additions (stable browser tab handles and background-first browser automation) remain unchanged.
-
-- Browser tabs have stable `tab_handle` identifiers. Chrome handles use Chrome's native tab ID; Safari uses a Mac MCP registry that survives tab-index shifts.
-- `browser_open_url` opens new tabs in the background by default and high-level observe/find/act flows can target stable handles without stealing foreground focus.
-
-Previous v1.6.3 additions (Agent Skills and shared embeddings) remain unchanged.
-
-- Added five MCP-native Agent Skills tools: `skill_list`, `skill_search`, `skill_get`, `skill_register`, and `skill_update_index`.
-- Added open `SKILL.md` support with YAML `name`/`description`, managed skills under `~/.mac-mcp/skills`, optional `scripts/`, `references/`, `assets/`, external skill registration, and progressive disclosure.
-- `memory_search` and `skill_search` now share one on-demand FastEmbed/MiniLM worker, model cache, and idle timer instead of creating separate model processes.
-- Preserved the Mac-specific semantic fallback chain: multilingual MiniLM → Apple NaturalLanguage → dependency-free feature hash.
-- Added shared embedding environment names (`MAC_MCP_EMBEDDING*`) while keeping existing `MAC_MCP_MEMORY_*` embedding variables as backward-compatible aliases.
-- MCP tool count is now 81; the legacy REST/OpenAPI surface remains stable for backwards compatibility.
-
-## Benefits and usage strategy: ChatGPT Chat vs ChatGPT Work vs Codex
-
-Mac MCP can be used from ordinary ChatGPT conversations, ChatGPT Work, and Codex. The connector and the MCP tools are the same; the useful surface depends on whether the task is primarily conversation, workspace work, or repository implementation.
-
-### Why ChatGPT Chat becomes especially powerful with Mac MCP
-
-**ChatGPT Chat + Mac MCP is not limited to ordinary question-and-answer use.** Once the connector is enabled, **ChatGPT Chat can act as a long-working, coding-capable, agentic workspace for the Mac**: it can plan a task, inspect the Accessibility tree with `mac_observe`, operate applications with `mac_act`, read and modify project files, run commands, start bounded background jobs, and inspect the results in the same conversation. This makes **long-working tasks, coding workflows, research, troubleshooting, and desktop automation** available from one natural-language interface.
-
-The key benefit is the combination of **ChatGPT Chat's reasoning and conversation flow** with **Mac MCP's local execution layer**. The MCP server supplies the Mac-side capabilities; the ChatGPT surface supplies the planning, iteration, and explanation. Use the smallest safe tool call for each step and keep the server's authentication and tunnel private.
-
-| Surface | Best for | Benefit with Mac MCP | Official usage picture |
-| --- | --- | --- | --- |
-| **ChatGPT Chat** (cloud chat) | Conversational planning, explanations, research, summaries | **With Mac MCP, we turn this conversational surface into an agentic workspace for long-working tasks, coding, research, troubleshooting, and desktop automation: inspect, act, run bounded jobs, edit files, test, and iterate in one thread.** | OpenAI says cloud chats on ChatGPT plans use GPT-5.6 Sol and may use more allowance than local messages. Local messages and cloud chats share a five-hour window; additional weekly limits may apply. |
-| **ChatGPT Work** | Workspace conversations, longer knowledge-work tasks, and collaboration | Useful when the Mac action is part of a broader workspace task | Work and Codex share the same pricing, credits, and usage limits. Work should not be treated as a separately documented unlimited pool. |
-| **Codex** (local, CLI/IDE, or cloud) | Repository changes, coding, tests, and repeatable engineering workflows | Best fit for making and verifying code changes while Mac MCP handles local UI or system actions | For ChatGPT Plus, OpenAI publishes approximate local-message ranges per five-hour window: Sol **10–100**, Terra **25–200**, and Luna **250–2,000**. These are estimates, not guaranteed caps. |
-
-Official references: [Models](https://learn.chatgpt.com/docs/models) and [Pricing, credits, and usage limits](https://learn.chatgpt.com/docs/pricing).
-
-## Tool coverage
-
-| Area | MCP tools | Highlights |
-| --- | ---: | --- |
-| Terminal & system | 4 | shell commands, process list/kill, system info |
-| Background jobs | 7 | start/status/output/stop/list/wait/parallel |
-| Agent delegation | 7 | OpenCode/Codex catalog, single/team spawn, bounded wait, status/result, lifecycle control |
-| Files | 13 | read/write/edit/copy/move/delete/tree/search-by-name |
-| macOS | 12 | AppleScript, apps, clipboard, notifications, reminders, screenshots, volume/brightness |
-| Unified UI | 2 | `mac_observe`, `mac_act` |
-| Search | 2 | recursive grep, Spotlight |
-| HTTP | 1 | outbound HTTP requests with validation |
-| Browser | 18 | tabs, JS, selectors, compact visual DOM, semantic find, batch actions, screenshots, scrolling, coordinate fallback |
-| Interactive | 4 | native text question/answer, voice question/answer, choice, and confirmation |
-| Memory | 5 | Markdown-backed persistent memory with exact get, hybrid search, date/range selection, update, delete |
-| Agent Skills | 5 | SKILL.md discovery, hybrid search, progressive load, external registration, index refresh |
-| Self-update | 1 | commit-based update check/apply with runtime overlay preservation, backup, restart, health check, rollback |
-| **Total** | **81** | |
+- Native **Mac MCP.app** menu bar controller written in SwiftUI. It runs without a Dock icon and remains independent from the Python server.
+- Start, Stop, Restart, Update, Dashboard, server status, ngrok status, success rate, recent tool usage, and delegated-agent status are available from the menu bar.
+- **Latest Tool Usage** shows up to five rows at once and scrolls internally for older calls.
+- **Delegated Agents** keeps a compact fixed-height list and scrolls internally when multiple active/recent agents exist. Active work also triggers a lightweight animated robot and a pulsing menu bar status icon.
+- **Voice** is a collapsed disclosure section by default. `ask_user_voice` can be enabled/disabled live without removing the MCP tool from discovery.
+- When voice is disabled, calls return `experimental_tool_disabled` and instruct the agent to fall back to `ask_user`.
+- Groq API keys can be stored in **macOS Keychain** instead of plaintext configuration.
+- Voice input/output pickers enumerate connected CoreAudio devices such as AirPods, built-in microphone, and speakers.
+- Runtime settings are read live from `~/.mac-mcp/settings.json`; voice changes do not require an MCP restart.
+- The updater now carries the native `menu_app/` runtime alongside `mcp_server/` and refreshes an already-installed menu app after updates.
 
 ## Requirements
 
-- macOS
+- macOS 13+
+- Apple Silicon or Intel Mac
 - Python 3.10+
 - Git
-- Xcode Command Line Tools (`swiftc`) for the lazily compiled voice microphone helper
-- ngrok account only if you want a public HTTPS URL for Custom GPT Actions or ChatGPT Developer Mode
-
-Install the core tools:
+- Xcode Command Line Tools (`swiftc`)
+- ngrok only if you want a public HTTPS MCP endpoint
 
 ```bash
 brew install python git ngrok
@@ -101,22 +37,10 @@ brew install python git ngrok
 Optional helpers:
 
 ```bash
-brew install cliclick      # coordinate mouse actions / typing fallback for mac_act
-brew install tesseract     # OCR for mac_observe(..., ocr=true)
-brew install brightness    # set_brightness
+brew install cliclick brightness
 ```
 
-### macOS permissions
-
-For full desktop control, grant the process that runs Mac MCP the permissions needed by the tools you use:
-
-- **Accessibility**: required for `mac_observe`, `mac_act`, System Events UI automation, and some keyboard/mouse actions.
-- **Screen Recording**: required when `mac_observe` includes screenshots or when screenshot tools capture protected screen content.
-- **Automation**: macOS may prompt when Terminal/Python controls Safari, Chrome, System Events, Reminders, or other apps.
-
-If browser JavaScript tools fail, enable the browser's **Allow JavaScript from Apple Events** developer setting where applicable.
-
-## Installation
+## Install
 
 ```bash
 git clone https://github.com/bulutarkan/mac-mcp.git
@@ -127,7 +51,7 @@ pip install -e .
 cp mcp_server/.env.example mcp_server/.env
 ```
 
-Edit `mcp_server/.env`:
+Configure at minimum:
 
 ```env
 MCP_API_KEY=replace-with-a-long-random-token
@@ -135,15 +59,11 @@ MCP_ALLOW_NO_AUTH=false
 MCP_ALLOW_SHELL=true
 RATE_LIMIT_PER_MINUTE=120
 
-# Optional. Defaults to your macOS home directory.
-# MAC_MCP_HOME=~/Projects
-# WORKDIR=~/Projects
-
-# Paste only the static ngrok domain, without https://
+# Optional public tunnel
 NGROK_DOMAIN=your-domain.ngrok-free.dev
 ```
 
-Generate a strong token with:
+Generate a strong token:
 
 ```bash
 python3 - <<'PY'
@@ -152,506 +72,148 @@ print(secrets.token_urlsafe(48))
 PY
 ```
 
-## Start, stop, restart, and status
-
-After `pip install -e .`, the `mac-mcp` command is available inside the virtual environment:
+## Install the menu bar app
 
 ```bash
-mac-mcp start          # local server only
-mac-mcp start --ngrok  # local server + managed ngrok tunnel
+./menu_app/install_app.sh
+```
+
+Default location:
+
+```text
+~/Applications/Mac MCP.app
+```
+
+The app is independent from the server:
+
+- quitting the app does **not** stop MCP;
+- stopping MCP does **not** quit the app;
+- `mac-mcp start` opens the app automatically when it is installed;
+- server controls remain available even while the Voice section is collapsed.
+
+The app uses the existing localhost dashboard APIs:
+
+```text
+/dashboard/api/summary
+/dashboard/api/events
+/dashboard/api/agents
+```
+
+## Server commands
+
+```bash
+mac-mcp start
+mac-mcp start --ngrok
 mac-mcp status
 mac-mcp restart --ngrok
 mac-mcp stop
+mac-mcp dashboard
 ```
 
-Useful options:
+Default local endpoint:
 
-```bash
-mac-mcp start --host 127.0.0.1 --port 8000
-mac-mcp start --ngrok --ngrok-domain your-domain.ngrok-free.dev
-mac-mcp start --reload
-mac-mcp stop --force
+```text
+http://127.0.0.1:8000/mcp
 ```
 
-## Updating Mac MCP
+A custom port can be supplied through `MAC_MCP_PORT` or CLI flags.
 
-Mac MCP follows commits on `origin/main`; GitHub Releases are not required. Check first, then update:
+## Voice interaction
+
+`ask_user_voice` speaks a short prompt, records the local answer, transcribes it with Groq Whisper, and returns the transcript to the calling agent.
+
+The menu app manages:
+
+- experimental enable/disable toggle;
+- Groq API key in macOS Keychain;
+- input microphone;
+- output device;
+- language;
+- timeout;
+- TTS voice and rate.
+
+Non-secret settings are stored in:
+
+```text
+~/.mac-mcp/settings.json
+```
+
+Environment variables remain supported as fallbacks, including `MAC_MCP_VOICE_GROQ_API_KEY`, `GROQ_API_KEY`, `MAC_MCP_VOICE_LANGUAGE`, `MAC_MCP_VOICE_INPUT_DEVICE`, `MAC_MCP_VOICE_OUTPUT_DEVICE`, and `MAC_MCP_VOICE_TTS_RATE`.
+
+## Operations dashboard
+
+Open:
+
+```text
+http://127.0.0.1:<port>/dashboard
+```
+
+The dashboard records sanitized MCP/REST tool activity, status, latency, recent delegated-agent state, active calls, and tool frequency. Telemetry persists locally under:
+
+```text
+~/.mac-mcp/dashboard/telemetry.sqlite3
+```
+
+The dashboard is restricted to loopback access even when `/mcp` is exposed through ngrok.
+
+## Tool coverage
+
+Mac MCP 2.0 exposes **81 MCP tools** across:
+
+- terminal/system and background jobs;
+- delegated OpenCode/Codex agents;
+- file management;
+- macOS automation and Accessibility UI control;
+- Safari/Chrome browser automation with stable tab handles and background visual observation;
+- HTTP and search;
+- text/choice/confirmation/voice human input;
+- persistent memory;
+- Agent Skills;
+- safe self-update.
+
+Use MCP tool discovery for the authoritative live schema.
+
+## Updating
 
 ```bash
 mac-mcp update --check
 mac-mcp update
 ```
 
-The same workflow is available to MCP clients through the single `mac_mcp_update` tool:
+The updater follows `origin/main`, blocks on dirty repositories, preserves runtime overlays and private files, creates a runtime backup, restarts the managed service, performs a health check, and rolls back managed runtime files if verification fails.
 
-```text
-mac_mcp_update(check_only=true)   -> fetch + compare only
-mac_mcp_update(check_only=false)  -> start the safe detached updater
-```
+In 2.0, `menu_app/` is part of the managed runtime. If `Mac MCP.app` is already installed, a successful update rebuilds and refreshes it automatically.
 
-The updater supports both a single checkout and the recommended split layout where the Git repository and running runtime are separate (for example `~/Projects/mac-mcp` and `~/mac-mcp`). For split installations it treats the runtime as a local overlay: it stages the currently deployed commit, applies runtime customizations, merges the latest `origin/main`, and only deploys if that merge is clean.
+## macOS permissions
 
-Safety behavior:
+Grant only the permissions required by the tools you use:
 
-- A dirty Git repository blocks the update; the updater never force-resets user work.
-- Runtime-only files such as `.env`, agent/team state, logs, workspace data, credentials, and other untracked files are not overwritten.
-- Managed runtime files are backed up under `~/mac-mcp/backups/updates/` before deployment.
-- If runtime customizations conflict with upstream changes, the update stops before touching the real repository/runtime.
-- Dependency installation runs only when `mcp_server/requirements.txt` changed.
-- Mac MCP restarts automatically after deployment. The updater verifies `/health`; if health fails, the previous runtime files are restored and restarted.
-- The deployed commit is stored in `~/mac-mcp/.mac-mcp-deployed-commit`, so a failed runtime deployment can be retried even if the Git checkout already fast-forwarded.
+- **Accessibility** for `mac_observe`, `mac_act`, System Events, and desktop automation;
+- **Screen Recording** for protected screen capture;
+- **Automation** when macOS asks permission to control Safari, Chrome, System Events, Reminders, or other apps;
+- **Microphone** for `ask_user_voice`.
 
-Defaults can be overridden with `MAC_MCP_REPO`, `MAC_MCP_RUNTIME`, and `MAC_MCP_LAUNCHD_LABEL` when a different layout or service label is used.
+## Development
 
-> **Existing installations older than v1.5.0:** perform one normal `git pull --ff-only` / install refresh once to obtain the updater. Future updates can use `mac-mcp update` or `mac_mcp_update`.
-
-## Persistent memory
-
-Mac MCP can keep AI-authored notes in human-readable Markdown while exposing them to agents only through dedicated memory tools. The Markdown files are the source of truth and live outside the repo/runtime by default:
-
-```text
-~/.mac-mcp/memory/
-└── 2026/
-    └── 09/
-        └── 2026-09-07.md
-```
-
-`memory_add` derives the current date/time inside MCP using the `Europe/Istanbul` timezone (UTC+3), creates the year/month/day path automatically, assigns a stable `memory_id`, and appends a timestamped entry. The five tools are:
-
-```text
-memory_add      append a new timestamped memory
-memory_search   hybrid search or queryless date/range listing
-memory_get      fetch one exact memory_id
-memory_update   edit one memory_id, or list candidates by date/date_from/date_to
-memory_delete   list candidates, preview a deletion, then delete only with confirm=true
-```
-
-Examples:
-
-```text
-memory_search(query="browser automation", date_from="2026-09-01", date_to="2026-09-07")
-memory_update(date="2026-09-07")
-memory_delete(date_from="2026-09-01", date_to="2026-09-07")
-```
-
-A rebuildable SQLite index is stored at `~/.mac-mcp/memory/memory-index.sqlite3`. Search combines SQLite FTS5 with multilingual semantic vectors. The default semantic backend is FastEmbed with `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions, multilingual). The model is downloaded lazily on the first query-based `memory_search` and cached separately on disk under `~/.mac-mcp/cache/fastembed` (roughly 240 MB of model data). `memory_add`, `memory_update`, and queryless date/range listings do not load FastEmbed from disk; they only reuse it if a recent semantic search already has it warm in RAM. When the multilingual backend becomes available, existing Apple/feature-hash SQLite vectors are automatically rebuilt from the Markdown source of truth.
-
-FastEmbed/ONNX inference runs in a separate on-demand worker process rather than inside the main Mac MCP server. Query-based semantic `memory_search` starts that worker when needed; searches within the warm window reuse it, and after 60 seconds without an embedding request the worker exits completely so macOS can reclaim the model RAM. The main MCP process therefore stays lightweight when memory search is idle. The same worker is shared by `memory_search` and `skill_search`; only one MiniLM/ONNX process can be warm at a time. Set `MAC_MCP_EMBEDDING_IDLE_SECONDS` to change the warm window (`0` exits the worker immediately after its first request). `memory_add`, `memory_update`, skill index maintenance, delete/index maintenance, and queryless listings do not start FastEmbed. If FastEmbed or the model is unavailable, Mac MCP falls back to Apple's on-device NaturalLanguage English sentence embedding (512 dimensions), then to the dependency-free feature-hash vector. Manual Markdown edits are detected and re-indexed automatically. Override memory storage with `MAC_MCP_MEMORY_DIR`, skills storage with `MAC_MCP_SKILLS_DIR`, and the shared model cache with `MAC_MCP_EMBEDDING_MODEL_CACHE`. `MAC_MCP_EMBEDDING` supports `auto` (default), `multilingual`/`fastembed`, `apple`, or `feature_hash`. Existing `MAC_MCP_MEMORY_MODEL_CACHE`, `MAC_MCP_MEMORY_MODEL_IDLE_SECONDS`, and `MAC_MCP_MEMORY_EMBEDDING` remain supported as compatibility aliases.
-
-## Agent Skills
-
-Mac MCP supports reusable Agent Skills using the open `SKILL.md` directory format. Managed skills live under:
-
-```text
-~/.mac-mcp/skills/<skill-name>/
-├── SKILL.md
-├── scripts/       # optional
-├── references/    # optional
-└── assets/        # optional
-```
-
-`SKILL.md` must begin with YAML frontmatter containing a lowercase/hyphenated `name` and a non-empty `description`. Discovery is progressive: `skill_list` and `skill_search` return metadata and paths first; `skill_get` loads the full `SKILL.md` and lists bundled resources without eagerly loading their contents. Relative resource paths resolve from the skill directory.
-
-```text
-skill_list          list indexed skill metadata
-skill_search        hybrid FTS5 + shared semantic search
-skill_get           load one SKILL.md + resource paths
-skill_register      register an external skill directory/SKILL.md
-skill_update_index  rescan managed/registered skills
-```
-
-The rebuildable index lives at `~/.mac-mcp/skills/skills-index.sqlite3`. `skill_search` shares the exact same FastEmbed worker/cache/model and idle timer as `memory_search`, so Skills do not create a second model process or duplicate the model cache.
-
-Logs are written to:
-
-```text
-~/.mac-mcp/mac-mcp.log
-```
-
-You can also run the app directly:
+Run tests:
 
 ```bash
-uvicorn mcp_server.main:app --host 127.0.0.1 --port 8000
+python -m unittest discover -s tests -v
 ```
 
-## Endpoints
-
-Local endpoints:
-
-```text
-MCP:       http://127.0.0.1:8000/mcp
-REST:      http://127.0.0.1:8000/api/*
-Health:    http://127.0.0.1:8000/health
-Dashboard: http://127.0.0.1:8000/dashboard
-```
-
-### Local operations dashboard
-
-Mac MCP includes a live, local-only operations dashboard at `/dashboard`. It records MCP and legacy REST tool activity, sanitized request/result previews, duration and errors, plus delegated-agent state. Live updates use Server-Sent Events; completed call history is stored in SQLite at `~/.mac-mcp/dashboard/telemetry.sqlite3` by default.
-
-The dashboard intentionally rejects forwarded/non-loopback clients, so exposing `/mcp` through ngrok does **not** expose the dashboard. Secret-like fields, bearer tokens, credentials, large encoded payloads, and image data are redacted or summarized before persistence. Retention defaults to 7 days / 20,000 completed events.
-
-Open it from a local browser or run:
+Build the native menu app without installing it:
 
 ```bash
-mac-mcp dashboard
+./menu_app/build_app.sh /tmp/mac-mcp-build
 ```
 
-Optional telemetry settings are documented in `mcp_server/.env.example`.
-
-MCP clients that support Streamable HTTP can connect directly to `/mcp` and use all 81 tools.
-
-Example REST request:
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/system_info \
-  -H "Authorization: Bearer $MCP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
-
-Example shell request:
-
-```bash
-curl -X POST http://127.0.0.1:8000/api/run \
-  -H "Authorization: Bearer $MCP_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"command":"pwd && sw_vers","timeout_s":10}'
-```
-
-## Unified macOS UI tools
-
-`mac_observe` is designed to be the first step for desktop UI work. It returns an `observation_id` and Accessibility nodes such as:
+Project layout:
 
 ```text
-w1/2/1
-```
-
-Each node can include role, title, value, enabled state, screen position, and supported Accessibility actions.
-
-Typical flow:
-
-1. Call `mac_observe` for the frontmost app or a named app.
-2. Find the desired node and keep the returned `observation_id`.
-3. Call `mac_act` with one or more actions targeting those `element_id` values.
-4. Leave `return_state=true` to receive a fresh observation after the action batch.
-
-Example action payload conceptually:
-
-```json
-{
-  "observation_id": "obs_...",
-  "actions": [
-    {"type": "click", "element_id": "w1/2/1"},
-    {"type": "type", "element_id": "w1/3", "text": "Hello", "clear": true},
-    {"type": "key", "key": "return"}
-  ]
-}
-```
-
-Use `ocr=true` only when the Accessibility tree does not provide enough text. OCR requires `tesseract` and is slower than Accessibility inspection.
-
-## Background jobs
-
-Use background jobs for commands that should not block the current MCP request. Background job execution/wait timeouts default to 60 seconds; pass `timeout_s` explicitly for longer tasks, up to 600 seconds.
-
-```text
-start_background_job -> job_id
-get_job_status        -> current state
-get_job_output        -> stdout/stderr
-wait_jobs             -> bounded wait
-stop_job              -> terminate process group
-run_commands_parallel -> parallel jobs + bounded collection
-```
-
-A `no_output_timeout_s` can be used to stop commands that stop producing output; these jobs end in the `stalled` state.
-
-## High-level browser control
-
-For Safari/Chrome computer-use, prefer the three high-level MCP-only tools before falling back to low-level selectors, Accessibility, or raw coordinates:
-
-```text
-browser_observe -> interactive/visible/content/leaf DOM + stable e1/e2 IDs + optional viewport/element JPEG
-browser_find    -> exact-first semantic ranking with hard role/text constraints
-browser_act     -> batch click/type/async-select/key/scroll/wait; target by element_id or query/text/role
-```
-
-`browser_observe` also supports `visual="full_page"`. `viewport`, `element`, and `full_page` visuals are
-rasterized inside the explicitly targeted tab's DOM, so the capture does not need to activate the browser,
-select that tab, or scroll it through the page. The screenshot bytes are returned as MCP `ImageContent` next
-to the compact DOM response rather than being embedded as base64 in model-facing JSON. Capture buffers stay
-in memory and are cleared immediately after the image is read; no temporary screenshot file is left behind.
-This makes one `browser_observe` call suitable for low-round-trip visual grounding while the user continues
-working in another app or another Safari/Chrome tab. Cross-origin iframes and protected media may be omitted
-by the DOM rasterizer when the page does not expose those pixels to web content.
-
-For agent workflows, prefer this visual `browser_observe` path over the older `browser_screenshot` tool.
-`browser_screenshot` remains available for backwards compatibility when raw browser-window pixels are
-specifically wanted, but it is not the background-tab visual grounding path.
-
-For multi-tab work, call `browser_list_tabs` or use the `tab_handle` returned by `browser_open_url`, then keep targeting that handle instead of remembering mutable tab indexes. This is especially important when the user is simultaneously opening, closing, or reordering their own tabs.
-
-New tabs are background-first by default. A typical parallel workflow is:
-
-```text
-browser_open_url(..., background=true) -> tab_handle
-browser_find(..., tab_handle=...)
-browser_act(..., tab_handle=...)
-browser_execute_js(..., tab_handle=...)
-```
-
-`browser_act` keeps parent round-trips low, supports bounded internal waits, returns a compact post-action state by default, and detects stale observations/elements. DOM-based click/type/select/scroll/wait actions do not need to focus the browser. Native keyboard and coordinate actions refuse to steal focus unless `allow_foreground=true`; explicit tab selection stays background-safe unless foreground activation is explicitly allowed. Existing `window_index` / `tab_index` arguments remain supported for backwards compatibility.
-
-## Agent delegation
-
-Use delegated agents for tasks that would otherwise consume a large amount of parent-chat context or block the main agent while research, coding, or analysis runs. `spawn_agent` returns immediately; the OpenCode or Codex process continues independently.
-
-For parallel work, `spawn_agents` creates a persistent team and enforces one shared provider/model/reasoning/access configuration across all children. `wait_agents` replaces repeated polling with a bounded `all`, `any`, or `majority` wait. Progress metadata includes first-event latency, phase, idle time, steps, tool count, and last tool. `idle_timeout_s` plus same-model retries can recover transient provider stalls/errors; teams default to one retry and never fall back to another model implicitly.
-
-```text
-agent_catalog  -> choose provider/model/reasoning
-spawn_agent    -> one agent_id immediately
-spawn_agents   -> one team_id + child agent_ids immediately
-wait_agents    -> bounded all / any / majority collection
-list_agents    -> compact overview, optionally by team_id
-get_agent      -> progress telemetry + concise final handoff
-agent_action   -> agent/team cancel / retry / despawn; agent message/resume
-```
-
-Typical flow:
-
-```text
-Parent ChatGPT
-  ├─ spawn_agents(same model × N) → team_id
-  └─ continues other work
-          ↓
-     wait_agents(team_id) → compact handoffs
-          ↓
-     concise handoff only
-```
-
-`provider` is currently `opencode` or `codex`. `model`, `reasoning`, `cwd`, `timeout_s`, `result_style`, and `access_mode` are optional controls. The default `result_style=concise` asks the delegated model to do the full task but return only verified findings/results, material caveats, and the next useful action to the parent agent.
-
-Agent metadata lives under `mcp_server/agents/` and is ignored by Git. This allows completed results and provider session IDs to survive a Mac MCP restart. Use `include_logs=true` only when debugging a failed or suspicious run.
-
-## Human-in-the-loop tools
-
-Mac MCP exposes four human-in-the-loop tools for controlled interaction with the local user:
-
-- `ask_user`: collect a free-form text answer while preserving the existing interface.
-- `ask_user_voice`: speak a concise question, listen for the local spoken answer, transcribe it, and return the response to the calling agent. Default voice: `tr-TR-AhmetNeural`; exact spoken `atla`, `iptal`, `boşver`, or `vazgeç` skips.
-- `ask_choice`: present 2-3 labeled native buttons and return the selected label and index. Two-choice dialogs include `Cancel`; three-choice dialogs use all three native buttons and window-close remains cancellation.
-- `ask_confirmation`: present explicit Yes/No buttons and return `confirmed=true` only after an affirmative click.
-
-All three tools use one shared dialog lock, so concurrent agents do not stack invisible dialogs. If another prompt is already open, the new call returns `prompt_busy` immediately. Timeouts are capped at 300 seconds; cancellation, window close, or timeout never counts as confirmation.
-
-## ChatGPT Plus: Custom MCP plugin with Developer Mode
-
-ChatGPT Plus users who have Developer Mode available can connect a running Mac MCP instance to ChatGPT web as a developer-mode custom MCP plugin. In the current ChatGPT UI, this is a remote MCP connection created from the Plugins area. It is separate from Custom GPT Actions:
-
-- **Developer Mode MCP plugin:** connects to the Streamable HTTP `/mcp` endpoint and discovers the server's MCP tools.
-- **Custom GPT Actions:** imports `openapi/custom-gpt-actions.json` and uses the REST `/api/*` operations.
-
-Developer Mode and custom connections can depend on account or workspace policy. If the setting or Plugins area is not available, the feature may not be enabled for that account or workspace yet.
-
-### 1. Start Mac MCP and the public tunnel
-
-Run Mac MCP with ngrok and copy the HTTPS URL printed by the command:
-
-```bash
-mac-mcp start --ngrok
-mac-mcp status
-```
-
-The URL must include the MCP path:
-
-```text
-https://your-domain.ngrok-free.dev/mcp
-```
-
-If you use a domain explicitly, configure it in `mcp_server/.env` or pass it on the command line:
-
-```bash
-mac-mcp start --ngrok --ngrok-domain your-domain.ngrok-free.dev
-```
-
-Use the complete public **HTTPS** URL ending in `/mcp`. Do not paste the local URL (`127.0.0.1`), the ngrok root URL without `/mcp`, or a REST URL under `/api/*`. The Mac MCP process and ngrok tunnel must remain running while ChatGPT uses the connection. If a temporary/free ngrok URL changes after a restart, update the connection URL and refresh it; a stable ngrok domain avoids that extra step.
-
-### 2. Enable Developer Mode in ChatGPT
-
-1. Open [ChatGPT](https://chatgpt.com) and go to **Settings**.
-2. Open **Security and login**.
-3. Turn on **Developer mode**.
-4. Open the [ChatGPT Plugins](https://chatgpt.com/plugins) page and select **`+`**.
-5. Enter a display name such as `Mac MCP` and a short description.
-6. Under **Connection**, choose the public endpoint option and paste the full URL, including `/mcp`.
-7. Create the connection and review the discovered tools and metadata.
-
-### 3. Enable it in a conversation
-
-Start a new conversation, open the **Tools** menu, and add/select the `Mac MCP` connection. Begin with a read-only test such as:
-
-```text
-Use mac_observe on Safari's first window with include_screenshot=true and ocr=false. Only observe; do not click or type.
-```
-
-The `mac_observe` and `mac_act` results are designed for this connector flow. Screenshots are returned as bounded JPEG image content so large full-resolution images do not leave the request waiting indefinitely.
-
-### 4. Refresh after server or tool changes
-
-After restarting Mac MCP or changing tool names, descriptions, schemas, annotations, authentication, or UI resources:
-
-1. Open the connection again from the Plugins page.
-2. Select **Refresh**.
-3. Confirm that the advertised metadata/tool list changed.
-4. Start a new conversation and rerun the affected test.
-
-### Security and sharing
-
-This server can read and modify files, run shell commands, and control the desktop. A public ngrok URL is therefore a remote-control channel to **one specific Mac**:
-
-- Never share your Mac's URL with other users. Each person should install Mac MCP, run it on their own Mac, and use their own tunnel URL.
-- Keep `MCP_ALLOW_NO_AUTH=false` for network-exposed deployments whenever possible, and never put `MCP_API_KEY` in the URL, README, screenshots, or chat messages.
-- The repository's `MCP_API_KEY` is a local bearer-token setting; it is not the same as ChatGPT's OAuth-based user-linking flow. A real multi-user or published plugin should implement OAuth 2.1 and enforce authorization on the server.
-- For personal Developer Mode testing, only connect a Mac you own and keep the tunnel private to your account. Developer Mode access is not a substitute for server-side authentication.
-
-Official references: [Connect and test your plugin](https://developers.openai.com/plugins/deploy/connect-chatgpt), [Model Context Protocol](https://learn.chatgpt.com/docs/extend/mcp), and [Authentication](https://developers.openai.com/plugins/build/auth).
-
-## Custom GPT Actions
-
-Custom GPT Actions use the included schema:
-
-```text
-openapi/custom-gpt-actions.json
-```
-
-The REST schema exposes the original 59 core operations and remains stable for backwards compatibility. Newer MCP-native extensions such as agent orchestration, persistent memory, Agent Skills, self-update, and the high-level browser-agent layer are intentionally discovered through `/mcp` rather than added to the legacy REST schema. Each REST operation's `operationId` retains its established MCP-compatible name. The core endpoints retain their established paths:
-
-```text
-POST /api/run                 -> run_command
-POST /api/system_info         -> get_system_info
-POST /api/process_list        -> process_list
-POST /api/kill_process        -> kill_process
-POST /api/jobs/start          -> start_background_job
-POST /api/jobs/status         -> get_job_status
-POST /api/jobs/output         -> get_job_output
-POST /api/jobs/stop           -> stop_job
-POST /api/jobs/list           -> list_jobs
-POST /api/jobs/wait           -> wait_jobs
-POST /api/run_parallel        -> run_commands_parallel
-POST /api/http                -> http_request
-POST /api/interactive         -> ask_user
-POST /api/interactive/choice  -> ask_choice
-POST /api/interactive/confirmation -> ask_confirmation
-```
-
-The file, macOS, unified UI, search, and browser tools use one-to-one aliases such as:
-
-```text
-POST /api/write_file          -> write_file
-POST /api/run_applescript     -> run_applescript
-POST /api/mac_observe         -> mac_observe
-POST /api/mac_act             -> mac_act
-POST /api/browser_get_snapshot -> browser_get_snapshot
-```
-
-The complete 59-operation definition is maintained in [`openapi/custom-gpt-actions.json`](openapi/custom-gpt-actions.json). Replace its placeholder server URL with your static ngrok domain before importing it.
-
-
-### Static ngrok domain
-
-Authenticate ngrok once:
-
-```bash
-ngrok config add-authtoken YOUR_NGROK_AUTHTOKEN
-```
-
-Create a static dev domain in the ngrok dashboard, then set it in `mcp_server/.env`:
-
-```env
-NGROK_DOMAIN=your-domain.ngrok-free.dev
-```
-
-Start both services:
-
-```bash
-mac-mcp start --ngrok
-```
-
-Your public endpoints will then be available under:
-
-```text
-https://your-domain.ngrok-free.dev/mcp
-https://your-domain.ngrok-free.dev/api/*
-```
-
-Use the same bearer token for MCP and REST when authentication is enabled.
-
-## Configuration
-
-The most important environment variables are documented in `mcp_server/.env.example`:
-
-```text
-MCP_API_KEY
-MCP_ALLOW_NO_AUTH
-MCP_ALLOW_SHELL
-MAC_MCP_HOME
-WORKDIR
-RATE_LIMIT_PER_MINUTE
-DEFAULT_COMMAND_TIMEOUT_S
-MAX_COMMAND_TIMEOUT_S
-MAX_OUTPUT_CHARS
-HTTP_ALLOWLIST
-HTTP_HTTPS_ONLY
-HTTP_MAX_RESPONSE_BYTES
-HTTP_TIMEOUT_S
-NGROK_DOMAIN
-BROWSER_ALLOWLIST
-BROWSER_HTTPS_ONLY
-DOWNLOAD_DIR
-MAX_JS_RESULT_CHARS
-MAX_HTML_CHARS
-MAX_WAIT_S
-```
-
-`MAC_MCP_HOME` controls how relative file/search paths resolve. `WORKDIR` controls the default working directory for shell/background-job execution.
-
-## Security recommendations
-
-- Keep `MCP_ALLOW_NO_AUTH=false` whenever the server is exposed through ngrok or another network tunnel.
-- Use a long random bearer token and never commit `mcp_server/.env`.
-- Bind locally to `127.0.0.1` unless you intentionally need LAN access.
-- Review every tool you expose to an AI client. Shell, file, browser, AppleScript, and UI-action tools are powerful.
-- `mac_act` treats likely consequential clicks as risky and requires `allow_risky=true`, but this is an additional guardrail rather than a replacement for client-side confirmation policies.
-- Do not commit logs, job outputs, generated screenshots, or personal files.
-- Stop the server and managed tunnel when they are not needed:
-
-```bash
-mac-mcp stop
-```
-
-## Repository structure
-
-```text
-mcp_server/
-  main.py                 FastAPI + MCP app and tool registration
-  cli.py                  mac-mcp start/stop/restart/status CLI
-  security.py             auth, rate limiting, path/URL validation, settings
-  rest_routes.py          REST API used by Custom GPT Actions
-  tools_terminal.py       shell/process/system tools
-  tools_jobs.py           background jobs and parallel commands
-  tools_agents.py         persistent OpenCode/Codex agent delegation
-  tools_files.py          file operations
-  tools_macos.py          AppleScript and macOS utilities
-  tools_ui.py             Accessibility/screenshot based UI observation + actions
-  tools_browser.py        Safari/Chrome automation
-  tools_search.py         grep/Spotlight search
-  tools_http.py           outbound HTTP
-  tools_interactive.py    native question, choice, and confirmation dialogs
-openapi/custom-gpt-actions.json
-assets/screenshots/
-pyproject.toml
-README.md
+mcp_server/   Python MCP server and dashboard
+menu_app/     Native SwiftUI menu bar controller
+tests/        Regression tests
+openapi/      REST/OpenAPI schema assets
 ```
 
 ## License

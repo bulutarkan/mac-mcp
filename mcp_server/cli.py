@@ -19,7 +19,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = "8000"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = PROJECT_ROOT / "mcp_server" / ".env"
-STATE_DIR = Path.home() / ".mac-mcp"
+STATE_DIR = Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
 PID_FILE = STATE_DIR / "mac-mcp.pid"
 NGROK_PID_FILE = STATE_DIR / "ngrok.pid"
 LOG_FILE = STATE_DIR / "mac-mcp.log"
@@ -28,6 +28,31 @@ NGROK_LOG_FILE = STATE_DIR / "ngrok.log"
 
 def _load_env() -> None:
     load_dotenv(ENV_FILE)
+
+
+def _menu_app_candidates() -> list[Path]:
+    configured = os.getenv("MAC_MCP_MENU_APP", "").strip()
+    items = [Path(configured).expanduser()] if configured else []
+    items += [Path.home() / "Applications" / "Mac MCP.app", Path("/Applications/Mac MCP.app")]
+    return items
+
+
+def _launch_menu_app() -> None:
+    if os.getenv("MAC_MCP_SKIP_MENU_APP", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+    app = next((item for item in _menu_app_candidates() if item.exists()), None)
+    if app is None:
+        return
+    try:
+        command = ["/usr/bin/open", "-g"]
+        for name in ("MAC_MCP_SETTINGS_PATH", "MAC_MCP_STATE_DIR", "MAC_MCP_CLI_PATH", "MAC_MCP_PORT", "MAC_MCP_VOICE_GROQ_KEYCHAIN_SERVICE", "MAC_MCP_VOICE_GROQ_KEYCHAIN_ACCOUNT"):
+            value = os.getenv(name)
+            if value is not None:
+                command.extend(["--env", f"{name}={value}"])
+        command.append(str(app))
+        subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def _pid_alive(pid: int) -> bool:
@@ -89,6 +114,7 @@ def _start_server(args: argparse.Namespace) -> int:
     pid = _read_pid(PID_FILE)
     if pid and _pid_alive(pid):
         print(f"mac-mcp is already running (pid {pid}).")
+        _launch_menu_app()
         return 0
 
     env = os.environ.copy()
@@ -128,6 +154,7 @@ def _start_server(args: argparse.Namespace) -> int:
     dashboard_host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
     print(f"dashboard: {_local_url(dashboard_host, args.port)}/dashboard")
     print(f"mac-mcp log: {LOG_FILE}")
+    _launch_menu_app()
     return 0
 
 

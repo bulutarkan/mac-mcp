@@ -164,7 +164,7 @@ def format_check(info: UpdateInfo) -> str:
 
 
 def _tracked_files(repo: Path, commit: str) -> list[str]:
-    out = _git(repo, "ls-tree", "-r", "--name-only", commit, "--", "mcp_server")
+    out = _git(repo, "ls-tree", "-r", "--name-only", commit, "--", "mcp_server", "menu_app")
     return [line for line in out.splitlines() if line and not line.endswith("/")]
 
 
@@ -190,7 +190,10 @@ def _prepare_runtime_merge(repo: Path, runtime: Path, deployed: str, target: str
     if overlay_count:
         _git(stage, "config", "user.email", "mac-mcp-updater@localhost")
         _git(stage, "config", "user.name", "Mac MCP Updater")
-        _git(stage, "add", "--", "mcp_server")
+        add_paths = ["mcp_server"]
+        if (stage / "menu_app").exists():
+            add_paths.append("menu_app")
+        _git(stage, "add", "--", *add_paths)
         _git(stage, "commit", "--quiet", "-m", "runtime overlay")
     merge = _run(["git", "-C", str(stage), "merge", "--no-edit", "--no-ff", target], check=False, timeout=120)
     if merge.returncode != 0:
@@ -364,6 +367,15 @@ def _health_ok(url: str, attempts: int = 30, delay: float = 0.4) -> bool:
     return False
 
 
+def _refresh_installed_menu_app(runtime: Path) -> bool:
+    installer = runtime / "menu_app" / "install_app.sh"
+    installed = [Path.home() / "Applications" / "Mac MCP.app", Path("/Applications/Mac MCP.app")]
+    if not installer.exists() or not any(path.exists() for path in installed):
+        return False
+    _run([str(installer)], timeout=180)
+    return True
+
+
 def _deps_changed(repo: Path, deployed: str, target: str) -> bool:
     changed = _git(repo, "diff", "--name-only", deployed, target, "--", "mcp_server/requirements.txt")
     return bool(changed.strip())
@@ -419,6 +431,9 @@ def apply_update(
         synced = _sync_runtime(stage, runtime_path, old_files, new_files)
         print(f"[mac-mcp update] Synced {synced} managed runtime file(s).", flush=True)
 
+        if _refresh_installed_menu_app(runtime_path):
+            print("[mac-mcp update] Refreshed installed Mac MCP menu bar app.", flush=True)
+
         if deps_changed and not skip_deps:
             python = runtime_path / ".venv" / "bin" / "python"
             requirements = runtime_path / "mcp_server" / "requirements.txt"
@@ -458,6 +473,10 @@ def apply_update(
                 print("[mac-mcp update] Restoring the previous runtime...", flush=True)
                 _restore_runtime(runtime_path, backup)
                 _write_state_commit(runtime_path, info.deployed_commit)
+                try:
+                    _refresh_installed_menu_app(runtime_path)
+                except Exception as menu_exc:
+                    print(f"[mac-mcp update] WARNING: menu app rollback refresh failed: {menu_exc}", flush=True)
                 if not skip_restart:
                     try:
                         rollback_health = _restart_service(runtime_path, launchd_label)
