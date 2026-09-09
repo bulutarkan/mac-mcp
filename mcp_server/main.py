@@ -53,6 +53,7 @@ from .tools_voice import ask_user_voice
 from .tools_update import mac_mcp_update
 from .tools_memory import memory_add, memory_search, memory_get, memory_update, memory_delete
 from .tools_skills import skill_list, skill_search, skill_get, skill_register, skill_update_index
+from .menu_app_bootstrap import bootstrap_menu_app_and_legacy_state
 
 
 def _log(audit_logger, tool: str, fn):
@@ -73,6 +74,7 @@ def _log(audit_logger, tool: str, fn):
 
 
 def create_app():
+    bootstrap_menu_app_and_legacy_state()
     settings = load_settings()
     limiter = RateLimiter(settings.rate_limit_per_minute)
     audit_logger = setup_audit_logger()

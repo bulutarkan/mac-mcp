@@ -16,12 +16,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
+from .update_state import backups_root, read_deployed_commit, write_deployed_commit, write_update_state
+
 DEFAULT_BRANCH = "main"
 DEFAULT_REMOTE = "origin"
 DEFAULT_LAUNCHD_LABEL = "mac-mcp-uvicorn"
 DEFAULT_PORT = 8000
-STATE_FILE = ".mac-mcp-deployed-commit"
-UPDATE_STATE_FILE = ".mac-mcp-update.json"
 
 
 class UpdateError(RuntimeError):
@@ -88,24 +88,17 @@ def resolve_paths(repo: str | None = None, runtime: str | None = None) -> tuple[
 
 
 def _read_state_commit(runtime: Path) -> str | None:
-    path = runtime / STATE_FILE
-    if not path.exists():
-        return None
-    value = path.read_text(encoding="utf-8").strip()
-    return value or None
+    return read_deployed_commit(runtime)
 
 
 def _write_state_commit(runtime: Path, commit: str) -> None:
-    runtime.mkdir(parents=True, exist_ok=True)
-    (runtime / STATE_FILE).write_text(commit + "\n", encoding="utf-8")
+    del runtime
+    write_deployed_commit(commit)
 
 
 def _write_update_state(runtime: Path, payload: dict) -> None:
-    try:
-        (runtime / UPDATE_STATE_FILE).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    except Exception:
-        pass
-
+    del runtime
+    write_update_state(payload)
 
 def check_update(
     repo: str | Path | None = None,
@@ -206,7 +199,7 @@ def _prepare_runtime_merge(repo: Path, runtime: Path, deployed: str, target: str
 
 def _backup_runtime(repo: Path, runtime: Path, deployed: str, target: str) -> tuple[Path, list[str], list[str]]:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup = runtime / "backups" / "updates" / f"{stamp}-{_short(deployed)}"
+    backup = backups_root() / f"{stamp}-{_short(deployed)}"
     backup.mkdir(parents=True, exist_ok=True)
     old_files = _tracked_files(repo, deployed)
     new_files = _tracked_files(repo, target)

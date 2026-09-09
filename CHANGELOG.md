@@ -1,3 +1,10 @@
+## [2.0.1] - 2026-09-09
+
+- Fixed single-checkout installations (`repo == runtime`) so update metadata and backups live under `~/.mac-mcp/update/` instead of dirtying the Git working tree after the first update.
+- Added migration of successful legacy updater artifacts from the checkout into the external update-state directory.
+- Added a pre-v2 upgrade bootstrap so users updating an older checkout receive and install the native `Mac MCP.app` automatically on the first v2 startup.
+- Added regression coverage for repeated single-checkout updates and legacy state migration.
+
 ## [2.0.0] - 2026-09-09
 
 - Added the native SwiftUI `Mac MCP.app` menu bar controller with no Dock icon and independent server lifecycle.

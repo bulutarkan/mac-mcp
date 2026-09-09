@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from mcp_server.update_helper import UpdateError, apply_update, check_update, format_check
+from mcp_server.update_state import migrate_completed_legacy_update
 
 
 def run(*args: str, cwd: Path | None = None) -> str:
@@ -14,6 +18,13 @@ def run(*args: str, cwd: Path | None = None) -> str:
 
 
 class UpdateHelperTests(unittest.TestCase):
+    def setUp(self):
+        self.update_dir = Path(tempfile.mkdtemp(prefix="mac-mcp-update-state-test-"))
+        self.addCleanup(shutil.rmtree, self.update_dir, True)
+        self.env_patcher = patch.dict(os.environ, {"MAC_MCP_UPDATE_DIR": str(self.update_dir)})
+        self.env_patcher.start()
+        self.addCleanup(self.env_patcher.stop)
+
     def make_fixture(self, conflict: bool = False):
         root = Path(tempfile.mkdtemp(prefix="mac-mcp-update-test-"))
         self.addCleanup(shutil.rmtree, root, True)
@@ -69,8 +80,51 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertIn("RUNTIME_CUSTOMIZATION", (runtime / "mcp_server/security.py").read_text(encoding="utf-8"))
         self.assertTrue((runtime / "mcp_server/new_tool.py").exists())
         self.assertIn("preserve-me", (runtime / "mcp_server/.env").read_text(encoding="utf-8"))
-        self.assertEqual(target, (runtime / ".mac-mcp-deployed-commit").read_text().strip())
+        self.assertEqual(target, (self.update_dir / "deployed-commit").read_text().strip())
         self.assertTrue(Path(result["backup"]).exists())
+        self.assertTrue(str(Path(result["backup"])).startswith(str(self.update_dir / "backups")))
+        self.assertFalse((runtime / ".mac-mcp-deployed-commit").exists())
+        self.assertFalse((runtime / ".mac-mcp-update.json").exists())
+        self.assertFalse((runtime / "backups/updates").exists())
+
+    def test_single_checkout_update_stays_clean_and_second_check_works(self):
+        root, repo, _runtime, _old, target = self.make_fixture()
+        # Public install shape: one Git checkout is both source repo and live runtime.
+        single = root / "single"
+        shutil.copytree(repo, single)
+        run("git", "remote", "set-url", "origin", str(root / "remote.git"), cwd=single)
+
+        before = check_update(single, single)
+        self.assertTrue(before.update_available)
+        result = apply_update(single, single, skip_restart=True, skip_deps=True)
+        self.assertTrue(result["updated"])
+        self.assertEqual(target, run("git", "rev-parse", "HEAD", cwd=single))
+        self.assertEqual("", run("git", "status", "--porcelain", cwd=single))
+
+        after = check_update(single, single)
+        self.assertFalse(after.dirty)
+        self.assertFalse(after.update_available)
+        self.assertIn("up to date", format_check(after))
+        self.assertTrue((self.update_dir / "deployed-commit").exists())
+        self.assertTrue((self.update_dir / "state.json").exists())
+        self.assertTrue((self.update_dir / "backups").exists())
+
+    def test_completed_legacy_state_moves_out_of_checkout(self):
+        runtime = Path(tempfile.mkdtemp(prefix="mac-mcp-legacy-update-test-"))
+        self.addCleanup(shutil.rmtree, runtime, True)
+        commit = "a" * 40
+        (runtime / ".mac-mcp-deployed-commit").write_text(commit + "\n", encoding="utf-8")
+        (runtime / ".mac-mcp-update.json").write_text(json.dumps({"status": "completed", "to_commit": commit}) + "\n", encoding="utf-8")
+        old_backup = runtime / "backups" / "updates" / "legacy-backup"
+        old_backup.mkdir(parents=True)
+        (old_backup / "manifest.json").write_text("{}\n", encoding="utf-8")
+
+        self.assertTrue(migrate_completed_legacy_update(runtime))
+        self.assertFalse((runtime / ".mac-mcp-deployed-commit").exists())
+        self.assertFalse((runtime / ".mac-mcp-update.json").exists())
+        self.assertFalse((runtime / "backups").exists())
+        self.assertEqual(commit, (self.update_dir / "deployed-commit").read_text().strip())
+        self.assertTrue((self.update_dir / "backups" / "legacy-backup" / "manifest.json").exists())
 
     def test_conflicting_runtime_overlay_aborts_before_repo_or_runtime_change(self):
         _, repo, runtime, old, _ = self.make_fixture(conflict=True)
@@ -79,7 +133,7 @@ class UpdateHelperTests(unittest.TestCase):
             apply_update(repo, runtime, skip_restart=True, skip_deps=True)
         self.assertEqual(old, run("git", "rev-parse", "HEAD", cwd=repo))
         self.assertEqual(before, (runtime / "mcp_server/main.py").read_text(encoding="utf-8"))
-        self.assertFalse((runtime / "backups/updates").exists())
+        self.assertFalse((self.update_dir / "backups").exists())
         run("git", "worktree", "prune", cwd=repo)
 
     def test_dirty_repo_is_reported(self):

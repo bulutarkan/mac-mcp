@@ -7,6 +7,11 @@ from mcp_server import tools_voice
 
 
 class VoiceToolTests(unittest.TestCase):
+    def setUp(self):
+        self.tool_enabled_patcher = patch.object(tools_voice, "tool_enabled", return_value=True)
+        self.tool_enabled_patcher.start()
+        self.addCleanup(self.tool_enabled_patcher.stop)
+
     def tearDown(self):
         if tools_voice._DIALOG_LOCK.locked():
             try:
