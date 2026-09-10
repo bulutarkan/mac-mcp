@@ -40,10 +40,16 @@ import mcp_server.tools_agents as agents
 
 
 class RiskAndScopeTests(unittest.TestCase):
-    def test_registry_covers_current_81_tool_surface(self) -> None:
-        self.assertEqual(81, len(RISK_REGISTRY))
-        for required in ("run_command", "browser_observe", "spawn_agent", "mac_act", "read_file"):
+    def test_registry_covers_current_84_tool_surface(self) -> None:
+        self.assertEqual(84, len(RISK_REGISTRY))
+        for required in ("run_command", "browser_observe", "browser_do", "tool_discover", "tool_invoke", "spawn_agent", "mac_act", "read_file"):
             self.assertIn(required, RISK_REGISTRY)
+
+    def test_tool_invoke_inherits_target_risk(self) -> None:
+        _, read_risk = resolve_risk("tool_invoke", {"tool_name": "read_file", "arguments": {"path": "/tmp/a"}})
+        _, shell_risk = resolve_risk("tool_invoke", {"tool_name": "run_command", "arguments": {"command": "pwd"}})
+        self.assertTrue(evaluate_profile("read_only", read_risk).allowed)
+        self.assertFalse(evaluate_profile("read_only", shell_risk).allowed)
 
     def test_profiles_are_deterministic(self) -> None:
         _, read_risk = resolve_risk("read_file", {"path": "/tmp/a"})
@@ -92,6 +98,35 @@ class ScopedCredentialTests(unittest.TestCase):
             self.assertNotIn(token, db.read_bytes().decode("latin1", errors="ignore"))
             store.revoke_token_id(token_id)
             self.assertIsNone(store.resolve(token))
+
+
+class CompactToolSurfaceTests(unittest.TestCase):
+    def test_core_is_default_and_full_is_opt_in(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as td:
+                manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
+                mcp = ObservedFastMCP(name="test", telemetry=manager)
+
+                @mcp.tool(name="run_command")
+                def core_tool(command: str) -> dict:
+                    return {"ok": True}
+
+                @mcp.tool(name="process_list")
+                def hidden_tool(filter: str | None = None) -> dict:
+                    return {"ok": True}
+
+                with patch.dict(os.environ, {}, clear=False):
+                    os.environ.pop("MAC_MCP_TOOL_PROFILE", None)
+                    names = {tool.name for tool in await mcp.list_tools()}
+                self.assertIn("run_command", names)
+                self.assertNotIn("process_list", names)
+
+                with patch.dict(os.environ, {"MAC_MCP_TOOL_PROFILE": "full"}, clear=False):
+                    names = {tool.name for tool in await mcp.list_tools()}
+                self.assertIn("run_command", names)
+                self.assertIn("process_list", names)
+
+        asyncio.run(run())
 
 
 class DispatchAndTelemetryTests(unittest.TestCase):

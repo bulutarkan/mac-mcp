@@ -6,8 +6,8 @@
 <key>CFBundleName</key><string>Mac MCP</string>
 <key>CFBundleDisplayName</key><string>Mac MCP</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>2.0.4</string>
-<key>CFBundleVersion</key><string>204</string>
+<key>CFBundleShortVersionString</key><string>2.0.5</string>
+<key>CFBundleVersion</key><string>205</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>

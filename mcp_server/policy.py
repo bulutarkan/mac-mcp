@@ -139,6 +139,27 @@ def _http_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     )
 
 
+def _tool_invoke_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    target = str(arguments.get("tool_name") or "").strip()
+    nested = arguments.get("arguments") if isinstance(arguments.get("arguments"), Mapping) else {}
+    if not target or target in {"tool_invoke", "tool_discover"}:
+        return RiskOverride(
+            capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.UI_ACTION,
+                               Capability.BROWSER_CONTROL, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT,
+                               Capability.NETWORK_ACCESS, Capability.RAW_EXECUTION, Capability.UPDATE_CONTROL,
+                               Capability.AGENT_DELEGATION, Capability.HUMAN_INTERACTION),
+            destructive=True, sensitive=True,
+        )
+    try:
+        _, effective = resolve_risk(target, nested)
+    except KeyError:
+        return RiskOverride(capabilities=_caps(Capability.RAW_EXECUTION), destructive=True, sensitive=True)
+    return RiskOverride(
+        capabilities=effective.capabilities, destructive=effective.destructive, sensitive=effective.sensitive,
+        requested_access_mode=effective.requested_access_mode,
+    )
+
+
 def _update_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     check_only = arguments.get("check_only", True)
     if check_only is not False:
@@ -261,6 +282,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "browser_observe": _r("browser_observe", "browser", _caps(Capability.READ, Capability.BROWSER_CONTROL), sensitive=True),
     "browser_find": _r("browser_find", "browser", _caps(Capability.READ, Capability.BROWSER_CONTROL), sensitive=True),
     "browser_act": _r("browser_act", "browser", _caps(Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True),
+    "browser_do": _r("browser_do", "browser", _caps(Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True),
     "browser_execute_js": _r("browser_execute_js", "browser", _caps(Capability.READ, Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.EXTERNAL_SIDE_EFFECT, Capability.RAW_EXECUTION), destructive=True, sensitive=True),
     "browser_click_selector": _r("browser_click_selector", "browser", _caps(Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.EXTERNAL_SIDE_EFFECT), destructive=True),
     "browser_type_selector": _r("browser_type_selector", "browser", _caps(Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True),
@@ -288,6 +310,8 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "ask_user_voice": _r("ask_user_voice", "voice", _caps(Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.NETWORK_ACCESS, Capability.HUMAN_INTERACTION, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
     "ask_choice": _r("ask_choice", "interactive", _caps(Capability.UI_ACTION, Capability.HUMAN_INTERACTION, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
     "ask_confirmation": _r("ask_confirmation", "interactive", _caps(Capability.UI_ACTION, Capability.HUMAN_INTERACTION, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
+    "tool_discover": _r("tool_discover", "meta", _caps(Capability.READ)),
+    "tool_invoke": _r("tool_invoke", "meta", _caps(Capability.RAW_EXECUTION), destructive=True, sensitive=True, resolver=_tool_invoke_risk),
 }
 
 

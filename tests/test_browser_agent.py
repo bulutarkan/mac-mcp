@@ -2,7 +2,9 @@ import unittest
 
 from mcp_server.tools_browser_agent import (
     _VISUAL_MODES,
+    _condition_js,
     _dom_capture_start_js,
+    _extract_action_js,
     _score_candidate,
     _normalize_text,
 )
@@ -60,6 +62,17 @@ class BrowserAgentLayerTests(unittest.TestCase):
             'title': '', 'role': 'textbox', 'tag': 'input', 'actionable': True,
         }
         self.assertEqual(0.0, _score_candidate(search, 'İl', 'textbox', 'İl'))
+
+    def test_network_idle_does_not_accept_about_blank(self):
+        script = _condition_js({"for": "network_idle"}, "https://example.com")
+        self.assertIn("location.href!=='about:blank'", script)
+
+    def test_extract_action_builds_targeted_selector_payload(self):
+        script = _extract_action_js([{"name": "price", "selector": ".price", "attr": "text"}], 1200)
+        self.assertIn('querySelectorAll(sel)', script)
+        self.assertIn('"price"', script)
+        self.assertIn('".price"', script)
+        self.assertIn('budget=1200', script)
 
     def test_full_page_is_a_supported_visual_mode(self):
         self.assertIn('full_page', _VISUAL_MODES)

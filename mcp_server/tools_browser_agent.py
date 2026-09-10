@@ -29,7 +29,7 @@ from .tools_browser import (
 )
 
 _MAX_OBSERVE_ELEMENTS = 240
-_DEFAULT_OBSERVE_ELEMENTS = 120
+_DEFAULT_OBSERVE_ELEMENTS = 40
 _MAX_ACTIONS = 20
 _VISUAL_MODES = {"none", "viewport", "element", "full_page"}
 _RETURN_STATE_MODES = {"none", "compact", "full"}
@@ -1188,7 +1188,7 @@ def _condition_js(action: Dict[str, Any], initial_url: str) -> str:
         base = json.dumps(initial_url)
         expr = f"location.href!=={base}"
     elif kind == "network_idle":
-        expr = "document.readyState==='complete'"
+        expr = "location.href!=='about:blank' && document.readyState==='complete'"
     else:
         expr = "false"
     return f'''(function(){{
@@ -1196,6 +1196,68 @@ def _condition_js(action: Dict[str, Any], initial_url: str) -> str:
 function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
 return __mcpB64({{ok:true,matched:!!({expr}),url:location.href,title:document.title,scroll:{{x:scrollX,y:scrollY}},dom_revision:__mcpState().mutationRevision}});
 }})()'''
+
+
+def _extract_action_js(fields: List[Dict[str, Any]], max_chars: int) -> str:
+    specs = json.dumps(fields, ensure_ascii=False)
+    budget = max(256, min(int(max_chars), 20_000))
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var specs={specs}, budget={budget}, data={{}}, counts={{}}, truncated=false, used=0;
+function readValue(el, attr){{
+  attr=String(attr||'text');
+  if(attr==='text') return String(el.innerText||el.textContent||'').trim();
+  if(attr==='html') return String(el.innerHTML||'');
+  if(attr==='value') return String(el.value==null?'':el.value);
+  if(attr==='href') return String(el.href||el.getAttribute('href')||'');
+  if(attr==='aria_label') return String(el.getAttribute('aria-label')||'');
+  return String(el.getAttribute(attr)||'');
+}}
+function bounded(v){{
+  v=String(v==null?'':v);
+  var remaining=Math.max(0,budget-used);
+  if(v.length>remaining){{v=v.slice(0,remaining);truncated=true;}}
+  used+=v.length; return v;
+}}
+for(var i=0;i<specs.length;i++){{
+  var sp=specs[i]||{{}}, name=String(sp.name||('field_'+i)), sel=String(sp.selector||'body');
+  var els=[];
+  try{{els=Array.from(document.querySelectorAll(sel));}}catch(e){{data[name]=null;counts[name]=0;continue;}}
+  counts[name]=els.length;
+  var maxItems=Math.max(1,Math.min(Number(sp.max_items||10),100));
+  var vals=els.slice(0,maxItems).map(function(el){{return bounded(readValue(el,sp.attr));}});
+  if(sp.regex){{
+    try{{
+      var re=new RegExp(String(sp.regex),String(sp.flags||''));
+      vals=vals.map(function(v){{var m=v.match(re); return m?(m[1]!==undefined?m[1]:m[0]):null;}}).filter(function(v){{return v!==null;}});
+    }}catch(e){{}}
+  }}
+  data[name]=sp.all?vals:(vals.length?vals[0]:null);
+}}
+return __mcpB64({{ok:true,type:'extract',url:location.href,title:document.title,data:data,matched_counts:counts,truncated:truncated,chars:used}});
+}})()'''
+
+
+def _extract_action(
+    settings: Settings,
+    browser: str,
+    action: Dict[str, Any],
+    window_index: int,
+    tab_index: Optional[int],
+    tab_handle: Optional[str] = None,
+) -> Dict[str, Any]:
+    fields = action.get("fields") or []
+    if not isinstance(fields, list) or not fields:
+        return {"ok": False, "type": "extract", "error": "fields must be a non-empty list", "_js_calls": 0}
+    if len(fields) > 20:
+        return {"ok": False, "type": "extract", "error": "fields may contain at most 20 items", "_js_calls": 0}
+    out = _run_json_js(
+        settings, browser, _extract_action_js(fields, int(action.get("max_chars", 4000))),
+        window_index, tab_index, tab_handle,
+    )
+    out["_js_calls"] = 1
+    return out
 
 
 def _wait_action(
@@ -1380,16 +1442,24 @@ def _browser_act_locked(
         typ = str(action.get("type") or "").lower().replace("-", "_")
         resolved_target: Optional[Dict[str, Any]] = None
         work_action = dict(action)
-        if typ not in {"wait", "key", "keyboard", "shortcut"}:
+        if typ not in {"wait", "key", "keyboard", "shortcut", "extract"}:
             work_action, resolved_target = resolve_target(action)
             if isinstance(resolved_target, dict) and resolved_target.get("ok") is False:
                 results.append({"type": typ, **resolved_target})
                 break
 
-        if typ in {"wait", "key", "keyboard", "shortcut", "select"}:
+        if typ in {"wait", "key", "keyboard", "shortcut", "select", "extract"}:
             if not flush_pending():
                 break
-            if typ == "select":
+            if typ == "extract":
+                extract_result = _extract_action(
+                    settings, browser, action, window_index, tab_index, tab_handle,
+                )
+                internal_js_calls += int(extract_result.pop("_js_calls", 0))
+                results.append(extract_result)
+                if not extract_result.get("ok"):
+                    break
+            elif typ == "select":
                 select_result = _select_action(
                     settings,
                     browser,

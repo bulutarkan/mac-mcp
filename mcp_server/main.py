@@ -483,7 +483,7 @@ def create_app():
         window_index: int = 1,
         max_depth: int = 5,
         max_children: int = 30,
-        include_screenshot: bool = True,
+        include_screenshot: bool = False,
         ocr: bool = False,
     ) -> Any:
         return _log(
@@ -622,7 +622,7 @@ def create_app():
     )
     def _browser_observe(browser: str, window_index: int = 1, tab_index: Optional[int] = None,
                          tab_handle: Optional[str] = None,
-                         scope: str = "interactive", max_elements: int = 120,
+                         scope: str = "interactive", max_elements: int = 40,
                          visual: str = "none", element_id: Optional[str] = None) -> Any:
         return _log(
             audit_logger, "browser_observe",
@@ -671,6 +671,90 @@ def create_app():
                                  tab_index=tab_index, tab_handle=tab_handle,
                                  return_state=return_state, allow_foreground=allow_foreground),
         )
+
+    @mcp.tool(
+        name="browser_do",
+        description=(
+            "Preferred browser transaction tool. If a task opens a URL and then reads/acts, pass url here instead of calling "
+            "browser_open_url separately. In one MCP call it can open, wait, find/click/type/select/scroll, verify, and compactly "
+            "extract fields. actions is optional: url alone automatically returns h1 + paragraphs. For custom reads use "
+            "action type 'extract' with fields [{name,selector,attr,all,max_items}]. Set close_after=true for a one-shot "
+            "open/read/act/verify/close flow in a single MCP call; it only closes the newly opened tab."
+        ),
+    )
+    async def _browser_do(browser: str, url: Optional[str] = None,
+                          actions: Optional[List[Dict[str, Any]]] = None,
+                          new_tab: bool = True, background: bool = True,
+                          window_index: int = 1, tab_index: Optional[int] = None,
+                          tab_handle: Optional[str] = None, wait_after_open: bool = True,
+                          return_state: str = "none", allow_foreground: bool = False,
+                          close_after: bool = False, debug: bool = False) -> Dict[str, Any]:
+        def work() -> Dict[str, Any]:
+            handle = tab_handle
+            opened = None
+            requested_actions = list(actions or [])
+            work_actions = list(requested_actions)
+            if url:
+                opened = browser_open_url(
+                    settings, browser=browser, url=url, new_tab=new_tab, background=background
+                )
+                handle = opened.get("tab_handle") or handle
+                if wait_after_open:
+                    work_actions.insert(0, {"type": "wait", "for": "network_idle", "timeout_s": 15, "required": False})
+            if not requested_actions:
+                work_actions.append({
+                    "type": "extract",
+                    "fields": [
+                        {"name": "h1", "selector": "h1", "attr": "text"},
+                        {"name": "paragraphs", "selector": "p", "attr": "text", "all": True, "max_items": 20},
+                    ],
+                    "max_chars": 3000,
+                })
+            result = browser_act(
+                settings, browser=browser, actions=work_actions, window_index=window_index,
+                tab_index=tab_index, tab_handle=handle, return_state=return_state,
+                allow_foreground=allow_foreground,
+            )
+            if opened:
+                result["opened"] = {k: opened.get(k) for k in ("url", "window_index", "tab_index", "tab_handle", "background") if k in opened}
+            closed = False
+            if close_after:
+                if not opened or not handle:
+                    raise HTTPException(status.HTTP_400_BAD_REQUEST, "close_after is only allowed for a tab newly opened by browser_do.")
+                browser_close_tab(settings, browser=browser, tab_handle=handle)
+                closed = True
+            if debug:
+                if closed:
+                    result["closed"] = True
+                return result
+            data: Dict[str, Any] = {}
+            final_url = None
+            final_title = None
+            errors = []
+            for item in result.get("actions") or []:
+                if item.get("type") == "extract" and isinstance(item.get("data"), dict):
+                    data.update(item["data"])
+                    final_url = item.get("url") or final_url
+                    final_title = item.get("title") or final_title
+                if item.get("ok") is False or item.get("matched") is False:
+                    errors.append({k: item.get(k) for k in ("type", "error", "for", "timed_out") if item.get(k) is not None})
+            compact: Dict[str, Any] = {
+                "ok": bool(result.get("ok")),
+                "data": data,
+                "url": final_url or ((result.get("state") or {}).get("url") if isinstance(result.get("state"), dict) else None),
+                "title": final_title or ((result.get("state") or {}).get("title") if isinstance(result.get("state"), dict) else None),
+                "tab_handle": handle,
+                "action_count": result.get("action_count"),
+                "internal_js_calls": result.get("internal_js_calls"),
+                "duration_ms": result.get("duration_ms"),
+                "closed": closed,
+            }
+            if errors:
+                compact["errors"] = errors
+            if return_state != "none" and result.get("state") is not None:
+                compact["state"] = result.get("state")
+            return compact
+        return await asyncio.to_thread(_log, audit_logger, "browser_do", work)
 
     @mcp.tool(name="browser_execute_js",
               description="Execute JavaScript in a browser tab and return the result.")
@@ -1085,6 +1169,84 @@ def create_app():
                 deny_label=deny_label,
             ),
         )
+
+    @mcp.tool(
+        name="tool_discover",
+        description="Find less-common Mac MCP capabilities hidden from the compact default tool list. Returns a small schema summary.",
+    )
+    def _tool_discover(query: str = "", limit: int = 8, include_schema: bool = False) -> Dict[str, Any]:
+        q = str(query or "").strip().lower()
+        limit = max(1, min(int(limit), 100))
+        matches = []
+        for info in mcp._tool_manager.list_tools():
+            if info.name in {"tool_discover", "tool_invoke"}:
+                continue
+            hay = f"{info.name} {info.description or ''}".lower()
+            if q and all(token not in hay for token in q.split()):
+                continue
+            params = info.parameters or {}
+            properties = params.get("properties") or {}
+            item = {
+                "name": info.name,
+                "description": (info.description or "")[:180],
+                "required": params.get("required") or [],
+                "parameters": {
+                    name: {"type": spec.get("type"), "default": spec.get("default")}
+                    for name, spec in properties.items()
+                },
+            }
+            if include_schema:
+                item["input_schema"] = params
+            matches.append(item)
+            if len(matches) >= limit:
+                break
+        return {"ok": True, "query": query, "count": len(matches), "tools": matches}
+
+    @mcp.tool(
+        name="tool_invoke",
+        description="Invoke a less-common registered Mac MCP tool by name after tool_discover, preserving normal policy and telemetry checks.",
+    )
+    async def _tool_invoke(tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        target = str(tool_name or "").strip()
+        if not target or target in {"tool_discover", "tool_invoke"}:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "A non-fallback target tool_name is required.")
+        if mcp._tool_manager.get_tool(target) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown tool: {target}")
+        result = await mcp.call_tool(target, arguments or {})
+        payload: Any
+        if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], dict):
+            payload = result[1].get("result", result[1])
+        elif isinstance(result, dict):
+            payload = result.get("result", result)
+        elif isinstance(result, (list, tuple)):
+            converted = []
+            for item in result:
+                if hasattr(item, "model_dump"):
+                    converted.append(item.model_dump(mode="json"))
+                elif isinstance(item, dict):
+                    converted.append(item)
+                else:
+                    converted.append(str(item))
+            # FastMCP tools registered with structured_output=False commonly return
+            # a single TextContent whose text is the tool's JSON payload. Preserve
+            # legacy result shape through tool_invoke instead of exposing an MCP
+            # content-block wrapper to the calling model.
+            if len(converted) == 1 and isinstance(converted[0], dict) and converted[0].get("type") == "text":
+                text_value = converted[0].get("text")
+                if isinstance(text_value, str):
+                    try:
+                        payload = json.loads(text_value)
+                    except json.JSONDecodeError:
+                        payload = converted
+                else:
+                    payload = converted
+            else:
+                payload = converted
+        elif hasattr(result, "model_dump"):
+            payload = result.model_dump(mode="json")
+        else:
+            payload = result
+        return {"ok": True, "tool": target, "result": payload}
 
     # ── App setup ────────────────────────────────────────────────────────────
     app = mcp.streamable_http_app()

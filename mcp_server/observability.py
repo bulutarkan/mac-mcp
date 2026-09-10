@@ -595,8 +595,19 @@ class TelemetryManager:
         }
 
 
+_CORE_TOOL_NAMES = {
+    "run_command", "run_commands_parallel",
+    "read_file", "write_file", "edit_file", "search_files", "http_request",
+    "mac_observe", "mac_act",
+    "browser_list_tabs", "browser_close_tab", "browser_observe", "browser_do",
+    "spawn_agents", "wait_agents",
+    "memory_search", "ask_user",
+    "tool_discover", "tool_invoke",
+}
+
+
 class ObservedFastMCP(FastMCP):
-    """FastMCP with central registration hints, enforcement, and telemetry."""
+    """FastMCP with central registration hints, enforcement, telemetry, and optional compact discovery."""
 
     def __init__(
         self,
@@ -608,6 +619,25 @@ class ObservedFastMCP(FastMCP):
         self.telemetry = telemetry
         self._policy_context_provider = policy_context_provider
         super().__init__(*args, **kwargs)
+
+    async def list_tools(self):
+        tools = await super().list_tools()
+        if os.getenv("MAC_MCP_TOOL_PROFILE", "core").strip().lower() != "core":
+            return tools
+        extra = {
+            item.strip() for item in os.getenv("MAC_MCP_CORE_EXTRA_TOOLS", "").split(",") if item.strip()
+        }
+        allowed = _CORE_TOOL_NAMES | extra
+        compact = []
+        for tool in tools:
+            if tool.name not in allowed:
+                continue
+            description = tool.description or ""
+            if len(description) > 220:
+                description = description[:217].rsplit(" ", 1)[0] + "..."
+                tool = tool.model_copy(update={"description": description})
+            compact.append(tool)
+        return compact
 
     def tool(
         self,
