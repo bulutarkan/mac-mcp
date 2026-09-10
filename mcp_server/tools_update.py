@@ -13,6 +13,7 @@ from typing import Any, Dict
 from fastapi import HTTPException, status
 
 from .update_helper import UpdateError, check_update, resolve_paths
+from .update_state import update_state_path
 
 
 def _public_info(info) -> Dict[str, Any]:
@@ -62,13 +63,16 @@ def mac_mcp_update(check_only: bool = True, branch: str = "main") -> Dict[str, A
         return payload
 
     update_id = f"upd_{uuid.uuid4().hex[:10]}"
-    updates_dir = runtime / ".updates"
-    updates_dir.mkdir(parents=True, exist_ok=True)
-    log_path = updates_dir / f"{update_id}.log"
-    status_path = runtime / ".mac-mcp-update.json"
+    status_path = update_state_path()
+    logs_dir = status_path.parent / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_path = logs_dir / f"{update_id}.log"
     helper_src = Path(__file__).with_name("update_helper.py")
-    helper_tmp = Path(tempfile.gettempdir()) / f"mac-mcp-update-{update_id}.py"
+    state_src = helper_src.with_name("update_state.py")
+    helper_tmp_dir = Path(tempfile.mkdtemp(prefix=f"mac-mcp-update-{update_id}-"))
+    helper_tmp = helper_tmp_dir / "update_helper.py"
     shutil.copy2(helper_src, helper_tmp)
+    shutil.copy2(state_src, helper_tmp_dir / "update_state.py")
 
     started_state = {
         "status": "starting",
@@ -76,6 +80,7 @@ def mac_mcp_update(check_only: bool = True, branch: str = "main") -> Dict[str, A
         "from_commit": info.deployed_commit,
         "to_commit": info.target_commit,
         "log_path": str(log_path),
+        "status_path": str(status_path),
     }
     status_path.write_text(json.dumps(started_state, indent=2) + "\n", encoding="utf-8")
 
@@ -102,9 +107,10 @@ def mac_mcp_update(check_only: bool = True, branch: str = "main") -> Dict[str, A
             start_new_session=True,
             close_fds=True,
         )
+        log.close()
     except Exception as exc:
         log.close()
-        helper_tmp.unlink(missing_ok=True)
+        shutil.rmtree(helper_tmp_dir, ignore_errors=True)
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Could not start updater: {exc}") from exc
 
     payload.update({

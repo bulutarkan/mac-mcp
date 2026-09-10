@@ -16,7 +16,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
-from .update_state import backups_root, read_deployed_commit, write_deployed_commit, write_update_state
+if __package__:
+    from .update_state import backups_root, read_deployed_commit, write_deployed_commit, write_update_state
+else:
+    # The detached updater is launched as a staged standalone script. Keep the
+    # staged sibling ahead of the repo and site-packages on sys.path so the
+    # helper cannot accidentally load an unrelated update_state module.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from update_state import backups_root, read_deployed_commit, write_deployed_commit, write_update_state
 
 DEFAULT_BRANCH = "main"
 DEFAULT_REMOTE = "origin"
@@ -374,6 +381,96 @@ def _deps_changed(repo: Path, deployed: str, target: str) -> bool:
     return bool(changed.strip())
 
 
+def _rollback_repo(
+    repo: Path,
+    expected_branch: str,
+    pre_update_head: str | None,
+    post_merge_head: str | None,
+    head_moved: bool,
+) -> dict[str, str]:
+    """Safely move the source checkout back to its pre-update HEAD."""
+    if not head_moved:
+        return {"status": "skipped", "reason": "Updater did not move repository HEAD."}
+    if not pre_update_head or not post_merge_head:
+        return {"status": "skipped", "reason": "Repository rollback markers were not recorded."}
+
+    try:
+        current_branch = _git(repo, "branch", "--show-current")
+    except Exception as exc:
+        return {"status": "skipped", "reason": f"Could not verify the current branch: {exc}"}
+    if current_branch != expected_branch:
+        return {
+            "status": "skipped",
+            "reason": f"Current branch changed from '{expected_branch}' to '{current_branch or 'detached HEAD'}'.",
+        }
+
+    try:
+        current_head = _git(repo, "rev-parse", "HEAD")
+    except Exception as exc:
+        return {"status": "skipped", "reason": f"Could not verify the current HEAD: {exc}"}
+    if current_head != post_merge_head:
+        return {
+            "status": "skipped",
+            "reason": (
+                f"Current HEAD {_short(current_head)} no longer matches the updater's "
+                f"post-merge HEAD {_short(post_merge_head)}."
+            ),
+        }
+
+    try:
+        status = _git(repo, "status", "--porcelain", "--untracked-files=all")
+    except Exception as exc:
+        return {"status": "skipped", "reason": f"Could not verify repository cleanliness: {exc}"}
+    if status:
+        return {"status": "skipped", "reason": "Repository worktree/index is not clean at rollback time."}
+
+    reset = _run(
+        ["git", "-C", str(repo), "reset", "--keep", pre_update_head],
+        check=False,
+        timeout=120,
+    )
+    if reset.returncode != 0:
+        detail = (reset.stderr or reset.stdout or "git reset --keep failed").strip()
+        return {"status": "failed", "reason": f"git reset --keep failed: {detail}"}
+
+    try:
+        restored_head = _git(repo, "rev-parse", "HEAD")
+        restored_status = _git(repo, "status", "--porcelain", "--untracked-files=all")
+    except Exception as exc:
+        return {"status": "failed", "reason": f"Could not verify repository rollback: {exc}"}
+    if restored_head != pre_update_head:
+        return {
+            "status": "failed",
+            "reason": f"Repository rollback ended at {_short(restored_head)}, expected {_short(pre_update_head)}.",
+        }
+    if restored_status:
+        return {"status": "failed", "reason": "Repository is not clean after git reset --keep."}
+    return {"status": "restored", "reason": f"Repository HEAD restored to {_short(pre_update_head)}."}
+
+
+def _same_checkout_restore_guard(
+    repo: Path,
+    expected_branch: str,
+    expected_head: str | None,
+) -> tuple[bool, str]:
+    """Check that a same-checkout runtime restore will not overwrite user work."""
+    if not expected_head:
+        return False, "The pre-update repository HEAD was not recorded."
+    try:
+        current_branch = _git(repo, "branch", "--show-current")
+        current_head = _git(repo, "rev-parse", "HEAD")
+        status = _git(repo, "status", "--porcelain", "--untracked-files=all")
+    except Exception as exc:
+        return False, f"Could not verify the checkout before runtime restore: {exc}"
+    if current_branch != expected_branch:
+        return False, "The repository branch changed before the runtime restore."
+    if current_head != expected_head:
+        return False, "The repository HEAD changed before the runtime restore."
+    if status:
+        return False, "The repository worktree/index is not clean before the runtime restore."
+    return True, "The checkout is still at the verified clean pre-update revision."
+
+
 def apply_update(
     repo: str | Path | None = None,
     runtime: str | Path | None = None,
@@ -401,8 +498,37 @@ def apply_update(
     stage: Optional[Path] = None
     backup: Optional[Path] = None
     health_url: Optional[str] = None
+    expected_branch = branch
+    pre_update_head: Optional[str] = info.repo_commit
+    post_merge_head: Optional[str] = None
+    repo_head_moved = False
+    merge_completed = False
+    runtime_sync_attempted = False
+    dependency_install_attempted = False
+    dependencies_updated = False
+    repo_rollback: dict[str, str] = {
+        "status": "skipped",
+        "reason": "Repository fast-forward was not attempted.",
+    }
+    runtime_rollback: dict[str, str] = {
+        "status": "skipped",
+        "reason": "Runtime synchronization was not attempted.",
+    }
     deps_changed = _deps_changed(repo_path, info.deployed_commit, info.target_commit)
     try:
+        current_branch = _git(repo_path, "branch", "--show-current")
+        if current_branch != expected_branch:
+            raise UpdateError(
+                f"Repository must be on branch '{expected_branch}', currently on "
+                f"'{current_branch or 'detached HEAD'}'."
+            )
+        verified_head = _git(repo_path, "rev-parse", "HEAD")
+        if verified_head != pre_update_head:
+            raise UpdateError(
+                f"Repository changed while preparing the update: expected {_short(pre_update_head)}, "
+                f"found {_short(verified_head)}."
+            )
+
         print("[mac-mcp update] Preparing runtime merge...", flush=True)
         stage, overlay_count = _prepare_runtime_merge(
             repo_path, runtime_path, info.deployed_commit, info.target_commit, temp_root
@@ -416,11 +542,30 @@ def apply_update(
         print(f"[mac-mcp update] Runtime backup: {backup}", flush=True)
 
         current_branch = _git(repo_path, "branch", "--show-current")
-        if current_branch != branch:
-            raise UpdateError(f"Repository must be on branch '{branch}', currently on '{current_branch or 'detached HEAD'}'.")
+        if current_branch != expected_branch:
+            raise UpdateError(
+                f"Repository branch changed while preparing the update: expected '{expected_branch}', "
+                f"found '{current_branch or 'detached HEAD'}'."
+            )
+        current_head = _git(repo_path, "rev-parse", "HEAD")
+        if current_head != pre_update_head:
+            raise UpdateError(
+                f"Repository changed while preparing the update: expected {_short(pre_update_head)}, "
+                f"found {_short(current_head)}."
+            )
         print("[mac-mcp update] Updating repository (fast-forward)...", flush=True)
         _git(repo_path, "merge", "--ff-only", info.target_commit)
+        merge_completed = True
+        observed_head = _git(repo_path, "rev-parse", "HEAD")
+        post_merge_head = info.target_commit
+        repo_head_moved = info.target_commit != pre_update_head
+        if observed_head != info.target_commit:
+            raise UpdateError(
+                f"Repository fast-forward ended at {_short(observed_head)}, "
+                f"expected {_short(info.target_commit)}."
+            )
 
+        runtime_sync_attempted = True
         synced = _sync_runtime(stage, runtime_path, old_files, new_files)
         print(f"[mac-mcp update] Synced {synced} managed runtime file(s).", flush=True)
 
@@ -433,7 +578,9 @@ def apply_update(
             if not python.exists():
                 raise UpdateError(f"Runtime Python was not found: {python}")
             print("[mac-mcp update] Installing updated dependencies...", flush=True)
+            dependency_install_attempted = True
             _run([str(python), "-m", "pip", "install", "-r", str(requirements)], timeout=300)
+            dependencies_updated = True
         elif deps_changed:
             print("[mac-mcp update] Dependency installation skipped (test mode).", flush=True)
         else:
@@ -461,32 +608,97 @@ def apply_update(
     except Exception as exc:
         message = str(exc)
         print(f"[mac-mcp update] ERROR: {message}", flush=True)
-        if backup is not None:
-            try:
-                print("[mac-mcp update] Restoring the previous runtime...", flush=True)
-                _restore_runtime(runtime_path, backup)
-                _write_state_commit(runtime_path, info.deployed_commit)
+        if merge_completed and post_merge_head is None:
+            post_merge_head = info.target_commit
+            repo_head_moved = info.target_commit != pre_update_head
+        try:
+            repo_rollback = _rollback_repo(
+                repo_path,
+                expected_branch,
+                pre_update_head,
+                post_merge_head,
+                repo_head_moved,
+            )
+        except Exception as repo_exc:
+            repo_rollback = {"status": "failed", "reason": f"Unexpected repository rollback error: {repo_exc}"}
+        print(
+            f"[mac-mcp update] Repository rollback {repo_rollback['status']}: "
+            f"{repo_rollback['reason']}",
+            flush=True,
+        )
+        if backup is not None and runtime_sync_attempted:
+            same_checkout = repo_path == runtime_path
+            restore_runtime = True
+            if same_checkout:
+                expected_restore_head = pre_update_head
+                restore_runtime, guard_reason = _same_checkout_restore_guard(
+                    repo_path, expected_branch, expected_restore_head
+                )
+                if not restore_runtime:
+                    runtime_rollback = {"status": "skipped", "reason": guard_reason}
+                elif repo_head_moved and repo_rollback.get("status") != "restored":
+                    restore_runtime = False
+                    runtime_rollback = {
+                        "status": "skipped",
+                        "reason": (
+                            "Repository rollback was not restored safely; preserving the same-checkout "
+                            "worktree and user changes."
+                        ),
+                    }
+            if restore_runtime:
                 try:
-                    _refresh_installed_menu_app(runtime_path)
-                except Exception as menu_exc:
-                    print(f"[mac-mcp update] WARNING: menu app rollback refresh failed: {menu_exc}", flush=True)
-                if not skip_restart:
+                    print("[mac-mcp update] Restoring the previous runtime...", flush=True)
+                    _restore_runtime(runtime_path, backup)
+                    _write_state_commit(runtime_path, info.deployed_commit)
                     try:
-                        rollback_health = _restart_service(runtime_path, launchd_label)
-                        if _health_ok(rollback_health):
-                            print("[mac-mcp update] Rollback health check passed.", flush=True)
-                        else:
-                            print("[mac-mcp update] WARNING: rollback health check failed.", flush=True)
-                    except Exception as restart_exc:
-                        print(f"[mac-mcp update] WARNING: rollback restart failed: {restart_exc}", flush=True)
-                print("[mac-mcp update] Runtime rollback completed.", flush=True)
-            except Exception as rollback_exc:
-                print(f"[mac-mcp update] WARNING: runtime rollback failed: {rollback_exc}", flush=True)
-        _write_update_state(runtime_path, {"status": "failed", "error": message})
+                        _refresh_installed_menu_app(runtime_path)
+                    except Exception as menu_exc:
+                        print(f"[mac-mcp update] WARNING: menu app rollback refresh failed: {menu_exc}", flush=True)
+                    if not skip_restart:
+                        try:
+                            rollback_health = _restart_service(runtime_path, launchd_label)
+                            if _health_ok(rollback_health):
+                                print("[mac-mcp update] Rollback health check passed.", flush=True)
+                            else:
+                                print("[mac-mcp update] WARNING: rollback health check failed.", flush=True)
+                        except Exception as restart_exc:
+                            print(f"[mac-mcp update] WARNING: rollback restart failed: {restart_exc}", flush=True)
+                    runtime_rollback = {
+                        "status": "restored",
+                        "reason": "Previous runtime files and deployed marker were restored.",
+                    }
+                    print("[mac-mcp update] Runtime rollback completed.", flush=True)
+                except Exception as rollback_exc:
+                    runtime_rollback = {"status": "failed", "reason": str(rollback_exc)}
+                    print(f"[mac-mcp update] WARNING: runtime rollback failed: {rollback_exc}", flush=True)
+        elif backup is not None:
+            runtime_rollback = {"status": "skipped", "reason": "Runtime synchronization was not attempted."}
+        failed_state = {
+            "status": "failed",
+            "error": message,
+            "repo_rollback": repo_rollback,
+            "runtime_rollback": runtime_rollback,
+            "repo_head_moved": repo_head_moved,
+        }
+        if dependency_install_attempted:
+            failed_state["dependency_note"] = (
+                "Dependency rollback was not attempted; the runtime environment may contain residual "
+                "dependency changes."
+            )
+        if dependencies_updated:
+            failed_state["dependencies_updated"] = True
+        if pre_update_head is not None:
+            failed_state["repo_pre_update_commit"] = pre_update_head
+        if post_merge_head is not None:
+            failed_state["repo_post_merge_commit"] = post_merge_head
+        _write_update_state(runtime_path, failed_state)
         raise
     finally:
         if stage is not None:
-            _git(repo_path, "worktree", "remove", "--force", str(stage), check=False)
+            try:
+                _git(repo_path, "worktree", "remove", "--force", str(stage), check=False)
+            except Exception as cleanup_exc:
+                print(f"[mac-mcp update] WARNING: temporary worktree cleanup failed: {cleanup_exc}", flush=True)
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
