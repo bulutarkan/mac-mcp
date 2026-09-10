@@ -68,6 +68,10 @@ class RiskAndScopeTests(unittest.TestCase):
         self.assertFalse(evaluate_tool_scope(scope, "browser_observe", {"tab_handle": "tab-b"}).allowed)
         self.assertFalse(evaluate_tool_scope(scope, "wait_jobs", {"job_ids": ["job-a", "job-b"]}).allowed)
 
+    def test_browser_wildcard_scope_allows_list_tabs_without_handle(self) -> None:
+        scope = ResourceScope(browser_tabs=("*",), tool_families=("browser",), access_mode="read_only")
+        self.assertTrue(evaluate_tool_scope(scope, "browser_list_tabs", {"browser": "Safari"}).allowed)
+
     def test_child_scope_can_only_narrow_parent(self) -> None:
         parent = ResourceScope(path_roots=("/tmp/project",), browser_tabs=("tab-a", "tab-b"), access_mode="workspace_write")
         child = ResourceScope(path_roots=("/tmp/project/sub",), browser_tabs=("tab-a",), access_mode="read_only")

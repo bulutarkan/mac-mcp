@@ -5,6 +5,7 @@ from mcp_server.tools_browser_agent import (
     _condition_js,
     _dom_capture_start_js,
     _extract_action_js,
+    semantic_extract_fields,
     _score_candidate,
     _normalize_text,
 )
@@ -73,6 +74,23 @@ class BrowserAgentLayerTests(unittest.TestCase):
         self.assertIn('"price"', script)
         self.assertIn('".price"', script)
         self.assertIn('budget=1200', script)
+
+
+    def test_semantic_extract_fields_are_compact_and_deduplicated(self):
+        fields = semantic_extract_fields(["price", "cancellation", "price", "parking"])
+        self.assertEqual(["price", "cancellation", "parking"], [item["name"] for item in fields])
+        self.assertTrue(all(item.get("semantic") for item in fields))
+        self.assertTrue(all(item.get("max_items") == 2 for item in fields))
+
+    def test_semantic_extract_script_keeps_selector_compatibility(self):
+        script = _extract_action_js([
+            {"name": "price", "semantic": "price", "all": True, "max_items": 2},
+            {"name": "title", "selector": "h1", "attr": "text"},
+        ], 1500)
+        self.assertIn("semanticValues", script)
+        self.assertIn("querySelectorAll(sel)", script)
+        self.assertIn("free cancellation", script)
+        self.assertIn("budget=1500", script)
 
     def test_full_page_is_a_supported_visual_mode(self):
         self.assertIn('full_page', _VISUAL_MODES)

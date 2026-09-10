@@ -49,13 +49,103 @@ from .tools_browser import (
     browser_screenshot, browser_scroll, browser_press_key,
     browser_coordinate_click, browser_get_snapshot,
 )
-from .tools_browser_agent import browser_observe, browser_find, browser_act
+from .tools_browser_agent import browser_observe, browser_find, browser_act, semantic_extract_fields
 from .tools_interactive import ask_choice, ask_confirmation, ask_user
 from .tools_voice import ask_user_voice
 from .tools_update import mac_mcp_update
 from .tools_memory import memory_add, memory_search, memory_get, memory_update, memory_delete
 from .tools_skills import skill_list, skill_search, skill_get, skill_register, skill_update_index
 from .menu_app_bootstrap import bootstrap_menu_app_and_legacy_state
+
+
+_BROWSER_DO_OUTPUT_BUDGET_BYTES = 8_192
+
+
+def _browser_json_bytes(payload: Any) -> int:
+    return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8"))
+
+
+def _clip_browser_value(value: Any, *, max_string: int, max_items: int, depth: int = 0) -> Any:
+    if depth >= 4:
+        return str(value)[:max_string]
+    if isinstance(value, str):
+        return value if len(value) <= max_string else value[: max(0, max_string - 1)] + "…"
+    if isinstance(value, list):
+        return [
+            _clip_browser_value(item, max_string=max_string, max_items=max_items, depth=depth + 1)
+            for item in value[:max_items]
+        ]
+    if isinstance(value, dict):
+        return {
+            str(key): _clip_browser_value(item, max_string=max_string, max_items=max_items, depth=depth + 1)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _fit_browser_do_output(payload: Dict[str, Any], budget_bytes: int = _BROWSER_DO_OUTPUT_BUDGET_BYTES) -> Dict[str, Any]:
+    """Keep normal browser_do responses bounded; debug mode bypasses this helper."""
+    budget = max(1_024, min(int(budget_bytes), 64_000))
+    if _browser_json_bytes(payload) <= budget:
+        return payload
+
+    out = dict(payload)
+    out["output_truncated"] = True
+
+    state = out.get("state")
+    if isinstance(state, dict):
+        light_state = {
+            key: state.get(key)
+            for key in ("ok", "url", "title", "scroll", "dom_revision", "active_element")
+            if state.get(key) is not None
+        }
+        out["state"] = _clip_browser_value(light_state, max_string=700, max_items=3)
+        out["state_truncated"] = True
+
+    if isinstance(out.get("errors"), list):
+        out["errors"] = _clip_browser_value(out["errors"], max_string=500, max_items=3)
+    if isinstance(out.get("data"), dict):
+        out["data"] = _clip_browser_value(out["data"], max_string=1_000, max_items=4)
+
+    for max_string, max_items in ((600, 3), (320, 2), (180, 1)):
+        if _browser_json_bytes(out) <= budget:
+            break
+        if isinstance(out.get("data"), dict):
+            out["data"] = _clip_browser_value(out["data"], max_string=max_string, max_items=max_items)
+        if isinstance(out.get("state"), dict):
+            out["state"] = _clip_browser_value(out["state"], max_string=max_string, max_items=max_items)
+
+    if _browser_json_bytes(out) > budget:
+        out.pop("state", None)
+        out["state_truncated"] = True
+    if _browser_json_bytes(out) > budget:
+        out.pop("errors", None)
+    if _browser_json_bytes(out) > budget and isinstance(out.get("data"), dict):
+        out["data"] = {
+            str(key): _clip_browser_value(value, max_string=120, max_items=1)
+            for key, value in list(out["data"].items())[:12]
+        }
+    if _browser_json_bytes(out) > budget:
+        out = _clip_browser_value(out, max_string=160, max_items=2)
+        out["output_truncated"] = True
+    if _browser_json_bytes(out) > budget:
+        core_data = out.get("data")
+        if isinstance(core_data, dict):
+            core_data = {
+                str(key): _clip_browser_value(value, max_string=100, max_items=1)
+                for key, value in list(core_data.items())[:8]
+            }
+        core: Dict[str, Any] = {
+            key: out.get(key)
+            for key in ("ok", "url", "title", "tab_handle", "closed")
+            if key in out
+        }
+        if core_data is not None:
+            core["data"] = core_data
+        core = _clip_browser_value(core, max_string=100, max_items=1)
+        core["output_truncated"] = True
+        out = core
+    return out
 
 
 def _log(audit_logger, tool: str, fn):
@@ -675,11 +765,9 @@ def create_app():
     @mcp.tool(
         name="browser_do",
         description=(
-            "Preferred browser transaction tool. If a task opens a URL and then reads/acts, pass url here instead of calling "
-            "browser_open_url separately. In one MCP call it can open, wait, find/click/type/select/scroll, verify, and compactly "
-            "extract fields. actions is optional: url alone automatically returns h1 + paragraphs. For custom reads use "
-            "action type 'extract' with fields [{name,selector,attr,all,max_items}]. Set close_after=true for a one-shot "
-            "open/read/act/verify/close flow in a single MCP call; it only closes the newly opened tab."
+            "Preferred one-call browser transaction. For research use extract=['price','cancellation','parking','rating'] "
+            "for compact semantic reads. Leave return_state='none' normally; debug=true can expose raw/full state. "
+            "Existing actions and selector-based extract remain supported."
         ),
     )
     async def _browser_do(browser: str, url: Optional[str] = None,
@@ -688,12 +776,17 @@ def create_app():
                           window_index: int = 1, tab_index: Optional[int] = None,
                           tab_handle: Optional[str] = None, wait_after_open: bool = True,
                           return_state: str = "none", allow_foreground: bool = False,
-                          close_after: bool = False, debug: bool = False) -> Dict[str, Any]:
+                          close_after: bool = False, debug: bool = False,
+                          extract: Optional[List[str]] = None) -> Dict[str, Any]:
         def work() -> Dict[str, Any]:
             handle = tab_handle
             opened = None
             requested_actions = list(actions or [])
             work_actions = list(requested_actions)
+            semantic_fields = semantic_extract_fields(extract) if extract is not None else None
+            automatic_actions = (1 if semantic_fields else 0) + (1 if url and wait_after_open else 0)
+            if len(work_actions) + automatic_actions > 20:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "browser_do transaction may contain at most 20 actions including automatic wait/extract actions.")
             if url:
                 opened = browser_open_url(
                     settings, browser=browser, url=url, new_tab=new_tab, background=background
@@ -701,7 +794,9 @@ def create_app():
                 handle = opened.get("tab_handle") or handle
                 if wait_after_open:
                     work_actions.insert(0, {"type": "wait", "for": "network_idle", "timeout_s": 15, "required": False})
-            if not requested_actions:
+            if semantic_fields:
+                work_actions.append({"type": "extract", "fields": semantic_fields, "max_chars": 6_000})
+            elif not requested_actions:
                 work_actions.append({
                     "type": "extract",
                     "fields": [
@@ -753,7 +848,7 @@ def create_app():
                 compact["errors"] = errors
             if return_state != "none" and result.get("state") is not None:
                 compact["state"] = result.get("state")
-            return compact
+            return _fit_browser_do_output(compact)
         return await asyncio.to_thread(_log, audit_logger, "browser_do", work)
 
     @mcp.tool(name="browser_execute_js",
