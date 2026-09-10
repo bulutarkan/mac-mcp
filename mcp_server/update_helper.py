@@ -29,6 +29,7 @@ DEFAULT_BRANCH = "main"
 DEFAULT_REMOTE = "origin"
 DEFAULT_LAUNCHD_LABEL = "mac-mcp-uvicorn"
 DEFAULT_PORT = 8000
+_STAGING_DIR_RE = re.compile(r"^mac-mcp-update-upd_[0-9a-f]{10}-[a-z0-9]+$")
 
 
 class UpdateError(RuntimeError):
@@ -381,6 +382,35 @@ def _deps_changed(repo: Path, deployed: str, target: str) -> bool:
     return bool(changed.strip())
 
 
+def _cleanup_staging_dir(requested_dir: str | None) -> None:
+    """Remove only the explicitly authorized, detached updater staging directory."""
+    if not requested_dir:
+        return
+
+    try:
+        helper_file = Path(__file__).resolve(strict=True)
+        helper_dir = helper_file.parent
+        requested_path = Path(requested_dir).expanduser().resolve(strict=True)
+        temp_dir = Path(tempfile.gettempdir()).resolve()
+    except (OSError, RuntimeError):
+        return
+
+    if (
+        helper_file.name != "update_helper.py"
+        or requested_path != helper_dir
+        or helper_dir.parent != temp_dir
+        or not _STAGING_DIR_RE.fullmatch(helper_dir.name)
+        or not helper_dir.is_dir()
+        or not (helper_dir / "update_state.py").is_file()
+    ):
+        return
+
+    try:
+        shutil.rmtree(helper_dir)
+    except OSError as exc:
+        print(f"[mac-mcp update] WARNING: staging cleanup failed: {exc}", file=sys.stderr, flush=True)
+
+
 def _rollback_repo(
     repo: Path,
     expected_branch: str,
@@ -713,6 +743,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--skip-deps", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--deferred-seconds", type=float, default=0.0, help=argparse.SUPPRESS)
     p.add_argument("--launchd-label", default=os.getenv("MAC_MCP_LAUNCHD_LABEL", DEFAULT_LAUNCHD_LABEL), help=argparse.SUPPRESS)
+    p.add_argument("--cleanup-staging-dir", default=None, help=argparse.SUPPRESS)
     return p
 
 
@@ -732,6 +763,8 @@ def main(argv: list[str] | None = None) -> int:
     except UpdateError as exc:
         print(f"mac-mcp update failed: {exc}", file=sys.stderr)
         return 1
+    finally:
+        _cleanup_staging_dir(args.cleanup_staging_dir)
 
 
 if __name__ == "__main__":

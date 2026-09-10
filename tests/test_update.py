@@ -44,6 +44,9 @@ class UpdateHelperTests(unittest.TestCase):
         (repo / "mcp_server/main.py").write_text("VALUE = 'old'\n", encoding="utf-8")
         run("git", "add", ".", cwd=repo)
         run("git", "commit", "-q", "-m", "old", cwd=repo)
+        remote = root / "remote.git"
+        run("git", "clone", "-q", "--bare", str(repo), str(remote))
+        run("git", "remote", "add", "origin", str(remote), cwd=repo)
         self.assertEqual("", run("git", "status", "--porcelain", cwd=repo))
         isolated_cwd.mkdir()
         info = SimpleNamespace(
@@ -109,6 +112,7 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertTrue(captured["kwargs"]["start_new_session"])
         self.assertTrue(captured["kwargs"]["close_fds"])
         self.assertIn("--deferred-seconds", cmd)
+        self.assertEqual(["--cleanup-staging-dir", str(helper.parent)], cmd[-2:])
 
         env = os.environ.copy()
         env.pop("PYTHONPATH", None)
@@ -124,6 +128,85 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertEqual(bootstrap.returncode, 0, bootstrap.stderr)
         self.assertIn("usage:", bootstrap.stdout)
         self.assertNotIn("ImportError", bootstrap.stderr)
+
+        staged_check = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(helper),
+                "--check",
+                "--repo",
+                str(repo),
+                "--runtime",
+                str(runtime),
+                "--cleanup-staging-dir",
+                str(helper.parent),
+            ],
+            cwd=str(isolated_cwd),
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+        self.assertEqual(staged_check.returncode, 0, staged_check.stderr)
+        self.assertFalse(helper.parent.exists())
+
+        source_helper = Path(update_helper_module.__file__).resolve()
+        source_check = subprocess.run(
+            [
+                sys.executable,
+                str(source_helper),
+                "--check",
+                "--repo",
+                str(repo),
+                "--runtime",
+                str(runtime),
+                "--cleanup-staging-dir",
+                str(source_helper.parent),
+            ],
+            cwd=str(isolated_cwd),
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+        self.assertEqual(source_check.returncode, 0, source_check.stderr)
+        self.assertTrue(source_helper.exists())
+        self.assertTrue(source_helper.parent.is_dir())
+
+    def test_handled_staged_update_failure_cleans_only_its_staging_dir(self):
+        root = Path(tempfile.mkdtemp(prefix="mac-mcp-staged-failure-test-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        staging = Path(tempfile.mkdtemp(prefix="mac-mcp-update-upd_deadbeef00-"))
+        self.addCleanup(shutil.rmtree, staging, True)
+        helper = staging / "update_helper.py"
+        shutil.copy2(Path(update_helper_module.__file__), helper)
+        shutil.copy2(Path(update_helper_module.__file__).with_name("update_state.py"), staging / "update_state.py")
+
+        failed = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(helper),
+                "--repo",
+                str(root / "missing-repo"),
+                "--runtime",
+                str(root / "missing-runtime"),
+                "--cleanup-staging-dir",
+                str(staging),
+            ],
+            cwd=str(root),
+            env=os.environ.copy(),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+        self.assertEqual(failed.returncode, 1)
+        self.assertIn("mac-mcp update failed", failed.stderr)
+        self.assertFalse(staging.exists())
 
     def make_fixture(self, conflict: bool = False, delete_old: bool = False):
         root = Path(tempfile.mkdtemp(prefix="mac-mcp-update-test-"))

@@ -97,6 +97,7 @@ def mac_mcp_update(check_only: bool = True, branch: str = "main") -> Dict[str, A
     label = os.getenv("MAC_MCP_LAUNCHD_LABEL", "").strip()
     if label:
         cmd.extend(["--launchd-label", label])
+    cmd.extend(["--cleanup-staging-dir", str(helper_tmp_dir)])
     try:
         proc = subprocess.Popen(
             cmd,
