@@ -29,7 +29,7 @@ DEFAULT_BRANCH = "main"
 DEFAULT_REMOTE = "origin"
 DEFAULT_LAUNCHD_LABEL = "mac-mcp-uvicorn"
 DEFAULT_PORT = 8000
-_STAGING_DIR_RE = re.compile(r"^mac-mcp-update-upd_[0-9a-f]{10}-[a-z0-9]+$")
+_STAGING_DIR_RE = re.compile(r"^mac-mcp-update-upd_[0-9a-f]{10}-[a-z0-9_]+$")
 
 
 class UpdateError(RuntimeError):

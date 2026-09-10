@@ -179,7 +179,7 @@ class UpdateHelperTests(unittest.TestCase):
     def test_handled_staged_update_failure_cleans_only_its_staging_dir(self):
         root = Path(tempfile.mkdtemp(prefix="mac-mcp-staged-failure-test-"))
         self.addCleanup(shutil.rmtree, root, True)
-        staging = Path(tempfile.mkdtemp(prefix="mac-mcp-update-upd_deadbeef00-"))
+        staging = Path(tempfile.mkdtemp(prefix="mac-mcp-update-upd_deadbeef00-under_score_"))
         self.addCleanup(shutil.rmtree, staging, True)
         helper = staging / "update_helper.py"
         shutil.copy2(Path(update_helper_module.__file__), helper)
