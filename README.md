@@ -95,6 +95,20 @@ print(secrets.token_urlsafe(48))
 PY
 ```
 
+When authentication is enabled, the preferred client credential is still:
+
+```http
+Authorization: Bearer <MCP_API_KEY>
+```
+
+For MCP clients/connectors that cannot set an `Authorization` header, Mac MCP also accepts the configured global key in the endpoint URL:
+
+```text
+https://your-domain.example/mcp?ApiKey=<MCP_API_KEY>
+```
+
+`Authorization` remains authoritative when both forms are supplied. Empty, duplicate, or invalid `ApiKey` query credentials are rejected while authentication is enabled. The server removes `ApiKey` from its local access-log URL before logging, but upstream proxies/tunnels can still observe query strings, so Bearer headers should be preferred whenever the client supports them.
+
 ## Install the menu bar app
 
 ```bash

@@ -6,6 +6,7 @@ import json
 import time
 import uuid
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 from fastapi import HTTPException, status
 from mcp.types import ToolAnnotations
@@ -15,7 +16,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, Mount
 
 from mcp.server.transport_security import TransportSecuritySettings
-from .security import RateLimiter, Settings, authenticate, client_ip, load_settings, rate_limit, setup_audit_logger
+from .security import RateLimiter, Settings, authenticate, client_ip, load_settings, rate_limit, request_authorization, setup_audit_logger
 from .observability import ObservedFastMCP, TelemetryManager
 from .policy import current_policy_context, reset_policy_context, set_policy_context
 from .scoped_auth import resolve_request_identity
@@ -190,20 +191,37 @@ def create_app():
 
     class SecurityMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
-            if request.method == "HEAD" and request.url.path == "/mcp":
-                return Response(status_code=200, headers={
-                    "content-type": "text/event-stream; charset=utf-8",
-                    "mcp-session-id": uuid.uuid4().hex,
-                })
             if request.url.path.startswith("/mcp"):
+                query_api_keys = request.query_params.getlist("ApiKey")
+
+                # Scrub URL credentials before any early return so local access
+                # logs never retain the API key. Preserve all unrelated params.
+                if query_api_keys:
+                    clean_pairs = [
+                        (key, value)
+                        for key, value in request.query_params.multi_items()
+                        if key != "ApiKey"
+                    ]
+                    request.scope["query_string"] = urlencode(clean_pairs, doseq=True).encode("utf-8")
+
                 try:
-                    rate_key, policy_context = resolve_request_identity(
-                        settings, request.headers.get("authorization")
+                    authorization = request_authorization(
+                        settings,
+                        request.headers.get("authorization"),
+                        query_api_keys,
                     )
+                    rate_key, policy_context = resolve_request_identity(settings, authorization)
                     ip = client_ip(request)
                     rate_limit(limiter, rate_key, ip)
                 except HTTPException as exc:
                     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+
+                if request.method == "HEAD" and request.url.path == "/mcp":
+                    return Response(status_code=200, headers={
+                        "content-type": "text/event-stream; charset=utf-8",
+                        "mcp-session-id": uuid.uuid4().hex,
+                    })
+
                 context_token = set_policy_context(policy_context)
                 try:
                     return await call_next(request)

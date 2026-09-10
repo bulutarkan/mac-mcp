@@ -143,6 +143,30 @@ class RateLimiter:
 
 
 # ── Auth ────────────────────────────────────────────────────────────────────
+def request_authorization(
+    settings: Settings,
+    authorization: Optional[str],
+    query_api_keys: List[str],
+) -> Optional[str]:
+    """Resolve the request credential without weakening existing auth behavior.
+
+    Bearer headers remain authoritative. When authentication is enabled, clients
+    that cannot set headers may pass exactly one non-empty ``?ApiKey=...`` value.
+    Query credentials are intentionally limited to the configured global API key;
+    scoped agent bearer tokens remain header-only.
+    """
+    if settings.allow_no_auth or authorization is not None:
+        return authorization
+    if not query_api_keys:
+        return None
+    if len(query_api_keys) != 1:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid API key.")
+    token = query_api_keys[0].strip()
+    if not token or token != settings.api_key:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid API key.")
+    return f"Bearer {token}"
+
+
 def authenticate(settings: Settings, authorization: Optional[str]) -> str:
     if settings.allow_no_auth:
         return "no-auth"
