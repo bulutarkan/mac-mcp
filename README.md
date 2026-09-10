@@ -65,6 +65,32 @@ brew install cliclick brightness
 
 ## Install
 
+### Recommended: one-line installer
+
+The easiest way to install Mac MCP on a new Mac is the interactive installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bulutarkan/mac-mcp/main/install.sh | bash
+```
+
+The installer is designed specifically to work safely through `curl | bash` while still reading interactive answers from the real terminal. It:
+
+- verifies macOS 13+, Apple Silicon or Intel, Git, Python 3.10+, Xcode Command Line Tools, and `swiftc`;
+- can offer Homebrew when a required dependency is missing, while keeping optional helpers such as `cliclick` and `brightness` optional;
+- creates a Git source checkout at `~/Projects/mac-mcp` and a separate runtime at `~/mac-mcp` without Git metadata;
+- creates and verifies the Python virtual environment and dependencies;
+- generates a strong MCP API key, enables authenticated access, and stores the runtime `.env` with mode `600`;
+- installs the `mac-mcp` CLI at `~/.local/bin/mac-mcp` and records the deployed commit for the built-in updater;
+- builds and code-sign verifies the native `Mac MCP.app` menu bar controller in `~/Applications`;
+- shows both Bearer-token and `?ApiKey=` connection formats at the end;
+- does **not** install OpenCode or Codex. If you want to use Subagents, install either provider separately.
+
+Existing source/runtime/CLI paths are never silently overwritten. If Mac MCP is already installed, use the built-in updater instead of re-running the installer over the same paths.
+
+### Manual installation
+
+If you prefer to manage the checkout and Python environment yourself:
+
 ```bash
 git clone https://github.com/bulutarkan/mac-mcp.git
 cd mac-mcp
