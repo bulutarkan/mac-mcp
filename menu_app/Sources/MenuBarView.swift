@@ -111,7 +111,7 @@ struct MenuBarView: View {
                 if state.steeringTargets.isEmpty {
                     HStack(spacing: 8) {
                         Image(systemName: "bubble.left.and.bubble.right").foregroundStyle(.secondary)
-                        Text("No active ChatGPT tool call right now.").font(.caption).foregroundStyle(.secondary)
+                        Text("No active agent task right now.").font(.caption).foregroundStyle(.secondary)
                         Spacer()
                     }.padding(.vertical, 2)
                 } else {
@@ -144,7 +144,7 @@ struct MenuBarView: View {
                 }
 
                 HStack(spacing: 7) {
-                    TextField("Steer this ChatGPT flow…", text: $state.steeringPrompt)
+                    TextField("Prompt", text: $state.steeringPrompt)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit { state.sendSteering() }
                     Button { state.sendSteering() } label: {
@@ -156,7 +156,7 @@ struct MenuBarView: View {
                 }
                 Text(state.steeringStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
             }.padding(2)
-        } label: { Label("Steer ChatGPT", systemImage: "arrow.triangle.branch") }
+        } label: { Label("Steer the agent", systemImage: "arrow.triangle.branch") }
     }
 
     private var agentCard: some View {

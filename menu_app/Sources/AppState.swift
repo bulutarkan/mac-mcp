@@ -131,7 +131,7 @@ final class AppState: ObservableObject {
     @Published var steeringTargets: [SteeringTarget] = []
     @Published var selectedSteeringEventID: String?
     @Published var steeringPrompt = ""
-    @Published var steeringStatus = "No active ChatGPT tool call."
+    @Published var steeringStatus = "No active agent task."
     @Published var steeringSending = false
     @Published var busyAction: String?
     @Published var actionNotice: ActionNotice?
@@ -217,7 +217,7 @@ final class AppState: ObservableObject {
         let text = steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         guard let eventID = selectedSteeringEventID else {
-            steeringStatus = steeringTargets.count > 1 ? "Choose a flow first." : "No active ChatGPT tool call."
+            steeringStatus = steeringTargets.count > 1 ? "Choose a flow first." : "No active agent task."
             return
         }
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
@@ -236,7 +236,7 @@ final class AppState: ObservableObject {
                 }
                 lastSteeringMessageID = messageID
                 steeringPrompt = ""
-                steeringStatus = "Queued for the selected ChatGPT flow."
+                steeringStatus = "Queued for the selected agent flow."
                 await refresh()
             } catch {
                 steeringStatus = "Target ended before the message could be queued."
@@ -256,17 +256,17 @@ final class AppState: ObservableObject {
         if let messageID = lastSteeringMessageID,
            let recent = envelope.recent.first(where: { $0.id == messageID }) {
             if recent.status == "delivered" {
-                steeringStatus = "Delivered to ChatGPT with the tool result."
+                steeringStatus = "Delivered to the agent with the tool result."
             } else if recent.status == "tool_failed" {
                 steeringStatus = "Tool ended with an error before delivery."
             }
             lastSteeringMessageID = nil
         } else if steeringTargets.isEmpty && lastSteeringMessageID == nil {
             if !steeringStatus.hasPrefix("Delivered") && !steeringStatus.hasPrefix("Tool ended") {
-                steeringStatus = "No active ChatGPT tool call."
+                steeringStatus = "No active agent task."
             }
         } else if steeringTargets.count > 1 && selectedSteeringEventID == nil {
-            steeringStatus = "Multiple ChatGPT flows are active — choose the one you want to steer."
+            steeringStatus = "Multiple agent flows are active — choose the one you want to steer."
         }
     }
 
