@@ -216,6 +216,17 @@ def attach_steering(result: Any, messages: Iterable[Dict[str, Any]]) -> Any:
             content = [*content, block]
         else:
             content = [content, block]
+
+        # FastMCP wraps Dict[str, Any] returns as {"result": {...}}. Mirror the
+        # steering payload into that inner result so clients/connectors that surface
+        # only structuredContent still deliver the user's steering to the model.
+        # Do not add arbitrary top-level keys because stricter output schemas may
+        # reject them.
+        if isinstance(structured.get("result"), dict):
+            structured = dict(structured)
+            inner = dict(structured["result"])
+            inner["_mac_mcp_steering"] = payload["_mac_mcp_steering"]
+            structured["result"] = inner
         return (content, structured)
 
     if isinstance(result, dict):

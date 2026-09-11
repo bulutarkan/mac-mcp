@@ -20,6 +20,19 @@ class SteeringManagerTests(unittest.TestCase):
         label, _ = describe_target("read_file", {"path": "/Users/test/Projects/mac-mcp/mcp_server/main.py"})
         self.assertIn("mcp_server/main.py", label)
 
+    def test_attach_mirrors_steering_into_wrapped_structured_result(self) -> None:
+        from mcp.types import TextContent
+
+        original_content = [TextContent(type="text", text='{"ok":true}')]
+        structured = {"result": {"ok": True, "value": 42}}
+        result = attach_steering(
+            (original_content, structured),
+            [{"id": "st_wrapped", "text": "connector-visible", "created_at": 3.0}],
+        )
+        self.assertEqual(result[1]["result"]["ok"], True)
+        steering = result[1]["result"]["_mac_mcp_steering"]
+        self.assertEqual(steering["messages"][0]["text"], "connector-visible")
+
     def test_close_is_race_safe_for_late_messages(self) -> None:
         manager = SteeringManager()
         manager.open_target("evt_test", tool="read_file", arguments={"path": "/tmp/x"})
@@ -47,7 +60,7 @@ class SteeringManagerTests(unittest.TestCase):
             [{"id": "st_tuple", "text": "new direction", "created_at": 2.0}],
         )
         self.assertIsInstance(result, tuple)
-        self.assertEqual(result[1], structured)
+        self.assertEqual(result[1]["ok"], structured["ok"])
         self.assertEqual(len(result[0]), 2)
         payload = json.loads(result[0][-1].text)
         self.assertEqual(payload["_mac_mcp_steering"]["messages"][0]["text"], "new direction")
