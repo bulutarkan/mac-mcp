@@ -59,6 +59,49 @@ struct AgentInfo: Decodable, Identifiable {
 
 struct AgentsEnvelope: Decodable { let agents: [AgentInfo] }
 
+struct SteeringTarget: Decodable, Identifiable {
+    let eventID: String
+    let flowNumber: Int
+    let label: String
+    let detail: String
+    let tool: String
+    let startedAt: Double
+    let durationMS: Int
+    let queued: Int
+    var id: String { eventID }
+    enum CodingKeys: String, CodingKey {
+        case eventID = "event_id"
+        case flowNumber = "flow_number"
+        case label, detail, tool, queued
+        case startedAt = "started_at"
+        case durationMS = "duration_ms"
+    }
+}
+
+struct SteeringRecent: Decodable {
+    let id: String
+    let eventID: String
+    let status: String
+    let deliveredAt: Double?
+    enum CodingKeys: String, CodingKey {
+        case id, status
+        case eventID = "event_id"
+        case deliveredAt = "delivered_at"
+    }
+}
+
+struct SteeringEnvelope: Decodable {
+    let targets: [SteeringTarget]
+    let recent: [SteeringRecent]
+}
+
+struct SteeringSendEnvelope: Decodable {
+    struct Message: Decodable { let id: String }
+    let ok: Bool
+    let status: String?
+    let message: Message?
+}
+
 struct ActionNotice: Identifiable, Equatable {
     enum Kind { case info, success, error, update }
     let id = UUID()
@@ -85,6 +128,11 @@ final class AppState: ObservableObject {
     @Published var activeAgents = 0
     @Published var recentEvents: [ToolEvent] = []
     @Published var agents: [AgentInfo] = []
+    @Published var steeringTargets: [SteeringTarget] = []
+    @Published var selectedSteeringEventID: String?
+    @Published var steeringPrompt = ""
+    @Published var steeringStatus = "No active ChatGPT tool call."
+    @Published var steeringSending = false
     @Published var busyAction: String?
     @Published var actionNotice: ActionNotice?
     @Published var pulse = false
@@ -94,6 +142,7 @@ final class AppState: ObservableObject {
     private var pulseTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
     private var consecutiveRefreshFailures = 0
+    private var lastSteeringMessageID: String?
 
     init() { startTasks() }
     deinit { pollTask?.cancel(); pulseTask?.cancel(); noticeTask?.cancel() }
@@ -130,12 +179,14 @@ final class AppState: ObservableObject {
             activeAgents = summary.activeAgents ?? 0
             async let eventsResult: EventsEnvelope? = try? fetch(base.appendingPathComponent("dashboard/api/events"), query: ["hours": "1", "limit": "20"])
             async let agentsResult: AgentsEnvelope? = try? fetch(base.appendingPathComponent("dashboard/api/agents"), query: ["limit": "20"])
-            let (eventsEnvelope, agentsEnvelope) = await (eventsResult, agentsResult)
+            async let steeringResult: SteeringEnvelope? = try? fetch(base.appendingPathComponent("dashboard/api/steering"), query: [:])
+            let (eventsEnvelope, agentsEnvelope, steeringEnvelope) = await (eventsResult, agentsResult, steeringResult)
             if let eventsEnvelope { recentEvents = eventsEnvelope.events }
             if let agentsEnvelope {
                 agents = agentsEnvelope.agents
                 activeAgents = agentsEnvelope.agents.filter(\.isActive).count
             }
+            if let steeringEnvelope { applySteering(steeringEnvelope) }
         } catch {
             consecutiveRefreshFailures += 1
             if consecutiveRefreshFailures >= 3 {
@@ -161,6 +212,63 @@ final class AppState: ObservableObject {
     func installUpdate() { runAction(title: "Updating", args: ["update"]) }
     func openDashboard() { if let dashboardURL { NSWorkspace.shared.open(dashboardURL) } }
     func quitApp() { NSApplication.shared.terminate(nil) }
+
+    func sendSteering() {
+        let text = steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        guard let eventID = selectedSteeringEventID else {
+            steeringStatus = steeringTargets.count > 1 ? "Choose a flow first." : "No active ChatGPT tool call."
+            return
+        }
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        steeringSending = true
+        steeringStatus = "Sending…"
+        Task {
+            defer { steeringSending = false }
+            do {
+                let response: SteeringSendEnvelope = try await post(
+                    base.appendingPathComponent("dashboard/api/steering"),
+                    body: ["event_id": eventID, "text": text]
+                )
+                guard response.ok, let messageID = response.message?.id else {
+                    steeringStatus = "Could not queue steering message."
+                    return
+                }
+                lastSteeringMessageID = messageID
+                steeringPrompt = ""
+                steeringStatus = "Queued for the selected ChatGPT flow."
+                await refresh()
+            } catch {
+                steeringStatus = "Target ended before the message could be queued."
+                await refresh()
+            }
+        }
+    }
+
+    private func applySteering(_ envelope: SteeringEnvelope) {
+        steeringTargets = envelope.targets
+        if steeringTargets.count == 1 {
+            selectedSteeringEventID = steeringTargets[0].eventID
+        } else if let selectedSteeringEventID, !steeringTargets.contains(where: { $0.eventID == selectedSteeringEventID }) {
+            self.selectedSteeringEventID = nil
+        }
+
+        if let messageID = lastSteeringMessageID,
+           let recent = envelope.recent.first(where: { $0.id == messageID }) {
+            if recent.status == "delivered" {
+                steeringStatus = "Delivered to ChatGPT with the tool result."
+            } else if recent.status == "tool_failed" {
+                steeringStatus = "Tool ended with an error before delivery."
+            }
+            lastSteeringMessageID = nil
+        } else if steeringTargets.isEmpty && lastSteeringMessageID == nil {
+            if !steeringStatus.hasPrefix("Delivered") && !steeringStatus.hasPrefix("Tool ended") {
+                steeringStatus = "No active ChatGPT tool call."
+            }
+        } else if steeringTargets.count > 1 && selectedSteeringEventID == nil {
+            steeringStatus = "Multiple ChatGPT flows are active — choose the one you want to steer."
+        }
+    }
 
     private func runAction(title: String, args: [String]) {
         guard busyAction == nil else { return }
@@ -232,6 +340,18 @@ final class AppState: ObservableObject {
         var request = URLRequest(url: components.url!)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 1.8
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func post<T: Decodable>(_ url: URL, body: [String: String]) async throws -> T {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 2.0
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
         return try JSONDecoder().decode(T.self, from: data)

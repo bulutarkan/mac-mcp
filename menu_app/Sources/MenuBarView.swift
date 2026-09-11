@@ -16,6 +16,7 @@ struct MenuBarView: View {
             VStack(spacing: 12) {
                 header
                 serverCard
+                steeringCard
                 if state.activeAgents > 0 || !state.agents.isEmpty { agentCard }
                 activityCard
                 voiceCard
@@ -102,6 +103,60 @@ struct MenuBarView: View {
                 }
             }.padding(2)
         } label: { Label("Server", systemImage: "server.rack") }
+    }
+
+    private var steeringCard: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 9) {
+                if state.steeringTargets.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: "bubble.left.and.bubble.right").foregroundStyle(.secondary)
+                        Text("No active ChatGPT tool call right now.").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                    }.padding(.vertical, 2)
+                } else {
+                    if state.steeringTargets.count > 1 {
+                        Text("Choose the active flow you want to steer.").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    VStack(spacing: 6) {
+                        ForEach(state.steeringTargets.prefix(5)) { target in
+                            Button { state.selectedSteeringEventID = target.eventID } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: state.selectedSteeringEventID == target.eventID ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(state.selectedSteeringEventID == target.eventID ? Color.accentColor : Color.secondary)
+                                    Text("Flow \(target.flowNumber)")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .padding(.horizontal, 5).padding(.vertical, 2)
+                                        .background(.quaternary, in: Capsule())
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(target.label).font(.caption.weight(.semibold)).lineLimit(1)
+                                        Text("\(target.detail) · \(compactDuration(target.durationMS))")
+                                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                    }
+                                    Spacer()
+                                    if target.queued > 0 {
+                                        Text("Queued").font(.caption2.weight(.medium)).foregroundStyle(.orange)
+                                    }
+                                }.padding(.vertical, 3).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                HStack(spacing: 7) {
+                    TextField("Steer this ChatGPT flow…", text: $state.steeringPrompt)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { state.sendSteering() }
+                    Button { state.sendSteering() } label: {
+                        if state.steeringSending { ProgressView().controlSize(.small) }
+                        else { Image(systemName: "paperplane.fill") }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(state.steeringSending || state.steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.selectedSteeringEventID == nil)
+                }
+                Text(state.steeringStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+            }.padding(2)
+        } label: { Label("Steer ChatGPT", systemImage: "arrow.triangle.branch") }
     }
 
     private var agentCard: some View {

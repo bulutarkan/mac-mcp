@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 import re
@@ -14,6 +15,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
+
+from .steering import SteeringManager, attach_steering
 
 from .policy import (
     PolicyContext,
@@ -595,6 +598,11 @@ class TelemetryManager:
         }
 
 
+_STEERING_PARENT_EVENT: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "mac_mcp_steering_parent_event", default=None
+)
+
+
 _CORE_TOOL_NAMES = {
     "run_command", "run_commands_parallel",
     "read_file", "write_file", "edit_file", "search_files", "http_request",
@@ -613,10 +621,12 @@ class ObservedFastMCP(FastMCP):
         self,
         *args: Any,
         telemetry: TelemetryManager,
+        steering: Optional[SteeringManager] = None,
         policy_context_provider: Callable[[], PolicyContext] = current_policy_context,
         **kwargs: Any,
     ) -> None:
         self.telemetry = telemetry
+        self.steering = steering or SteeringManager()
         self._policy_context_provider = policy_context_provider
         super().__init__(*args, **kwargs)
 
@@ -669,9 +679,19 @@ class ObservedFastMCP(FastMCP):
         decision = evaluate_profile(context.profile, effective)
         metadata = policy_metadata(context, declared, effective, decision)
         event_id = self.telemetry.start_call("mcp", name, arguments, metadata=metadata)
+        parent_event = _STEERING_PARENT_EVENT.get()
+        top_level = parent_event is None
+        steering_token = None
+        if top_level:
+            self.steering.open_target(event_id, tool=name, arguments=arguments)
+            steering_token = _STEERING_PARENT_EVENT.set(event_id)
         if not decision.allowed:
             result = profile_denied_result(name, decision, declared, effective)
             self.telemetry.finish_call(event_id, result=result)
+            if top_level:
+                self.steering.close_target(event_id, delivered=False)
+                if steering_token is not None:
+                    _STEERING_PARENT_EVENT.reset(steering_token)
             raise ToolError(
                 f"profile_denied: tool={name}; profile={decision.profile}; reason={decision.reason}"
             )
@@ -681,13 +701,27 @@ class ObservedFastMCP(FastMCP):
             self.telemetry.finish_call(
                 event_id, result=result, metadata={"policy_decision": "scope_denied"}
             )
+            if top_level:
+                self.steering.close_target(event_id, delivered=False)
+                if steering_token is not None:
+                    _STEERING_PARENT_EVENT.reset(steering_token)
             reasons = ",".join(scope_decision.reasons) or "scope_rejected"
             raise ToolError(f"scope_denied: tool={name}; reasons={reasons}")
         try:
             result = await super().call_tool(name, arguments)
         except BaseException as exc:
             self.telemetry.finish_call(event_id, error=exc)
+            if top_level:
+                self.steering.close_target(event_id, delivered=False)
             raise
+        finally:
+            if top_level and steering_token is not None:
+                _STEERING_PARENT_EVENT.reset(steering_token)
         result = filter_scoped_result(context.scope, name, result)
+        # Keep menu-bar steering out of persistent telemetry; it is attached only
+        # to the live MCP response after normal result logging completes.
         self.telemetry.finish_call(event_id, result=result)
-        return result
+        if not top_level:
+            return result
+        messages = self.steering.close_target(event_id, delivered=True)
+        return attach_steering(result, messages)

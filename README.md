@@ -160,7 +160,14 @@ The app uses the existing localhost dashboard APIs:
 /dashboard/api/summary
 /dashboard/api/events
 /dashboard/api/agents
+/dashboard/api/steering
 ```
+
+### Live menu-bar steering
+
+While a ChatGPT/MCP client tool call is running, the menu bar shows a **Steer ChatGPT** card. You can send a short instruction to that specific active flow without opening the chat UI. If several flows are active at once, Mac MCP shows a human-readable context label (for example Safari/domain, terminal command, or file path) and requires you to choose the target first.
+
+Steering messages are kept in memory only. They are bound to the selected active top-level tool call, appended to its live MCP response as structured `_mac_mcp_steering` content, and are not written into the telemetry SQLite history. Nested fallback calls such as `tool_invoke` do not create duplicate visible flows.
 
 ## Server commands
 

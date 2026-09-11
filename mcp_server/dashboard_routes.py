@@ -13,6 +13,7 @@ from starlette.routing import Route
 from .observability import TelemetryManager, sanitize_value
 from .policy import RISK_REGISTRY
 from .security import Settings
+from .steering import SteeringManager
 from .tools_agents import list_agents
 from .version import __version__
 
@@ -77,7 +78,7 @@ def _int_query(request: Request, key: str, default: int) -> int:
         return default
 
 
-def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings) -> list[Route]:
+def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, steering: Optional[SteeringManager] = None) -> list[Route]:
     async def index(request: Request) -> Response:
         denied = _local_only(request)
         if denied:
@@ -147,6 +148,54 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings) -> 
             })
         return JSONResponse({"ok": True, "count": len(public_agents), "agents": public_agents})
 
+    async def steering_state(request: Request) -> Response:
+        denied = _local_only(request)
+        if denied:
+            return denied
+        if steering is None:
+            return JSONResponse({"ok": True, "targets": [], "recent": []})
+        return JSONResponse({
+            "ok": True,
+            "targets": steering.active_targets(),
+            "recent": steering.recent(30),
+        })
+
+    async def steering_send(request: Request) -> Response:
+        denied = _local_only(request)
+        if denied:
+            return denied
+        if steering is None:
+            return JSONResponse({"ok": False, "error": "steering_unavailable"}, status_code=503)
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return JSONResponse({"ok": False, "error": "invalid_json"}, status_code=400)
+        if not isinstance(payload, dict):
+            return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=400)
+        event_id = str(payload.get("event_id") or "").strip()
+        text = str(payload.get("text") or "")
+        if not event_id:
+            return JSONResponse({"ok": False, "error": "target_required"}, status_code=400)
+        try:
+            message = steering.enqueue(event_id, text)
+        except KeyError:
+            return JSONResponse({"ok": False, "error": "target_closed"}, status_code=409)
+        except OverflowError:
+            return JSONResponse({"ok": False, "error": "queue_full"}, status_code=409)
+        except ValueError as exc:
+            code = str(exc) or "invalid_message"
+            return JSONResponse({"ok": False, "error": code}, status_code=400)
+        return JSONResponse({
+            "ok": True,
+            "status": "queued",
+            "message": {
+                "id": message["id"],
+                "event_id": message["event_id"],
+                "created_at": message["created_at"],
+                "status": message["status"],
+            },
+        })
+
     async def stream(request: Request) -> Response:
         denied = _local_only(request)
         if denied:
@@ -185,6 +234,8 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings) -> 
         Route("/dashboard/api/summary", summary, methods=["GET"]),
         Route("/dashboard/api/events", events, methods=["GET"]),
         Route("/dashboard/api/agents", agents, methods=["GET"]),
+        Route("/dashboard/api/steering", steering_state, methods=["GET"]),
+        Route("/dashboard/api/steering", steering_send, methods=["POST"]),
         Route("/dashboard/events", stream, methods=["GET"]),
     ]
 

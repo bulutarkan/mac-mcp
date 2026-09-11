@@ -1369,7 +1369,7 @@ def create_app():
         return JSONResponse({"ok": True, "server": "mac-mcp", "workdir": str(settings.workdir)})
 
     app.router.routes.append(Route("/health", health, methods=["GET"]))
-    app.router.routes.extend(create_dashboard_routes(telemetry, settings))
+    app.router.routes.extend(create_dashboard_routes(telemetry, settings, mcp.steering))
 
     # REST API — FastAPI sub-app mounted at /api
     from fastapi import FastAPI
