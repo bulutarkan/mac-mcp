@@ -176,8 +176,9 @@ def create_app():
     # Stateful Streamable HTTP sessions are additionally bound to the credential
     # identity resolved by our custom security middleware. FastMCP's built-in
     # session-owner binding only applies when its own auth middleware is used.
-    mcp_session_owners: Dict[str, str] = {}
+    mcp_session_owners: Dict[str, tuple[str, float]] = {}
     head_probe_sessions: Dict[str, tuple[str, float]] = {}
+    mcp_session_owner_ttl_s = 3600.0
 
     mcp = ObservedFastMCP(
         telemetry=telemetry,
@@ -227,6 +228,9 @@ def create_app():
                 for probe_id, (_owner, expires_at) in list(head_probe_sessions.items()):
                     if expires_at <= now:
                         head_probe_sessions.pop(probe_id, None)
+                for session_id, (_owner, last_seen) in list(mcp_session_owners.items()):
+                    if now - last_seen > mcp_session_owner_ttl_s:
+                        mcp_session_owners.pop(session_id, None)
 
                 if request.method == "HEAD" and request.url.path == "/mcp":
                     # Preserve the historical connector probe response, but mark
@@ -255,9 +259,12 @@ def create_app():
                         head_probe_sessions.pop(request_session_id, None)
                         request_session_id = None
                     else:
-                        expected_owner = mcp_session_owners.get(request_session_id)
-                        if expected_owner is not None and expected_owner != owner_key:
-                            return JSONResponse({"detail": "Session not found"}, status_code=404)
+                        owner_record = mcp_session_owners.get(request_session_id)
+                        if owner_record is not None:
+                            expected_owner, _last_seen = owner_record
+                            if expected_owner != owner_key:
+                                return JSONResponse({"detail": "Session not found"}, status_code=404)
+                            mcp_session_owners[request_session_id] = (owner_key, now)
 
                 context_token = set_policy_context(policy_context)
                 try:
@@ -267,7 +274,7 @@ def create_app():
 
                 response_session_id = response.headers.get("mcp-session-id")
                 if response_session_id:
-                    mcp_session_owners.setdefault(response_session_id, owner_key)
+                    mcp_session_owners[response_session_id] = (owner_key, now)
                 if request.method == "DELETE" and request_session_id:
                     mcp_session_owners.pop(request_session_id, None)
                 elif response.status_code == 404 and request_session_id:
@@ -1409,6 +1416,10 @@ def create_app():
 
     # ── App setup ────────────────────────────────────────────────────────────
     app = mcp.streamable_http_app()
+    # ChatGPT currently opens a fresh stateful transport for many tool calls. Keep
+    # those protocol transports bounded while logical steering sessions (derived
+    # from request metadata when available) can remain visible independently.
+    mcp.session_manager.session_idle_timeout = 1800.0
     app.add_middleware(SecurityMiddleware)
 
     async def health(_: Request) -> Response:

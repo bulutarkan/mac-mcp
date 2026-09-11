@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from .steering import SteeringManager, attach_steering, preemption_error
+from .steering import SteeringManager, attach_steering, preemption_error, steering_identity_from_context
 
 from .policy import (
     PolicyContext,
@@ -697,21 +697,21 @@ class ObservedFastMCP(FastMCP):
         parent_event = _STEERING_PARENT_EVENT.get()
         top_level = parent_event is None
         steering_token = _STEERING_PARENT_EVENT.set(event_id) if top_level else None
-        session = None
+        steering_identity = None
         call_registered = False
 
         if top_level:
             try:
-                session = self.get_context().session
+                steering_identity = steering_identity_from_context(self.get_context())
             except (LookupError, ValueError, AttributeError):
-                session = None
+                steering_identity = None
 
         try:
             # Session-bound steering is checked before policy/tool execution. If a
             # user queued steering while this agent was idle, fail this attempted
             # tool without executing it so the model sees the new direction first.
-            if top_level and session is not None:
-                pending = self.steering.prepare_call(session, tool=name, arguments=arguments)
+            if top_level and steering_identity is not None:
+                pending = self.steering.prepare_call(steering_identity, tool=name, arguments=arguments)
                 if pending:
                     self.telemetry.finish_call(
                         event_id,
@@ -736,27 +736,27 @@ class ObservedFastMCP(FastMCP):
                 reasons = ",".join(scope_decision.reasons) or "scope_rejected"
                 raise ToolError(f"scope_denied: tool={name}; reasons={reasons}")
 
-            if top_level and session is not None:
-                self.steering.begin_call(session, event_id, tool=name, arguments=arguments)
+            if top_level and steering_identity is not None:
+                self.steering.begin_call(steering_identity, event_id, tool=name, arguments=arguments)
                 call_registered = True
 
             try:
                 result = await self._call_registered_tool(name, arguments)
             except BaseException as exc:
                 self.telemetry.finish_call(event_id, error=exc)
-                if call_registered and session is not None:
+                if call_registered and steering_identity is not None:
                     # Keep steering queued when the underlying tool fails. The next
                     # tool request for this same agent session will be preempted.
-                    self.steering.finish_call(session, event_id, delivered=False)
+                    self.steering.finish_call(steering_identity, event_id, delivered=False)
                 raise
 
             result = filter_scoped_result(policy_context.scope, name, result)
             # Keep menu-bar steering out of persistent telemetry; it is attached
             # only to the live MCP response after normal result logging completes.
             self.telemetry.finish_call(event_id, result=result)
-            if not call_registered or session is None:
+            if not call_registered or steering_identity is None:
                 return result
-            messages = self.steering.finish_call(session, event_id, delivered=True)
+            messages = self.steering.finish_call(steering_identity, event_id, delivered=True)
             return attach_steering(result, messages)
         finally:
             if top_level and steering_token is not None:

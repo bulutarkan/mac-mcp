@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import threading
 import time
 import uuid
 import weakref
 from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 from urllib.parse import urlparse
@@ -22,6 +25,82 @@ PREEMPT_INSTRUCTION = (
     "This tool was NOT executed. The user queued steering for this agent session while it was idle. "
     "Follow the user's steering before choosing the next action, and do not assume the preempted tool changed anything."
 )
+
+DEFAULT_SESSION_TTL_S = 3600
+
+
+@dataclass(frozen=True)
+class SteeringIdentity:
+    """Opaque logical identity for one MCP agent/conversation.
+
+    Stable request metadata wins over transport identity. The raw metadata value is
+    hashed before entering steering state, so vendor/account/session IDs are never
+    exposed through the dashboard or written to telemetry.
+    """
+
+    key: str
+    source: str
+    transport_session: Any | None = field(default=None, repr=False, compare=False)
+
+
+def _hashed_identity(source: str, *values: str) -> SteeringIdentity:
+    raw = "\0".join((source, *values)).encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    return SteeringIdentity(key=f"{source}:{digest}", source=source)
+
+
+def steering_identity_from_context(context: Any) -> SteeringIdentity:
+    """Resolve the safest durable steering identity available for an MCP request.
+
+    OpenAI's connector currently creates a fresh Streamable HTTP transport session
+    for each tool call, but sends a stable conversation-scoped ``openai/session``
+    value in request ``_meta``. Other clients may provide ``_meta.client_id`` or
+    reuse a stateful MCP transport. We prefer conversation metadata, then generic
+    client_id, then fall back to the transport ServerSession object.
+    """
+
+    meta = None
+    try:
+        meta = context.request_context.meta
+    except (AttributeError, ValueError):
+        pass
+
+    extras: Dict[str, Any] = {}
+    if meta is not None:
+        model_extra = getattr(meta, "model_extra", None)
+        if isinstance(model_extra, dict):
+            extras.update(model_extra)
+        try:
+            dumped = meta.model_dump(by_alias=True, exclude_none=True)
+            if isinstance(dumped, dict):
+                extras.update(dumped)
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+    openai_session = str(extras.get("openai/session") or "").strip()
+    if openai_session:
+        # Subject scopes the opaque session token to the account when supplied,
+        # without storing either raw value in Mac MCP state.
+        openai_subject = str(extras.get("openai/subject") or "").strip()
+        return _hashed_identity("openai_session", openai_subject, openai_session)
+
+    client_id = ""
+    try:
+        client_id = str(context.client_id or "").strip()
+    except (AttributeError, ValueError):
+        pass
+    if client_id:
+        return _hashed_identity("client_id", client_id)
+
+    try:
+        session = context.session
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("MCP request has no usable steering identity") from exc
+    return SteeringIdentity(
+        key=f"transport:{id(session)}",
+        source="transport",
+        transport_session=session,
+    )
 
 
 def _short(value: Any, limit: int = 76) -> str:
@@ -105,20 +184,28 @@ def describe_target(tool: str, arguments: Dict[str, Any]) -> tuple[str, str]:
 
 
 class SteeringManager:
-    """In-memory steering inbox keyed to persistent stateful MCP sessions.
+    """In-memory steering inbox keyed to logical MCP agent sessions."""
 
-    The Python ServerSession object is stable for the lifetime of a stateful MCP
-    transport. Mac MCP assigns it a short local session ID for menu-bar routing.
-    Raw user steering text never enters persistent telemetry.
-    """
-
-    def __init__(self, *, max_messages_per_session: int = 10, max_text_chars: int = 4_000) -> None:
+    def __init__(
+        self,
+        *,
+        max_messages_per_session: int = 10,
+        max_text_chars: int = 4_000,
+        session_ttl_s: Optional[int] = None,
+    ) -> None:
         self.max_messages_per_session = max(1, int(max_messages_per_session))
         self.max_text_chars = max(64, int(max_text_chars))
+        configured_ttl = session_ttl_s
+        if configured_ttl is None:
+            try:
+                configured_ttl = int(os.getenv("MAC_MCP_STEERING_SESSION_TTL_S", str(DEFAULT_SESSION_TTL_S)))
+            except ValueError:
+                configured_ttl = DEFAULT_SESSION_TTL_S
+        self.session_ttl_s = max(60, min(int(configured_ttl), 86_400))
         self._lock = threading.RLock()
-        self._sessions: Dict[int, Dict[str, Any]] = {}
-        self._session_refs: Dict[int, weakref.ReferenceType[Any]] = {}
-        self._public_to_key: Dict[str, int] = {}
+        self._sessions: Dict[str, Dict[str, Any]] = {}
+        self._transport_refs: Dict[str, weakref.ReferenceType[Any]] = {}
+        self._public_to_key: Dict[str, str] = {}
         self._recent: deque[Dict[str, Any]] = deque(maxlen=100)
         self._used_flow_numbers: set[int] = set()
 
@@ -142,35 +229,66 @@ class SteeringManager:
             "tool": tool,
         })
 
-    def _drop_session(self, key: int, expected_public_id: str) -> None:
+    def _drop_key_locked(self, key: str, *, status: str = "session_ended") -> None:
+        state = self._sessions.pop(key, None)
+        self._transport_refs.pop(key, None)
+        if state is None:
+            return
+        public_id = str(state.get("session_id") or "")
+        self._public_to_key.pop(public_id, None)
+        self._used_flow_numbers.discard(int(state.get("flow_number") or 0))
+        for message in state.get("pending", []):
+            self._recent_record(message, status)
+
+    def _drop_transport_identity(self, key: str, expected_public_id: str) -> None:
         with self._lock:
             state = self._sessions.get(key)
             if state is None or state.get("session_id") != expected_public_id:
                 return
-            self._sessions.pop(key, None)
-            self._session_refs.pop(key, None)
-            self._public_to_key.pop(expected_public_id, None)
-            self._used_flow_numbers.discard(int(state.get("flow_number") or 0))
-            for message in state.get("pending", []):
-                self._recent_record(message, "session_ended")
+            self._drop_key_locked(key)
 
-    def _ensure_session_locked(
+    def _prune_locked(self, now: Optional[float] = None) -> None:
+        current = time.time() if now is None else now
+        for key, state in list(self._sessions.items()):
+            if state.get("active"):
+                continue
+            if state.get("identity_source") == "transport":
+                ref = self._transport_refs.get(key)
+                if ref is not None and ref() is None:
+                    self._drop_key_locked(key)
+                    continue
+            last_activity = float(state.get("last_activity_at") or state.get("created_at") or current)
+            if current - last_activity > self.session_ttl_s:
+                self._drop_key_locked(key, status="session_expired")
+
+    def _ensure_identity_locked(
         self,
-        session: Any,
+        identity: SteeringIdentity,
         *,
         tool: Optional[str] = None,
         arguments: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        key = id(session)
-        ref = self._session_refs.get(key)
-        state = self._sessions.get(key)
-        if ref is None or ref() is not session or state is None:
+        now = time.time()
+        self._prune_locked(now)
+        state = self._sessions.get(identity.key)
+
+        if identity.source == "transport":
+            session = identity.transport_session
+            if session is None:
+                raise ValueError("transport steering identity requires a session object")
+            ref = self._transport_refs.get(identity.key)
+            if state is not None and (ref is None or ref() is not session):
+                # Python object ids can be reused after GC. Never merge a new
+                # transport into an old state merely because the id matches.
+                self._drop_key_locked(identity.key)
+                state = None
+
+        if state is None:
             public_id = "sess_" + uuid.uuid4().hex[:12]
-            flow_number = self._allocate_flow_number()
-            now = time.time()
             state = {
                 "session_id": public_id,
-                "flow_number": flow_number,
+                "flow_number": self._allocate_flow_number(),
+                "identity_source": identity.source,
                 "created_at": now,
                 "last_activity_at": now,
                 "last_tool": "",
@@ -179,39 +297,47 @@ class SteeringManager:
                 "pending": [],
                 "active": {},
             }
-            self._sessions[key] = state
-            self._public_to_key[public_id] = key
-            self_ref = weakref.ref(self)
+            self._sessions[identity.key] = state
+            self._public_to_key[public_id] = identity.key
 
-            def gone(_ref: weakref.ReferenceType[Any], *, object_key: int = key, sid: str = public_id) -> None:
-                manager = self_ref()
-                if manager is not None:
-                    manager._drop_session(object_key, sid)
+            if identity.source == "transport":
+                session = identity.transport_session
+                self_ref = weakref.ref(self)
 
-            self._session_refs[key] = weakref.ref(session, gone)
+                def gone(
+                    _ref: weakref.ReferenceType[Any],
+                    *,
+                    key: str = identity.key,
+                    sid: str = public_id,
+                ) -> None:
+                    manager = self_ref()
+                    if manager is not None:
+                        manager._drop_transport_identity(key, sid)
+
+                self._transport_refs[identity.key] = weakref.ref(session, gone)
 
         if tool:
             label, detail = describe_target(tool, arguments or {})
             state["last_tool"] = str(tool)
             state["label"] = label
             state["detail"] = detail
-            state["last_activity_at"] = time.time()
+            state["last_activity_at"] = now
         return state
 
-    def session_id_for(self, session: Any) -> str:
+    def session_id_for(self, identity: SteeringIdentity) -> str:
         with self._lock:
-            return str(self._ensure_session_locked(session)["session_id"])
+            return str(self._ensure_identity_locked(identity)["session_id"])
 
     def prepare_call(
         self,
-        session: Any,
+        identity: SteeringIdentity,
         *,
         tool: str,
         arguments: Optional[Dict[str, Any]] = None,
     ) -> list[Dict[str, Any]]:
-        """Register/touch a session and consume idle steering before tool execution."""
+        """Register/touch identity and consume queued idle steering before execution."""
         with self._lock:
-            state = self._ensure_session_locked(session, tool=tool, arguments=arguments)
+            state = self._ensure_identity_locked(identity, tool=tool, arguments=arguments)
             pending = list(state["pending"])
             if not pending:
                 return []
@@ -223,7 +349,7 @@ class SteeringManager:
 
     def begin_call(
         self,
-        session: Any,
+        identity: SteeringIdentity,
         event_id: str,
         *,
         tool: str,
@@ -232,7 +358,7 @@ class SteeringManager:
         now = time.time()
         label, detail = describe_target(tool, arguments or {})
         with self._lock:
-            state = self._ensure_session_locked(session, tool=tool, arguments=arguments)
+            state = self._ensure_identity_locked(identity, tool=tool, arguments=arguments)
             state["active"][event_id] = {
                 "event_id": event_id,
                 "tool": str(tool),
@@ -243,14 +369,12 @@ class SteeringManager:
             state["last_activity_at"] = now
             return self._public_state_locked(state, now=now)
 
-    def finish_call(self, session: Any, event_id: str, *, delivered: bool) -> list[Dict[str, Any]]:
-        """Finish one active call. Failed tools leave pending steering queued for the next call."""
+    def finish_call(self, identity: SteeringIdentity, event_id: str, *, delivered: bool) -> list[Dict[str, Any]]:
+        """Finish one call; failed calls leave pending steering for the next preemption."""
         now = time.time()
         with self._lock:
-            key = id(session)
-            ref = self._session_refs.get(key)
-            state = self._sessions.get(key)
-            if ref is None or ref() is not session or state is None:
+            state = self._sessions.get(identity.key)
+            if state is None:
                 return []
             state["active"].pop(event_id, None)
             state["last_activity_at"] = now
@@ -269,10 +393,10 @@ class SteeringManager:
         if len(clean) > self.max_text_chars:
             raise ValueError("message_too_long")
         with self._lock:
+            self._prune_locked()
             key = self._public_to_key.get(str(session_id))
             state = self._sessions.get(key) if key is not None else None
-            ref = self._session_refs.get(key) if key is not None else None
-            if key is None or state is None or ref is None or ref() is None:
+            if key is None or state is None:
                 raise KeyError("session_closed")
             queue = state["pending"]
             if len(queue) >= self.max_messages_per_session:
@@ -323,6 +447,7 @@ class SteeringManager:
     def sessions(self) -> list[Dict[str, Any]]:
         now = time.time()
         with self._lock:
+            self._prune_locked(now)
             rows = [self._public_state_locked(state, now=now) for state in self._sessions.values()]
         return sorted(rows, key=lambda item: (item["flow_number"], item["created_at"]))
 
@@ -373,9 +498,6 @@ def attach_steering(result: Any, messages: Iterable[Dict[str, Any]]) -> Any:
         text=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
     )
 
-    # FastMCP structured-output tools return (content_blocks, structured_content).
-    # Preserve that tuple exactly and append steering only to the unstructured
-    # content side so MCP outputSchema validation keeps receiving its dict.
     if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], dict):
         content, structured = result
         if isinstance(content, (list, tuple)):
@@ -383,9 +505,6 @@ def attach_steering(result: Any, messages: Iterable[Dict[str, Any]]) -> Any:
         else:
             content = [content, block]
 
-        # FastMCP wraps Dict[str, Any] returns as {"result": {...}}. Mirror the
-        # steering payload into that inner result so clients/connectors that surface
-        # only structuredContent still deliver the user's steering to the model.
         if isinstance(structured.get("result"), dict):
             structured = dict(structured)
             inner = dict(structured["result"])
