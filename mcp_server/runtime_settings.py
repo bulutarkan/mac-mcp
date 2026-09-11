@@ -43,6 +43,13 @@ def voice_setting(name: str, default: Any = None) -> Any:
     return voice.get(name, default)
 
 
+def steering_setting(name: str, default: Any = None) -> Any:
+    steering = load_runtime_settings().get("steering", {})
+    if not isinstance(steering, dict):
+        return default
+    return steering.get(name, default)
+
+
 def keychain_password() -> str | None:
     service = os.getenv("MAC_MCP_VOICE_GROQ_KEYCHAIN_SERVICE", "com.bulutarkan.mac-mcp").strip()
     account = os.getenv("MAC_MCP_VOICE_GROQ_KEYCHAIN_ACCOUNT", "groq-api-key").strip()

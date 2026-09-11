@@ -153,11 +153,12 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         if denied:
             return denied
         if steering is None:
-            return JSONResponse({"ok": True, "sessions": [], "recent": []})
+            return JSONResponse({"ok": True, "sessions": [], "recent": [], "session_ttl_minutes": 10})
         return JSONResponse({
             "ok": True,
             "sessions": steering.sessions(),
             "recent": steering.recent(30),
+            "session_ttl_minutes": steering.session_ttl_minutes,
         })
 
     async def steering_send(request: Request) -> Response:
@@ -196,6 +197,26 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
                 "session_state": message.get("session_state"),
             },
         })
+
+
+    async def steering_settings(request: Request) -> Response:
+        denied = _local_only(request)
+        if denied:
+            return denied
+        if steering is None:
+            return JSONResponse({"ok": False, "error": "steering_unavailable"}, status_code=503)
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, ValueError):
+            return JSONResponse({"ok": False, "error": "invalid_json"}, status_code=400)
+        if not isinstance(payload, dict):
+            return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=400)
+        try:
+            minutes = int(payload.get("session_ttl_minutes"))
+            minutes = steering.set_session_ttl_minutes(minutes)
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "session_ttl_must_be_positive"}, status_code=400)
+        return JSONResponse({"ok": True, "session_ttl_minutes": minutes})
 
     async def stream(request: Request) -> Response:
         denied = _local_only(request)
@@ -237,6 +258,7 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         Route("/dashboard/api/agents", agents, methods=["GET"]),
         Route("/dashboard/api/steering", steering_state, methods=["GET"]),
         Route("/dashboard/api/steering", steering_send, methods=["POST"]),
+        Route("/dashboard/api/steering/settings", steering_settings, methods=["POST"]),
         Route("/dashboard/events", stream, methods=["GET"]),
     ]
 

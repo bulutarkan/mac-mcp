@@ -9,6 +9,8 @@ struct MenuBarView: View {
     @State private var settingsMessage = ""
     @State private var showVoice = false
     @State private var showAdvanced = false
+    @State private var showSessions = false
+    @State private var sessionMinutesText = ""
     @State private var lastActiveAgentID: String? = nil
 
     var body: some View {
@@ -16,9 +18,9 @@ struct MenuBarView: View {
             VStack(spacing: 12) {
                 header
                 serverCard
-                steeringCard
                 if state.activeAgents > 0 || !state.agents.isEmpty { agentCard }
                 activityCard
+                steeringCard
                 voiceCard
                 advancedCard
                 footer
@@ -27,7 +29,13 @@ struct MenuBarView: View {
         }
         .frame(width: 400, height: 660)
         .background(.regularMaterial)
-        .task { await state.refresh(); audio.refresh() }
+        .task {
+            await state.refresh()
+            audio.refresh()
+            if settings.steeringSessionMinutes != 10 {
+                sessionMinutesText = String(settings.steeringSessionMinutes)
+            }
+        }
     }
 
     private var displayAgents: [AgentInfo] {
@@ -107,60 +115,94 @@ struct MenuBarView: View {
 
     private var steeringCard: some View {
         GroupBox {
-            VStack(alignment: .leading, spacing: 9) {
-                if state.steeringSessions.isEmpty {
-                    HStack(spacing: 8) {
-                        Image(systemName: "bubble.left.and.bubble.right").foregroundStyle(.secondary)
-                        Text("No agent sessions yet.").font(.caption).foregroundStyle(.secondary)
+            DisclosureGroup(isExpanded: $showSessions) {
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "timer").font(.caption2).foregroundStyle(.secondary)
+                        Text("Keep idle").font(.caption2).foregroundStyle(.secondary)
                         Spacer()
-                    }.padding(.vertical, 2)
-                } else {
-                    if state.steeringSessions.count > 1 {
-                        Text("Choose the agent session you want to steer.").font(.caption2).foregroundStyle(.secondary)
-                    }
-                    VStack(spacing: 6) {
-                        ForEach(state.steeringSessions.prefix(8)) { session in
-                            Button { state.selectedSteeringSessionID = session.sessionID } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: state.selectedSteeringSessionID == session.sessionID ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(state.selectedSteeringSessionID == session.sessionID ? Color.accentColor : Color.secondary)
-                                    Text("Agent \(session.flowNumber)")
-                                        .font(.system(size: 9, weight: .semibold))
-                                        .padding(.horizontal, 5).padding(.vertical, 2)
-                                        .background(.quaternary, in: Capsule())
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(session.label).font(.caption.weight(.semibold)).lineLimit(1)
-                                        Text("\(session.detail) · \(session.isWorking ? "working" : "idle") \(compactDuration(session.activityMS))")
-                                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                                    }
-                                    Spacer()
-                                    if session.queued > 0 {
-                                        Text("Queued").font(.caption2.weight(.medium)).foregroundStyle(.orange)
-                                    } else {
-                                        Text(session.isWorking ? "Working" : "Idle")
-                                            .font(.caption2.weight(.medium))
-                                            .foregroundStyle(session.isWorking ? Color.accentColor : Color.secondary)
-                                    }
-                                }.padding(.vertical, 3).contentShape(Rectangle())
-                            }.buttonStyle(.plain)
+                        TextField("10", text: $sessionMinutesText)
+                            .textFieldStyle(.roundedBorder)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 48)
+                            .onChange(of: sessionMinutesText) { value in
+                                let digits = value.filter(\.isNumber)
+                                if digits != value { sessionMinutesText = digits; return }
+                                if !digits.isEmpty, Int(digits) == 0 { sessionMinutesText = "" }
+                            }
+                            .onSubmit { applySessionRetention() }
+                        Text("min").font(.caption2).foregroundStyle(.secondary)
+                        Button { applySessionRetention() } label: {
+                            Image(systemName: "checkmark").font(.caption2.weight(.semibold))
                         }
+                        .buttonStyle(.borderless)
+                        .help("Apply session retention")
                     }
-                }
 
-                HStack(spacing: 7) {
-                    TextField("Prompt", text: $state.steeringPrompt)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { state.sendSteering() }
-                    Button { state.sendSteering() } label: {
-                        if state.steeringSending { ProgressView().controlSize(.small) }
-                        else { Image(systemName: "paperplane.fill") }
+                    if state.steeringSessions.isEmpty {
+                        HStack(spacing: 8) {
+                            Image(systemName: "rectangle.stack.badge.minus").foregroundStyle(.secondary)
+                            Text("No agent sessions yet.").font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                        }.padding(.vertical, 3)
+                    } else {
+                        if state.steeringSessions.count > 1 {
+                            Text("Choose the session you want to steer.").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        ScrollView(.vertical) {
+                            LazyVStack(spacing: 4) {
+                                ForEach(state.steeringSessions) { session in
+                                    Button { state.selectedSteeringSessionID = session.sessionID } label: {
+                                        HStack(spacing: 8) {
+                                            Image(systemName: state.selectedSteeringSessionID == session.sessionID ? "checkmark.circle.fill" : "circle")
+                                                .foregroundStyle(state.selectedSteeringSessionID == session.sessionID ? Color.accentColor : Color.secondary)
+                                            Text("Agent \(session.flowNumber)")
+                                                .font(.system(size: 9, weight: .semibold))
+                                                .padding(.horizontal, 5).padding(.vertical, 2)
+                                                .background(.quaternary, in: Capsule())
+                                            VStack(alignment: .leading, spacing: 1) {
+                                                Text(session.label).font(.caption.weight(.semibold)).lineLimit(1)
+                                                Text("\(session.detail) · \(compactDuration(session.activityMS))")
+                                                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                            }
+                                            Spacer()
+                                            if session.queued > 0 {
+                                                Image(systemName: "clock.badge.exclamationmark.fill")
+                                                    .foregroundStyle(.orange)
+                                                    .font(.caption)
+                                                    .help("Steering queued")
+                                            }
+                                            Image(systemName: session.isWorking ? "bolt.circle.fill" : "pause.circle.fill")
+                                                .foregroundStyle(session.isWorking ? Color.accentColor : Color.secondary)
+                                                .font(.caption)
+                                                .help(session.isWorking ? "Working" : "Idle")
+                                                .accessibilityLabel(session.isWorking ? "Working" : "Idle")
+                                        }.padding(.vertical, 3).contentShape(Rectangle())
+                                    }.buttonStyle(.plain)
+                                }
+                            }
+                        }
+                        .frame(height: CGFloat(min(max(state.steeringSessions.count, 1), 5)) * 42)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(state.steeringSending || state.steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.selectedSteeringSessionID == nil)
+
+                    HStack(spacing: 7) {
+                        TextField("Prompt", text: $state.steeringPrompt)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { state.sendSteering() }
+                        Button { state.sendSteering() } label: {
+                            if state.steeringSending { ProgressView().controlSize(.small) }
+                            else { Image(systemName: "paperplane.fill") }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(state.steeringSending || state.steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.selectedSteeringSessionID == nil)
+                    }
+                    Text(state.steeringStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                 }
-                Text(state.steeringStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-            }.padding(2)
-        } label: { Label("Steer the agent", systemImage: "arrow.triangle.branch") }
+                .padding(.top, 8)
+            } label: {
+                Label("Sessions", systemImage: "rectangle.stack")
+            }
+        }
     }
 
     private var agentCard: some View {
@@ -541,6 +583,18 @@ struct MenuBarView: View {
         let minutes = seconds / 60
         if minutes < 60 { return "\(minutes)m" }
         return "\(minutes / 60)h \(minutes % 60)m"
+    }
+
+    private func applySessionRetention() {
+        let trimmed = sessionMinutesText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let minutes = trimmed.isEmpty ? 10 : (Int(trimmed) ?? 10)
+        guard minutes > 0 else { sessionMinutesText = ""; return }
+        if minutes == 10 && trimmed.isEmpty {
+            sessionMinutesText = ""
+        } else {
+            sessionMinutesText = String(minutes)
+        }
+        state.updateSteeringRetention(minutes: minutes)
     }
 
     private func persistSettings() { do { try settings.save(); settingsMessage = "Saved" } catch { settingsMessage = error.localizedDescription } }

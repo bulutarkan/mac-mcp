@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import TextContent
@@ -159,6 +161,22 @@ class SteeringManagerTests(unittest.TestCase):
         self.assertEqual(manager.recent()[0]["status"], "session_ended")
         with self.assertRaises(KeyError):
             manager.enqueue(sid, "too late")
+
+
+    def test_session_ttl_uses_persisted_minutes_and_rejects_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "settings.json"
+            path.write_text(json.dumps({"steering": {"session_ttl_minutes": 120}}))
+            with patch.dict(
+                os.environ,
+                {"MAC_MCP_SETTINGS_PATH": str(path), "MAC_MCP_STEERING_SESSION_TTL_S": ""},
+            ):
+                manager = SteeringManager()
+        self.assertEqual(manager.session_ttl_minutes, 120)
+        self.assertEqual(manager.set_session_ttl_minutes(1), 1)
+        self.assertEqual(manager.session_ttl_minutes, 1)
+        with self.assertRaises(ValueError):
+            manager.set_session_ttl_minutes(0)
 
     def test_preemption_error_says_tool_was_not_executed(self) -> None:
         text = preemption_error(

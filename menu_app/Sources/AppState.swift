@@ -101,6 +101,15 @@ struct SteeringEnvelope: Decodable {
     let recent: [SteeringRecent]
 }
 
+struct SteeringSettingsEnvelope: Decodable {
+    let ok: Bool
+    let sessionTTLMinutes: Int
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case sessionTTLMinutes = "session_ttl_minutes"
+    }
+}
+
 struct SteeringSendEnvelope: Decodable {
     struct Message: Decodable {
         let id: String
@@ -226,6 +235,33 @@ final class AppState: ObservableObject {
     func openDashboard() { if let dashboardURL { NSWorkspace.shared.open(dashboardURL) } }
     func quitApp() { NSApplication.shared.terminate(nil) }
 
+
+    func updateSteeringRetention(minutes: Int) {
+        let normalized = max(1, minutes)
+        settings.steeringSessionMinutes = normalized
+        do {
+            try settings.save()
+        } catch {
+            steeringStatus = "Could not save the session duration."
+            return
+        }
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        Task {
+            do {
+                let response: SteeringSettingsEnvelope = try await post(
+                    base.appendingPathComponent("dashboard/api/steering/settings"),
+                    body: ["session_ttl_minutes": normalized]
+                )
+                guard response.ok else { throw URLError(.badServerResponse) }
+                settings.steeringSessionMinutes = max(1, response.sessionTTLMinutes)
+                steeringStatus = "Sessions stay visible for \(response.sessionTTLMinutes) min after activity."
+                await refresh()
+            } catch {
+                steeringStatus = "Duration saved; it will apply when the server next starts."
+            }
+        }
+    }
+
     func sendSteering() {
         let text = steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
@@ -278,10 +314,12 @@ final class AppState: ObservableObject {
                 steeringStatus = "Delivered before the next tool; that tool was not executed."
             } else if recent.status == "session_ended" {
                 steeringStatus = "Agent session ended before delivery."
+            } else if recent.status == "session_expired" {
+                steeringStatus = "Session expired before delivery."
             }
             lastSteeringMessageID = nil
         } else if steeringSessions.isEmpty && lastSteeringMessageID == nil {
-            if !steeringStatus.hasPrefix("Delivered") && !steeringStatus.hasPrefix("Agent session ended") {
+            if !steeringStatus.hasPrefix("Delivered") && !steeringStatus.hasPrefix("Agent session ended") && !steeringStatus.hasPrefix("Session expired") {
                 steeringStatus = "No agent sessions yet."
             }
         } else if steeringSessions.count > 1 && selectedSteeringSessionID == nil {
@@ -364,7 +402,7 @@ final class AppState: ObservableObject {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
-    private func post<T: Decodable>(_ url: URL, body: [String: String]) async throws -> T {
+    private func post<T: Decodable>(_ url: URL, body: [String: Any]) async throws -> T {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.cachePolicy = .reloadIgnoringLocalCacheData

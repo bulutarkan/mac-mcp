@@ -16,16 +16,21 @@ struct MenuSettings: Codable {
         var cli_path: String
         var ngrok_on_start: Bool
     }
+    struct Steering: Codable {
+        var session_ttl_minutes: Int
+    }
 
     var experimental_tools: [String: ExperimentalTool]
     var voice: Voice
     var server: Server
+    var steering: Steering?
 
     static func defaults() -> MenuSettings {
         MenuSettings(
             experimental_tools: ["ask_user_voice": ExperimentalTool(enabled: true)],
             voice: Voice(language: "auto", input_device: "auto", output_device: "system", tts_rate: "-5%", timeout_s: 45, voice: "tr-TR-AhmetNeural"),
-            server: Server(port: 8000, cli_path: "", ngrok_on_start: false)
+            server: Server(port: 8000, cli_path: "", ngrok_on_start: false),
+            steering: Steering(session_ttl_minutes: 10)
         )
     }
 }
@@ -42,6 +47,7 @@ final class SettingsStore: ObservableObject {
     @Published var serverPort = 8000
     @Published var cliPath = ""
     @Published var ngrokOnStart = false
+    @Published var steeringSessionMinutes = 10
     @Published var hasGroqKey = false
 
     let path: URL
@@ -74,6 +80,7 @@ final class SettingsStore: ObservableObject {
         serverPort = current.server.port
         cliPath = current.server.cli_path
         ngrokOnStart = current.server.ngrok_on_start
+        steeringSessionMinutes = max(1, current.steering?.session_ttl_minutes ?? 10)
         if cliPath.isEmpty { cliPath = defaultCLIPath() }
     }
 
@@ -81,7 +88,8 @@ final class SettingsStore: ObservableObject {
         let payload = MenuSettings(
             experimental_tools: ["ask_user_voice": .init(enabled: voiceEnabled)],
             voice: .init(language: language, input_device: inputDevice, output_device: outputDevice, tts_rate: ttsRate, timeout_s: timeoutSeconds, voice: voiceName),
-            server: .init(port: serverPort, cli_path: cliPath, ngrok_on_start: ngrokOnStart)
+            server: .init(port: serverPort, cli_path: cliPath, ngrok_on_start: ngrokOnStart),
+            steering: .init(session_ttl_minutes: max(1, steeringSessionMinutes))
         )
         let data = try JSONEncoder.pretty.encode(payload)
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)

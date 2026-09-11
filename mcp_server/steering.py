@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 
 from mcp.types import TextContent
 
+from .runtime_settings import steering_setting
+
 
 STEERING_INSTRUCTION = (
     "The user sent these instructions from the Mac MCP menu bar while this tool was running. "
@@ -26,7 +28,7 @@ PREEMPT_INSTRUCTION = (
     "Follow the user's steering before choosing the next action, and do not assume the preempted tool changed anything."
 )
 
-DEFAULT_SESSION_TTL_S = 3600
+DEFAULT_SESSION_TTL_S = 600
 
 
 @dataclass(frozen=True)
@@ -197,17 +199,39 @@ class SteeringManager:
         self.max_text_chars = max(64, int(max_text_chars))
         configured_ttl = session_ttl_s
         if configured_ttl is None:
-            try:
-                configured_ttl = int(os.getenv("MAC_MCP_STEERING_SESSION_TTL_S", str(DEFAULT_SESSION_TTL_S)))
-            except ValueError:
-                configured_ttl = DEFAULT_SESSION_TTL_S
-        self.session_ttl_s = max(60, min(int(configured_ttl), 86_400))
+            env_ttl = os.getenv("MAC_MCP_STEERING_SESSION_TTL_S", "").strip()
+            if env_ttl:
+                try:
+                    configured_ttl = int(env_ttl)
+                except ValueError:
+                    configured_ttl = DEFAULT_SESSION_TTL_S
+            else:
+                try:
+                    configured_minutes = int(steering_setting("session_ttl_minutes", DEFAULT_SESSION_TTL_S // 60))
+                except (TypeError, ValueError):
+                    configured_minutes = DEFAULT_SESSION_TTL_S // 60
+                configured_ttl = configured_minutes * 60
+        self.session_ttl_s = max(60, int(configured_ttl))
         self._lock = threading.RLock()
         self._sessions: Dict[str, Dict[str, Any]] = {}
         self._transport_refs: Dict[str, weakref.ReferenceType[Any]] = {}
         self._public_to_key: Dict[str, str] = {}
         self._recent: deque[Dict[str, Any]] = deque(maxlen=100)
         self._used_flow_numbers: set[int] = set()
+
+    @property
+    def session_ttl_minutes(self) -> int:
+        with self._lock:
+            return max(1, int(self.session_ttl_s // 60))
+
+    def set_session_ttl_minutes(self, minutes: int) -> int:
+        value = int(minutes)
+        if value <= 0:
+            raise ValueError("session_ttl_must_be_positive")
+        with self._lock:
+            self.session_ttl_s = value * 60
+            self._prune_locked()
+            return max(1, int(self.session_ttl_s // 60))
 
     def _allocate_flow_number(self) -> int:
         for number in range(1, 1000):
