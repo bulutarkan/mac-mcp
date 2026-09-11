@@ -10,10 +10,11 @@ Mac MCP is a local macOS control server for AI agents. It exposes your Mac throu
 
 ## What's new in 2.0.5
 
-- Mac MCP now presents a **19-tool core surface by default** instead of sending the full tool catalog to every MCP client. The complete registry remains available through `tool_discover` + `tool_invoke`, so older capabilities are not removed.
+- Mac MCP now presents a **21-tool core surface by default** instead of sending the full tool catalog to every MCP client. The complete registry remains available through `tool_discover` + `tool_invoke`, so older capabilities are not removed.
 - The registered capability set is now **84 tools total**: the previous 81 tools plus `browser_do`, `tool_discover`, and `tool_invoke`. All previous 81 tools remain callable.
 - Added `browser_do` for one-call browser transactions: open a URL, wait, interact, extract targeted fields, optionally verify state, and optionally close the newly opened tab without extra MCP round trips.
 - Added targeted browser `extract` actions so agents can request only the data they need instead of pulling large DOM/HTML payloads into context.
+- `browser_find` and `browser_act` are now part of the default core surface; visual observations retain compact DOM IDs alongside the image, and semantic browser extraction is more resilient on dynamic pages such as Google Maps.
 - Reduced default browser observation payloads and disabled macOS screenshots by default for `mac_observe`, cutting unnecessary context and capture work.
 - Hardened `network_idle` waits against Safari's transient `about:blank` state and preserved normal risk/profile enforcement for dynamically invoked tools.
 - In local compatibility testing, tool-schema context fell from about **16.7k to 4.5k tokens (~73% less)** while all previous 81 tools retained an access path.
@@ -231,7 +232,7 @@ The dashboard is restricted to loopback access even when `/mcp` is exposed throu
 
 ## Tool coverage
 
-Mac MCP 2.0.5 advertises a compact **19-tool core surface by default**, backed by **84 registered MCP capabilities**. The 65 less-common tools remain available through `tool_discover` and `tool_invoke`, including every tool from the previous 81-tool surface.
+Mac MCP 2.0.5 advertises a compact **21-tool core surface by default**, backed by **84 registered MCP capabilities**. The 63 less-common tools remain available through `tool_discover` and `tool_invoke`, including every tool from the previous 81-tool surface.
 
 Set `MAC_MCP_TOOL_PROFILE=full` to advertise all registered tools directly to the client. You can also add selected tools to the compact surface with `MAC_MCP_CORE_EXTRA_TOOLS=name1,name2`.
 

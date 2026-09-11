@@ -53,6 +53,9 @@ _SEMANTIC_EXTRACT_ALIASES = {
     "breakfast": ["breakfast", "kahvaltı", "kahvalti"],
     "payment": ["payment", "pay at property", "pay later", "ödeme", "odeme", "otelde ödeme", "otele ödeme", "tesiste ödeme"],
     "location": ["location", "address", "konum", "adres"],
+    "address": ["address", "street address", "adres", "konum", "mahalle", "cadde", "sokak", "bulvar", "boulevard"],
+    "hours": ["hours", "opening hours", "open", "closed", "closes", "opens", "çalışma saatleri", "calisma saatleri", "açık", "acik", "kapalı", "kapali", "kapanış saati", "kapanis saati"],
+    "website": ["website", "web site", "web sitesi", "official website", "official site", "resmi site", "homepage"],
     "distance": ["distance", "away", "walking", "walk", "mesafe", "uzaklık", "uzaklik", "yürüme", "yurume"],
     "availability": ["availability", "available", "rooms left", "müsait", "musait", "son oda", "son odalar"],
     "checkin": ["check-in", "check in", "giriş", "giris"],
@@ -80,7 +83,8 @@ def semantic_extract_fields(targets: List[str]) -> List[Dict[str, Any]]:
         if key in seen:
             continue
         seen.add(key)
-        fields.append({"name": target, "semantic": target, "all": True, "max_items": 2})
+        max_items = 1 if key in {"address", "location", "website"} else 2
+        fields.append({"name": target, "semantic": target, "all": True, "max_items": max_items})
     if not fields:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "extract must contain at least one non-empty field name.")
     return fields
@@ -671,14 +675,39 @@ def _capture_region(rect: Dict[str, Any], max_dimension: int = 1280) -> Tuple[Op
 def _format_observation(payload: Dict[str, Any], image_data: Optional[bytes]) -> Any:
     if image_data:
         visual = payload.get("visual") or {}
+        compact_elements: List[Dict[str, Any]] = []
+        for element in payload.get("elements") or []:
+            if not isinstance(element, dict):
+                continue
+            compact_element = {
+                key: element.get(key)
+                for key in (
+                    "element_id", "tag", "role", "text", "aria_label", "placeholder",
+                    "name", "title", "value", "href", "actionable", "enabled", "focused",
+                    "checked", "input_type", "viewport_rect",
+                )
+                if element.get(key) is not None
+            }
+            compact_elements.append(compact_element)
         compact = {
             "ok": bool(payload.get("ok")),
             "observation_id": payload.get("observation_id"),
+            "dom_revision": payload.get("dom_revision"),
+            "url": payload.get("url"),
+            "title": payload.get("title"),
+            "scope": payload.get("scope"),
+            "element_count": payload.get("element_count"),
+            "elements": compact_elements,
+            "viewport": payload.get("viewport"),
+            "scroll": payload.get("scroll"),
+            "duration_ms": payload.get("duration_ms"),
             "visual": {
                 "mode": visual.get("mode"),
                 "w": visual.get("output_width"),
                 "h": visual.get("output_height"),
                 "truncated": visual.get("truncated"),
+                "background_safe": visual.get("background_safe"),
+                "tab_activated": visual.get("tab_activated"),
             },
         }
         text = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
@@ -823,7 +852,7 @@ def _score_candidate(element: Dict[str, Any], query: str, role: Optional[str], t
 
     primary = [
         element.get("text"), element.get("aria_label"), element.get("placeholder"),
-        element.get("name"), element.get("title"),
+        element.get("name"), element.get("title"), element.get("value"),
     ]
     if text:
         text_levels = [_match_level(value, text) for value in primary]
@@ -848,7 +877,8 @@ def _score_candidate(element: Dict[str, Any], query: str, role: Optional[str], t
     token_ratio = (sum(1 for token in q_tokens if token in combined_tokens) / len(q_tokens)) if q_tokens else 0.0
 
     level_score = {0: 0.0, 2: 0.48, 3: 0.68, 4: 0.84, 5: 0.98}
-    score = max(level_score.get(best_query, 0.0), level_score.get(best_text, 0.0))
+    role_only = bool(role) and not q and not text
+    score = 0.70 if role_only else max(level_score.get(best_query, 0.0), level_score.get(best_text, 0.0))
     if token_ratio == 1.0 and q_tokens:
         score = max(score, 0.86)
     elif token_ratio >= 0.5:
@@ -902,7 +932,7 @@ for(var i=0;i<all.length&&out.length<{max_candidates};i++){{
   var d=__mcpDescribe(el,s); d.actionable=__mcpActionable(el);
   if(actionableOnly && !d.actionable)continue;
   if(wantedRole&&norm(d.role)!==wantedRole)continue;
-  var fields=[d.text||'',d.aria_label||'',d.placeholder||'',d.name||'',d.title||''];
+  var fields=[d.text||'',d.aria_label||'',d.placeholder||'',d.name||'',d.title||'',d.value||''];
   if(wantedText){{var tl=0;fields.forEach(function(v){{tl=Math.max(tl,level(v,wantedText));}});if(!tl)continue;}}
   if(q){{
     var ql=0;fields.forEach(function(v){{ql=Math.max(ql,level(v,q));}});
@@ -977,7 +1007,8 @@ def browser_find(
             "confidence": round(score, 3),
             "tag": element.get("tag"), "role": element.get("role"),
             "text": element.get("text"), "aria_label": element.get("aria_label"),
-            "placeholder": element.get("placeholder"), "value": element.get("value"),
+            "placeholder": element.get("placeholder"), "name": element.get("name"),
+            "title": element.get("title"), "value": element.get("value"),
             "href": element.get("href"), "viewport_rect": element.get("viewport_rect"),
             "screen_rect": element.get("screen_rect"), "actionable": element.get("actionable"),
         })
@@ -1213,6 +1244,21 @@ return __mcpB64({{ok:true,url:location.href,title:document.title,scroll:{{x:scro
 }})()'''
 
 
+def _network_idle_state_js() -> str:
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var s=__mcpState();
+var bodyText='';
+try{{bodyText=String((document.body&&document.body.innerText)||'').replace(/\\s+/g,' ').trim();}}catch(e){{}}
+var controls=0;
+try{{controls=document.querySelectorAll('a,button,input,textarea,select,[role="button"],[role="link"],[role="combobox"],[role="textbox"]').length;}}catch(e){{}}
+var ready=location.href!=='about:blank'&&document.readyState==='complete'&&bodyText.length>0;
+var signature=[location.href,document.title,bodyText.length,controls].join('|');
+return __mcpB64({{ok:true,matched:ready,url:location.href,title:document.title,ready_state:document.readyState,body_text_length:bodyText.length,control_count:controls,content_signature:signature,dom_revision:s.mutationRevision,scroll:{{x:scrollX,y:scrollY}}}});
+}})()'''
+
+
 def _condition_js(action: Dict[str, Any], initial_url: str) -> str:
     kind = str(action.get("for") or action.get("condition") or "selector").lower().strip()
     if kind == "selector":
@@ -1228,7 +1274,7 @@ def _condition_js(action: Dict[str, Any], initial_url: str) -> str:
         base = json.dumps(initial_url)
         expr = f"location.href!=={base}"
     elif kind == "network_idle":
-        expr = "location.href!=='about:blank' && document.readyState==='complete'"
+        expr = "location.href!=='about:blank' && document.readyState==='complete' && !!(document.body&&String(document.body.innerText||'').trim())"
     else:
         expr = "false"
     return f'''(function(){{
@@ -1289,10 +1335,12 @@ function semanticCandidates(){{
   if(nodes.length>6000) nodes=nodes.slice(0,6000);
   for(var i=0;i<nodes.length;i++){{
     var el=nodes[i]; if(!visible(el)) continue;
-    var raw=clean(el.innerText||el.textContent||''); if(!raw||raw.length>520) continue;
-    var childText=0;
+    var aria=clean(el.getAttribute&&el.getAttribute('aria-label')||''), title=clean(el.getAttribute&&el.getAttribute('title')||'');
+    var raw=clean(el.innerText||el.textContent||aria||title||''); if(!raw||raw.length>520) continue;
+    var childText=0, href='', itemId='';
     try{{for(var c=0;c<el.children.length;c++) if(clean(el.children[c].innerText||el.children[c].textContent||'')) childText++;}}catch(e){{}}
-    semanticCache.push({{el:el,raw:raw,text:norm(raw),childText:childText,tag:String(el.tagName||'').toLowerCase()}});
+    try{{href=String(el.href||el.getAttribute('href')||'');itemId=String(el.getAttribute('data-item-id')||'');}}catch(e){{}}
+    semanticCache.push({{el:el,raw:raw,text:norm(raw),childText:childText,tag:String(el.tagName||'').toLowerCase(),href:href,aria:aria,title:title,itemId:itemId}});
   }}
   return semanticCache;
 }}
@@ -1307,6 +1355,24 @@ function semanticValues(sp,name,maxItems){{
     }}
     if(semantic.indexOf('rating')>=0||semantic.indexOf('score')>=0||semantic.indexOf('puan')>=0){{
       if(/^\\s*(?:[0-9](?:[.,][0-9])?|10(?:[.,]0)?)\\s*(?:\\/\\s*(?:5|10))?\\s*$/.test(raw)) score=Math.max(score,135);
+    }}
+    if(semantic.indexOf('hours')>=0||semantic.indexOf('opening')>=0||semantic.indexOf('calisma saat')>=0||semantic.indexOf('çalışma saat')>=0){{
+      if(/(?:open|closed|closes|opens|açık|acik|kapalı|kapali|kapanış saati|kapanis saati|çalışma saatleri|calisma saatleri)/i.test(raw)) score=Math.max(score,175);
+      if(/\\b(?:[01]?\\d|2[0-3])[:.]?[0-5]\\d\\b/.test(raw)&&/(?:open|closed|açık|acik|kapalı|kapali|kapan|saat)/i.test(raw)) score+=45;
+    }}
+    if(semantic.indexOf('address')>=0||semantic.indexOf('location')>=0||semantic.indexOf('adres')>=0||semantic.indexOf('konum')>=0){{
+      var addressMeta=[candidate.itemId,candidate.aria,candidate.title].join(' ');
+      var structuralAddress=/(?:^|[^a-z])address(?:$|[^a-z])|(?:^|[^a-z])adres(?:$|[^a-z])/i.test(addressMeta);
+      if(structuralAddress) score=Math.max(score,260);
+      if(/^(?:adres|address)\\s*:/i.test(candidate.aria||'')) score=Math.max(score,280);
+      if(/(?:\\b(?:cad(?:desi)?|cd\\.?|sok(?:ak)?|sk\\.?|bulv(?:arı|ari)?|blv\\.?|mah(?:allesi)?|apt\\.?|street|st\\.?|road|rd\\.?|avenue|ave\\.?|boulevard|blvd\\.?)\\b|\\bno[:.]?\\s*\\d)/i.test(raw)) score=Math.max(score,170);
+      if(/street view|sokak görünümü|sokak gorunumu/i.test(raw)) score-=260;
+      if(raw.length>180&&!structuralAddress) score-=140;
+    }}
+    if(semantic.indexOf('website')>=0||semantic.indexOf('web site')>=0||semantic.indexOf('homepage')>=0){{
+      var websiteHint=/website|web sitesi|web site|official website|official site|resmi site|homepage|authority/i.test([raw,candidate.aria,candidate.title,candidate.itemId].join(' '));
+      if(websiteHint&&/^https?:\\/\\//i.test(candidate.href||'')) score=Math.max(score,220);
+      else if(websiteHint) score=Math.max(score,165);
     }}
     if(semantic.indexOf('price')>=0||semantic.indexOf('fiyat')>=0){{
       if(/maxipuan|puan kazan|kampanya|\\bindirim\\b/i.test(raw)) score-=90;
@@ -1336,6 +1402,17 @@ function semanticValues(sp,name,maxItems){{
     if(raw.length<=80) score+=20; else if(raw.length<=180) score+=10;
     if(/^(p|li|dt|dd|label|span|strong|b|small|h[1-6])$/.test(candidate.tag)) score+=8;
     var snippet=raw;
+    if((semantic.indexOf('address')>=0||semantic.indexOf('location')>=0||semantic.indexOf('adres')>=0||semantic.indexOf('konum')>=0)&&/^(?:adres|address)\\s*:/i.test(candidate.aria||'')){{
+      snippet=String(candidate.aria||'').replace(/^(?:adres|address)\\s*:\\s*/i,'').trim();
+    }}
+    if((semantic.indexOf('website')>=0||semantic.indexOf('web site')>=0||semantic.indexOf('homepage')>=0)&&candidate.href){{
+      try{{
+        var websiteUrl=new URL(candidate.href,location.href);
+        if(/(^|\\.)google\\./i.test(websiteUrl.hostname)&&websiteUrl.pathname==='/url'){{
+          snippet=websiteUrl.searchParams.get('q')||websiteUrl.searchParams.get('url')||websiteUrl.href;
+        }}else snippet=websiteUrl.href;
+      }}catch(e){{snippet=candidate.href;}}
+    }}
     if(raw.length<=80&&terms.some(function(term){{return norm(raw)===norm(term);}})){{
       var parent=el.parentElement, parentText=parent?clean(parent.innerText||parent.textContent||''):'';
       if(parentText&&parentText!==raw&&parentText.length<=240) snippet=parentText;
@@ -1413,6 +1490,36 @@ def _wait_action(
     poll_s = max(0.05, min(float(action.get("poll_ms", 125)) / 1000.0, 1.0))
     started = time.perf_counter()
     js_calls = 0
+    if kind == "network_idle":
+        stable_ms = max(150, min(int(action.get("stable_ms", 300)), 2000))
+        last_signature = None
+        stable_since = time.perf_counter()
+        while time.perf_counter() - started < timeout_s:
+            state = _run_json_js(
+                settings, browser, _network_idle_state_js(), window_index, tab_index, tab_handle,
+            )
+            js_calls += 1
+            if not state.get("matched"):
+                last_signature = None
+                stable_since = time.perf_counter()
+                time.sleep(poll_s)
+                continue
+            signature = state.get("content_signature")
+            if signature != last_signature:
+                last_signature = signature
+                stable_since = time.perf_counter()
+            elif (time.perf_counter() - stable_since) * 1000 >= stable_ms:
+                return {
+                    "ok": True, "type": "wait", "for": kind, "matched": True,
+                    "settled_by": "content_stable", "duration_ms": int((time.perf_counter()-started)*1000),
+                    "url": state.get("url"), "_compact_state": state, "_js_calls": js_calls,
+                }
+            time.sleep(poll_s)
+        return {
+            "ok": True, "type": "wait", "for": kind, "matched": False, "timed_out": True,
+            "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
+        }
+
     if kind == "dom_stable":
         stable_ms = max(100, min(int(action.get("stable_ms", 500)), 5000))
         last_revision = None

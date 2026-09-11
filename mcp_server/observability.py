@@ -607,7 +607,7 @@ _CORE_TOOL_NAMES = {
     "run_command", "run_commands_parallel",
     "read_file", "write_file", "edit_file", "search_files", "http_request",
     "mac_observe", "mac_act",
-    "browser_list_tabs", "browser_close_tab", "browser_observe", "browser_do",
+    "browser_list_tabs", "browser_close_tab", "browser_observe", "browser_find", "browser_act", "browser_do",
     "spawn_agents", "wait_agents",
     "memory_search", "ask_user",
     "tool_discover", "tool_invoke",

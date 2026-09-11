@@ -539,13 +539,24 @@ def evaluate_tool_scope(
         reasons.extend(evaluate_scope(scope, ScopeRequest(path=path)).reasons)
 
     if risk.family == "browser" and scope.browser_tabs is not None and "*" not in scope.browser_tabs:
+        handles: list[str] = []
         handle = str(arguments.get("tab_handle") or "").strip()
+        if handle:
+            handles.append(handle)
+        tab_handles = arguments.get("tab_handles")
+        if isinstance(tab_handles, (list, tuple)):
+            for value in tab_handles:
+                candidate = str(value or "").strip()
+                if candidate:
+                    handles.append(candidate)
+        handles = list(dict.fromkeys(handles))
         if tool == "browser_list_tabs":
             pass  # result is filtered after execution
-        elif not handle:
+        elif not handles:
             reasons.append("browser_tab_required")
         else:
-            reasons.extend(evaluate_scope(scope, ScopeRequest(browser_tab=handle)).reasons)
+            for selected_handle in handles:
+                reasons.extend(evaluate_scope(scope, ScopeRequest(browser_tab=selected_handle)).reasons)
 
     if risk.family == "jobs" and scope.job_ids is not None and "*" not in scope.job_ids:
         job_id = str(arguments.get("job_id") or "").strip()

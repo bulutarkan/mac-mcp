@@ -740,7 +740,7 @@ def create_app():
                                              new_tab=new_tab, background=background))
 
     @mcp.tool(name="browser_list_tabs",
-              description="List all open tabs with stable tab_handle values that survive tab index shifts.")
+              description="List all open tabs with title, URL, indices, and stable tab_handle values that survive tab index shifts.")
     def _browser_list_tabs(browser: str) -> Dict[str, Any]:
         return _log(audit_logger, "browser_list_tabs",
                     lambda: browser_list_tabs(settings, browser=browser))
@@ -757,18 +757,24 @@ def create_app():
                                                 allow_foreground=allow_foreground))
 
     @mcp.tool(name="browser_close_tab",
-              description="Close a tab by window_index and tab_index.")
+              description=(
+                  "Close one or multiple browser tabs. For safe selection, call browser_list_tabs first and choose tabs by "
+                  "their title/tab_handle. Use tab_handles for multiple stable handles; existing tab_handle or "
+                  "window_index+tab_index single-tab behavior remains supported."
+              ))
     def _browser_close_tab(browser: str, window_index: int = 1, tab_index: int = 1,
-                           tab_handle: Optional[str] = None) -> Dict[str, Any]:
+                           tab_handle: Optional[str] = None,
+                           tab_handles: Optional[List[str]] = None) -> Dict[str, Any]:
         return _log(audit_logger, "browser_close_tab",
                     lambda: browser_close_tab(settings, browser=browser, window_index=window_index,
-                                             tab_index=tab_index, tab_handle=tab_handle))
+                                             tab_index=tab_index, tab_handle=tab_handle,
+                                             tab_handles=tab_handles))
 
     @mcp.tool(
         name="browser_observe",
         title="Observe browser tab",
         description=(
-            "High-level browser observation. Returns compact DOM with stable e1/e2 IDs and optional JPEG visual. "
+            "High-level browser observation. Returns compact DOM with stable e1/e2 IDs; optional JPEG visuals keep the DOM list in the same response. "
             "scope: interactive, visible, content, or leaf; visual: none, viewport, element, or full_page. "
             "Visual capture is rendered inside the target tab DOM and returned as MCP image content without "
             "activating Safari/Chrome, switching tabs, scrolling the page, or leaving screenshot files on disk."
@@ -796,11 +802,11 @@ def create_app():
     @mcp.tool(
         name="browser_find",
         description=(
-            "Find a rendered browser element with exact-first ranking and hard role/text constraints. "
+            "Find a rendered browser element with exact-first ranking and hard role/text constraints. Queries also match input values; role-only lookup is supported. "
             "Set actionable_only=false to include labels/cards; use best_match with browser_act."
         ),
     )
-    async def _browser_find(browser: str, query: str, role: Optional[str] = None,
+    async def _browser_find(browser: str, query: str = "", role: Optional[str] = None,
                             text: Optional[str] = None, window_index: int = 1,
                             tab_index: Optional[int] = None, tab_handle: Optional[str] = None,
                             max_results: int = 5,
@@ -864,7 +870,7 @@ def create_app():
                 )
                 handle = opened.get("tab_handle") or handle
                 if wait_after_open:
-                    work_actions.insert(0, {"type": "wait", "for": "network_idle", "timeout_s": 15, "required": False})
+                    work_actions.insert(0, {"type": "wait", "for": "network_idle", "timeout_s": 4, "stable_ms": 300, "required": False})
             if semantic_fields:
                 work_actions.append({"type": "extract", "fields": semantic_fields, "max_chars": 6_000})
             elif not requested_actions:

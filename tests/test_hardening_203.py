@@ -115,6 +115,14 @@ class CompactToolSurfaceTests(unittest.TestCase):
                 def core_tool(command: str) -> dict:
                     return {"ok": True}
 
+                @mcp.tool(name="browser_find")
+                def browser_find_tool(query: str = "", role: str | None = None) -> dict:
+                    return {"ok": True}
+
+                @mcp.tool(name="browser_act")
+                def browser_act_tool(actions: list[dict] | None = None) -> dict:
+                    return {"ok": True}
+
                 @mcp.tool(name="process_list")
                 def hidden_tool(filter: str | None = None) -> dict:
                     return {"ok": True}
@@ -123,6 +131,8 @@ class CompactToolSurfaceTests(unittest.TestCase):
                     os.environ.pop("MAC_MCP_TOOL_PROFILE", None)
                     names = {tool.name for tool in await mcp.list_tools()}
                 self.assertIn("run_command", names)
+                self.assertIn("browser_find", names)
+                self.assertIn("browser_act", names)
                 self.assertNotIn("process_list", names)
 
                 with patch.dict(os.environ, {"MAC_MCP_TOOL_PROFILE": "full"}, clear=False):

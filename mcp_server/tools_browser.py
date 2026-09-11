@@ -302,12 +302,80 @@ def browser_close_tab(
     window_index: int = 1,
     tab_index: int = 1,
     tab_handle: Optional[str] = None,
+    tab_handles: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     b = _norm_browser(browser)
-    if not tab_handle and (window_index < 1 or tab_index < 1):
+
+    requested_handles: List[str] = []
+    if tab_handle:
+        requested_handles.append(str(tab_handle).strip())
+    if tab_handles is not None:
+        for value in tab_handles:
+            handle = str(value or "").strip()
+            if handle:
+                requested_handles.append(handle)
+        if not requested_handles:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "tab_handles must contain at least one tab_handle")
+
+    if requested_handles:
+        # Preserve caller order while preventing accidental duplicate closes. Resolve
+        # the full selection first so a stale/unknown handle cannot cause a partial
+        # multi-tab close. Each close still re-resolves its stable handle afterward,
+        # so shifting tab/window indices are safe.
+        requested_handles = list(dict.fromkeys(requested_handles))
+        current_tabs = {str(row.get("tab_handle") or ""): row for row in browser_tabs.list_tabs(b)}
+        missing = [handle for handle in requested_handles if handle not in current_tabs]
+        if missing:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                {
+                    "ok": False,
+                    "error": "unknown_tab_handle",
+                    "missing_tab_handles": missing,
+                    "message": "One or more selected tabs are unknown or already closed; no tabs were closed.",
+                },
+            )
+
+        closed: List[Dict[str, Any]] = []
+        for handle in requested_handles:
+            with _tab_lease(b, handle, window_index, tab_index) as target:
+                guard = _tab_identity_guard(target)
+                script = f'''
+                tell application "{b}"
+                    tell window {target.window_index}
+                        {guard}
+                        close targetTab
+                    end tell
+                end tell
+                '''
+                _run_osascript(script, timeout_s=30)
+                browser_tabs.forget(target.tab_handle)
+                closed.append({
+                    "window_index": target.window_index,
+                    "tab_index": target.tab_index,
+                    "tab_handle": target.tab_handle,
+                    "title": target.title,
+                    "url": target.url,
+                })
+
+        result: Dict[str, Any] = {
+            "ok": True,
+            "browser": b,
+            "closed_count": len(closed),
+            "closed": closed,
+        }
+        if len(closed) == 1:
+            result.update({
+                "window_index": closed[0]["window_index"],
+                "tab_index": closed[0]["tab_index"],
+                "tab_handle": closed[0]["tab_handle"],
+            })
+        return result
+
+    if window_index < 1 or tab_index < 1:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "window_index and tab_index must be >= 1")
 
-    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+    with _tab_lease(b, None, window_index, tab_index) as target:
         guard = _tab_identity_guard(target)
         script = f'''
         tell application "{b}"
@@ -325,6 +393,14 @@ def browser_close_tab(
         "window_index": target.window_index,
         "tab_index": target.tab_index,
         "tab_handle": target.tab_handle,
+        "closed_count": 1,
+        "closed": [{
+            "window_index": target.window_index,
+            "tab_index": target.tab_index,
+            "tab_handle": target.tab_handle,
+            "title": target.title,
+            "url": target.url,
+        }],
     }
 
 
