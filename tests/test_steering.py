@@ -37,6 +37,21 @@ class SteeringManagerTests(unittest.TestCase):
         self.assertEqual(result["value"], 42)
         self.assertEqual(result["_mac_mcp_steering"]["messages"][0]["text"], "hello")
 
+    def test_attach_preserves_fastmcp_structured_output_tuple(self) -> None:
+        from mcp.types import TextContent
+
+        original_content = [TextContent(type="text", text='{"ok":true}')]
+        structured = {"ok": True, "value": 42}
+        result = attach_steering(
+            (original_content, structured),
+            [{"id": "st_tuple", "text": "new direction", "created_at": 2.0}],
+        )
+        self.assertIsInstance(result, tuple)
+        self.assertEqual(result[1], structured)
+        self.assertEqual(len(result[0]), 2)
+        payload = json.loads(result[0][-1].text)
+        self.assertEqual(payload["_mac_mcp_steering"]["messages"][0]["text"], "new direction")
+
 
 class ObservedFastMCPSteeringTests(unittest.TestCase):
     def test_live_message_reaches_only_top_level_response_and_not_telemetry(self) -> None:

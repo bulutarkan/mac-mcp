@@ -202,15 +202,26 @@ def attach_steering(result: Any, messages: Iterable[Dict[str, Any]]) -> Any:
             "messages": public_messages,
         }
     }
-    if isinstance(result, dict):
-        enriched = dict(result)
-        enriched["_mac_mcp_steering"] = payload["_mac_mcp_steering"]
-        return enriched
-
     block = TextContent(
         type="text",
         text=__import__("json").dumps(payload, ensure_ascii=False, separators=(",", ":")),
     )
+
+    # FastMCP structured-output tools return (content_blocks, structured_content).
+    # Preserve that tuple exactly and append steering only to the unstructured
+    # content side so MCP outputSchema validation keeps receiving its dict.
+    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], dict):
+        content, structured = result
+        if isinstance(content, (list, tuple)):
+            content = [*content, block]
+        else:
+            content = [content, block]
+        return (content, structured)
+
+    if isinstance(result, dict):
+        enriched = dict(result)
+        enriched["_mac_mcp_steering"] = payload["_mac_mcp_steering"]
+        return enriched
     if isinstance(result, list):
         return [*result, block]
     if isinstance(result, tuple):
