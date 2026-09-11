@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import hashlib
 import json
 import time
 import uuid
@@ -172,6 +173,11 @@ def create_app():
     limiter = RateLimiter(settings.rate_limit_per_minute)
     audit_logger = setup_audit_logger()
     telemetry = TelemetryManager()
+    # Stateful Streamable HTTP sessions are additionally bound to the credential
+    # identity resolved by our custom security middleware. FastMCP's built-in
+    # session-owner binding only applies when its own auth middleware is used.
+    mcp_session_owners: Dict[str, str] = {}
+    head_probe_sessions: Dict[str, tuple[str, float]] = {}
 
     mcp = ObservedFastMCP(
         telemetry=telemetry,
@@ -185,7 +191,7 @@ def create_app():
             "Prefer the smallest number of tool calls that safely completes and verifies the task."
         ),
         streamable_http_path="/mcp",
-        stateless_http=True,
+        stateless_http=False,
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
     )
 
@@ -216,17 +222,57 @@ def create_app():
                 except HTTPException as exc:
                     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
 
+                owner_key = hashlib.sha256(str(rate_key).encode("utf-8")).hexdigest()
+                now = time.monotonic()
+                for probe_id, (_owner, expires_at) in list(head_probe_sessions.items()):
+                    if expires_at <= now:
+                        head_probe_sessions.pop(probe_id, None)
+
                 if request.method == "HEAD" and request.url.path == "/mcp":
+                    # Preserve the historical connector probe response, but mark
+                    # this ID as a one-shot probe rather than a real MCP session.
+                    probe_id = uuid.uuid4().hex
+                    head_probe_sessions[probe_id] = (owner_key, now + 60.0)
                     return Response(status_code=200, headers={
                         "content-type": "text/event-stream; charset=utf-8",
-                        "mcp-session-id": uuid.uuid4().hex,
+                        "mcp-session-id": probe_id,
                     })
+
+                request_session_id = request.headers.get("mcp-session-id")
+                if request_session_id:
+                    probe = head_probe_sessions.get(request_session_id)
+                    if probe is not None:
+                        probe_owner, _expires_at = probe
+                        if probe_owner != owner_key:
+                            return JSONResponse({"detail": "Session not found"}, status_code=404)
+                        # Some connector probes replay the HEAD session header on
+                        # their first POST. Strip that synthetic ID so FastMCP can
+                        # create a real stateful session and return its own ID.
+                        request.scope["headers"] = [
+                            (key, value) for key, value in request.scope.get("headers", [])
+                            if key.lower() != b"mcp-session-id"
+                        ]
+                        head_probe_sessions.pop(request_session_id, None)
+                        request_session_id = None
+                    else:
+                        expected_owner = mcp_session_owners.get(request_session_id)
+                        if expected_owner is not None and expected_owner != owner_key:
+                            return JSONResponse({"detail": "Session not found"}, status_code=404)
 
                 context_token = set_policy_context(policy_context)
                 try:
-                    return await call_next(request)
+                    response = await call_next(request)
                 finally:
                     reset_policy_context(context_token)
+
+                response_session_id = response.headers.get("mcp-session-id")
+                if response_session_id:
+                    mcp_session_owners.setdefault(response_session_id, owner_key)
+                if request.method == "DELETE" and request_session_id:
+                    mcp_session_owners.pop(request_session_id, None)
+                elif response.status_code == 404 and request_session_id:
+                    mcp_session_owners.pop(request_session_id, None)
+                return response
             return await call_next(request)
 
     # ── Terminal tools ──────────────────────────────────────────────────────

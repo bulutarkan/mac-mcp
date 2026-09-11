@@ -108,34 +108,38 @@ struct MenuBarView: View {
     private var steeringCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 9) {
-                if state.steeringTargets.isEmpty {
+                if state.steeringSessions.isEmpty {
                     HStack(spacing: 8) {
                         Image(systemName: "bubble.left.and.bubble.right").foregroundStyle(.secondary)
-                        Text("No active agent task right now.").font(.caption).foregroundStyle(.secondary)
+                        Text("No agent sessions yet.").font(.caption).foregroundStyle(.secondary)
                         Spacer()
                     }.padding(.vertical, 2)
                 } else {
-                    if state.steeringTargets.count > 1 {
-                        Text("Choose the active flow you want to steer.").font(.caption2).foregroundStyle(.secondary)
+                    if state.steeringSessions.count > 1 {
+                        Text("Choose the agent session you want to steer.").font(.caption2).foregroundStyle(.secondary)
                     }
                     VStack(spacing: 6) {
-                        ForEach(state.steeringTargets.prefix(5)) { target in
-                            Button { state.selectedSteeringEventID = target.eventID } label: {
+                        ForEach(state.steeringSessions.prefix(8)) { session in
+                            Button { state.selectedSteeringSessionID = session.sessionID } label: {
                                 HStack(spacing: 8) {
-                                    Image(systemName: state.selectedSteeringEventID == target.eventID ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(state.selectedSteeringEventID == target.eventID ? Color.accentColor : Color.secondary)
-                                    Text("Flow \(target.flowNumber)")
+                                    Image(systemName: state.selectedSteeringSessionID == session.sessionID ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(state.selectedSteeringSessionID == session.sessionID ? Color.accentColor : Color.secondary)
+                                    Text("Agent \(session.flowNumber)")
                                         .font(.system(size: 9, weight: .semibold))
                                         .padding(.horizontal, 5).padding(.vertical, 2)
                                         .background(.quaternary, in: Capsule())
                                     VStack(alignment: .leading, spacing: 1) {
-                                        Text(target.label).font(.caption.weight(.semibold)).lineLimit(1)
-                                        Text("\(target.detail) · \(compactDuration(target.durationMS))")
+                                        Text(session.label).font(.caption.weight(.semibold)).lineLimit(1)
+                                        Text("\(session.detail) · \(session.isWorking ? "working" : "idle") \(compactDuration(session.activityMS))")
                                             .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                                     }
                                     Spacer()
-                                    if target.queued > 0 {
+                                    if session.queued > 0 {
                                         Text("Queued").font(.caption2.weight(.medium)).foregroundStyle(.orange)
+                                    } else {
+                                        Text(session.isWorking ? "Working" : "Idle")
+                                            .font(.caption2.weight(.medium))
+                                            .foregroundStyle(session.isWorking ? Color.accentColor : Color.secondary)
                                     }
                                 }.padding(.vertical, 3).contentShape(Rectangle())
                             }.buttonStyle(.plain)
@@ -152,7 +156,7 @@ struct MenuBarView: View {
                         else { Image(systemName: "paperplane.fill") }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(state.steeringSending || state.steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.selectedSteeringEventID == nil)
+                    .disabled(state.steeringSending || state.steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.selectedSteeringSessionID == nil)
                 }
                 Text(state.steeringStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
             }.padding(2)

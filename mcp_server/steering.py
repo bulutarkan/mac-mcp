@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 import uuid
+import weakref
 from collections import deque
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
@@ -14,6 +16,11 @@ from mcp.types import TextContent
 STEERING_INSTRUCTION = (
     "The user sent these instructions from the Mac MCP menu bar while this tool was running. "
     "Treat them as new user steering for the current task before choosing the next action."
+)
+
+PREEMPT_INSTRUCTION = (
+    "This tool was NOT executed. The user queued steering for this agent session while it was idle. "
+    "Follow the user's steering before choosing the next action, and do not assume the preempted tool changed anything."
 )
 
 
@@ -49,7 +56,7 @@ def _path_hint(value: Any) -> Optional[str]:
 
 
 def describe_target(tool: str, arguments: Dict[str, Any]) -> tuple[str, str]:
-    """Return a human-friendly label/detail without exposing internal event IDs."""
+    """Return a human-friendly label/detail without exposing internal IDs."""
     name = str(tool or "tool")
     args = arguments or {}
 
@@ -74,7 +81,10 @@ def describe_target(tool: str, arguments: Dict[str, Any]) -> tuple[str, str]:
             label += f" · {cwd}"
         return _short(label), name
 
-    if name in {"read_file", "write_file", "edit_file", "move_file", "copy_file", "delete_path", "list_directory", "directory_tree", "search_files", "find_files", "get_file_info", "create_directory"}:
+    if name in {
+        "read_file", "write_file", "edit_file", "move_file", "copy_file", "delete_path",
+        "list_directory", "directory_tree", "search_files", "find_files", "get_file_info", "create_directory",
+    }:
         hint = _path_hint(args.get("path") or args.get("source") or args.get("destination"))
         family = "Files" if name != "search_files" else "Search"
         return _short(f"{family} · {hint or name.replace('_', ' ')}"), name
@@ -95,14 +105,20 @@ def describe_target(tool: str, arguments: Dict[str, Any]) -> tuple[str, str]:
 
 
 class SteeringManager:
-    """In-memory, localhost-fed steering inbox keyed to active top-level MCP calls."""
+    """In-memory steering inbox keyed to persistent stateful MCP sessions.
 
-    def __init__(self, *, max_messages_per_target: int = 10, max_text_chars: int = 4_000) -> None:
-        self.max_messages_per_target = max(1, int(max_messages_per_target))
+    The Python ServerSession object is stable for the lifetime of a stateful MCP
+    transport. Mac MCP assigns it a short local session ID for menu-bar routing.
+    Raw user steering text never enters persistent telemetry.
+    """
+
+    def __init__(self, *, max_messages_per_session: int = 10, max_text_chars: int = 4_000) -> None:
+        self.max_messages_per_session = max(1, int(max_messages_per_session))
         self.max_text_chars = max(64, int(max_text_chars))
         self._lock = threading.RLock()
-        self._targets: Dict[str, Dict[str, Any]] = {}
-        self._messages: Dict[str, list[Dict[str, Any]]] = {}
+        self._sessions: Dict[int, Dict[str, Any]] = {}
+        self._session_refs: Dict[int, weakref.ReferenceType[Any]] = {}
+        self._public_to_key: Dict[str, int] = {}
         self._recent: deque[Dict[str, Any]] = deque(maxlen=100)
         self._used_flow_numbers: set[int] = set()
 
@@ -111,77 +127,227 @@ class SteeringManager:
             if number not in self._used_flow_numbers:
                 self._used_flow_numbers.add(number)
                 return number
-        return max(self._used_flow_numbers, default=0) + 1
+        number = max(self._used_flow_numbers, default=0) + 1
+        self._used_flow_numbers.add(number)
+        return number
 
-    def open_target(self, event_id: str, *, tool: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _recent_record(self, message: Dict[str, Any], status: str, *, tool: Optional[str] = None) -> None:
+        now = time.time()
+        self._recent.append({
+            "id": message.get("id"),
+            "session_id": message.get("session_id"),
+            "status": status,
+            "created_at": message.get("created_at"),
+            "delivered_at": now if status in {"delivered", "preempted"} else None,
+            "tool": tool,
+        })
+
+    def _drop_session(self, key: int, expected_public_id: str) -> None:
+        with self._lock:
+            state = self._sessions.get(key)
+            if state is None or state.get("session_id") != expected_public_id:
+                return
+            self._sessions.pop(key, None)
+            self._session_refs.pop(key, None)
+            self._public_to_key.pop(expected_public_id, None)
+            self._used_flow_numbers.discard(int(state.get("flow_number") or 0))
+            for message in state.get("pending", []):
+                self._recent_record(message, "session_ended")
+
+    def _ensure_session_locked(
+        self,
+        session: Any,
+        *,
+        tool: Optional[str] = None,
+        arguments: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        key = id(session)
+        ref = self._session_refs.get(key)
+        state = self._sessions.get(key)
+        if ref is None or ref() is not session or state is None:
+            public_id = "sess_" + uuid.uuid4().hex[:12]
+            flow_number = self._allocate_flow_number()
+            now = time.time()
+            state = {
+                "session_id": public_id,
+                "flow_number": flow_number,
+                "created_at": now,
+                "last_activity_at": now,
+                "last_tool": "",
+                "label": "Agent session",
+                "detail": "Idle",
+                "pending": [],
+                "active": {},
+            }
+            self._sessions[key] = state
+            self._public_to_key[public_id] = key
+            self_ref = weakref.ref(self)
+
+            def gone(_ref: weakref.ReferenceType[Any], *, object_key: int = key, sid: str = public_id) -> None:
+                manager = self_ref()
+                if manager is not None:
+                    manager._drop_session(object_key, sid)
+
+            self._session_refs[key] = weakref.ref(session, gone)
+
+        if tool:
+            label, detail = describe_target(tool, arguments or {})
+            state["last_tool"] = str(tool)
+            state["label"] = label
+            state["detail"] = detail
+            state["last_activity_at"] = time.time()
+        return state
+
+    def session_id_for(self, session: Any) -> str:
+        with self._lock:
+            return str(self._ensure_session_locked(session)["session_id"])
+
+    def prepare_call(
+        self,
+        session: Any,
+        *,
+        tool: str,
+        arguments: Optional[Dict[str, Any]] = None,
+    ) -> list[Dict[str, Any]]:
+        """Register/touch a session and consume idle steering before tool execution."""
+        with self._lock:
+            state = self._ensure_session_locked(session, tool=tool, arguments=arguments)
+            pending = list(state["pending"])
+            if not pending:
+                return []
+            state["pending"].clear()
+            state["last_activity_at"] = time.time()
+            for message in pending:
+                self._recent_record(message, "preempted", tool=tool)
+            return [dict(message) for message in pending]
+
+    def begin_call(
+        self,
+        session: Any,
+        event_id: str,
+        *,
+        tool: str,
+        arguments: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         now = time.time()
         label, detail = describe_target(tool, arguments or {})
         with self._lock:
-            flow_number = self._allocate_flow_number()
-            target = {
+            state = self._ensure_session_locked(session, tool=tool, arguments=arguments)
+            state["active"][event_id] = {
                 "event_id": event_id,
-                "flow_number": flow_number,
+                "tool": str(tool),
                 "label": label,
                 "detail": detail,
-                "tool": str(tool),
                 "started_at": now,
             }
-            self._targets[event_id] = target
-            self._messages[event_id] = []
-            return dict(target)
+            state["last_activity_at"] = now
+            return self._public_state_locked(state, now=now)
 
-    def active_targets(self) -> list[Dict[str, Any]]:
+    def finish_call(self, session: Any, event_id: str, *, delivered: bool) -> list[Dict[str, Any]]:
+        """Finish one active call. Failed tools leave pending steering queued for the next call."""
         now = time.time()
         with self._lock:
-            rows = []
-            for event_id, target in self._targets.items():
-                row = dict(target)
-                row["duration_ms"] = max(0, int((now - float(row["started_at"])) * 1000))
-                row["queued"] = len(self._messages.get(event_id, []))
-                rows.append(row)
-        return sorted(rows, key=lambda item: (item["flow_number"], item["started_at"]))
+            key = id(session)
+            ref = self._session_refs.get(key)
+            state = self._sessions.get(key)
+            if ref is None or ref() is not session or state is None:
+                return []
+            state["active"].pop(event_id, None)
+            state["last_activity_at"] = now
+            if not delivered:
+                return []
+            messages = list(state["pending"])
+            state["pending"].clear()
+            for message in messages:
+                self._recent_record(message, "delivered", tool=state.get("last_tool"))
+            return [dict(message) for message in messages]
 
-    def enqueue(self, event_id: str, text: str) -> Dict[str, Any]:
+    def enqueue(self, session_id: str, text: str) -> Dict[str, Any]:
         clean = str(text or "").strip()
         if not clean:
             raise ValueError("empty_message")
         if len(clean) > self.max_text_chars:
             raise ValueError("message_too_long")
         with self._lock:
-            if event_id not in self._targets:
-                raise KeyError("target_closed")
-            queue = self._messages.setdefault(event_id, [])
-            if len(queue) >= self.max_messages_per_target:
+            key = self._public_to_key.get(str(session_id))
+            state = self._sessions.get(key) if key is not None else None
+            ref = self._session_refs.get(key) if key is not None else None
+            if key is None or state is None or ref is None or ref() is None:
+                raise KeyError("session_closed")
+            queue = state["pending"]
+            if len(queue) >= self.max_messages_per_session:
                 raise OverflowError("queue_full")
             message = {
                 "id": "st_" + uuid.uuid4().hex[:12],
-                "event_id": event_id,
+                "session_id": str(session_id),
                 "text": clean,
                 "created_at": time.time(),
                 "status": "queued",
             }
             queue.append(message)
-            return dict(message)
+            return {
+                **message,
+                "session_state": "working" if state["active"] else "idle",
+            }
 
-    def close_target(self, event_id: str, *, delivered: bool) -> list[Dict[str, Any]]:
-        """Atomically close first, then consume; late enqueue therefore returns target_closed."""
+    def _public_state_locked(self, state: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, Any]:
+        current = time.time() if now is None else now
+        active_calls = list(state["active"].values())
+        if active_calls:
+            current_call = max(active_calls, key=lambda item: float(item.get("started_at") or 0.0))
+            status = "working"
+            label = current_call["label"]
+            detail = current_call["detail"]
+            tool = current_call["tool"]
+            activity_ms = max(0, int((current - float(current_call["started_at"])) * 1000))
+        else:
+            status = "idle"
+            label = state["label"]
+            detail = state["detail"]
+            tool = state["last_tool"]
+            activity_ms = max(0, int((current - float(state["last_activity_at"])) * 1000))
+        return {
+            "session_id": state["session_id"],
+            "flow_number": state["flow_number"],
+            "label": label,
+            "detail": detail,
+            "tool": tool,
+            "state": status,
+            "created_at": state["created_at"],
+            "last_activity_at": state["last_activity_at"],
+            "activity_ms": activity_ms,
+            "queued": len(state["pending"]),
+            "active_calls": len(active_calls),
+        }
+
+    def sessions(self) -> list[Dict[str, Any]]:
         now = time.time()
         with self._lock:
-            target = self._targets.pop(event_id, None)
-            if target is not None:
-                self._used_flow_numbers.discard(int(target.get("flow_number") or 0))
-            messages = self._messages.pop(event_id, [])
-            status = "delivered" if delivered else "tool_failed"
-            for message in messages:
-                message["status"] = status
-                message["delivered_at"] = now if delivered else None
-                message["closed_at"] = now
-                self._recent.append(dict(message))
-            return [dict(message) for message in messages]
+            rows = [self._public_state_locked(state, now=now) for state in self._sessions.values()]
+        return sorted(rows, key=lambda item: (item["flow_number"], item["created_at"]))
 
     def recent(self, limit: int = 30) -> list[Dict[str, Any]]:
         with self._lock:
             return list(self._recent)[-max(1, min(int(limit), 100)) :][::-1]
+
+
+def preemption_error(tool: str, messages: Iterable[Dict[str, Any]]) -> str:
+    public_messages = [
+        {
+            "id": str(message.get("id") or ""),
+            "text": str(message.get("text") or ""),
+            "created_at": message.get("created_at"),
+        }
+        for message in messages
+    ]
+    payload = {
+        "_mac_mcp_steering": {
+            "preempted_tool": str(tool),
+            "instruction": PREEMPT_INSTRUCTION,
+            "messages": public_messages,
+        }
+    }
+    return "mac_mcp_steering_preempted: " + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def attach_steering(result: Any, messages: Iterable[Dict[str, Any]]) -> Any:
@@ -204,7 +370,7 @@ def attach_steering(result: Any, messages: Iterable[Dict[str, Any]]) -> Any:
     }
     block = TextContent(
         type="text",
-        text=__import__("json").dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        text=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
     )
 
     # FastMCP structured-output tools return (content_blocks, structured_content).
@@ -220,8 +386,6 @@ def attach_steering(result: Any, messages: Iterable[Dict[str, Any]]) -> Any:
         # FastMCP wraps Dict[str, Any] returns as {"result": {...}}. Mirror the
         # steering payload into that inner result so clients/connectors that surface
         # only structuredContent still deliver the user's steering to the model.
-        # Do not add arbitrary top-level keys because stricter output schemas may
-        # reject them.
         if isinstance(structured.get("result"), dict):
             structured = dict(structured)
             inner = dict(structured["result"])

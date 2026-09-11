@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from .steering import SteeringManager, attach_steering
+from .steering import SteeringManager, attach_steering, preemption_error
 
 from .policy import (
     PolicyContext,
@@ -689,53 +689,75 @@ class ObservedFastMCP(FastMCP):
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):
         declared, effective = resolve_risk(name, arguments)
-        context = self._policy_context_provider()
-        decision = evaluate_profile(context.profile, effective)
-        metadata = policy_metadata(context, declared, effective, decision)
+        policy_context = self._policy_context_provider()
+        decision = evaluate_profile(policy_context.profile, effective)
+        metadata = policy_metadata(policy_context, declared, effective, decision)
         event_id = self.telemetry.start_call("mcp", name, arguments, metadata=metadata)
+
         parent_event = _STEERING_PARENT_EVENT.get()
         top_level = parent_event is None
-        steering_token = None
+        steering_token = _STEERING_PARENT_EVENT.set(event_id) if top_level else None
+        session = None
+        call_registered = False
+
         if top_level:
-            self.steering.open_target(event_id, tool=name, arguments=arguments)
-            steering_token = _STEERING_PARENT_EVENT.set(event_id)
-        if not decision.allowed:
-            result = profile_denied_result(name, decision, declared, effective)
-            self.telemetry.finish_call(event_id, result=result)
-            if top_level:
-                self.steering.close_target(event_id, delivered=False)
-                if steering_token is not None:
-                    _STEERING_PARENT_EVENT.reset(steering_token)
-            raise ToolError(
-                f"profile_denied: tool={name}; profile={decision.profile}; reason={decision.reason}"
-            )
-        scope_decision = evaluate_tool_scope(context.scope, name, arguments, effective)
-        if not scope_decision.allowed and context.scope is not None:
-            result = scope_denied_result(name, scope_decision, context.scope)
-            self.telemetry.finish_call(
-                event_id, result=result, metadata={"policy_decision": "scope_denied"}
-            )
-            if top_level:
-                self.steering.close_target(event_id, delivered=False)
-                if steering_token is not None:
-                    _STEERING_PARENT_EVENT.reset(steering_token)
-            reasons = ",".join(scope_decision.reasons) or "scope_rejected"
-            raise ToolError(f"scope_denied: tool={name}; reasons={reasons}")
+            try:
+                session = self.get_context().session
+            except (LookupError, ValueError, AttributeError):
+                session = None
+
         try:
-            result = await self._call_registered_tool(name, arguments)
-        except BaseException as exc:
-            self.telemetry.finish_call(event_id, error=exc)
-            if top_level:
-                self.steering.close_target(event_id, delivered=False)
-            raise
+            # Session-bound steering is checked before policy/tool execution. If a
+            # user queued steering while this agent was idle, fail this attempted
+            # tool without executing it so the model sees the new direction first.
+            if top_level and session is not None:
+                pending = self.steering.prepare_call(session, tool=name, arguments=arguments)
+                if pending:
+                    self.telemetry.finish_call(
+                        event_id,
+                        result={"ok": False, "error": "steering_preempted", "tool": name},
+                        metadata={"policy_decision": "steering_preempted"},
+                    )
+                    raise ToolError(preemption_error(name, pending))
+
+            if not decision.allowed:
+                result = profile_denied_result(name, decision, declared, effective)
+                self.telemetry.finish_call(event_id, result=result)
+                raise ToolError(
+                    f"profile_denied: tool={name}; profile={decision.profile}; reason={decision.reason}"
+                )
+
+            scope_decision = evaluate_tool_scope(policy_context.scope, name, arguments, effective)
+            if not scope_decision.allowed and policy_context.scope is not None:
+                result = scope_denied_result(name, scope_decision, policy_context.scope)
+                self.telemetry.finish_call(
+                    event_id, result=result, metadata={"policy_decision": "scope_denied"}
+                )
+                reasons = ",".join(scope_decision.reasons) or "scope_rejected"
+                raise ToolError(f"scope_denied: tool={name}; reasons={reasons}")
+
+            if top_level and session is not None:
+                self.steering.begin_call(session, event_id, tool=name, arguments=arguments)
+                call_registered = True
+
+            try:
+                result = await self._call_registered_tool(name, arguments)
+            except BaseException as exc:
+                self.telemetry.finish_call(event_id, error=exc)
+                if call_registered and session is not None:
+                    # Keep steering queued when the underlying tool fails. The next
+                    # tool request for this same agent session will be preempted.
+                    self.steering.finish_call(session, event_id, delivered=False)
+                raise
+
+            result = filter_scoped_result(policy_context.scope, name, result)
+            # Keep menu-bar steering out of persistent telemetry; it is attached
+            # only to the live MCP response after normal result logging completes.
+            self.telemetry.finish_call(event_id, result=result)
+            if not call_registered or session is None:
+                return result
+            messages = self.steering.finish_call(session, event_id, delivered=True)
+            return attach_steering(result, messages)
         finally:
             if top_level and steering_token is not None:
                 _STEERING_PARENT_EVENT.reset(steering_token)
-        result = filter_scoped_result(context.scope, name, result)
-        # Keep menu-bar steering out of persistent telemetry; it is attached only
-        # to the live MCP response after normal result logging completes.
-        self.telemetry.finish_call(event_id, result=result)
-        if not top_level:
-            return result
-        messages = self.steering.close_target(event_id, delivered=True)
-        return attach_steering(result, messages)

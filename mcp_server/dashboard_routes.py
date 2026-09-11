@@ -153,10 +153,10 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         if denied:
             return denied
         if steering is None:
-            return JSONResponse({"ok": True, "targets": [], "recent": []})
+            return JSONResponse({"ok": True, "sessions": [], "recent": []})
         return JSONResponse({
             "ok": True,
-            "targets": steering.active_targets(),
+            "sessions": steering.sessions(),
             "recent": steering.recent(30),
         })
 
@@ -172,14 +172,14 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
             return JSONResponse({"ok": False, "error": "invalid_json"}, status_code=400)
         if not isinstance(payload, dict):
             return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=400)
-        event_id = str(payload.get("event_id") or "").strip()
+        session_id = str(payload.get("session_id") or "").strip()
         text = str(payload.get("text") or "")
-        if not event_id:
-            return JSONResponse({"ok": False, "error": "target_required"}, status_code=400)
+        if not session_id:
+            return JSONResponse({"ok": False, "error": "session_required"}, status_code=400)
         try:
-            message = steering.enqueue(event_id, text)
+            message = steering.enqueue(session_id, text)
         except KeyError:
-            return JSONResponse({"ok": False, "error": "target_closed"}, status_code=409)
+            return JSONResponse({"ok": False, "error": "session_closed"}, status_code=409)
         except OverflowError:
             return JSONResponse({"ok": False, "error": "queue_full"}, status_code=409)
         except ValueError as exc:
@@ -190,9 +190,10 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
             "status": "queued",
             "message": {
                 "id": message["id"],
-                "event_id": message["event_id"],
+                "session_id": message["session_id"],
                 "created_at": message["created_at"],
                 "status": message["status"],
+                "session_state": message.get("session_state"),
             },
         })
 

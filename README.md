@@ -165,9 +165,9 @@ The app uses the existing localhost dashboard APIs:
 
 ### Live menu-bar steering
 
-While an MCP client or agent tool call is running, the menu bar shows a **Steer the agent** card. You can send a short instruction to that specific active flow without returning to the client UI. If several flows are active at once, Mac MCP shows a human-readable context label (for example Safari/domain, terminal command, or file path) and requires you to choose the target first.
+Mac MCP uses stateful Streamable HTTP sessions so the menu bar can keep an agent visible between tool calls instead of showing it only for the few milliseconds while a tool is running. After a client has used Mac MCP once, **Steer the agent** shows that MCP session as either **Working** or **Idle**, together with its most recent tool context (for example Safari/domain, terminal command, or file path). If several sessions are connected, choose the one you want before sending a prompt.
 
-Steering messages are kept in memory only. They are bound to the selected active top-level tool call, appended to its live MCP response as structured `_mac_mcp_steering` content, and are not written into the telemetry SQLite history. Nested fallback calls such as `tool_invoke` do not create duplicate visible flows.
+Steering messages are kept in memory only and are bound to the selected MCP session, never to a global "next caller" queue. If the selected agent currently has a tool running, the prompt is appended to that tool's live response as structured `_mac_mcp_steering` content. If the session is idle, the prompt remains queued for that session and its next requested tool is **preempted before execution** with a `mac_mcp_steering_preempted` tool error, so the agent sees the user's new direction before doing more work. Another MCP session cannot consume that prompt. Raw steering text is not written into the telemetry SQLite history, and nested fallback calls such as `tool_invoke` do not create duplicate visible sessions.
 
 ## Server commands
 

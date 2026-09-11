@@ -59,44 +59,57 @@ struct AgentInfo: Decodable, Identifiable {
 
 struct AgentsEnvelope: Decodable { let agents: [AgentInfo] }
 
-struct SteeringTarget: Decodable, Identifiable {
-    let eventID: String
+struct SteeringSession: Decodable, Identifiable {
+    let sessionID: String
     let flowNumber: Int
     let label: String
     let detail: String
     let tool: String
-    let startedAt: Double
-    let durationMS: Int
+    let state: String
+    let createdAt: Double
+    let lastActivityAt: Double
+    let activityMS: Int
     let queued: Int
-    var id: String { eventID }
+    let activeCalls: Int
+    var id: String { sessionID }
+    var isWorking: Bool { state == "working" }
     enum CodingKeys: String, CodingKey {
-        case eventID = "event_id"
+        case sessionID = "session_id"
         case flowNumber = "flow_number"
-        case label, detail, tool, queued
-        case startedAt = "started_at"
-        case durationMS = "duration_ms"
+        case label, detail, tool, state, queued
+        case createdAt = "created_at"
+        case lastActivityAt = "last_activity_at"
+        case activityMS = "activity_ms"
+        case activeCalls = "active_calls"
     }
 }
 
 struct SteeringRecent: Decodable {
     let id: String
-    let eventID: String
+    let sessionID: String
     let status: String
     let deliveredAt: Double?
     enum CodingKeys: String, CodingKey {
         case id, status
-        case eventID = "event_id"
+        case sessionID = "session_id"
         case deliveredAt = "delivered_at"
     }
 }
 
 struct SteeringEnvelope: Decodable {
-    let targets: [SteeringTarget]
+    let sessions: [SteeringSession]
     let recent: [SteeringRecent]
 }
 
 struct SteeringSendEnvelope: Decodable {
-    struct Message: Decodable { let id: String }
+    struct Message: Decodable {
+        let id: String
+        let sessionState: String?
+        enum CodingKeys: String, CodingKey {
+            case id
+            case sessionState = "session_state"
+        }
+    }
     let ok: Bool
     let status: String?
     let message: Message?
@@ -128,10 +141,10 @@ final class AppState: ObservableObject {
     @Published var activeAgents = 0
     @Published var recentEvents: [ToolEvent] = []
     @Published var agents: [AgentInfo] = []
-    @Published var steeringTargets: [SteeringTarget] = []
-    @Published var selectedSteeringEventID: String?
+    @Published var steeringSessions: [SteeringSession] = []
+    @Published var selectedSteeringSessionID: String?
     @Published var steeringPrompt = ""
-    @Published var steeringStatus = "No active agent task."
+    @Published var steeringStatus = "No agent sessions yet."
     @Published var steeringSending = false
     @Published var busyAction: String?
     @Published var actionNotice: ActionNotice?
@@ -216,8 +229,8 @@ final class AppState: ObservableObject {
     func sendSteering() {
         let text = steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        guard let eventID = selectedSteeringEventID else {
-            steeringStatus = steeringTargets.count > 1 ? "Choose a flow first." : "No active agent task."
+        guard let sessionID = selectedSteeringSessionID else {
+            steeringStatus = steeringSessions.count > 1 ? "Choose an agent session first." : "No agent sessions yet."
             return
         }
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
@@ -228,45 +241,51 @@ final class AppState: ObservableObject {
             do {
                 let response: SteeringSendEnvelope = try await post(
                     base.appendingPathComponent("dashboard/api/steering"),
-                    body: ["event_id": eventID, "text": text]
+                    body: ["session_id": sessionID, "text": text]
                 )
-                guard response.ok, let messageID = response.message?.id else {
+                guard response.ok, let message = response.message else {
                     steeringStatus = "Could not queue steering message."
                     return
                 }
-                lastSteeringMessageID = messageID
+                lastSteeringMessageID = message.id
                 steeringPrompt = ""
-                steeringStatus = "Queued for the selected agent flow."
+                if message.sessionState == "idle" {
+                    steeringStatus = "Queued. The agent's next tool will be preempted."
+                } else {
+                    steeringStatus = "Queued for the running agent task."
+                }
                 await refresh()
             } catch {
-                steeringStatus = "Target ended before the message could be queued."
+                steeringStatus = "That agent session ended before the prompt could be queued."
                 await refresh()
             }
         }
     }
 
     private func applySteering(_ envelope: SteeringEnvelope) {
-        steeringTargets = envelope.targets
-        if steeringTargets.count == 1 {
-            selectedSteeringEventID = steeringTargets[0].eventID
-        } else if let selectedSteeringEventID, !steeringTargets.contains(where: { $0.eventID == selectedSteeringEventID }) {
-            self.selectedSteeringEventID = nil
+        steeringSessions = envelope.sessions
+        if steeringSessions.count == 1 {
+            selectedSteeringSessionID = steeringSessions[0].sessionID
+        } else if let selectedSteeringSessionID, !steeringSessions.contains(where: { $0.sessionID == selectedSteeringSessionID }) {
+            self.selectedSteeringSessionID = nil
         }
 
         if let messageID = lastSteeringMessageID,
            let recent = envelope.recent.first(where: { $0.id == messageID }) {
             if recent.status == "delivered" {
-                steeringStatus = "Delivered to the agent with the tool result."
-            } else if recent.status == "tool_failed" {
-                steeringStatus = "Tool ended with an error before delivery."
+                steeringStatus = "Delivered with the running tool result."
+            } else if recent.status == "preempted" {
+                steeringStatus = "Delivered before the next tool; that tool was not executed."
+            } else if recent.status == "session_ended" {
+                steeringStatus = "Agent session ended before delivery."
             }
             lastSteeringMessageID = nil
-        } else if steeringTargets.isEmpty && lastSteeringMessageID == nil {
-            if !steeringStatus.hasPrefix("Delivered") && !steeringStatus.hasPrefix("Tool ended") {
-                steeringStatus = "No active agent task."
+        } else if steeringSessions.isEmpty && lastSteeringMessageID == nil {
+            if !steeringStatus.hasPrefix("Delivered") && !steeringStatus.hasPrefix("Agent session ended") {
+                steeringStatus = "No agent sessions yet."
             }
-        } else if steeringTargets.count > 1 && selectedSteeringEventID == nil {
-            steeringStatus = "Multiple agent flows are active — choose the one you want to steer."
+        } else if steeringSessions.count > 1 && selectedSteeringSessionID == nil {
+            steeringStatus = "Multiple agent sessions are available — choose the one you want to steer."
         }
     }
 
