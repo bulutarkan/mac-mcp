@@ -673,6 +673,20 @@ class ObservedFastMCP(FastMCP):
             )(fn)
         return register
 
+    async def _call_registered_tool(self, name: str, arguments: dict[str, Any]):
+        """Keep synchronous tool bodies off the server event loop.
+
+        FastMCP 1.27 executes sync functions inline. Moving only those registered
+        tool calls to a worker thread keeps localhost dashboard/steering requests
+        responsive while long shell, browser, file, or UI work is in progress.
+        asyncio.to_thread propagates the current contextvars into the worker.
+        """
+        tool = self._tool_manager.get_tool(name)
+        if tool is not None and not tool.is_async:
+            base_call = super(ObservedFastMCP, self).call_tool
+            return await asyncio.to_thread(lambda: asyncio.run(base_call(name, arguments)))
+        return await super().call_tool(name, arguments)
+
     async def call_tool(self, name: str, arguments: dict[str, Any]):
         declared, effective = resolve_risk(name, arguments)
         context = self._policy_context_provider()
@@ -708,7 +722,7 @@ class ObservedFastMCP(FastMCP):
             reasons = ",".join(scope_decision.reasons) or "scope_rejected"
             raise ToolError(f"scope_denied: tool={name}; reasons={reasons}")
         try:
-            result = await super().call_tool(name, arguments)
+            result = await self._call_registered_tool(name, arguments)
         except BaseException as exc:
             self.telemetry.finish_call(event_id, error=exc)
             if top_level:

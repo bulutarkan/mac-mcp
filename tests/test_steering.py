@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -71,6 +72,32 @@ class ObservedFastMCPSteeringTests(unittest.TestCase):
                 self.assertEqual(len(events), 1)
                 self.assertNotIn("_mac_mcp_steering", json.dumps(events[0].get("result"), ensure_ascii=False))
                 self.assertEqual(steering.active_targets(), [])
+
+        asyncio.run(run())
+
+    def test_sync_tool_keeps_event_loop_responsive_for_live_steering(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as td:
+                telemetry = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
+                steering = SteeringManager()
+                mcp = ObservedFastMCP(name="sync-steering-test", telemetry=telemetry, steering=steering)
+
+                @mcp.tool(name="read_file", structured_output=False)
+                def fake_read_file(path: str):
+                    time.sleep(0.16)
+                    return {"ok": True, "path": path}
+
+                task = asyncio.create_task(mcp.call_tool("read_file", {"path": "/tmp/sync.txt"}))
+                await asyncio.sleep(0.035)
+                targets = steering.active_targets()
+                self.assertEqual(len(targets), 1, "sync tool blocked the event loop; steering target vanished before UI could act")
+                steering.enqueue(targets[0]["event_id"], "change course while sync tool is running")
+                result = await task
+                payload = json.loads(result[-1].text)
+                self.assertEqual(
+                    payload["_mac_mcp_steering"]["messages"][0]["text"],
+                    "change course while sync tool is running",
+                )
 
         asyncio.run(run())
 
