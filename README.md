@@ -25,6 +25,7 @@ Mac MCP is a local macOS control server for AI agents. It exposes your Mac throu
 - Start, Stop, Restart, Update, Dashboard, server status, ngrok status, success rate, recent tool usage, and delegated-agent status are available from the menu bar.
 - **Latest Tool Usage** shows up to five rows at once and scrolls internally for older calls.
 - **Delegated Agents** keeps a compact fixed-height list and scrolls internally when multiple active/recent agents exist. Active work also triggers a lightweight animated robot and a pulsing menu bar status icon.
+- **Live agent steering** adds persistent logical Sessions to the menu bar, so you can redirect a specific agent while it is working or queue a new instruction while it is idle without sending the prompt to the wrong conversation.
 - **Voice** is a collapsed disclosure section by default. `ask_user_voice` can be enabled/disabled live without removing the MCP tool from discovery.
 - When voice is disabled, calls return `experimental_tool_disabled` and instruct the agent to fall back to `ask_user`.
 - Groq API keys can be stored in **macOS Keychain** instead of plaintext configuration.
@@ -168,6 +169,8 @@ The app uses the existing localhost dashboard APIs:
 Mac MCP keeps a **logical agent session** visible between tool calls instead of showing it only for the few milliseconds while a tool is running. It prefers stable conversation metadata supplied by the MCP client (for example OpenAI's conversation-scoped `openai/session` metadata), then generic `_meta.client_id`, and finally a reused stateful Streamable HTTP transport as a fallback. Raw identity values are hashed before entering steering state and are never exposed in the dashboard. This matters for hosts that create a fresh transport session for every tool call: repeated calls from the same conversation still collapse into one **Working / Idle** agent card.
 
 Steering messages are kept in memory only and are bound to the selected logical agent, never to a global "next caller" queue. If the selected agent currently has a tool running, the prompt is appended to that tool's live response as structured `_mac_mcp_steering` content. If the agent is idle, the prompt remains queued for that logical session and its next requested tool is **preempted before execution** with a `mac_mcp_steering_preempted` tool error, so the agent sees the user's new direction before doing more work. A different conversation/session cannot consume that prompt. Logical steering sessions expire after 10 minutes of inactivity by default. The menu-bar **Sessions** disclosure lets you enter any positive number of minutes and persists that value in `~/.mac-mcp/settings.json`; stateful protocol transports are separately bounded so short-lived client transports do not accumulate indefinitely. Raw steering text is not written into telemetry SQLite, and nested fallback calls such as `tool_invoke` do not create duplicate visible sessions.
+
+For example, if an agent is researching in a background Safari tab and you type `stop using Airbnb and check Booking.com instead` into that agent's Session, Mac MCP routes the instruction only to that logical agent. A running tool can return the steering immediately; an idle agent is interrupted before its next tool call so it can change course first.
 
 ## Server commands
 
