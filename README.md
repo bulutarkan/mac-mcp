@@ -153,7 +153,7 @@ Mac MCP treats **capability enforcement** and **human approval** as separate sec
 
 Delegated Codex workers currently run with Codex `approval_policy="never"`; their sandbox/access mode is separate from human approval. OpenCode permission behavior is also provider-side and must not be treated as a Mac MCP server confirmation guarantee.
 
-Set the server capability profile with `MAC_MCP_PERMISSION_PROFILE=trusted|standard|read_only`. The native menu bar app reads `/dashboard/api/security/semantics` and shows **Allowed Capabilities** and **Approval Behavior** separately for the active profile.
+Set the server capability profile with `MAC_MCP_PERMISSION_PROFILE=trusted|standard|read_only`. The native menu bar app reads `/dashboard/api/security/semantics` and shows **Allowed Capabilities** and **Approval Behavior** separately for the active profile. The three preset rows are clickable: choosing one persists the value in `mcp_server/.env` and applies it to new global requests immediately without restarting the server or ngrok. Existing delegated agents keep the scoped profile issued when they were started; new agents inherit the newly selected parent profile.
 
 ## Install the menu bar app
 

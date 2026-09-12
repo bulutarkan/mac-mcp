@@ -230,6 +230,7 @@ final class AppState: ObservableObject {
     @Published var activeEvents: [ToolEvent] = []
     @Published var browserActionStatus = ""
     @Published var securitySemantics: SecuritySemanticsEnvelope?
+    @Published var permissionProfileChanging = false
     @Published var agents: [AgentInfo] = []
     @Published var steeringSessions: [SteeringSession] = []
     @Published var selectedSteeringSessionID: String?
@@ -303,6 +304,26 @@ final class AppState: ObservableObject {
                 serverRunning = false
                 version = "—"
                 activeAgents = 0
+            }
+        }
+    }
+
+    func setPermissionProfile(_ profile: String) {
+        guard !permissionProfileChanging else { return }
+        guard securitySemantics?.activeProfile != profile else { return }
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        permissionProfileChanging = true
+        Task {
+            defer { permissionProfileChanging = false }
+            do {
+                let response: SecuritySemanticsEnvelope = try await post(
+                    base.appendingPathComponent("dashboard/api/security/profile"),
+                    body: ["profile": profile]
+                )
+                securitySemantics = response
+                await refresh()
+            } catch {
+                await refresh()
             }
         }
     }

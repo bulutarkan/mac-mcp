@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
@@ -12,7 +14,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Respon
 from starlette.routing import Route
 
 from .observability import TelemetryManager, sanitize_value
-from .policy import RISK_REGISTRY, permission_semantics
+from .policy import PROFILES, RISK_REGISTRY, permission_semantics
 from .security import Settings
 from .steering import SteeringManager
 from .tools_agents import list_agents
@@ -20,6 +22,7 @@ from .tools_browser import browser_activate_tab
 from .version import __version__
 
 DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
+PERMISSION_ENV_FILE = Path(__file__).resolve().parent / ".env"
 
 _BROWSER_ACTIONS = {
     "browser_open_url": "Opened tab",
@@ -163,6 +166,37 @@ def _int_query(request: Request, key: str, default: int) -> int:
         return default
 
 
+def _persist_permission_profile(profile: str, env_file: Path = PERMISSION_ENV_FILE) -> None:
+    key = "MAC_MCP_PERMISSION_PROFILE"
+    env_file.parent.mkdir(parents=True, exist_ok=True)
+    existing = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
+    lines = existing.splitlines()
+    replacement = f"{key}={profile}"
+    replaced = False
+    output: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not replaced and (stripped.startswith(f"{key}=") or stripped.startswith(f"export {key}=")):
+            output.append(replacement)
+            replaced = True
+        else:
+            output.append(line)
+    if not replaced:
+        output.append(replacement)
+    text = "\n".join(output).rstrip("\n") + "\n"
+    fd, tmp_name = tempfile.mkstemp(prefix=".mac-mcp-env-", dir=str(env_file.parent), text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, env_file)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
 def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, steering: Optional[SteeringManager] = None) -> list[Route]:
     async def index(request: Request) -> Response:
         denied = _local_only(request)
@@ -205,6 +239,36 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         if denied:
             return denied
         return JSONResponse(permission_semantics())
+
+    async def set_security_profile(request: Request) -> Response:
+        denied = _local_only(request)
+        if denied:
+            return denied
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        profile = str(body.get("profile") or "").strip().lower()
+        if profile not in PROFILES:
+            return JSONResponse({
+                "ok": False,
+                "error": "invalid_permission_profile",
+                "allowed_profiles": list(PROFILES),
+            }, status_code=400)
+        try:
+            _persist_permission_profile(profile)
+        except OSError:
+            return JSONResponse({"ok": False, "error": "permission_profile_persist_failed"}, status_code=500)
+        os.environ["MAC_MCP_PERMISSION_PROFILE"] = profile
+        payload = permission_semantics(profile)
+        payload.update({
+            "ok": True,
+            "restart_required": False,
+            "existing_scoped_agents_retain_profile": True,
+        })
+        return JSONResponse(payload)
 
     async def events(request: Request) -> Response:
         denied = _local_only(request)
@@ -385,6 +449,7 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         Route("/dashboard/assets/{name}", asset, methods=["GET"]),
         Route("/dashboard/api/summary", summary, methods=["GET"]),
         Route("/dashboard/api/security/semantics", security_semantics, methods=["GET"]),
+        Route("/dashboard/api/security/profile", set_security_profile, methods=["POST"]),
         Route("/dashboard/api/events", events, methods=["GET"]),
         Route("/dashboard/api/browser/show-tab", show_browser_tab, methods=["POST"]),
         Route("/dashboard/api/agents", agents, methods=["GET"]),

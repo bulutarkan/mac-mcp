@@ -25,3 +25,5 @@ The menu bar controller shows active browser work in Sessions and Latest Tool Us
 The menu bar app intentionally presents **Allowed Capabilities** separately from **Approval Behavior**. The permission profile is enforced by the Mac MCP server; approval describes whether a human confirmation layer exists and where it comes from. Current built-in profiles report approval source `none`: allowed calls do not automatically trigger a second Mac MCP prompt. Client-side approval, if any, is controlled by the MCP client and is not a server guarantee.
 
 The app reads this information from the localhost-only `/dashboard/api/security/semantics` endpoint. `ask_confirmation` remains an explicit interaction tool rather than a universal approval gate.
+
+The preset overview rows are interactive without changing their visual layout. Selecting Trusted, Standard, or Read Only persists `MAC_MCP_PERMISSION_PROFILE` in the server `.env` and updates the running server immediately; no server/ngrok restart is required. Existing already-issued scoped agent credentials retain their original profile for the lifetime of that agent.

@@ -12,7 +12,7 @@ from pathlib import Path
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
-from mcp_server.dashboard_routes import _is_loopback, browser_event_context, create_dashboard_routes
+from mcp_server.dashboard_routes import _is_loopback, _persist_permission_profile, browser_event_context, create_dashboard_routes
 from mcp_server.observability import TelemetryManager, sanitize_value
 from mcp_server.security import load_settings
 from mcp_server.version import __version__
@@ -130,6 +130,53 @@ class BrowserVisibilityTests(unittest.TestCase):
 
 
 class SecuritySemanticsRouteTests(unittest.TestCase):
+    def test_permission_profile_persistence_preserves_env_and_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            env_file = Path(td) / ".env"
+            env_file.write_text("MCP_ALLOW_NO_AUTH=false\nMAC_MCP_PERMISSION_PROFILE=trusted\nSECRET_PLACEHOLDER=keep-me\n", encoding="utf-8")
+            _persist_permission_profile("read_only", env_file)
+            text = env_file.read_text(encoding="utf-8")
+            self.assertIn("MCP_ALLOW_NO_AUTH=false", text)
+            self.assertIn("SECRET_PLACEHOLDER=keep-me", text)
+            self.assertIn("MAC_MCP_PERMISSION_PROFILE=read_only", text)
+            self.assertNotIn("MAC_MCP_PERMISSION_PROFILE=trusted", text)
+            self.assertEqual(0o600, env_file.stat().st_mode & 0o777)
+
+    def test_profile_change_is_immediate_persistent_and_restart_free(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
+            app = Starlette(routes=create_dashboard_routes(manager, load_settings()))
+            with patch("mcp_server.dashboard_routes._persist_permission_profile") as persist, \
+                 patch.dict("os.environ", {"MAC_MCP_PERMISSION_PROFILE": "trusted"}, clear=False):
+                response = TestClient(app).post(
+                    "/dashboard/api/security/profile", json={"profile": "read_only"}
+                )
+                self.assertEqual(200, response.status_code)
+                payload = response.json()
+                self.assertTrue(payload["ok"])
+                self.assertEqual("read_only", payload["active_profile"])
+                self.assertFalse(payload["restart_required"])
+                self.assertTrue(payload["existing_scoped_agents_retain_profile"])
+                self.assertEqual("read_only", __import__("os").environ["MAC_MCP_PERMISSION_PROFILE"])
+                persist.assert_called_once_with("read_only")
+
+    def test_profile_change_rejects_unknown_and_remote_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
+            app = Starlette(routes=create_dashboard_routes(manager, load_settings()))
+            with patch("mcp_server.dashboard_routes._persist_permission_profile") as persist:
+                invalid = TestClient(app).post(
+                    "/dashboard/api/security/profile", json={"profile": "approval_heavy"}
+                )
+                remote = TestClient(app).post(
+                    "/dashboard/api/security/profile",
+                    json={"profile": "standard"},
+                    headers={"x-forwarded-for": "8.8.8.8"},
+                )
+                self.assertEqual(400, invalid.status_code)
+                self.assertEqual(403, remote.status_code)
+                persist.assert_not_called()
+
     def test_security_semantics_is_local_only_and_separates_approval(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")

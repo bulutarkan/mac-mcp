@@ -436,15 +436,19 @@ struct MenuBarView: View {
                             Divider()
                             Text("Preset overview").font(.caption.weight(.semibold))
                             ForEach(semantics.profiles) { item in
-                                HStack(spacing: 6) {
-                                    Image(systemName: item.active ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(item.active ? Color.accentColor : Color.secondary)
-                                        .font(.caption2)
-                                    Text(profileDisplayName(item.name)).font(.caption2.weight(.medium))
-                                    Spacer()
-                                    Text("\(item.allowedCapabilities.count) caps · Approval \(approvalSourceDisplayName(item.approvalBehavior.source))")
-                                        .font(.caption2).foregroundStyle(.secondary)
+                                Button { state.setPermissionProfile(item.name) } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: item.active ? "checkmark.circle.fill" : "circle")
+                                            .foregroundStyle(item.active ? Color.accentColor : Color.secondary)
+                                            .font(.caption2)
+                                        Text(profileDisplayName(item.name)).font(.caption2.weight(.medium))
+                                        Spacer()
+                                        Text("\(item.allowedCapabilities.count) caps · Approval \(approvalSourceDisplayName(item.approvalBehavior.source))")
+                                            .font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
                             }
                         } else {
                             Text("Unknown permission profile: \(semantics.activeProfile). Calls fail closed until a known profile is configured.")
