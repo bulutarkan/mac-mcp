@@ -282,6 +282,17 @@ struct SteeringSendEnvelope: Decodable {
     let message: Message?
 }
 
+enum DashboardConnectionState: String {
+    case connecting
+    case connected
+    case degraded
+    case disconnected
+}
+
+enum DashboardAPIError: Error {
+    case httpStatus(Int)
+}
+
 struct ActionNotice: Identifiable, Equatable {
     enum Kind { case info, success, error, update }
     let id = UUID()
@@ -302,6 +313,11 @@ struct ActionNotice: Identifiable, Equatable {
 final class AppState: ObservableObject {
     @Published var serverRunning = false
     @Published var ngrokRunning = false
+    @Published private(set) var connectionState: DashboardConnectionState = .connecting
+    @Published private(set) var connectionIssue: String?
+    @Published private(set) var steeringSnapshotStale = false
+    @Published private(set) var hasSteeringSnapshot = false
+    @Published private(set) var nextPollDelaySeconds = 2.5
     @Published var version = "—"
     @Published var totalCalls = 0
     @Published var successRate = 100.0
@@ -328,18 +344,60 @@ final class AppState: ObservableObject {
     private var noticeTask: Task<Void, Never>?
     private var consecutiveRefreshFailures = 0
     private var lastSteeringMessageID: String?
+    private static let normalPollIntervalSeconds = 2.5
+    private static let maxRetryIntervalSeconds = 30.0
 
-    init() { startTasks() }
+    init(startBackgroundTasks: Bool = true) {
+        if startBackgroundTasks { startTasks() }
+    }
     deinit { pollTask?.cancel(); pulseTask?.cancel(); noticeTask?.cancel() }
 
     var dashboardURL: URL? { URL(string: "http://127.0.0.1:\(settings.serverPort)/dashboard") }
+
+    static func pollDelaySeconds(forFailureCount failureCount: Int) -> Double {
+        guard failureCount > 0 else { return normalPollIntervalSeconds }
+        return min(pow(2.0, Double(failureCount - 1)), maxRetryIntervalSeconds)
+    }
+
+    var connectionStatusText: String {
+        switch connectionState {
+        case .connecting: return "Connecting…"
+        case .connected: return "Server running · v\(version)"
+        case .degraded: return "Server running · degraded"
+        case .disconnected: return "Disconnected"
+        }
+    }
+
+    var connectionBannerTitle: String {
+        switch connectionState {
+        case .connecting: return "Connecting to Mac MCP…"
+        case .connected: return "Connected"
+        case .degraded: return "Some dashboard data is unavailable"
+        case .disconnected: return "Mac MCP server is unreachable"
+        }
+    }
+
+    var connectionBannerDetail: String {
+        var parts: [String] = []
+        if let connectionIssue, !connectionIssue.isEmpty { parts.append(connectionIssue) }
+        if connectionState == .degraded || connectionState == .disconnected {
+            parts.append("Retrying in \(Self.formatPollDelay(nextPollDelaySeconds)).")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private static func formatPollDelay(_ seconds: Double) -> String {
+        seconds.rounded() == seconds ? "\(Int(seconds))s" : String(format: "%.1fs", seconds)
+    }
 
     func startTasks() {
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refresh()
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                guard let self else { return }
+                await self.refresh()
+                let delay = max(0.25, self.nextPollDelaySeconds)
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
         }
         pulseTask = Task { [weak self] in
@@ -353,40 +411,119 @@ final class AppState: ObservableObject {
 
     func refresh() async {
         ngrokRunning = Self.processExists(matching: "ngrok http")
-        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else {
+            recordDisconnected(issue: "Invalid server URL.")
+            return
+        }
         do {
             let summary: DashboardSummary = try await fetch(base.appendingPathComponent("dashboard/api/summary"), query: ["hours": "1"])
-            consecutiveRefreshFailures = 0
             serverRunning = true
-            version = summary.version ?? "—"
-            totalCalls = summary.totalCalls ?? 0
-            successRate = summary.successRate ?? 100
-            activeAgents = summary.activeAgents ?? 0
-            async let eventsResult: EventsEnvelope? = try? fetch(base.appendingPathComponent("dashboard/api/events"), query: ["hours": "1", "limit": "20"])
-            async let agentsResult: AgentsEnvelope? = try? fetch(base.appendingPathComponent("dashboard/api/agents"), query: ["limit": "20"])
-            async let steeringResult: SteeringEnvelope? = try? fetch(base.appendingPathComponent("dashboard/api/steering"), query: [:])
-            async let securityResult: SecuritySemanticsEnvelope? = try? fetch(base.appendingPathComponent("dashboard/api/security/semantics"), query: [:])
-            let (eventsEnvelope, agentsEnvelope, steeringEnvelope, securityEnvelope) = await (eventsResult, agentsResult, steeringResult, securityResult)
-            if let eventsEnvelope {
+            version = summary.version ?? version
+            totalCalls = summary.totalCalls ?? totalCalls
+            successRate = summary.successRate ?? successRate
+            activeAgents = summary.activeAgents ?? activeAgents
+
+            async let eventsFetch: EventsEnvelope = fetch(base.appendingPathComponent("dashboard/api/events"), query: ["hours": "1", "limit": "20"])
+            async let agentsFetch: AgentsEnvelope = fetch(base.appendingPathComponent("dashboard/api/agents"), query: ["limit": "20"])
+            async let steeringFetch: SteeringEnvelope = fetch(base.appendingPathComponent("dashboard/api/steering"), query: [:])
+            async let securityFetch: SecuritySemanticsEnvelope = fetch(base.appendingPathComponent("dashboard/api/security/semantics"), query: [:])
+
+            var secondaryIssue: String?
+            do {
+                let eventsEnvelope = try await eventsFetch
                 recentEvents = eventsEnvelope.events
                 activeEvents = eventsEnvelope.active
-            } else {
+            } catch {
                 activeEvents = []
+                secondaryIssue = secondaryIssue ?? "Activity: \(Self.issueText(for: error))"
             }
-            if let agentsEnvelope {
+            do {
+                let agentsEnvelope = try await agentsFetch
                 agents = agentsEnvelope.agents
                 activeAgents = agentsEnvelope.agents.filter(\.isActive).count
+            } catch {
+                secondaryIssue = secondaryIssue ?? "Agents: \(Self.issueText(for: error))"
             }
-            if let steeringEnvelope { applySteering(steeringEnvelope) }
-            if let securityEnvelope { securitySemantics = securityEnvelope }
+            do {
+                let steeringEnvelope = try await steeringFetch
+                applySteering(steeringEnvelope)
+                hasSteeringSnapshot = true
+                steeringSnapshotStale = false
+            } catch {
+                steeringSnapshotStale = true
+                secondaryIssue = secondaryIssue ?? "Sessions: \(Self.issueText(for: error))"
+            }
+            do {
+                securitySemantics = try await securityFetch
+            } catch {
+                secondaryIssue = secondaryIssue ?? "Security: \(Self.issueText(for: error))"
+            }
+
+            if let secondaryIssue {
+                recordRefreshFailure(state: .degraded, issue: secondaryIssue)
+            } else {
+                recordConnected()
+            }
         } catch {
-            consecutiveRefreshFailures += 1
-            if consecutiveRefreshFailures >= 3 {
-                serverRunning = false
-                version = "—"
-                activeAgents = 0
+            activeEvents = []
+            steeringSnapshotStale = true
+            let state = Self.failureState(for: error)
+            serverRunning = state == .degraded
+            if state == .disconnected { activeAgents = 0 }
+            recordRefreshFailure(state: state, issue: Self.issueText(for: error))
+        }
+    }
+
+    func retryConnection() async {
+        connectionState = .connecting
+        connectionIssue = nil
+        consecutiveRefreshFailures = 0
+        nextPollDelaySeconds = Self.normalPollIntervalSeconds
+        await refresh()
+    }
+
+    private func recordConnected() {
+        consecutiveRefreshFailures = 0
+        connectionState = .connected
+        connectionIssue = nil
+        nextPollDelaySeconds = Self.normalPollIntervalSeconds
+    }
+
+    private func recordDisconnected(issue: String) {
+        serverRunning = false
+        recordRefreshFailure(state: .disconnected, issue: issue)
+    }
+
+    private func recordRefreshFailure(state: DashboardConnectionState, issue: String) {
+        consecutiveRefreshFailures += 1
+        connectionState = state
+        connectionIssue = issue
+        nextPollDelaySeconds = Self.pollDelaySeconds(forFailureCount: consecutiveRefreshFailures)
+    }
+
+    nonisolated private static func failureState(for error: Error) -> DashboardConnectionState {
+        if error is DashboardAPIError || error is DecodingError { return .degraded }
+        return .disconnected
+    }
+
+    nonisolated private static func issueText(for error: Error) -> String {
+        if let apiError = error as? DashboardAPIError {
+            switch apiError {
+            case .httpStatus(let status): return "Server error (HTTP \(status))"
             }
         }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut: return "Request timed out"
+            case .cannotConnectToHost: return "Connection refused"
+            case .networkConnectionLost: return "Connection lost"
+            case .notConnectedToInternet: return "Network unavailable"
+            case .cannotFindHost: return "Server host unavailable"
+            default: return "Connection error (\(urlError.code.rawValue))"
+            }
+        }
+        if error is DecodingError { return "Invalid API response" }
+        return "Connection error"
     }
 
     func setPermissionProfile(_ profile: String) {
@@ -657,7 +794,8 @@ final class AppState: ObservableObject {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 1.8
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard (200..<300).contains(http.statusCode) else { throw DashboardAPIError.httpStatus(http.statusCode) }
         return try JSONDecoder().decode(T.self, from: data)
     }
 
@@ -669,7 +807,8 @@ final class AppState: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard (200..<300).contains(http.statusCode) else { throw DashboardAPIError.httpStatus(http.statusCode) }
         return try JSONDecoder().decode(T.self, from: data)
     }
 

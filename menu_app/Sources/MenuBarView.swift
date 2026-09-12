@@ -32,7 +32,6 @@ struct MenuBarView: View {
         .frame(width: 400, height: 660)
         .background(.regularMaterial)
         .task {
-            await state.refresh()
             audio.refresh()
             if settings.steeringSessionMinutes != 10 {
                 sessionMinutesText = String(settings.steeringSessionMinutes)
@@ -62,8 +61,8 @@ struct MenuBarView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Mac MCP").font(.system(size: 17, weight: .semibold))
                 HStack(spacing: 6) {
-                    Circle().fill(state.serverRunning ? Color.green : Color.secondary).frame(width: 7, height: 7)
-                    Text(state.serverRunning ? "Server running · v\(state.version)" : "Server stopped")
+                    Circle().fill(connectionColor).frame(width: 7, height: 7)
+                    Text(state.connectionStatusText)
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -86,6 +85,26 @@ struct MenuBarView: View {
                     Divider().frame(height: 28)
                     metric(title: "Agents", value: "\(state.activeAgents) active")
                 }
+                if state.connectionState != .connected {
+                    HStack(spacing: 8) {
+                        Image(systemName: connectionBannerSymbol)
+                            .foregroundStyle(connectionColor)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(state.connectionBannerTitle).font(.caption.weight(.semibold))
+                            if !state.connectionBannerDetail.isEmpty {
+                                Text(state.connectionBannerDetail)
+                                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                        }
+                        Spacer()
+                        if state.connectionState == .degraded || state.connectionState == .disconnected {
+                            Button("Retry") { Task { await state.retryConnection() } }
+                                .controlSize(.small)
+                        }
+                    }
+                    .padding(.horizontal, 9).padding(.vertical, 7)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
                 HStack(spacing: 8) {
                     if state.serverRunning {
                         Button { state.restartServer() } label: { Label("Restart", systemImage: "arrow.clockwise") }.accessibilityLabel("Restart Server")
@@ -96,7 +115,7 @@ struct MenuBarView: View {
                     }
                     Spacer()
                     Button { state.openDashboard() } label: { Image(systemName: "chart.xyaxis.line") }.help("Open Dashboard")
-                    Button { Task { await state.refresh() } } label: { Image(systemName: "arrow.triangle.2.circlepath") }.help("Refresh")
+                    Button { Task { await state.retryConnection() } } label: { Image(systemName: "arrow.triangle.2.circlepath") }.help("Refresh now")
                 }
                 if let action = state.busyAction {
                     HStack(spacing: 8) {
@@ -146,6 +165,31 @@ struct MenuBarView: View {
                         .help("Apply session retention")
                     }
 
+                    if state.steeringSnapshotStale && state.hasSteeringSnapshot {
+                        HStack(spacing: 7) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .foregroundStyle(.orange)
+                            Text("Last successful session snapshot · stale")
+                                .font(.caption2.weight(.medium))
+                            Spacer()
+                            Button("Retry") { Task { await state.retryConnection() } }
+                                .controlSize(.mini)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    } else if state.steeringSnapshotStale || state.connectionState == .disconnected {
+                        HStack(spacing: 7) {
+                            Image(systemName: "wifi.slash").foregroundStyle(.red)
+                            Text("Session data unavailable")
+                                .font(.caption2.weight(.medium))
+                            Spacer()
+                            Button("Retry") { Task { await state.retryConnection() } }
+                                .controlSize(.mini)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    }
+
                     if let browserEvent = state.activeBrowserEvents.first,
                        let context = state.resolvedBrowserContext(for: browserEvent) {
                         VStack(alignment: .leading, spacing: 5) {
@@ -174,7 +218,10 @@ struct MenuBarView: View {
                     if state.steeringSessions.isEmpty {
                         HStack(spacing: 8) {
                             Image(systemName: "rectangle.stack.badge.minus").foregroundStyle(.secondary)
-                            Text(state.steeringEmptyMessage).font(.caption).foregroundStyle(.secondary)
+                            Text(state.steeringSnapshotStale
+                                 ? (state.hasSteeringSnapshot ? "Last session snapshot contains no sessions." : "Session data unavailable.")
+                                 : state.steeringEmptyMessage)
+                                .font(.caption).foregroundStyle(.secondary)
                             Spacer()
                         }.padding(.vertical, 3)
                     } else {
@@ -226,7 +273,7 @@ struct MenuBarView: View {
                             else { Image(systemName: "paperplane.fill") }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(state.steeringSending || state.steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.selectedSteeringSessionID == nil)
+                        .disabled(state.steeringSending || state.steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.selectedSteeringSessionID == nil || state.steeringSnapshotStale || state.connectionState == .disconnected)
                     }
                     Text(state.steeringStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                 }
@@ -331,11 +378,17 @@ struct MenuBarView: View {
 
     private var activityCard: some View {
         GroupBox {
-            if state.serverRunning && displayActivityEvents.isEmpty {
+            if state.connectionState == .disconnected && displayActivityEvents.isEmpty {
+                Text("Disconnected · tool activity unavailable.").font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
+            } else if state.connectionState == .degraded && displayActivityEvents.isEmpty {
+                Text("Tool activity is temporarily unavailable.").font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
+            } else if state.serverRunning && displayActivityEvents.isEmpty {
                 Text("No tool calls recorded in the last hour.").font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
             } else if !state.serverRunning {
-                Text("Start the server to see live tool activity.").font(.caption).foregroundStyle(.secondary)
+                Text("Start the server or retry the connection to see live tool activity.").font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
             } else {
                 VStack(alignment: .leading, spacing: 5) {
@@ -566,6 +619,23 @@ struct MenuBarView: View {
         HStack {
             Text("Settings apply live; server controls stay available when Voice is collapsed.").font(.caption2).foregroundStyle(.secondary).lineLimit(2)
             Spacer(); Button("Quit") { state.quitApp() }
+        }
+    }
+
+    private var connectionColor: Color {
+        switch state.connectionState {
+        case .connected: return .green
+        case .connecting, .degraded: return .orange
+        case .disconnected: return .red
+        }
+    }
+
+    private var connectionBannerSymbol: String {
+        switch state.connectionState {
+        case .connecting: return "arrow.triangle.2.circlepath"
+        case .connected: return "checkmark.circle.fill"
+        case .degraded: return "exclamationmark.triangle.fill"
+        case .disconnected: return "wifi.slash"
         }
     }
 

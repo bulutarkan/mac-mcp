@@ -27,6 +27,8 @@ Mac MCP is a local macOS control server for AI agents. It exposes your Mac throu
 - **Latest Tool Usage** shows up to five rows at once and scrolls internally for older calls.
 - **Delegated Agents** keeps a compact fixed-height list and scrolls internally when multiple active/recent agents exist. Active work also triggers a lightweight animated robot and a pulsing menu bar status icon.
 - **Live agent steering** adds persistent logical Sessions to the menu bar, so you can redirect a specific agent while it is working or queue a new instruction while it is idle without sending the prompt to the wrong conversation.
+- The menu bar treats dashboard reachability as a first-class state: **Connected**, **Degraded**, **Disconnected**, or **Connecting**. Failed fetches never masquerade as an empty session list; the last successful session snapshot is retained and marked **stale** until a successful refresh replaces it.
+- Polling uses bounded exponential backoff after failures (`1s → 2s → 4s → 8s → 16s → 30s max`) and resets to the normal 2.5-second interval after recovery. A manual **Retry** performs an immediate refresh.
 - **Voice** is a collapsed disclosure section by default. `ask_user_voice` can be enabled/disabled live without removing the MCP tool from discovery.
 - When voice is disabled, calls return `experimental_tool_disabled` and instruct the agent to fall back to `ask_user`.
 - Groq API keys can be stored in **macOS Keychain** instead of plaintext configuration.
@@ -199,6 +201,12 @@ The steering API exposes `schema_version: 1` and separates **activity** from **i
 The instruction lifecycle is intentionally small: `ready → queued → delivered → acknowledged`. If the underlying tool fails before queued steering can be delivered, the session enters `failed` while keeping the instruction pending for the next tool call. Transport-backed sessions emit `disconnected` when their MCP transport disappears, and idle sessions emit `expired` when their retention TTL elapses. Illegal lifecycle transitions are rejected internally instead of silently producing ambiguous state.
 
 `acknowledged` is inferred when the same logical agent makes its next top-level tool request after receiving steering; it means the agent continued after the delivery boundary, not that the model sent a separate acknowledgement packet. Daemon/API reachability is a different connection concern and is handled separately by the menu app's connection UX.
+
+### Menu bar connection resilience
+
+The native controller does not treat a failed dashboard request as valid empty data. A successful empty `/dashboard/api/steering` response clears the session list normally; an HTTP error, timeout, or connection refusal preserves the last successful snapshot and marks it stale. If the app has never received a valid session snapshot, it shows **Session data unavailable** rather than **No agent sessions yet**.
+
+A transport failure such as timeout or connection refusal enters `disconnected`; an HTTP error or invalid response from a reachable server enters `degraded`, including failures from the primary summary endpoint. HTTP status failures, timeouts, and connection-refused errors are surfaced separately. Automatic polling backs off from 1 second to a 30-second cap and returns to the normal 2.5-second cadence after the next complete successful refresh.
 
 ## Server commands
 

@@ -31,3 +31,9 @@ The preset overview rows are interactive without changing their visual layout. S
 ## Session lifecycle
 
 Sessions use the server's versioned lifecycle snapshot when available while remaining compatible with older `working` / `idle` responses. Activity (`working` or `idle`) is separate from steering lifecycle (`ready`, `queued`, `delivered`, `acknowledged`, `failed`, `disconnected`, `expired`). The menu shows queued, delivered, acknowledged, and failed states directly; terminal transport disconnect/expiry events remain visible instead of collapsing immediately into a generic empty-session message.
+
+## Connection resilience
+
+Dashboard reachability is modeled independently from session lifecycle. The app reports `connecting`, `connected`, `degraded`, or `disconnected`; a successful empty response is distinct from a failed fetch. Session fetch failures retain the last valid snapshot with a **stale** marker, while a first-load failure shows **Session data unavailable** instead of pretending there are zero sessions.
+
+Automatic polling uses bounded exponential backoff after failed refreshes: 1, 2, 4, 8, 16, then 30 seconds maximum. A complete successful refresh resets polling to the normal 2.5-second cadence. HTTP 5xx responses, request timeouts, and connection-refused failures are surfaced with distinct status text, and **Retry** triggers an immediate refresh without restarting the daemon or ngrok.
