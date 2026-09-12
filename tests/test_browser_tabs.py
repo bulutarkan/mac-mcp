@@ -61,12 +61,19 @@ class BrowserTabHandleTests(unittest.TestCase):
 
     def test_activate_tab_does_not_raise_browser_by_default(self):
         scripts = []
+        tabs = [
+            {"browser": "Safari", "window_index": 1, "tab_index": 1, "active": True,
+             "native_id": "3001", "title": "First", "url": "https://example.com/first"},
+            {"browser": "Safari", "window_index": 1, "tab_index": 2, "active": False,
+             "native_id": "3002", "title": "Second", "url": "https://example.com/second"},
+        ]
 
         def fake_script(script, timeout_s=30):
             scripts.append(script)
             return ""
 
-        with patch("mcp_server.tools_browser._run_osascript", side_effect=fake_script):
+        with patch("mcp_server.browser_tabs._scan", return_value=tabs), \
+             patch("mcp_server.tools_browser._run_osascript", side_effect=fake_script):
             result = browser_activate_tab(None, browser="Safari", window_index=1, tab_index=2)
         self.assertTrue(result["ok"])
         self.assertFalse(result["foreground_forced"])

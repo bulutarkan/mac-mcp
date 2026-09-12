@@ -6,10 +6,15 @@ import shutil
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
-from mcp_server.dashboard_routes import _is_loopback
+from starlette.applications import Starlette
+from starlette.testclient import TestClient
+
+from mcp_server.dashboard_routes import _is_loopback, browser_event_context, create_dashboard_routes
 from mcp_server.observability import TelemetryManager, sanitize_value
+from mcp_server.security import load_settings
 from mcp_server.version import __version__
 
 
@@ -75,6 +80,92 @@ class TelemetryTests(unittest.TestCase):
                 self.assertEqual(finished["status"], "success")
 
         asyncio.run(run())
+
+
+class BrowserVisibilityTests(unittest.TestCase):
+    def test_browser_context_keeps_only_minimal_site_metadata(self) -> None:
+        context = browser_event_context({
+            "tool": "browser_do",
+            "arguments": {
+                "browser": "Safari",
+                "url": "https://www.example.com/private/path?token=secret-value",
+                "actions": [{"type": "click", "selector": "#account"}],
+            },
+            "result": {
+                "tab_handle": "tab_test123",
+                "title": "Private Account Dashboard",
+            },
+        })
+        self.assertEqual(context, {
+            "browser": "Safari",
+            "tab_handle": "tab_test123",
+            "site": "example.com",
+            "action": "Browser task",
+        })
+        rendered = json.dumps(context, ensure_ascii=False)
+        self.assertNotIn("private/path", rendered)
+        self.assertNotIn("secret-value", rendered)
+        self.assertNotIn("Private Account", rendered)
+        self.assertNotIn("#account", rendered)
+
+    def test_browser_context_can_use_nested_opened_result(self) -> None:
+        context = browser_event_context({
+            "tool": "browser_do",
+            "arguments": {"browser": "Google Chrome"},
+            "result": {
+                "opened": {
+                    "url": "https://news.example.org/story?id=42",
+                    "tab_handle": "tab_nested",
+                }
+            },
+        })
+        self.assertEqual(context["site"], "news.example.org")
+        self.assertEqual(context["tab_handle"], "tab_nested")
+
+    def test_non_browser_event_has_no_browser_context(self) -> None:
+        self.assertIsNone(browser_event_context({
+            "tool": "run_command",
+            "arguments": {"command": "echo browser_open_url"},
+        }))
+
+
+class BrowserShowTabRouteTests(unittest.TestCase):
+    def test_show_tab_is_explicit_foreground_action(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
+            app = Starlette(routes=create_dashboard_routes(manager, load_settings()))
+            with patch("mcp_server.dashboard_routes.browser_activate_tab") as activate:
+                activate.return_value = {
+                    "ok": True,
+                    "browser": "Safari",
+                    "tab_handle": "tab_live",
+                    "foreground_forced": True,
+                }
+                response = TestClient(app).post(
+                    "/dashboard/api/browser/show-tab",
+                    json={"browser": "Safari", "tab_handle": "tab_live"},
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.json()["foreground_forced"])
+                activate.assert_called_once_with(
+                    unittest.mock.ANY,
+                    browser="Safari",
+                    tab_handle="tab_live",
+                    allow_foreground=True,
+                )
+
+    def test_show_tab_remains_localhost_only(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
+            app = Starlette(routes=create_dashboard_routes(manager, load_settings()))
+            with patch("mcp_server.dashboard_routes.browser_activate_tab") as activate:
+                response = TestClient(app).post(
+                    "/dashboard/api/browser/show-tab",
+                    json={"browser": "Safari", "tab_handle": "tab_live"},
+                    headers={"x-forwarded-for": "8.8.8.8"},
+                )
+                self.assertEqual(response.status_code, 403)
+                activate.assert_not_called()
 
 
 class DashboardSecurityTests(unittest.TestCase):

@@ -42,6 +42,11 @@ struct MenuBarView: View {
         state.agents.filter(\.isActive) + state.agents.filter { !$0.isActive }
     }
 
+    private var displayActivityEvents: [ToolEvent] {
+        let activeIDs = Set(state.activeEvents.map(\.id))
+        return state.activeEvents + state.recentEvents.filter { !activeIDs.contains($0.id) }
+    }
+
     private var firstActiveAgentID: String? {
         state.agents.first(where: \.isActive)?.id
     }
@@ -139,6 +144,31 @@ struct MenuBarView: View {
                         .help("Apply session retention")
                     }
 
+                    if let browserEvent = state.activeBrowserEvents.first,
+                       let context = state.resolvedBrowserContext(for: browserEvent) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(state.activeBrowserEvents.count == 1 ? "Browser automation active" : "\(state.activeBrowserEvents.count) browser tasks active")
+                                        .font(.caption.weight(.semibold))
+                                    Text(browserActivityLabel(context))
+                                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                Spacer()
+                                if context.canShowTab {
+                                    Button("Show Tab") { state.showBrowserTab(browserEvent) }
+                                        .controlSize(.small)
+                                        .help("Bring this real browser tab to the front")
+                                }
+                            }
+                            Text("Visible real browser tab · background means non-focus-stealing, not headless.")
+                                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(8)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+
                     if state.steeringSessions.isEmpty {
                         HStack(spacing: 8) {
                             Image(systemName: "rectangle.stack.badge.minus").foregroundStyle(.secondary)
@@ -214,7 +244,7 @@ struct MenuBarView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("\(state.activeAgents) Agent\(state.activeAgents == 1 ? "" : "s") Active")
                                 .font(.caption.weight(.semibold))
-                            Text("Working in background").font(.caption2).foregroundStyle(.secondary)
+                            Text("Working without taking focus").font(.caption2).foregroundStyle(.secondary)
                         }
                         Spacer()
                     }
@@ -299,34 +329,59 @@ struct MenuBarView: View {
 
     private var activityCard: some View {
         GroupBox {
-            if state.serverRunning && state.recentEvents.isEmpty {
+            if state.serverRunning && displayActivityEvents.isEmpty {
                 Text("No tool calls recorded in the last hour.").font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
             } else if !state.serverRunning {
                 Text("Start the server to see live tool activity.").font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
             } else {
-                ScrollView(.vertical) {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(state.recentEvents.enumerated()), id: \.element.id) { index, event in
-                            HStack(spacing: 8) {
-                                Image(systemName: toolSymbol(event.tool))
-                                    .foregroundStyle(.secondary).font(.caption).frame(width: 16)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(cleanToolName(event.tool)).font(.caption.weight(.medium)).lineLimit(1)
-                                    Text("\(event.source.uppercased()) · \(event.durationMS ?? 0) ms · \(relativeTime(event.timestamp))")
-                                        .font(.caption2).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Image(systemName: eventStatusSymbol(event.status))
-                                    .foregroundStyle(eventStatusColor(event.status)).font(.caption)
-                                    .help(event.status.capitalized)
-                            }.padding(.vertical, 5)
-                            if index < state.recentEvents.count - 1 { Divider() }
+                VStack(alignment: .leading, spacing: 5) {
+                    ScrollView(.vertical) {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(displayActivityEvents.enumerated()), id: \.element.id) { index, event in
+                                HStack(spacing: 8) {
+                                    Image(systemName: toolSymbol(event.tool))
+                                        .foregroundStyle(event.status.lowercased() == "running" ? Color.accentColor : Color.secondary)
+                                        .font(.caption).frame(width: 16)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        HStack(spacing: 5) {
+                                            Text(cleanToolName(event.tool)).font(.caption.weight(.medium)).lineLimit(1)
+                                            if event.status.lowercased() == "running" {
+                                                Text("LIVE").font(.system(size: 8, weight: .bold))
+                                                    .padding(.horizontal, 4).padding(.vertical, 1)
+                                                    .background(.quaternary, in: Capsule())
+                                            }
+                                        }
+                                        if let context = state.resolvedBrowserContext(for: event) {
+                                            Text("\(browserActivityLabel(context)) · \(event.durationMS ?? 0) ms")
+                                                .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                        } else {
+                                            Text("\(event.source.uppercased()) · \(event.durationMS ?? 0) ms · \(relativeTime(event.timestamp))")
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    Spacer()
+                                    if let context = state.resolvedBrowserContext(for: event), context.canShowTab, event.tool != "browser_close_tab" {
+                                        Button { state.showBrowserTab(event) } label: {
+                                            Image(systemName: "arrow.up.forward.app").font(.caption2)
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .help("Show the real browser tab")
+                                    }
+                                    Image(systemName: eventStatusSymbol(event.status))
+                                        .foregroundStyle(eventStatusColor(event.status)).font(.caption)
+                                        .help(event.status.capitalized)
+                                }.padding(.vertical, 5)
+                                if index < displayActivityEvents.count - 1 { Divider() }
+                            }
                         }
                     }
+                    .frame(height: CGFloat(min(max(displayActivityEvents.count, 1), 5)) * 39)
+                    if !state.browserActionStatus.isEmpty {
+                        Text(state.browserActionStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
-                .frame(height: CGFloat(min(max(state.recentEvents.count, 1), 5)) * 39)
             }
         } label: { Label("Latest Tool Usage", systemImage: "waveform.path.ecg") }
     }
@@ -552,10 +607,26 @@ struct MenuBarView: View {
         return "wrench.and.screwdriver.fill"
     }
 
+    private func browserActivityLabel(_ context: BrowserContext) -> String {
+        let rawBrowser = (context.browser ?? "Browser").lowercased()
+        let browser: String
+        if rawBrowser == "google chrome" || rawBrowser == "chrome" || rawBrowser == "chromium" {
+            browser = "Chrome"
+        } else if rawBrowser == "safari" {
+            browser = "Safari"
+        } else {
+            browser = context.browser ?? "Browser"
+        }
+        let site = context.site ?? "tab"
+        let action = context.action ?? "Active"
+        return "\(browser) · \(site) · \(action)"
+    }
+
     private func eventStatusSymbol(_ status: String) -> String {
         switch status.lowercased() {
         case "success": return "checkmark.circle.fill"
         case "error": return "xmark.circle.fill"
+        case "running": return "dot.radiowaves.left.and.right"
         default: return "ellipsis.circle.fill"
         }
     }
@@ -564,6 +635,7 @@ struct MenuBarView: View {
         switch status.lowercased() {
         case "success": return .green
         case "error": return .red
+        case "running": return .accentColor
         default: return .orange
         }
     }

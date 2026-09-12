@@ -16,6 +16,22 @@ struct DashboardSummary: Decodable {
     }
 }
 
+struct BrowserContext: Decodable {
+    let browser: String?
+    let tabHandle: String?
+    let site: String?
+    let action: String?
+
+    enum CodingKeys: String, CodingKey {
+        case browser, site, action
+        case tabHandle = "tab_handle"
+    }
+
+    var canShowTab: Bool {
+        !(browser ?? "").isEmpty && !(tabHandle ?? "").isEmpty
+    }
+}
+
 struct ToolEvent: Decodable, Identifiable {
     let eventID: String
     let timestamp: Double
@@ -23,15 +39,24 @@ struct ToolEvent: Decodable, Identifiable {
     let tool: String
     let status: String
     let durationMS: Int?
+    let browserContext: BrowserContext?
     var id: String { eventID }
     enum CodingKeys: String, CodingKey {
         case eventID = "event_id"
         case timestamp, source, tool, status
         case durationMS = "duration_ms"
+        case browserContext = "browser_context"
     }
 }
 
-struct EventsEnvelope: Decodable { let events: [ToolEvent] }
+struct EventsEnvelope: Decodable {
+    let events: [ToolEvent]
+    let active: [ToolEvent]
+}
+
+struct BrowserShowTabEnvelope: Decodable {
+    let ok: Bool
+}
 
 struct AgentInfo: Decodable, Identifiable {
     let agentID: String
@@ -149,6 +174,8 @@ final class AppState: ObservableObject {
     @Published var successRate = 100.0
     @Published var activeAgents = 0
     @Published var recentEvents: [ToolEvent] = []
+    @Published var activeEvents: [ToolEvent] = []
+    @Published var browserActionStatus = ""
     @Published var agents: [AgentInfo] = []
     @Published var steeringSessions: [SteeringSession] = []
     @Published var selectedSteeringSessionID: String?
@@ -203,7 +230,12 @@ final class AppState: ObservableObject {
             async let agentsResult: AgentsEnvelope? = try? fetch(base.appendingPathComponent("dashboard/api/agents"), query: ["limit": "20"])
             async let steeringResult: SteeringEnvelope? = try? fetch(base.appendingPathComponent("dashboard/api/steering"), query: [:])
             let (eventsEnvelope, agentsEnvelope, steeringEnvelope) = await (eventsResult, agentsResult, steeringResult)
-            if let eventsEnvelope { recentEvents = eventsEnvelope.events }
+            if let eventsEnvelope {
+                recentEvents = eventsEnvelope.events
+                activeEvents = eventsEnvelope.active
+            } else {
+                activeEvents = []
+            }
             if let agentsEnvelope {
                 agents = agentsEnvelope.agents
                 activeAgents = agentsEnvelope.agents.filter(\.isActive).count
@@ -234,6 +266,49 @@ final class AppState: ObservableObject {
     func installUpdate() { runAction(title: "Updating", args: ["update"]) }
     func openDashboard() { if let dashboardURL { NSWorkspace.shared.open(dashboardURL) } }
     func quitApp() { NSApplication.shared.terminate(nil) }
+
+    var activeBrowserEvents: [ToolEvent] {
+        activeEvents.filter { $0.browserContext != nil }
+    }
+
+    func resolvedBrowserContext(for event: ToolEvent) -> BrowserContext? {
+        guard let context = event.browserContext else { return nil }
+        if context.site != nil || context.tabHandle == nil { return context }
+        guard let handle = context.tabHandle else { return context }
+        let prior = recentEvents.lazy.compactMap(\.browserContext).first {
+            $0.tabHandle == handle && $0.site != nil
+        }
+        guard let prior else { return context }
+        return BrowserContext(
+            browser: context.browser ?? prior.browser,
+            tabHandle: handle,
+            site: prior.site,
+            action: context.action
+        )
+    }
+
+    func showBrowserTab(_ event: ToolEvent) {
+        guard let context = resolvedBrowserContext(for: event),
+              let browser = context.browser, !browser.isEmpty,
+              let tabHandle = context.tabHandle, !tabHandle.isEmpty,
+              let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else {
+            browserActionStatus = "This browser task no longer has a live tab reference."
+            return
+        }
+        browserActionStatus = "Opening tab…"
+        Task {
+            do {
+                let response: BrowserShowTabEnvelope = try await post(
+                    base.appendingPathComponent("dashboard/api/browser/show-tab"),
+                    body: ["browser": browser, "tab_handle": tabHandle]
+                )
+                browserActionStatus = response.ok ? "Opened the real browser tab." : "Could not open that browser tab."
+            } catch {
+                browserActionStatus = "That browser tab is closed or unavailable."
+                await refresh()
+            }
+        }
+    }
 
 
     func updateSteeringRetention(minutes: Int) {

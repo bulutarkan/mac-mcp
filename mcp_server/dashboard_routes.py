@@ -5,6 +5,7 @@ import ipaddress
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
@@ -15,9 +16,93 @@ from .policy import RISK_REGISTRY
 from .security import Settings
 from .steering import SteeringManager
 from .tools_agents import list_agents
+from .tools_browser import browser_activate_tab
 from .version import __version__
 
 DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
+
+_BROWSER_ACTIONS = {
+    "browser_open_url": "Opened tab",
+    "browser_list_tabs": "Listed tabs",
+    "browser_activate_tab": "Selected tab",
+    "browser_close_tab": "Closed tab",
+    "browser_observe": "Observing",
+    "browser_find": "Finding element",
+    "browser_act": "Interacting",
+    "browser_do": "Browser task",
+    "browser_execute_js": "Running page script",
+    "browser_click_selector": "Clicking",
+    "browser_type_selector": "Typing",
+    "browser_wait_for_selector": "Waiting",
+    "browser_get_html": "Reading page",
+    "browser_wait_for_download": "Waiting for download",
+    "browser_screenshot": "Capturing page",
+    "browser_scroll": "Scrolling",
+    "browser_press_key": "Pressing key",
+    "browser_coordinate_click": "Clicking",
+    "browser_get_snapshot": "Inspecting page",
+}
+
+
+def _mapping(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _browser_site(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    return parsed.hostname.removeprefix("www.")[:120]
+
+
+def browser_event_context(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return minimal browser metadata suitable for compact local UI surfaces.
+
+    Deliberately excludes URL paths, query strings, page titles, selectors and
+    page content. The full sanitized event remains available to the localhost
+    dashboard; this projection is for glanceable menu-bar visibility only.
+    """
+    tool = str(event.get("tool") or "")
+    if not tool.startswith("browser_"):
+        return None
+    arguments = _mapping(event.get("arguments"))
+    result = _mapping(event.get("result"))
+    opened = _mapping(result.get("opened"))
+    state = _mapping(result.get("state"))
+
+    browser = str(arguments.get("browser") or result.get("browser") or "").strip() or None
+    handle = str(
+        arguments.get("tab_handle")
+        or result.get("tab_handle")
+        or opened.get("tab_handle")
+        or state.get("tab_handle")
+        or ""
+    ).strip() or None
+    site = None
+    for candidate in (arguments.get("url"), result.get("url"), opened.get("url"), state.get("url")):
+        site = _browser_site(candidate)
+        if site:
+            break
+    return {
+        "browser": browser,
+        "tab_handle": handle,
+        "site": site,
+        "action": _BROWSER_ACTIONS.get(tool, tool.removeprefix("browser_").replace("_", " ").title()),
+    }
+
+
+def _with_browser_context(event: Dict[str, Any]) -> Dict[str, Any]:
+    item = dict(event)
+    context = browser_event_context(item)
+    if context is not None:
+        item["browser_context"] = context
+    return item
 REST_TOOL_ALIASES = {
     "/run": "run_command",
     "/system_info": "get_system_info",
@@ -126,7 +211,46 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
             status=request.query_params.get("status"),
             tool=request.query_params.get("tool"),
         )
-        return JSONResponse({"events": payload, "active": telemetry.active_calls()})
+        return JSONResponse({
+            "events": [_with_browser_context(event) for event in payload],
+            "active": [_with_browser_context(event) for event in telemetry.active_calls()],
+        })
+
+    async def show_browser_tab(request: Request) -> Response:
+        denied = _local_only(request)
+        if denied:
+            return denied
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        browser = str(body.get("browser") or "").strip()
+        tab_handle = str(body.get("tab_handle") or "").strip()
+        if not browser or not tab_handle:
+            return JSONResponse({"ok": False, "error": "browser_and_tab_handle_required"}, status_code=400)
+        try:
+            result = await asyncio.to_thread(
+                browser_activate_tab,
+                settings,
+                browser=browser,
+                tab_handle=tab_handle,
+                allow_foreground=True,
+            )
+        except Exception as exc:
+            status_code = int(getattr(exc, "status_code", 500) or 500)
+            detail = getattr(exc, "detail", None) or str(exc)
+            return JSONResponse(
+                {"ok": False, "error": sanitize_value(detail)},
+                status_code=max(400, min(status_code, 599)),
+            )
+        return JSONResponse({
+            "ok": True,
+            "browser": result.get("browser"),
+            "tab_handle": result.get("tab_handle"),
+            "foreground_forced": bool(result.get("foreground_forced")),
+        })
 
     async def agents(request: Request) -> Response:
         denied = _local_only(request)
@@ -255,6 +379,7 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         Route("/dashboard/assets/{name}", asset, methods=["GET"]),
         Route("/dashboard/api/summary", summary, methods=["GET"]),
         Route("/dashboard/api/events", events, methods=["GET"]),
+        Route("/dashboard/api/browser/show-tab", show_browser_tab, methods=["POST"]),
         Route("/dashboard/api/agents", agents, methods=["GET"]),
         Route("/dashboard/api/steering", steering_state, methods=["GET"]),
         Route("/dashboard/api/steering", steering_send, methods=["POST"]),
