@@ -32,6 +32,12 @@ The app reads this information from the authenticated machine-local `/dashboard/
 
 The preset overview rows are interactive without changing their visual layout. Selecting Trusted, Standard, or Read Only persists `MAC_MCP_PERMISSION_PROFILE` in the server `.env` and updates the running server immediately; no server/ngrok restart is required. Existing already-issued scoped agent credentials retain their original profile for the lifetime of that agent.
 
+## SwiftUI state efficiency
+
+The controller remains `@MainActor` for observable UI mutation and keeps the existing polling cadence. Dashboard snapshots are decoded as before, but equivalent values are no longer re-published to SwiftUI. Session updates use stable `session_id` diffing (added/updated/removed) and only replace the published session array when that diff is non-empty, so repeated identical snapshots do not invalidate the visible hierarchy. Volatile `activity_ms` changes are coalesced whenever the rendered duration label would stay the same (for example within the same displayed minute). Stable `ForEach` identities continue to preserve row identity when one session changes.
+
+This optimization intentionally does **not** reduce polling frequency or delay visible state changes; it removes redundant UI/main-thread publication work while preserving the same refresh behavior.
+
 ## Sessions information architecture
 
 The Sessions disclosure is grouped from the server lifecycle snapshot rather than from UI-only status guesses. **Needs Attention** contains failed/unresolved lifecycle states and recent disconnected/expired session events; **Active** contains working sessions plus queued/delivered/pending steering; **Recent** contains retained idle ready/acknowledged sessions. Terminal historical rows are informational and cannot be selected for steering.

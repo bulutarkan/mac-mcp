@@ -16,7 +16,7 @@ struct DashboardSummary: Decodable {
     }
 }
 
-struct BrowserContext: Decodable {
+struct BrowserContext: Decodable, Equatable {
     let browser: String?
     let tabHandle: String?
     let site: String?
@@ -32,7 +32,7 @@ struct BrowserContext: Decodable {
     }
 }
 
-struct ToolEvent: Decodable, Identifiable {
+struct ToolEvent: Decodable, Identifiable, Equatable {
     let eventID: String
     let timestamp: Double
     let source: String
@@ -58,7 +58,7 @@ struct BrowserShowTabEnvelope: Decodable {
     let ok: Bool
 }
 
-struct ApprovalBehaviorInfo: Decodable {
+struct ApprovalBehaviorInfo: Decodable, Equatable {
     let source: String
     let automaticConfirmation: Bool
     let summary: String
@@ -69,7 +69,7 @@ struct ApprovalBehaviorInfo: Decodable {
     }
 }
 
-struct PermissionProfileInfo: Decodable, Identifiable {
+struct PermissionProfileInfo: Decodable, Identifiable, Equatable {
     let name: String
     let active: Bool
     let capabilityEnforcement: String
@@ -91,7 +91,7 @@ struct PermissionProfileInfo: Decodable, Identifiable {
     }
 }
 
-struct SecuritySemanticsEnvelope: Decodable {
+struct SecuritySemanticsEnvelope: Decodable, Equatable {
     let activeProfile: String
     let knownProfile: Bool
     let capabilityEnforcement: String
@@ -111,7 +111,7 @@ struct SecuritySemanticsEnvelope: Decodable {
     }
 }
 
-struct AgentInfo: Decodable, Identifiable {
+struct AgentInfo: Decodable, Identifiable, Equatable {
     let agentID: String
     let status: String?
     let phase: String?
@@ -137,7 +137,7 @@ struct AgentInfo: Decodable, Identifiable {
 
 struct AgentsEnvelope: Decodable { let agents: [AgentInfo] }
 
-enum SteeringActivityState: String, Decodable {
+enum SteeringActivityState: String, Decodable, Equatable {
     case working
     case idle
     case unknown
@@ -148,7 +148,7 @@ enum SteeringActivityState: String, Decodable {
     }
 }
 
-enum SteeringLifecycleState: String, Decodable {
+enum SteeringLifecycleState: String, Decodable, Equatable {
     case ready
     case queued
     case delivered
@@ -164,7 +164,7 @@ enum SteeringLifecycleState: String, Decodable {
     }
 }
 
-struct SteeringSession: Decodable, Identifiable {
+struct SteeringSession: Decodable, Identifiable, Equatable {
     let schemaVersion: Int?
     let sessionID: String
     let flowNumber: Int
@@ -192,6 +192,30 @@ struct SteeringSession: Decodable, Identifiable {
     }
     var pendingCount: Int { pendingInstructionCount ?? queued }
     var isWorking: Bool { effectiveActivityState == .working }
+    var activityDisplayBucket: Int {
+        let seconds = max(0, activityMS / 1000)
+        return seconds < 60 ? seconds : 60 + (seconds / 60)
+    }
+    func isPresentationEquivalent(to other: SteeringSession) -> Bool {
+        schemaVersion == other.schemaVersion
+            && sessionID == other.sessionID
+            && flowNumber == other.flowNumber
+            && label == other.label
+            && detail == other.detail
+            && tool == other.tool
+            && state == other.state
+            && activityState == other.activityState
+            && lifecycleState == other.lifecycleState
+            && lastTransitionAt == other.lastTransitionAt
+            && lastError == other.lastError
+            && pendingInstructionCount == other.pendingInstructionCount
+            && awaitingAcknowledgementCount == other.awaitingAcknowledgementCount
+            && createdAt == other.createdAt
+            && lastActivityAt == other.lastActivityAt
+            && activityDisplayBucket == other.activityDisplayBucket
+            && queued == other.queued
+            && activeCalls == other.activeCalls
+    }
     enum CodingKeys: String, CodingKey {
         case label, detail, tool, state, queued
         case schemaVersion = "schema_version"
@@ -210,7 +234,7 @@ struct SteeringSession: Decodable, Identifiable {
     }
 }
 
-struct SteeringRecent: Decodable {
+struct SteeringRecent: Decodable, Equatable {
     let schemaVersion: Int?
     let kind: String?
     let id: String
@@ -261,6 +285,16 @@ enum SteeringSessionSection: String {
     case recent
 }
 
+struct SteeringSessionDiff: Equatable {
+    let addedIDs: [String]
+    let updatedIDs: [String]
+    let removedIDs: [String]
+
+    var hasChanges: Bool {
+        !addedIDs.isEmpty || !updatedIDs.isEmpty || !removedIDs.isEmpty
+    }
+}
+
 struct SteeringSessionGroups {
     let needsAttention: [SteeringSession]
     let active: [SteeringSession]
@@ -294,6 +328,18 @@ struct SteeringSessionGrouping {
             return .active
         }
         return .recent
+    }
+
+    static func diff(current: [SteeringSession], incoming: [SteeringSession]) -> SteeringSessionDiff {
+        let currentByID = current.reduce(into: [String: SteeringSession]()) { $0[$1.sessionID] = $1 }
+        let incomingByID = incoming.reduce(into: [String: SteeringSession]()) { $0[$1.sessionID] = $1 }
+        let added = incoming.compactMap { currentByID[$0.sessionID] == nil ? $0.sessionID : nil }
+        let updated = incoming.compactMap { session -> String? in
+            guard let existing = currentByID[session.sessionID], !existing.isPresentationEquivalent(to: session) else { return nil }
+            return session.sessionID
+        }
+        let removed = current.compactMap { incomingByID[$0.sessionID] == nil ? $0.sessionID : nil }
+        return SteeringSessionDiff(addedIDs: added, updatedIDs: updated, removedIDs: removed)
     }
 
     static func groups(
@@ -363,7 +409,7 @@ struct SteeringSendEnvelope: Decodable {
     let message: Message?
 }
 
-enum DashboardConnectionState: String {
+enum DashboardConnectionState: String, Equatable {
     case connecting
     case connected
     case degraded
@@ -433,6 +479,13 @@ final class AppState: ObservableObject {
     }
     deinit { pollTask?.cancel(); pulseTask?.cancel(); noticeTask?.cancel() }
 
+    @discardableResult
+    private func setIfChanged<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<AppState, Value>, _ value: Value) -> Bool {
+        guard self[keyPath: keyPath] != value else { return false }
+        self[keyPath: keyPath] = value
+        return true
+    }
+
     var dashboardURL: URL? { URL(string: "http://127.0.0.1:\(settings.serverPort)/dashboard") }
 
     static func pollDelaySeconds(forFailureCount failureCount: Int) -> Double {
@@ -491,51 +544,54 @@ final class AppState: ObservableObject {
     }
 
     func refresh() async {
-        ngrokRunning = Self.processExists(matching: "ngrok http")
+        setIfChanged(\.ngrokRunning, Self.processExists(matching: "ngrok http"))
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else {
             recordDisconnected(issue: "Invalid server URL.")
             return
         }
         do {
             let summary: DashboardSummary = try await fetch(base.appendingPathComponent("dashboard/api/summary"), query: ["hours": "1"])
-            serverRunning = true
-            version = summary.version ?? version
-            totalCalls = summary.totalCalls ?? totalCalls
-            successRate = summary.successRate ?? successRate
-            activeAgents = summary.activeAgents ?? activeAgents
 
             async let eventsFetch: EventsEnvelope = fetch(base.appendingPathComponent("dashboard/api/events"), query: ["hours": "1", "limit": "20"])
             async let agentsFetch: AgentsEnvelope = fetch(base.appendingPathComponent("dashboard/api/agents"), query: ["limit": "20"])
             async let steeringFetch: SteeringEnvelope = fetch(base.appendingPathComponent("dashboard/api/steering"), query: [:])
             async let securityFetch: SecuritySemanticsEnvelope = fetch(base.appendingPathComponent("dashboard/api/security/semantics"), query: [:])
 
+            setIfChanged(\.serverRunning, true)
+            if let value = summary.version { setIfChanged(\.version, value) }
+            if let value = summary.totalCalls { setIfChanged(\.totalCalls, value) }
+            if let value = summary.successRate { setIfChanged(\.successRate, value) }
+
             var secondaryIssue: String?
+            var resolvedActiveAgents = summary.activeAgents ?? activeAgents
             do {
                 let eventsEnvelope = try await eventsFetch
-                recentEvents = eventsEnvelope.events
-                activeEvents = eventsEnvelope.active
+                setIfChanged(\.recentEvents, eventsEnvelope.events)
+                setIfChanged(\.activeEvents, eventsEnvelope.active)
             } catch {
-                activeEvents = []
+                setIfChanged(\.activeEvents, [])
                 secondaryIssue = secondaryIssue ?? "Activity: \(Self.issueText(for: error))"
             }
             do {
                 let agentsEnvelope = try await agentsFetch
-                agents = agentsEnvelope.agents
-                activeAgents = agentsEnvelope.agents.filter(\.isActive).count
+                setIfChanged(\.agents, agentsEnvelope.agents)
+                resolvedActiveAgents = agentsEnvelope.agents.filter(\.isActive).count
             } catch {
                 secondaryIssue = secondaryIssue ?? "Agents: \(Self.issueText(for: error))"
             }
+            setIfChanged(\.activeAgents, resolvedActiveAgents)
             do {
                 let steeringEnvelope = try await steeringFetch
-                applySteering(steeringEnvelope)
-                hasSteeringSnapshot = true
-                steeringSnapshotStale = false
+                applySteeringSnapshot(steeringEnvelope)
+                setIfChanged(\.hasSteeringSnapshot, true)
+                setIfChanged(\.steeringSnapshotStale, false)
             } catch {
-                steeringSnapshotStale = true
+                setIfChanged(\.steeringSnapshotStale, true)
                 secondaryIssue = secondaryIssue ?? "Sessions: \(Self.issueText(for: error))"
             }
             do {
-                securitySemantics = try await securityFetch
+                let semantics = try await securityFetch
+                setIfChanged(\.securitySemantics, semantics)
             } catch {
                 secondaryIssue = secondaryIssue ?? "Security: \(Self.issueText(for: error))"
             }
@@ -546,40 +602,40 @@ final class AppState: ObservableObject {
                 recordConnected()
             }
         } catch {
-            activeEvents = []
-            steeringSnapshotStale = true
+            setIfChanged(\.activeEvents, [])
+            setIfChanged(\.steeringSnapshotStale, true)
             let state = Self.failureState(for: error)
-            serverRunning = state == .degraded
-            if state == .disconnected { activeAgents = 0 }
+            setIfChanged(\.serverRunning, state == .degraded)
+            if state == .disconnected { setIfChanged(\.activeAgents, 0) }
             recordRefreshFailure(state: state, issue: Self.issueText(for: error))
         }
     }
 
     func retryConnection() async {
-        connectionState = .connecting
-        connectionIssue = nil
+        setIfChanged(\.connectionState, .connecting)
+        setIfChanged(\.connectionIssue, nil)
         consecutiveRefreshFailures = 0
-        nextPollDelaySeconds = Self.normalPollIntervalSeconds
+        setIfChanged(\.nextPollDelaySeconds, Self.normalPollIntervalSeconds)
         await refresh()
     }
 
     private func recordConnected() {
         consecutiveRefreshFailures = 0
-        connectionState = .connected
-        connectionIssue = nil
-        nextPollDelaySeconds = Self.normalPollIntervalSeconds
+        setIfChanged(\.connectionState, .connected)
+        setIfChanged(\.connectionIssue, nil)
+        setIfChanged(\.nextPollDelaySeconds, Self.normalPollIntervalSeconds)
     }
 
     private func recordDisconnected(issue: String) {
-        serverRunning = false
+        setIfChanged(\.serverRunning, false)
         recordRefreshFailure(state: .disconnected, issue: issue)
     }
 
     private func recordRefreshFailure(state: DashboardConnectionState, issue: String) {
         consecutiveRefreshFailures += 1
-        connectionState = state
-        connectionIssue = issue
-        nextPollDelaySeconds = Self.pollDelaySeconds(forFailureCount: consecutiveRefreshFailures)
+        setIfChanged(\.connectionState, state)
+        setIfChanged(\.connectionIssue, issue)
+        setIfChanged(\.nextPollDelaySeconds, Self.pollDelaySeconds(forFailureCount: consecutiveRefreshFailures))
     }
 
     nonisolated private static func failureState(for error: Error) -> DashboardConnectionState {
@@ -619,7 +675,7 @@ final class AppState: ObservableObject {
                     base.appendingPathComponent("dashboard/api/security/profile"),
                     body: ["profile": profile]
                 )
-                securitySemantics = response
+                setIfChanged(\.securitySemantics, response)
                 await refresh()
             } catch {
                 await refresh()
@@ -788,47 +844,49 @@ final class AppState: ObservableObject {
         return "No agent sessions yet."
     }
 
-    private func applySteering(_ envelope: SteeringEnvelope) {
-        steeringSessions = envelope.sessions
-        steeringRecent = envelope.recent
-        if steeringSessions.count == 1 {
-            selectedSteeringSessionID = steeringSessions[0].sessionID
-        } else if let selectedSteeringSessionID, !steeringSessions.contains(where: { $0.sessionID == selectedSteeringSessionID }) {
-            self.selectedSteeringSessionID = nil
+    func applySteeringSnapshot(_ envelope: SteeringEnvelope) {
+        let sessionDiff = SteeringSessionGrouping.diff(current: steeringSessions, incoming: envelope.sessions)
+        if sessionDiff.hasChanges { setIfChanged(\.steeringSessions, envelope.sessions) }
+        setIfChanged(\.steeringRecent, envelope.recent)
+
+        let sessionsForSelection = sessionDiff.hasChanges ? envelope.sessions : steeringSessions
+        if sessionsForSelection.count == 1 {
+            setIfChanged(\.selectedSteeringSessionID, sessionsForSelection[0].sessionID)
+        } else if let selectedSteeringSessionID, !sessionsForSelection.contains(where: { $0.sessionID == selectedSteeringSessionID }) {
+            setIfChanged(\.selectedSteeringSessionID, nil)
         }
 
         if let messageID = lastSteeringMessageID,
            let recent = envelope.recent.first(where: { $0.id == messageID }) {
             switch recent.effectiveLifecycleState {
             case .queued:
-                if steeringSessions.first(where: { $0.sessionID == recent.sessionID })?.isWorking == true {
-                    steeringStatus = "Queued for the running agent task."
-                } else {
-                    steeringStatus = "Queued. The agent's next tool will be preempted."
-                }
+                let text = sessionsForSelection.first(where: { $0.sessionID == recent.sessionID })?.isWorking == true
+                    ? "Queued for the running agent task."
+                    : "Queued. The agent's next tool will be preempted."
+                setIfChanged(\.steeringStatus, text)
             case .delivered:
-                steeringStatus = recent.status == "preempted"
+                setIfChanged(\.steeringStatus, recent.status == "preempted"
                     ? "Delivered before the next tool; that tool was not executed."
-                    : "Delivered with the running tool result."
+                    : "Delivered with the running tool result.")
                 lastSteeringMessageID = nil
             case .acknowledged:
-                steeringStatus = "Acknowledged by the agent."
+                setIfChanged(\.steeringStatus, "Acknowledged by the agent.")
                 lastSteeringMessageID = nil
             case .failed:
-                steeringStatus = "Delivery failed; instruction will retry on the next tool call."
+                setIfChanged(\.steeringStatus, "Delivery failed; instruction will retry on the next tool call.")
             case .disconnected:
-                steeringStatus = "Agent session ended before acknowledgement."
+                setIfChanged(\.steeringStatus, "Agent session ended before acknowledgement.")
                 lastSteeringMessageID = nil
             case .expired:
-                steeringStatus = "Session expired before acknowledgement."
+                setIfChanged(\.steeringStatus, "Session expired before acknowledgement.")
                 lastSteeringMessageID = nil
             default:
                 break
             }
-        } else if steeringSessions.isEmpty && lastSteeringMessageID == nil {
-            steeringStatus = steeringEmptyMessage
-        } else if steeringSessions.count > 1 && selectedSteeringSessionID == nil {
-            steeringStatus = "Multiple agent sessions are available — choose the one you want to steer."
+        } else if sessionsForSelection.isEmpty && lastSteeringMessageID == nil {
+            setIfChanged(\.steeringStatus, steeringEmptyMessage)
+        } else if sessionsForSelection.count > 1 && selectedSteeringSessionID == nil {
+            setIfChanged(\.steeringStatus, "Multiple agent sessions are available — choose the one you want to steer.")
         }
     }
 
