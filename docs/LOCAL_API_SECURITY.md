@@ -1,5 +1,7 @@
 # Local API Security
 
+Terminology in this document follows [`TERMINOLOGY.md`](TERMINOLOGY.md). In particular, localhost/loopback means **machine-local transport, not user isolation**.
+
 ## Boundary
 
 Mac MCP has three distinct HTTP surfaces:
@@ -36,7 +38,7 @@ A Unix-domain socket was evaluated for menu-app ↔ daemon traffic. A socket fil
 2. a `0600` socket does not isolate a malicious process already running under the same uid, which is also able to read the user's token file and many other user resources;
 3. maintaining one authenticated loopback protocol keeps menu app, browser dashboard, tests, and recovery behavior consistent.
 
-A future privileged helper or dedicated non-admin service account could create a stronger containment boundary. A Unix socket may still be reconsidered if the browser dashboard is removed from the same transport.
+A future privileged helper or dedicated non-admin service account could create a stronger containment boundary. A dedicated user is hardening/containment, not a complete sandbox. A Unix socket may still be reconsidered if the browser dashboard is removed from the same transport.
 
 ## What this does not guarantee
 

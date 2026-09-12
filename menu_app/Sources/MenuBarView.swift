@@ -208,7 +208,7 @@ struct MenuBarView: View {
                                         .help("Bring this real browser tab to the front")
                                 }
                             }
-                            Text("Visible real browser tab · background means non-focus-stealing, not headless.")
+                            Text("Visible, non-focus-stealing browser automation · not headless.")
                                 .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                         .padding(8)
@@ -226,7 +226,7 @@ struct MenuBarView: View {
                         }.padding(.vertical, 3)
                     } else {
                         if state.steeringSessions.count > 1 {
-                            Text("Choose the session you want to steer.").font(.caption2).foregroundStyle(.secondary)
+                            Text("Choose the Mac MCP logical session you want to steer.").font(.caption2).foregroundStyle(.secondary)
                         }
                         ScrollView(.vertical) {
                             LazyVStack(spacing: 4) {
@@ -279,7 +279,7 @@ struct MenuBarView: View {
                 }
                 .padding(.top, 8)
             } label: {
-                Label("Sessions", systemImage: "rectangle.stack")
+                Label("Sessions", systemImage: "rectangle.stack").help("Mac MCP logical sessions; not raw provider identities")
             }
         }
     }
@@ -482,7 +482,7 @@ struct MenuBarView: View {
                             Text(profile.approvalBehavior.summary)
                                 .font(.caption2).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
-                            Text("Allowed means the server permits the capability. It does not mean a confirmation prompt will appear.")
+                            Text("Capability allowed = server permits it. Approval is separate; a confirmation prompt is not guaranteed.")
                                 .font(.caption2.weight(.medium)).foregroundStyle(.orange)
                                 .fixedSize(horizontal: false, vertical: true)
 
