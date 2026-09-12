@@ -27,3 +27,7 @@ The menu bar app intentionally presents **Allowed Capabilities** separately from
 The app reads this information from the localhost-only `/dashboard/api/security/semantics` endpoint. `ask_confirmation` remains an explicit interaction tool rather than a universal approval gate.
 
 The preset overview rows are interactive without changing their visual layout. Selecting Trusted, Standard, or Read Only persists `MAC_MCP_PERMISSION_PROFILE` in the server `.env` and updates the running server immediately; no server/ngrok restart is required. Existing already-issued scoped agent credentials retain their original profile for the lifetime of that agent.
+
+## Session lifecycle
+
+Sessions use the server's versioned lifecycle snapshot when available while remaining compatible with older `working` / `idle` responses. Activity (`working` or `idle`) is separate from steering lifecycle (`ready`, `queued`, `delivered`, `acknowledged`, `failed`, `disconnected`, `expired`). The menu shows queued, delivered, acknowledged, and failed states directly; terminal transport disconnect/expiry events remain visible instead of collapsing immediately into a generic empty-session message.

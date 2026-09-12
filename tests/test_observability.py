@@ -15,6 +15,7 @@ from starlette.testclient import TestClient
 from mcp_server.dashboard_routes import _is_loopback, _persist_permission_profile, browser_event_context, create_dashboard_routes
 from mcp_server.observability import TelemetryManager, sanitize_value
 from mcp_server.security import load_settings
+from mcp_server.steering import SteeringIdentity, SteeringManager
 from mcp_server.version import __version__
 
 
@@ -192,6 +193,43 @@ class SecuritySemanticsRouteTests(unittest.TestCase):
             self.assertEqual("standard", payload["active_profile"])
             self.assertFalse(payload["ask_confirmation_is_automatic_gate"])
             self.assertEqual(403, remote.status_code)
+
+
+class SteeringLifecycleRouteTests(unittest.TestCase):
+    def test_versioned_steering_api_keeps_legacy_activity_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
+            steering = SteeringManager()
+            identity = SteeringIdentity(key="client:test-lifecycle", source="client_id")
+            session_id = steering.session_id_for(identity)
+            app = Starlette(routes=create_dashboard_routes(manager, load_settings(), steering))
+
+            state_response = TestClient(app).get("/dashboard/api/steering")
+            self.assertEqual(200, state_response.status_code)
+            payload = state_response.json()
+            self.assertEqual(1, payload["schema_version"])
+            session = payload["sessions"][0]
+            self.assertEqual(1, session["schema_version"])
+            self.assertEqual("idle", session["state"])
+            self.assertEqual("idle", session["activity_state"])
+            self.assertEqual("ready", session["lifecycle_state"])
+            self.assertEqual(0, session["queued"])
+            self.assertEqual(0, session["pending_instruction_count"])
+
+            send_response = TestClient(app).post(
+                "/dashboard/api/steering",
+                json={"session_id": session_id, "text": "change direction"},
+            )
+            self.assertEqual(200, send_response.status_code)
+            sent = send_response.json()
+            self.assertEqual(1, sent["schema_version"])
+            self.assertEqual("queued", sent["message"]["lifecycle_state"])
+            self.assertEqual("idle", sent["message"]["activity_state"])
+
+            queued = TestClient(app).get("/dashboard/api/steering").json()["sessions"][0]
+            self.assertEqual("queued", queued["lifecycle_state"])
+            self.assertEqual(1, queued["queued"])
+            self.assertEqual(1, queued["pending_instruction_count"])
 
 
 class BrowserShowTabRouteTests(unittest.TestCase):

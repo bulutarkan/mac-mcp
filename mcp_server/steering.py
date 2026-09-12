@@ -29,6 +29,17 @@ PREEMPT_INSTRUCTION = (
 )
 
 DEFAULT_SESSION_TTL_S = 600
+STEERING_SCHEMA_VERSION = 1
+
+_LIFECYCLE_TRANSITIONS: dict[str, frozenset[str]] = {
+    "ready": frozenset({"queued", "disconnected", "expired"}),
+    "queued": frozenset({"delivered", "failed", "disconnected", "expired"}),
+    "failed": frozenset({"queued", "delivered", "disconnected", "expired"}),
+    "delivered": frozenset({"acknowledged", "queued", "disconnected", "expired"}),
+    "acknowledged": frozenset({"queued", "disconnected", "expired"}),
+    "disconnected": frozenset(),
+    "expired": frozenset(),
+}
 
 
 @dataclass(frozen=True)
@@ -242,27 +253,106 @@ class SteeringManager:
         self._used_flow_numbers.add(number)
         return number
 
-    def _recent_record(self, message: Dict[str, Any], status: str, *, tool: Optional[str] = None) -> None:
+    def _transition_locked(
+        self,
+        state: Dict[str, Any],
+        lifecycle_state: str,
+        *,
+        last_error: Optional[str] = None,
+        now: Optional[float] = None,
+    ) -> None:
+        current = str(state.get("lifecycle_state") or "ready")
+        target = str(lifecycle_state)
+        if target == current:
+            if last_error is not None:
+                state["last_error"] = last_error
+            return
+        allowed = _LIFECYCLE_TRANSITIONS.get(current, frozenset())
+        if target not in allowed:
+            raise RuntimeError(f"illegal_steering_transition:{current}->{target}")
+        state["lifecycle_state"] = target
+        state["last_transition_at"] = time.time() if now is None else now
+        state["last_error"] = last_error
+
+    @staticmethod
+    def _recent_lifecycle_state(status: str) -> str:
+        return {
+            "queued": "queued",
+            "delivered": "delivered",
+            "preempted": "delivered",
+            "acknowledged": "acknowledged",
+            "delivery_failed": "failed",
+            "session_ended": "disconnected",
+            "session_expired": "expired",
+        }.get(status, status)
+
+    def _recent_record(
+        self,
+        message: Dict[str, Any],
+        status: str,
+        *,
+        tool: Optional[str] = None,
+        delivery_mode: Optional[str] = None,
+        last_error: Optional[str] = None,
+    ) -> None:
         now = time.time()
+        lifecycle_state = self._recent_lifecycle_state(status)
         self._recent.append({
+            "schema_version": STEERING_SCHEMA_VERSION,
+            "kind": "instruction",
             "id": message.get("id"),
             "session_id": message.get("session_id"),
             "status": status,
+            "lifecycle_state": lifecycle_state,
             "created_at": message.get("created_at"),
-            "delivered_at": now if status in {"delivered", "preempted"} else None,
+            "transitioned_at": now,
+            "delivered_at": now if lifecycle_state == "delivered" else None,
             "tool": tool,
+            "delivery_mode": delivery_mode,
+            "last_error": last_error,
         })
+
+    def _recent_session_record(self, state: Dict[str, Any], status: str) -> None:
+        now = time.time()
+        self._recent.append({
+            "schema_version": STEERING_SCHEMA_VERSION,
+            "kind": "session",
+            "id": "se_" + uuid.uuid4().hex[:12],
+            "session_id": state.get("session_id"),
+            "status": status,
+            "lifecycle_state": self._recent_lifecycle_state(status),
+            "created_at": state.get("created_at"),
+            "transitioned_at": now,
+            "delivered_at": None,
+            "tool": state.get("last_tool"),
+            "delivery_mode": None,
+            "last_error": state.get("last_error"),
+        })
+
+    def _acknowledge_locked(self, state: Dict[str, Any], *, tool: Optional[str] = None) -> None:
+        awaiting = list(state.get("awaiting_ack") or [])
+        if not awaiting:
+            return
+        state["awaiting_ack"].clear()
+        for message in awaiting:
+            self._recent_record(message, "acknowledged", tool=tool)
+        if not state.get("pending"):
+            self._transition_locked(state, "acknowledged")
 
     def _drop_key_locked(self, key: str, *, status: str = "session_ended") -> None:
         state = self._sessions.pop(key, None)
         self._transport_refs.pop(key, None)
         if state is None:
             return
+        terminal_state = self._recent_lifecycle_state(status)
+        if terminal_state in {"disconnected", "expired"}:
+            self._transition_locked(state, terminal_state)
         public_id = str(state.get("session_id") or "")
         self._public_to_key.pop(public_id, None)
         self._used_flow_numbers.discard(int(state.get("flow_number") or 0))
         for message in state.get("pending", []):
             self._recent_record(message, status)
+        self._recent_session_record(state, status)
 
     def _drop_transport_identity(self, key: str, expected_public_id: str) -> None:
         with self._lock:
@@ -319,7 +409,11 @@ class SteeringManager:
                 "label": "Agent session",
                 "detail": "Idle",
                 "pending": [],
+                "awaiting_ack": [],
                 "active": {},
+                "lifecycle_state": "ready",
+                "last_transition_at": now,
+                "last_error": None,
             }
             self._sessions[identity.key] = state
             self._public_to_key[public_id] = identity.key
@@ -362,13 +456,17 @@ class SteeringManager:
         """Register/touch identity and consume queued idle steering before execution."""
         with self._lock:
             state = self._ensure_identity_locked(identity, tool=tool, arguments=arguments)
+            self._acknowledge_locked(state, tool=tool)
             pending = list(state["pending"])
             if not pending:
                 return []
             state["pending"].clear()
-            state["last_activity_at"] = time.time()
+            state["awaiting_ack"].extend(dict(message) for message in pending)
+            now = time.time()
+            state["last_activity_at"] = now
             for message in pending:
-                self._recent_record(message, "preempted", tool=tool)
+                self._recent_record(message, "preempted", tool=tool, delivery_mode="preempted")
+            self._transition_locked(state, "delivered", now=now)
             return [dict(message) for message in pending]
 
     def begin_call(
@@ -403,11 +501,33 @@ class SteeringManager:
             state["active"].pop(event_id, None)
             state["last_activity_at"] = now
             if not delivered:
+                if state.get("pending"):
+                    self._transition_locked(
+                        state,
+                        "failed",
+                        last_error="tool_failed_before_steering_delivery",
+                        now=now,
+                    )
+                    for message in state["pending"]:
+                        self._recent_record(
+                            message,
+                            "delivery_failed",
+                            tool=state.get("last_tool"),
+                            last_error="tool_failed_before_steering_delivery",
+                        )
                 return []
             messages = list(state["pending"])
             state["pending"].clear()
-            for message in messages:
-                self._recent_record(message, "delivered", tool=state.get("last_tool"))
+            if messages:
+                state["awaiting_ack"].extend(dict(message) for message in messages)
+                for message in messages:
+                    self._recent_record(
+                        message,
+                        "delivered",
+                        tool=state.get("last_tool"),
+                        delivery_mode="running_result",
+                    )
+                self._transition_locked(state, "delivered", now=now)
             return [dict(message) for message in messages]
 
     def enqueue(self, session_id: str, text: str) -> Dict[str, Any]:
@@ -433,9 +553,13 @@ class SteeringManager:
                 "status": "queued",
             }
             queue.append(message)
+            self._recent_record(message, "queued", tool=state.get("last_tool"))
+            self._transition_locked(state, "queued")
             return {
                 **message,
                 "session_state": "working" if state["active"] else "idle",
+                "activity_state": "working" if state["active"] else "idle",
+                "lifecycle_state": state["lifecycle_state"],
             }
 
     def _public_state_locked(self, state: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, Any]:
@@ -455,16 +579,25 @@ class SteeringManager:
             tool = state["last_tool"]
             activity_ms = max(0, int((current - float(state["last_activity_at"])) * 1000))
         return {
+            "schema_version": STEERING_SCHEMA_VERSION,
             "session_id": state["session_id"],
             "flow_number": state["flow_number"],
             "label": label,
             "detail": detail,
             "tool": tool,
+            # Backward-compatible activity fields.
             "state": status,
+            "queued": len(state["pending"]),
+            # Versioned lifecycle contract.
+            "activity_state": status,
+            "lifecycle_state": state.get("lifecycle_state", "ready"),
+            "last_transition_at": state.get("last_transition_at", state["created_at"]),
+            "last_error": state.get("last_error"),
+            "pending_instruction_count": len(state["pending"]),
+            "awaiting_acknowledgement_count": len(state.get("awaiting_ack") or []),
             "created_at": state["created_at"],
             "last_activity_at": state["last_activity_at"],
             "activity_ms": activity_ms,
-            "queued": len(state["pending"]),
             "active_calls": len(active_calls),
         }
 

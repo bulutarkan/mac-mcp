@@ -16,7 +16,7 @@ from starlette.routing import Route
 from .observability import TelemetryManager, sanitize_value
 from .policy import PROFILES, RISK_REGISTRY, permission_semantics
 from .security import Settings
-from .steering import SteeringManager
+from .steering import STEERING_SCHEMA_VERSION, SteeringManager
 from .tools_agents import list_agents
 from .tools_browser import browser_activate_tab
 from .version import __version__
@@ -347,9 +347,16 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         if denied:
             return denied
         if steering is None:
-            return JSONResponse({"ok": True, "sessions": [], "recent": [], "session_ttl_minutes": 10})
+            return JSONResponse({
+                "ok": True,
+                "schema_version": STEERING_SCHEMA_VERSION,
+                "sessions": [],
+                "recent": [],
+                "session_ttl_minutes": 10,
+            })
         return JSONResponse({
             "ok": True,
+            "schema_version": STEERING_SCHEMA_VERSION,
             "sessions": steering.sessions(),
             "recent": steering.recent(30),
             "session_ttl_minutes": steering.session_ttl_minutes,
@@ -382,6 +389,7 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
             return JSONResponse({"ok": False, "error": code}, status_code=400)
         return JSONResponse({
             "ok": True,
+            "schema_version": STEERING_SCHEMA_VERSION,
             "status": "queued",
             "message": {
                 "id": message["id"],
@@ -389,6 +397,8 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
                 "created_at": message["created_at"],
                 "status": message["status"],
                 "session_state": message.get("session_state"),
+                "activity_state": message.get("activity_state"),
+                "lifecycle_state": message.get("lifecycle_state"),
             },
         })
 

@@ -123,6 +123,81 @@ class SteeringManagerTests(unittest.TestCase):
         self.assertEqual(pending[0]["text"], "only A should see this")
         self.assertEqual(manager.recent()[0]["status"], "preempted")
 
+    def test_versioned_lifecycle_queued_delivered_acknowledged(self) -> None:
+        manager = SteeringManager()
+        identity = steering_identity_from_context(fake_context(FakeSession(), openai_session="conversation-lifecycle"))
+        manager.prepare_call(identity, tool="read_file", arguments={"path": "/tmp/a"})
+        initial = manager.sessions()[0]
+        self.assertEqual(1, initial["schema_version"])
+        self.assertEqual("idle", initial["activity_state"])
+        self.assertEqual("ready", initial["lifecycle_state"])
+        self.assertEqual(0, initial["pending_instruction_count"])
+
+        sid = initial["session_id"]
+        manager.begin_call(identity, "evt_live", tool="read_file", arguments={"path": "/tmp/a"})
+        message = manager.enqueue(sid, "change direction")
+        queued = manager.sessions()[0]
+        self.assertEqual("working", queued["activity_state"])
+        self.assertEqual("queued", queued["lifecycle_state"])
+        self.assertEqual(1, queued["pending_instruction_count"])
+        self.assertEqual("queued", message["lifecycle_state"])
+
+        delivered = manager.finish_call(identity, "evt_live", delivered=True)
+        self.assertEqual(message["id"], delivered[0]["id"])
+        snapshot = manager.sessions()[0]
+        self.assertEqual("idle", snapshot["activity_state"])
+        self.assertEqual("delivered", snapshot["lifecycle_state"])
+        self.assertEqual(0, snapshot["pending_instruction_count"])
+        self.assertEqual(1, snapshot["awaiting_acknowledgement_count"])
+
+        manager.prepare_call(identity, tool="read_file", arguments={"path": "/tmp/b"})
+        acknowledged = manager.sessions()[0]
+        self.assertEqual("acknowledged", acknowledged["lifecycle_state"])
+        self.assertEqual(0, acknowledged["awaiting_acknowledgement_count"])
+        history = [row for row in manager.recent() if row["id"] == message["id"]]
+        self.assertEqual(["acknowledged", "delivered", "queued"], [row["lifecycle_state"] for row in history[:3]])
+
+    def test_failed_delivery_is_explicit_and_retries_on_next_call(self) -> None:
+        manager = SteeringManager()
+        identity = steering_identity_from_context(fake_context(FakeSession(), openai_session="conversation-failure"))
+        manager.prepare_call(identity, tool="run_command", arguments={"command": "false"})
+        sid = manager.session_id_for(identity)
+        manager.begin_call(identity, "evt_fail", tool="run_command", arguments={"command": "false"})
+        message = manager.enqueue(sid, "do something else")
+        self.assertEqual([], manager.finish_call(identity, "evt_fail", delivered=False))
+        failed = manager.sessions()[0]
+        self.assertEqual("failed", failed["lifecycle_state"])
+        self.assertEqual("tool_failed_before_steering_delivery", failed["last_error"])
+        self.assertEqual(1, failed["pending_instruction_count"])
+
+        pending = manager.prepare_call(identity, tool="read_file", arguments={"path": "/tmp/retry"})
+        self.assertEqual(message["id"], pending[0]["id"])
+        retried = manager.sessions()[0]
+        self.assertEqual("delivered", retried["lifecycle_state"])
+        self.assertIsNone(retried["last_error"])
+
+    def test_illegal_lifecycle_transition_is_rejected(self) -> None:
+        manager = SteeringManager()
+        identity = steering_identity_from_context(fake_context(FakeSession(), openai_session="conversation-illegal"))
+        manager.session_id_for(identity)
+        with manager._lock:
+            state = manager._sessions[identity.key]
+            with self.assertRaisesRegex(RuntimeError, "illegal_steering_transition:ready->acknowledged"):
+                manager._transition_locked(state, "acknowledged")
+
+    def test_ttl_expiry_emits_explicit_terminal_session_event(self) -> None:
+        manager = SteeringManager(session_ttl_s=60)
+        identity = steering_identity_from_context(fake_context(FakeSession(), openai_session="conversation-expired"))
+        manager.session_id_for(identity)
+        with manager._lock:
+            manager._sessions[identity.key]["last_activity_at"] -= 61
+        self.assertEqual([], manager.sessions())
+        event = manager.recent()[0]
+        self.assertEqual("session", event["kind"])
+        self.assertEqual("session_expired", event["status"])
+        self.assertEqual("expired", event["lifecycle_state"])
+        self.assertEqual(1, event["schema_version"])
+
     def test_active_delivery_keeps_logical_session_idle_after_call(self) -> None:
         manager = SteeringManager()
         identity = steering_identity_from_context(fake_context(FakeSession(), openai_session="conversation-a"))
@@ -158,7 +233,11 @@ class SteeringManagerTests(unittest.TestCase):
         del session
         gc.collect()
         self.assertEqual(manager.sessions(), [])
-        self.assertEqual(manager.recent()[0]["status"], "session_ended")
+        terminal = manager.recent()[0]
+        self.assertEqual(terminal["status"], "session_ended")
+        self.assertEqual(terminal["kind"], "session")
+        self.assertEqual(terminal["lifecycle_state"], "disconnected")
+        self.assertEqual(terminal["schema_version"], 1)
         with self.assertRaises(KeyError):
             manager.enqueue(sid, "too late")
 

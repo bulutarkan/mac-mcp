@@ -174,7 +174,7 @@ struct MenuBarView: View {
                     if state.steeringSessions.isEmpty {
                         HStack(spacing: 8) {
                             Image(systemName: "rectangle.stack.badge.minus").foregroundStyle(.secondary)
-                            Text("No agent sessions yet.").font(.caption).foregroundStyle(.secondary)
+                            Text(state.steeringEmptyMessage).font(.caption).foregroundStyle(.secondary)
                             Spacer()
                         }.padding(.vertical, 3)
                     } else {
@@ -194,15 +194,15 @@ struct MenuBarView: View {
                                                 .background(.quaternary, in: Capsule())
                                             VStack(alignment: .leading, spacing: 1) {
                                                 Text(session.label).font(.caption.weight(.semibold)).lineLimit(1)
-                                                Text("\(session.detail) · \(compactDuration(session.activityMS))")
+                                                Text(sessionDetailLine(session))
                                                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                                             }
                                             Spacer()
-                                            if session.queued > 0 {
-                                                Image(systemName: "clock.badge.exclamationmark.fill")
-                                                    .foregroundStyle(.orange)
+                                            if let lifecycleSymbol = sessionLifecycleSymbol(session.effectiveLifecycleState) {
+                                                Image(systemName: lifecycleSymbol)
+                                                    .foregroundStyle(sessionLifecycleColor(session.effectiveLifecycleState))
                                                     .font(.caption)
-                                                    .help("Steering queued")
+                                                    .help(sessionLifecycleLabel(session.effectiveLifecycleState))
                                             }
                                             Image(systemName: session.isWorking ? "bolt.circle.fill" : "pause.circle.fill")
                                                 .foregroundStyle(session.isWorking ? Color.accentColor : Color.secondary)
@@ -763,6 +763,49 @@ struct MenuBarView: View {
         case .error: return .red
         case .update: return .accentColor
         case .info: return .secondary
+        }
+    }
+
+    private func sessionLifecycleLabel(_ state: SteeringLifecycleState) -> String {
+        switch state {
+        case .ready: return "Ready"
+        case .queued: return "Steering queued"
+        case .delivered: return "Steering delivered"
+        case .acknowledged: return "Steering acknowledged"
+        case .failed: return "Delivery failed; retry pending"
+        case .disconnected: return "Disconnected"
+        case .expired: return "Expired"
+        case .unknown: return "Unknown lifecycle"
+        }
+    }
+
+    private func sessionLifecycleSymbol(_ state: SteeringLifecycleState) -> String? {
+        switch state {
+        case .queued: return "clock.badge.exclamationmark.fill"
+        case .delivered: return "paperplane.circle.fill"
+        case .failed: return "exclamationmark.triangle.fill"
+        case .disconnected: return "wifi.slash"
+        case .expired: return "clock.badge.xmark"
+        case .ready, .acknowledged, .unknown: return nil
+        }
+    }
+
+    private func sessionLifecycleColor(_ state: SteeringLifecycleState) -> Color {
+        switch state {
+        case .queued: return .orange
+        case .delivered: return .accentColor
+        case .failed, .disconnected, .expired: return .red
+        default: return .secondary
+        }
+    }
+
+    private func sessionDetailLine(_ session: SteeringSession) -> String {
+        let base = "\(session.detail) · \(compactDuration(session.activityMS))"
+        switch session.effectiveLifecycleState {
+        case .queued, .delivered, .acknowledged, .failed:
+            return base + " · " + sessionLifecycleLabel(session.effectiveLifecycleState)
+        default:
+            return base
         }
     }
 

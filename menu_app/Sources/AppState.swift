@@ -137,24 +137,72 @@ struct AgentInfo: Decodable, Identifiable {
 
 struct AgentsEnvelope: Decodable { let agents: [AgentInfo] }
 
+enum SteeringActivityState: String, Decodable {
+    case working
+    case idle
+    case unknown
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        self = SteeringActivityState(rawValue: value) ?? .unknown
+    }
+}
+
+enum SteeringLifecycleState: String, Decodable {
+    case ready
+    case queued
+    case delivered
+    case acknowledged
+    case failed
+    case disconnected
+    case expired
+    case unknown
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        self = SteeringLifecycleState(rawValue: value) ?? .unknown
+    }
+}
+
 struct SteeringSession: Decodable, Identifiable {
+    let schemaVersion: Int?
     let sessionID: String
     let flowNumber: Int
     let label: String
     let detail: String
     let tool: String
     let state: String
+    let activityState: SteeringActivityState?
+    let lifecycleState: SteeringLifecycleState?
+    let lastTransitionAt: Double?
+    let lastError: String?
+    let pendingInstructionCount: Int?
+    let awaitingAcknowledgementCount: Int?
     let createdAt: Double
     let lastActivityAt: Double
     let activityMS: Int
     let queued: Int
     let activeCalls: Int
     var id: String { sessionID }
-    var isWorking: Bool { state == "working" }
+    var effectiveActivityState: SteeringActivityState {
+        activityState ?? (state == "working" ? .working : .idle)
+    }
+    var effectiveLifecycleState: SteeringLifecycleState {
+        lifecycleState ?? (queued > 0 ? .queued : .ready)
+    }
+    var pendingCount: Int { pendingInstructionCount ?? queued }
+    var isWorking: Bool { effectiveActivityState == .working }
     enum CodingKeys: String, CodingKey {
+        case label, detail, tool, state, queued
+        case schemaVersion = "schema_version"
         case sessionID = "session_id"
         case flowNumber = "flow_number"
-        case label, detail, tool, state, queued
+        case activityState = "activity_state"
+        case lifecycleState = "lifecycle_state"
+        case lastTransitionAt = "last_transition_at"
+        case lastError = "last_error"
+        case pendingInstructionCount = "pending_instruction_count"
+        case awaitingAcknowledgementCount = "awaiting_acknowledgement_count"
         case createdAt = "created_at"
         case lastActivityAt = "last_activity_at"
         case activityMS = "activity_ms"
@@ -163,20 +211,48 @@ struct SteeringSession: Decodable, Identifiable {
 }
 
 struct SteeringRecent: Decodable {
+    let schemaVersion: Int?
+    let kind: String?
     let id: String
     let sessionID: String
     let status: String
+    let lifecycleState: SteeringLifecycleState?
+    let transitionedAt: Double?
     let deliveredAt: Double?
+    let deliveryMode: String?
+    let lastError: String?
+    var effectiveLifecycleState: SteeringLifecycleState {
+        if let lifecycleState { return lifecycleState }
+        switch status {
+        case "queued": return .queued
+        case "delivered", "preempted": return .delivered
+        case "acknowledged": return .acknowledged
+        case "delivery_failed": return .failed
+        case "session_ended": return .disconnected
+        case "session_expired": return .expired
+        default: return .unknown
+        }
+    }
     enum CodingKeys: String, CodingKey {
-        case id, status
+        case id, kind, status
+        case schemaVersion = "schema_version"
         case sessionID = "session_id"
+        case lifecycleState = "lifecycle_state"
+        case transitionedAt = "transitioned_at"
         case deliveredAt = "delivered_at"
+        case deliveryMode = "delivery_mode"
+        case lastError = "last_error"
     }
 }
 
 struct SteeringEnvelope: Decodable {
+    let schemaVersion: Int?
     let sessions: [SteeringSession]
     let recent: [SteeringRecent]
+    enum CodingKeys: String, CodingKey {
+        case sessions, recent
+        case schemaVersion = "schema_version"
+    }
 }
 
 struct SteeringSettingsEnvelope: Decodable {
@@ -192,9 +268,13 @@ struct SteeringSendEnvelope: Decodable {
     struct Message: Decodable {
         let id: String
         let sessionState: String?
+        let activityState: SteeringActivityState?
+        let lifecycleState: SteeringLifecycleState?
         enum CodingKeys: String, CodingKey {
             case id
             case sessionState = "session_state"
+            case activityState = "activity_state"
+            case lifecycleState = "lifecycle_state"
         }
     }
     let ok: Bool
@@ -233,6 +313,7 @@ final class AppState: ObservableObject {
     @Published var permissionProfileChanging = false
     @Published var agents: [AgentInfo] = []
     @Published var steeringSessions: [SteeringSession] = []
+    @Published var steeringRecent: [SteeringRecent] = []
     @Published var selectedSteeringSessionID: String?
     @Published var steeringPrompt = ""
     @Published var steeringStatus = "No agent sessions yet."
@@ -450,8 +531,20 @@ final class AppState: ObservableObject {
         }
     }
 
+    var steeringEmptyMessage: String {
+        if let event = steeringRecent.first(where: { $0.kind == "session" }) {
+            switch event.effectiveLifecycleState {
+            case .expired: return "Last agent session expired."
+            case .disconnected: return "Last transport session disconnected."
+            default: break
+            }
+        }
+        return "No agent sessions yet."
+    }
+
     private func applySteering(_ envelope: SteeringEnvelope) {
         steeringSessions = envelope.sessions
+        steeringRecent = envelope.recent
         if steeringSessions.count == 1 {
             selectedSteeringSessionID = steeringSessions[0].sessionID
         } else if let selectedSteeringSessionID, !steeringSessions.contains(where: { $0.sessionID == selectedSteeringSessionID }) {
@@ -460,20 +553,34 @@ final class AppState: ObservableObject {
 
         if let messageID = lastSteeringMessageID,
            let recent = envelope.recent.first(where: { $0.id == messageID }) {
-            if recent.status == "delivered" {
-                steeringStatus = "Delivered with the running tool result."
-            } else if recent.status == "preempted" {
-                steeringStatus = "Delivered before the next tool; that tool was not executed."
-            } else if recent.status == "session_ended" {
-                steeringStatus = "Agent session ended before delivery."
-            } else if recent.status == "session_expired" {
-                steeringStatus = "Session expired before delivery."
+            switch recent.effectiveLifecycleState {
+            case .queued:
+                if steeringSessions.first(where: { $0.sessionID == recent.sessionID })?.isWorking == true {
+                    steeringStatus = "Queued for the running agent task."
+                } else {
+                    steeringStatus = "Queued. The agent's next tool will be preempted."
+                }
+            case .delivered:
+                steeringStatus = recent.status == "preempted"
+                    ? "Delivered before the next tool; that tool was not executed."
+                    : "Delivered with the running tool result."
+                lastSteeringMessageID = nil
+            case .acknowledged:
+                steeringStatus = "Acknowledged by the agent."
+                lastSteeringMessageID = nil
+            case .failed:
+                steeringStatus = "Delivery failed; instruction will retry on the next tool call."
+            case .disconnected:
+                steeringStatus = "Agent session ended before acknowledgement."
+                lastSteeringMessageID = nil
+            case .expired:
+                steeringStatus = "Session expired before acknowledgement."
+                lastSteeringMessageID = nil
+            default:
+                break
             }
-            lastSteeringMessageID = nil
         } else if steeringSessions.isEmpty && lastSteeringMessageID == nil {
-            if !steeringStatus.hasPrefix("Delivered") && !steeringStatus.hasPrefix("Agent session ended") && !steeringStatus.hasPrefix("Session expired") {
-                steeringStatus = "No agent sessions yet."
-            }
+            steeringStatus = steeringEmptyMessage
         } else if steeringSessions.count > 1 && selectedSteeringSessionID == nil {
             steeringStatus = "Multiple agent sessions are available — choose the one you want to steer."
         }
