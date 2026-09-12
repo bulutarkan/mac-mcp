@@ -32,6 +32,12 @@ The app reads this information from the authenticated machine-local `/dashboard/
 
 The preset overview rows are interactive without changing their visual layout. Selecting Trusted, Standard, or Read Only persists `MAC_MCP_PERMISSION_PROFILE` in the server `.env` and updates the running server immediately; no server/ngrok restart is required. Existing already-issued scoped agent credentials retain their original profile for the lifetime of that agent.
 
+## Sessions information architecture
+
+The Sessions disclosure is grouped from the server lifecycle snapshot rather than from UI-only status guesses. **Needs Attention** contains failed/unresolved lifecycle states and recent disconnected/expired session events; **Active** contains working sessions plus queued/delivered/pending steering; **Recent** contains retained idle ready/acknowledged sessions. Terminal historical rows are informational and cannot be selected for steering.
+
+The menu-bar status item stays aggregate-only: it can signal attention or active work, but it does not encode individual session details. Session-level Retry/Cancel controls are intentionally absent because the backend does not expose those actions; the existing **Retry** button retries dashboard connectivity only. The list still exposes at most five session rows before internal scrolling, with compact group headers.
+
 ## Session lifecycle
 
 Sessions use the server's versioned lifecycle snapshot when available while remaining compatible with older `working` / `idle` responses. Activity (`working` or `idle`) is separate from steering lifecycle (`ready`, `queued`, `delivered`, `acknowledged`, `failed`, `disconnected`, `expired`). The menu shows queued, delivered, acknowledged, and failed states directly; terminal transport disconnect/expiry events remain visible instead of collapsing immediately into a generic empty-session message.

@@ -215,7 +215,8 @@ struct MenuBarView: View {
                         .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
 
-                    if state.steeringSessions.isEmpty {
+                    let sessionGroups = state.steeringSessionGroups
+                    if sessionGroups.totalItemCount == 0 {
                         HStack(spacing: 8) {
                             Image(systemName: "rectangle.stack.badge.minus").foregroundStyle(.secondary)
                             Text(state.steeringSnapshotStale
@@ -229,39 +230,23 @@ struct MenuBarView: View {
                             Text("Choose the Mac MCP logical session you want to steer.").font(.caption2).foregroundStyle(.secondary)
                         }
                         ScrollView(.vertical) {
-                            LazyVStack(spacing: 4) {
-                                ForEach(state.steeringSessions) { session in
-                                    Button { state.selectedSteeringSessionID = session.sessionID } label: {
-                                        HStack(spacing: 8) {
-                                            Image(systemName: state.selectedSteeringSessionID == session.sessionID ? "checkmark.circle.fill" : "circle")
-                                                .foregroundStyle(state.selectedSteeringSessionID == session.sessionID ? Color.accentColor : Color.secondary)
-                                            Text("Agent \(session.flowNumber)")
-                                                .font(.system(size: 9, weight: .semibold))
-                                                .padding(.horizontal, 5).padding(.vertical, 2)
-                                                .background(.quaternary, in: Capsule())
-                                            VStack(alignment: .leading, spacing: 1) {
-                                                Text(session.label).font(.caption.weight(.semibold)).lineLimit(1)
-                                                Text(sessionDetailLine(session))
-                                                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                                            }
-                                            Spacer()
-                                            if let lifecycleSymbol = sessionLifecycleSymbol(session.effectiveLifecycleState) {
-                                                Image(systemName: lifecycleSymbol)
-                                                    .foregroundStyle(sessionLifecycleColor(session.effectiveLifecycleState))
-                                                    .font(.caption)
-                                                    .help(sessionLifecycleLabel(session.effectiveLifecycleState))
-                                            }
-                                            Image(systemName: session.isWorking ? "bolt.circle.fill" : "pause.circle.fill")
-                                                .foregroundStyle(session.isWorking ? Color.accentColor : Color.secondary)
-                                                .font(.caption)
-                                                .help(session.isWorking ? "Working" : "Idle")
-                                                .accessibilityLabel(session.isWorking ? "Working" : "Idle")
-                                        }.padding(.vertical, 3).contentShape(Rectangle())
-                                    }.buttonStyle(.plain)
+                            LazyVStack(spacing: 6) {
+                                if !sessionGroups.needsAttention.isEmpty || !sessionGroups.terminalAttention.isEmpty {
+                                    sessionSectionHeader("Needs Attention", count: sessionGroups.needsAttention.count + sessionGroups.terminalAttention.count, symbol: "exclamationmark.triangle.fill", color: .red)
+                                    ForEach(sessionGroups.needsAttention) { session in sessionRow(session) }
+                                    ForEach(sessionGroups.terminalAttention, id: \.id) { event in terminalSessionRow(event) }
+                                }
+                                if !sessionGroups.active.isEmpty {
+                                    sessionSectionHeader("Active", count: sessionGroups.active.count, symbol: "bolt.fill", color: .accentColor)
+                                    ForEach(sessionGroups.active) { session in sessionRow(session) }
+                                }
+                                if !sessionGroups.recent.isEmpty {
+                                    sessionSectionHeader("Recent", count: sessionGroups.recent.count, symbol: "clock", color: .secondary)
+                                    ForEach(sessionGroups.recent) { session in sessionRow(session) }
                                 }
                             }
                         }
-                        .frame(height: CGFloat(min(max(state.steeringSessions.count, 1), 5)) * 42)
+                        .frame(height: CGFloat(min(max(sessionGroups.totalItemCount, 1), 5)) * 42 + CGFloat(sessionGroups.sectionCount) * 20)
                     }
 
                     HStack(spacing: 7) {
@@ -279,7 +264,17 @@ struct MenuBarView: View {
                 }
                 .padding(.top, 8)
             } label: {
-                Label("Sessions", systemImage: "rectangle.stack").help("Mac MCP logical sessions; not raw provider identities")
+                HStack {
+                    Label("Sessions", systemImage: "rectangle.stack").help("Mac MCP logical sessions; not raw provider identities")
+                    Spacer()
+                    if !showSessions && state.hasReliableSessionSignal {
+                        if state.sessionNeedsAttentionCount > 0 {
+                            Text("\(state.sessionNeedsAttentionCount) attention").font(.caption2.weight(.semibold)).foregroundStyle(.red)
+                        } else if state.sessionActiveCount > 0 {
+                            Text("\(state.sessionActiveCount) active").font(.caption2.weight(.semibold)).foregroundStyle(Color.accentColor)
+                        }
+                    }
+                }
             }
         }
     }
@@ -834,6 +829,65 @@ struct MenuBarView: View {
         case .update: return .accentColor
         case .info: return .secondary
         }
+    }
+
+    private func sessionSectionHeader(_ title: String, count: Int, symbol: String, color: Color) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: symbol).font(.system(size: 9, weight: .semibold)).foregroundStyle(color)
+            Text(title).font(.caption2.weight(.semibold)).foregroundStyle(color)
+            Text("\(count)").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.top, 2)
+    }
+
+    private func sessionRow(_ session: SteeringSession) -> some View {
+        Button { state.selectedSteeringSessionID = session.sessionID } label: {
+            HStack(spacing: 8) {
+                Image(systemName: state.selectedSteeringSessionID == session.sessionID ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(state.selectedSteeringSessionID == session.sessionID ? Color.accentColor : Color.secondary)
+                Text("Agent \(session.flowNumber)")
+                    .font(.system(size: 9, weight: .semibold))
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(.quaternary, in: Capsule())
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(session.label).font(.caption.weight(.semibold)).lineLimit(1)
+                    Text(sessionDetailLine(session)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer()
+                if let lifecycleSymbol = sessionLifecycleSymbol(session.effectiveLifecycleState) {
+                    Image(systemName: lifecycleSymbol)
+                        .foregroundStyle(sessionLifecycleColor(session.effectiveLifecycleState))
+                        .font(.caption)
+                        .help(sessionLifecycleLabel(session.effectiveLifecycleState))
+                }
+                Image(systemName: session.isWorking ? "bolt.circle.fill" : "pause.circle.fill")
+                    .foregroundStyle(session.isWorking ? Color.accentColor : Color.secondary)
+                    .font(.caption)
+                    .help(session.isWorking ? "Working" : "Idle")
+                    .accessibilityLabel(session.isWorking ? "Working" : "Idle")
+            }.padding(.vertical, 3).contentShape(Rectangle())
+        }.buttonStyle(.plain)
+    }
+
+    private func terminalSessionRow(_ event: SteeringRecent) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: sessionLifecycleSymbol(event.effectiveLifecycleState) ?? "exclamationmark.circle.fill")
+                .foregroundStyle(sessionLifecycleColor(event.effectiveLifecycleState))
+                .font(.caption)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Previous session").font(.caption.weight(.semibold))
+                HStack(spacing: 4) {
+                    Text(sessionLifecycleLabel(event.effectiveLifecycleState)).font(.caption2).foregroundStyle(.secondary)
+                    if let transitionedAt = event.transitionedAt {
+                        Text("· \(relativeTime(transitionedAt))").font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            Spacer()
+        }
+        .padding(.vertical, 3)
+        .help("Historical session state; steering is no longer available for this session")
     }
 
     private func sessionLifecycleLabel(_ state: SteeringLifecycleState) -> String {
