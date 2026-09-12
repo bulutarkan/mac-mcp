@@ -9,9 +9,11 @@ import sys
 import time
 import webbrowser
 from pathlib import Path
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
+from .security import dashboard_token_path
 from .update_helper import UpdateError, apply_update, check_update, format_check
 
 APP_MODULE = "mcp_server.main:app"
@@ -45,7 +47,7 @@ def _launch_menu_app() -> None:
         return
     try:
         command = ["/usr/bin/open", "-g"]
-        for name in ("MAC_MCP_SETTINGS_PATH", "MAC_MCP_STATE_DIR", "MAC_MCP_CLI_PATH", "MAC_MCP_PORT", "MAC_MCP_VOICE_GROQ_KEYCHAIN_SERVICE", "MAC_MCP_VOICE_GROQ_KEYCHAIN_ACCOUNT"):
+        for name in ("MAC_MCP_SETTINGS_PATH", "MAC_MCP_STATE_DIR", "MAC_MCP_DASHBOARD_TOKEN_FILE", "MAC_MCP_CLI_PATH", "MAC_MCP_PORT", "MAC_MCP_VOICE_GROQ_KEYCHAIN_SERVICE", "MAC_MCP_VOICE_GROQ_KEYCHAIN_ACCOUNT"):
             value = os.getenv(name)
             if value is not None:
                 command.extend(["--env", f"{name}={value}"])
@@ -151,8 +153,7 @@ def _start_server(args: argparse.Namespace) -> int:
         return proc.returncode or 1
 
     print(f"mac-mcp started on {_local_url(args.host, args.port)} (pid {proc.pid}).")
-    dashboard_host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
-    print(f"dashboard: {_local_url(dashboard_host, args.port)}/dashboard")
+    print("dashboard: run 'mac-mcp dashboard' for an authenticated local launch")
     print(f"mac-mcp log: {LOG_FILE}")
     _launch_menu_app()
     return 0
@@ -282,10 +283,19 @@ def dashboard(args: argparse.Namespace) -> int:
     except ValueError:
         port = int(DEFAULT_PORT)
     url = f"{_local_url(host, port)}/dashboard"
-    opened = webbrowser.open(url)
-    print(f"dashboard: {url}")
+    token_file = dashboard_token_path()
+    try:
+        token = token_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        token = ""
+    if not token:
+        print("Dashboard credential is unavailable. Restart Mac MCP once, then run: mac-mcp dashboard")
+        return 1
+    authenticated_url = f"{url}#token={quote(token, safe='')}"
+    opened = webbrowser.open(authenticated_url)
+    print(f"dashboard: {url} (authenticated local launch)")
     if not opened:
-        print("The browser did not open automatically; paste the dashboard URL into a local browser.")
+        print("The browser did not open automatically; run 'mac-mcp dashboard' again from this Mac.")
     return 0
 
 

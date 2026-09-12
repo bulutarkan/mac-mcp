@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hmac
 import ipaddress
 import logging
 import os
+import secrets
 import socket
+import tempfile
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -16,6 +19,64 @@ from fastapi import HTTPException, Request, status
 
 BASE_DIR = Path(__file__).resolve().parent
 HOME_DIR = Path(os.getenv("MAC_MCP_HOME", str(Path.home()))).expanduser().resolve()
+
+
+def dashboard_token_path() -> Path:
+    configured = os.getenv("MAC_MCP_DASHBOARD_TOKEN_FILE", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    state_dir = Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
+    return state_dir / "dashboard-token"
+
+
+def ensure_dashboard_token(path: Optional[Path] = None) -> str:
+    """Return the per-user dashboard credential, creating it securely if needed.
+
+    This token is intentionally separate from MCP_API_KEY so opening the local
+    dashboard never exposes the connector credential to the browser/menu app.
+    The file boundary is per Unix user, not a sandbox between processes running
+    under the same uid.
+    """
+    token_file = (path or dashboard_token_path()).expanduser()
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(token_file.parent, 0o700)
+    except OSError:
+        pass
+
+    if token_file.is_symlink():
+        raise RuntimeError("dashboard token path must not be a symlink")
+
+    if token_file.exists():
+        stat = token_file.stat()
+        if hasattr(os, "getuid") and stat.st_uid != os.getuid():
+            raise RuntimeError("dashboard token file is not owned by the current user")
+        token = token_file.read_text(encoding="utf-8").strip()
+        if len(token) >= 32:
+            os.chmod(token_file, 0o600)
+            return token
+
+    token = secrets.token_urlsafe(48)
+    fd, tmp_name = tempfile.mkstemp(prefix=".dashboard-token-", dir=str(token_file.parent), text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(token + "\n")
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, token_file)
+        os.chmod(token_file, 0o600)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+    return token
+
+
+def dashboard_authorized(expected_token: str, authorization: Optional[str]) -> bool:
+    if not expected_token or not authorization or not authorization.lower().startswith("bearer "):
+        return False
+    supplied = authorization[7:].strip()
+    return bool(supplied) and hmac.compare_digest(supplied, expected_token)
 
 
 def _bool(name: str, default: bool) -> bool:

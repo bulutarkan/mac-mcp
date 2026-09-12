@@ -559,7 +559,16 @@ final class AppState: ObservableObject {
     }
     func checkForUpdates() { runAction(title: "Checking update", args: ["update", "--check"]) }
     func installUpdate() { runAction(title: "Updating", args: ["update"]) }
-    func openDashboard() { if let dashboardURL { NSWorkspace.shared.open(dashboardURL) } }
+    func openDashboard() {
+        guard let dashboardURL else { return }
+        guard let token = dashboardToken(), !token.isEmpty else {
+            showNotice(ActionNotice(kind: .error, message: "Dashboard credential is unavailable. Restart Mac MCP once."))
+            return
+        }
+        var components = URLComponents(url: dashboardURL, resolvingAgainstBaseURL: false)
+        components?.fragment = "token=\(token)"
+        if let url = components?.url { NSWorkspace.shared.open(url) }
+    }
     func quitApp() { NSApplication.shared.terminate(nil) }
 
     var activeBrowserEvents: [ToolEvent] {
@@ -787,12 +796,40 @@ final class AppState: ObservableObject {
         }
     }
 
+    private static func dashboardTokenURL() -> URL {
+        let env = ProcessInfo.processInfo.environment
+        if let configured = env["MAC_MCP_DASHBOARD_TOKEN_FILE"], !configured.isEmpty {
+            return URL(fileURLWithPath: NSString(string: configured).expandingTildeInPath)
+        }
+        let stateDirectory: URL
+        if let configured = env["MAC_MCP_STATE_DIR"], !configured.isEmpty {
+            stateDirectory = URL(fileURLWithPath: NSString(string: configured).expandingTildeInPath)
+        } else {
+            stateDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".mac-mcp")
+        }
+        return stateDirectory.appendingPathComponent("dashboard-token")
+    }
+
+    private func dashboardToken() -> String? {
+        guard let data = try? Data(contentsOf: Self.dashboardTokenURL()),
+              let value = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
+    }
+
+    private func authorizeDashboardRequest(_ request: inout URLRequest) {
+        if let token = dashboardToken() {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+    }
+
     private func fetch<T: Decodable>(_ url: URL, query: [String: String]) async throws -> T {
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
         components.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
         var request = URLRequest(url: components.url!)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 1.8
+        authorizeDashboardRequest(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         guard (200..<300).contains(http.statusCode) else { throw DashboardAPIError.httpStatus(http.statusCode) }
@@ -805,6 +842,7 @@ final class AppState: ObservableObject {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = 2.0
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorizeDashboardRequest(&request)
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }

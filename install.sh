@@ -574,7 +574,7 @@ print_completion() {
   printf '  Runtime:            %s\n' "$RUNTIME_DIR"
   printf '  CLI:                %s\n' "$CLI_PATH"
   printf '  Local MCP endpoint: http://127.0.0.1:8000/mcp\n'
-  printf '  Dashboard:          http://127.0.0.1:8000/dashboard\n'
+  printf '  Dashboard:          mac-mcp dashboard (authenticated local launch)\n'
 
   printf '\n%sAuthentication%s\n' "$C_BOLD" "$C_RESET"
   printf '  API key: %s\n' "$API_KEY"

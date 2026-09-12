@@ -43,11 +43,19 @@ _SECRET_KEYS = {
     "client_secret", "secret", "password", "passwd", "passphrase", "token",
     "access_token", "refresh_token", "id_token", "session_token", "session_id",
     "cookie", "set_cookie", "private_key", "credentials", "credential",
+    "openai_session", "openai_subject", "openai_organization", "openai_org", "openai_location",
 }
 _SECRET_KEY_SUFFIXES = ("_password", "_secret", "_token", "_api_key", "_apikey")
+_PROVIDER_IDENTITY_KEYS = {
+    "openai_session", "openai_subject", "openai_organization", "openai_org", "openai_location",
+}
+TELEMETRY_SANITIZER_VERSION = 1
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
 _QUERY_SECRET_RE = re.compile(
     r"(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret)\s*[=:]\s*)([^\s&;,]+)"
+)
+_PROVIDER_IDENTITY_TEXT_RE = re.compile(
+    r"(?i)[\"']?openai[/_-](?:session|subject|organization|org|location)[\"']?\s*[=:]\s*[\"']?[^\"'\s,;}]+[\"']?"
 )
 _ENV_SECRET_RE = re.compile(
     r"(?im)^(\s*(?:[A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)[A-Z0-9_]*)\s*=\s*)(.+)$"
@@ -66,16 +74,27 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
         return default
 
 
-def _is_secret_key(key: Optional[str]) -> bool:
+def _normalized_key(key: Optional[str]) -> str:
     if not key:
-        return False
-    normalized = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
-    return normalized in _SECRET_KEYS or normalized.endswith(_SECRET_KEY_SUFFIXES)
+        return ""
+    return re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+
+
+def _is_provider_identity_key(key: Optional[str]) -> bool:
+    return _normalized_key(key) in _PROVIDER_IDENTITY_KEYS
+
+
+def _is_secret_key(key: Optional[str]) -> bool:
+    normalized = _normalized_key(key)
+    return bool(normalized) and (
+        normalized in _SECRET_KEYS or normalized.endswith(_SECRET_KEY_SUFFIXES)
+    )
 
 
 def _redact_text(text: str) -> str:
     text = _BEARER_RE.sub("Bearer [REDACTED]", text)
     text = _QUERY_SECRET_RE.sub(lambda m: m.group(1) + "[REDACTED]", text)
+    text = _PROVIDER_IDENTITY_TEXT_RE.sub("[provider identity redacted]", text)
     text = _ENV_SECRET_RE.sub(lambda m: m.group(1) + "[REDACTED]", text)
     text = _SK_RE.sub("[REDACTED]", text)
     return text
@@ -119,6 +138,8 @@ def sanitize_value(value: Any, *, key: Optional[str] = None, preview_chars: int 
         out: Dict[str, Any] = {}
         for child_key, child_value in value.items():
             text_key = str(child_key)
+            if _is_provider_identity_key(text_key):
+                continue
             out[text_key] = sanitize_value(
                 child_value, key=text_key, preview_chars=preview_chars, depth=depth + 1
             )
@@ -213,6 +234,36 @@ def normalize_result_status(result: Any, error: Optional[BaseException | str] = 
     return "success"
 
 
+def _resanitize_stored_json(raw: Optional[str], *, preview_chars: int) -> Optional[str]:
+    if raw is None:
+        return None
+    parsed = _parse_json(raw)
+    return _json_text(sanitize_value(parsed, preview_chars=preview_chars))
+
+
+def _migrate_sensitive_telemetry(
+    conn: sqlite3.Connection, *, preview_chars: int, target_version: int = TELEMETRY_SANITIZER_VERSION
+) -> bool:
+    current = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if current >= target_version:
+        return False
+    conn.execute("PRAGMA secure_delete=ON")
+    rows = conn.execute(
+        "SELECT event_id, arguments_json, result_json, error FROM tool_events"
+    ).fetchall()
+    for row in rows:
+        arguments_json = _resanitize_stored_json(row["arguments_json"], preview_chars=preview_chars)
+        result_json = _resanitize_stored_json(row["result_json"], preview_chars=preview_chars)
+        error = None if row["error"] is None else str(sanitize_value(row["error"], preview_chars=preview_chars))
+        if (arguments_json, result_json, error) != (row["arguments_json"], row["result_json"], row["error"]):
+            conn.execute(
+                "UPDATE tool_events SET arguments_json=?, result_json=?, error=? WHERE event_id=?",
+                (arguments_json, result_json, error, row["event_id"]),
+            )
+    conn.execute(f"PRAGMA user_version={int(target_version)}")
+    return True
+
+
 class TelemetryManager:
     def __init__(
         self,
@@ -297,8 +348,20 @@ class TelemetryManager:
         )
 
     def _init_db(self) -> None:
+        migrated = False
         with self._connect() as conn:
             self._ensure_schema(conn)
+            migrated = _migrate_sensitive_telemetry(conn, preview_chars=self.preview_chars)
+        if migrated:
+            # Remove superseded pages/WAL content after the one-time sanitizer
+            # migration so legacy provider identity values are not recoverable
+            # from the bounded telemetry store itself.
+            conn = self._connect()
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.execute("VACUUM")
+            finally:
+                conn.close()
 
     def _load_recent(self) -> None:
         with self._connect() as conn:

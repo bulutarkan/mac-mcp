@@ -10,7 +10,9 @@
     active: new Map(),
     trace: [],
     selected: null,
-    eventSource: null,
+    token: "",
+    streamAbort: null,
+    streamRetry: null,
     restoreFocus: null,
   };
 
@@ -59,8 +61,24 @@
   };
   const windowLabel = () => state.hours === 1 ? "last hour" : state.hours === 24 ? "last 24 hours" : state.hours === 168 ? "last 7 days" : `last ${state.hours} hours`;
 
+  const AUTH_STORAGE_KEY = "mac_mcp_dashboard_token";
+  function bootstrapAuthToken() {
+    const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const fragmentToken = fragment.get("token");
+    if (fragmentToken) {
+      window.sessionStorage.setItem(AUTH_STORAGE_KEY, fragmentToken);
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+    return window.sessionStorage.getItem(AUTH_STORAGE_KEY) || "";
+  }
+  function authHeaders() {
+    return state.token ? {Authorization: `Bearer ${state.token}`} : {};
+  }
+  state.token = bootstrapAuthToken();
+
   async function fetchJSON(url) {
-    const response = await fetch(url, {cache: "no-store"});
+    const response = await fetch(url, {cache: "no-store", headers: authHeaders()});
+    if (response.status === 401) { markAuthRequired(); throw new Error("401 Unauthorized"); }
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     return response.json();
   }
@@ -307,18 +325,53 @@
     }
   }
 
-  function connectStream() {
-    if (state.eventSource) state.eventSource.close();
-    const stream = new EventSource("/dashboard/events");
-    state.eventSource = stream;
-    stream.addEventListener("telemetry", (message) => {
-      try { handleTelemetry(JSON.parse(message.data)); } catch { /* malformed event is ignored */ }
-    });
-    stream.onopen = markOnline;
-    stream.onerror = () => {
-      markOffline();
-      // EventSource reconnects automatically. Keep the UI useful while it does.
-    };
+  function scheduleStreamReconnect() {
+    window.clearTimeout(state.streamRetry);
+    state.streamRetry = window.setTimeout(connectStream, 2000);
+  }
+
+  function handleSSEBlock(block) {
+    let eventName = "message";
+    const data = [];
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith("event:")) eventName = line.slice(6).trim();
+      else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+    }
+    if (eventName !== "telemetry" || !data.length) return;
+    try { handleTelemetry(JSON.parse(data.join("\n"))); } catch { /* malformed event is ignored */ }
+  }
+
+  async function connectStream() {
+    if (state.streamAbort) state.streamAbort.abort();
+    window.clearTimeout(state.streamRetry);
+    const controller = new AbortController();
+    state.streamAbort = controller;
+    try {
+      const response = await fetch("/dashboard/events", {
+        cache: "no-store", headers: authHeaders(), signal: controller.signal,
+      });
+      if (response.status === 401) { markAuthRequired(); return; }
+      if (!response.ok || !response.body) throw new Error(`${response.status} ${response.statusText}`);
+      markOnline();
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (!controller.signal.aborted) {
+        const {value, done} = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, {stream: true}).replace(/\r\n/g, "\n");
+        let boundary;
+        while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+          handleSSEBlock(buffer.slice(0, boundary));
+          buffer = buffer.slice(boundary + 2);
+        }
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      markOffline(error);
+    } finally {
+      if (state.streamAbort === controller && !controller.signal.aborted) scheduleStreamReconnect();
+    }
   }
 
   function markOnline() {
@@ -328,6 +381,10 @@
   function markOffline() {
     els.connection.classList.add("is-offline");
     els.connection.lastChild.textContent = "Reconnecting";
+  }
+  function markAuthRequired() {
+    els.connection.classList.add("is-offline");
+    els.connection.lastChild.textContent = "Authentication required";
   }
   function formatUptime(seconds) {
     const s = Number(seconds || 0);

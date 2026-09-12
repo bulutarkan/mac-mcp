@@ -17,7 +17,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, Mount
 
 from mcp.server.transport_security import TransportSecuritySettings
-from .security import RateLimiter, Settings, authenticate, client_ip, load_settings, rate_limit, request_authorization, setup_audit_logger
+from .security import RateLimiter, Settings, authenticate, client_ip, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger
 from .observability import ObservedFastMCP, TelemetryManager
 from .policy import current_policy_context, reset_policy_context, set_policy_context
 from .scoped_auth import resolve_request_identity
@@ -173,6 +173,7 @@ def create_app():
     limiter = RateLimiter(settings.rate_limit_per_minute)
     audit_logger = setup_audit_logger()
     telemetry = TelemetryManager()
+    dashboard_token = ensure_dashboard_token()
     # Stateful Streamable HTTP sessions are additionally bound to the credential
     # identity resolved by our custom security middleware. FastMCP's built-in
     # session-owner binding only applies when its own auth middleware is used.
@@ -1429,10 +1430,12 @@ def create_app():
     app.add_middleware(SecurityMiddleware)
 
     async def health(_: Request) -> Response:
-        return JSONResponse({"ok": True, "server": "mac-mcp", "workdir": str(settings.workdir)})
+        # Keep unauthenticated health probes deliberately non-sensitive; the
+        # public tunnel may expose this endpoint too.
+        return JSONResponse({"ok": True, "server": "mac-mcp"})
 
     app.router.routes.append(Route("/health", health, methods=["GET"]))
-    app.router.routes.extend(create_dashboard_routes(telemetry, settings, mcp.steering))
+    app.router.routes.extend(create_dashboard_routes(telemetry, settings, dashboard_token, mcp.steering))
 
     # REST API — FastAPI sub-app mounted at /api
     from fastapi import FastAPI

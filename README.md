@@ -6,7 +6,7 @@
 
 Mac MCP is a local macOS control server for AI agents. It exposes your Mac through a native MCP endpoint and a REST/OpenAPI surface, with shell, files, browser automation, macOS UI control, delegated OpenCode/Codex agents, memory, Agent Skills, voice interaction, self-update tooling, and a local operations dashboard.
 
-> **Security:** Mac MCP can execute commands, read/write files, and control desktop apps. Keep authentication enabled whenever the service is reachable outside localhost and expose it only to clients you trust. The operations dashboard is loopback-only.
+> **Security:** Mac MCP can execute commands, read/write files, and control desktop apps. Keep MCP authentication enabled whenever the service is reachable outside localhost and expose it only to clients you trust. The operations dashboard is loopback-only **and** requires a separate per-user dashboard Bearer token; localhost is machine-local transport, not a same-user sandbox.
 
 ## What's new in 2.0.5
 
@@ -176,7 +176,7 @@ The app is independent from the server:
 - `mac-mcp start` opens the app automatically when it is installed;
 - server controls remain available even while the Voice section is collapsed.
 
-The app uses the existing localhost dashboard APIs:
+The app uses the localhost dashboard APIs with a separate dashboard Bearer credential stored in `~/.mac-mcp/dashboard-token` (mode `0600`). The menu app reads that owner-only file locally and never needs the global `MCP_API_KEY`:
 
 ```text
 /dashboard/api/summary
@@ -251,19 +251,21 @@ Environment variables remain supported as fallbacks, including `MAC_MCP_VOICE_GR
 
 ## Operations dashboard
 
-Open:
+Open it with the authenticated local launcher:
 
-```text
-http://127.0.0.1:<port>/dashboard
+```bash
+mac-mcp dashboard
 ```
 
-The dashboard records sanitized MCP/REST tool activity, status, latency, recent delegated-agent state, active calls, and tool frequency. Telemetry persists locally under:
+The static dashboard shell is loopback-only. Every sensitive `/dashboard/api/*` request and the live `/dashboard/events` stream additionally require a separate dashboard Bearer token stored at `~/.mac-mcp/dashboard-token` with mode `0600`; the state directory is kept owner-only (`0700`). The CLI/menu app passes the browser credential in a URL **fragment**, which is not sent in the HTTP request, and dashboard JavaScript immediately moves it to `sessionStorage`, removes it from the address bar, and uses an `Authorization` header for API/SSE requests. The global connector `MCP_API_KEY` is not exposed to the browser.
+
+The dashboard records sanitized MCP/REST tool activity, status, latency, recent delegated-agent state, active calls, and tool frequency. Provider identity fields such as OpenAI session/subject/organization/location are dropped from telemetry; the security migration also scrubs legacy persisted rows on first startup. Telemetry persists locally under:
 
 ```text
 ~/.mac-mcp/dashboard/telemetry.sqlite3
 ```
 
-The dashboard is restricted to loopback access even when `/mcp` is exposed through ngrok.
+Loopback means **machine-local**, not **user-private**. The dashboard token prevents unrelated unauthenticated local processes and browser-origin requests from using sensitive endpoints, but a malicious process already running as the same macOS user can generally read that user's files and is inside this trust boundary. Unix-domain sockets were evaluated for menu-app ↔ daemon traffic; they can provide filesystem-owner permissions but do not solve same-UID isolation and cannot be consumed directly by the browser dashboard, so authenticated loopback HTTP remains the single transport. See `docs/LOCAL_API_SECURITY.md` for the threat model and decision.
 
 ## Tool coverage
 

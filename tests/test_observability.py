@@ -14,9 +14,13 @@ from starlette.testclient import TestClient
 
 from mcp_server.dashboard_routes import _is_loopback, _persist_permission_profile, browser_event_context, create_dashboard_routes
 from mcp_server.observability import TelemetryManager, sanitize_value
-from mcp_server.security import load_settings
+from mcp_server.security import dashboard_authorized, ensure_dashboard_token, load_settings
 from mcp_server.steering import SteeringIdentity, SteeringManager
 from mcp_server.version import __version__
+
+
+DASHBOARD_TOKEN = "dashboard-test-token-0123456789-abcdefghijklmnopqrstuvwxyz"
+DASHBOARD_AUTH = {"authorization": f"Bearer {DASHBOARD_TOKEN}"}
 
 
 class SanitizerTests(unittest.TestCase):
@@ -37,6 +41,25 @@ class SanitizerTests(unittest.TestCase):
         self.assertIn("keep this context visible", text)
         self.assertIn("image data", text)
 
+    def test_redacts_provider_identity_metadata(self) -> None:
+        payload = {
+            "openai/session": "raw-conversation-id",
+            "openai/subject": "raw-account-subject",
+            "openai/organization": "raw-org-id",
+            "openai/location": "precise-provider-location",
+        }
+        text = json.dumps(sanitize_value(payload), ensure_ascii=False)
+        for key, value in payload.items():
+            self.assertNotIn(key, text)
+            self.assertNotIn(value, text)
+        self.assertEqual({}, sanitize_value(payload))
+        free_text = "failure openai/session=raw-session-value openai/subject:raw-subject-value"
+        rendered = str(sanitize_value(free_text))
+        self.assertNotIn("openai/session", rendered)
+        self.assertNotIn("raw-session-value", rendered)
+        self.assertNotIn("openai/subject", rendered)
+        self.assertNotIn("raw-subject-value", rendered)
+
 
 class TelemetryTests(unittest.TestCase):
     def test_event_persists_and_summary_counts_error(self) -> None:
@@ -56,6 +79,53 @@ class TelemetryTests(unittest.TestCase):
             reopened = TelemetryManager(db_path=db, max_events=100)
             events = reopened.query_events(limit=10)
             self.assertEqual({event["tool"] for event in events}, {"read_file", "run_command"})
+
+    def test_startup_migration_scrubs_legacy_provider_identity_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "telemetry.sqlite3"
+            manager = TelemetryManager(db_path=db, max_events=100)
+            event_id = manager.start_call("mcp", "read_file", {"path": "/tmp/example"})
+            manager.finish_call(event_id, result={"ok": True})
+            legacy_args = json.dumps({
+                "_meta": {"openai/session": "legacy-session-value", "openai/subject": "legacy-subject-value"},
+                "path": "/tmp/example",
+            })
+            legacy_result = json.dumps({
+                "ok": True,
+                "meta": {"openai/organization": "legacy-org-value", "openai/location": "legacy-location-value"},
+            })
+            import sqlite3
+            con = sqlite3.connect(db)
+            con.execute(
+                "UPDATE tool_events SET arguments_json=?, result_json=? WHERE event_id=?",
+                (legacy_args, legacy_result, event_id),
+            )
+            con.execute("PRAGMA user_version=0")
+            con.commit(); con.close()
+
+            migrated = TelemetryManager(db_path=db, max_events=100)
+            event = migrated.query_events(limit=1)[0]
+            rendered = json.dumps(event, ensure_ascii=False)
+            for marker in ("openai/session", "openai/subject", "openai/organization", "openai/location",
+                           "legacy-session-value", "legacy-subject-value", "legacy-org-value", "legacy-location-value"):
+                self.assertNotIn(marker, rendered)
+            con = sqlite3.connect(db)
+            raw = " ".join(str(value or "") for value in con.execute(
+                "SELECT arguments_json, result_json FROM tool_events WHERE event_id=?", (event_id,)
+            ).fetchone())
+            version = con.execute("PRAGMA user_version").fetchone()[0]
+            con.close()
+            self.assertEqual(1, version)
+            self.assertNotIn("openai/", raw.lower())
+            self.assertNotIn("legacy-session-value", raw)
+            raw_bytes = db.read_bytes().lower()
+            self.assertNotIn(b"openai/session", raw_bytes)
+            self.assertNotIn(b"legacy-session-value", raw_bytes)
+            wal = db.with_name(db.name + "-wal")
+            if wal.exists():
+                wal_bytes = wal.read_bytes().lower()
+                self.assertNotIn(b"openai/session", wal_bytes)
+                self.assertNotIn(b"legacy-session-value", wal_bytes)
 
     def test_database_recovers_if_storage_directory_is_recreated(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -146,11 +216,11 @@ class SecuritySemanticsRouteTests(unittest.TestCase):
     def test_profile_change_is_immediate_persistent_and_restart_free(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
-            app = Starlette(routes=create_dashboard_routes(manager, load_settings()))
+            app = Starlette(routes=create_dashboard_routes(manager, load_settings(), DASHBOARD_TOKEN))
             with patch("mcp_server.dashboard_routes._persist_permission_profile") as persist, \
                  patch.dict("os.environ", {"MAC_MCP_PERMISSION_PROFILE": "trusted"}, clear=False):
                 response = TestClient(app).post(
-                    "/dashboard/api/security/profile", json={"profile": "read_only"}
+                    "/dashboard/api/security/profile", json={"profile": "read_only"}, headers=DASHBOARD_AUTH
                 )
                 self.assertEqual(200, response.status_code)
                 payload = response.json()
@@ -164,15 +234,15 @@ class SecuritySemanticsRouteTests(unittest.TestCase):
     def test_profile_change_rejects_unknown_and_remote_requests(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
-            app = Starlette(routes=create_dashboard_routes(manager, load_settings()))
+            app = Starlette(routes=create_dashboard_routes(manager, load_settings(), DASHBOARD_TOKEN))
             with patch("mcp_server.dashboard_routes._persist_permission_profile") as persist:
                 invalid = TestClient(app).post(
-                    "/dashboard/api/security/profile", json={"profile": "approval_heavy"}
+                    "/dashboard/api/security/profile", json={"profile": "approval_heavy"}, headers=DASHBOARD_AUTH
                 )
                 remote = TestClient(app).post(
                     "/dashboard/api/security/profile",
                     json={"profile": "standard"},
-                    headers={"x-forwarded-for": "8.8.8.8"},
+                    headers={**DASHBOARD_AUTH, "x-forwarded-for": "8.8.8.8"},
                 )
                 self.assertEqual(400, invalid.status_code)
                 self.assertEqual(403, remote.status_code)
@@ -181,12 +251,12 @@ class SecuritySemanticsRouteTests(unittest.TestCase):
     def test_security_semantics_is_local_only_and_separates_approval(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
-            app = Starlette(routes=create_dashboard_routes(manager, load_settings()))
+            app = Starlette(routes=create_dashboard_routes(manager, load_settings(), DASHBOARD_TOKEN))
             with patch.dict("os.environ", {"MAC_MCP_PERMISSION_PROFILE": "standard"}, clear=False):
-                local = TestClient(app).get("/dashboard/api/security/semantics")
+                local = TestClient(app).get("/dashboard/api/security/semantics", headers=DASHBOARD_AUTH)
                 remote = TestClient(app).get(
                     "/dashboard/api/security/semantics",
-                    headers={"x-forwarded-for": "8.8.8.8"},
+                    headers={**DASHBOARD_AUTH, "x-forwarded-for": "8.8.8.8"},
                 )
             self.assertEqual(200, local.status_code)
             payload = local.json()
@@ -202,9 +272,9 @@ class SteeringLifecycleRouteTests(unittest.TestCase):
             steering = SteeringManager()
             identity = SteeringIdentity(key="client:test-lifecycle", source="client_id")
             session_id = steering.session_id_for(identity)
-            app = Starlette(routes=create_dashboard_routes(manager, load_settings(), steering))
+            app = Starlette(routes=create_dashboard_routes(manager, load_settings(), DASHBOARD_TOKEN, steering))
 
-            state_response = TestClient(app).get("/dashboard/api/steering")
+            state_response = TestClient(app).get("/dashboard/api/steering", headers=DASHBOARD_AUTH)
             self.assertEqual(200, state_response.status_code)
             payload = state_response.json()
             self.assertEqual(1, payload["schema_version"])
@@ -218,7 +288,7 @@ class SteeringLifecycleRouteTests(unittest.TestCase):
 
             send_response = TestClient(app).post(
                 "/dashboard/api/steering",
-                json={"session_id": session_id, "text": "change direction"},
+                json={"session_id": session_id, "text": "change direction"}, headers=DASHBOARD_AUTH,
             )
             self.assertEqual(200, send_response.status_code)
             sent = send_response.json()
@@ -226,7 +296,7 @@ class SteeringLifecycleRouteTests(unittest.TestCase):
             self.assertEqual("queued", sent["message"]["lifecycle_state"])
             self.assertEqual("idle", sent["message"]["activity_state"])
 
-            queued = TestClient(app).get("/dashboard/api/steering").json()["sessions"][0]
+            queued = TestClient(app).get("/dashboard/api/steering", headers=DASHBOARD_AUTH).json()["sessions"][0]
             self.assertEqual("queued", queued["lifecycle_state"])
             self.assertEqual(1, queued["queued"])
             self.assertEqual(1, queued["pending_instruction_count"])
@@ -236,7 +306,7 @@ class BrowserShowTabRouteTests(unittest.TestCase):
     def test_show_tab_is_explicit_foreground_action(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
-            app = Starlette(routes=create_dashboard_routes(manager, load_settings()))
+            app = Starlette(routes=create_dashboard_routes(manager, load_settings(), DASHBOARD_TOKEN))
             with patch("mcp_server.dashboard_routes.browser_activate_tab") as activate:
                 activate.return_value = {
                     "ok": True,
@@ -246,7 +316,7 @@ class BrowserShowTabRouteTests(unittest.TestCase):
                 }
                 response = TestClient(app).post(
                     "/dashboard/api/browser/show-tab",
-                    json={"browser": "Safari", "tab_handle": "tab_live"},
+                    json={"browser": "Safari", "tab_handle": "tab_live"}, headers=DASHBOARD_AUTH,
                 )
                 self.assertEqual(response.status_code, 200)
                 self.assertTrue(response.json()["foreground_forced"])
@@ -260,12 +330,12 @@ class BrowserShowTabRouteTests(unittest.TestCase):
     def test_show_tab_remains_localhost_only(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
-            app = Starlette(routes=create_dashboard_routes(manager, load_settings()))
+            app = Starlette(routes=create_dashboard_routes(manager, load_settings(), DASHBOARD_TOKEN))
             with patch("mcp_server.dashboard_routes.browser_activate_tab") as activate:
                 response = TestClient(app).post(
                     "/dashboard/api/browser/show-tab",
                     json={"browser": "Safari", "tab_handle": "tab_live"},
-                    headers={"x-forwarded-for": "8.8.8.8"},
+                    headers={**DASHBOARD_AUTH, "x-forwarded-for": "8.8.8.8"},
                 )
                 self.assertEqual(response.status_code, 403)
                 activate.assert_not_called()
@@ -277,6 +347,42 @@ class DashboardSecurityTests(unittest.TestCase):
         self.assertTrue(_is_loopback("::1"))
         self.assertFalse(_is_loopback("8.8.8.8"))
         self.assertFalse(_is_loopback("192.168.1.10"))
+
+    def test_dashboard_token_file_is_owner_only_and_stable(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            token_file = Path(td) / "state" / "dashboard-token"
+            first = ensure_dashboard_token(token_file)
+            second = ensure_dashboard_token(token_file)
+            self.assertEqual(first, second)
+            self.assertGreaterEqual(len(first), 32)
+            self.assertEqual(0o600, token_file.stat().st_mode & 0o777)
+            self.assertEqual(0o700, token_file.parent.stat().st_mode & 0o777)
+
+    def test_dashboard_token_symlink_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            target = root / "real-token"
+            target.write_text("x" * 64, encoding="utf-8")
+            link = root / "dashboard-token"
+            link.symlink_to(target)
+            with self.assertRaisesRegex(RuntimeError, "must not be a symlink"):
+                ensure_dashboard_token(link)
+
+    def test_dashboard_bearer_comparison(self) -> None:
+        self.assertTrue(dashboard_authorized(DASHBOARD_TOKEN, f"Bearer {DASHBOARD_TOKEN}"))
+        self.assertFalse(dashboard_authorized(DASHBOARD_TOKEN, None))
+        self.assertFalse(dashboard_authorized(DASHBOARD_TOKEN, "Bearer wrong"))
+
+    def test_sensitive_dashboard_api_requires_auth_even_on_loopback(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
+            app = Starlette(routes=create_dashboard_routes(manager, load_settings(), DASHBOARD_TOKEN))
+            client = TestClient(app)
+            self.assertEqual(200, client.get("/dashboard").status_code)
+            self.assertEqual(401, client.get("/dashboard/api/summary").status_code)
+            self.assertEqual(401, client.get("/dashboard/api/summary", headers={"authorization": "Bearer wrong"}).status_code)
+            self.assertEqual(200, client.get("/dashboard/api/summary", headers=DASHBOARD_AUTH).status_code)
+            self.assertEqual(401, client.get("/dashboard/events").status_code)
 
 
 class VersionTests(unittest.TestCase):

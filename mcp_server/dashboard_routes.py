@@ -15,7 +15,7 @@ from starlette.routing import Route
 
 from .observability import TelemetryManager, sanitize_value
 from .policy import PROFILES, RISK_REGISTRY, permission_semantics
-from .security import Settings
+from .security import Settings, dashboard_authorized
 from .steering import STEERING_SCHEMA_VERSION, SteeringManager
 from .tools_agents import list_agents
 from .tools_browser import browser_activate_tab
@@ -152,6 +152,19 @@ def _local_only(request: Request) -> Optional[Response]:
     return HTMLResponse("Dashboard is available on localhost only.", status_code=403)
 
 
+def _dashboard_guard(request: Request, dashboard_token: str) -> Optional[Response]:
+    denied = _local_only(request)
+    if denied is not None:
+        return denied
+    if dashboard_authorized(dashboard_token, request.headers.get("authorization")):
+        return None
+    return JSONResponse(
+        {"detail": "Dashboard authentication required."},
+        status_code=401,
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
 def _float_query(request: Request, key: str, default: float) -> float:
     try:
         return float(request.query_params.get(key, str(default)))
@@ -197,7 +210,7 @@ def _persist_permission_profile(profile: str, env_file: Path = PERMISSION_ENV_FI
             pass
 
 
-def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, steering: Optional[SteeringManager] = None) -> list[Route]:
+def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, dashboard_token: str, steering: Optional[SteeringManager] = None) -> list[Route]:
     async def index(request: Request) -> Response:
         denied = _local_only(request)
         if denied:
@@ -216,7 +229,7 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         return FileResponse(DASHBOARD_DIR / name, media_type=allowed[name])
 
     async def summary(request: Request) -> Response:
-        denied = _local_only(request)
+        denied = _dashboard_guard(request, dashboard_token)
         if denied:
             return denied
         hours = _float_query(request, "hours", 24)
@@ -235,13 +248,13 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         return JSONResponse(payload)
 
     async def security_semantics(request: Request) -> Response:
-        denied = _local_only(request)
+        denied = _dashboard_guard(request, dashboard_token)
         if denied:
             return denied
         return JSONResponse(permission_semantics())
 
     async def set_security_profile(request: Request) -> Response:
-        denied = _local_only(request)
+        denied = _dashboard_guard(request, dashboard_token)
         if denied:
             return denied
         try:
@@ -271,7 +284,7 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         return JSONResponse(payload)
 
     async def events(request: Request) -> Response:
-        denied = _local_only(request)
+        denied = _dashboard_guard(request, dashboard_token)
         if denied:
             return denied
         payload = telemetry.query_events(
@@ -287,7 +300,7 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         })
 
     async def show_browser_tab(request: Request) -> Response:
-        denied = _local_only(request)
+        denied = _dashboard_guard(request, dashboard_token)
         if denied:
             return denied
         try:
@@ -323,7 +336,7 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         })
 
     async def agents(request: Request) -> Response:
-        denied = _local_only(request)
+        denied = _dashboard_guard(request, dashboard_token)
         if denied:
             return denied
         try:
@@ -343,7 +356,7 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         return JSONResponse({"ok": True, "count": len(public_agents), "agents": public_agents})
 
     async def steering_state(request: Request) -> Response:
-        denied = _local_only(request)
+        denied = _dashboard_guard(request, dashboard_token)
         if denied:
             return denied
         if steering is None:
@@ -363,7 +376,7 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         })
 
     async def steering_send(request: Request) -> Response:
-        denied = _local_only(request)
+        denied = _dashboard_guard(request, dashboard_token)
         if denied:
             return denied
         if steering is None:
@@ -404,7 +417,7 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
 
 
     async def steering_settings(request: Request) -> Response:
-        denied = _local_only(request)
+        denied = _dashboard_guard(request, dashboard_token)
         if denied:
             return denied
         if steering is None:
@@ -423,7 +436,7 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         return JSONResponse({"ok": True, "session_ttl_minutes": minutes})
 
     async def stream(request: Request) -> Response:
-        denied = _local_only(request)
+        denied = _dashboard_guard(request, dashboard_token)
         if denied:
             return denied
         queue = telemetry.subscribe()

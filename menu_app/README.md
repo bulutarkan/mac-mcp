@@ -37,3 +37,11 @@ Sessions use the server's versioned lifecycle snapshot when available while rema
 Dashboard reachability is modeled independently from session lifecycle. The app reports `connecting`, `connected`, `degraded`, or `disconnected`; a successful empty response is distinct from a failed fetch. Session fetch failures retain the last valid snapshot with a **stale** marker, while a first-load failure shows **Session data unavailable** instead of pretending there are zero sessions.
 
 Automatic polling uses bounded exponential backoff after failed refreshes: 1, 2, 4, 8, 16, then 30 seconds maximum. A complete successful refresh resets polling to the normal 2.5-second cadence. HTTP 5xx responses, request timeouts, and connection-refused failures are surfaced with distinct status text, and **Retry** triggers an immediate refresh without restarting the daemon or ngrok.
+
+## Local dashboard authentication
+
+The menu controller authenticates every sensitive localhost dashboard API request with a dedicated per-user Bearer token from `~/.mac-mcp/dashboard-token` (or `MAC_MCP_DASHBOARD_TOKEN_FILE`). This credential is separate from `MCP_API_KEY`, so the connector credential is never copied into the native UI or browser dashboard. The token file is owner-only (`0600`), and the default state directory is owner-only (`0700`).
+
+**Open Dashboard** passes that token to the local browser only as a URL fragment. Fragments are not included in HTTP requests or normal server/proxy access logs; dashboard JavaScript stores the token in `sessionStorage`, removes the fragment from the address bar immediately, and sends `Authorization: Bearer …` on API and live-stream requests. A missing or incorrect token produces HTTP 401 rather than silently exposing session, steering, permission, or telemetry data.
+
+This is a per-user local boundary, not a sandbox against another process already running as the same macOS user.
