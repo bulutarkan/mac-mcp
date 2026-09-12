@@ -10,6 +10,7 @@ struct MenuBarView: View {
     @State private var showVoice = false
     @State private var showAdvanced = false
     @State private var showSessions = false
+    @State private var showSecurity = false
     @State private var sessionMinutesText = ""
     @State private var lastActiveAgentID: String? = nil
 
@@ -20,6 +21,7 @@ struct MenuBarView: View {
                 serverCard
                 if state.activeAgents > 0 || !state.agents.isEmpty { agentCard }
                 activityCard
+                securityCard
                 steeringCard
                 voiceCard
                 advancedCard
@@ -386,6 +388,88 @@ struct MenuBarView: View {
         } label: { Label("Latest Tool Usage", systemImage: "waveform.path.ecg") }
     }
 
+    private var securityCard: some View {
+        GroupBox {
+            DisclosureGroup(isExpanded: $showSecurity) {
+                if let semantics = state.securitySemantics {
+                    VStack(alignment: .leading, spacing: 9) {
+                        if let profile = semantics.profiles.first(where: { $0.name == semantics.activeProfile }) {
+                            HStack {
+                                Text("Active profile").font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                                Text(profileDisplayName(profile.name)).font(.caption.weight(.semibold))
+                            }
+
+                            Divider()
+                            Label("Allowed Capabilities", systemImage: "lock.shield")
+                                .font(.caption.weight(.semibold))
+                            Text(profile.allowedCapabilities.map(capabilityDisplayName).joined(separator: " · "))
+                                .font(.caption2).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            HStack {
+                                Text("Destructive families").font(.caption2).foregroundStyle(.secondary)
+                                Spacer()
+                                Text(destructiveFamiliesLabel(profile.destructiveFamilies)).font(.caption2.weight(.medium))
+                            }
+                            HStack {
+                                Text("Agent access ceiling").font(.caption2).foregroundStyle(.secondary)
+                                Spacer()
+                                Text(capabilityDisplayName(profile.accessModeCeiling)).font(.caption2.weight(.medium))
+                            }
+
+                            Divider()
+                            Label("Approval Behavior", systemImage: "person.badge.shield.checkmark")
+                                .font(.caption.weight(.semibold))
+                            HStack {
+                                Text("Source").font(.caption2).foregroundStyle(.secondary)
+                                Spacer()
+                                Text(approvalSourceDisplayName(profile.approvalBehavior.source))
+                                    .font(.caption2.weight(.semibold))
+                            }
+                            Text(profile.approvalBehavior.summary)
+                                .font(.caption2).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text("Allowed means the server permits the capability. It does not mean a confirmation prompt will appear.")
+                                .font(.caption2.weight(.medium)).foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Divider()
+                            Text("Preset overview").font(.caption.weight(.semibold))
+                            ForEach(semantics.profiles) { item in
+                                HStack(spacing: 6) {
+                                    Image(systemName: item.active ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(item.active ? Color.accentColor : Color.secondary)
+                                        .font(.caption2)
+                                    Text(profileDisplayName(item.name)).font(.caption2.weight(.medium))
+                                    Spacer()
+                                    Text("\(item.allowedCapabilities.count) caps · Approval \(approvalSourceDisplayName(item.approvalBehavior.source))")
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+                            }
+                        } else {
+                            Text("Unknown permission profile: \(semantics.activeProfile). Calls fail closed until a known profile is configured.")
+                                .font(.caption2).foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.top, 8)
+                } else {
+                    Text(state.serverRunning ? "Permission semantics unavailable." : "Start the server to inspect permission semantics.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
+                }
+            } label: {
+                HStack {
+                    Label("Permissions & Approval", systemImage: "checkmark.shield")
+                    Spacer()
+                    if !showSecurity, let semantics = state.securitySemantics {
+                        Text(profileDisplayName(semantics.activeProfile)).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
     private var voiceCard: some View {
         GroupBox {
             DisclosureGroup(isExpanded: $showVoice) {
@@ -605,6 +689,35 @@ struct MenuBarView: View {
         if value.contains("http") || value.contains("web") || value.contains("network") { return "network" }
         if value.contains("observe") || value.contains("ui") || value.contains("screen") { return "rectangle.and.hand.point.up.left.fill" }
         return "wrench.and.screwdriver.fill"
+    }
+
+    private func profileDisplayName(_ value: String) -> String {
+        switch value.lowercased() {
+        case "read_only": return "Read Only"
+        case "standard": return "Standard"
+        case "trusted": return "Trusted"
+        default: return value.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    private func approvalSourceDisplayName(_ value: String) -> String {
+        switch value.lowercased() {
+        case "client": return "Client"
+        case "server": return "Mac MCP"
+        case "external": return "External guard"
+        case "none": return "None"
+        default: return value.capitalized
+        }
+    }
+
+    private func capabilityDisplayName(_ value: String) -> String {
+        value.replacingOccurrences(of: "_", with: " ")
+    }
+
+    private func destructiveFamiliesLabel(_ values: [String]) -> String {
+        if values == ["*"] { return "All" }
+        if values.isEmpty { return "None" }
+        return values.map(capabilityDisplayName).joined(separator: ", ")
     }
 
     private func browserActivityLabel(_ context: BrowserContext) -> String {

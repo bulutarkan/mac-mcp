@@ -129,6 +129,24 @@ class BrowserVisibilityTests(unittest.TestCase):
         }))
 
 
+class SecuritySemanticsRouteTests(unittest.TestCase):
+    def test_security_semantics_is_local_only_and_separates_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
+            app = Starlette(routes=create_dashboard_routes(manager, load_settings()))
+            with patch.dict("os.environ", {"MAC_MCP_PERMISSION_PROFILE": "standard"}, clear=False):
+                local = TestClient(app).get("/dashboard/api/security/semantics")
+                remote = TestClient(app).get(
+                    "/dashboard/api/security/semantics",
+                    headers={"x-forwarded-for": "8.8.8.8"},
+                )
+            self.assertEqual(200, local.status_code)
+            payload = local.json()
+            self.assertEqual("standard", payload["active_profile"])
+            self.assertFalse(payload["ask_confirmation_is_automatic_gate"])
+            self.assertEqual(403, remote.status_code)
+
+
 class BrowserShowTabRouteTests(unittest.TestCase):
     def test_show_tab_is_explicit_foreground_action(self) -> None:
         with tempfile.TemporaryDirectory() as td:

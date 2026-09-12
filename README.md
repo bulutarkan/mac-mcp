@@ -139,6 +139,22 @@ https://your-domain.example/mcp?ApiKey=<MCP_API_KEY>
 
 `Authorization` remains authoritative when both forms are supplied. Empty, duplicate, or invalid `ApiKey` query credentials are rejected while authentication is enabled. The server removes `ApiKey` from its local access-log URL before logging, but upstream proxies/tunnels can still observe query strings, so Bearer headers should be preferred whenever the client supports them.
 
+## Permission profiles and approval semantics
+
+Mac MCP treats **capability enforcement** and **human approval** as separate security concepts. A capability being allowed means only that the Mac MCP server policy permits that tool/risk class. It does **not** mean a second confirmation prompt will appear before the action runs.
+
+| Profile | Server-enforced capability behavior | Approval source | Automatic Mac MCP prompt |
+| --- | --- | --- | --- |
+| `trusted` | All registered capabilities; destructive families are not additionally restricted by the profile. | `none` | No |
+| `standard` | Blocks `raw_execution` and `update_control`; destructive operations are limited to browser/accessibility families; access-mode ceiling is read-only. | `none` | No |
+| `read_only` | Allows read/network/browser/native-accessibility capabilities only and denies destructive calls. | `none` | No |
+
+`ask_confirmation` is an explicit interaction tool. It is **not** an automatic approval gate around other tools. A connected MCP client may implement its own approval UI, but that is client-side behavior and is not guaranteed by Mac MCP. Likewise, a future server-side or external guard can be represented explicitly as approval source `server` or `external`; Mac MCP does not currently advertise an “approval-heavy” preset because that name would imply a guarantee that does not exist.
+
+Delegated Codex workers currently run with Codex `approval_policy="never"`; their sandbox/access mode is separate from human approval. OpenCode permission behavior is also provider-side and must not be treated as a Mac MCP server confirmation guarantee.
+
+Set the server capability profile with `MAC_MCP_PERMISSION_PROFILE=trusted|standard|read_only`. The native menu bar app reads `/dashboard/api/security/semantics` and shows **Allowed Capabilities** and **Approval Behavior** separately for the active profile.
+
 ## Install the menu bar app
 
 ```bash
@@ -162,6 +178,7 @@ The app uses the existing localhost dashboard APIs:
 
 ```text
 /dashboard/api/summary
+/dashboard/api/security/semantics
 /dashboard/api/events
 /dashboard/api/agents
 /dashboard/api/steering

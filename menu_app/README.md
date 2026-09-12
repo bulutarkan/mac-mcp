@@ -19,3 +19,9 @@ The app is independent from the Python server. Quitting the app does not stop MC
 For Mac MCP, **background browser automation** means automation inside a normal, visible Safari or Chrome tab without stealing focus. It does not mean a headless or invisible browser.
 
 The menu bar controller shows active browser work in Sessions and Latest Tool Usage. Its compact browser context is deliberately privacy-minimized to browser name, site hostname, and action; URL paths/query strings and page content are not displayed. A **Show Tab** control is available when a stable live tab reference exists, and only that explicit click is allowed to bring the browser to the foreground.
+
+## Permissions and approval
+
+The menu bar app intentionally presents **Allowed Capabilities** separately from **Approval Behavior**. The permission profile is enforced by the Mac MCP server; approval describes whether a human confirmation layer exists and where it comes from. Current built-in profiles report approval source `none`: allowed calls do not automatically trigger a second Mac MCP prompt. Client-side approval, if any, is controlled by the MCP client and is not a server guarantee.
+
+The app reads this information from the localhost-only `/dashboard/api/security/semantics` endpoint. `ask_confirmation` remains an explicit interaction tool rather than a universal approval gate.

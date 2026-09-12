@@ -58,6 +58,59 @@ struct BrowserShowTabEnvelope: Decodable {
     let ok: Bool
 }
 
+struct ApprovalBehaviorInfo: Decodable {
+    let source: String
+    let automaticConfirmation: Bool
+    let summary: String
+
+    enum CodingKeys: String, CodingKey {
+        case source, summary
+        case automaticConfirmation = "automatic_confirmation"
+    }
+}
+
+struct PermissionProfileInfo: Decodable, Identifiable {
+    let name: String
+    let active: Bool
+    let capabilityEnforcement: String
+    let allowedCapabilities: [String]
+    let deniedCapabilities: [String]
+    let destructiveFamilies: [String]
+    let accessModeCeiling: String
+    let approvalBehavior: ApprovalBehaviorInfo
+    var id: String { name }
+
+    enum CodingKeys: String, CodingKey {
+        case name, active
+        case capabilityEnforcement = "capability_enforcement"
+        case allowedCapabilities = "allowed_capabilities"
+        case deniedCapabilities = "denied_capabilities"
+        case destructiveFamilies = "destructive_families"
+        case accessModeCeiling = "access_mode_ceiling"
+        case approvalBehavior = "approval_behavior"
+    }
+}
+
+struct SecuritySemanticsEnvelope: Decodable {
+    let activeProfile: String
+    let knownProfile: Bool
+    let capabilityEnforcement: String
+    let approvalContract: String
+    let askConfirmationIsAutomaticGate: Bool
+    let supportedApprovalSources: [String]
+    let profiles: [PermissionProfileInfo]
+
+    enum CodingKeys: String, CodingKey {
+        case profiles
+        case activeProfile = "active_profile"
+        case knownProfile = "known_profile"
+        case capabilityEnforcement = "capability_enforcement"
+        case approvalContract = "approval_contract"
+        case askConfirmationIsAutomaticGate = "ask_confirmation_is_automatic_gate"
+        case supportedApprovalSources = "supported_approval_sources"
+    }
+}
+
 struct AgentInfo: Decodable, Identifiable {
     let agentID: String
     let status: String?
@@ -176,6 +229,7 @@ final class AppState: ObservableObject {
     @Published var recentEvents: [ToolEvent] = []
     @Published var activeEvents: [ToolEvent] = []
     @Published var browserActionStatus = ""
+    @Published var securitySemantics: SecuritySemanticsEnvelope?
     @Published var agents: [AgentInfo] = []
     @Published var steeringSessions: [SteeringSession] = []
     @Published var selectedSteeringSessionID: String?
@@ -229,7 +283,8 @@ final class AppState: ObservableObject {
             async let eventsResult: EventsEnvelope? = try? fetch(base.appendingPathComponent("dashboard/api/events"), query: ["hours": "1", "limit": "20"])
             async let agentsResult: AgentsEnvelope? = try? fetch(base.appendingPathComponent("dashboard/api/agents"), query: ["limit": "20"])
             async let steeringResult: SteeringEnvelope? = try? fetch(base.appendingPathComponent("dashboard/api/steering"), query: [:])
-            let (eventsEnvelope, agentsEnvelope, steeringEnvelope) = await (eventsResult, agentsResult, steeringResult)
+            async let securityResult: SecuritySemanticsEnvelope? = try? fetch(base.appendingPathComponent("dashboard/api/security/semantics"), query: [:])
+            let (eventsEnvelope, agentsEnvelope, steeringEnvelope, securityEnvelope) = await (eventsResult, agentsResult, steeringResult, securityResult)
             if let eventsEnvelope {
                 recentEvents = eventsEnvelope.events
                 activeEvents = eventsEnvelope.active
@@ -241,6 +296,7 @@ final class AppState: ObservableObject {
                 activeAgents = agentsEnvelope.agents.filter(\.isActive).count
             }
             if let steeringEnvelope { applySteering(steeringEnvelope) }
+            if let securityEnvelope { securitySemantics = securityEnvelope }
         } catch {
             consecutiveRefreshFailures += 1
             if consecutiveRefreshFailures >= 3 {

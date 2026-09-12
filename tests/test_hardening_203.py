@@ -19,10 +19,12 @@ from mcp_server import browser_tabs
 from mcp_server.cli import _resolve_ngrok_binary
 from mcp_server.observability import ObservedFastMCP, TelemetryManager
 from mcp_server.policy import (
+    ApprovalSource,
     PolicyContext,
     RISK_REGISTRY,
     evaluate_profile,
     evaluate_tool_scope,
+    permission_semantics,
     resolve_risk,
 )
 from mcp_server.policy_scope import ResourceScope, child_scope, scope_contains
@@ -57,6 +59,40 @@ class RiskAndScopeTests(unittest.TestCase):
         self.assertTrue(evaluate_profile("read_only", read_risk).allowed)
         self.assertFalse(evaluate_profile("read_only", shell_risk).allowed)
         self.assertTrue(evaluate_profile("trusted", shell_risk).allowed)
+
+    def test_permission_semantics_separates_capability_and_approval(self) -> None:
+        semantics = permission_semantics("standard")
+        self.assertEqual("separate_from_capability_enforcement", semantics["approval_contract"])
+        self.assertFalse(semantics["ask_confirmation_is_automatic_gate"])
+        self.assertEqual({source.value for source in ApprovalSource}, set(semantics["supported_approval_sources"]))
+        profiles = {item["name"]: item for item in semantics["profiles"]}
+        self.assertEqual({"trusted", "standard", "read_only"}, set(profiles))
+        self.assertTrue(profiles["standard"]["active"])
+        for profile in profiles.values():
+            self.assertEqual("none", profile["approval_behavior"]["source"])
+            self.assertFalse(profile["approval_behavior"]["automatic_confirmation"])
+
+    def test_read_only_denies_write_and_standard_allowed_write_has_no_server_prompt(self) -> None:
+        _, file_write = resolve_risk("write_file", {"path": "/tmp/a", "content": "x"})
+        _, mkdir_write = resolve_risk("create_directory", {"path": "/tmp/a"})
+        self.assertFalse(evaluate_profile("read_only", file_write).allowed)
+        self.assertTrue(evaluate_profile("standard", mkdir_write).allowed)
+        standard = {item["name"]: item for item in permission_semantics("standard")["profiles"]}["standard"]
+        self.assertEqual("none", standard["approval_behavior"]["source"])
+        self.assertFalse(standard["approval_behavior"]["automatic_confirmation"])
+
+    def test_active_permission_profile_tracks_environment(self) -> None:
+        with patch.dict(os.environ, {"MAC_MCP_PERMISSION_PROFILE": "read_only"}, clear=False):
+            semantics = permission_semantics()
+        self.assertEqual("read_only", semantics["active_profile"])
+        self.assertTrue(semantics["known_profile"])
+        self.assertTrue(next(item for item in semantics["profiles"] if item["name"] == "read_only")["active"])
+
+    def test_unknown_profile_is_reported_without_inventing_approval(self) -> None:
+        semantics = permission_semantics("approval_heavy")
+        self.assertEqual("approval_heavy", semantics["active_profile"])
+        self.assertFalse(semantics["known_profile"])
+        self.assertFalse(any(item["active"] for item in semantics["profiles"]))
 
     def test_scope_enforces_path_browser_and_job(self) -> None:
         scope = ResourceScope(

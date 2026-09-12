@@ -12,7 +12,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Respon
 from starlette.routing import Route
 
 from .observability import TelemetryManager, sanitize_value
-from .policy import RISK_REGISTRY
+from .policy import RISK_REGISTRY, permission_semantics
 from .security import Settings
 from .steering import SteeringManager
 from .tools_agents import list_agents
@@ -200,6 +200,12 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         })
         return JSONResponse(payload)
 
+    async def security_semantics(request: Request) -> Response:
+        denied = _local_only(request)
+        if denied:
+            return denied
+        return JSONResponse(permission_semantics())
+
     async def events(request: Request) -> Response:
         denied = _local_only(request)
         if denied:
@@ -378,6 +384,7 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, ste
         Route("/dashboard", index, methods=["GET"]),
         Route("/dashboard/assets/{name}", asset, methods=["GET"]),
         Route("/dashboard/api/summary", summary, methods=["GET"]),
+        Route("/dashboard/api/security/semantics", security_semantics, methods=["GET"]),
         Route("/dashboard/api/events", events, methods=["GET"]),
         Route("/dashboard/api/browser/show-tab", show_browser_tab, methods=["POST"]),
         Route("/dashboard/api/agents", agents, methods=["GET"]),

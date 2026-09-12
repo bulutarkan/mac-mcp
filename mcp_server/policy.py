@@ -72,12 +72,34 @@ class RiskAssessment:
         }
 
 
+class ApprovalSource(str, Enum):
+    CLIENT = "client"
+    SERVER = "server"
+    EXTERNAL = "external"
+    NONE = "none"
+
+
+@dataclass(frozen=True)
+class ApprovalBehavior:
+    source: ApprovalSource
+    automatic_confirmation: bool
+    summary: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source.value,
+            "automatic_confirmation": self.automatic_confirmation,
+            "summary": self.summary,
+        }
+
+
 @dataclass(frozen=True)
 class PermissionProfile:
     name: str
     allowed_capabilities: Optional[frozenset[Capability]]
     allow_destructive_families: Optional[frozenset[str]]
     access_mode_ceiling: AccessMode
+    approval: ApprovalBehavior
 
 
 @dataclass(frozen=True)
@@ -321,6 +343,11 @@ PROFILES: dict[str, PermissionProfile] = {
         allowed_capabilities=None,
         allow_destructive_families=None,
         access_mode_ceiling=AccessMode.FULL,
+        approval=ApprovalBehavior(
+            source=ApprovalSource.NONE,
+            automatic_confirmation=False,
+            summary="Allowed calls execute without an automatic Mac MCP confirmation prompt; the MCP client may still apply its own approval flow.",
+        ),
     ),
     "standard": PermissionProfile(
         name="standard",
@@ -330,6 +357,11 @@ PROFILES: dict[str, PermissionProfile] = {
         ),
         allow_destructive_families=frozenset({"browser", "accessibility"}),
         access_mode_ceiling=AccessMode.READ_ONLY,
+        approval=ApprovalBehavior(
+            source=ApprovalSource.NONE,
+            automatic_confirmation=False,
+            summary="Allowed calls are capability-gated but do not trigger a second Mac MCP confirmation prompt; client-side approval is separate.",
+        ),
     ),
     "read_only": PermissionProfile(
         name="read_only",
@@ -341,6 +373,11 @@ PROFILES: dict[str, PermissionProfile] = {
         ),
         allow_destructive_families=frozenset(),
         access_mode_ceiling=AccessMode.READ_ONLY,
+        approval=ApprovalBehavior(
+            source=ApprovalSource.NONE,
+            automatic_confirmation=False,
+            summary="Mutating capabilities are denied by policy. Allowed read-only calls do not require a Mac MCP confirmation prompt.",
+        ),
     ),
 }
 
@@ -398,6 +435,44 @@ def evaluate_profile(profile_name: str, risk: RiskAssessment) -> PolicyDecision:
 
 def permission_profile_name() -> str:
     return (os.getenv("MAC_MCP_PERMISSION_PROFILE", "trusted").strip().lower() or "trusted")
+
+
+def permission_semantics(profile_name: Optional[str] = None) -> dict[str, Any]:
+    """Describe capability enforcement and human-approval behavior separately.
+
+    This is intentionally descriptive: it must never imply that an allowed tool
+    call will produce a confirmation prompt. Approval sources are modeled now so
+    a future client/server/external guard can be represented without changing the
+    capability contract.
+    """
+    active_name = str(profile_name or permission_profile_name()).strip().lower() or "trusted"
+    all_capabilities = frozenset(Capability)
+    profiles: list[dict[str, Any]] = []
+    for name, profile in PROFILES.items():
+        allowed = all_capabilities if profile.allowed_capabilities is None else profile.allowed_capabilities
+        denied = all_capabilities.difference(allowed)
+        profiles.append({
+            "name": name,
+            "active": name == active_name,
+            "capability_enforcement": "server",
+            "allowed_capabilities": sorted(capability.value for capability in allowed),
+            "denied_capabilities": sorted(capability.value for capability in denied),
+            "destructive_families": (
+                ["*"] if profile.allow_destructive_families is None
+                else sorted(profile.allow_destructive_families)
+            ),
+            "access_mode_ceiling": profile.access_mode_ceiling.value,
+            "approval_behavior": profile.approval.to_dict(),
+        })
+    return {
+        "active_profile": active_name,
+        "known_profile": active_name in PROFILES,
+        "capability_enforcement": "Mac MCP server policy",
+        "approval_contract": "separate_from_capability_enforcement",
+        "ask_confirmation_is_automatic_gate": False,
+        "supported_approval_sources": [source.value for source in ApprovalSource],
+        "profiles": profiles,
+    }
 
 
 def environment_policy_context(*, actor: str = "global") -> PolicyContext:
