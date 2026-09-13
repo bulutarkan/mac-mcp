@@ -59,8 +59,20 @@ class SafariVisualCompanionTests(unittest.TestCase):
         menu = (ROOT / "menu_app/Sources/MenuBarView.swift").read_text(encoding="utf-8")
         self.assertIn("SFSafariExtensionManager.getStateOfSafariExtension", app_state)
         self.assertIn("SFSafariApplication.showPreferencesForExtension", app_state)
+        self.assertIn("safariExtensionRegistered", app_state)
+        self.assertIn("openUnsignedSafariExtensionSetup", app_state)
+        self.assertIn("activateFileViewerSelecting", app_state)
+        self.assertIn("Add Temporary Extension", app_state)
         self.assertIn('Button("Enable in Safari…")', menu)
+        self.assertIn('Button("Developer Setup…")', menu)
         self.assertIn("Safari Visual Companion", menu)
+
+    def test_installer_explains_adhoc_safari_setup(self) -> None:
+        source = (ROOT / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("Signature=adhoc", source)
+        self.assertIn("Developer Setup…", source)
+        self.assertIn("Add Temporary Extension", source)
+        self.assertIn("Mac MCP Safari Visual Companion.appex/Contents/Resources", source)
 
     def test_updater_tracks_and_syncs_new_safari_extension_files(self) -> None:
         with tempfile.TemporaryDirectory() as td:

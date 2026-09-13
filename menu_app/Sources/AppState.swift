@@ -490,6 +490,7 @@ final class AppState: ObservableObject {
     @Published var actionNotice: ActionNotice?
     @Published var pulse = false
     @Published private(set) var safariExtensionEnabled = false
+    @Published private(set) var safariExtensionRegistered = false
     @Published private(set) var safariExtensionStatus = "Checking…"
 
     let settings = SettingsStore()
@@ -529,11 +530,13 @@ final class AppState: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 if let state, error == nil {
+                    self.safariExtensionRegistered = true
                     self.safariExtensionEnabled = state.isEnabled
                     self.safariExtensionStatus = state.isEnabled ? "On" : "Needs enabling"
                 } else {
+                    self.safariExtensionRegistered = false
                     self.safariExtensionEnabled = false
-                    self.safariExtensionStatus = "Unavailable"
+                    self.safariExtensionStatus = "Developer setup"
                 }
             }
         }
@@ -541,17 +544,44 @@ final class AppState: ObservableObject {
 
     func openSafariExtensionPreferences() {
         let identifier = safariExtensionBundleIdentifier
-        SFSafariApplication.showPreferencesForExtension(withIdentifier: identifier) { [weak self] error in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if error != nil {
-                    self.actionNotice = ActionNotice(kind: .error, message: "Could not open Safari extension settings.")
-                } else {
-                    self.actionNotice = ActionNotice(kind: .info, message: "Enable Mac MCP Visual Companion in Safari, then allow website access.")
+        SFSafariExtensionManager.getStateOfSafariExtension(withIdentifier: identifier) { [weak self] state, error in
+            guard let self else { return }
+            if state != nil, error == nil {
+                SFSafariApplication.showPreferencesForExtension(withIdentifier: identifier) { [weak self] preferencesError in
+                    DispatchQueue.main.async {
+                        guard let self else { return }
+                        if let preferencesError {
+                            self.actionNotice = ActionNotice(kind: .error, message: "Safari could not open the registered extension settings: \(preferencesError.localizedDescription)")
+                        } else {
+                            self.actionNotice = ActionNotice(kind: .info, message: "Enable Mac MCP Visual Companion in Safari, then allow website access.")
+                        }
+                        self.refreshSafariExtensionState()
+                    }
                 }
-                self.refreshSafariExtensionState()
+                return
+            }
+            DispatchQueue.main.async {
+                self.openUnsignedSafariExtensionSetup()
             }
         }
+    }
+
+    private func openUnsignedSafariExtensionSetup() {
+        let resourcesURL = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/PlugIns/Mac MCP Safari Visual Companion.appex/Contents/Resources", isDirectory: true)
+        let manifestURL = resourcesURL.appendingPathComponent("manifest.json")
+        if FileManager.default.fileExists(atPath: manifestURL.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([manifestURL])
+        }
+        if let safariURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Safari") {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            NSWorkspace.shared.openApplication(at: safariURL, configuration: configuration)
+        }
+        actionNotice = ActionNotice(
+            kind: .info,
+            message: "Unsigned build: in Safari choose Develop → Allow Unsigned Extensions, then Develop → Add Temporary Extension… and select the revealed Resources folder."
+        )
     }
 
     static func pollDelaySeconds(forFailureCount failureCount: Int) -> Double {

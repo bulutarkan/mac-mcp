@@ -2,19 +2,19 @@
   <img src="assets/screenshots/mac-mcp.png" alt="Mac MCP" width="760">
 </p>
 
-# Mac MCP 2.1
+# Mac MCP 2.1.1
 
 Mac MCP is a local macOS control server for AI agents. It exposes your Mac through a native MCP endpoint and a REST/OpenAPI surface, with shell, files, browser automation, macOS UI control, delegated OpenCode/Codex agents, memory, Agent Skills, voice interaction, self-update tooling, and a local operations dashboard.
 
 > **Security:** Mac MCP can execute commands, read/write files, and control desktop apps. Keep MCP authentication enabled whenever the service is reachable outside localhost and expose it only to clients you trust. The operations dashboard is loopback-only **and** requires a separate per-user dashboard Bearer token; localhost is machine-local transport, not a same-user sandbox.
 
-## What's new in 2.1
+## What's new in 2.1.1
 
 - Added the **Safari Visual Companion**, a bundled Safari Web Extension that makes real Mac MCP browser work visible inside the exact page being automated. While an agent is working, Safari can show a subtle animated page frame, `Mac MCP · …` activity badge, synthetic cursor movement, and click feedback.
 - Visual feedback is driven by the existing high-level browser actions, including **Inspecting, Finding, Reading, Clicking, Typing, Selecting, Focusing, and Scrolling**. It works with the same real Safari tabs used by Mac MCP; it does not replace the browser automation layer or require a separate browser profile.
 - The visual event channel is intentionally metadata-only: it sends a bounded action label, optional viewport coordinates, effect type, and TTL. Typed text, selectors, URLs, titles, DOM content, and secrets are not copied into extension events.
-- Added a native **Safari Activity** card to `Mac MCP.app`. It checks the bundled extension state and offers **Enable in Safari…** when one-time Safari setup is still required.
-- The installer and updater now carry the Safari extension with the menu app and verify the nested extension signature during installation.
+- Added a native **Safari Activity** card to `Mac MCP.app`. Registered Apple-signed builds offer **Enable in Safari…**; local ad-hoc builds now show **Developer Setup…** instead of failing when Safari has not registered the extension.
+- The installer and updater carry the Safari extension with the menu app and verify the nested extension signature. The installer now distinguishes a normal Apple-signed distribution from an ad-hoc local source build and prints the correct Safari setup for each.
 - Kept the overlay display-only. It is useful for watching what an agent is doing, but it is **not** a trust, permission, or security indicator; Mac MCP's existing access profiles, approvals, provenance, secret-egress guard, tab leases, and no-progress protections remain authoritative.
 - The 2.1 release also includes the recent browser resilience and security work: source-aware web-to-host approval, secret-egress protection, sticky untrusted provenance, no-progress circuit breaking, delegated tab leases, steering idempotency/recovery, and dedicated-user hardening guidance.
 
@@ -64,13 +64,23 @@ This is designed for workflows where an AI agent keeps working in one or more ba
 
 `Mac MCP.app` bundles a Safari Web Extension that makes active Mac MCP browser work visible inside the exact page being automated. The extension is display-only: it renders a subtle pulsing page frame, a small `Mac MCP · …` activity badge, a synthetic cursor, and click feedback for high-level browser actions. Visual events contain only bounded action labels and viewport coordinates; typed text, selectors, URLs, page titles, DOM content, and secrets are not copied into the extension event. The overlay is activity feedback only and must not be treated as a security or trust indicator.
 
-One-time Safari setup:
+Safari setup depends on how `Mac MCP.app` is signed:
 
-1. Install or update Mac MCP normally so the extension is present inside `~/Applications/Mac MCP.app`.
-2. Open **Mac MCP.app → Safari Activity → Enable in Safari…**. You can also open **Safari → Settings → Extensions** manually.
-3. Turn on **Mac MCP Visual Companion**.
-4. Grant website access for the sites where you want activity feedback. The extension declares `http://*/*` and `https://*/*` because Mac MCP can automate arbitrary web pages, but you can restrict Safari's per-site permission if you only want the overlay on selected sites.
-5. For local/ad-hoc source builds, Safari may additionally require **Develop → Allow Unsigned Extensions**. If the Develop menu is hidden, enable Safari's web-developer features first. This unsigned-extension step is only a local-development requirement; properly Developer ID-signed/notarized distributions do not need it.
+**Developer ID / Apple-signed build (persistent):**
+
+1. Install or update Mac MCP normally.
+2. Open **Mac MCP.app → Safari Activity → Enable in Safari…**. You can also use **Safari → Settings → Extensions**.
+3. Turn on **Mac MCP Visual Companion** and grant website access for the sites where you want activity feedback.
+
+**Local GitHub/source build (ad-hoc, development mode):**
+
+1. Open **Mac MCP.app → Safari Activity → Developer Setup…**. Mac MCP reveals the packaged extension `Resources` folder and opens Safari.
+2. In Safari, enable web-developer features if the **Develop** menu is hidden.
+3. Choose **Develop → Allow Unsigned Extensions**.
+4. Choose **Develop → Add Temporary Extension…** and select `~/Applications/Mac MCP.app/Contents/PlugIns/Mac MCP Safari Visual Companion.appex/Contents/Resources`.
+5. Grant website access when Safari asks. Safari treats this as a development/temporary extension; persistent normal installation requires an Apple-signed app bundle.
+
+The project remains fully open source and does **not** need the Mac App Store. For a persistent GitHub release, sign/notarize the distributed `Mac MCP.app` with Developer ID; `menu_app/build_app.sh` accepts `MAC_MCP_CODESIGN_IDENTITY` for that release path.
 
 No separate browser profile, helper daemon, or Xcode project is required. `menu_app/build_app.sh` compiles the `.appex` into `Mac MCP.app/Contents/PlugIns/` with the normal command-line Swift toolchain. Local builds default to ad-hoc signing; release builders can set `MAC_MCP_CODESIGN_IDENTITY` to use a Developer ID identity with hardened runtime/timestamp signing.
 

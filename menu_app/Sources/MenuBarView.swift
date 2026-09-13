@@ -459,7 +459,9 @@ struct MenuBarView: View {
                         .font(.caption.weight(.semibold))
                     Text(state.safariExtensionEnabled
                          ? "Shows when Mac MCP is actively using a Safari page."
-                         : "One-time setup: enable the bundled extension in Safari.")
+                         : (state.safariExtensionRegistered
+                            ? "One-time setup: enable the bundled extension in Safari."
+                            : "Unsigned build: Safari developer setup is required."))
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -467,8 +469,11 @@ struct MenuBarView: View {
                 if state.safariExtensionEnabled {
                     Button { state.refreshSafariExtensionState() } label: { Image(systemName: "arrow.clockwise") }
                         .buttonStyle(.borderless).help("Refresh extension status")
-                } else {
+                } else if state.safariExtensionRegistered {
                     Button("Enable in Safari…") { state.openSafariExtensionPreferences() }
+                        .controlSize(.small)
+                } else {
+                    Button("Developer Setup…") { state.openSafariExtensionPreferences() }
                         .controlSize(.small)
                 }
             }

@@ -1,3 +1,10 @@
+## [2.1.1] - 2026-09-13
+
+- Fixed the Safari Activity onboarding for locally built/ad-hoc-signed `Mac MCP.app` bundles. Safari does not register those bundles as normal installed Safari extensions, so `showPreferencesForExtension` could fail with “Could not open Safari extension settings.”
+- The menu app now distinguishes a registered Safari extension from an unsigned local build. Registered builds keep **Enable in Safari…**; unregistered/ad-hoc builds show **Developer Setup…**, reveal the packaged extension resources, open Safari, and provide the temporary-extension steps.
+- Updated the installer and README to state the actual distribution boundary: persistent Safari registration requires an Apple-signed app (Developer ID is supported outside the Mac App Store), while ad-hoc source installs use Safari's unsigned temporary-extension developer flow.
+- Surfaced the real SafariServices error when a registered extension preference request fails instead of replacing it with a generic message.
+
 ## [2.1.0] - 2026-09-13
 
 - Added **Safari Visual Companion**, a bundled Safari Web Extension that visualizes active Mac MCP browser work directly in the real page with a subtle frame, activity badge, synthetic cursor, and click ripple.

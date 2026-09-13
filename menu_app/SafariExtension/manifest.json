@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Mac MCP Visual Companion",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Shows a lightweight visual indicator when Mac MCP is actively using a Safari page.",
   "content_scripts": [
     {
