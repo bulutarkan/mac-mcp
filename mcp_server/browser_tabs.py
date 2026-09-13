@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 import threading
+import time
 import uuid
 import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, status
 
@@ -18,6 +21,9 @@ _RESOURCE_LOCKS_LOCK = threading.Lock()
 _RESOURCE_LOCKS: weakref.WeakValueDictionary[Tuple[str, str], threading.RLock] = (
     weakref.WeakValueDictionary()
 )
+_LOGICAL_LEASES: Dict[str, Dict[str, Any]] = {}
+_LEASE_HISTORY: Dict[str, Dict[str, Any]] = {}
+_LEASE_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -29,6 +35,10 @@ class TabTarget:
     native_id: str
     title: str
     url: str
+    lease_generation: int = 0
+    logical_owner: Optional[str] = None
+    lease_rebound: bool = False
+    previous_origin: Optional[str] = None
 
 
 def _osascript(script: str) -> str:
@@ -60,6 +70,158 @@ def _resource_lock(browser: str, tab_handle: str) -> threading.RLock:
             lock = threading.RLock()
             _RESOURCE_LOCKS[key] = lock
         return lock
+
+
+
+
+def _lease_ttl_s() -> float:
+    try:
+        value = float(os.getenv("MAC_MCP_TAB_LEASE_TTL_S", "300"))
+    except ValueError:
+        value = 300.0
+    return max(30.0, min(value, 3600.0))
+
+
+def _origin(url: Any) -> Optional[str]:
+    try:
+        parsed = urlsplit(str(url or ""))
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    host = parsed.hostname.lower().rstrip(".")
+    default_port = 443 if parsed.scheme == "https" else 80
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    suffix = f":{port}" if port and port != default_port else ""
+    return f"{parsed.scheme}://{host}{suffix}"
+
+
+def _logical_owner() -> tuple[Optional[str], Optional[str], Optional[str]]:
+    # Imported lazily to avoid creating a browser_tabs -> policy import cycle at module load.
+    try:
+        from .policy import current_policy_context
+        context = current_policy_context()
+    except Exception:
+        return None, None, None
+    if not context.agent_id:
+        return None, None, context.profile
+    return f"agent:{context.agent_id}", context.agent_id, context.profile
+
+
+def _prune_logical_leases_locked(now: Optional[float] = None) -> None:
+    current = time.time() if now is None else now
+    for handle, lease in list(_LOGICAL_LEASES.items()):
+        if float(lease.get("expires_at") or 0) <= current:
+            _LEASE_HISTORY[handle] = dict(lease)
+            _LOGICAL_LEASES.pop(handle, None)
+
+
+def _claim_logical_lease(
+    row: Dict[str, Any], *, allow_rebind: bool = False, created_by_owner: bool = False,
+) -> Dict[str, Any]:
+    owner, agent_id, profile = _logical_owner()
+    handle = str(row.get("tab_handle") or "")
+    if not owner or not handle:
+        return {"generation": 0, "owner": owner, "rebound": False, "previous_origin": None}
+
+    now = time.time()
+    current_origin = _origin(row.get("url"))
+    with _LEASE_LOCK:
+        _prune_logical_leases_locked(now)
+        active = _LOGICAL_LEASES.get(handle)
+        if active is not None and active.get("owner") != owner:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "ok": False,
+                    "error": "tab_owned_by_other_agent",
+                    "retryable": True,
+                    "retry_after_ms": 1000,
+                    "tab_handle": handle,
+                    "owner": "another_agent",
+                    "message": "The tab is still leased by another delegated agent.",
+                },
+                headers={"Retry-After": "1"},
+            )
+        if active is not None:
+            active["expires_at"] = now + _lease_ttl_s()
+            active["last_seen_at"] = now
+            active["origin"] = current_origin or active.get("origin")
+            active["profile"] = profile or active.get("profile")
+            return {
+                "generation": int(active.get("generation") or 0),
+                "owner": owner,
+                "rebound": False,
+                "previous_origin": active.get("origin"),
+            }
+
+        previous = _LEASE_HISTORY.get(handle)
+        if not allow_rebind and not created_by_owner:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "ok": False,
+                    "error": "tab_rebind_required",
+                    "retryable": True,
+                    "tab_handle": handle,
+                    "required_action": "browser_observe",
+                    "message": "Fresh browser_observe is required before this agent can act on the tab.",
+                },
+            )
+        generation = int((previous or {}).get("generation") or 0) + 1
+        lease = {
+            "owner": owner,
+            "agent_id": agent_id,
+            "profile": profile,
+            "origin": current_origin,
+            "generation": generation,
+            "created_at": now,
+            "last_seen_at": now,
+            "expires_at": now + _lease_ttl_s(),
+        }
+        _LOGICAL_LEASES[handle] = lease
+        _LEASE_HISTORY[handle] = dict(lease)
+        return {
+            "generation": generation,
+            "owner": owner,
+            "rebound": bool(previous is not None),
+            "previous_origin": (previous or {}).get("origin"),
+        }
+
+
+def claim_created_tab(browser: str, tab_handle: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not tab_handle:
+        return None
+    try:
+        _, _, row = resolve_tab(browser, str(tab_handle))
+    except KeyError:
+        return None
+    return _claim_logical_lease(row, allow_rebind=True, created_by_owner=True)
+
+
+def release_agent_leases(agent_id: Optional[str]) -> int:
+    if not agent_id:
+        return 0
+    owner = f"agent:{agent_id}"
+    released = 0
+    with _LEASE_LOCK:
+        _prune_logical_leases_locked()
+        for handle, lease in list(_LOGICAL_LEASES.items()):
+            if lease.get("owner") != owner:
+                continue
+            _LEASE_HISTORY[handle] = dict(lease)
+            _LOGICAL_LEASES.pop(handle, None)
+            released += 1
+    return released
+
+
+def logical_lease_snapshot() -> Dict[str, Dict[str, Any]]:
+    with _LEASE_LOCK:
+        _prune_logical_leases_locked()
+        return {handle: dict(lease) for handle, lease in _LOGICAL_LEASES.items()}
 
 
 def _scan(browser: str) -> List[Dict[str, Any]]:
@@ -226,7 +388,8 @@ def resolve_location(
     return int(match["window_index"]), int(match["tab_index"]), match
 
 
-def _target_from_row(row: Dict[str, Any]) -> TabTarget:
+def _target_from_row(row: Dict[str, Any], lease: Optional[Dict[str, Any]] = None) -> TabTarget:
+    lease = lease or {}
     return TabTarget(
         browser=_browser_key(str(row.get("browser") or "")),
         window_index=int(row["window_index"]),
@@ -235,6 +398,10 @@ def _target_from_row(row: Dict[str, Any]) -> TabTarget:
         native_id=str(row.get("native_id") or ""),
         title=str(row.get("title") or ""),
         url=str(row.get("url") or ""),
+        lease_generation=int(lease.get("generation") or 0),
+        logical_owner=lease.get("owner"),
+        lease_rebound=bool(lease.get("rebound")),
+        previous_origin=lease.get("previous_origin"),
     )
 
 
@@ -244,6 +411,8 @@ def tab_lease(
     tab_handle: Optional[str] = None,
     window_index: int = 1,
     tab_index: Optional[int] = None,
+    *,
+    allow_rebind: bool = False,
 ) -> Iterator[TabTarget]:
     """Exclusively lease one logical tab without queueing competing callers.
 
@@ -273,7 +442,8 @@ def tab_lease(
         )
     try:
         _, _, row = resolve_tab(browser, handle)
-        yield _target_from_row(row)
+        lease = _claim_logical_lease(row, allow_rebind=allow_rebind)
+        yield _target_from_row(row, lease)
     finally:
         lock.release()
 
@@ -295,8 +465,13 @@ def find_created(browser: str, window_index: int, tab_index: int) -> Optional[Di
 def forget(tab_handle: Optional[str]) -> None:
     if not tab_handle:
         return
+    handle = str(tab_handle)
     with _LOCK:
-        _REGISTRY.pop(str(tab_handle), None)
+        _REGISTRY.pop(handle, None)
+    with _LEASE_LOCK:
+        lease = _LOGICAL_LEASES.pop(handle, None)
+        if lease is not None:
+            _LEASE_HISTORY[handle] = dict(lease)
 
 
 def registry_snapshot() -> Dict[str, Dict[str, Any]]:

@@ -24,6 +24,7 @@ from .policy_scope import (
 )
 from .scoped_auth import get_scoped_credential_store
 from .security import BASE_DIR, Settings, truncate
+from . import browser_tabs
 
 AGENTS_DIR = BASE_DIR / "agents"
 TEAMS_DIR = BASE_DIR / "agent_teams"
@@ -251,6 +252,7 @@ def _reap_worker(agent_id: str, proc: subprocess.Popen) -> None:
     try:
         proc.wait()
     finally:
+        browser_tabs.release_agent_leases(agent_id)
         with _WORKERS_LOCK:
             _WORKERS.pop(agent_id, None)
 
@@ -707,6 +709,8 @@ def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
                 return True
 
             meta = _update_meta(agent_id, mark_failed)
+            if meta.get("status") == "failed":
+                browser_tabs.release_agent_leases(agent_id)
     return meta
 
 
@@ -1163,6 +1167,7 @@ def _agent_action_single(
 
         meta = _update_meta(agent_id, mark_cancelled)
         get_scoped_credential_store().revoke_agent(agent_id)
+        browser_tabs.release_agent_leases(agent_id)
         _kill_group(meta.get("provider_pid"), allowed[sig_name])
         _kill_group(meta.get("worker_pid"), allowed[sig_name])
         with _WORKERS_LOCK:
@@ -1182,6 +1187,7 @@ def _agent_action_single(
         if meta.get("status") not in TERMINAL_STATUSES:
             raise HTTPException(status.HTTP_409_CONFLICT, "Cancel a running agent before despawn.")
         get_scoped_credential_store().revoke_agent(agent_id)
+        browser_tabs.release_agent_leases(agent_id)
         shutil.rmtree(_agent_dir(agent_id))
         return {"ok": True, "agent_id": agent_id, "status": "despawned"}
 

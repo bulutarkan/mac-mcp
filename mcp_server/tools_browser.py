@@ -79,6 +79,8 @@ def _tab_lease(
     tab_handle: Optional[str],
     window_index: int,
     tab_index: Optional[int],
+    *,
+    allow_rebind: bool = False,
 ) -> Iterator[browser_tabs.TabTarget]:
     with ExitStack() as stack:
         try:
@@ -88,6 +90,7 @@ def _tab_lease(
                     tab_handle=tab_handle,
                     window_index=window_index,
                     tab_index=tab_index,
+                    allow_rebind=allow_rebind,
                 )
             )
         except KeyError as exc:
@@ -221,12 +224,24 @@ def browser_open_url(
         end tell
         '''
 
-    raw = _run_osascript(script, timeout_s=30)
+    if not new_tab:
+        # Existing-tab navigation is a mutation of a shared browser resource. For
+        # delegated agents, acquire logical ownership before changing the URL.
+        existing_tabs = browser_tabs.list_tabs(b)
+        if existing_tabs:
+            with _tab_lease(b, None, 1, None):
+                raw = _run_osascript(script, timeout_s=30)
+        else:
+            raw = _run_osascript(script, timeout_s=30)
+    else:
+        raw = _run_osascript(script, timeout_s=30)
     try:
         tab_index = int(str(raw).strip())
     except Exception:
         tab_index = 1
     created = browser_tabs.find_created(b, 1, tab_index)
+    handle = created.get("tab_handle") if created else None
+    lease = browser_tabs.claim_created_tab(b, handle) if handle else None
     return {
         "ok": True,
         "browser": b,
@@ -234,7 +249,8 @@ def browser_open_url(
         "background": bool(background),
         "window_index": 1,
         "tab_index": tab_index,
-        "tab_handle": created.get("tab_handle") if created else None,
+        "tab_handle": handle,
+        "lease_generation": (lease or {}).get("generation"),
         "foreground_forced": False if background else True,
     }
 

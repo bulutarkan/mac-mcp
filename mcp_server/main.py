@@ -924,17 +924,20 @@ def create_app():
                     final_title = item.get("title") or final_title
                 if item.get("ok") is False or item.get("matched") is False:
                     errors.append({k: item.get(k) for k in ("type", "error", "for", "timed_out") if item.get(k) is not None})
+            progress = result.get("progress") if isinstance(result.get("progress"), dict) else {}
             compact: Dict[str, Any] = {
                 "ok": bool(result.get("ok")),
                 "data": data,
-                "url": final_url or ((result.get("state") or {}).get("url") if isinstance(result.get("state"), dict) else None),
-                "title": final_title or ((result.get("state") or {}).get("title") if isinstance(result.get("state"), dict) else None),
+                "url": final_url or ((result.get("state") or {}).get("url") if isinstance(result.get("state"), dict) else None) or progress.get("url"),
+                "title": final_title or ((result.get("state") or {}).get("title") if isinstance(result.get("state"), dict) else None) or progress.get("title"),
                 "tab_handle": handle,
                 "action_count": result.get("action_count"),
                 "internal_js_calls": result.get("internal_js_calls"),
                 "duration_ms": result.get("duration_ms"),
                 "closed": closed,
             }
+            if progress:
+                compact["progress"] = progress
             if errors:
                 compact["errors"] = errors
             if return_state != "none" and result.get("state") is not None:

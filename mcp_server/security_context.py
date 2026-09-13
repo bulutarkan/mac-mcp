@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import threading
 import time
 import uuid
@@ -24,6 +25,11 @@ UNTRUSTED_BROWSER_CONTENT_TOOLS = frozenset({
     "browser_get_snapshot", "browser_execute_js", "browser_screenshot",
 })
 _BROWSER_NAVIGATION_TOOLS = frozenset({"browser_open_url"})
+_BROWSER_PROGRESS_TOOLS = frozenset({
+    "browser_act", "browser_do", "browser_click_selector", "browser_type_selector",
+    "browser_coordinate_click",
+})
+_PROGRESS_EXEMPT_ACTIONS = frozenset({"wait", "scroll", "extract", "focus"})
 _SAFE_WHILE_WEB_SCOPED_FAMILIES = frozenset({"browser", "interactive", "voice"})
 _PRIVILEGED_CAPABILITIES = frozenset({
     Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.UI_ACTION,
@@ -50,6 +56,11 @@ class ExecutionSecurityState:
     last_sensitive_at: Optional[float] = None
     last_seen_at: float = field(default_factory=time.time)
     last_web_at: Optional[float] = None
+    progress_state: Optional[str] = None
+    no_progress_signature: Optional[str] = None
+    no_progress_count: int = 0
+    breaker_signature: Optional[str] = None
+    breaker_since: Optional[float] = None
 
 
 @dataclass
@@ -101,12 +112,19 @@ class SecurityContextManager:
         self, *, state_ttl_s: int = 1800, max_states: int = 512,
         pending_ttl_s: int = 120, rejection_cooldown_s: int = 120,
         max_secret_fingerprints: int = 256,
+        no_progress_threshold: Optional[int] = None,
     ) -> None:
         self.state_ttl_s = max(60, int(state_ttl_s))
         self.max_states = max(32, int(max_states))
         self.pending_ttl_s = max(15, min(int(pending_ttl_s), 300))
         self.rejection_cooldown_s = max(15, min(int(rejection_cooldown_s), 600))
         self.max_secret_fingerprints = max(32, min(int(max_secret_fingerprints), 2048))
+        if no_progress_threshold is None:
+            try:
+                no_progress_threshold = int(os.getenv("MAC_MCP_NO_PROGRESS_THRESHOLD", "4"))
+            except ValueError:
+                no_progress_threshold = 4
+        self.no_progress_threshold = max(2, min(int(no_progress_threshold), 10))
         self._lock = threading.RLock()
         self._states: dict[str, ExecutionSecurityState] = {}
         self._public_to_key: dict[str, str] = {}
@@ -233,11 +251,112 @@ class SecurityContextManager:
                 return None
         return None
 
+
+    @staticmethod
+    def _browser_action_signature(tool: str, arguments: Mapping[str, Any]) -> Optional[str]:
+        if tool not in _BROWSER_PROGRESS_TOOLS:
+            return None
+        if tool in {"browser_act", "browser_do"}:
+            actions = arguments.get("actions") or []
+            if not isinstance(actions, list):
+                return None
+            meaningful = []
+            for action in actions:
+                if not isinstance(action, Mapping):
+                    continue
+                typ = str(action.get("type") or "").lower().replace("-", "_")
+                if typ in _PROGRESS_EXEMPT_ACTIONS:
+                    continue
+                meaningful.append(dict(action))
+            if not meaningful:
+                return None
+            payload = {
+                "browser": arguments.get("browser"),
+                "tab_handle": arguments.get("tab_handle"),
+                "window_index": arguments.get("window_index"),
+                "tab_index": arguments.get("tab_index"),
+                "actions": meaningful,
+            }
+            return action_fingerprint(tool, payload)
+        return action_fingerprint(tool, arguments)
+
+    @classmethod
+    def _browser_progress_state(cls, result: Any) -> Optional[str]:
+        url = cls._find_context_value(result, "url")
+        title = cls._find_context_value(result, "title")
+        revision = cls._find_context_value(result, "dom_revision")
+        observation = cls._find_context_value(result, "observation_id")
+        if not any(value is not None for value in (url, title, revision, observation)):
+            return None
+        # Observation ids are deliberately excluded: a fresh observation over an
+        # unchanged DOM is not itself page progress.
+        return json.dumps({
+            "url": url or "",
+            "title": title or "",
+            "dom_revision": revision or "",
+        }, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def _result_failed(cls, result: Any) -> bool:
+        if isinstance(result, Mapping):
+            if result.get("ok") is False:
+                return True
+            actions = result.get("actions")
+            if isinstance(actions, list) and any(isinstance(item, Mapping) and item.get("ok") is False for item in actions):
+                return True
+        return False
+
+    def _observe_browser_progress_locked(
+        self, state: ExecutionSecurityState, tool: str, arguments: Mapping[str, Any], result: Any,
+    ) -> None:
+        current_state = self._browser_progress_state(result)
+        signature = self._browser_action_signature(tool, arguments)
+
+        if signature is None:
+            # Pure wait/scroll/extract/observe flows never consume the retry budget,
+            # but genuine page progress should clear a prior breaker.
+            if current_state is not None and current_state != state.progress_state:
+                state.progress_state = current_state
+                state.no_progress_signature = None
+                state.no_progress_count = 0
+                state.breaker_signature = None
+                state.breaker_since = None
+            elif current_state is not None and state.progress_state is None:
+                state.progress_state = current_state
+            return
+
+        progressed = current_state is not None and state.progress_state is not None and current_state != state.progress_state
+        if progressed:
+            state.progress_state = current_state
+            state.no_progress_signature = None
+            state.no_progress_count = 0
+            state.breaker_signature = None
+            state.breaker_since = None
+            return
+
+        comparable = current_state is not None or self._result_failed(result)
+        if not comparable:
+            return
+        if current_state is not None and state.progress_state is None:
+            state.progress_state = current_state
+        if state.no_progress_signature == signature:
+            state.no_progress_count += 1
+        else:
+            state.no_progress_signature = signature
+            state.no_progress_count = 1
+        if state.no_progress_count >= self.no_progress_threshold:
+            state.breaker_signature = signature
+            state.breaker_since = time.time()
+
     def observe_browser_result(
         self, *, key: str, public_session_id: str, tool: str,
         arguments: Mapping[str, Any], result: Any,
     ) -> Optional[ExecutionSecurityState]:
-        if tool not in UNTRUSTED_BROWSER_CONTENT_TOOLS and tool not in _BROWSER_NAVIGATION_TOOLS:
+        if (
+            tool not in UNTRUSTED_BROWSER_CONTENT_TOOLS
+            and tool not in _BROWSER_NAVIGATION_TOOLS
+            and tool not in _BROWSER_PROGRESS_TOOLS
+        ):
             return None
         url = self._find_context_value(result, "url") or self._find_context_value(arguments, "url")
         origin = self._origin(url)
@@ -245,6 +364,7 @@ class SecurityContextManager:
         tab_title = self._find_context_value(result, "title")
         state = self.touch(key, public_session_id)
         with self._lock:
+            self._observe_browser_progress_locked(state, tool, arguments, result)
             if origin is None and state.current_origin:
                 origin = state.current_origin
             trust = self._trust_for_origin(origin)
@@ -362,6 +482,15 @@ class SecurityContextManager:
     ) -> ContextGateDecision:
         state = self.touch(key, public_session_id)
         with self._lock:
+            progress_signature = self._browser_action_signature(tool, arguments)
+            if progress_signature and state.breaker_signature == progress_signature:
+                return ContextGateDecision(
+                    False, "browser_no_progress",
+                    f"same browser action produced no DOM/URL/title progress {state.no_progress_count} times",
+                    public_session_id, state.current_origin, state.trust_level,
+                    target_summary=f"browser action stalled after {state.no_progress_count} attempts",
+                    tab_handle=state.tab_handle, tab_title=state.tab_title,
+                )
             fingerprint = action_fingerprint(tool, arguments)
             argument_origin = self._origin(arguments.get("url"))
             current_target_origin = argument_origin or state.current_origin

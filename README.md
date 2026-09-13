@@ -162,11 +162,13 @@ Mac MCP treats **capability enforcement** and **human approval** as separate sec
 | `standard` | Blocks `raw_execution` and `update_control`; destructive operations are limited to browser/accessibility families; access-mode ceiling is read-only. | `none` | No |
 | `read_only` | Allows read/network/browser/native-accessibility capabilities only and denies destructive calls. | `none` | No |
 
-`ask_confirmation` is an explicit interaction tool. It is **not** an automatic approval gate around other tools. A connected MCP client may implement its own approval UI, but that is client-side behavior and is not guaranteed by Mac MCP. Likewise, a future server-side or external guard can be represented explicitly as approval source `server` or `external`; Mac MCP does not currently advertise an “approval-heavy” preset because that name would imply a guarantee that does not exist.
+`ask_confirmation` remains an explicit interaction tool and is not a blanket confirmation wrapper around normal tool calls. Separately, Mac MCP now has narrow server-side security gates for risky trust-boundary crossings: untrusted web context → privileged host action and detected credential/secret egress to an untrusted origin require a source-aware **Allow Once / Block** decision. Those grants are exact-action/origin-bound and single-use; they do not turn a permission profile into a general “approval-heavy” mode.
 
 Delegated Codex workers currently run with Codex `approval_policy="never"`; their sandbox/access mode is separate from human approval. OpenCode permission behavior is also provider-side and must not be treated as a Mac MCP server confirmation guarantee.
 
 Set the server capability profile with `MAC_MCP_PERMISSION_PROFILE=trusted|standard|read_only`. The native menu bar app reads `/dashboard/api/security/semantics` and shows **Allowed Capabilities** and **Approval Behavior** separately for the active profile. The three preset rows are clickable: choosing one persists the value in `mcp_server/.env` and applies it to new global requests immediately without restarting the server or ngrok. Existing delegated agents keep the scoped profile issued when they were started; new agents inherit the newly selected parent profile.
+
+Browser resilience guards are configurable with `MAC_MCP_NO_PROGRESS_THRESHOLD` (default `4`, range `2–10`) and `MAC_MCP_TAB_LEASE_TTL_S` (default `300` seconds, range `30–3600`). The no-progress breaker stops only repeated meaningful browser actions that fail to change DOM revision, URL, or title; wait/scroll/extract flows do not consume that budget. Delegated-agent tab ownership is logical and time-bounded: completing/cancelling/crashing an agent releases ownership without closing the user's tab, and the next agent must make a fresh `browser_observe` before acting on a previously owned handle.
 
 ## Install the menu bar app
 

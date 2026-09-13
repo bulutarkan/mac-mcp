@@ -154,6 +154,8 @@ def _rest_security_gate(request: Request, tool: str, arguments: Dict[str, Any], 
             event_type = "SECRET_EGRESS_BLOCK"
         elif gate.code == "security_approval_rejected":
             event_type = "SECURITY_APPROVAL_REJECTED"
+        elif gate.code == "browser_no_progress":
+            event_type = "NO_PROGRESS"
         else:
             event_type = "HOST_TOOL_BREACH"
         _record_rest_security_event(
@@ -161,7 +163,7 @@ def _rest_security_gate(request: Request, tool: str, arguments: Dict[str, Any], 
             reason_code=gate.code, origin=gate.origin, target_summary=gate.target_summary,
         )
         raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
+            status.HTTP_409_CONFLICT if gate.code == "browser_no_progress" else status.HTTP_403_FORBIDDEN,
             detail={
                 "ok": False, "denied": True, "error": gate.code, "tool": tool,
                 "origin": gate.origin, "request_id": gate.request_id,

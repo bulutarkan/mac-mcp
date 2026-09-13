@@ -462,7 +462,7 @@ function __mcpState(){
 }
 function __mcpId(el,s){
   var id=s.ids.get(el);
-  if(!id){id='e'+(++s.counter);s.ids.set(el,id);}
+  if(!id){id='e_'+s.pageToken+'_'+(++s.counter);s.ids.set(el,id);}
   s.elements[id]=el;
   return id;
 }
@@ -728,8 +728,15 @@ def browser_observe(
 ) -> Any:
     """Compact DOM observation with stable element IDs and optional background-safe page image."""
     b = _norm_browser(browser)
-    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
-        return _browser_observe_locked(
+    with _tab_lease(b, tab_handle, window_index, tab_index, allow_rebind=True) as target:
+        if target.lease_rebound:
+            _execute_js_for_target(
+                target.browser,
+                "try{delete window.__macMcpBrowserAgent;}catch(e){window.__macMcpBrowserAgent=undefined;} 'OK';",
+                target,
+                timeout_s=10,
+            )
+        observed = _browser_observe_locked(
             settings=settings,
             browser=target.browser,
             window_index=target.window_index,
@@ -740,6 +747,27 @@ def browser_observe(
             visual=visual,
             element_id=element_id,
         )
+        lease_meta = {"lease_generation": target.lease_generation}
+        if target.lease_rebound:
+            lease_meta.update({"lease_rebound": True, "previous_origin": target.previous_origin})
+        if isinstance(observed, str):
+            try:
+                payload = json.loads(observed)
+            except json.JSONDecodeError:
+                return observed
+            if isinstance(payload, dict):
+                payload.update(lease_meta)
+                return json.dumps(payload, ensure_ascii=False, indent=2)
+        if isinstance(observed, list) and observed and isinstance(observed[0], str):
+            try:
+                payload = json.loads(observed[0])
+            except json.JSONDecodeError:
+                return observed
+            if isinstance(payload, dict):
+                payload.update(lease_meta)
+                observed = list(observed)
+                observed[0] = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return observed
 
 
 def _browser_observe_locked(
@@ -1817,4 +1845,13 @@ def _browser_act_locked(
             response["state_fallback"] = "compact"
             response["full_state_error"] = "payload_too_large"
             response["internal_js_calls"] += 1
+    if return_state == "none":
+        progress = _run_json_js(
+            settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+        )
+        response["progress"] = {
+            key: progress.get(key) for key in ("url", "title", "dom_revision")
+            if progress.get(key) is not None
+        }
+        response["internal_js_calls"] += 1
     return response

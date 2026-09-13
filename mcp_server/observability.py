@@ -1005,6 +1005,8 @@ class ObservedFastMCP(FastMCP):
                     event_type = "SECRET_EGRESS_BLOCK"
                 elif gate.code == "security_approval_rejected":
                     event_type = "SECURITY_APPROVAL_REJECTED"
+                elif gate.code == "browser_no_progress":
+                    event_type = "NO_PROGRESS"
                 else:
                     event_type = "HOST_TOOL_BREACH"
                 security_event(
@@ -1013,6 +1015,11 @@ class ObservedFastMCP(FastMCP):
                 )
                 if top_level and steering_identity is not None:
                     self.steering.mark_security_attention(steering_identity, gate.code)
+                if gate.code == "browser_no_progress":
+                    raise ToolError(
+                        f"{gate.code}: tool={name}; target={gate.target_summary or name}; "
+                        "retry chain stopped; wait for page progress or use a different action/steering instruction"
+                    )
                 raise ToolError(
                     f"{gate.code}: tool={name}; origin={gate.origin or 'unknown'}; "
                     f"target={gate.target_summary or name}; local Allow Once approval required"
