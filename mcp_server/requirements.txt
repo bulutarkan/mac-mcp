@@ -2,7 +2,7 @@ fastapi==0.115.6
 uvicorn[standard]==0.32.1
 httpx==0.28.1
 python-dotenv==1.0.1
-mcp[cli]==1.27.2
+mcp[cli]==1.28.1
 fastembed==0.7.4
 PyYAML==6.0.3
 edge-tts==7.2.8
