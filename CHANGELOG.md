@@ -1,3 +1,14 @@
+## [2.1.0] - 2026-09-13
+
+- Added **Safari Visual Companion**, a bundled Safari Web Extension that visualizes active Mac MCP browser work directly in the real page with a subtle frame, activity badge, synthetic cursor, and click ripple.
+- Added visual states for high-level browser operations including Inspecting, Finding, Reading, Clicking, Typing, Selecting, Focusing, and Scrolling, without copying typed values, selectors, URLs, titles, page text, or secrets into extension events.
+- Added the native **Safari Activity** menu-bar card with extension-state detection and an **Enable in Safari…** onboarding action backed by SafariServices.
+- Extended the menu-app build and installer to compile, embed, sign, carry, and verify `Mac MCP Safari Visual Companion.appex`; local source builds remain ad-hoc signed while `MAC_MCP_CODESIGN_IDENTITY` supports a Developer ID release-signing path.
+- Documented Safari extension enablement, per-site website-access permission, and the optional **Allow Unsigned Extensions** requirement for local/ad-hoc development builds.
+- Prevented the visual event attribute from incrementing Mac MCP's browser DOM revision so the overlay cannot manufacture false page progress or interfere with the no-progress circuit breaker.
+- Included the post-2.0.51 security/reliability work in the 2.1 line: source-aware web-to-host approvals, secret-egress protection, sticky untrusted provenance, no-progress browser protection, delegated tab leases, idempotent steering recovery, and dedicated-user hardening guidance.
+- Verified the Visual Companion on a real Google Flights Antalya → Prague search, including live Inspecting, Finding, Typing, Clicking, and Scrolling feedback on the actual Safari page.
+
 ## [2.0.51] - 2026-09-10
 
 - Added semantic `browser_do(extract=[...])` reads for compact natural targets such as `price`, `cancellation`, `parking`, `rating`, `breakfast`, and `payment`, while keeping existing selector-based `actions[].type="extract"` fully compatible.

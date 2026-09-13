@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Darwin
 import Foundation
+import SafariServices
 
 struct DashboardSummary: Decodable {
     let version: String?
@@ -488,6 +489,8 @@ final class AppState: ObservableObject {
     @Published var busyAction: String?
     @Published var actionNotice: ActionNotice?
     @Published var pulse = false
+    @Published private(set) var safariExtensionEnabled = false
+    @Published private(set) var safariExtensionStatus = "Checking…"
 
     let settings = SettingsStore()
     private var pollTask: Task<Void, Never>?
@@ -502,6 +505,7 @@ final class AppState: ObservableObject {
     private static let maxRetryIntervalSeconds = 30.0
 
     init(startBackgroundTasks: Bool = true) {
+        refreshSafariExtensionState()
         if startBackgroundTasks { startTasks() }
     }
     deinit { pollTask?.cancel(); pulseTask?.cancel(); noticeTask?.cancel() }
@@ -514,6 +518,41 @@ final class AppState: ObservableObject {
     }
 
     var dashboardURL: URL? { URL(string: "http://127.0.0.1:\(settings.serverPort)/dashboard") }
+
+    var safariExtensionBundleIdentifier: String {
+        "\(Bundle.main.bundleIdentifier ?? "com.bulutarkan.mac-mcp.menu").safari"
+    }
+
+    func refreshSafariExtensionState() {
+        let identifier = safariExtensionBundleIdentifier
+        SFSafariExtensionManager.getStateOfSafariExtension(withIdentifier: identifier) { [weak self] state, error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let state, error == nil {
+                    self.safariExtensionEnabled = state.isEnabled
+                    self.safariExtensionStatus = state.isEnabled ? "On" : "Needs enabling"
+                } else {
+                    self.safariExtensionEnabled = false
+                    self.safariExtensionStatus = "Unavailable"
+                }
+            }
+        }
+    }
+
+    func openSafariExtensionPreferences() {
+        let identifier = safariExtensionBundleIdentifier
+        SFSafariApplication.showPreferencesForExtension(withIdentifier: identifier) { [weak self] error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if error != nil {
+                    self.actionNotice = ActionNotice(kind: .error, message: "Could not open Safari extension settings.")
+                } else {
+                    self.actionNotice = ActionNotice(kind: .info, message: "Enable Mac MCP Visual Companion in Safari, then allow website access.")
+                }
+                self.refreshSafariExtensionState()
+            }
+        }
+    }
 
     static func pollDelaySeconds(forFailureCount failureCount: Int) -> Double {
         guard failureCount > 0 else { return normalPollIntervalSeconds }

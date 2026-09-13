@@ -21,6 +21,7 @@ struct MenuBarView: View {
                 serverCard
                 if state.activeAgents > 0 || !state.agents.isEmpty { agentCard }
                 activityCard
+                safariVisualCard
                 securityCard
                 steeringCard
                 voiceCard
@@ -441,6 +442,44 @@ struct MenuBarView: View {
                 }
             }
         } label: { Label("Latest Tool Usage", systemImage: "waveform.path.ecg") }
+    }
+
+    private var safariVisualCard: some View {
+        GroupBox {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(.quaternary)
+                        .frame(width: 34, height: 34)
+                    Image(systemName: state.safariExtensionEnabled ? "safari.fill" : "safari")
+                        .foregroundStyle(state.safariExtensionEnabled ? Color.accentColor : Color.secondary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(state.safariExtensionEnabled ? "Visual Companion · On" : "Safari Visual Companion")
+                        .font(.caption.weight(.semibold))
+                    Text(state.safariExtensionEnabled
+                         ? "Shows when Mac MCP is actively using a Safari page."
+                         : "One-time setup: enable the bundled extension in Safari.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                if state.safariExtensionEnabled {
+                    Button { state.refreshSafariExtensionState() } label: { Image(systemName: "arrow.clockwise") }
+                        .buttonStyle(.borderless).help("Refresh extension status")
+                } else {
+                    Button("Enable in Safari…") { state.openSafariExtensionPreferences() }
+                        .controlSize(.small)
+                }
+            }
+            .padding(.vertical, 2)
+        } label: {
+            HStack {
+                Label("Safari Activity", systemImage: "sparkles.rectangle.stack")
+                Spacer()
+                Text(state.safariExtensionStatus).font(.caption2).foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var securityCard: some View {

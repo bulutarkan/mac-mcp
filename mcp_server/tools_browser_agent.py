@@ -454,11 +454,34 @@ function __mcpState(){
       observer:null
     };
     try{
-      s.observer=new MutationObserver(function(){s.mutationRevision+=1;});
+      s.observer=new MutationObserver(function(records){
+        for(var i=0;i<records.length;i++){
+          var rec=records[i];
+          if(rec.type==='attributes' && rec.attributeName==='data-mac-mcp-visual-event') continue;
+          s.mutationRevision+=1;
+          break;
+        }
+      });
       s.observer.observe(document.documentElement||document,{subtree:true,childList:true,attributes:true,characterData:true});
     }catch(e){}
   }
   return s;
+}
+function __mcpVisual(action,el,effect,ttl){
+  try{
+    var payload={seq:Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7),phase:'working',action:String(action||'Working').slice(0,40),ttl_ms:Math.max(500,Math.min(Number(ttl||1800),30000))};
+    if(el&&el.nodeType===1){
+      var r=el.getBoundingClientRect();
+      if(isFinite(r.left)&&isFinite(r.top)&&isFinite(r.width)&&isFinite(r.height)){
+        payload.x=Math.max(0,Math.min(innerWidth,Math.round(r.left+r.width/2)));
+        payload.y=Math.max(0,Math.min(innerHeight,Math.round(r.top+r.height/2)));
+      }
+    }
+    if(effect==='click') payload.effect='click';
+    var raw=btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+    (document.documentElement||document.body).setAttribute('data-mac-mcp-visual-event',raw);
+    try{window.dispatchEvent(new Event('mac-mcp-visual'));}catch(e){}
+  }catch(e){}
 }
 function __mcpId(el,s){
   var id=s.ids.get(el);
@@ -574,6 +597,7 @@ function __mcpContentCandidate(el,actionable){{
   return false;
 }}
 var s=__mcpState();
+__mcpVisual('Inspecting',null,'',1800);
 Object.keys(s.elements).forEach(function(k){{var e=s.elements[k];if(!e||!e.isConnected)delete s.elements[k];}});
 var scope={scope_js};
 var all=Array.from(document.querySelectorAll('*'));
@@ -953,6 +977,7 @@ function level(actual,wanted){{
   return 0;
 }}
 var s=__mcpState(), q={q_js}, wantedRole={role_js}, wantedText={text_js}, actionableOnly={actionable_js};
+__mcpVisual('Finding',null,'',1600);
 var out=[];
 var all=Array.from(document.querySelectorAll('*'));
 for(var i=0;i<all.length&&out.length<{max_candidates};i++){{
@@ -1075,6 +1100,8 @@ for(var i=0;i<actions.length;i++){{
   var a=actions[i]||{{}}, type=String(a.type||'').toLowerCase().replace(/-/g,'_');
   var el=a.element_id?target(a.element_id):null;
   if(a.element_id && !el){{results.push({{index:i,type:type,element_id:a.element_id,ok:false,error:'stale_element',observe_again:true}});break;}}
+  var visualLabel=type==='click'||type==='double_click'?'Clicking':(type==='type'||type==='type_text'||type==='paste'?'Typing':(type==='scroll'?'Scrolling':(type==='focus'?'Focusing':(type==='select'?'Selecting':'Working'))));
+  __mcpVisual(visualLabel,el,(type==='click'||type==='double_click')?'click':'',2200);
   try{{
     if(type==='click'||type==='double_click'){{
       if(!el) throw new Error('element_id is required');
@@ -1142,6 +1169,7 @@ var s=__mcpState(), expected={obs}, eid={eid}, wanted=norm({wanted});
 if(expected && !(expected in s.observations)) return __mcpB64({{ok:false,error:'stale_observation',observe_again:true}});
 var el=s.elements[eid];
 if(!el||!el.isConnected) return __mcpB64({{ok:false,error:'stale_element',observe_again:true,element_id:eid}});
+__mcpVisual('Selecting',el,'',2200);
 if((el.tagName||'').toLowerCase()==='select'){{
   var opts=Array.from(el.options||[]);
   var chosen=opts.find(function(o){{return norm(o.value)===wanted||norm(o.text)===wanted;}}) ||
@@ -1319,6 +1347,7 @@ def _extract_action_js(fields: List[Dict[str, Any]], max_chars: int) -> str:
     return f'''(function(){{
 {_browser_state_bootstrap()}
 function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+__mcpVisual('Reading',null,'',1800);
 var specs={specs}, aliases={aliases}, budget={budget}, data={{}}, counts={{}}, truncated=false, used=0;
 function readValue(el, attr){{
   attr=String(attr||'text');

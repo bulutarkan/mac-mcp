@@ -2,11 +2,21 @@
   <img src="assets/screenshots/mac-mcp.png" alt="Mac MCP" width="760">
 </p>
 
-# Mac MCP 2.0
+# Mac MCP 2.1
 
 Mac MCP is a local macOS control server for AI agents. It exposes your Mac through a native MCP endpoint and a REST/OpenAPI surface, with shell, files, browser automation, macOS UI control, delegated OpenCode/Codex agents, memory, Agent Skills, voice interaction, self-update tooling, and a local operations dashboard.
 
 > **Security:** Mac MCP can execute commands, read/write files, and control desktop apps. Keep MCP authentication enabled whenever the service is reachable outside localhost and expose it only to clients you trust. The operations dashboard is loopback-only **and** requires a separate per-user dashboard Bearer token; localhost is machine-local transport, not a same-user sandbox.
+
+## What's new in 2.1
+
+- Added the **Safari Visual Companion**, a bundled Safari Web Extension that makes real Mac MCP browser work visible inside the exact page being automated. While an agent is working, Safari can show a subtle animated page frame, `Mac MCP · …` activity badge, synthetic cursor movement, and click feedback.
+- Visual feedback is driven by the existing high-level browser actions, including **Inspecting, Finding, Reading, Clicking, Typing, Selecting, Focusing, and Scrolling**. It works with the same real Safari tabs used by Mac MCP; it does not replace the browser automation layer or require a separate browser profile.
+- The visual event channel is intentionally metadata-only: it sends a bounded action label, optional viewport coordinates, effect type, and TTL. Typed text, selectors, URLs, titles, DOM content, and secrets are not copied into extension events.
+- Added a native **Safari Activity** card to `Mac MCP.app`. It checks the bundled extension state and offers **Enable in Safari…** when one-time Safari setup is still required.
+- The installer and updater now carry the Safari extension with the menu app and verify the nested extension signature during installation.
+- Kept the overlay display-only. It is useful for watching what an agent is doing, but it is **not** a trust, permission, or security indicator; Mac MCP's existing access profiles, approvals, provenance, secret-egress guard, tab leases, and no-progress protections remain authoritative.
+- The 2.1 release also includes the recent browser resilience and security work: source-aware web-to-host approval, secret-egress protection, sticky untrusted provenance, no-progress circuit breaking, delegated tab leases, steering idempotency/recovery, and dedicated-user hardening guidance.
 
 ## What's new in 2.0.5
 
@@ -49,6 +59,20 @@ Mac MCP can inspect and interact with Safari and Chrome tabs in the background w
 - **Show Tab** is an explicit user action: normal automation remains non-focus-stealing, while clicking Show Tab brings that specific real Safari/Chrome tab to the front.
 
 This is designed for workflows where an AI agent keeps working in one or more background browser tabs while the Mac remains usable normally.
+
+### Safari Visual Companion
+
+`Mac MCP.app` bundles a Safari Web Extension that makes active Mac MCP browser work visible inside the exact page being automated. The extension is display-only: it renders a subtle pulsing page frame, a small `Mac MCP · …` activity badge, a synthetic cursor, and click feedback for high-level browser actions. Visual events contain only bounded action labels and viewport coordinates; typed text, selectors, URLs, page titles, DOM content, and secrets are not copied into the extension event. The overlay is activity feedback only and must not be treated as a security or trust indicator.
+
+One-time Safari setup:
+
+1. Install or update Mac MCP normally so the extension is present inside `~/Applications/Mac MCP.app`.
+2. Open **Mac MCP.app → Safari Activity → Enable in Safari…**. You can also open **Safari → Settings → Extensions** manually.
+3. Turn on **Mac MCP Visual Companion**.
+4. Grant website access for the sites where you want activity feedback. The extension declares `http://*/*` and `https://*/*` because Mac MCP can automate arbitrary web pages, but you can restrict Safari's per-site permission if you only want the overlay on selected sites.
+5. For local/ad-hoc source builds, Safari may additionally require **Develop → Allow Unsigned Extensions**. If the Develop menu is hidden, enable Safari's web-developer features first. This unsigned-extension step is only a local-development requirement; properly Developer ID-signed/notarized distributions do not need it.
+
+No separate browser profile, helper daemon, or Xcode project is required. `menu_app/build_app.sh` compiles the `.appex` into `Mac MCP.app/Contents/PlugIns/` with the normal command-line Swift toolchain. Local builds default to ad-hoc signing; release builders can set `MAC_MCP_CODESIGN_IDENTITY` to use a Developer ID identity with hardened runtime/timestamp signing.
 
 ## Requirements
 
@@ -296,7 +320,7 @@ Loopback means **machine-local**, not **user-private**. The dashboard token prev
 
 ## Tool coverage
 
-Mac MCP 2.0.5 advertises a compact **21-tool core surface by default**, backed by **84 registered MCP capabilities**. The 63 less-common tools remain available through `tool_discover` and `tool_invoke`, including every tool from the previous 81-tool surface.
+Mac MCP 2.1 advertises a compact **21-tool core surface by default**, backed by **84 registered MCP capabilities**. The 63 less-common tools remain available through `tool_discover` and `tool_invoke`, including every tool from the previous 81-tool surface.
 
 Set `MAC_MCP_TOOL_PROFILE=full` to advertise all registered tools directly to the client. You can also add selected tools to the compact surface with `MAC_MCP_CORE_EXTRA_TOOLS=name1,name2`.
 

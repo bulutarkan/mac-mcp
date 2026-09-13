@@ -549,10 +549,15 @@ install_menu_app() {
     || fail "The native menu bar app failed to build or install."
   /usr/bin/codesign --verify --deep --strict "$APP_PATH" \
     || fail "The installed menu bar app failed code-signature verification."
+  local safari_extension="$APP_PATH/Contents/PlugIns/Mac MCP Safari Visual Companion.appex"
+  [[ -d "$safari_extension" ]] \
+    || fail "The bundled Safari Visual Companion extension is missing from Mac MCP.app."
+  /usr/bin/codesign --verify --strict "$safari_extension" \
+    || fail "The bundled Safari Visual Companion extension failed code-signature verification."
   if [[ "$BACKED_UP_APP" -eq 0 ]]; then
     CREATED_APP=1
   fi
-  ok "Menu bar app installed and code-signature verified."
+  ok "Menu bar app and bundled Safari Visual Companion installed and code-signature verified."
 }
 
 optionally_start_server() {
@@ -585,6 +590,11 @@ print_completion() {
   printf '\n'
   info "A public HTTPS endpoint is optional. Install/configure ngrok separately, set NGROK_DOMAIN in mcp_server/.env, then use 'mac-mcp start --ngrok'."
   info "macOS may ask for Accessibility, Screen Recording, Automation, or Microphone permissions when you first use features that need them."
+
+  printf '\n%sSafari Visual Companion%s\n' "$C_BOLD" "$C_RESET"
+  printf '  The Safari extension is bundled inside Mac MCP.app.\n'
+  printf '  Open the Mac MCP menu and choose "Enable in Safari…" once, then allow website access in Safari.\n'
+  printf '  The page overlay is activity feedback only; it is not a security or trust indicator.\n'
 
   printf '\n%sSubagents%s\n' "$C_BOLD" "$C_RESET"
   printf '  OpenCode and Codex are not installed by Mac MCP.\n'

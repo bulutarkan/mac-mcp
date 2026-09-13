@@ -1,3 +1,3 @@
 """Mac MCP runtime version."""
 
-__version__ = "2.0.51"
+__version__ = "2.1.0"
