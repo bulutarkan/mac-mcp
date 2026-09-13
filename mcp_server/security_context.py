@@ -50,6 +50,11 @@ class ExecutionSecurityState:
     provenance_origin: Optional[str] = None
     provenance_tab_handle: Optional[str] = None
     provenance_tab_title: Optional[str] = None
+    provenance_class: str = "local"
+    tainted_at: Optional[float] = None
+    taint_reasons: set[str] = field(default_factory=set)
+    inherited_from_session: Optional[str] = None
+    inheritance_hops: int = 0
     sensitive_fingerprints: set[str] = field(default_factory=set)
     sensitive_source_classes: set[str] = field(default_factory=set)
     clipboard_sensitive: bool = False
@@ -348,6 +353,127 @@ class SecurityContextManager:
             state.breaker_signature = signature
             state.breaker_since = time.time()
 
+
+    @staticmethod
+    def _collect_agent_ids(value: Any, *, depth: int = 0) -> list[str]:
+        if depth > 5:
+            return []
+        found: list[str] = []
+        if isinstance(value, Mapping):
+            candidate = value.get("agent_id")
+            if candidate is not None:
+                text = str(candidate).strip()
+                if text.startswith("agt_"):
+                    found.append(text)
+            for child in value.values():
+                found.extend(SecurityContextManager._collect_agent_ids(child, depth=depth + 1))
+        elif isinstance(value, (list, tuple)):
+            for child in value[:32]:
+                found.extend(SecurityContextManager._collect_agent_ids(child, depth=depth + 1))
+        elif isinstance(value, str):
+            text = value.strip()
+            if text[:1] in {"{", "["}:
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError:
+                    parsed = None
+                if parsed is not None:
+                    found.extend(SecurityContextManager._collect_agent_ids(parsed, depth=depth + 1))
+        elif hasattr(value, "model_dump"):
+            try:
+                found.extend(SecurityContextManager._collect_agent_ids(value.model_dump(), depth=depth + 1))
+            except Exception:
+                pass
+        unique: list[str] = []
+        seen: set[str] = set()
+        for agent_id in found:
+            if agent_id not in seen:
+                seen.add(agent_id)
+                unique.append(agent_id)
+        return unique
+
+    def _mark_untrusted_provenance_locked(
+        self, state: ExecutionSecurityState, *, origin: Optional[str],
+        tab_handle: Optional[str], tab_title: Optional[str], reason: str,
+        inherited_from_session: Optional[str] = None, inheritance_hops: Optional[int] = None,
+    ) -> None:
+        now = time.time()
+        state.web_scoped = True
+        state.trust_level = "untrusted_web"
+        state.provenance_class = "tainted_untrusted_web"
+        state.last_web_at = state.last_web_at or now
+        state.tainted_at = state.tainted_at or now
+        state.taint_reasons.add(str(reason))
+        if origin:
+            state.provenance_origin = origin
+        if tab_handle:
+            state.provenance_tab_handle = tab_handle
+        if tab_title:
+            state.provenance_tab_title = tab_title
+        if inherited_from_session:
+            state.inherited_from_session = inherited_from_session
+        if inheritance_hops is not None:
+            state.inheritance_hops = max(state.inheritance_hops, int(inheritance_hops))
+        state.last_seen_at = now
+
+    def inherit_delegated_provenance(
+        self, *, parent_key: str, parent_public_session_id: str, tool: str,
+        arguments: Mapping[str, Any], result: Any,
+    ) -> list[dict[str, Any]]:
+        if tool not in {"spawn_agent", "spawn_agents", "agent_action"}:
+            return []
+        if tool == "agent_action":
+            action = str(arguments.get("action") or "").strip().lower()
+            if action not in {"retry", "message"}:
+                return []
+        child_ids = self._collect_agent_ids(result)
+        if not child_ids:
+            return []
+        with self._lock:
+            self._prune_locked()
+            parent = self._states.get(parent_key)
+            if (
+                parent is None or not parent.web_scoped
+                or parent.provenance_class != "tainted_untrusted_web"
+            ):
+                return []
+            inherited: list[dict[str, Any]] = []
+            for child_id in child_ids:
+                if child_id == parent_public_session_id:
+                    continue
+                child_key = f"agent:{child_id}"
+                child = self._states.get(child_key)
+                if child is None:
+                    child = ExecutionSecurityState(
+                        key=child_key, public_session_id=child_id, last_seen_at=time.time()
+                    )
+                    self._states[child_key] = child
+                else:
+                    child.public_session_id = child_id
+                self._public_to_key[child_id] = child_key
+                self._mark_untrusted_provenance_locked(
+                    child, origin=parent.provenance_origin or parent.current_origin,
+                    tab_handle=parent.provenance_tab_handle or parent.tab_handle,
+                    tab_title=parent.provenance_tab_title or parent.tab_title,
+                    reason="delegated_context_transfer",
+                    inherited_from_session=parent_public_session_id,
+                    inheritance_hops=parent.inheritance_hops + 1,
+                )
+                child.current_origin = parent.current_origin
+                child.tab_handle = parent.tab_handle
+                child.tab_title = parent.tab_title
+                child.sensitive_fingerprints.update(parent.sensitive_fingerprints)
+                child.sensitive_source_classes.update(parent.sensitive_source_classes)
+                child.clipboard_sensitive = parent.clipboard_sensitive
+                child.last_sensitive_at = parent.last_sensitive_at
+                inherited.append({
+                    "agent_id": child_id,
+                    "origin": child.provenance_origin,
+                    "reason_code": "delegated_context_transfer",
+                    "inheritance_hops": child.inheritance_hops,
+                })
+            return inherited
+
     def observe_browser_result(
         self, *, key: str, public_session_id: str, tool: str,
         arguments: Mapping[str, Any], result: Any,
@@ -382,13 +508,13 @@ class SecurityContextManager:
                 state.last_seen_at = time.time()
                 return state
             if trust == "untrusted_web" or (origin is None and not state.web_scoped):
-                state.trust_level = "untrusted_web"
-                state.web_scoped = True
-                state.last_web_at = time.time()
-                if origin:
-                    state.provenance_origin = origin
-                state.provenance_tab_handle = tab_handle or state.provenance_tab_handle
-                state.provenance_tab_title = tab_title or state.provenance_tab_title
+                self._mark_untrusted_provenance_locked(
+                    state,
+                    origin=origin or state.provenance_origin,
+                    tab_handle=tab_handle or state.provenance_tab_handle,
+                    tab_title=tab_title or state.provenance_tab_title,
+                    reason="untrusted_browser_content",
+                )
             elif not state.web_scoped:
                 state.trust_level = trust
             state.last_seen_at = time.time()
@@ -680,6 +806,11 @@ class SecurityContextManager:
                 "provenance_origin": state.provenance_origin,
                 "provenance_tab_handle": state.provenance_tab_handle,
                 "provenance_tab_title": state.provenance_tab_title,
+                "provenance_class": state.provenance_class,
+                "tainted_at": state.tainted_at,
+                "taint_reasons": sorted(state.taint_reasons),
+                "inherited_from_session": state.inherited_from_session,
+                "inheritance_hops": state.inheritance_hops,
                 "last_web_at": state.last_web_at,
                 "last_sensitive_at": state.last_sensitive_at,
                 "sensitive_source_classes": sorted(state.sensitive_source_classes),

@@ -1057,6 +1057,28 @@ class ObservedFastMCP(FastMCP):
                 arguments=arguments,
                 result=result,
             )
+            inherited = self.security_context.inherit_delegated_provenance(
+                parent_key=security_key,
+                parent_public_session_id=public_session_id,
+                tool=name,
+                arguments=arguments,
+                result=result,
+            )
+            for inherited_item in inherited:
+                child_agent_id = str(inherited_item.get("agent_id") or "") or None
+                self.telemetry.record_security_event(
+                    session_id=child_agent_id,
+                    event_type="PROVENANCE_INHERITED",
+                    tool=name,
+                    tool_class="agents",
+                    origin=inherited_item.get("origin"),
+                    decision="inherit",
+                    reason_code=str(inherited_item.get("reason_code") or "delegated_context_transfer"),
+                    profile=policy_context.profile,
+                    actor=policy_context.actor,
+                    agent_id=child_agent_id,
+                    target_summary=f"tainted_untrusted_web hop={int(inherited_item.get('inheritance_hops') or 0)}",
+                )
             if gate.escalated and top_level and steering_identity is not None:
                 self.steering.clear_security_attention(steering_identity)
             self.telemetry.finish_call(event_id, result=result)
