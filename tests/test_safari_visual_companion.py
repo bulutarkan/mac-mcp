@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mcp_server.tools_browser import _safari_visual_claim_js, _safari_visual_claim_script
+from mcp_server.tools_browser import _safari_visual_claim_js, _safari_visual_claim_script, _visual_companion_source
 from mcp_server.tools_browser_agent import _batch_js, _browser_state_bootstrap, _observe_js
 from mcp_server.update_helper import _sync_runtime, _tracked_files
 
@@ -70,13 +70,26 @@ class SafariVisualCompanionTests(unittest.TestCase):
         script = _safari_visual_claim_script(3, expected)
         self.assertIn("tab 3 of window 1", script)
         self.assertNotIn("eval(", script)
-        self.assertIn("document.readyState==='loading'", js)
-        self.assertIn("location.href", js)  # used only to ensure the final document is the claimed target
-        self.assertIn("claim:true", js)
-        self.assertIn("action:'Opened'", js)
-        self.assertIn("target_kind:'Page'", js)
+        claim_start = js.rfind("(()=>{try{const expected=")
+        self.assertGreaterEqual(claim_start, 0)
+        claim_js = js[claim_start:]
+        self.assertIn("document.readyState==='loading'", claim_js)
+        self.assertIn("location.href", claim_js)  # used only to ensure the final document is the claimed target
+        self.assertIn("claim:true", claim_js)
+        self.assertIn("action:'Opened'", claim_js)
+        self.assertIn("target_kind:'Page'", claim_js)
         for forbidden in ("document.title", "innerText", "textContent"):
-            self.assertNotIn(forbidden, js)
+            self.assertNotIn(forbidden, claim_js)
+
+    def test_browser_tools_embed_visual_companion_when_safari_extension_is_unavailable(self) -> None:
+        source = _visual_companion_source()
+        self.assertIn("__macMcpVisualCompanionLoaded", source)
+        self.assertIn("window.addEventListener('mac-mcp-visual'", source)
+        bootstrap = _browser_state_bootstrap()
+        self.assertIn("__macMcpVisualCompanionLoaded", bootstrap)
+        claim = _safari_visual_claim_js("https://example.com/")
+        self.assertIn("__macMcpVisualCompanionLoaded", claim)
+        self.assertIn("action:'Opened'", claim)
 
     def test_visual_attribute_does_not_advance_browser_dom_revision(self) -> None:
         bootstrap = _browser_state_bootstrap()

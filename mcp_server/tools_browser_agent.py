@@ -22,6 +22,7 @@ from .tools_browser import (
     _resolve_tab_target,
     _run_osascript,
     _js_escape,
+    _visual_companion_source,
     _tab_identity_guard,
     _tab_lease,
     browser_execute_js,
@@ -440,7 +441,7 @@ def _b64_return(expression: str) -> str:
 
 
 def _browser_state_bootstrap() -> str:
-    return r'''
+    return _visual_companion_source() + "\n" + r'''
 function __mcpState(){
   var s=window.__macMcpBrowserAgent;
   if(!s){

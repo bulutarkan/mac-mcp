@@ -42,6 +42,14 @@ def validate_url(settings: Settings, url: str) -> None:
         pass
 
 
+_VISUAL_COMPANION_PATH = Path(__file__).resolve().parents[1] / "menu_app" / "SafariExtension" / "visual.js"
+
+def _visual_companion_source() -> str:
+    try:
+        return _VISUAL_COMPANION_PATH.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
 BROWSERS = {
     "safari": "Safari",
     "chrome": "Google Chrome",
@@ -170,7 +178,7 @@ def _run_osascript(script: str, timeout_s: int = 30) -> str:
 
 def _safari_visual_claim_js(expected_url: str) -> str:
     expected = json.dumps(str(expected_url or ""))
-    return (
+    return _visual_companion_source() + "\n" + (
         "(()=>{try{"
         f"const expected={expected};"
         "if(document.readyState==='loading')return false;"
