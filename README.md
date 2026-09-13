@@ -152,6 +152,8 @@ Mac MCP uses a small canonical glossary so UI and documentation do not imply str
 - **Mac MCP logical session:** a local hashed steering identity that keeps one agent/conversation flow coherent; not the raw provider identity.
 - **Dedicated user:** containment/hardening that reduces blast radius; not a complete sandbox.
 
+For an advanced two-account deployment, see **[Hardened deployment with a dedicated non-admin macOS user](docs/HARDENED_DEDICATED_USER.md)**. It covers loopback authentication, an explicit ACL-shared directory, TCC/GUI-session limits, tool behavior, rollback, and a two-user validation matrix.
+
 ## Permission profiles and approval semantics
 
 Mac MCP treats **capability enforcement** and **human approval** as separate security concepts. A capability being allowed means only that the Mac MCP server policy permits that tool/risk class. It does **not** mean a second confirmation prompt will appear before the action runs.
