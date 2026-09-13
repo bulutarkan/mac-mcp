@@ -5,13 +5,15 @@ Mirrors the MCP tools as plain HTTP POST endpoints.
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from .security import Settings, load_settings
+from .security_context import SecurityContextManager
 from .scoped_auth import resolve_request_identity
 from .policy import (
     RISK_REGISTRY,
@@ -51,6 +53,19 @@ from .tools_interactive import ask_choice, ask_confirmation, ask_user
 from .tools_ui import act_ui, observe_ui
 
 _settings: Optional[Settings] = None
+_rest_security_context: Optional[SecurityContextManager] = None
+_rest_security_telemetry: Any = None
+_rest_security_approval_provider: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
+
+
+def configure_rest_security(
+    security_context: SecurityContextManager, telemetry: Any,
+    approval_provider: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+) -> None:
+    global _rest_security_context, _rest_security_telemetry, _rest_security_approval_provider
+    _rest_security_context = security_context
+    _rest_security_telemetry = telemetry
+    _rest_security_approval_provider = approval_provider
 
 
 def get_settings() -> Settings:
@@ -63,7 +78,105 @@ def get_settings() -> Settings:
 def require_auth(request: Request) -> str:
     rate_key, context = resolve_request_identity(get_settings(), request.headers.get("authorization"))
     request.state.policy_context = context
+    digest = hashlib.sha256(str(rate_key).encode("utf-8")).hexdigest()
+    request.state.security_key = f"rest:{digest}"
+    request.state.security_session_id = context.agent_id or f"rest_{digest[:16]}"
     return rate_key
+
+
+def _record_rest_security_event(
+    request: Request, *, event_type: str, tool: str, risk: Any, decision: str,
+    reason_code: str, origin: Optional[str], target_summary: Optional[str],
+) -> None:
+    if _rest_security_telemetry is None:
+        return
+    context = getattr(request.state, "policy_context", None)
+    _rest_security_telemetry.record_security_event(
+        session_id=getattr(request.state, "security_session_id", None),
+        event_type=event_type, tool=tool, tool_class=risk.family, origin=origin,
+        decision=decision, reason_code=reason_code,
+        profile=getattr(context, "profile", None), actor=getattr(context, "actor", None),
+        agent_id=getattr(context, "agent_id", None), target_summary=target_summary,
+    )
+
+
+def _rest_security_gate(request: Request, tool: str, arguments: Dict[str, Any], effective: Any) -> None:
+    if _rest_security_context is None:
+        return
+    if getattr(request.state, "security_authorized_tool", None) == tool:
+        return
+    key = getattr(request.state, "security_key", None)
+    session_id = getattr(request.state, "security_session_id", None)
+    context = getattr(request.state, "policy_context", None)
+    if not key or not session_id:
+        return
+    safe_arguments = {str(k): v for k, v in (arguments or {}).items() if str(k) != "tool"}
+    gate = _rest_security_context.evaluate(
+        key=key, public_session_id=session_id, tool=tool, risk=effective, arguments=safe_arguments,
+    )
+    if (not gate.allowed and gate.approval_required and gate.request_id and _rest_security_approval_provider is not None):
+        _record_rest_security_event(
+            request,
+            event_type="SECRET_EGRESS_ATTEMPT" if gate.code.startswith("secret_egress") else "WEB_TO_HOST_ATTEMPT",
+            tool=tool, risk=effective, decision="approval_required", reason_code=gate.code,
+            origin=gate.origin, target_summary=gate.target_summary,
+        )
+        payload = _rest_security_context.pending_request(gate.request_id)
+        approval = {"confirmed": False, "decision": "unavailable"}
+        if payload is not None:
+            try:
+                approval = _rest_security_approval_provider(payload)
+            except Exception:
+                approval = {"confirmed": False, "decision": "unavailable"}
+        if bool(approval.get("confirmed")) and payload is not None:
+            _rest_security_context.grant_escalation(
+                session_id, tool, request_id=gate.request_id, ttl_s=120,
+            )
+            _record_rest_security_event(
+                request,
+                event_type="SECRET_EGRESS_APPROVAL" if payload.get("reason_code") == "secret_egress" else "WEB_TO_HOST_APPROVAL",
+                tool=tool, risk=effective, decision="grant", reason_code="local_user_allow_once",
+                origin=gate.origin, target_summary=gate.target_summary,
+            )
+        else:
+            _rest_security_context.reject_escalation(gate.request_id)
+            _record_rest_security_event(
+                request,
+                event_type="SECRET_EGRESS_APPROVAL" if (payload or {}).get("reason_code") == "secret_egress" else "WEB_TO_HOST_APPROVAL",
+                tool=tool, risk=effective, decision="deny", reason_code=str(approval.get("decision") or "user_denied"),
+                origin=gate.origin, target_summary=gate.target_summary,
+            )
+        gate = _rest_security_context.evaluate(
+            key=key, public_session_id=session_id, tool=tool, risk=effective, arguments=safe_arguments,
+        )
+    if not gate.allowed:
+        if gate.code.startswith("secret_egress"):
+            event_type = "SECRET_EGRESS_BLOCK"
+        elif gate.code == "security_approval_rejected":
+            event_type = "SECURITY_APPROVAL_REJECTED"
+        else:
+            event_type = "HOST_TOOL_BREACH"
+        _record_rest_security_event(
+            request, event_type=event_type, tool=tool, risk=effective, decision="deny",
+            reason_code=gate.code, origin=gate.origin, target_summary=gate.target_summary,
+        )
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            detail={
+                "ok": False, "denied": True, "error": gate.code, "tool": tool,
+                "origin": gate.origin, "request_id": gate.request_id,
+                "target_summary": gate.target_summary,
+            },
+        )
+    if gate.escalated:
+        _record_rest_security_event(
+            request,
+            event_type="SECRET_EGRESS_ESCALATION" if gate.code.startswith("secret_egress") else "WEB_TO_HOST_ESCALATION",
+            tool=tool, risk=effective, decision="allow", reason_code=gate.code,
+            origin=gate.origin, target_summary=gate.target_summary,
+        )
+    request.state.security_authorized_tool = tool
+    request.state.security_arguments = safe_arguments
 
 
 def _authorize_rest_tool(request: Request, tool: str, arguments: Dict[str, Any]) -> None:
@@ -87,11 +200,24 @@ def _authorize_rest_tool(request: Request, tool: str, arguments: Dict[str, Any])
             status.HTTP_403_FORBIDDEN,
             detail=scope_denied_result(tool, scope_decision, context.scope),
         )
+    _rest_security_gate(request, tool, arguments, effective)
 
 
-def _filter_rest_result(request: Request, tool: str, result: Dict[str, Any]) -> Dict[str, Any]:
+def _filter_rest_result(request: Request, tool: str, result: Any) -> Any:
     context = getattr(request.state, "policy_context", None)
-    return filter_scoped_result(context.scope if context is not None else None, tool, result)
+    filtered = filter_scoped_result(context.scope if context is not None else None, tool, result)
+    if _rest_security_context is not None:
+        key = getattr(request.state, "security_key", None)
+        session_id = getattr(request.state, "security_session_id", None)
+        arguments = getattr(request.state, "security_arguments", {})
+        if key and session_id:
+            _rest_security_context.observe_host_result(
+                key=key, public_session_id=session_id, tool=tool, arguments=arguments, result=filtered,
+            )
+            _rest_security_context.observe_browser_result(
+                key=key, public_session_id=session_id, tool=tool, arguments=arguments, result=filtered,
+            )
+    return filtered
 
 
 async def require_policy(request: Request) -> None:
@@ -267,8 +393,9 @@ class RunParallelRequest(BaseModel):
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.post("/run", operation_id="run_command")
-def api_run(req: RunCommandRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
-    return run_command(settings, command=req.command, timeout_s=req.timeout_s)
+def api_run(req: RunCommandRequest, request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
+    result = run_command(settings, command=req.command, timeout_s=req.timeout_s)
+    return _filter_rest_result(request, "run_command", result)
 
 
 @router.post("/system_info", operation_id="get_system_info")
@@ -304,14 +431,15 @@ def api_jobs_status(req: JobStatusRequest, settings: Settings = Depends(get_sett
 
 
 @router.post("/jobs/output", operation_id="get_job_output")
-def api_jobs_output(req: JobOutputRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
-    return get_job_output(
+def api_jobs_output(req: JobOutputRequest, request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
+    result = get_job_output(
         settings,
         job_id=req.job_id,
         tail_lines=req.tail_lines,
         since_offset=req.since_offset,
         stream=req.stream or "both",
     )
+    return _filter_rest_result(request, "get_job_output", result)
 
 
 @router.post("/jobs/stop", operation_id="stop_job")
@@ -325,24 +453,26 @@ def api_jobs_list(req: ListJobsRequest, request: Request, settings: Settings = D
 
 
 @router.post("/jobs/wait", operation_id="wait_jobs")
-def api_jobs_wait(req: WaitJobsRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
-    return wait_jobs(
+def api_jobs_wait(req: WaitJobsRequest, request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
+    result = wait_jobs(
         settings,
         job_ids=req.job_ids,
         timeout_s=req.timeout_s,
         return_output=req.return_output or False,
     )
+    return _filter_rest_result(request, "wait_jobs", result)
 
 
 @router.post("/run_parallel", operation_id="run_commands_parallel")
-def api_run_parallel(req: RunParallelRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
-    return run_commands_parallel(
+def api_run_parallel(req: RunParallelRequest, request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
+    result = run_commands_parallel(
         settings,
         commands=req.commands,
         cwd=req.cwd,
         timeout_s=req.timeout_s,
         return_output=req.return_output if req.return_output is not None else True,
     )
+    return _filter_rest_result(request, "run_commands_parallel", result)
 
 
 @router.post("/files", include_in_schema=False)
@@ -352,35 +482,36 @@ def api_files(req: FilesRequest, request: Request, settings: Settings = Depends(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown file tool: {t}")
     _authorize_rest_tool(request, t, req.model_dump())
     if t == "read_file":
-        return read_file(settings, path=req.path, offset=req.offset or 0, length=req.length)
+        result = read_file(settings, path=req.path, offset=req.offset or 0, length=req.length)
     elif t == "read_multiple_files":
-        return read_multiple_files(settings, paths=req.paths or [])
+        result = read_multiple_files(settings, paths=req.paths or [])
     elif t == "write_file":
-        return write_file(settings, path=req.path, content=req.content or "")
+        result = write_file(settings, path=req.path, content=req.content or "")
     elif t == "write_files_batch":
-        return write_files_batch(settings, files=req.files or [], atomic=req.atomic)
+        result = write_files_batch(settings, files=req.files or [], atomic=req.atomic)
     elif t == "edit_file":
-        return edit_file(settings, path=req.path, old_string=req.old_string,
-                         new_string=req.new_string, expected_replacements=req.expected_replacements or 1)
+        result = edit_file(settings, path=req.path, old_string=req.old_string,
+                           new_string=req.new_string, expected_replacements=req.expected_replacements or 1)
     elif t == "move_file":
-        return move_file(settings, source=req.source, destination=req.destination)
+        result = move_file(settings, source=req.source, destination=req.destination)
     elif t == "copy_file":
-        return copy_file(settings, source=req.source, destination=req.destination)
+        result = copy_file(settings, source=req.source, destination=req.destination)
     elif t == "delete_path":
-        return delete_path(settings, path=req.path, recursive=req.recursive or False)
+        result = delete_path(settings, path=req.path, recursive=req.recursive or False)
     elif t == "list_directory":
-        return list_directory(settings, path=req.path)
+        result = list_directory(settings, path=req.path)
     elif t == "directory_tree":
-        return directory_tree(settings, path=req.path, depth=req.depth or 3)
+        result = directory_tree(settings, path=req.path, depth=req.depth or 3)
     elif t == "create_directory":
-        return create_directory(settings, path=req.path)
+        result = create_directory(settings, path=req.path)
     elif t == "get_file_info":
-        return get_file_info(settings, path=req.path)
+        result = get_file_info(settings, path=req.path)
     elif t == "find_files":
-        return find_files(settings, pattern=req.pattern, path=req.path or str(Path.home()),
-                          file_type=req.file_type or "any")
+        result = find_files(settings, pattern=req.pattern, path=req.path or str(Path.home()),
+                            file_type=req.file_type or "any")
     else:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown file tool: {t}")
+    return _filter_rest_result(request, t, result)
 
 
 @router.post("/macos", include_in_schema=False)
@@ -390,32 +521,33 @@ def api_macos(req: MacOSRequest, request: Request, settings: Settings = Depends(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown macOS tool: {t}")
     _authorize_rest_tool(request, t, req.model_dump())
     if t == "run_applescript":
-        return run_applescript(settings, script=req.script, timeout_s=req.timeout_s or 30)
+        result = run_applescript(settings, script=req.script, timeout_s=req.timeout_s or 30)
     elif t == "send_notification":
-        return send_notification(settings, title=req.title, message=req.message, sound=req.sound or "Pop")
+        result = send_notification(settings, title=req.title, message=req.message, sound=req.sound or "Pop")
     elif t == "clipboard_get":
-        return clipboard_get(settings)
+        result = clipboard_get(settings)
     elif t == "clipboard_set":
-        return clipboard_set(settings, content=req.content or "")
+        result = clipboard_set(settings, content=req.content or "")
     elif t == "open_app":
-        return open_app(settings, app_name=req.app_name)
+        result = open_app(settings, app_name=req.app_name)
     elif t == "open_url":
-        return open_url(settings, url=req.url)
+        result = open_url(settings, url=req.url)
     elif t == "set_volume":
-        return set_volume(settings, level=req.level)
+        result = set_volume(settings, level=req.level)
     elif t == "get_volume":
-        return get_volume(settings)
+        result = get_volume(settings)
     elif t == "set_brightness":
-        return set_brightness(settings, level=req.level)
+        result = set_brightness(settings, level=req.level)
     elif t == "screenshot":
-        return screenshot(settings, path=req.path or str(Path.home() / "Desktop" / "screenshot.png"),
-                          window=req.window or False)
+        result = screenshot(settings, path=req.path or str(Path.home() / "Desktop" / "screenshot.png"),
+                            window=req.window or False)
     elif t == "set_reminder":
-        return set_reminder(settings, title=req.title, notes=req.notes or "", due_date=req.due_date)
+        result = set_reminder(settings, title=req.title, notes=req.notes or "", due_date=req.due_date)
     elif t == "get_running_apps":
-        return get_running_apps(settings)
+        result = get_running_apps(settings)
     else:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown macOS tool: {t}")
+    return _filter_rest_result(request, t, result)
 
 
 @router.post("/browser", include_in_schema=False)
@@ -425,56 +557,57 @@ def api_browser(req: BrowserRequest, request: Request, settings: Settings = Depe
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown browser tool: {t}")
     _authorize_rest_tool(request, t, req.model_dump())
     if t == "browser_open_url":
-        return browser_open_url(settings, browser=req.browser, url=req.url, new_tab=req.new_tab)
+        result = browser_open_url(settings, browser=req.browser, url=req.url, new_tab=req.new_tab)
     elif t == "browser_list_tabs":
-        return _filter_rest_result(request, t, browser_list_tabs(settings, browser=req.browser))
+        result = browser_list_tabs(settings, browser=req.browser)
     elif t == "browser_activate_tab":
-        return browser_activate_tab(settings, browser=req.browser,
-                                    window_index=req.window_index or 1, tab_index=req.tab_index or 1)
+        result = browser_activate_tab(settings, browser=req.browser,
+                                      window_index=req.window_index or 1, tab_index=req.tab_index or 1)
     elif t == "browser_close_tab":
-        return browser_close_tab(settings, browser=req.browser,
-                                 window_index=req.window_index or 1, tab_index=req.tab_index or 1)
+        result = browser_close_tab(settings, browser=req.browser,
+                                   window_index=req.window_index or 1, tab_index=req.tab_index or 1)
     elif t == "browser_execute_js":
-        return browser_execute_js(settings, browser=req.browser, js=req.js,
-                                  window_index=req.window_index or 1, tab_index=req.tab_index)
+        result = browser_execute_js(settings, browser=req.browser, js=req.js,
+                                    window_index=req.window_index or 1, tab_index=req.tab_index)
     elif t == "browser_click_selector":
-        return browser_click_selector(settings, browser=req.browser, css_selector=req.css_selector,
-                                      window_index=req.window_index or 1, tab_index=req.tab_index)
+        result = browser_click_selector(settings, browser=req.browser, css_selector=req.css_selector,
+                                        window_index=req.window_index or 1, tab_index=req.tab_index)
     elif t == "browser_type_selector":
-        return browser_type_selector(settings, browser=req.browser, css_selector=req.css_selector,
-                                     text=req.text, clear=req.clear, window_index=req.window_index or 1,
-                                     tab_index=req.tab_index)
+        result = browser_type_selector(settings, browser=req.browser, css_selector=req.css_selector,
+                                       text=req.text, clear=req.clear, window_index=req.window_index or 1,
+                                       tab_index=req.tab_index)
     elif t == "browser_wait_for_selector":
-        return browser_wait_for_selector(settings, browser=req.browser, css_selector=req.css_selector,
-                                         timeout_s=req.timeout_s or 20, window_index=req.window_index or 1,
-                                         tab_index=req.tab_index)
+        result = browser_wait_for_selector(settings, browser=req.browser, css_selector=req.css_selector,
+                                           timeout_s=req.timeout_s or 20, window_index=req.window_index or 1,
+                                           tab_index=req.tab_index)
     elif t == "browser_get_html":
-        return browser_get_html(settings, browser=req.browser, max_chars=req.max_chars,
-                                window_index=req.window_index or 1, tab_index=req.tab_index)
+        result = browser_get_html(settings, browser=req.browser, max_chars=req.max_chars,
+                                  window_index=req.window_index or 1, tab_index=req.tab_index)
     elif t == "browser_wait_for_download":
-        return browser_wait_for_download(settings, filename_contains=req.filename_contains,
-                                         timeout_s=req.timeout_s or 60)
+        result = browser_wait_for_download(settings, filename_contains=req.filename_contains,
+                                           timeout_s=req.timeout_s or 60)
     elif t == "browser_screenshot":
-        return browser_screenshot(settings, browser=req.browser, path=req.path,
-                                  window_index=req.window_index or 1,
-                                  return_base64=req.return_base64 if req.return_base64 is not None else True)
+        result = browser_screenshot(settings, browser=req.browser, path=req.path,
+                                    window_index=req.window_index or 1,
+                                    return_base64=req.return_base64 if req.return_base64 is not None else True)
     elif t == "browser_scroll":
-        return browser_scroll(settings, browser=req.browser, dx=req.dx or 0, dy=req.dy or 300,
-                              selector=req.selector, window_index=req.window_index or 1,
-                              tab_index=req.tab_index)
+        result = browser_scroll(settings, browser=req.browser, dx=req.dx or 0, dy=req.dy or 300,
+                                selector=req.selector, window_index=req.window_index or 1,
+                                tab_index=req.tab_index)
     elif t == "browser_press_key":
-        return browser_press_key(settings, browser=req.browser, key=req.key,
-                                 modifiers=req.modifiers, window_index=req.window_index or 1)
+        result = browser_press_key(settings, browser=req.browser, key=req.key,
+                                   modifiers=req.modifiers, window_index=req.window_index or 1)
     elif t == "browser_coordinate_click":
-        return browser_coordinate_click(settings, browser=req.browser, x=req.x, y=req.y,
-                                        double_click=req.double_click or False,
-                                        window_index=req.window_index or 1)
+        result = browser_coordinate_click(settings, browser=req.browser, x=req.x, y=req.y,
+                                          double_click=req.double_click or False,
+                                          window_index=req.window_index or 1)
     elif t == "browser_get_snapshot":
-        return browser_get_snapshot(settings, browser=req.browser, window_index=req.window_index or 1,
-                                    tab_index=req.tab_index, max_depth=req.max_depth or 6,
-                                    max_children=req.max_children or 25)
+        result = browser_get_snapshot(settings, browser=req.browser, window_index=req.window_index or 1,
+                                      tab_index=req.tab_index, max_depth=req.max_depth or 6,
+                                      max_children=req.max_children or 25)
     else:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown browser tool: {t}")
+    return _filter_rest_result(request, t, result)
 
 
 @router.post("/search", include_in_schema=False)
@@ -493,9 +626,10 @@ def api_search(req: SearchRequest, request: Request, settings: Settings = Depend
 
 
 @router.post("/http", operation_id="http_request")
-def api_http(req: HttpRequest, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
-    return http_request(settings, url=req.url, method=req.method or "GET",
-                        headers=req.headers, body=req.body)
+def api_http(req: HttpRequest, request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
+    result = http_request(settings, url=req.url, method=req.method or "GET",
+                          headers=req.headers, body=req.body)
+    return _filter_rest_result(request, "http_request", result)
 
 
 @router.post("/interactive", operation_id="ask_user")

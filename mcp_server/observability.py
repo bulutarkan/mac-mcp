@@ -18,6 +18,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from .steering import SteeringManager, attach_steering, preemption_error, steering_identity_from_context
 from .security_context import SecurityContextManager
+from .data_guard import redact_sensitive_source_result, redact_sensitive_text, sanitize_tool_arguments
 
 from .policy import (
     PolicyContext,
@@ -50,7 +51,7 @@ _SECRET_KEY_SUFFIXES = ("_password", "_secret", "_token", "_api_key", "_apikey")
 _PROVIDER_IDENTITY_KEYS = {
     "openai_session", "openai_subject", "openai_organization", "openai_org", "openai_location",
 }
-TELEMETRY_SANITIZER_VERSION = 1
+TELEMETRY_SANITIZER_VERSION = 2
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
 _QUERY_SECRET_RE = re.compile(
     r"(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret)\s*[=:]\s*)([^\s&;,]+)"
@@ -98,7 +99,7 @@ def _redact_text(text: str) -> str:
     text = _PROVIDER_IDENTITY_TEXT_RE.sub("[provider identity redacted]", text)
     text = _ENV_SECRET_RE.sub(lambda m: m.group(1) + "[REDACTED]", text)
     text = _SK_RE.sub("[REDACTED]", text)
-    return text
+    return redact_sensitive_text(text)
 
 
 def _looks_encoded_blob(text: str) -> bool:
@@ -235,10 +236,14 @@ def normalize_result_status(result: Any, error: Optional[BaseException | str] = 
     return "success"
 
 
-def _resanitize_stored_json(raw: Optional[str], *, preview_chars: int) -> Optional[str]:
+def _resanitize_stored_json(
+    raw: Optional[str], *, preview_chars: int, tool: Optional[str] = None, arguments: bool = False,
+) -> Optional[str]:
     if raw is None:
         return None
     parsed = _parse_json(raw)
+    if arguments and isinstance(parsed, dict):
+        parsed = sanitize_tool_arguments(str(tool or ""), parsed)
     return _json_text(sanitize_value(parsed, preview_chars=preview_chars))
 
 
@@ -250,10 +255,10 @@ def _migrate_sensitive_telemetry(
         return False
     conn.execute("PRAGMA secure_delete=ON")
     rows = conn.execute(
-        "SELECT event_id, arguments_json, result_json, error FROM tool_events"
+        "SELECT event_id, tool, arguments_json, result_json, error FROM tool_events"
     ).fetchall()
     for row in rows:
-        arguments_json = _resanitize_stored_json(row["arguments_json"], preview_chars=preview_chars)
+        arguments_json = _resanitize_stored_json(row["arguments_json"], preview_chars=preview_chars, tool=row["tool"], arguments=True)
         result_json = _resanitize_stored_json(row["result_json"], preview_chars=preview_chars)
         error = None if row["error"] is None else str(sanitize_value(row["error"], preview_chars=preview_chars))
         if (arguments_json, result_json, error) != (row["arguments_json"], row["result_json"], row["error"]):
@@ -460,7 +465,7 @@ class TelemetryManager:
             "tool": str(tool or "unknown"),
             "status": "running",
             "started_at": now,
-            "arguments": sanitize_value(arguments or {}, preview_chars=self.preview_chars),
+            "arguments": sanitize_value(sanitize_tool_arguments(str(tool or ""), arguments or {}), preview_chars=self.preview_chars),
         }
         for field in _TELEMETRY_METADATA_COLUMNS:
             event[field] = sanitize_value((metadata or {}).get(field), preview_chars=self.preview_chars)
@@ -473,7 +478,10 @@ class TelemetryManager:
         with self._lock:
             event = self._active.get(event_id)
             if event is not None:
-                event["arguments"] = sanitize_value(arguments, preview_chars=self.preview_chars)
+                tool = str(event.get("tool") or "")
+                event["arguments"] = sanitize_value(
+                    sanitize_tool_arguments(tool, arguments), preview_chars=self.preview_chars
+                )
 
     def update_context(
         self,
@@ -505,7 +513,14 @@ class TelemetryManager:
             started_event = self._active.pop(event_id, None)
         if started_event is None:
             return {"event_id": event_id, "status": "unknown"}
-        safe_result = None if error is not None else sanitize_value(result, preview_chars=self.preview_chars)
+        telemetry_result = result
+        if error is None:
+            telemetry_result = redact_sensitive_source_result(
+                str(started_event.get("tool") or ""),
+                started_event.get("arguments") or {},
+                result,
+            )
+        safe_result = None if error is not None else sanitize_value(telemetry_result, preview_chars=self.preview_chars)
         safe_error = None
         if error is not None:
             if isinstance(error, BaseException):
@@ -776,11 +791,13 @@ class ObservedFastMCP(FastMCP):
         steering: Optional[SteeringManager] = None,
         policy_context_provider: Callable[[], PolicyContext] = current_policy_context,
         security_context: Optional[SecurityContextManager] = None,
+        security_approval_provider: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         **kwargs: Any,
     ) -> None:
         self.telemetry = telemetry
         self.steering = steering or SteeringManager()
         self.security_context = security_context or SecurityContextManager()
+        self._security_approval_provider = security_approval_provider
         self._policy_context_provider = policy_context_provider
         super().__init__(*args, **kwargs)
 
@@ -878,7 +895,10 @@ class ObservedFastMCP(FastMCP):
 
         security_key, public_session_id = security_pair
 
-        def security_event(event_type: str, decision_name: str, reason_code: str, *, origin: Optional[str] = None) -> None:
+        def security_event(
+            event_type: str, decision_name: str, reason_code: str, *,
+            origin: Optional[str] = None, target_summary: Optional[str] = None,
+        ) -> None:
             self.telemetry.record_security_event(
                 session_id=public_session_id,
                 event_type=event_type,
@@ -890,7 +910,7 @@ class ObservedFastMCP(FastMCP):
                 profile=policy_context.profile,
                 actor=policy_context.actor,
                 agent_id=policy_context.agent_id,
-                target_summary=f"{effective.family}:{name}",
+                target_summary=target_summary or f"{effective.family}:{name}",
             )
 
         try:
@@ -929,6 +949,46 @@ class ObservedFastMCP(FastMCP):
                 risk=effective,
                 arguments=arguments,
             )
+
+            if (
+                not gate.allowed and gate.approval_required and gate.request_id
+                and self._security_approval_provider is not None
+            ):
+                security_event(
+                    "SECRET_EGRESS_ATTEMPT" if gate.code.startswith("secret_egress") else "WEB_TO_HOST_ATTEMPT",
+                    "approval_required", gate.code, origin=gate.origin, target_summary=gate.target_summary,
+                )
+                approval_payload = self.security_context.pending_request(gate.request_id)
+                approval_result: Dict[str, Any] = {"confirmed": False, "decision": "unavailable"}
+                if approval_payload is not None:
+                    try:
+                        approval_result = await asyncio.to_thread(self._security_approval_provider, approval_payload)
+                    except Exception:
+                        approval_result = {"confirmed": False, "decision": "unavailable"}
+                if bool(approval_result.get("confirmed")) and approval_payload is not None:
+                    self.security_context.grant_escalation(
+                        public_session_id, name, request_id=gate.request_id, ttl_s=120
+                    )
+                    security_event(
+                        "SECRET_EGRESS_APPROVAL" if approval_payload.get("reason_code") == "secret_egress" else "WEB_TO_HOST_APPROVAL",
+                        "grant", "local_user_allow_once", origin=gate.origin,
+                        target_summary=gate.target_summary,
+                    )
+                else:
+                    self.security_context.reject_escalation(gate.request_id)
+                    security_event(
+                        "SECRET_EGRESS_APPROVAL" if (approval_payload or {}).get("reason_code") == "secret_egress" else "WEB_TO_HOST_APPROVAL",
+                        "deny", str(approval_result.get("decision") or "user_denied"),
+                        origin=gate.origin, target_summary=gate.target_summary,
+                    )
+                gate = self.security_context.evaluate(
+                    key=security_key,
+                    public_session_id=public_session_id,
+                    tool=name,
+                    risk=effective,
+                    arguments=arguments,
+                )
+
             if not gate.allowed:
                 result = {
                     "ok": False,
@@ -937,17 +997,31 @@ class ObservedFastMCP(FastMCP):
                     "tool": name,
                     "reason": gate.reason,
                     "origin": gate.origin,
+                    "request_id": gate.request_id,
+                    "target_summary": gate.target_summary,
                 }
                 self.telemetry.finish_call(event_id, result=result, metadata={"policy_decision": gate.code})
-                security_event("HOST_TOOL_BREACH", "deny", gate.code, origin=gate.origin)
+                if gate.code.startswith("secret_egress"):
+                    event_type = "SECRET_EGRESS_BLOCK"
+                elif gate.code == "security_approval_rejected":
+                    event_type = "SECURITY_APPROVAL_REJECTED"
+                else:
+                    event_type = "HOST_TOOL_BREACH"
+                security_event(
+                    event_type, "deny", gate.code, origin=gate.origin,
+                    target_summary=gate.target_summary,
+                )
                 if top_level and steering_identity is not None:
                     self.steering.mark_security_attention(steering_identity, gate.code)
                 raise ToolError(
                     f"{gate.code}: tool={name}; origin={gate.origin or 'unknown'}; "
-                    "a local one-shot escalation is required before this host action"
+                    f"target={gate.target_summary or name}; local Allow Once approval required"
                 )
             if gate.escalated:
-                security_event("WEB_TO_HOST_ESCALATION", "allow", gate.code, origin=gate.origin)
+                security_event(
+                    "SECRET_EGRESS_ESCALATION" if gate.code.startswith("secret_egress") else "WEB_TO_HOST_ESCALATION",
+                    "allow", gate.code, origin=gate.origin, target_summary=gate.target_summary,
+                )
 
             if top_level and steering_identity is not None:
                 self.steering.begin_call(steering_identity, event_id, tool=name, arguments=arguments)
@@ -962,6 +1036,13 @@ class ObservedFastMCP(FastMCP):
                 raise
 
             result = filter_scoped_result(policy_context.scope, name, result)
+            self.security_context.observe_host_result(
+                key=security_key,
+                public_session_id=public_session_id,
+                tool=name,
+                arguments=arguments,
+                result=result,
+            )
             self.security_context.observe_browser_result(
                 key=security_key,
                 public_session_id=public_session_id,

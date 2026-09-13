@@ -58,6 +58,7 @@ from .tools_update import mac_mcp_update
 from .tools_memory import memory_add, memory_search, memory_get, memory_update, memory_delete
 from .tools_skills import skill_list, skill_search, skill_get, skill_register, skill_update_index
 from .menu_app_bootstrap import bootstrap_menu_app_and_legacy_state
+from .data_guard import format_security_approval_question
 
 
 _BROWSER_DO_OUTPUT_BUDGET_BYTES = 8_192
@@ -181,6 +182,13 @@ def create_app():
     head_probe_sessions: Dict[str, tuple[str, float]] = {}
     mcp_session_owner_ttl_s = 3600.0
 
+    def security_approval(payload: Dict[str, Any]) -> Dict[str, Any]:
+        return ask_confirmation(
+            settings, question=format_security_approval_question(payload),
+            sender="Mac MCP Security", timeout_s=60,
+            confirm_label="Allow Once", deny_label="Block",
+        )
+
     mcp = ObservedFastMCP(
         telemetry=telemetry,
         name="mac-mcp",
@@ -195,6 +203,7 @@ def create_app():
         streamable_http_path="/mcp",
         stateless_http=False,
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+        security_approval_provider=security_approval,
     )
 
     class SecurityMiddleware(BaseHTTPMiddleware):
@@ -1443,7 +1452,8 @@ def create_app():
 
     # REST API — FastAPI sub-app mounted at /api
     from fastapi import FastAPI
-    from .rest_routes import router as rest_router
+    from .rest_routes import configure_rest_security, router as rest_router
+    configure_rest_security(mcp.security_context, telemetry, security_approval)
     rest_app = FastAPI()
 
     @rest_app.middleware("http")

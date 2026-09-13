@@ -14,6 +14,7 @@ from starlette.testclient import TestClient
 
 from mcp_server.dashboard_routes import _is_loopback, _persist_permission_profile, browser_event_context, create_dashboard_routes
 from mcp_server.observability import TelemetryManager, sanitize_value
+from mcp_server.policy import resolve_risk
 from mcp_server.security import dashboard_authorized, ensure_dashboard_token, load_settings
 from mcp_server.security_context import SecurityContextManager
 from mcp_server.steering import SteeringIdentity, SteeringManager
@@ -116,7 +117,7 @@ class TelemetryTests(unittest.TestCase):
             ).fetchone())
             version = con.execute("PRAGMA user_version").fetchone()[0]
             con.close()
-            self.assertEqual(1, version)
+            self.assertEqual(2, version)
             self.assertNotIn("openai/", raw.lower())
             self.assertNotIn("legacy-session-value", raw)
             raw_bytes = db.read_bytes().lower()
@@ -127,6 +128,57 @@ class TelemetryTests(unittest.TestCase):
                 wal_bytes = wal.read_bytes().lower()
                 self.assertNotIn(b"openai/session", wal_bytes)
                 self.assertNotIn(b"legacy-session-value", wal_bytes)
+
+    def test_v2_migration_scrubs_legacy_browser_input_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "telemetry.sqlite3"
+            manager = TelemetryManager(db_path=db, max_events=100)
+            secret = "legacy-arbitrary-secret-42"
+            event_id = manager.start_call(
+                "mcp", "browser_type_selector",
+                {"browser": "Safari", "css_selector": "#password", "text": "placeholder"},
+            )
+            manager.finish_call(event_id, result={"ok": True})
+            import sqlite3
+            con = sqlite3.connect(db)
+            con.execute(
+                "UPDATE tool_events SET arguments_json=? WHERE event_id=?",
+                (json.dumps({"browser": "Safari", "css_selector": "#password", "text": secret}), event_id),
+            )
+            con.execute("PRAGMA user_version=1")
+            con.commit(); con.close()
+
+            migrated = TelemetryManager(db_path=db, max_events=100)
+            event = migrated.query_events(limit=1)[0]
+            rendered = json.dumps(event, ensure_ascii=False)
+            self.assertNotIn(secret, rendered)
+            self.assertIn("BROWSER INPUT REDACTED", rendered)
+            con = sqlite3.connect(db)
+            raw = str(con.execute(
+                "SELECT arguments_json FROM tool_events WHERE event_id=?", (event_id,)
+            ).fetchone()[0])
+            version = con.execute("PRAGMA user_version").fetchone()[0]
+            con.close()
+            self.assertEqual(2, version)
+            self.assertNotIn(secret, raw)
+            self.assertIn("BROWSER INPUT REDACTED", raw)
+            self.assertNotIn(secret.encode(), db.read_bytes())
+
+    def test_sensitive_source_result_is_redacted_from_persistent_telemetry(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "telemetry.sqlite3"
+            manager = TelemetryManager(db_path=db, max_events=100)
+            secret = "sk-privateTelemetrySecret1234567890"
+            event_id = manager.start_call("mcp", "read_file", {"path": "/tmp/project/.env"})
+            manager.finish_call(
+                event_id,
+                result={"ok": True, "path": "/tmp/project/.env", "content": f"API_KEY={secret}"},
+            )
+            event = manager.query_events(limit=1)[0]
+            rendered = json.dumps(event, ensure_ascii=False)
+            self.assertNotIn(secret, rendered)
+            self.assertIn("SENSITIVE OUTPUT REDACTED", rendered)
+            self.assertNotIn(secret.encode(), db.read_bytes())
 
     def test_database_recovers_if_storage_directory_is_recreated(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -274,22 +326,29 @@ class SecuritySemanticsRouteTests(unittest.TestCase):
                 tool="browser_observe", arguments={},
                 result={"url": "https://evil.example/page", "tab_handle": "tab-security"},
             )
+            _declared, run_risk = resolve_risk("run_command", {"command": "pwd"})
+            pending = security_context.evaluate(
+                key="session:test", public_session_id="sess_security",
+                tool="run_command", risk=run_risk, arguments={"command": "pwd"},
+            )
+            self.assertFalse(pending.allowed)
+            self.assertIsNotNone(pending.request_id)
             app = Starlette(routes=create_dashboard_routes(
                 manager, load_settings(), DASHBOARD_TOKEN, security_context=security_context
             ))
             client = TestClient(app)
             unauth = client.post(
                 "/dashboard/api/security/escalate",
-                json={"session_id": "sess_security", "tool": "run_command"},
+                json={"session_id": "sess_security", "tool": "run_command", "request_id": pending.request_id},
             )
             remote = client.post(
                 "/dashboard/api/security/escalate",
-                json={"session_id": "sess_security", "tool": "run_command"},
+                json={"session_id": "sess_security", "tool": "run_command", "request_id": pending.request_id},
                 headers={**DASHBOARD_AUTH, "x-forwarded-for": "8.8.8.8"},
             )
             local = client.post(
                 "/dashboard/api/security/escalate",
-                json={"session_id": "sess_security", "tool": "run_command", "ttl_seconds": 60},
+                json={"session_id": "sess_security", "tool": "run_command", "request_id": pending.request_id, "ttl_seconds": 60},
                 headers=DASHBOARD_AUTH,
             )
             self.assertEqual(401, unauth.status_code)
@@ -298,6 +357,8 @@ class SecuritySemanticsRouteTests(unittest.TestCase):
             grant = local.json()["grant"]
             self.assertEqual("run_command", grant["tool"])
             self.assertEqual("https://evil.example", grant["origin"])
+            self.assertEqual(pending.request_id, grant["request_id"])
+            self.assertIn("pwd", grant["target_summary"])
 
             events_response = client.get("/dashboard/api/security/events", headers=DASHBOARD_AUTH)
             self.assertEqual(200, events_response.status_code)

@@ -312,11 +312,13 @@ def create_dashboard_routes(
             body = {}
         session_id = str(body.get("session_id") or "").strip()
         tool = str(body.get("tool") or "").strip()
+        request_id = str(body.get("request_id") or "").strip() or None
         if tool not in RISK_REGISTRY:
             return JSONResponse({"ok": False, "error": "unknown_tool"}, status_code=400)
         try:
             grant = security_context.grant_escalation(
-                session_id, tool, ttl_s=int(body.get("ttl_seconds") or 120)
+                session_id, tool, ttl_s=int(body.get("ttl_seconds") or 120),
+                request_id=request_id,
             )
         except (TypeError, ValueError):
             return JSONResponse({"ok": False, "error": "invalid_escalation_request"}, status_code=400)
@@ -326,7 +328,7 @@ def create_dashboard_routes(
             session_id=session_id, event_type="WEB_TO_HOST_APPROVAL", tool=tool,
             tool_class=RISK_REGISTRY[tool].family, origin=grant.get("origin"), decision="grant",
             reason_code="local_user_one_shot_grant", profile=None, actor="dashboard-local-user",
-            agent_id=None, target_summary=f"{RISK_REGISTRY[tool].family}:{tool}",
+            agent_id=None, target_summary=grant.get("target_summary") or f"{RISK_REGISTRY[tool].family}:{tool}",
         )
         return JSONResponse({"ok": True, "grant": grant})
 
