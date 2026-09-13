@@ -119,6 +119,8 @@ struct AgentInfo: Decodable, Identifiable, Equatable {
     let provider: String?
     let model: String?
     let reasoning: String?
+    let accessMode: String?
+    let capabilityProfile: String?
     let lastTool: String?
     let toolCallCount: Int?
     let retryCount: Int?
@@ -128,6 +130,8 @@ struct AgentInfo: Decodable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case agentID = "agent_id"
         case status, phase, title, provider, model, reasoning
+        case accessMode = "access_mode"
+        case capabilityProfile = "capability_profile"
         case lastTool = "last_tool"
         case toolCallCount = "tool_call_count"
         case retryCount = "retry_count"

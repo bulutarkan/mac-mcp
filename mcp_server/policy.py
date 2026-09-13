@@ -204,6 +204,15 @@ def _update_risk(arguments: Mapping[str, Any]) -> RiskOverride:
 
 
 def _agent_spawn_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    capability_profile = str(arguments.get("capability_profile") or "").strip().lower()
+    profile_modes = {
+        "browser_only": AccessMode.READ_ONLY,
+        "read_only": AccessMode.READ_ONLY,
+        "developer": AccessMode.WORKSPACE_WRITE,
+        "full": AccessMode.FULL,
+    }
+    if capability_profile in profile_modes:
+        return RiskOverride(requested_access_mode=profile_modes[capability_profile])
     raw_mode = arguments.get("access_mode", AccessMode.WORKSPACE_WRITE.value)
     try:
         mode = normalize_access_mode(str(raw_mode))
@@ -379,7 +388,34 @@ PROFILES: dict[str, PermissionProfile] = {
             summary="Mutating capabilities are denied by policy. Allowed read-only calls do not require a Mac MCP confirmation prompt.",
         ),
     ),
+    # Scoped delegated-agent profiles. These are not selectable as global server
+    # presets; ResourceScope remains the second, server-side boundary.
+    "browser_only": PermissionProfile(
+        name="browser_only",
+        allowed_capabilities=_caps(
+            Capability.READ, Capability.LOCAL_WRITE, Capability.UI_ACTION,
+            Capability.BROWSER_CONTROL, Capability.EXTERNAL_SIDE_EFFECT, Capability.NETWORK_ACCESS,
+        ),
+        allow_destructive_families=frozenset({"browser"}),
+        access_mode_ceiling=AccessMode.READ_ONLY,
+        approval=ApprovalBehavior(
+            source=ApprovalSource.NONE, automatic_confirmation=False,
+            summary="Delegated browser-only profile; server scope restricts calls to the browser tool family.",
+        ),
+    ),
+    "developer": PermissionProfile(
+        name="developer",
+        allowed_capabilities=frozenset(capability for capability in Capability if capability != Capability.UPDATE_CONTROL),
+        allow_destructive_families=frozenset({"terminal", "jobs", "files", "http", "agents", "skills", "memory"}),
+        access_mode_ceiling=AccessMode.WORKSPACE_WRITE,
+        approval=ApprovalBehavior(
+            source=ApprovalSource.NONE, automatic_confirmation=False,
+            summary="Delegated developer profile; resource scope limits the exposed host tool families and paths.",
+        ),
+    ),
 }
+
+_GLOBAL_PROFILE_NAMES = ("trusted", "standard", "read_only")
 
 
 def declared_risk(tool: str) -> RiskAssessment:
@@ -448,7 +484,8 @@ def permission_semantics(profile_name: Optional[str] = None) -> dict[str, Any]:
     active_name = str(profile_name or permission_profile_name()).strip().lower() or "trusted"
     all_capabilities = frozenset(Capability)
     profiles: list[dict[str, Any]] = []
-    for name, profile in PROFILES.items():
+    for name in _GLOBAL_PROFILE_NAMES:
+        profile = PROFILES[name]
         allowed = all_capabilities if profile.allowed_capabilities is None else profile.allowed_capabilities
         denied = all_capabilities.difference(allowed)
         profiles.append({
@@ -556,8 +593,24 @@ def annotations_for_tool(tool: str) -> ToolAnnotations:
     )
 
 
+def profile_contains(parent_name: str, child_name: str) -> bool:
+    """Return True only when the child permission profile cannot widen the parent."""
+    parent = PROFILES.get(str(parent_name or "").strip().lower())
+    child = PROFILES.get(str(child_name or "").strip().lower())
+    if parent is None or child is None:
+        return False
+    if parent.allowed_capabilities is not None:
+        child_caps = frozenset(Capability) if child.allowed_capabilities is None else child.allowed_capabilities
+        if not child_caps.issubset(parent.allowed_capabilities):
+            return False
+    if parent.allow_destructive_families is not None:
+        if child.allow_destructive_families is None or not child.allow_destructive_families.issubset(parent.allow_destructive_families):
+            return False
+    return access_mode_allows(parent.access_mode_ceiling, child.access_mode_ceiling)
+
+
 def narrow_child_profile(parent_profile: str, access_mode: AccessMode | str) -> str:
-    """Map child execution mode to a profile without ever elevating the parent."""
+    """Map legacy child execution mode to a profile without ever elevating the parent."""
 
     mode = normalize_access_mode(access_mode)
     parent = str(parent_profile or "trusted").strip().lower()

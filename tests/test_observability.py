@@ -15,6 +15,7 @@ from starlette.testclient import TestClient
 from mcp_server.dashboard_routes import _is_loopback, _persist_permission_profile, browser_event_context, create_dashboard_routes
 from mcp_server.observability import TelemetryManager, sanitize_value
 from mcp_server.security import dashboard_authorized, ensure_dashboard_token, load_settings
+from mcp_server.security_context import SecurityContextManager
 from mcp_server.steering import SteeringIdentity, SteeringManager
 from mcp_server.version import __version__
 
@@ -263,6 +264,45 @@ class SecuritySemanticsRouteTests(unittest.TestCase):
             self.assertEqual("standard", payload["active_profile"])
             self.assertFalse(payload["ask_confirmation_is_automatic_gate"])
             self.assertEqual(403, remote.status_code)
+
+    def test_web_host_escalation_is_local_authenticated_and_audited(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
+            security_context = SecurityContextManager()
+            security_context.observe_browser_result(
+                key="session:test", public_session_id="sess_security",
+                tool="browser_observe", arguments={},
+                result={"url": "https://evil.example/page", "tab_handle": "tab-security"},
+            )
+            app = Starlette(routes=create_dashboard_routes(
+                manager, load_settings(), DASHBOARD_TOKEN, security_context=security_context
+            ))
+            client = TestClient(app)
+            unauth = client.post(
+                "/dashboard/api/security/escalate",
+                json={"session_id": "sess_security", "tool": "run_command"},
+            )
+            remote = client.post(
+                "/dashboard/api/security/escalate",
+                json={"session_id": "sess_security", "tool": "run_command"},
+                headers={**DASHBOARD_AUTH, "x-forwarded-for": "8.8.8.8"},
+            )
+            local = client.post(
+                "/dashboard/api/security/escalate",
+                json={"session_id": "sess_security", "tool": "run_command", "ttl_seconds": 60},
+                headers=DASHBOARD_AUTH,
+            )
+            self.assertEqual(401, unauth.status_code)
+            self.assertEqual(403, remote.status_code)
+            self.assertEqual(200, local.status_code)
+            grant = local.json()["grant"]
+            self.assertEqual("run_command", grant["tool"])
+            self.assertEqual("https://evil.example", grant["origin"])
+
+            events_response = client.get("/dashboard/api/security/events", headers=DASHBOARD_AUTH)
+            self.assertEqual(200, events_response.status_code)
+            events = events_response.json()["events"]
+            self.assertTrue(any(event["event_type"] == "WEB_TO_HOST_APPROVAL" for event in events))
 
 
 class SteeringLifecycleRouteTests(unittest.TestCase):

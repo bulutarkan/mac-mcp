@@ -446,6 +446,24 @@ class SteeringManager:
         with self._lock:
             return str(self._ensure_identity_locked(identity)["session_id"])
 
+    def mark_security_attention(self, identity: SteeringIdentity, reason_code: str) -> Dict[str, Any]:
+        """Expose a local policy stop through the existing Needs Attention session UX."""
+        with self._lock:
+            state = self._ensure_identity_locked(identity)
+            state["last_error"] = "security:" + str(reason_code or "policy_denied")
+            state["last_transition_at"] = time.time()
+            state["last_activity_at"] = time.time()
+            return self._public_state_locked(state)
+
+    def clear_security_attention(self, identity: SteeringIdentity) -> None:
+        with self._lock:
+            state = self._sessions.get(identity.key)
+            if state is None:
+                return
+            if str(state.get("last_error") or "").startswith("security:"):
+                state["last_error"] = None
+                state["last_transition_at"] = time.time()
+
     def prepare_call(
         self,
         identity: SteeringIdentity,

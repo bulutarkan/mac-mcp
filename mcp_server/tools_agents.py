@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from fastapi import HTTPException, status
 
-from .policy import PROFILES, narrow_child_profile
+from .policy import PROFILES, narrow_child_profile, profile_contains
 from .policy_scope import (
     ResourceScope, access_mode_allows, child_scope, normalize_access_mode, scope_contains,
 )
@@ -41,6 +41,15 @@ _PROVIDER_NAMES = {"opencode", "codex"}
 _ACCESS_MODES = {"read_only", "workspace_write", "full"}
 _RESULT_STYLES = {"concise", "detailed"}
 _WAIT_MODES = {"all", "any", "majority"}
+_AGENT_CAPABILITY_PROFILES: Dict[str, Dict[str, Any]] = {
+    "browser_only": {"access_mode": "read_only", "permission_profile": "browser_only", "tool_families": ("browser",)},
+    "read_only": {"access_mode": "read_only", "permission_profile": "read_only", "tool_families": None},
+    "developer": {
+        "access_mode": "workspace_write", "permission_profile": "developer",
+        "tool_families": ("terminal", "jobs", "files", "search", "http", "agents", "memory", "skills"),
+    },
+    "full": {"access_mode": "full", "permission_profile": "trusted", "tool_families": None},
+}
 _WORKERS: Dict[str, subprocess.Popen] = {}
 _WORKERS_LOCK = threading.RLock()
 _META_LOCKS: Dict[str, threading.RLock] = {}
@@ -472,9 +481,18 @@ def _requested_agent_scope(
     raw_scope: Optional[Dict[str, Any]],
     parent_scope: Optional[ResourceScope],
     parent_profile: str,
-) -> Tuple[ResourceScope, str]:
+    capability_profile: Optional[str] = None,
+) -> Tuple[ResourceScope, str, str]:
+    requested_capability = str(capability_profile or "").strip().lower()
+    preset = _AGENT_CAPABILITY_PROFILES.get(requested_capability) if requested_capability else None
+    if requested_capability and preset is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"capability_profile must be one of: {', '.join(sorted(_AGENT_CAPABILITY_PROFILES))}",
+        )
+    effective_access_mode = str(preset["access_mode"] if preset else access_mode)
     try:
-        mode = normalize_access_mode(access_mode)
+        mode = normalize_access_mode(effective_access_mode)
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     profile = PROFILES.get(str(parent_profile or "trusted").strip().lower())
@@ -483,7 +501,18 @@ def _requested_agent_scope(
     if not access_mode_allows(profile.access_mode_ceiling, mode):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Requested agent access_mode exceeds the parent permission profile.")
 
+    target_profile = str(preset["permission_profile"] if preset else narrow_child_profile(profile.name, mode))
+    if not profile_contains(profile.name, target_profile):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "capability_profile_denied: child profile cannot widen the parent profile.")
+
     data: Dict[str, Any] = dict(raw_scope or {})
+    preset_families = None if preset is None else preset.get("tool_families")
+    if preset_families is not None:
+        requested_families = data.get("tool_families")
+        if requested_families is None:
+            data["tool_families"] = list(preset_families)
+        elif not set(str(value) for value in requested_families).issubset(set(preset_families)):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "scope_denied: tool_families exceed capability_profile.")
     if "access_mode" in data:
         try:
             scoped_mode = normalize_access_mode(data["access_mode"])
@@ -503,7 +532,7 @@ def _requested_agent_scope(
     if not scope_contains(parent, requested):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "scope_denied: child scope cannot widen the parent scope.")
     effective = child_scope(parent, requested)
-    return effective, narrow_child_profile(profile.name, mode)
+    return effective, target_profile, (requested_capability or "legacy")
 
 
 def _scope_prompt(scope: ResourceScope, profile: str, provider: str) -> str:
@@ -622,6 +651,7 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "cwd": meta.get("cwd"),
         "access_mode": meta.get("access_mode"),
         "permission_profile": meta.get("permission_profile"),
+        "capability_profile": meta.get("capability_profile"),
         "scope": meta.get("scope"),
         "scoped_mcp": bool(meta.get("scoped_mcp")),
         "access_mode_enforced": access_info["enforced"],
@@ -693,6 +723,7 @@ def _spawn_internal(
     access_mode: str,
     scope: ResourceScope,
     permission_profile: str,
+    capability_profile: str = "legacy",
     parent_agent_id: Optional[str] = None,
     resume_session_id: Optional[str] = None,
     attempt: int = 1,
@@ -753,6 +784,7 @@ def _spawn_internal(
         "cwd": str(workdir),
         "access_mode": access_mode,
         "permission_profile": permission_profile,
+        "capability_profile": capability_profile,
         "scope": scope.to_dict(),
         "scoped_mcp": True,
         "mcp_endpoint": os.getenv("MAC_MCP_AGENT_ENDPOINT", "http://127.0.0.1:8765/mcp"),
@@ -836,15 +868,16 @@ def spawn_agent(
     scope: Optional[Dict[str, Any]] = None,
     parent_scope: Optional[ResourceScope] = None,
     parent_profile: str = "trusted",
+    capability_profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     workdir = _resolve_cwd(cwd)
-    effective_scope, permission_profile = _requested_agent_scope(
-        workdir, access_mode, scope, parent_scope, parent_profile
+    effective_scope, permission_profile, effective_capability_profile = _requested_agent_scope(
+        workdir, access_mode, scope, parent_scope, parent_profile, capability_profile
     )
     return _spawn_internal(
         settings, provider, prompt, model, reasoning, str(workdir), timeout_s, title,
-        result_style, access_mode, effective_scope, permission_profile,
-        idle_timeout_s=idle_timeout_s, retries=retries,
+        result_style, effective_scope.access_mode.value, effective_scope, permission_profile,
+        capability_profile=effective_capability_profile, idle_timeout_s=idle_timeout_s, retries=retries,
     )
 
 
@@ -865,6 +898,7 @@ def spawn_agents(
     scope: Optional[Dict[str, Any]] = None,
     parent_scope: Optional[ResourceScope] = None,
     parent_profile: str = "trusted",
+    capability_profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not tasks or not isinstance(tasks, list):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "tasks is required.")
@@ -894,9 +928,10 @@ def spawn_agents(
         })
 
     workdir = _resolve_cwd(cwd)
-    team_scope, team_profile = _requested_agent_scope(
-        workdir, access_mode, scope, parent_scope, parent_profile
+    team_scope, team_profile, effective_capability_profile = _requested_agent_scope(
+        workdir, access_mode, scope, parent_scope, parent_profile, capability_profile
     )
+    access_mode = team_scope.access_mode.value
     team_id = "team_" + uuid.uuid4().hex[:10]
     created = _now()
     team_meta: Dict[str, Any] = {
@@ -912,6 +947,7 @@ def spawn_agents(
         "result_style": result_style,
         "access_mode": access_mode,
         "permission_profile": team_profile,
+        "capability_profile": effective_capability_profile,
         "scope": team_scope.to_dict(),
         "created_at": created,
         "updated_at": created,
@@ -954,7 +990,7 @@ def spawn_agents(
                 settings=settings, provider=provider, prompt=task["prompt"], model=model,
                 reasoning=reasoning, cwd=str(workdir), timeout_s=timeout_s, title=task["title"],
                 result_style=result_style, access_mode=access_mode, scope=effective_scope,
-                permission_profile=permission_profile, team_id=team_id,
+                permission_profile=permission_profile, capability_profile=effective_capability_profile, team_id=team_id,
                 idle_timeout_s=idle_timeout_s, retries=retries,
             )
             spawned.append(item)
@@ -1164,6 +1200,7 @@ def _agent_action_single(
             access_mode=meta.get("access_mode", "workspace_write"),
             scope=ResourceScope.from_dict(meta.get("scope")),
             permission_profile=str(meta.get("permission_profile") or "trusted"),
+            capability_profile=str(meta.get("capability_profile") or "legacy"),
             parent_agent_id=agent_id,
             attempt=int(meta.get("attempt", 1)) + 1,
             idle_timeout_s=meta.get("idle_timeout_s"),
@@ -1190,6 +1227,7 @@ def _agent_action_single(
         access_mode=meta.get("access_mode", "workspace_write"),
         scope=ResourceScope.from_dict(meta.get("scope")),
         permission_profile=str(meta.get("permission_profile") or "trusted"),
+        capability_profile=str(meta.get("capability_profile") or "legacy"),
         parent_agent_id=agent_id,
         resume_session_id=session_id,
         attempt=int(meta.get("attempt", 1)) + 1,

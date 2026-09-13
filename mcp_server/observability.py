@@ -17,6 +17,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 from .steering import SteeringManager, attach_steering, preemption_error, steering_identity_from_context
+from .security_context import SecurityContextManager
 
 from .policy import (
     PolicyContext,
@@ -346,6 +347,27 @@ class TelemetryManager:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tool_events_tool_time ON tool_events(tool, timestamp DESC)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS security_events (
+                event_id TEXT PRIMARY KEY,
+                timestamp REAL NOT NULL,
+                session_id TEXT,
+                event_type TEXT NOT NULL,
+                tool TEXT,
+                tool_class TEXT,
+                origin TEXT,
+                decision TEXT NOT NULL,
+                reason_code TEXT NOT NULL,
+                profile TEXT,
+                actor TEXT,
+                agent_id TEXT,
+                target_summary TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_time ON security_events(timestamp DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_session ON security_events(session_id, timestamp DESC)")
 
     def _init_db(self) -> None:
         migrated = False
@@ -547,6 +569,16 @@ class TelemetryManager:
         cutoff = time.time() - (self.retention_days * 86400)
         with self._connect() as conn:
             conn.execute("DELETE FROM tool_events WHERE timestamp < ?", (cutoff,))
+            conn.execute("DELETE FROM security_events WHERE timestamp < ?", (cutoff,))
+            conn.execute(
+                """
+                DELETE FROM security_events
+                WHERE event_id NOT IN (
+                    SELECT event_id FROM security_events ORDER BY timestamp DESC LIMIT ?
+                )
+                """,
+                (self.max_events,),
+            )
             conn.execute(
                 """
                 DELETE FROM tool_events
@@ -556,6 +588,60 @@ class TelemetryManager:
                 """,
                 (self.max_events,),
             )
+
+    def record_security_event(
+        self, *, session_id: Optional[str], event_type: str, tool: Optional[str],
+        tool_class: Optional[str], origin: Optional[str], decision: str, reason_code: str,
+        profile: Optional[str], actor: Optional[str], agent_id: Optional[str],
+        target_summary: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        event = {
+            "event_id": "sec_" + uuid.uuid4().hex[:14],
+            "timestamp": time.time(),
+            "session_id": str(session_id) if session_id else None,
+            "event_type": str(event_type),
+            "tool": str(tool) if tool else None,
+            "tool_class": str(tool_class) if tool_class else None,
+            "origin": str(origin)[:240] if origin else None,
+            "decision": str(decision),
+            "reason_code": str(reason_code),
+            "profile": str(profile) if profile else None,
+            "actor": str(actor) if actor else None,
+            "agent_id": str(agent_id) if agent_id else None,
+            "target_summary": sanitize_value(target_summary, preview_chars=240) if target_summary else None,
+        }
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO security_events (
+                    event_id,timestamp,session_id,event_type,tool,tool_class,origin,decision,reason_code,
+                    profile,actor,agent_id,target_summary
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                tuple(event[key] for key in (
+                    "event_id","timestamp","session_id","event_type","tool","tool_class","origin","decision",
+                    "reason_code","profile","actor","agent_id","target_summary"
+                )),
+            )
+        self._writes += 1
+        if self._writes % 100 == 1:
+            self._prune()
+        self._publish({"kind": "security_event", **event})
+        return event
+
+    def query_security_events(self, *, hours: float = 24, limit: int = 100, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        bounded_hours = max(0.05, min(float(hours), 24 * 365))
+        bounded_limit = max(1, min(int(limit), 500))
+        clauses = ["timestamp >= ?"]
+        params: List[Any] = [time.time() - bounded_hours * 3600]
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(str(session_id))
+        params.append(bounded_limit)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM security_events WHERE " + " AND ".join(clauses) + " ORDER BY timestamp DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def active_calls(self) -> List[Dict[str, Any]]:
         now = time.time()
@@ -664,6 +750,9 @@ class TelemetryManager:
 _STEERING_PARENT_EVENT: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "mac_mcp_steering_parent_event", default=None
 )
+_SECURITY_SESSION: contextvars.ContextVar[Optional[tuple[str, str]]] = contextvars.ContextVar(
+    "mac_mcp_security_session", default=None
+)
 
 
 _CORE_TOOL_NAMES = {
@@ -686,10 +775,12 @@ class ObservedFastMCP(FastMCP):
         telemetry: TelemetryManager,
         steering: Optional[SteeringManager] = None,
         policy_context_provider: Callable[[], PolicyContext] = current_policy_context,
+        security_context: Optional[SecurityContextManager] = None,
         **kwargs: Any,
     ) -> None:
         self.telemetry = telemetry
         self.steering = steering or SteeringManager()
+        self.security_context = security_context or SecurityContextManager()
         self._policy_context_provider = policy_context_provider
         super().__init__(*args, **kwargs)
 
@@ -762,17 +853,47 @@ class ObservedFastMCP(FastMCP):
         steering_token = _STEERING_PARENT_EVENT.set(event_id) if top_level else None
         steering_identity = None
         call_registered = False
+        security_token = None
+        security_pair = _SECURITY_SESSION.get()
 
         if top_level:
             try:
                 steering_identity = steering_identity_from_context(self.get_context())
             except (LookupError, ValueError, AttributeError):
                 steering_identity = None
+            if policy_context.agent_id:
+                public_session_id = policy_context.agent_id
+            elif steering_identity is not None:
+                public_session_id = self.steering.session_id_for(steering_identity)
+            else:
+                public_session_id = f"actor:{policy_context.actor}"
+            security_key = self.security_context.identity_key(
+                policy_context, steering_identity.key if steering_identity is not None else None
+            )
+            security_pair = (security_key, public_session_id)
+            security_token = _SECURITY_SESSION.set(security_pair)
+        elif security_pair is None:
+            public_session_id = policy_context.agent_id or f"actor:{policy_context.actor}"
+            security_pair = (self.security_context.identity_key(policy_context, None), public_session_id)
+
+        security_key, public_session_id = security_pair
+
+        def security_event(event_type: str, decision_name: str, reason_code: str, *, origin: Optional[str] = None) -> None:
+            self.telemetry.record_security_event(
+                session_id=public_session_id,
+                event_type=event_type,
+                tool=name,
+                tool_class=effective.family,
+                origin=origin,
+                decision=decision_name,
+                reason_code=reason_code,
+                profile=policy_context.profile,
+                actor=policy_context.actor,
+                agent_id=policy_context.agent_id,
+                target_summary=f"{effective.family}:{name}",
+            )
 
         try:
-            # Session-bound steering is checked before policy/tool execution. If a
-            # user queued steering while this agent was idle, fail this attempted
-            # tool without executing it so the model sees the new direction first.
             if top_level and steering_identity is not None:
                 pending = self.steering.prepare_call(steering_identity, tool=name, arguments=arguments)
                 if pending:
@@ -786,6 +907,7 @@ class ObservedFastMCP(FastMCP):
             if not decision.allowed:
                 result = profile_denied_result(name, decision, declared, effective)
                 self.telemetry.finish_call(event_id, result=result)
+                security_event("POLICY_DENY", "deny", decision.code)
                 raise ToolError(
                     f"profile_denied: tool={name}; profile={decision.profile}; reason={decision.reason}"
                 )
@@ -797,7 +919,35 @@ class ObservedFastMCP(FastMCP):
                     event_id, result=result, metadata={"policy_decision": "scope_denied"}
                 )
                 reasons = ",".join(scope_decision.reasons) or "scope_rejected"
+                security_event("POLICY_DENY", "deny", reasons)
                 raise ToolError(f"scope_denied: tool={name}; reasons={reasons}")
+
+            gate = self.security_context.evaluate(
+                key=security_key,
+                public_session_id=public_session_id,
+                tool=name,
+                risk=effective,
+                arguments=arguments,
+            )
+            if not gate.allowed:
+                result = {
+                    "ok": False,
+                    "denied": True,
+                    "error": gate.code,
+                    "tool": name,
+                    "reason": gate.reason,
+                    "origin": gate.origin,
+                }
+                self.telemetry.finish_call(event_id, result=result, metadata={"policy_decision": gate.code})
+                security_event("HOST_TOOL_BREACH", "deny", gate.code, origin=gate.origin)
+                if top_level and steering_identity is not None:
+                    self.steering.mark_security_attention(steering_identity, gate.code)
+                raise ToolError(
+                    f"{gate.code}: tool={name}; origin={gate.origin or 'unknown'}; "
+                    "a local one-shot escalation is required before this host action"
+                )
+            if gate.escalated:
+                security_event("WEB_TO_HOST_ESCALATION", "allow", gate.code, origin=gate.origin)
 
             if top_level and steering_identity is not None:
                 self.steering.begin_call(steering_identity, event_id, tool=name, arguments=arguments)
@@ -808,19 +958,26 @@ class ObservedFastMCP(FastMCP):
             except BaseException as exc:
                 self.telemetry.finish_call(event_id, error=exc)
                 if call_registered and steering_identity is not None:
-                    # Keep steering queued when the underlying tool fails. The next
-                    # tool request for this same agent session will be preempted.
                     self.steering.finish_call(steering_identity, event_id, delivered=False)
                 raise
 
             result = filter_scoped_result(policy_context.scope, name, result)
-            # Keep menu-bar steering out of persistent telemetry; it is attached
-            # only to the live MCP response after normal result logging completes.
+            self.security_context.observe_browser_result(
+                key=security_key,
+                public_session_id=public_session_id,
+                tool=name,
+                arguments=arguments,
+                result=result,
+            )
+            if gate.escalated and top_level and steering_identity is not None:
+                self.steering.clear_security_attention(steering_identity)
             self.telemetry.finish_call(event_id, result=result)
             if not call_registered or steering_identity is None:
                 return result
             messages = self.steering.finish_call(steering_identity, event_id, delivered=True)
             return attach_steering(result, messages)
         finally:
+            if security_token is not None:
+                _SECURITY_SESSION.reset(security_token)
             if top_level and steering_token is not None:
                 _STEERING_PARENT_EVENT.reset(steering_token)

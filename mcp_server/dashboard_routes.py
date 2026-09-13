@@ -16,6 +16,7 @@ from starlette.routing import Route
 from .observability import TelemetryManager, sanitize_value
 from .policy import PROFILES, RISK_REGISTRY, permission_semantics
 from .security import Settings, dashboard_authorized
+from .security_context import SecurityContextManager
 from .steering import STEERING_SCHEMA_VERSION, SteeringManager
 from .tools_agents import list_agents
 from .tools_browser import browser_activate_tab
@@ -210,7 +211,10 @@ def _persist_permission_profile(profile: str, env_file: Path = PERMISSION_ENV_FI
             pass
 
 
-def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, dashboard_token: str, steering: Optional[SteeringManager] = None) -> list[Route]:
+def create_dashboard_routes(
+    telemetry: TelemetryManager, settings: Settings, dashboard_token: str,
+    steering: Optional[SteeringManager] = None, security_context: Optional[SecurityContextManager] = None,
+) -> list[Route]:
     async def index(request: Request) -> Response:
         denied = _local_only(request)
         if denied:
@@ -283,6 +287,49 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, das
         })
         return JSONResponse(payload)
 
+    async def security_events(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        payload = telemetry.query_security_events(
+            hours=_float_query(request, "hours", 24),
+            limit=_int_query(request, "limit", 100),
+            session_id=request.query_params.get("session_id"),
+        )
+        return JSONResponse({"ok": True, "events": payload})
+
+    async def security_escalate(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        if security_context is None:
+            return JSONResponse({"ok": False, "error": "security_context_unavailable"}, status_code=503)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        session_id = str(body.get("session_id") or "").strip()
+        tool = str(body.get("tool") or "").strip()
+        if tool not in RISK_REGISTRY:
+            return JSONResponse({"ok": False, "error": "unknown_tool"}, status_code=400)
+        try:
+            grant = security_context.grant_escalation(
+                session_id, tool, ttl_s=int(body.get("ttl_seconds") or 120)
+            )
+        except (TypeError, ValueError):
+            return JSONResponse({"ok": False, "error": "invalid_escalation_request"}, status_code=400)
+        except KeyError:
+            return JSONResponse({"ok": False, "error": "web_scoped_session_not_found"}, status_code=404)
+        telemetry.record_security_event(
+            session_id=session_id, event_type="WEB_TO_HOST_APPROVAL", tool=tool,
+            tool_class=RISK_REGISTRY[tool].family, origin=grant.get("origin"), decision="grant",
+            reason_code="local_user_one_shot_grant", profile=None, actor="dashboard-local-user",
+            agent_id=None, target_summary=f"{RISK_REGISTRY[tool].family}:{tool}",
+        )
+        return JSONResponse({"ok": True, "grant": grant})
+
     async def events(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -348,7 +395,7 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, das
             public_agents.append({
                 key: item.get(key) for key in (
                     "agent_id", "team_id", "status", "phase", "title", "provider", "model", "reasoning",
-                    "access_mode", "started_at", "ended_at", "duration_ms", "first_event_latency_ms",
+                    "access_mode", "capability_profile", "started_at", "ended_at", "duration_ms", "first_event_latency_ms",
                     "idle_seconds", "step_count", "tool_call_count", "last_tool", "last_tool_duration_ms",
                     "retry_count", "output_tokens", "result_preview",
                 )
@@ -473,6 +520,8 @@ def create_dashboard_routes(telemetry: TelemetryManager, settings: Settings, das
         Route("/dashboard/api/summary", summary, methods=["GET"]),
         Route("/dashboard/api/security/semantics", security_semantics, methods=["GET"]),
         Route("/dashboard/api/security/profile", set_security_profile, methods=["POST"]),
+        Route("/dashboard/api/security/events", security_events, methods=["GET"]),
+        Route("/dashboard/api/security/escalate", security_escalate, methods=["POST"]),
         Route("/dashboard/api/events", events, methods=["GET"]),
         Route("/dashboard/api/browser/show-tab", show_browser_tab, methods=["POST"]),
         Route("/dashboard/api/agents", agents, methods=["GET"]),

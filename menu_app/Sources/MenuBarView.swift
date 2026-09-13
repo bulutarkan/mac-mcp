@@ -349,6 +349,13 @@ struct MenuBarView: View {
                         .background(.quaternary, in: Capsule())
                         .help("Reasoning: \(reasoningBadge(reasoning))")
                     }
+                    if let capabilityProfile = agent.capabilityProfile, capabilityProfile != "legacy", !capabilityProfile.isEmpty {
+                        Text(profileDisplayName(capabilityProfile))
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(.quaternary, in: Capsule())
+                            .help("Agent capability profile: \(profileDisplayName(capabilityProfile))")
+                    }
                 }
 
                 HStack(spacing: 5) {
@@ -925,6 +932,10 @@ struct MenuBarView: View {
 
     private func sessionDetailLine(_ session: SteeringSession) -> String {
         let base = "\(session.detail) · \(compactDuration(session.activityMS))"
+        if let error = session.lastError, error.hasPrefix("security:") {
+            let reason = String(error.dropFirst("security:".count)).replacingOccurrences(of: "_", with: " ")
+            return base + " · Security blocked: " + reason
+        }
         switch session.effectiveLifecycleState {
         case .queued, .delivered, .acknowledged, .failed:
             return base + " · " + sessionLifecycleLabel(session.effectiveLifecycleState)

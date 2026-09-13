@@ -397,14 +397,16 @@ def create_app():
                      timeout_s: Optional[int] = None, title: Optional[str] = None,
                      result_style: str = "concise", access_mode: str = "workspace_write",
                      idle_timeout_s: Optional[int] = None, retries: int = 0,
-                     scope: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                     scope: Optional[Dict[str, Any]] = None,
+                     capability_profile: Optional[str] = None) -> Dict[str, Any]:
         context = current_policy_context()
         return _log(audit_logger, "spawn_agent",
                     lambda: spawn_agent(settings, provider=provider, prompt=prompt, model=model,
                                         reasoning=reasoning, cwd=cwd, timeout_s=timeout_s,
                                         title=title, result_style=result_style, access_mode=access_mode,
                                         idle_timeout_s=idle_timeout_s, retries=retries, scope=scope,
-                                        parent_scope=context.scope, parent_profile=context.profile))
+                                        parent_scope=context.scope, parent_profile=context.profile,
+                                        capability_profile=capability_profile))
 
     @mcp.tool(
         name="spawn_agents",
@@ -419,14 +421,16 @@ def create_app():
                       timeout_s: Optional[int] = None, idle_timeout_s: Optional[int] = None,
                       retries: int = 1, result_style: str = "concise",
                       access_mode: str = "read_only", title: Optional[str] = None,
-                      scope: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                      scope: Optional[Dict[str, Any]] = None,
+                      capability_profile: Optional[str] = None) -> Dict[str, Any]:
         context = current_policy_context()
         return _log(audit_logger, "spawn_agents",
                     lambda: spawn_agents(settings, tasks=tasks, provider=provider, model=model,
                                          reasoning=reasoning, cwd=cwd, timeout_s=timeout_s,
                                          idle_timeout_s=idle_timeout_s, retries=retries,
                                          result_style=result_style, access_mode=access_mode, title=title,
-                                         scope=scope, parent_scope=context.scope, parent_profile=context.profile))
+                                         scope=scope, parent_scope=context.scope, parent_profile=context.profile,
+                                         capability_profile=capability_profile))
 
     @mcp.tool(
         name="wait_agents",
@@ -1435,7 +1439,7 @@ def create_app():
         return JSONResponse({"ok": True, "server": "mac-mcp"})
 
     app.router.routes.append(Route("/health", health, methods=["GET"]))
-    app.router.routes.extend(create_dashboard_routes(telemetry, settings, dashboard_token, mcp.steering))
+    app.router.routes.extend(create_dashboard_routes(telemetry, settings, dashboard_token, mcp.steering, mcp.security_context))
 
     # REST API — FastAPI sub-app mounted at /api
     from fastapi import FastAPI
