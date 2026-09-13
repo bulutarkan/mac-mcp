@@ -17,6 +17,7 @@ from mcp.types import TextContent
 from mcp_server.observability import ObservedFastMCP, TelemetryManager
 from mcp_server.steering import (
     SteeringIdentity,
+    SteeringIdempotencyConflict,
     SteeringManager,
     attach_steering,
     describe_target,
@@ -434,6 +435,109 @@ class ObservedFastMCPSteeringTests(unittest.TestCase):
                 self.assertEqual(max_active_calls, 1)
 
         asyncio.run(run())
+
+
+class SteeringIdempotencyTests(unittest.TestCase):
+    def _session(self, manager: SteeringManager, name: str = "idem"):
+        identity = steering_identity_from_context(fake_context(FakeSession(), openai_session=f"conversation-{name}"))
+        session_id = manager.session_id_for(identity)
+        return identity, session_id
+
+    def test_same_key_replays_canonical_message_without_duplicate_pending(self) -> None:
+        manager = SteeringManager()
+        _identity, sid = self._session(manager, "same")
+        first = manager.enqueue(sid, "change direction", client_instruction_id="cli-a")
+        replay = manager.enqueue(sid, "change direction", client_instruction_id="cli-a")
+        self.assertEqual(first["id"], replay["id"])
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(1, manager.sessions()[0]["pending_instruction_count"])
+        recent = [row for row in manager.recent() if row.get("client_instruction_id") == "cli-a"]
+        self.assertEqual(1, len(recent))
+        self.assertEqual(first["id"], recent[0]["id"])
+
+    def test_same_key_different_text_conflicts(self) -> None:
+        manager = SteeringManager()
+        _identity, sid = self._session(manager, "different-text")
+        first = manager.enqueue(sid, "first", client_instruction_id="cli-a")
+        with self.assertRaises(SteeringIdempotencyConflict) as ctx:
+            manager.enqueue(sid, "second", client_instruction_id="cli-a")
+        self.assertEqual("client_instruction_id_reused_with_different_text", ctx.exception.reason)
+        self.assertEqual(first["id"], ctx.exception.canonical_message_id)
+        self.assertEqual(1, manager.sessions()[0]["pending_instruction_count"])
+
+    def test_same_key_cannot_cross_sessions(self) -> None:
+        manager = SteeringManager()
+        _a, sid_a = self._session(manager, "owner-a")
+        _b, sid_b = self._session(manager, "owner-b")
+        manager.enqueue(sid_a, "first", client_instruction_id="cli-global")
+        with self.assertRaises(SteeringIdempotencyConflict) as ctx:
+            manager.enqueue(sid_b, "first", client_instruction_id="cli-global")
+        self.assertEqual("client_instruction_id_belongs_to_another_session", ctx.exception.reason)
+
+    def test_duplicate_retry_while_working_delivers_once(self) -> None:
+        manager = SteeringManager()
+        identity, sid = self._session(manager, "working")
+        manager.begin_call(identity, "evt-working", tool="read_file", arguments={"path": "/tmp/a"})
+        first = manager.enqueue(sid, "change course", client_instruction_id="cli-working")
+        replay = manager.enqueue(sid, "change course", client_instruction_id="cli-working")
+        self.assertEqual(first["id"], replay["id"])
+        delivered = manager.finish_call(identity, "evt-working", delivered=True)
+        self.assertEqual([first["id"]], [item["id"] for item in delivered])
+        self.assertEqual(0, manager.sessions()[0]["pending_instruction_count"])
+        self.assertEqual(1, manager.sessions()[0]["awaiting_acknowledgement_count"])
+        replay_after_delivery = manager.enqueue(sid, "change course", client_instruction_id="cli-working")
+        self.assertEqual(first["id"], replay_after_delivery["id"])
+        self.assertEqual("delivered", replay_after_delivery["lifecycle_state"])
+        self.assertEqual(0, manager.sessions()[0]["pending_instruction_count"])
+
+    def test_duplicate_retry_idle_preemption_happens_once(self) -> None:
+        manager = SteeringManager()
+        identity, sid = self._session(manager, "idle")
+        first = manager.enqueue(sid, "do not run next tool", client_instruction_id="cli-idle")
+        replay = manager.enqueue(sid, "do not run next tool", client_instruction_id="cli-idle")
+        self.assertEqual(first["id"], replay["id"])
+        pending = manager.prepare_call(identity, tool="run_command", arguments={"command": "pwd"})
+        self.assertEqual([first["id"]], [item["id"] for item in pending])
+        self.assertEqual([], manager.prepare_call(identity, tool="read_file", arguments={"path": "/tmp/a"}))
+
+    def test_session_expiry_releases_idempotency_key(self) -> None:
+        manager = SteeringManager(session_ttl_s=60)
+        identity, sid = self._session(manager, "expire")
+        manager.enqueue(sid, "old", client_instruction_id="cli-reusable")
+        with manager._lock:
+            manager._sessions[identity.key]["last_activity_at"] -= 61
+        self.assertEqual([], manager.sessions())
+        self.assertNotIn("cli-reusable", manager._client_instruction_owners)
+        expired_recent = [row for row in manager.recent() if row.get("client_instruction_id") == "cli-reusable"]
+        self.assertTrue(expired_recent)
+        self.assertEqual("session_expired", expired_recent[0]["status"])
+        _other, other_sid = self._session(manager, "fresh")
+        fresh = manager.enqueue(other_sid, "new", client_instruction_id="cli-reusable")
+        self.assertFalse(fresh["idempotent_replay"])
+
+    def test_legacy_enqueue_without_client_id_keeps_existing_behavior(self) -> None:
+        manager = SteeringManager()
+        _identity, sid = self._session(manager, "legacy")
+        first = manager.enqueue(sid, "same text")
+        second = manager.enqueue(sid, "same text")
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(2, manager.sessions()[0]["pending_instruction_count"])
+
+    def test_idempotency_index_is_bounded(self) -> None:
+        manager = SteeringManager(max_idempotency_keys_per_session=8, max_messages_per_session=5)
+        identity, sid = self._session(manager, "bounded")
+        for index in range(12):
+            message = manager.enqueue(sid, f"message {index}", client_instruction_id=f"cli-{index}")
+            pending = manager.prepare_call(identity, tool="read_file", arguments={"path": f"/tmp/{index}"})
+            self.assertEqual(message["id"], pending[0]["id"])
+            manager.prepare_call(identity, tool="read_file", arguments={"path": f"/tmp/ack-{index}"})
+        with manager._lock:
+            key = manager._public_to_key[sid]
+            self.assertEqual(8, len(manager._sessions[key]["idempotency"]))
+            self.assertEqual(8, len(manager._sessions[key]["idempotency_order"]))
+        self.assertNotIn("cli-0", manager._client_instruction_owners)
+        self.assertIn("cli-11", manager._client_instruction_owners)
 
 
 if __name__ == "__main__":

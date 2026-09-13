@@ -492,5 +492,77 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(project["project"]["version"], __version__)
 
 
+class SteeringIdempotencyRouteTests(unittest.TestCase):
+    def _app(self, td: str):
+        telemetry = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
+        steering = SteeringManager()
+        identity = SteeringIdentity(key="client:idempotency-route", source="client_id")
+        session_id = steering.session_id_for(identity)
+        app = Starlette(routes=create_dashboard_routes(telemetry, load_settings(), DASHBOARD_TOKEN, steering))
+        return app, steering, identity, session_id
+
+    def test_lost_response_retry_returns_same_canonical_message(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app, steering, _identity, session_id = self._app(td)
+            client = TestClient(app)
+            body = {
+                "session_id": session_id,
+                "text": "change direction",
+                "client_instruction_id": "ui-request-001",
+            }
+            first = client.post("/dashboard/api/steering", json=body, headers=DASHBOARD_AUTH)
+            self.assertEqual(200, first.status_code)
+            canonical_id = first.json()["message"]["id"]
+            # Simulate a client that never received/processed the first response.
+            retry = client.post("/dashboard/api/steering", json=body, headers=DASHBOARD_AUTH)
+            self.assertEqual(200, retry.status_code)
+            payload = retry.json()
+            self.assertEqual(canonical_id, payload["message"]["id"])
+            self.assertTrue(payload["message"]["idempotent_replay"])
+            self.assertEqual("ui-request-001", payload["message"]["client_instruction_id"])
+            self.assertEqual(1, steering.sessions()[0]["pending_instruction_count"])
+            correlated = [row for row in steering.recent() if row.get("client_instruction_id") == "ui-request-001"]
+            self.assertEqual(1, len(correlated))
+
+    def test_route_rejects_same_key_with_different_text(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app, steering, _identity, session_id = self._app(td)
+            client = TestClient(app)
+            first = client.post(
+                "/dashboard/api/steering",
+                json={"session_id": session_id, "text": "first", "client_instruction_id": "ui-conflict"},
+                headers=DASHBOARD_AUTH,
+            )
+            self.assertEqual(200, first.status_code)
+            canonical = first.json()["message"]["id"]
+            conflict = client.post(
+                "/dashboard/api/steering",
+                json={"session_id": session_id, "text": "second", "client_instruction_id": "ui-conflict"},
+                headers=DASHBOARD_AUTH,
+            )
+            self.assertEqual(409, conflict.status_code)
+            payload = conflict.json()
+            self.assertEqual("idempotency_conflict", payload["error"])
+            self.assertEqual("client_instruction_id_reused_with_different_text", payload["reason"])
+            self.assertEqual(canonical, payload["canonical_message_id"])
+            self.assertEqual(1, steering.sessions()[0]["pending_instruction_count"])
+
+    def test_legacy_route_without_client_instruction_id_still_queues(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            app, steering, _identity, session_id = self._app(td)
+            client = TestClient(app)
+            ids = []
+            for _ in range(2):
+                response = client.post(
+                    "/dashboard/api/steering",
+                    json={"session_id": session_id, "text": "legacy duplicate"},
+                    headers=DASHBOARD_AUTH,
+                )
+                self.assertEqual(200, response.status_code)
+                ids.append(response.json()["message"]["id"])
+            self.assertNotEqual(ids[0], ids[1])
+            self.assertEqual(2, steering.sessions()[0]["pending_instruction_count"])
+
+
 if __name__ == "__main__":
     unittest.main()

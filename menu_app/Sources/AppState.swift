@@ -249,6 +249,7 @@ struct SteeringRecent: Decodable, Equatable {
     let deliveredAt: Double?
     let deliveryMode: String?
     let lastError: String?
+    let clientInstructionID: String?
     var effectiveLifecycleState: SteeringLifecycleState {
         if let lifecycleState { return lifecycleState }
         switch status {
@@ -270,6 +271,7 @@ struct SteeringRecent: Decodable, Equatable {
         case deliveredAt = "delivered_at"
         case deliveryMode = "delivery_mode"
         case lastError = "last_error"
+        case clientInstructionID = "client_instruction_id"
     }
 }
 
@@ -398,11 +400,15 @@ struct SteeringSettingsEnvelope: Decodable {
 struct SteeringSendEnvelope: Decodable {
     struct Message: Decodable {
         let id: String
+        let clientInstructionID: String?
+        let idempotentReplay: Bool?
         let sessionState: String?
         let activityState: SteeringActivityState?
         let lifecycleState: SteeringLifecycleState?
         enum CodingKeys: String, CodingKey {
             case id
+            case clientInstructionID = "client_instruction_id"
+            case idempotentReplay = "idempotent_replay"
             case sessionState = "session_state"
             case activityState = "activity_state"
             case lifecycleState = "lifecycle_state"
@@ -411,6 +417,20 @@ struct SteeringSendEnvelope: Decodable {
     let ok: Bool
     let status: String?
     let message: Message?
+}
+
+struct SteeringErrorEnvelope: Decodable {
+    let error: String?
+    let reason: String?
+    let canonicalMessageID: String?
+    enum CodingKeys: String, CodingKey {
+        case error, reason
+        case canonicalMessageID = "canonical_message_id"
+    }
+}
+
+enum SteeringPostError: Error {
+    case server(status: Int, code: String, reason: String?)
 }
 
 enum DashboardConnectionState: String, Equatable {
@@ -475,6 +495,9 @@ final class AppState: ObservableObject {
     private var noticeTask: Task<Void, Never>?
     private var consecutiveRefreshFailures = 0
     private var lastSteeringMessageID: String?
+    private var pendingSteeringClientInstructionID: String?
+    private var pendingSteeringSessionID: String?
+    private var pendingSteeringText: String?
     private static let normalPollIntervalSeconds = 2.5
     private static let maxRetryIntervalSeconds = 30.0
 
@@ -782,6 +805,31 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func steeringClientInstructionID(sessionID: String, text: String) -> String {
+        if pendingSteeringSessionID == sessionID,
+           pendingSteeringText == text,
+           let existing = pendingSteeringClientInstructionID {
+            return existing
+        }
+        let created = UUID().uuidString.lowercased()
+        pendingSteeringClientInstructionID = created
+        pendingSteeringSessionID = sessionID
+        pendingSteeringText = text
+        return created
+    }
+
+    private func clearPendingSteeringSubmission() {
+        pendingSteeringClientInstructionID = nil
+        pendingSteeringSessionID = nil
+        pendingSteeringText = nil
+    }
+
+    private func recoverSteeringMessageID(clientInstructionID: String, sessionID: String) -> String? {
+        steeringRecent.first(where: {
+            $0.clientInstructionID == clientInstructionID && $0.sessionID == sessionID
+        })?.id
+    }
+
     func sendSteering() {
         let text = steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
@@ -790,30 +838,119 @@ final class AppState: ObservableObject {
             return
         }
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        let clientInstructionID = steeringClientInstructionID(sessionID: sessionID, text: text)
         steeringSending = true
         steeringStatus = "Sending…"
         Task {
             defer { steeringSending = false }
-            do {
-                let response: SteeringSendEnvelope = try await post(
-                    base.appendingPathComponent("dashboard/api/steering"),
-                    body: ["session_id": sessionID, "text": text]
-                )
-                guard response.ok, let message = response.message else {
-                    steeringStatus = "Could not queue steering message."
-                    return
+            var accepted: SteeringSendEnvelope.Message?
+            var definitiveError: SteeringPostError?
+            var lastAmbiguousError: Error?
+
+            for attempt in 0..<2 {
+                do {
+                    let response = try await postSteering(
+                        base.appendingPathComponent("dashboard/api/steering"),
+                        body: [
+                            "session_id": sessionID,
+                            "text": text,
+                            "client_instruction_id": clientInstructionID,
+                        ]
+                    )
+                    guard response.ok, let message = response.message else {
+                        definitiveError = .server(status: 500, code: "invalid_response", reason: nil)
+                        break
+                    }
+                    accepted = message
+                    break
+                } catch let error as SteeringPostError {
+                    switch error {
+                    case let .server(status, _, _):
+                        if status >= 500 && attempt == 0 {
+                            lastAmbiguousError = error
+                            continue
+                        }
+                        if status >= 500 {
+                            lastAmbiguousError = error
+                        } else {
+                            definitiveError = error
+                        }
+                    }
+                    break
+                } catch {
+                    lastAmbiguousError = error
+                    if attempt == 0 { continue }
+                    break
                 }
+            }
+
+            if let message = accepted {
                 lastSteeringMessageID = message.id
                 steeringPrompt = ""
+                clearPendingSteeringSubmission()
                 if message.sessionState == "idle" {
-                    steeringStatus = "Queued. The agent's next tool will be preempted."
+                    steeringStatus = message.idempotentReplay == true
+                        ? "Recovered queued steering. The agent's next tool will be preempted."
+                        : "Queued. The agent's next tool will be preempted."
                 } else {
-                    steeringStatus = "Queued for the running agent task."
+                    steeringStatus = message.idempotentReplay == true
+                        ? "Recovered queued steering for the running agent task."
+                        : "Queued for the running agent task."
                 }
                 await refresh()
-            } catch {
-                steeringStatus = "That agent session ended before the prompt could be queued."
+                return
+            }
+
+            if let definitiveError {
+                switch definitiveError {
+                case let .server(_, code, reason):
+                    switch code {
+                    case "session_closed":
+                        await refresh()
+                        if let recoveredID = recoverSteeringMessageID(
+                            clientInstructionID: clientInstructionID,
+                            sessionID: sessionID
+                        ) {
+                            lastSteeringMessageID = recoveredID
+                            steeringPrompt = ""
+                            clearPendingSteeringSubmission()
+                            steeringStatus = "The agent session ended after the steering instruction was accepted."
+                        } else {
+                            steeringStatus = "That agent session ended before the prompt could be queued."
+                            clearPendingSteeringSubmission()
+                        }
+                        return
+                    case "queue_full":
+                        steeringStatus = "That agent already has too many queued steering messages."
+                    case "idempotency_conflict":
+                        steeringStatus = reason == "client_instruction_id_belongs_to_another_session"
+                            ? "The steering retry key no longer belongs to this agent session."
+                            : "The steering retry conflicted with an earlier instruction. Edit the prompt and send again."
+                        clearPendingSteeringSubmission()
+                    default:
+                        steeringStatus = "Could not queue steering message (\(code))."
+                    }
+                }
                 await refresh()
+                return
+            }
+
+            if lastAmbiguousError != nil {
+                await refresh()
+                if pendingSteeringClientInstructionID == nil && steeringPrompt.isEmpty {
+                    return
+                }
+                if let recoveredID = recoverSteeringMessageID(
+                    clientInstructionID: clientInstructionID,
+                    sessionID: sessionID
+                ) {
+                    lastSteeringMessageID = recoveredID
+                    steeringPrompt = ""
+                    clearPendingSteeringSubmission()
+                    steeringStatus = "Recovered steering after a network timeout."
+                } else {
+                    steeringStatus = "Network result is uncertain. Send again to retry safely without duplicating the instruction."
+                }
             }
         }
     }
@@ -858,6 +995,18 @@ final class AppState: ObservableObject {
             setIfChanged(\.selectedSteeringSessionID, sessionsForSelection[0].sessionID)
         } else if let selectedSteeringSessionID, !sessionsForSelection.contains(where: { $0.sessionID == selectedSteeringSessionID }) {
             setIfChanged(\.selectedSteeringSessionID, nil)
+        }
+
+        if lastSteeringMessageID == nil,
+           let clientInstructionID = pendingSteeringClientInstructionID,
+           let pendingSessionID = pendingSteeringSessionID,
+           let recovered = envelope.recent.first(where: {
+               $0.clientInstructionID == clientInstructionID && $0.sessionID == pendingSessionID
+           }) {
+            lastSteeringMessageID = recovered.id
+            steeringPrompt = ""
+            clearPendingSteeringSubmission()
+            setIfChanged(\.steeringStatus, "Recovered steering after a delayed response.")
         }
 
         if let messageID = lastSteeringMessageID,
@@ -996,6 +1145,27 @@ final class AppState: ObservableObject {
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         guard (200..<300).contains(http.statusCode) else { throw DashboardAPIError.httpStatus(http.statusCode) }
         return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func postSteering(_ url: URL, body: [String: Any]) async throws -> SteeringSendEnvelope {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 2.0
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        authorizeDashboardRequest(&request)
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard (200..<300).contains(http.statusCode) else {
+            let envelope = try? JSONDecoder().decode(SteeringErrorEnvelope.self, from: data)
+            throw SteeringPostError.server(
+                status: http.statusCode,
+                code: envelope?.error ?? "http_\(http.statusCode)",
+                reason: envelope?.reason
+            )
+        }
+        return try JSONDecoder().decode(SteeringSendEnvelope.self, from: data)
     }
 
     private func post<T: Decodable>(_ url: URL, body: [String: Any]) async throws -> T {

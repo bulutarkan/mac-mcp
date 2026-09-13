@@ -31,6 +31,15 @@ PREEMPT_INSTRUCTION = (
 DEFAULT_SESSION_TTL_S = 600
 STEERING_SCHEMA_VERSION = 1
 
+
+class SteeringIdempotencyConflict(ValueError):
+    def __init__(self, reason: str, *, client_instruction_id: str, canonical_message_id: Optional[str] = None) -> None:
+        super().__init__("idempotency_conflict")
+        self.reason = str(reason)
+        self.client_instruction_id = str(client_instruction_id)
+        self.canonical_message_id = canonical_message_id
+
+
 _LIFECYCLE_TRANSITIONS: dict[str, frozenset[str]] = {
     "ready": frozenset({"queued", "disconnected", "expired"}),
     "queued": frozenset({"delivered", "failed", "disconnected", "expired"}),
@@ -205,9 +214,16 @@ class SteeringManager:
         max_messages_per_session: int = 10,
         max_text_chars: int = 4_000,
         session_ttl_s: Optional[int] = None,
+        max_idempotency_keys_per_session: Optional[int] = None,
     ) -> None:
         self.max_messages_per_session = max(1, int(max_messages_per_session))
         self.max_text_chars = max(64, int(max_text_chars))
+        if max_idempotency_keys_per_session is None:
+            max_idempotency_keys_per_session = max(16, self.max_messages_per_session * 8)
+        self.max_idempotency_keys_per_session = max(
+            self.max_messages_per_session,
+            min(int(max_idempotency_keys_per_session), 512),
+        )
         configured_ttl = session_ttl_s
         if configured_ttl is None:
             env_ttl = os.getenv("MAC_MCP_STEERING_SESSION_TTL_S", "").strip()
@@ -227,6 +243,7 @@ class SteeringManager:
         self._sessions: Dict[str, Dict[str, Any]] = {}
         self._transport_refs: Dict[str, weakref.ReferenceType[Any]] = {}
         self._public_to_key: Dict[str, str] = {}
+        self._client_instruction_owners: Dict[str, str] = {}
         self._recent: deque[Dict[str, Any]] = deque(maxlen=100)
         self._used_flow_numbers: set[int] = set()
 
@@ -310,7 +327,18 @@ class SteeringManager:
             "tool": tool,
             "delivery_mode": delivery_mode,
             "last_error": last_error,
+            "client_instruction_id": message.get("client_instruction_id"),
         })
+        client_instruction_id = str(message.get("client_instruction_id") or "").strip()
+        session_id = str(message.get("session_id") or "").strip()
+        if client_instruction_id and session_id:
+            key = self._public_to_key.get(session_id)
+            state = self._sessions.get(key) if key else None
+            entry = (state or {}).get("idempotency", {}).get(client_instruction_id) if state else None
+            if entry is not None:
+                entry["status"] = status
+                entry["lifecycle_state"] = lifecycle_state
+                entry["transitioned_at"] = now
 
     def _recent_session_record(self, state: Dict[str, Any], status: str) -> None:
         now = time.time()
@@ -349,6 +377,9 @@ class SteeringManager:
             self._transition_locked(state, terminal_state)
         public_id = str(state.get("session_id") or "")
         self._public_to_key.pop(public_id, None)
+        for client_instruction_id in list((state.get("idempotency") or {}).keys()):
+            if self._client_instruction_owners.get(client_instruction_id) == public_id:
+                self._client_instruction_owners.pop(client_instruction_id, None)
         self._used_flow_numbers.discard(int(state.get("flow_number") or 0))
         for message in state.get("pending", []):
             self._recent_record(message, status)
@@ -410,6 +441,8 @@ class SteeringManager:
                 "detail": "Idle",
                 "pending": [],
                 "awaiting_ack": [],
+                "idempotency": {},
+                "idempotency_order": [],
                 "active": {},
                 "lifecycle_state": "ready",
                 "last_transition_at": now,
@@ -548,36 +581,144 @@ class SteeringManager:
                 self._transition_locked(state, "delivered", now=now)
             return [dict(message) for message in messages]
 
-    def enqueue(self, session_id: str, text: str) -> Dict[str, Any]:
+    @staticmethod
+    def _normalize_client_instruction_id(value: Optional[str]) -> Optional[str]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if len(text) > 128:
+            raise ValueError("client_instruction_id_too_long")
+        if any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.:" for ch in text):
+            raise ValueError("invalid_client_instruction_id")
+        return text
+
+    @staticmethod
+    def _instruction_text_hash(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def _idempotency_response_locked(
+        self,
+        state: Dict[str, Any],
+        entry: Dict[str, Any],
+        clean_text: str,
+        *,
+        replay: bool,
+    ) -> Dict[str, Any]:
+        activity_state = "working" if state["active"] else "idle"
+        return {
+            "id": entry["message_id"],
+            "session_id": state["session_id"],
+            "text": clean_text,
+            "created_at": entry["created_at"],
+            "status": entry.get("status") or "queued",
+            "client_instruction_id": entry.get("client_instruction_id"),
+            "idempotent_replay": bool(replay),
+            "session_state": activity_state,
+            "activity_state": activity_state,
+            "lifecycle_state": entry.get("lifecycle_state") or state.get("lifecycle_state", "queued"),
+        }
+
+    def _remember_idempotency_locked(
+        self,
+        state: Dict[str, Any],
+        *,
+        client_instruction_id: str,
+        text_hash: str,
+        message_id: str,
+        created_at: float,
+    ) -> Dict[str, Any]:
+        index = state["idempotency"]
+        order = state["idempotency_order"]
+        entry = {
+            "client_instruction_id": client_instruction_id,
+            "text_hash": text_hash,
+            "message_id": message_id,
+            "created_at": created_at,
+            "status": "queued",
+            "lifecycle_state": "queued",
+            "transitioned_at": created_at,
+        }
+        index[client_instruction_id] = entry
+        order.append(client_instruction_id)
+        self._client_instruction_owners[client_instruction_id] = str(state["session_id"])
+        while len(order) > self.max_idempotency_keys_per_session:
+            expired = order.pop(0)
+            old = index.pop(expired, None)
+            if old is not None and self._client_instruction_owners.get(expired) == state["session_id"]:
+                self._client_instruction_owners.pop(expired, None)
+        return entry
+
+    def enqueue(
+        self,
+        session_id: str,
+        text: str,
+        client_instruction_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         clean = str(text or "").strip()
         if not clean:
             raise ValueError("empty_message")
         if len(clean) > self.max_text_chars:
             raise ValueError("message_too_long")
+        client_id = self._normalize_client_instruction_id(client_instruction_id)
+        text_hash = self._instruction_text_hash(clean) if client_id else None
         with self._lock:
             self._prune_locked()
-            key = self._public_to_key.get(str(session_id))
+            public_session_id = str(session_id)
+            key = self._public_to_key.get(public_session_id)
             state = self._sessions.get(key) if key is not None else None
             if key is None or state is None:
                 raise KeyError("session_closed")
+
+            if client_id:
+                owner = self._client_instruction_owners.get(client_id)
+                if owner is not None and owner != public_session_id:
+                    raise SteeringIdempotencyConflict(
+                        "client_instruction_id_belongs_to_another_session",
+                        client_instruction_id=client_id,
+                    )
+                existing = state["idempotency"].get(client_id)
+                if existing is not None:
+                    if existing.get("text_hash") != text_hash:
+                        raise SteeringIdempotencyConflict(
+                            "client_instruction_id_reused_with_different_text",
+                            client_instruction_id=client_id,
+                            canonical_message_id=existing.get("message_id"),
+                        )
+                    return self._idempotency_response_locked(state, existing, clean, replay=True)
+
             queue = state["pending"]
             if len(queue) >= self.max_messages_per_session:
                 raise OverflowError("queue_full")
+            created_at = time.time()
             message = {
                 "id": "st_" + uuid.uuid4().hex[:12],
-                "session_id": str(session_id),
+                "session_id": public_session_id,
                 "text": clean,
-                "created_at": time.time(),
+                "created_at": created_at,
                 "status": "queued",
             }
+            if client_id:
+                message["client_instruction_id"] = client_id
+                entry = self._remember_idempotency_locked(
+                    state,
+                    client_instruction_id=client_id,
+                    text_hash=str(text_hash),
+                    message_id=message["id"],
+                    created_at=created_at,
+                )
+            else:
+                entry = None
             queue.append(message)
             self._recent_record(message, "queued", tool=state.get("last_tool"))
             self._transition_locked(state, "queued")
+            if entry is not None:
+                return self._idempotency_response_locked(state, entry, clean, replay=False)
             return {
                 **message,
                 "session_state": "working" if state["active"] else "idle",
                 "activity_state": "working" if state["active"] else "idle",
                 "lifecycle_state": state["lifecycle_state"],
+                "idempotent_replay": False,
             }
 
     def _public_state_locked(self, state: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, Any]:

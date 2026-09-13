@@ -17,7 +17,7 @@ from .observability import TelemetryManager, sanitize_value
 from .policy import PROFILES, RISK_REGISTRY, permission_semantics
 from .security import Settings, dashboard_authorized
 from .security_context import SecurityContextManager
-from .steering import STEERING_SCHEMA_VERSION, SteeringManager
+from .steering import STEERING_SCHEMA_VERSION, SteeringIdempotencyConflict, SteeringManager
 from .tools_agents import list_agents
 from .tools_browser import browser_activate_tab
 from .version import __version__
@@ -438,10 +438,23 @@ def create_dashboard_routes(
             return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=400)
         session_id = str(payload.get("session_id") or "").strip()
         text = str(payload.get("text") or "")
+        client_instruction_id = str(payload.get("client_instruction_id") or "").strip() or None
         if not session_id:
             return JSONResponse({"ok": False, "error": "session_required"}, status_code=400)
         try:
-            message = steering.enqueue(session_id, text)
+            message = steering.enqueue(
+                session_id,
+                text,
+                client_instruction_id=client_instruction_id,
+            )
+        except SteeringIdempotencyConflict as exc:
+            return JSONResponse({
+                "ok": False,
+                "error": "idempotency_conflict",
+                "reason": exc.reason,
+                "client_instruction_id": exc.client_instruction_id,
+                "canonical_message_id": exc.canonical_message_id,
+            }, status_code=409)
         except KeyError:
             return JSONResponse({"ok": False, "error": "session_closed"}, status_code=409)
         except OverflowError:
@@ -452,12 +465,14 @@ def create_dashboard_routes(
         return JSONResponse({
             "ok": True,
             "schema_version": STEERING_SCHEMA_VERSION,
-            "status": "queued",
+            "status": message.get("status") or "queued",
             "message": {
                 "id": message["id"],
                 "session_id": message["session_id"],
                 "created_at": message["created_at"],
                 "status": message["status"],
+                "client_instruction_id": message.get("client_instruction_id"),
+                "idempotent_replay": bool(message.get("idempotent_replay")),
                 "session_state": message.get("session_state"),
                 "activity_state": message.get("activity_state"),
                 "lifecycle_state": message.get("lifecycle_state"),
