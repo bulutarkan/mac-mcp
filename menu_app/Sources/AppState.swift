@@ -568,7 +568,7 @@ final class AppState: ObservableObject {
 
     private func openUnsignedSafariExtensionSetup() {
         let extensionSourceURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("mac-mcp/menu_app/SafariExtension", isDirectory: true)
+            .appendingPathComponent("mac-mcp/menu_app/BrowserVisualCompanion", isDirectory: true)
         let manifestURL = extensionSourceURL.appendingPathComponent("manifest.json")
         if FileManager.default.fileExists(atPath: manifestURL.path) {
             NSWorkspace.shared.activateFileViewerSelecting([manifestURL])
@@ -580,7 +580,26 @@ final class AppState: ObservableObject {
         }
         actionNotice = ActionNotice(
             kind: .info,
-            message: "Local developer build: in Safari choose Develop → Allow Unsigned Extensions, then Add Temporary Extension… and select the revealed SafariExtension folder."
+            message: "Local developer build: in Safari choose Develop → Allow Unsigned Extensions, then Add Temporary Extension… and select the revealed BrowserVisualCompanion folder."
+        )
+    }
+
+    func openChromeExtensionSetup() {
+        let extensionSourceURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("mac-mcp/menu_app/BrowserVisualCompanion", isDirectory: true)
+        let manifestURL = extensionSourceURL.appendingPathComponent("manifest.json")
+        if FileManager.default.fileExists(atPath: manifestURL.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([manifestURL])
+        }
+        if let chromeURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            configuration.arguments = ["chrome://extensions/"]
+            NSWorkspace.shared.openApplication(at: chromeURL, configuration: configuration)
+        }
+        actionNotice = ActionNotice(
+            kind: .info,
+            message: "Chrome setup: first manually enable View → Developer → Allow JavaScript from Apple Events. For the optional extension, enable Developer mode at chrome://extensions, choose Load unpacked, then select BrowserVisualCompanion. Browser-tool fallback remains active without the extension."
         )
     }
 

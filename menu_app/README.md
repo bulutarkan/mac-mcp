@@ -20,6 +20,8 @@ UI copy follows the canonical definitions in [`../docs/TERMINOLOGY.md`](../docs/
 
 ## Browser activity visibility
 
+Safari and Chrome share `BrowserVisualCompanion/manifest.json` + `visual.js`. Chrome can load that folder unpacked; browser tools inject the same source as a fallback. Chrome automation itself also requires the user to manually enable **View → Developer → Allow JavaScript from Apple Events** once. Chrome builds with the `execute javascript` `-1723` regression fall back to the same user-gated JavaScript channel without activating the tab.
+
 For Mac MCP, **background browser automation** means **visible, non-focus-stealing browser automation** inside a normal Safari or Chrome tab. It does not mean headless, hidden, or invisible automation.
 
 The menu bar controller shows active browser work in Sessions and Latest Tool Usage. Its compact browser context is deliberately privacy-minimized to browser name, site hostname, and action; URL paths/query strings and page content are not displayed. A **Show Tab** control is available when a stable live tab reference exists, and only that explicit click is allowed to bring the browser to the foreground.

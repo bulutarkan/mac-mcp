@@ -47,8 +47,8 @@ xcrun swiftc -O -parse-as-library -application-extension -target "${ARCH}-apple-
   -o "${EXTENSION_MACOS}/MacMCPSafariExtension"
 sed "s/__MAC_MCP_EXTENSION_BUNDLE_ID__/${EXTENSION_BUNDLE_ID}/g" \
   "${SCRIPT_DIR}/SafariExtension/Info.plist" > "${EXTENSION_CONTENTS}/Info.plist"
-cp "${SCRIPT_DIR}/SafariExtension/manifest.json" "${EXTENSION_RESOURCES}/manifest.json"
-cp "${SCRIPT_DIR}/SafariExtension/visual.js" "${EXTENSION_RESOURCES}/visual.js"
+cp "${SCRIPT_DIR}/BrowserVisualCompanion/manifest.json" "${EXTENSION_RESOURCES}/manifest.json"
+cp "${SCRIPT_DIR}/BrowserVisualCompanion/visual.js" "${EXTENSION_RESOURCES}/visual.js"
 /usr/bin/plutil -lint "${EXTENSION_CONTENTS}/Info.plist" >/dev/null
 /usr/bin/codesign --force "${CODESIGN_EXTRA[@]}" --sign "${SIGN_IDENTITY}" "${EXTENSION}" >/dev/null
 

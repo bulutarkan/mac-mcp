@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import time
+import uuid
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -42,7 +43,7 @@ def validate_url(settings: Settings, url: str) -> None:
         pass
 
 
-_VISUAL_COMPANION_PATH = Path(__file__).resolve().parents[1] / "menu_app" / "SafariExtension" / "visual.js"
+_VISUAL_COMPANION_PATH = Path(__file__).resolve().parents[1] / "menu_app" / "BrowserVisualCompanion" / "visual.js"
 
 def _visual_companion_source() -> str:
     try:
@@ -176,9 +177,9 @@ def _run_osascript(script: str, timeout_s: int = 30) -> str:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, msg)
     return (stdout or "").strip()
 
-def _safari_visual_claim_js(expected_url: str) -> str:
+def _visual_claim_event_js(expected_url: str) -> str:
     expected = json.dumps(str(expected_url or ""))
-    return _visual_companion_source() + "\n" + (
+    return (
         "(()=>{try{"
         f"const expected={expected};"
         "if(document.readyState==='loading')return false;"
@@ -193,14 +194,23 @@ def _safari_visual_claim_js(expected_url: str) -> str:
     )
 
 
-def _safari_visual_claim_script(tab_index: int, expected_url: str) -> str:
-    """Best-effort visual claim for the final Safari document opened by Mac MCP."""
-    js_escaped = _js_escape(_safari_visual_claim_js(expected_url))
+def _visual_claim_js(expected_url: str) -> str:
+    return _visual_companion_source() + "\n" + _visual_claim_event_js(expected_url)
+
+
+def _visual_claim_script(browser: str, tab_index: int, expected_url: str) -> str:
+    """Best-effort Visual Companion claim for the final browser document opened by Mac MCP."""
+    b = _norm_browser(browser)
+    js_escaped = _js_escape(_visual_claim_js(expected_url))
+    if b == "Safari":
+        execute = f'set claimed to do JavaScript "{js_escaped}" in tab {int(tab_index)} of window 1'
+    else:
+        execute = f'set claimed to execute javascript "{js_escaped}" in tab {int(tab_index)} of window 1'
     return (
-        'tell application "Safari"\n'
+        f'tell application "{b}"\n'
         'repeat with attempt from 1 to 30\n'
         'try\n'
-        f'set claimed to do JavaScript "{js_escaped}" in tab {int(tab_index)} of window 1\n'
+        f'{execute}\n'
         'if claimed is true then return true\n'
         'end try\n'
         'delay 0.15\n'
@@ -210,14 +220,39 @@ def _safari_visual_claim_script(tab_index: int, expected_url: str) -> str:
     )
 
 
-def _claim_safari_tab_visual(tab_index: int, expected_url: str) -> bool:
+def _claim_tab_visual(
+    browser: str,
+    tab_index: int,
+    expected_url: str,
+    tab_handle: Optional[str] = None,
+) -> bool:
     try:
-        raw = _run_osascript(_safari_visual_claim_script(tab_index, expected_url), timeout_s=6)
+        b = _norm_browser(browser)
+        if b == "Google Chrome":
+            with _tab_lease(b, tab_handle, 1, tab_index) as target:
+                # Self-inject the exact shared source first; the extension remains optional.
+                _execute_js_for_target(b, _visual_companion_source(), target, 6)
+                raw = _execute_js_for_target(b, _visual_claim_event_js(expected_url), target, 6)
+        else:
+            raw = _run_osascript(_visual_claim_script(b, tab_index, expected_url), timeout_s=6)
         return str(raw).strip().lower() in {"true", "1"}
     except Exception:
         # Visual Companion is optional UX; opening the page must never fail because
-        # Safari denied or delayed the visual claim.
+        # the browser denied or delayed the visual claim.
         return False
+
+
+# Compatibility wrappers retained for existing callers/tests.
+def _safari_visual_claim_js(expected_url: str) -> str:
+    return _visual_claim_js(expected_url)
+
+
+def _safari_visual_claim_script(tab_index: int, expected_url: str) -> str:
+    return _visual_claim_script("Safari", tab_index, expected_url)
+
+
+def _claim_safari_tab_visual(tab_index: int, expected_url: str) -> bool:
+    return _claim_tab_visual("Safari", tab_index, expected_url)
 
 
 def browser_open_url(
@@ -294,7 +329,7 @@ def browser_open_url(
     created = browser_tabs.find_created(b, 1, tab_index)
     handle = created.get("tab_handle") if created else None
     lease = browser_tabs.claim_created_tab(b, handle) if handle else None
-    visual_claimed = _claim_safari_tab_visual(tab_index, url) if b == "Safari" else False
+    visual_claimed = _claim_tab_visual(b, tab_index, url, handle)
     return {
         "ok": True,
         "browser": b,
@@ -479,6 +514,135 @@ def _js_escape(js: str) -> str:
     return (js or "").replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _chrome_execute_js_via_url_bridge(
+    js: str,
+    target: browser_tabs.TabTarget,
+    timeout_s: int,
+) -> str:
+    """Fallback for Chrome builds where AppleScript `execute javascript` is broken.
+
+    The bridge still depends on Chrome's user-controlled View → Developer →
+    Allow JavaScript from Apple Events setting. If that setting is off, the
+    javascript: URL itself is rejected by Chrome.
+    """
+    token = uuid.uuid4().hex[:12]
+    marker = f"__MAC_MCP_BRIDGE_{token}__"
+    code = (js or "").strip()
+    if not code:
+        return ""
+    # Generated browser-agent programs are expressions/IIFEs; tolerate one final
+    # semicolon so a standalone shared content script can use the same bridge.
+    code = code[:-1].rstrip() if code.endswith(";") else code
+
+    stage_js = (
+        "javascript:(()=>{try{"
+        "window.__macMcpBridgeOriginalTitle=document.title;"
+        f"const __mcpValue=({code});"
+        "const __mcpText=String(__mcpValue==null?'':__mcpValue);"
+        "window.__macMcpBridgeResult=btoa(unescape(encodeURIComponent(__mcpText)));"
+        f"document.title='{marker}READY:'+window.__macMcpBridgeResult.length;"
+        "}catch(e){"
+        "const __mcpErr='__MCPERR__'+String(e&&e.name||'Error')+':'+String(e&&e.message||e||'unknown');"
+        "window.__macMcpBridgeResult=btoa(unescape(encodeURIComponent(__mcpErr)));"
+        f"document.title='{marker}READY:'+window.__macMcpBridgeResult.length;"
+        "}})();void(0)"
+    )
+    guard = _tab_identity_guard(target)
+    stage_script = f'''tell application "Google Chrome"
+    tell window {target.window_index}
+        {guard}
+        set URL of targetTab to "{_js_escape(stage_js)}"
+        repeat with attempt from 1 to 80
+            delay 0.025
+            set bridgeTitle to (title of targetTab) as text
+            if bridgeTitle starts with "{marker}READY:" then return bridgeTitle
+        end repeat
+        return "{marker}TIMEOUT"
+    end tell
+end tell'''
+
+    restore_js = (
+        "javascript:(()=>{try{"
+        "if(window.__macMcpBridgeOriginalTitle!==undefined)document.title=window.__macMcpBridgeOriginalTitle;"
+        "delete window.__macMcpBridgeOriginalTitle;delete window.__macMcpBridgeResult;"
+        "}catch(_){}})();void(0)"
+    )
+    restore_script = f'''tell application "Google Chrome"
+    tell window {target.window_index}
+        {guard}
+        set URL of targetTab to "{_js_escape(restore_js)}"
+    end tell
+end tell'''
+
+    try:
+        prefix = f"{marker}READY:"
+        ready = ""
+        # A click may start navigation immediately before the next state/read call.
+        # In that narrow window Chrome can discard a javascript: URL with the old
+        # document. Retry against the same native tab identity after navigation.
+        for bridge_attempt in range(3):
+            ready = _run_osascript(stage_script, timeout_s=max(3, min(timeout_s, 10)))
+            if ready.startswith(prefix):
+                break
+            if bridge_attempt < 2:
+                time.sleep(0.12)
+        if not ready.startswith(prefix):
+            raise HTTPException(
+                status.HTTP_412_PRECONDITION_FAILED,
+                "Chrome JavaScript automation is unavailable. Manually enable View → Developer → "
+                "Allow JavaScript from Apple Events, then retry.",
+            )
+        try:
+            encoded_len = int(ready[len(prefix):])
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Chrome JavaScript bridge returned an invalid length.") from exc
+        if encoded_len < 0 or encoded_len > 8_000_000:
+            raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "Chrome JavaScript bridge result exceeded the safety limit.")
+
+        chunk_size = 3000
+        chunks: list[str] = []
+        for start in range(0, encoded_len, chunk_size):
+            end = min(start + chunk_size, encoded_len)
+            chunk_js = (
+                "javascript:(()=>{try{"
+                f"document.title='{marker}CHUNK:'+String(window.__macMcpBridgeResult||'').slice({start},{end});"
+                "}catch(_){}})();void(0)"
+            )
+            chunk_script = f'''tell application "Google Chrome"
+    tell window {target.window_index}
+        {guard}
+        set URL of targetTab to "{_js_escape(chunk_js)}"
+        repeat with attempt from 1 to 40
+            delay 0.015
+            set bridgeTitle to (title of targetTab) as text
+            if bridgeTitle starts with "{marker}CHUNK:" then return bridgeTitle
+        end repeat
+        return "{marker}TIMEOUT"
+    end tell
+end tell'''
+            row = _run_osascript(chunk_script, timeout_s=max(2, min(timeout_s, 10)))
+            chunk_prefix = f"{marker}CHUNK:"
+            if not row.startswith(chunk_prefix):
+                raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Chrome JavaScript bridge timed out while reading a result chunk.")
+            chunks.append(row[len(chunk_prefix):])
+
+        encoded = "".join(chunks)
+        if len(encoded) != encoded_len:
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Chrome JavaScript bridge returned an incomplete result.")
+        try:
+            raw = base64.b64decode(encoded.encode("ascii"), validate=True).decode("utf-8") if encoded else ""
+        except Exception as exc:
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Chrome JavaScript bridge returned invalid encoded data.") from exc
+        if raw.startswith("__MCPERR__"):
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, raw[len("__MCPERR__"):])
+        return raw
+    finally:
+        try:
+            _run_osascript(restore_script, timeout_s=3)
+        except Exception:
+            pass
+
+
 def _execute_js_for_target(
     browser: str,
     js: str,
@@ -503,7 +667,26 @@ end tell'''
         return r
     end tell
 end tell'''
-    return _run_osascript(script, timeout_s=timeout_s)
+    try:
+        return _run_osascript(script, timeout_s=timeout_s)
+    except HTTPException as exc:
+        detail = str(getattr(exc, "detail", "") or "")
+        if browser == "Google Chrome" and (
+            "Access not allowed" in detail
+            or "Executing JavaScript through AppleScript is turned off" in detail
+        ):
+            try:
+                return _chrome_execute_js_via_url_bridge(js, target, timeout_s)
+            except HTTPException as bridge_exc:
+                if bridge_exc.status_code == status.HTTP_412_PRECONDITION_FAILED:
+                    raise HTTPException(
+                        status.HTTP_412_PRECONDITION_FAILED,
+                        "Chrome JavaScript automation is disabled. In Chrome, manually enable "
+                        "View → Developer → Allow JavaScript from Apple Events, then retry. "
+                        "Chrome intentionally requires a real user input for this secure setting.",
+                    ) from exc
+                raise
+        raise
 
 
 def browser_execute_js(

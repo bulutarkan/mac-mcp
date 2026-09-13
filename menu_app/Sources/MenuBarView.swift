@@ -478,9 +478,29 @@ struct MenuBarView: View {
                 }
             }
             .padding(.vertical, 2)
+            Divider()
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(.quaternary)
+                        .frame(width: 34, height: 34)
+                    Image(systemName: "globe")
+                        .foregroundStyle(Color.secondary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Chrome Visual Companion").font(.caption.weight(.semibold))
+                    Text("Requires Chrome’s Apple Events JS toggle; the unpacked visual extension itself is optional.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                Button("Chrome Setup…") { state.openChromeExtensionSetup() }
+                    .controlSize(.small)
+            }
+            .padding(.vertical, 2)
         } label: {
             HStack {
-                Label("Safari Activity", systemImage: "sparkles.rectangle.stack")
+                Label("Browser Activity", systemImage: "sparkles.rectangle.stack")
                 Spacer()
                 Text(state.safariExtensionStatus).font(.caption2).foregroundStyle(.secondary)
             }

@@ -10,10 +10,10 @@ Mac MCP is a local macOS control server for AI agents. It exposes your Mac throu
 
 ## What's new in 2.1.1
 
-- Added the **Safari Visual Companion**, a bundled Safari Web Extension that makes real Mac MCP browser work visible inside the exact page being automated. While an agent is working, Safari can show a subtle animated page frame, `Mac MCP · …` activity badge, synthetic cursor movement, and click feedback.
-- Visual feedback is driven by the existing high-level browser actions, including **Inspecting, Finding, Reading, Clicking, Typing, Selecting, Focusing, and Scrolling**. It works with the same real Safari tabs used by Mac MCP; it does not replace the browser automation layer or require a separate browser profile.
+- Expanded the **Visual Companion** to Safari **and Google Chrome**. Both browsers use the same browser-agnostic WebExtension source for the page frame, `Mac MCP · …` activity badge, synthetic cursor feedback, and per-tab activity history.
+- Visual feedback is driven by the existing high-level browser actions, including **Inspecting, Finding, Reading, Clicking, Typing, Selecting, Focusing, and Scrolling**. It works with the same real Safari/Chrome tabs used by Mac MCP; it does not replace the browser automation layer or require a separate browser profile.
 - The visual event channel is intentionally metadata-only: it sends a bounded action label, optional viewport coordinates, effect type, and TTL. Typed text, selectors, URLs, titles, DOM content, and secrets are not copied into extension events.
-- Added a native **Safari Activity** card to `Mac MCP.app`. Registered Apple-signed builds offer **Enable in Safari…**; local ad-hoc builds now show **Developer Setup…** instead of failing when Safari has not registered the extension.
+- Added a native **Browser Activity** card to `Mac MCP.app`. Registered Apple-signed builds offer **Enable in Safari…**; local ad-hoc builds now show **Developer Setup…** instead of failing when Safari has not registered the extension.
 - The installer and updater carry the Safari extension with the menu app and verify the nested extension signature. The installer now distinguishes a normal Apple-signed distribution from an ad-hoc local source build and prints the correct Safari setup for each.
 - Kept the overlay display-only. It is useful for watching what an agent is doing, but it is **not** a trust, permission, or security indicator; Mac MCP's existing access profiles, approvals, provenance, secret-egress guard, tab leases, and no-progress protections remain authoritative.
 - The 2.1 release also includes the recent browser resilience and security work: source-aware web-to-host approval, secret-egress protection, sticky untrusted provenance, no-progress circuit breaking, delegated tab leases, steering idempotency/recovery, and dedicated-user hardening guidance.
@@ -60,25 +60,27 @@ Mac MCP can inspect and interact with Safari and Chrome tabs in the background w
 
 This is designed for workflows where an AI agent keeps working in one or more background browser tabs while the Mac remains usable normally.
 
-### Safari Visual Companion
+### Browser Visual Companion (Safari + Chrome)
 
-`Mac MCP.app` bundles a Safari Web Extension that makes active Mac MCP browser work visible inside the exact page being automated. The extension is display-only: it renders a subtle pulsing page frame, a small `Mac MCP · …` activity badge, a synthetic cursor, and click feedback for high-level browser actions. Visual events contain only bounded action labels and viewport coordinates; typed text, selectors, URLs, page titles, DOM content, and secrets are not copied into the extension event. The overlay is activity feedback only and must not be treated as a security or trust indicator.
+`Mac MCP.app` uses one shared WebExtension source for Safari and Chrome to make active Mac MCP browser work visible inside the exact page being automated. The extension is display-only: it renders a subtle pulsing page frame, a small `Mac MCP · …` activity badge, a synthetic cursor, and click feedback for high-level browser actions. Visual events contain only bounded action labels and viewport coordinates; typed text, selectors, URLs, page titles, DOM content, and secrets are not copied into the extension event. The overlay is activity feedback only and must not be treated as a security or trust indicator.
 
 Safari setup depends on how `Mac MCP.app` is signed:
 
 **Developer ID / Apple-signed build (persistent):**
 
 1. Install or update Mac MCP normally.
-2. Open **Mac MCP.app → Safari Activity → Enable in Safari…**. You can also use **Safari → Settings → Extensions**.
+2. Open **Mac MCP.app → Browser Activity → Enable in Safari…**. You can also use **Safari → Settings → Extensions**.
 3. Turn on **Mac MCP Visual Companion** and grant website access for the sites where you want activity feedback.
 
 **Local GitHub/source build (ad-hoc, development mode):**
 
-1. Open **Mac MCP.app → Safari Activity → Developer Setup…**. Mac MCP reveals the runtime `SafariExtension` source folder and opens Safari.
+1. Open **Mac MCP.app → Browser Activity → Developer Setup…**. Mac MCP reveals the runtime `BrowserVisualCompanion` source folder and opens Safari.
 2. In Safari, enable web-developer features if the **Develop** menu is hidden.
 3. Choose **Develop → Allow Unsigned Extensions**.
-4. Choose **Develop → Add Temporary Extension…** and select `~/mac-mcp/menu_app/SafariExtension`.
+4. Choose **Develop → Add Temporary Extension…** and select `~/mac-mcp/menu_app/BrowserVisualCompanion`.
 5. Grant website access when Safari asks. Safari treats this as a development/temporary extension; persistent normal installation requires an Apple-signed app bundle.
+
+For Chrome browser tools, first manually enable **View → Developer → Allow JavaScript from Apple Events** in Chrome. Chromium intentionally accepts that secure toggle only from real user input, so Mac MCP does not attempt to bypass it. Then, if you want the optional persistent visual content script, open **Mac MCP.app → Browser Activity → Chrome Setup…**, enable **Developer mode** at `chrome://extensions`, choose **Load unpacked**, and select `~/mac-mcp/menu_app/BrowserVisualCompanion`. The extension is optional: browser tools also self-inject the same Visual Companion source before emitting claimed activity events, so extension unload/permission issues do not disable the activity history. On Chrome builds where the AppleScript `execute javascript` command still returns `-1723` despite that toggle being enabled, Mac MCP uses a bounded, temporary `javascript:` return bridge through the same user-gated Chrome setting. The bridge retries across navigation races, restores the page title immediately, and does not require foreground activation.
 
 The project remains fully open source and does **not** need the Mac App Store. For a persistent GitHub release, sign/notarize the distributed `Mac MCP.app` with Developer ID; `menu_app/build_app.sh` accepts `MAC_MCP_CODESIGN_IDENTITY` for that release path.
 
