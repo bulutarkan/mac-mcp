@@ -124,7 +124,7 @@ class SafariVisualCompanionTests(unittest.TestCase):
         self.assertIn("Signature=adhoc", source)
         self.assertIn("Developer Setup…", source)
         self.assertIn("Add Temporary Extension", source)
-        self.assertIn("Mac MCP Safari Visual Companion.appex/Contents/Resources", source)
+        self.assertIn("menu_app/SafariExtension", source)
 
     def test_updater_tracks_and_syncs_new_safari_extension_files(self) -> None:
         with tempfile.TemporaryDirectory() as td:

@@ -596,7 +596,7 @@ print_completion() {
   if /usr/bin/codesign -dv --verbose=2 "$APP_PATH" 2>&1 | /usr/bin/grep -q '^Signature=adhoc$'; then
     printf '  This source install is ad-hoc signed, so Safari will not register the bundled extension as a normal installed extension.\n'
     printf '  In Mac MCP.app choose "Developer Setup…", then in Safari enable Develop → Allow Unsigned Extensions and use Develop → Add Temporary Extension….\n'
-    printf '  Select: %s/Contents/PlugIns/Mac MCP Safari Visual Companion.appex/Contents/Resources\n' "$APP_PATH"
+    printf '  Select: %s/menu_app/SafariExtension\n' "$RUNTIME_DIR"
   else
     printf '  Open the Mac MCP menu and choose "Enable in Safari…" once, then allow website access in Safari.\n'
   fi

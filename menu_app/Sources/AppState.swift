@@ -567,9 +567,9 @@ final class AppState: ObservableObject {
     }
 
     private func openUnsignedSafariExtensionSetup() {
-        let resourcesURL = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/PlugIns/Mac MCP Safari Visual Companion.appex/Contents/Resources", isDirectory: true)
-        let manifestURL = resourcesURL.appendingPathComponent("manifest.json")
+        let extensionSourceURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("mac-mcp/menu_app/SafariExtension", isDirectory: true)
+        let manifestURL = extensionSourceURL.appendingPathComponent("manifest.json")
         if FileManager.default.fileExists(atPath: manifestURL.path) {
             NSWorkspace.shared.activateFileViewerSelecting([manifestURL])
         }
@@ -580,7 +580,7 @@ final class AppState: ObservableObject {
         }
         actionNotice = ActionNotice(
             kind: .info,
-            message: "Unsigned build: in Safari choose Develop → Allow Unsigned Extensions, then Develop → Add Temporary Extension… and select the revealed Resources folder."
+            message: "Local developer build: in Safari choose Develop → Allow Unsigned Extensions, then Add Temporary Extension… and select the revealed SafariExtension folder."
         )
     }
 

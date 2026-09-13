@@ -74,10 +74,10 @@ Safari setup depends on how `Mac MCP.app` is signed:
 
 **Local GitHub/source build (ad-hoc, development mode):**
 
-1. Open **Mac MCP.app → Safari Activity → Developer Setup…**. Mac MCP reveals the packaged extension `Resources` folder and opens Safari.
+1. Open **Mac MCP.app → Safari Activity → Developer Setup…**. Mac MCP reveals the runtime `SafariExtension` source folder and opens Safari.
 2. In Safari, enable web-developer features if the **Develop** menu is hidden.
 3. Choose **Develop → Allow Unsigned Extensions**.
-4. Choose **Develop → Add Temporary Extension…** and select `~/Applications/Mac MCP.app/Contents/PlugIns/Mac MCP Safari Visual Companion.appex/Contents/Resources`.
+4. Choose **Develop → Add Temporary Extension…** and select `~/mac-mcp/menu_app/SafariExtension`.
 5. Grant website access when Safari asks. Safari treats this as a development/temporary extension; persistent normal installation requires an Apple-signed app bundle.
 
 The project remains fully open source and does **not** need the Mac App Store. For a persistent GitHub release, sign/notarize the distributed `Mac MCP.app` with Developer ID; `menu_app/build_app.sh` accepts `MAC_MCP_CODESIGN_IDENTITY` for that release path.
