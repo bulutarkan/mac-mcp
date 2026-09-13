@@ -605,8 +605,10 @@ class SecurityContextManager:
     def evaluate(
         self, *, key: str, public_session_id: str, tool: str,
         risk: RiskAssessment, arguments: Mapping[str, Any],
+        profile: str = "standard",
     ) -> ContextGateDecision:
         state = self.touch(key, public_session_id)
+        profile_name = str(profile or "standard").strip().lower() or "standard"
         with self._lock:
             progress_signature = self._browser_action_signature(tool, arguments)
             if progress_signature and state.breaker_signature == progress_signature:
@@ -670,6 +672,22 @@ class SecurityContextManager:
                 return ContextGateDecision(
                     True, "context_allowed", "non_privileged_or_browser_action",
                     public_session_id, source_origin, state.trust_level,
+                )
+
+            # The global Trusted profile is an explicit user opt-in to unrestricted
+            # host capabilities. Preserve sticky web provenance for audit/egress
+            # decisions, but do not interrupt every normal web→host transition with
+            # an Allow Once dialog. Secret egress is evaluated above and remains
+            # approval-gated even for Trusted sessions. Scoped delegated profiles
+            # (for example developer/browser_only) do not receive this bypass.
+            if profile_name == "trusted":
+                return ContextGateDecision(
+                    True, "trusted_profile_web_host_allowed",
+                    "trusted_profile_skips_web_host_confirmation",
+                    public_session_id, source_origin, state.trust_level,
+                    target_summary=safe_target_summary(tool, arguments),
+                    tab_handle=state.provenance_tab_handle or state.tab_handle,
+                    tab_title=state.provenance_tab_title or state.tab_title,
                 )
 
             grant = self._consume_grant_locked(state, tool, fingerprint)

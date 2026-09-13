@@ -56,11 +56,12 @@ class RestSecurityBoundaryTests(unittest.TestCase):
             html = self.client.post("/browser_get_html", json={"browser": "Safari"})
             self.assertEqual(200, html.status_code, html.text)
 
-    def test_rest_web_to_host_crossing_requires_source_bound_approval(self) -> None:
-        self._establish_untrusted_page()
-        with patch.object(rest_routes, "run_command") as run:
-            run.return_value = {"ok": True, "stdout": "unexpected"}
-            response = self.client.post("/run", json={"command": "printf rest-blocked"})
+    def test_rest_web_to_host_crossing_requires_source_bound_approval_for_developer_profile(self) -> None:
+        with patch.dict("os.environ", {"MAC_MCP_PERMISSION_PROFILE": "developer"}, clear=False):
+            self._establish_untrusted_page()
+            with patch.object(rest_routes, "run_command") as run:
+                run.return_value = {"ok": True, "stdout": "unexpected"}
+                response = self.client.post("/run", json={"command": "printf rest-blocked"})
         self.assertEqual(403, response.status_code, response.text)
         run.assert_not_called()
         self.assertEqual(1, len(self.approvals))
@@ -69,6 +70,16 @@ class RestSecurityBoundaryTests(unittest.TestCase):
         self.assertEqual("tab-rest", approval["tab_handle"])
         self.assertEqual("web_host_boundary", approval["reason_code"])
         self.assertIn("printf rest-blocked", approval["target_summary"])
+
+    def test_rest_trusted_web_to_host_crossing_skips_routine_approval(self) -> None:
+        with patch.dict("os.environ", {"MAC_MCP_PERMISSION_PROFILE": "trusted"}, clear=False):
+            self._establish_untrusted_page()
+            with patch.object(rest_routes, "run_command") as run:
+                run.return_value = {"ok": True, "stdout": "trusted-ok"}
+                response = self.client.post("/run", json={"command": "printf trusted-ok"})
+        self.assertEqual(200, response.status_code, response.text)
+        run.assert_called_once()
+        self.assertEqual([], self.approvals)
 
     def test_rest_sensitive_read_cannot_be_typed_to_untrusted_browser(self) -> None:
         secret = "sk-restSecretValue123456789012"

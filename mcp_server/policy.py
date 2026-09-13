@@ -355,7 +355,7 @@ PROFILES: dict[str, PermissionProfile] = {
         approval=ApprovalBehavior(
             source=ApprovalSource.NONE,
             automatic_confirmation=False,
-            summary="Allowed calls execute without an automatic Mac MCP confirmation prompt; the MCP client may still apply its own approval flow.",
+            summary="Allowed calls execute without routine Mac MCP confirmation prompts; detected secret/credential egress to an untrusted origin remains approval-gated. The MCP client may still apply its own approval flow.",
         ),
     ),
     "standard": PermissionProfile(

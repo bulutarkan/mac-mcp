@@ -113,6 +113,7 @@ def _rest_security_gate(request: Request, tool: str, arguments: Dict[str, Any], 
     safe_arguments = {str(k): v for k, v in (arguments or {}).items() if str(k) != "tool"}
     gate = _rest_security_context.evaluate(
         key=key, public_session_id=session_id, tool=tool, risk=effective, arguments=safe_arguments,
+        profile=getattr(context, "profile", "standard"),
     )
     if (not gate.allowed and gate.approval_required and gate.request_id and _rest_security_approval_provider is not None):
         _record_rest_security_event(
@@ -148,6 +149,7 @@ def _rest_security_gate(request: Request, tool: str, arguments: Dict[str, Any], 
             )
         gate = _rest_security_context.evaluate(
             key=key, public_session_id=session_id, tool=tool, risk=effective, arguments=safe_arguments,
+            profile=getattr(context, "profile", "standard"),
         )
     if not gate.allowed:
         if gate.code.startswith("secret_egress"):

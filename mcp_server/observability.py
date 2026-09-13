@@ -948,6 +948,7 @@ class ObservedFastMCP(FastMCP):
                 tool=name,
                 risk=effective,
                 arguments=arguments,
+                profile=policy_context.profile,
             )
 
             if (
@@ -987,6 +988,7 @@ class ObservedFastMCP(FastMCP):
                     tool=name,
                     risk=effective,
                     arguments=arguments,
+                    profile=policy_context.profile,
                 )
 
             if not gate.allowed:

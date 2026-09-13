@@ -38,7 +38,7 @@ class WebHostBoundaryRegressionTests(unittest.TestCase):
     def test_malicious_dom_cannot_pivot_to_shell_and_security_event_is_redacted(self) -> None:
         async def run() -> None:
             with tempfile.TemporaryDirectory() as td:
-                mcp, telemetry = self._manager(td)
+                mcp, telemetry = self._manager(td, context=PolicyContext(profile="developer", actor="test"))
                 shell_executed = False
                 html = FIXTURE.read_text(encoding="utf-8")
 
@@ -76,7 +76,7 @@ class WebHostBoundaryRegressionTests(unittest.TestCase):
     def test_local_one_shot_escalation_allows_exact_tool_once(self) -> None:
         async def run() -> None:
             with tempfile.TemporaryDirectory() as td:
-                mcp, telemetry = self._manager(td)
+                mcp, telemetry = self._manager(td, context=PolicyContext(profile="developer", actor="test"))
                 calls = 0
 
                 @mcp.tool(name="browser_observe")
@@ -105,7 +105,38 @@ class WebHostBoundaryRegressionTests(unittest.TestCase):
                 self.assertTrue(any(e["event_type"] == "WEB_TO_HOST_ESCALATION" for e in telemetry.query_security_events(limit=20)))
         asyncio.run(run())
 
-    def test_tool_invoke_cannot_bypass_web_host_gate(self) -> None:
+    def test_trusted_profile_skips_routine_web_host_confirmation_but_keeps_taint(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as td:
+                approvals = []
+
+                def unexpected_approval(payload):
+                    approvals.append(dict(payload))
+                    return {"confirmed": False, "decision": "unexpected"}
+
+                mcp, _telemetry = self._manager(td, approval_provider=unexpected_approval)
+                shell_calls = []
+
+                @mcp.tool(name="browser_observe")
+                def browser_observe(browser: str = "Safari") -> dict:
+                    return {"ok": True, "url": "https://evil.example/", "tab_handle": "tab-a"}
+
+                @mcp.tool(name="run_command")
+                def run_command(command: str) -> dict:
+                    shell_calls.append(command)
+                    return {"ok": True, "stdout": "ok"}
+
+                await mcp.call_tool("browser_observe", {"browser": "Safari"})
+                result = await mcp.call_tool("run_command", {"command": "pwd"})
+                self.assertIsNotNone(result)
+                self.assertEqual(["pwd"], shell_calls)
+                self.assertEqual([], approvals)
+                state = mcp.security_context.state_for_public_session("actor:test")
+                self.assertEqual("tainted_untrusted_web", state["provenance_class"])
+                self.assertEqual("https://evil.example", state["provenance_origin"])
+        asyncio.run(run())
+
+    def test_trusted_tool_invoke_follows_trusted_web_host_policy(self) -> None:
         async def run() -> None:
             with tempfile.TemporaryDirectory() as td:
                 mcp, _telemetry = self._manager(td)
@@ -126,10 +157,13 @@ class WebHostBoundaryRegressionTests(unittest.TestCase):
                     return {"result": await mcp.call_tool(tool_name, arguments or {})}
 
                 await mcp.call_tool("browser_observe", {"browser": "Safari"})
-                with self.assertRaises(ToolError) as ctx:
-                    await mcp.call_tool("tool_invoke", {"tool_name": "run_command", "arguments": {"command": "whoami"}})
-                self.assertIn("web_host_boundary_approval_required", str(ctx.exception))
-                self.assertFalse(shell_executed)
+                result = await mcp.call_tool(
+                    "tool_invoke", {"tool_name": "run_command", "arguments": {"command": "whoami"}}
+                )
+                self.assertIsNotNone(result)
+                self.assertTrue(shell_executed)
+                state = mcp.security_context.state_for_public_session("actor:test")
+                self.assertEqual("tainted_untrusted_web", state["provenance_class"])
         asyncio.run(run())
 
     def test_localhost_browser_content_does_not_trigger_untrusted_gate(self) -> None:
@@ -156,7 +190,7 @@ class WebHostBoundaryRegressionTests(unittest.TestCase):
     def test_untrusted_state_cannot_be_laundered_by_later_localhost_observation(self) -> None:
         async def run() -> None:
             with tempfile.TemporaryDirectory() as td:
-                mcp, _telemetry = self._manager(td)
+                mcp, _telemetry = self._manager(td, context=PolicyContext(profile="developer", actor="test"))
                 shell_executed = False
                 urls = iter(["https://evil.example/", "http://127.0.0.1:9876/dashboard"])
 
@@ -184,7 +218,7 @@ class WebHostBoundaryRegressionTests(unittest.TestCase):
     def test_origin_change_invalidates_existing_one_shot_grant(self) -> None:
         async def run() -> None:
             with tempfile.TemporaryDirectory() as td:
-                mcp, _telemetry = self._manager(td)
+                mcp, _telemetry = self._manager(td, context=PolicyContext(profile="developer", actor="test"))
                 urls = iter(["https://evil.example/", "https://other.example/"])
                 ran = False
 
@@ -221,7 +255,7 @@ class WebHostBoundaryRegressionTests(unittest.TestCase):
                         return {"confirmed": True, "decision": "confirmed"}
                     return {"confirmed": False, "decision": "denied"}
 
-                mcp, telemetry = self._manager(td, approval_provider=approve)
+                mcp, telemetry = self._manager(td, context=PolicyContext(profile="developer", actor="test"), approval_provider=approve)
 
                 @mcp.tool(name="browser_observe")
                 def browser_observe(browser: str = "Safari") -> dict:
@@ -269,7 +303,7 @@ class WebHostBoundaryRegressionTests(unittest.TestCase):
                     approval_count += 1
                     return {"confirmed": False, "decision": "denied"}
 
-                mcp, _telemetry = self._manager(td, approval_provider=deny)
+                mcp, _telemetry = self._manager(td, context=PolicyContext(profile="developer", actor="test"), approval_provider=deny)
 
                 @mcp.tool(name="browser_observe")
                 def browser_observe(browser: str = "Safari") -> dict:
