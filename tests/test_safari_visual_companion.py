@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from mcp_server.tools_browser import _safari_visual_claim_js, _safari_visual_claim_script
 from mcp_server.tools_browser_agent import _batch_js, _browser_state_bootstrap, _observe_js
 from mcp_server.update_helper import _sync_runtime, _tracked_files
 
@@ -25,6 +26,57 @@ class SafariVisualCompanionTests(unittest.TestCase):
         self.assertNotIn("location.href", visual_helper)
         self.assertNotIn("innerText", visual_helper)
         self.assertIn("action:String(action||'Working').slice(0,40)", visual_helper)
+        self.assertIn("claim:true", visual_helper)
+
+    def test_visual_history_sidebar_is_private_bounded_and_closed_by_default(self) -> None:
+        source = (ROOT / "menu_app/SafariExtension/visual.js").read_text(encoding="utf-8")
+        self.assertIn("const MAX_HISTORY = 30", source)
+        self.assertIn("sessionStorage", source)
+        self.assertIn("history-rail", source)
+        self.assertIn("history-panel", source)
+        self.assertIn("This tab only · no page content stored", source)
+        self.assertIn("companion.classList.toggle('sidebar-open')", source)
+        self.assertNotIn('<div class="companion sidebar-open">', source)
+        self.assertIn("SAFE_TARGETS", source)
+        self.assertIn("SAFE_DETAILS", source)
+
+    def test_visual_history_metadata_is_categorical_and_never_copies_typed_value(self) -> None:
+        secret = "SIDEBAR_SECRET_MUST_NOT_LEAK"
+        script = _batch_js([{"type": "type", "element_id": "e_1", "text": secret}], None)
+        self.assertIn(secret, script)
+        start = script.index("function __mcpVisualTarget")
+        end = script.index("function __mcpId", start)
+        helper = script[start:end]
+        self.assertNotIn(secret, helper)
+        self.assertNotIn("innerText", helper)
+        self.assertNotIn("location.href", helper)
+        self.assertIn("target_kind:__mcpVisualTarget(el)", helper)
+        self.assertIn("['Up','Down','Into view']", helper)
+        for label in ("Button", "Link", "Text field", "Menu", "Checkbox", "Option", "Tab", "Date", "Item"):
+            self.assertIn(label, helper)
+
+    def test_visual_companion_mounts_only_after_a_claimed_mcp_event(self) -> None:
+        source = (ROOT / "menu_app/SafariExtension/visual.js").read_text(encoding="utf-8")
+        install_start = source.index("function install()")
+        install_end = source.index("install();", install_start)
+        install_body = source[install_start:install_end]
+        self.assertNotIn("ensureUI();", install_body)
+        self.assertIn("event.claim !== true", source)
+        self.assertIn("const ui = ensureUI();", source)
+
+    def test_safari_open_url_claim_is_metadata_only(self) -> None:
+        expected = "https://example.com/path?q=private"
+        js = _safari_visual_claim_js(expected)
+        script = _safari_visual_claim_script(3, expected)
+        self.assertIn("tab 3 of window 1", script)
+        self.assertNotIn("eval(", script)
+        self.assertIn("document.readyState==='loading'", js)
+        self.assertIn("location.href", js)  # used only to ensure the final document is the claimed target
+        self.assertIn("claim:true", js)
+        self.assertIn("action:'Opened'", js)
+        self.assertIn("target_kind:'Page'", js)
+        for forbidden in ("document.title", "innerText", "textContent"):
+            self.assertNotIn(forbidden, js)
 
     def test_visual_attribute_does_not_advance_browser_dom_revision(self) -> None:
         bootstrap = _browser_state_bootstrap()

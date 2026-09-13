@@ -168,6 +168,50 @@ def _run_osascript(script: str, timeout_s: int = 30) -> str:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, msg)
     return (stdout or "").strip()
 
+def _safari_visual_claim_js(expected_url: str) -> str:
+    expected = json.dumps(str(expected_url or ""))
+    return (
+        "(()=>{try{"
+        f"const expected={expected};"
+        "if(document.readyState==='loading')return false;"
+        "const want=new URL(expected),current=new URL(location.href);"
+        "if(want.origin!==current.origin||want.pathname!==current.pathname)return false;"
+        "const p={seq:Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7),"
+        "claim:true,phase:'working',action:'Opened',target_kind:'Page',ttl_ms:1800};"
+        "const raw=btoa(unescape(encodeURIComponent(JSON.stringify(p))));"
+        "(document.documentElement||document.body).setAttribute('data-mac-mcp-visual-event',raw);"
+        "try{window.dispatchEvent(new Event('mac-mcp-visual'));}catch(_){}"
+        "return true;}catch(_){return false;}})()"
+    )
+
+
+def _safari_visual_claim_script(tab_index: int, expected_url: str) -> str:
+    """Best-effort visual claim for the final Safari document opened by Mac MCP."""
+    js_escaped = _js_escape(_safari_visual_claim_js(expected_url))
+    return (
+        'tell application "Safari"\n'
+        'repeat with attempt from 1 to 30\n'
+        'try\n'
+        f'set claimed to do JavaScript "{js_escaped}" in tab {int(tab_index)} of window 1\n'
+        'if claimed is true then return true\n'
+        'end try\n'
+        'delay 0.15\n'
+        'end repeat\n'
+        'return false\n'
+        'end tell'
+    )
+
+
+def _claim_safari_tab_visual(tab_index: int, expected_url: str) -> bool:
+    try:
+        raw = _run_osascript(_safari_visual_claim_script(tab_index, expected_url), timeout_s=6)
+        return str(raw).strip().lower() in {"true", "1"}
+    except Exception:
+        # Visual Companion is optional UX; opening the page must never fail because
+        # Safari denied or delayed the visual claim.
+        return False
+
+
 def browser_open_url(
     settings: Settings,
     browser: str,
@@ -242,6 +286,7 @@ def browser_open_url(
     created = browser_tabs.find_created(b, 1, tab_index)
     handle = created.get("tab_handle") if created else None
     lease = browser_tabs.claim_created_tab(b, handle) if handle else None
+    visual_claimed = _claim_safari_tab_visual(tab_index, url) if b == "Safari" else False
     return {
         "ok": True,
         "browser": b,
@@ -251,6 +296,7 @@ def browser_open_url(
         "tab_index": tab_index,
         "tab_handle": handle,
         "lease_generation": (lease or {}).get("generation"),
+        "visual_claimed": visual_claimed,
         "foreground_forced": False if background else True,
     }
 

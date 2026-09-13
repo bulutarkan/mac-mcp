@@ -467,9 +467,24 @@ function __mcpState(){
   }
   return s;
 }
-function __mcpVisual(action,el,effect,ttl){
+function __mcpVisualTarget(el){
   try{
-    var payload={seq:Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7),phase:'working',action:String(action||'Working').slice(0,40),ttl_ms:Math.max(500,Math.min(Number(ttl||1800),30000))};
+    if(!el||el.nodeType!==1) return 'Page';
+    var tag=(el.tagName||'').toLowerCase(), role=(el.getAttribute('role')||'').toLowerCase(), type=(el.getAttribute('type')||'').toLowerCase(), aria=(el.getAttribute('aria-label')||'');
+    if(tag==='button'||role==='button'||(tag==='input'&&['button','submit','reset'].indexOf(type)>=0)) return 'Button';
+    if(tag==='a'||role==='link') return 'Link';
+    if(tag==='textarea'||el.isContentEditable||role==='textbox'||role==='searchbox'||(tag==='input'&&['checkbox','radio','button','submit','reset'].indexOf(type)<0)) return 'Text field';
+    if(tag==='select'||role==='combobox'||role==='listbox'||role==='menu'||role==='menuitem') return 'Menu';
+    if(type==='checkbox'||role==='checkbox'||role==='switch') return 'Checkbox';
+    if(type==='radio'||role==='radio'||role==='option') return 'Option';
+    if(role==='tab') return 'Tab';
+    if(/(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday).*(?:january|february|march|april|may|june|july|august|september|october|november|december)/i.test(aria)) return 'Date';
+    return 'Item';
+  }catch(e){return 'Item';}
+}
+function __mcpVisual(action,el,effect,ttl,detail){
+  try{
+    var payload={seq:Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7),claim:true,phase:'working',action:String(action||'Working').slice(0,40),target_kind:__mcpVisualTarget(el),ttl_ms:Math.max(500,Math.min(Number(ttl||1800),30000))};
     if(el&&el.nodeType===1){
       var r=el.getBoundingClientRect();
       if(isFinite(r.left)&&isFinite(r.top)&&isFinite(r.width)&&isFinite(r.height)){
@@ -478,6 +493,7 @@ function __mcpVisual(action,el,effect,ttl){
       }
     }
     if(effect==='click') payload.effect='click';
+    if(['Up','Down','Into view'].indexOf(String(detail||''))>=0) payload.detail=String(detail);
     var raw=btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
     (document.documentElement||document.body).setAttribute('data-mac-mcp-visual-event',raw);
     try{window.dispatchEvent(new Event('mac-mcp-visual'));}catch(e){}
@@ -1101,7 +1117,8 @@ for(var i=0;i<actions.length;i++){{
   var el=a.element_id?target(a.element_id):null;
   if(a.element_id && !el){{results.push({{index:i,type:type,element_id:a.element_id,ok:false,error:'stale_element',observe_again:true}});break;}}
   var visualLabel=type==='click'||type==='double_click'?'Clicking':(type==='type'||type==='type_text'||type==='paste'?'Typing':(type==='scroll'?'Scrolling':(type==='focus'?'Focusing':(type==='select'?'Selecting':'Working'))));
-  __mcpVisual(visualLabel,el,(type==='click'||type==='double_click')?'click':'',2200);
+  var visualDetail=type==='scroll'?(el?'Into view':(Number(a.dy||300)<0?'Up':'Down')):'';
+  __mcpVisual(visualLabel,el,(type==='click'||type==='double_click')?'click':'',2200,visualDetail);
   try{{
     if(type==='click'||type==='double_click'){{
       if(!el) throw new Error('element_id is required');
