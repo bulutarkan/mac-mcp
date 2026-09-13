@@ -20,7 +20,7 @@ from mcp_server.tools_browser import (
     _chrome_execute_js_via_url_bridge,
     _claim_tab_visual,
 )
-from mcp_server.tools_browser_agent import _batch_js, _browser_state_bootstrap, _observe_js
+from mcp_server.tools_browser_agent import _batch_js, _browser_state_bootstrap, _observe_js, _ensure_visual_companion
 from mcp_server.update_helper import _sync_runtime, _tracked_files
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -203,7 +203,11 @@ class BrowserVisualCompanionTests(unittest.TestCase):
         self.assertIn("__macMcpVisualCompanionLoaded", source)
         self.assertIn("window.addEventListener('mac-mcp-visual'", source)
         bootstrap = _browser_state_bootstrap()
-        self.assertIn("__macMcpVisualCompanionLoaded", bootstrap)
+        self.assertNotIn(source, bootstrap)
+        import inspect
+        ensure_path = inspect.getsource(_ensure_visual_companion)
+        self.assertIn("__macMcpVisualCompanionLoaded", ensure_path)
+        self.assertIn("_visual_companion_source()", ensure_path)
         claim = _safari_visual_claim_js("https://example.com/")
         self.assertIn("__macMcpVisualCompanionLoaded", claim)
         self.assertIn("action:'Opened'", claim)

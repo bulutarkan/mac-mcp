@@ -7,6 +7,10 @@ from mcp_server.tools_browser_agent import (
     _dom_capture_start_js,
     _extract_action_js,
     _find_candidates_js,
+    _browser_state_bootstrap,
+    _batch_js,
+    _condition_js,
+    _effect_changed,
     _format_observation,
     _network_idle_state_js,
     semantic_extract_fields,
@@ -120,7 +124,7 @@ class BrowserAgentLayerTests(unittest.TestCase):
 
     def test_extract_action_builds_targeted_selector_payload(self):
         script = _extract_action_js([{"name": "price", "selector": ".price", "attr": "text"}], 1200)
-        self.assertIn('querySelectorAll(sel)', script)
+        self.assertIn('__mcpQueryAll(sel)', script)
         self.assertIn('"price"', script)
         self.assertIn('".price"', script)
         self.assertIn('budget=1200', script)
@@ -140,7 +144,7 @@ class BrowserAgentLayerTests(unittest.TestCase):
             {"name": "title", "selector": "h1", "attr": "text"},
         ], 1500)
         self.assertIn("semanticValues", script)
-        self.assertIn("querySelectorAll(sel)", script)
+        self.assertIn("__mcpQueryAll(sel)", script)
         self.assertIn("free cancellation", script)
         self.assertIn("budget=1500", script)
 
@@ -152,6 +156,57 @@ class BrowserAgentLayerTests(unittest.TestCase):
         self.assertIn("websiteHint", script)
         self.assertIn("candidate.href", script)
         self.assertIn("data-item-id", script)
+
+    def test_semantic_context_disambiguates_duplicate_calendar_days(self):
+        november = {
+            "text": "27", "context": "November 2026", "aria_label": "",
+            "placeholder": "", "name": "", "title": "", "value": "",
+            "role": "gridcell", "tag": "button", "actionable": True,
+        }
+        october = {**november, "context": "October 2026"}
+        november_score = _score_candidate(november, "November 27", "gridcell", None)
+        october_score = _score_candidate(october, "November 27", "gridcell", None)
+        self.assertGreaterEqual(november_score, 0.85)
+        self.assertGreater(november_score, october_score)
+        bootstrap = _browser_state_bootstrap()
+        self.assertIn("function __mcpContext", bootstrap)
+        self.assertIn("rdp-caption_label", bootstrap)
+
+    def test_deep_dom_scan_covers_open_shadow_and_same_origin_frames_but_skips_companion(self):
+        bootstrap = _browser_state_bootstrap()
+        self.assertIn("el.shadowRoot&&!__mcpInternalHost(el)", bootstrap)
+        self.assertIn("el.contentDocument", bootstrap)
+        self.assertIn("mac-mcp-visual-companion-root", bootstrap)
+        self.assertIn("function __mcpQueryAll", bootstrap)
+
+    def test_click_uses_pointer_mouse_chain_and_stale_element_recovery(self):
+        script = _batch_js([{"type": "click", "element_id": "e_test"}], None)
+        for event in ("pointerdown", "mousedown", "pointerup", "mouseup"):
+            self.assertIn(event, script)
+        self.assertIn("__mcpRecoverElement", script)
+        self.assertIn("__mcpRecoverAction", script)
+        self.assertIn("a.query||a.target||a.text_match||a.target_text", script)
+        self.assertIn("__mcpActivate", script)
+        self.assertIn("activation_target", script)
+
+    def test_type_uses_native_value_setter_and_input_events(self):
+        script = _batch_js([{"type": "type", "element_id": "e_test", "text": "Prague"}], None)
+        self.assertIn("Object.getOwnPropertyDescriptor(proto,'value')", script)
+        self.assertIn("beforeinput", script)
+        self.assertIn("__mcpSetText", script)
+        self.assertIn("InputEvent", script)
+
+    def test_selector_wait_uses_deep_query(self):
+        script = _condition_js({"for": "selector", "selector": "#inside-shadow"}, "")
+        self.assertIn("__mcpQueryOne", script)
+        self.assertNotIn("!!document.querySelector", script)
+
+    def test_effect_change_detects_spa_and_control_state_progress(self):
+        base = {"url": "https://x.test", "title": "X", "dom_revision": 4, "connected": True, "aria_expanded": "false", "value": ""}
+        self.assertTrue(_effect_changed(base, {**base, "dom_revision": 5}))
+        self.assertTrue(_effect_changed(base, {**base, "aria_expanded": "true"}))
+        self.assertTrue(_effect_changed(base, {**base, "connected": False}))
+        self.assertFalse(_effect_changed(base, dict(base)))
 
     def test_full_page_is_a_supported_visual_mode(self):
         self.assertIn('full_page', _VISUAL_MODES)

@@ -58,6 +58,8 @@ BROWSERS = {
 }
 
 _TAB_IDENTITY_CHANGED = "MAC_MCP_TAB_IDENTITY_CHANGED"
+_CHROME_NATIVE_JS_DENIED = False
+_CHROME_BRIDGE_INLINE_LIMIT = 2400
 
 
 def _norm_browser(browser: str) -> str:
@@ -540,11 +542,11 @@ def _chrome_execute_js_via_url_bridge(
         f"const __mcpValue=({code});"
         "const __mcpText=String(__mcpValue==null?'':__mcpValue);"
         "window.__macMcpBridgeResult=btoa(unescape(encodeURIComponent(__mcpText)));"
-        f"document.title='{marker}READY:'+window.__macMcpBridgeResult.length;"
+        f"document.title='{marker}'+(window.__macMcpBridgeResult.length<={_CHROME_BRIDGE_INLINE_LIMIT}?'INLINE:'+window.__macMcpBridgeResult:'READY:'+window.__macMcpBridgeResult.length);"
         "}catch(e){"
         "const __mcpErr='__MCPERR__'+String(e&&e.name||'Error')+':'+String(e&&e.message||e||'unknown');"
         "window.__macMcpBridgeResult=btoa(unescape(encodeURIComponent(__mcpErr)));"
-        f"document.title='{marker}READY:'+window.__macMcpBridgeResult.length;"
+        f"document.title='{marker}'+(window.__macMcpBridgeResult.length<={_CHROME_BRIDGE_INLINE_LIMIT}?'INLINE:'+window.__macMcpBridgeResult:'READY:'+window.__macMcpBridgeResult.length);"
         "}})();void(0)"
     )
     guard = _tab_identity_guard(target)
@@ -555,7 +557,7 @@ def _chrome_execute_js_via_url_bridge(
         repeat with attempt from 1 to 80
             delay 0.025
             set bridgeTitle to (title of targetTab) as text
-            if bridgeTitle starts with "{marker}READY:" then return bridgeTitle
+            if bridgeTitle starts with "{marker}READY:" or bridgeTitle starts with "{marker}INLINE:" then return bridgeTitle
         end repeat
         return "{marker}TIMEOUT"
     end tell
@@ -576,32 +578,39 @@ end tell'''
 
     try:
         prefix = f"{marker}READY:"
+        inline_prefix = f"{marker}INLINE:"
         ready = ""
         # A click may start navigation immediately before the next state/read call.
         # In that narrow window Chrome can discard a javascript: URL with the old
         # document. Retry against the same native tab identity after navigation.
         for bridge_attempt in range(3):
             ready = _run_osascript(stage_script, timeout_s=max(3, min(timeout_s, 10)))
-            if ready.startswith(prefix):
+            if ready.startswith(prefix) or ready.startswith(inline_prefix):
                 break
             if bridge_attempt < 2:
                 time.sleep(0.12)
-        if not ready.startswith(prefix):
+        if not (ready.startswith(prefix) or ready.startswith(inline_prefix)):
             raise HTTPException(
                 status.HTTP_412_PRECONDITION_FAILED,
                 "Chrome JavaScript automation is unavailable. Manually enable View → Developer → "
                 "Allow JavaScript from Apple Events, then retry.",
             )
-        try:
-            encoded_len = int(ready[len(prefix):])
-        except ValueError as exc:
-            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Chrome JavaScript bridge returned an invalid length.") from exc
-        if encoded_len < 0 or encoded_len > 8_000_000:
-            raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "Chrome JavaScript bridge result exceeded the safety limit.")
+
+        encoded = ""
+        if ready.startswith(inline_prefix):
+            encoded = ready[len(inline_prefix):]
+            encoded_len = len(encoded)
+        else:
+            try:
+                encoded_len = int(ready[len(prefix):])
+            except ValueError as exc:
+                raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Chrome JavaScript bridge returned an invalid length.") from exc
+            if encoded_len < 0 or encoded_len > 8_000_000:
+                raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "Chrome JavaScript bridge result exceeded the safety limit.")
 
         chunk_size = 3000
         chunks: list[str] = []
-        for start in range(0, encoded_len, chunk_size):
+        for start in range(0 if not encoded else encoded_len, encoded_len, chunk_size):
             end = min(start + chunk_size, encoded_len)
             chunk_js = (
                 "javascript:(()=>{try{"
@@ -626,7 +635,8 @@ end tell'''
                 raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Chrome JavaScript bridge timed out while reading a result chunk.")
             chunks.append(row[len(chunk_prefix):])
 
-        encoded = "".join(chunks)
+        if not encoded:
+            encoded = "".join(chunks)
         if len(encoded) != encoded_len:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Chrome JavaScript bridge returned an incomplete result.")
         try:
@@ -649,6 +659,9 @@ def _execute_js_for_target(
     target: browser_tabs.TabTarget,
     timeout_s: int,
 ) -> str:
+    global _CHROME_NATIVE_JS_DENIED
+    if browser == "Google Chrome" and _CHROME_NATIVE_JS_DENIED:
+        return _chrome_execute_js_via_url_bridge(js, target, timeout_s)
     js_escaped = _js_escape(js)
     guard = _tab_identity_guard(target)
     if browser == "Safari":
@@ -675,6 +688,7 @@ end tell'''
             "Access not allowed" in detail
             or "Executing JavaScript through AppleScript is turned off" in detail
         ):
+            _CHROME_NATIVE_JS_DENIED = True
             try:
                 return _chrome_execute_js_via_url_bridge(js, target, timeout_s)
             except HTTPException as bridge_exc:

@@ -271,7 +271,8 @@ class BrowserLogicalLeaseTests(unittest.TestCase):
             self.assertTrue(kwargs.get("allow_rebind"))
             yield target
 
-        with patch("mcp_server.tools_browser_agent._tab_lease", side_effect=fake_lease), \
+        with patch("mcp_server.tools_browser_agent._ensure_visual_companion", return_value=True), \
+             patch("mcp_server.tools_browser_agent._tab_lease", side_effect=fake_lease), \
              patch("mcp_server.tools_browser_agent._execute_js_for_target", return_value="OK") as reset_js, \
              patch("mcp_server.tools_browser_agent._browser_observe_locked", return_value=json.dumps({
                  "ok": True, "url": target.url, "title": target.title,

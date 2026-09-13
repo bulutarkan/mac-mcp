@@ -34,6 +34,8 @@ _DEFAULT_OBSERVE_ELEMENTS = 40
 _MAX_ACTIONS = 20
 _VISUAL_MODES = {"none", "viewport", "element", "full_page"}
 _RETURN_STATE_MODES = {"none", "compact", "full"}
+_VISUAL_ENSURE_CACHE: Dict[Tuple[str, str, str], float] = {}
+_VISUAL_ENSURE_TTL_S = 12.0
 _DOM_RASTERIZER_PATH = Path(__file__).resolve().parent / "vendor" / "html2canvas.min.js"
 _DOM_CAPTURE_STATE_PREFIX = "__macMcpVisualCapture"
 _DOM_RASTERIZER_GLOBAL = "__macMcpHtml2Canvas"
@@ -124,6 +126,44 @@ def _run_json_js(
         tab_handle=tab_handle,
     )
     return _decode_js_payload(raw)
+
+
+def _ensure_visual_companion(
+    settings: Settings,
+    browser: str,
+    window_index: int = 1,
+    tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
+) -> bool:
+    """Ensure the optional Visual Companion exists once per live tab document."""
+    b = _norm_browser(browser)
+    try:
+        with _tab_lease(b, tab_handle, window_index, tab_index, allow_rebind=True) as target:
+            key = (b, str(target.native_id or target.tab_handle), str(target.url or ""))
+            now = time.monotonic()
+            last = _VISUAL_ENSURE_CACHE.get(key, 0.0)
+            if last and now - last < _VISUAL_ENSURE_TTL_S:
+                return True
+            probe = _execute_js_for_target(
+                b, "window.__macMcpVisualCompanionLoaded ? '1' : '0'", target, timeout_s=8,
+            )
+            if str(probe or "").strip() != "1":
+                _execute_js_for_target(b, _visual_companion_source(), target, timeout_s=10)
+                probe = _execute_js_for_target(
+                    b, "window.__macMcpVisualCompanionLoaded ? '1' : '0'", target, timeout_s=8,
+                )
+            ok = str(probe or "").strip() == "1"
+            if ok:
+                _VISUAL_ENSURE_CACHE[key] = now
+                # Drop old cache entries for the same native tab after navigation/reload.
+                for old_key in list(_VISUAL_ENSURE_CACHE):
+                    if old_key != key and old_key[:2] == key[:2]:
+                        _VISUAL_ENSURE_CACHE.pop(old_key, None)
+            return ok
+    except Exception:
+        # Companion is UX only. Browser automation must continue even if browser policy
+        # blocks the visual injection. The action script still emits private metadata.
+        return False
 
 
 def _execute_js_unbounded(
@@ -441,150 +481,198 @@ def _b64_return(expression: str) -> str:
 
 
 def _browser_state_bootstrap() -> str:
-    return _visual_companion_source() + "\n" + r'''
-function __mcpState(){
-  var s=window.__macMcpBrowserAgent;
-  if(!s){
-    s=window.__macMcpBrowserAgent={
-      counter:0,
-      ids:new WeakMap(),
-      elements:Object.create(null),
-      pageToken:Math.random().toString(36).slice(2,10),
-      mutationRevision:0,
-      observations:Object.create(null),
-      observer:null
-    };
-    try{
-      s.observer=new MutationObserver(function(records){
-        for(var i=0;i<records.length;i++){
-          var rec=records[i];
-          if(rec.type==='attributes' && rec.attributeName==='data-mac-mcp-visual-event') continue;
-          s.mutationRevision+=1;
-          break;
-        }
-      });
-      s.observer.observe(document.documentElement||document,{subtree:true,childList:true,attributes:true,characterData:true});
-    }catch(e){}
-  }
-  return s;
-}
-function __mcpVisualTarget(el){
-  try{
-    if(!el||el.nodeType!==1) return 'Page';
-    var tag=(el.tagName||'').toLowerCase(), role=(el.getAttribute('role')||'').toLowerCase(), type=(el.getAttribute('type')||'').toLowerCase(), aria=(el.getAttribute('aria-label')||'');
-    if(tag==='button'||role==='button'||(tag==='input'&&['button','submit','reset'].indexOf(type)>=0)) return 'Button';
-    if(tag==='a'||role==='link') return 'Link';
-    if(tag==='textarea'||el.isContentEditable||role==='textbox'||role==='searchbox'||(tag==='input'&&['checkbox','radio','button','submit','reset'].indexOf(type)<0)) return 'Text field';
-    if(tag==='select'||role==='combobox'||role==='listbox'||role==='menu'||role==='menuitem') return 'Menu';
-    if(type==='checkbox'||role==='checkbox'||role==='switch') return 'Checkbox';
-    if(type==='radio'||role==='radio'||role==='option') return 'Option';
-    if(role==='tab') return 'Tab';
-    if(/(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday).*(?:january|february|march|april|may|june|july|august|september|october|november|december)/i.test(aria)) return 'Date';
-    return 'Item';
-  }catch(e){return 'Item';}
-}
-function __mcpVisual(action,el,effect,ttl,detail){
-  try{
-    var payload={seq:Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7),claim:true,phase:'working',action:String(action||'Working').slice(0,40),target_kind:__mcpVisualTarget(el),ttl_ms:Math.max(500,Math.min(Number(ttl||1800),30000))};
-    if(el&&el.nodeType===1){
-      var r=el.getBoundingClientRect();
-      if(isFinite(r.left)&&isFinite(r.top)&&isFinite(r.width)&&isFinite(r.height)){
-        payload.x=Math.max(0,Math.min(innerWidth,Math.round(r.left+r.width/2)));
-        payload.y=Math.max(0,Math.min(innerHeight,Math.round(r.top+r.height/2)));
-      }
+    return r'''
+function __mcpInternalHost(el){try{return !!el&&el.id==='mac-mcp-visual-companion-root';}catch(e){return false;}}
+function __mcpRoots(){
+  var roots=[],seen=new Set();
+  function visit(root,depth){
+    if(!root||seen.has(root)||depth>10)return;seen.add(root);roots.push(root);
+    var nodes=[];try{nodes=Array.from(root.querySelectorAll('*'));}catch(e){return;}
+    for(var i=0;i<nodes.length;i++){
+      var el=nodes[i];
+      try{if(el.shadowRoot&&!__mcpInternalHost(el))visit(el.shadowRoot,depth+1);}catch(e){}
+      var tag=String(el.tagName||'').toLowerCase();
+      if(tag==='iframe'||tag==='frame'){try{if(el.contentDocument)visit(el.contentDocument,depth+1);}catch(e){}}
     }
-    if(effect==='click') payload.effect='click';
-    if(['Up','Down','Into view'].indexOf(String(detail||''))>=0) payload.detail=String(detail);
-    var raw=btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
-    (document.documentElement||document.body).setAttribute('data-mac-mcp-visual-event',raw);
-    try{window.dispatchEvent(new Event('mac-mcp-visual'));}catch(e){}
-  }catch(e){}
-}
-function __mcpId(el,s){
-  var id=s.ids.get(el);
-  if(!id){id='e_'+s.pageToken+'_'+(++s.counter);s.ids.set(el,id);}
-  s.elements[id]=el;
-  return id;
-}
-function __mcpVisible(el){
-  if(!el || el.nodeType!==1) return false;
-  var st=getComputedStyle(el);
-  if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0) return false;
-  var r=el.getBoundingClientRect();
-  if(r.width<1||r.height<1) return false;
-  return r.bottom>0 && r.right>0 && r.top<innerHeight && r.left<innerWidth;
-}
-function __mcpActionable(el){
-  var tag=(el.tagName||'').toLowerCase();
-  var role=(el.getAttribute('role')||'').toLowerCase();
-  if(['a','button','input','textarea','select','summary','details'].indexOf(tag)>=0) return true;
-  if(['button','link','checkbox','radio','tab','menuitem','option','combobox','textbox','searchbox','switch','slider'].indexOf(role)>=0) return true;
-  if(el.isContentEditable || el.hasAttribute('onclick')) return true;
-  var cls=String(el.className||'');
-  if(/collapseTitle|collapse-title|dropdown-toggle|select-trigger|clickable|toggle/i.test(cls)) return true;
-  try{if(getComputedStyle(el).cursor==='pointer') return true;}catch(e){}
-  var ti=el.getAttribute('tabindex');
-  return ti!==null && Number(ti)>=0;
-}
-function __mcpText(el){
-  var aria=el.getAttribute('aria-label')||'';
-  var ph=el.getAttribute('placeholder')||'';
-  var title=el.getAttribute('title')||'';
-  var txt='';
-  try{txt=(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim();}catch(e){}
-  return (aria||ph||title||txt).slice(0,240);
-}
-function __mcpRole(el){
-  var role=el.getAttribute('role');
-  if(role) return role;
-  var tag=(el.tagName||'').toLowerCase();
-  if(tag==='a') return 'link';
-  if(tag==='button') return 'button';
-  if(tag==='select') return 'combobox';
-  if(tag==='textarea') return 'textbox';
-  if(tag==='input'){
-    var t=(el.type||'text').toLowerCase();
-    if(t==='checkbox') return 'checkbox';
-    if(t==='radio') return 'radio';
-    if(['button','submit','reset'].indexOf(t)>=0) return 'button';
-    return 'textbox';
   }
-  return '';
+  visit(document,0);return roots;
 }
-function __mcpRect(el){
-  var r=el.getBoundingClientRect();
-  var ox=(window.outerWidth-window.innerWidth);
-  var oy=(window.outerHeight-window.innerHeight);
-  var viewportX=window.screenX + Math.max(0, Math.round(ox/2));
-  var viewportY=window.screenY + Math.max(0, Math.round(oy));
-  return {
-    viewport:{x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)},
-    document:{x:Math.round(r.left+scrollX),y:Math.round(r.top+scrollY),w:Math.round(r.width),h:Math.round(r.height)},
-    screen:{x:Math.round(viewportX+r.left),y:Math.round(viewportY+r.top),w:Math.round(r.width),h:Math.round(r.height),estimated:true}
-  };
-}
-function __mcpDescribe(el,s){
-  var tag=(el.tagName||'').toLowerCase();
-  var rect=__mcpRect(el);
-  var out={
-    element_id:__mcpId(el,s),tag:tag,role:__mcpRole(el),text:__mcpText(el),
-    viewport_rect:rect.viewport,screen_rect:rect.screen,actionable:__mcpActionable(el)
-  };
-  var aria=el.getAttribute('aria-label')||'', ph=el.getAttribute('placeholder')||'', name=el.getAttribute('name')||'', title=el.getAttribute('title')||'';
-  if(aria) out.aria_label=aria.slice(0,120);
-  if(ph) out.placeholder=ph.slice(0,100);
-  if(name) out.name=name.slice(0,100);
-  if(title) out.title=title.slice(0,100);
-  if(tag==='a'&&el.href) out.href=String(el.href).slice(0,220);
-  if(el.disabled===true) out.enabled=false;
-  if(document.activeElement===el) out.focused=true;
-  if(['input','textarea','select'].indexOf(tag)>=0) out.value=String(el.value||'').slice(0,160);
-  if(tag==='input'&&el.type) out.input_type=String(el.type);
-  if(typeof el.checked==='boolean'&&el.checked) out.checked=true;
-  if(tag==='select'){
-    out.options=Array.from(el.options||[]).slice(0,24).map(function(o){return {text:String(o.text||'').slice(0,90),value:String(o.value||'').slice(0,90),selected:!!o.selected};});
+function __mcpQueryAll(selector){
+  var out=[],seen=new Set(),roots=__mcpRoots();
+  for(var r=0;r<roots.length;r++){
+    var nodes=[];try{nodes=Array.from(roots[r].querySelectorAll(selector));}catch(e){continue;}
+    for(var i=0;i<nodes.length;i++){if(!seen.has(nodes[i])){seen.add(nodes[i]);out.push(nodes[i]);}}
   }
   return out;
+}
+function __mcpQueryOne(selector){var all=__mcpQueryAll(selector);return all.length?all[0]:null;}
+function __mcpOwnerWindow(el){try{return (el.ownerDocument&&el.ownerDocument.defaultView)||window;}catch(e){return window;}}
+function __mcpStyle(el){try{return __mcpOwnerWindow(el).getComputedStyle(el);}catch(e){return getComputedStyle(el);}}
+function __mcpTopRect(el){
+  var r=el.getBoundingClientRect(),left=r.left,top=r.top,w=r.width,h=r.height,win=__mcpOwnerWindow(el),guard=0;
+  while(win&&win!==window&&guard++<10){var frame=null;try{frame=win.frameElement;}catch(e){}if(!frame)break;var fr=frame.getBoundingClientRect();left+=fr.left;top+=fr.top;win=__mcpOwnerWindow(frame);}
+  return {left:left,top:top,right:left+w,bottom:top+h,width:w,height:h};
+}
+function __mcpRefreshObservers(s){
+  if(!s.observedRoots)s.observedRoots=new WeakSet();if(!s.rootObservers)s.rootObservers=[];
+  var roots=__mcpRoots();
+  for(var i=0;i<roots.length;i++){var root=roots[i];if(s.observedRoots.has(root))continue;try{
+    var ob=new MutationObserver(function(records){for(var j=0;j<records.length;j++){var rec=records[j];if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')continue;s.mutationRevision+=1;break;}});
+    ob.observe(root,{subtree:true,childList:true,attributes:true,characterData:true});s.observedRoots.add(root);s.rootObservers.push(ob);
+  }catch(e){}}
+}
+function __mcpState(){
+  var s=window.__macMcpBrowserAgent;
+  if(!s){s=window.__macMcpBrowserAgent={counter:0,ids:new WeakMap(),elements:Object.create(null),pageToken:Math.random().toString(36).slice(2,10),mutationRevision:0,observations:Object.create(null),rootObservers:[],observedRoots:new WeakSet()};}
+  __mcpRefreshObservers(s);return s;
+}
+function __mcpVisualTarget(el){
+  try{if(!el||el.nodeType!==1)return 'Page';var tag=(el.tagName||'').toLowerCase(),role=(el.getAttribute('role')||'').toLowerCase(),type=(el.getAttribute('type')||'').toLowerCase(),aria=(el.getAttribute('aria-label')||'');
+    if(tag==='button'||role==='button'||(tag==='input'&&['button','submit','reset'].indexOf(type)>=0))return 'Button';
+    if(tag==='a'||role==='link')return 'Link';
+    if(tag==='textarea'||el.isContentEditable||role==='textbox'||role==='searchbox'||(tag==='input'&&['checkbox','radio','button','submit','reset'].indexOf(type)<0))return 'Text field';
+    if(tag==='select'||role==='combobox'||role==='listbox'||role==='menu'||role==='menuitem')return 'Menu';
+    if(type==='checkbox'||role==='checkbox'||role==='switch')return 'Checkbox';if(type==='radio'||role==='radio'||role==='option')return 'Option';if(role==='tab')return 'Tab';
+    if(/(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday).*(?:january|february|march|april|may|june|july|august|september|october|november|december)/i.test(aria))return 'Date';return 'Item';
+  }catch(e){return 'Item';}}
+function __mcpVisual(action,el,effect,ttl,detail){
+  try{var payload={seq:Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7),claim:true,phase:'working',action:String(action||'Working').slice(0,40),target_kind:__mcpVisualTarget(el),ttl_ms:Math.max(500,Math.min(Number(ttl||1800),30000))};
+    if(el&&el.nodeType===1){var r=__mcpTopRect(el);if(isFinite(r.left)&&isFinite(r.top)&&isFinite(r.width)&&isFinite(r.height)){payload.x=Math.max(0,Math.min(innerWidth,Math.round(r.left+r.width/2)));payload.y=Math.max(0,Math.min(innerHeight,Math.round(r.top+r.height/2)));}}
+    if(effect==='click')payload.effect='click';if(['Up','Down','Into view'].indexOf(String(detail||''))>=0)payload.detail=String(detail);
+    var raw=btoa(unescape(encodeURIComponent(JSON.stringify(payload))));(document.documentElement||document.body).setAttribute('data-mac-mcp-visual-event',raw);try{window.dispatchEvent(new Event('mac-mcp-visual'));}catch(e){}
+  }catch(e){}}
+function __mcpId(el,s){var id=s.ids.get(el);if(!id){id='e_'+s.pageToken+'_'+(++s.counter);s.ids.set(el,id);}s.elements[id]=el;return id;}
+function __mcpVisible(el){if(!el||el.nodeType!==1)return false;var st=__mcpStyle(el);if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0)return false;var r=__mcpTopRect(el);if(r.width<1||r.height<1)return false;return r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}
+function __mcpActionable(el){
+  var tag=(el.tagName||'').toLowerCase(),role=(el.getAttribute('role')||'').toLowerCase();
+  if(['a','button','input','textarea','select','summary','details','label'].indexOf(tag)>=0)return true;
+  if(['button','link','checkbox','radio','tab','menuitem','option','combobox','textbox','searchbox','switch','slider','listbox'].indexOf(role)>=0)return true;
+  if(el.isContentEditable||el.hasAttribute('onclick'))return true;var cls=String(el.className||'');if(/collapseTitle|collapse-title|dropdown-toggle|select-trigger|clickable|toggle/i.test(cls))return true;
+  try{
+    if(__mcpStyle(el).cursor==='pointer'){
+      var parent=__mcpParent(el),parentPointer=false;try{parentPointer=!!parent&&__mcpStyle(parent).cursor==='pointer';}catch(_){}
+      var pointerTag=String(el.tagName||'').toLowerCase();
+      if(!parentPointer&&['path','g','use','circle','rect','polygon','polyline'].indexOf(pointerTag)<0)return true;
+    }
+  }catch(e){}
+  var ti=el.getAttribute('tabindex');return ti!==null&&Number(ti)>=0;
+}
+function __mcpText(el){var aria=el.getAttribute('aria-label')||'',ph=el.getAttribute('placeholder')||'',title=el.getAttribute('title')||'',txt='';try{txt=(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim();}catch(e){}return(aria||ph||title||txt).slice(0,240);}
+function __mcpRole(el){var role=el.getAttribute('role');if(role)return role;var tag=(el.tagName||'').toLowerCase();if(tag==='a')return'link';if(tag==='button')return'button';if(tag==='select')return'combobox';if(tag==='textarea')return'textbox';if(tag==='input'){var t=(el.type||'text').toLowerCase();if(t==='checkbox')return'checkbox';if(t==='radio')return'radio';if(['button','submit','reset'].indexOf(t)>=0)return'button';return'textbox';}return'';}
+function __mcpContext(el){
+  try{
+    var own=__mcpText(el),p=__mcpParent(el),depth=0;
+    while(p&&depth++<8){
+      var role=String(p.getAttribute&&p.getAttribute('role')||'').toLowerCase();
+      var cls=String(p.className||'').toLowerCase();
+      var semantic=['grid','listbox','menu','dialog','tooltip','group','radiogroup'].indexOf(role)>=0 || /(?:^|[\s_-])(month|calendar|datepicker|date-picker|listbox|menu|option-group|suggestions?|results?)(?:[\s_-]|$)/i.test(cls);
+      if(semantic){
+        var labelled='';
+        try{
+          var labelledBy=p.getAttribute('aria-labelledby');
+          if(labelledBy){var doc=p.ownerDocument||document,node=doc.getElementById(labelledBy);if(node)labelled=String(node.innerText||node.textContent||'').replace(/\s+/g,' ').trim();}
+        }catch(e){}
+        var candidates=[];
+        if(labelled)candidates.push(labelled);
+        try{
+          var heads=Array.from(p.querySelectorAll('.rdp-caption_label,[data-caption],[aria-live="polite"],legend,[role="heading"],h1,h2,h3,h4,h5,h6'));
+          for(var i=0;i<heads.length&&i<10;i++){
+            var head=heads[i],txt=String(head.innerText||head.textContent||'').replace(/\s+/g,' ').trim();
+            if(txt&&txt.length<=120)candidates.push(txt);
+          }
+        }catch(e){}
+        for(var j=0;j<candidates.length;j++){var text=candidates[j];if(text&&text!==own)return text.slice(0,120);}
+      }
+      p=__mcpParent(p);
+    }
+  }catch(e){}
+  return '';
+}
+function __mcpRect(el){var r=__mcpTopRect(el),ox=(window.outerWidth-window.innerWidth),oy=(window.outerHeight-window.innerHeight),viewportX=window.screenX+Math.max(0,Math.round(ox/2)),viewportY=window.screenY+Math.max(0,Math.round(oy));return{viewport:{x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)},document:{x:Math.round(r.left+scrollX),y:Math.round(r.top+scrollY),w:Math.round(r.width),h:Math.round(r.height)},screen:{x:Math.round(viewportX+r.left),y:Math.round(viewportY+r.top),w:Math.round(r.width),h:Math.round(r.height),estimated:true}};}
+function __mcpDescribe(el,s){
+  var tag=(el.tagName||'').toLowerCase(),rect=__mcpRect(el),out={element_id:__mcpId(el,s),tag:tag,role:__mcpRole(el),text:__mcpText(el),viewport_rect:rect.viewport,screen_rect:rect.screen,actionable:__mcpActionable(el)};
+  var context=__mcpContext(el);if(context)out.context=context;
+  var aria=el.getAttribute('aria-label')||'',ph=el.getAttribute('placeholder')||'',name=el.getAttribute('name')||'',title=el.getAttribute('title')||'';if(aria)out.aria_label=aria.slice(0,120);if(ph)out.placeholder=ph.slice(0,100);if(name)out.name=name.slice(0,100);if(title)out.title=title.slice(0,100);if(tag==='a'&&el.href)out.href=String(el.href).slice(0,220);if(el.disabled===true||el.getAttribute('aria-disabled')==='true')out.enabled=false;
+  try{if(el.ownerDocument&&el.ownerDocument.activeElement===el)out.focused=true;}catch(e){}if(['input','textarea','select'].indexOf(tag)>=0)out.value=String(el.value||'').slice(0,160);if(tag==='input'&&el.type)out.input_type=String(el.type);if(typeof el.checked==='boolean'&&el.checked)out.checked=true;if(tag==='select')out.options=Array.from(el.options||[]).slice(0,24).map(function(o){return{text:String(o.text||'').slice(0,90),value:String(o.value||'').slice(0,90),selected:!!o.selected};});return out;
+}
+function __mcpParent(el){if(!el)return null;if(el.parentElement)return el.parentElement;try{var root=el.getRootNode&&el.getRootNode();return root&&root.host?root.host:null;}catch(e){return null;}}
+function __mcpActivationTarget(el){
+  if(!el)return el;if(__mcpActionable(el))return el;
+  var selector='button,a,input,textarea,select,summary,label,[role="button"],[role="link"],[role="combobox"],[role="option"],[role="menuitem"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[tabindex]';
+  try{var child=el.querySelector(selector);if(child&&__mcpVisible(child))return child;}catch(e){}var p=__mcpParent(el),n=0;while(p&&n++<4){if(__mcpActionable(p))return p;p=__mcpParent(p);}return el;
+}
+function __mcpScrollIntoView(el){if(!el)return;try{el.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}var win=__mcpOwnerWindow(el),guard=0;while(win&&win!==window&&guard++<10){var frame=null;try{frame=win.frameElement;}catch(e){}if(!frame)break;try{frame.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}win=__mcpOwnerWindow(frame);}}
+function __mcpMouseEvent(el,type){var win=__mcpOwnerWindow(el),r=el.getBoundingClientRect(),x=Math.max(0,Math.round(r.left+r.width/2)),y=Math.max(0,Math.round(r.top+r.height/2)),common={bubbles:true,cancelable:true,composed:true,view:win,clientX:x,clientY:y,button:0,buttons:(type==='pointerdown'||type==='mousedown')?1:0};try{if(type.indexOf('pointer')===0&&typeof win.PointerEvent==='function')return new win.PointerEvent(type,Object.assign({pointerId:1,pointerType:'mouse',isPrimary:true},common));return new win.MouseEvent(type,common);}catch(e){return null;}}
+function __mcpActivate(el){
+  el=__mcpActivationTarget(el);if(!el)throw new Error('element_not_found');if(el.disabled===true||el.getAttribute('aria-disabled')==='true')throw new Error('element_disabled');__mcpScrollIntoView(el);
+  var events=['pointerover','mouseover','pointermove','mousemove','pointerdown','mousedown'];for(var i=0;i<events.length;i++){var ev=__mcpMouseEvent(el,events[i]);if(ev)try{el.dispatchEvent(ev);}catch(e){}}
+  try{el.focus({preventScroll:true});}catch(e){try{el.focus();}catch(_){}}events=['pointerup','mouseup'];for(var j=0;j<events.length;j++){var up=__mcpMouseEvent(el,events[j]);if(up)try{el.dispatchEvent(up);}catch(e){}}el.click();return el;
+}
+function __mcpDoubleActivate(el){el=__mcpActivate(el);__mcpActivate(el);var ev=__mcpMouseEvent(el,'dblclick');if(ev)try{el.dispatchEvent(ev);}catch(e){}return el;}
+function __mcpInputEvent(el,type,data,inputType,cancelable){var win=__mcpOwnerWindow(el);try{if(typeof win.InputEvent==='function')return new win.InputEvent(type,{bubbles:true,cancelable:!!cancelable,composed:true,data:data,inputType:inputType});}catch(e){}try{return new win.Event(type,{bubbles:true,cancelable:!!cancelable,composed:true});}catch(e){return null;}}
+function __mcpNativeValueSetter(el,value){var win=__mcpOwnerWindow(el),tag=String(el.tagName||'').toLowerCase(),proto=null;if(tag==='input')proto=win.HTMLInputElement&&win.HTMLInputElement.prototype;else if(tag==='textarea')proto=win.HTMLTextAreaElement&&win.HTMLTextAreaElement.prototype;else if(tag==='select')proto=win.HTMLSelectElement&&win.HTMLSelectElement.prototype;if(proto){try{var d=Object.getOwnPropertyDescriptor(proto,'value');if(d&&typeof d.set==='function'){d.set.call(el,value);return true;}}catch(e){}}try{el.value=value;return true;}catch(e){return false;}}
+function __mcpRecoverElement(id,s){
+  var old=s.elements[id];if(old&&old.isConnected)return old;if(!old)return null;
+  var ident={tag:String(old.tagName||'').toLowerCase(),role:__mcpRole(old),text:__mcpText(old),aria:old.getAttribute&&old.getAttribute('aria-label')||'',name:old.getAttribute&&old.getAttribute('name')||'',ph:old.getAttribute&&old.getAttribute('placeholder')||'',title:old.getAttribute&&old.getAttribute('title')||''};
+  var all=__mcpQueryAll('*'),ranked=[];
+  for(var i=0;i<all.length;i++){var el=all[i];if(!el.isConnected||!__mcpVisible(el))continue;var score=0,role=__mcpRole(el),tag=String(el.tagName||'').toLowerCase();if(ident.role&&role===ident.role)score+=2;if(ident.tag&&tag===ident.tag)score+=1;
+    var pairs=[['aria','aria-label'],['name','name'],['ph','placeholder'],['title','title']];for(var j=0;j<pairs.length;j++){var want=ident[pairs[j][0]];if(want&&String(el.getAttribute(pairs[j][1])||'')===want)score+=4;}if(ident.text&&__mcpText(el)===ident.text)score+=3;if(score>=5)ranked.push({el:el,score:score});}
+  ranked.sort(function(a,b){return b.score-a.score;});if(!ranked.length)return null;if(ranked.length>1&&ranked[0].score===ranked[1].score&&ranked[0].score<8)return null;
+  var recovered=ranked[0].el;s.elements[id]=recovered;try{s.ids.set(recovered,id);}catch(e){}return recovered;
+}
+function __mcpNorm(v){return String(v||'').normalize('NFKD').toLowerCase().replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9çğıöşü]+/g,' ').replace(/\s+/g,' ').trim();}
+function __mcpRecoverAction(a,s){
+  var id=String(a&&a.element_id||''), byId=id?__mcpRecoverElement(id,s):null;if(byId)return byId;
+  var query=__mcpNorm(a&&(a.query||a.target||a.text_match||a.target_text)||''), wantedRole=__mcpNorm(a&&a.role||'');
+  if(!query&&!wantedRole)return null;
+  var qTokens=query.split(' ').filter(Boolean),all=__mcpQueryAll('*'),ranked=[];
+  for(var i=0;i<all.length;i++){
+    var el=all[i];if(!el.isConnected||!__mcpVisible(el)||!__mcpActionable(el))continue;
+    var role=__mcpNorm(__mcpRole(el));if(wantedRole&&role!==wantedRole)continue;
+    var d=__mcpDescribe(el,s),fields=[d.text||'',d.aria_label||'',d.placeholder||'',d.name||'',d.title||'',d.value||'',d.context||''],score=wantedRole?2:0;
+    for(var j=0;j<fields.length;j++){
+      var f=__mcpNorm(fields[j]);if(!f)continue;
+      if(query&&f===query)score=Math.max(score,12);
+      else if(query&&(f.indexOf(query+' ')===0||f.indexOf(query+'-')===0))score=Math.max(score,9);
+      else if(query&&qTokens.length&&qTokens.every(function(t){return f.split(' ').indexOf(t)>=0;}))score=Math.max(score,8);
+      else if(query&&query.length>=4&&f.indexOf(query)>=0)score=Math.max(score,6);
+    }
+    if(score>=6||(!query&&wantedRole))ranked.push({el:el,score:score,text:__mcpText(el)});
+  }
+  ranked.sort(function(x,y){var d=y.score-x.score;if(d)return d;return String(x.text||'').length-String(y.text||'').length;});
+  if(!ranked.length)return null;
+  if(ranked.length>1&&ranked[0].score===ranked[1].score&&ranked[0].score<10)return null;
+  var recovered=ranked[0].el;if(id){s.elements[id]=recovered;try{s.ids.set(recovered,id);}catch(e){}}return recovered;
+}
+function __mcpFlushMutations(s){
+  var changed=false,obs=s.rootObservers||[];
+  for(var i=0;i<obs.length;i++){
+    var records=[];try{records=obs[i].takeRecords();}catch(e){}
+    for(var j=0;j<records.length;j++){var rec=records[j];if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')continue;changed=true;break;}
+  }
+  if(changed)s.mutationRevision+=1;return changed;
+}
+function __mcpEffectState(el){
+  if(!el)return {connected:false};var role=__mcpRole(el),value='',text='';
+  try{value=('value' in el)?String(el.value==null?'':el.value):'';}catch(e){}
+  try{if(!value&&(el.isContentEditable||role==='textbox'||role==='searchbox'))text=String(el.textContent||'');}catch(e){}
+  return {connected:!!el.isConnected,value:value,text:text,checked:typeof el.checked==='boolean'?!!el.checked:null,expanded:el.getAttribute('aria-expanded'),selected:el.getAttribute('aria-selected'),pressed:el.getAttribute('aria-pressed'),ariaChecked:el.getAttribute('aria-checked'),cls:String(el.className||'')};
+}
+function __mcpEffectChanged(before,after){
+  if(!before||!after)return false;if(before.connected&&!after.connected)return true;
+  var keys=['value','text','checked','expanded','selected','pressed','ariaChecked','cls'];for(var i=0;i<keys.length;i++){if(before[keys[i]]!==after[keys[i]])return true;}return false;
+}
+function __mcpKeyboardActivate(el){
+  if(!el)return '';var role=String(__mcpRole(el)||'').toLowerCase(),key=(role==='combobox'||role==='listbox')?'ArrowDown':((role==='checkbox'||role==='switch'||role==='radio')?' ':'Enter');
+  try{el.focus({preventScroll:true});}catch(e){try{el.focus();}catch(_){}}
+  var win=__mcpOwnerWindow(el);function fire(type){try{el.dispatchEvent(new win.KeyboardEvent(type,{bubbles:true,cancelable:true,composed:true,key:key,code:key===' '?'Space':key}));}catch(e){}}
+  fire('keydown');fire('keypress');fire('keyup');return key;
+}
+function __mcpSetText(el,value,clearFirst){
+  if(!el)throw new Error('element_not_found');if(el.disabled===true||el.getAttribute('aria-disabled')==='true')throw new Error('element_disabled');if(el.readOnly===true||el.getAttribute('readonly')!==null)throw new Error('element_readonly');__mcpScrollIntoView(el);try{el.focus({preventScroll:true});}catch(e){try{el.focus();}catch(_){}}
+  value=String(value==null?'':value);var tag=String(el.tagName||'').toLowerCase(),editable=(tag==='input'||tag==='textarea'||tag==='select'),before=__mcpInputEvent(el,'beforeinput',value,'insertText',true);if(before)try{el.dispatchEvent(before);}catch(e){}
+  if(editable){if(clearFirst!==false)__mcpNativeValueSetter(el,'');__mcpNativeValueSetter(el,value);}else if(el.isContentEditable||['textbox','searchbox'].indexOf(String(el.getAttribute('role')||'').toLowerCase())>=0){try{el.textContent=value;}catch(e){}}else{if(!__mcpNativeValueSetter(el,value))try{el.textContent=value;}catch(e){}}
+  var input=__mcpInputEvent(el,'input',value,'insertText',false);if(input)try{el.dispatchEvent(input);}catch(e){}try{el.dispatchEvent(new (__mcpOwnerWindow(el).Event)('change',{bubbles:true,composed:true}));}catch(e){}try{var ku=new (__mcpOwnerWindow(el).KeyboardEvent)('keyup',{bubbles:true,cancelable:true,composed:true,key:value.slice(-1)||'Unidentified'});el.dispatchEvent(ku);}catch(e){}return el;
 }'''
 
 
@@ -617,7 +705,7 @@ var s=__mcpState();
 __mcpVisual('Inspecting',null,'',1800);
 Object.keys(s.elements).forEach(function(k){{var e=s.elements[k];if(!e||!e.isConnected)delete s.elements[k];}});
 var scope={scope_js};
-var all=Array.from(document.querySelectorAll('*'));
+var all=__mcpQueryAll('*');
 var elements=[];
 for(var i=0;i<all.length && elements.length<{max_elements};i++){{
   var el=all[i];
@@ -769,6 +857,7 @@ def browser_observe(
 ) -> Any:
     """Compact DOM observation with stable element IDs and optional background-safe page image."""
     b = _norm_browser(browser)
+    _ensure_visual_companion(settings, b, window_index, tab_index, tab_handle)
     with _tab_lease(b, tab_handle, window_index, tab_index, allow_rebind=True) as target:
         if target.lease_rebound:
             _execute_js_for_target(
@@ -921,8 +1010,11 @@ def _score_candidate(element: Dict[str, Any], query: str, role: Optional[str], t
 
     primary = [
         element.get("text"), element.get("aria_label"), element.get("placeholder"),
-        element.get("name"), element.get("title"), element.get("value"),
+        element.get("name"), element.get("title"), element.get("value"), element.get("context"),
     ]
+    combined_primary = " ".join(str(value or "") for value in primary if value)
+    if combined_primary:
+        primary.append(combined_primary)
     if text:
         text_levels = [_match_level(value, text) for value in primary]
         best_text = max(text_levels or [0])
@@ -996,13 +1088,14 @@ function level(actual,wanted){{
 var s=__mcpState(), q={q_js}, wantedRole={role_js}, wantedText={text_js}, actionableOnly={actionable_js};
 __mcpVisual('Finding',null,'',1600);
 var out=[];
-var all=Array.from(document.querySelectorAll('*'));
+var all=__mcpQueryAll('*');
 for(var i=0;i<all.length&&out.length<{max_candidates};i++){{
   var el=all[i]; if(!rendered(el))continue;
   var d=__mcpDescribe(el,s); d.actionable=__mcpActionable(el);
   if(actionableOnly && !d.actionable)continue;
   if(wantedRole&&norm(d.role)!==wantedRole)continue;
-  var fields=[d.text||'',d.aria_label||'',d.placeholder||'',d.name||'',d.title||'',d.value||''];
+  var fields=[d.text||'',d.aria_label||'',d.placeholder||'',d.name||'',d.title||'',d.value||'',d.context||''];
+  fields.push(fields.filter(Boolean).join(' '));
   if(wantedText){{var tl=0;fields.forEach(function(v){{tl=Math.max(tl,level(v,wantedText));}});if(!tl)continue;}}
   if(q){{
     var ql=0;fields.forEach(function(v){{ql=Math.max(ql,level(v,q));}});
@@ -1030,6 +1123,7 @@ def browser_find(
 ) -> Dict[str, Any]:
     """Find a rendered DOM target with exact-first ranking and hard role/text constraints."""
     window_index, tab_index = _resolve_tab_target(browser, tab_handle, window_index, tab_index)
+    _ensure_visual_companion(settings, browser, window_index, tab_index, tab_handle)
     if not str(query or "").strip() and not text and not role:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "query, text, or role is required.")
     started = time.perf_counter()
@@ -1078,7 +1172,7 @@ def browser_find(
             "tag": element.get("tag"), "role": element.get("role"),
             "text": element.get("text"), "aria_label": element.get("aria_label"),
             "placeholder": element.get("placeholder"), "name": element.get("name"),
-            "title": element.get("title"), "value": element.get("value"),
+            "title": element.get("title"), "value": element.get("value"), "context": element.get("context"),
             "href": element.get("href"), "viewport_rect": element.get("viewport_rect"),
             "screen_rect": element.get("screen_rect"), "actionable": element.get("actionable"),
         })
@@ -1102,77 +1196,92 @@ def browser_find(
 def _batch_js(actions: List[Dict[str, Any]], observation_id: Optional[str]) -> str:
     actions_json = json.dumps(actions, ensure_ascii=False)
     obs_json = json.dumps(observation_id)
-    return f'''(function(){{
-{_browser_state_bootstrap()}
-function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+    template = r'''(function(){
+__BOOTSTRAP__
+function __mcpB64(obj){return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}
 var s=__mcpState();
-var expected={obs_json};
-if(expected && !(expected in s.observations)) return __mcpB64({{ok:false,error:'stale_observation',observe_again:true}});
+__mcpFlushMutations(s);
+var expected=__OBS__;
+if(expected && !(expected in s.observations)) return __mcpB64({ok:false,error:'stale_observation',observe_again:true});
 var changed=expected ? (s.observations[expected]!==s.mutationRevision) : false;
-var actions={actions_json};
+var actions=__ACTIONS__;
 var results=[];
-function target(id){{var el=s.elements[id];return (el&&el.isConnected)?el:null;}}
-function emit(el,type){{try{{el.dispatchEvent(new Event(type,{{bubbles:true}}));}}catch(e){{}}}}
-for(var i=0;i<actions.length;i++){{
-  var a=actions[i]||{{}}, type=String(a.type||'').toLowerCase().replace(/-/g,'_');
-  var el=a.element_id?target(a.element_id):null;
-  if(a.element_id && !el){{results.push({{index:i,type:type,element_id:a.element_id,ok:false,error:'stale_element',observe_again:true}});break;}}
+function target(a){return __mcpRecoverAction(a,s);}
+function emit(el,type){try{el.dispatchEvent(new (__mcpOwnerWindow(el).Event)(type,{bubbles:true,composed:true}));}catch(e){}}
+function pageEffect(beforeRevision,beforeUrl,beforeTitle,beforeState,el){
+  __mcpFlushMutations(s);
+  var afterState=__mcpEffectState(el);
+  return s.mutationRevision!==beforeRevision || location.href!==beforeUrl || document.title!==beforeTitle || __mcpEffectChanged(beforeState,afterState);
+}
+for(var i=0;i<actions.length;i++){
+  var a=actions[i]||{}, type=String(a.type||'').toLowerCase().replace(/-/g,'_');
+  var el=a.element_id?target(a):null;
+  if(a.element_id && !el){results.push({index:i,type:type,element_id:a.element_id,ok:false,error:'stale_element',observe_again:true});break;}
   var visualLabel=type==='click'||type==='double_click'?'Clicking':(type==='type'||type==='type_text'||type==='paste'?'Typing':(type==='scroll'?'Scrolling':(type==='focus'?'Focusing':(type==='select'?'Selecting':'Working'))));
   var visualDetail=type==='scroll'?(el?'Into view':(Number(a.dy||300)<0?'Up':'Down')):'';
   __mcpVisual(visualLabel,el,(type==='click'||type==='double_click')?'click':'',2200,visualDetail);
-  try{{
-    if(type==='click'||type==='double_click'){{
+  var beforeRevision=s.mutationRevision,beforeUrl=location.href,beforeTitle=document.title,beforeState=el?__mcpEffectState(el):null;
+  try{
+    if(type==='click'||type==='double_click'){
       if(!el) throw new Error('element_id is required');
-      el.scrollIntoView({{block:'center',inline:'nearest'}});
-      var tag=(el.tagName||'').toLowerCase(), href=String(el.getAttribute('href')||'');
-      var inputType=String(el.getAttribute('type')||'').toLowerCase();
-      var mayNavigate=(tag==='a' && href && href!=='#' && !href.endsWith('#')) || ((tag==='button'||tag==='input') && inputType==='submit');
-      var shouldDefer=(type==='click'&&i===actions.length-1&&mayNavigate);
-      if(type==='double_click') {{
-        el.dispatchEvent(new MouseEvent('dblclick',{{bubbles:true,cancelable:true,view:window}}));
-      }} else if(shouldDefer) {{
-        setTimeout(function(){{try{{el.click();}}catch(e){{}}}},0);
-      }} else {{
-        el.click();
-      }}
-      results.push({{index:i,type:type,element_id:a.element_id,ok:true,deferred:shouldDefer}});
-    }} else if(type==='type'||type==='type_text'||type==='paste'){{
+      __mcpScrollIntoView(el);
+      var tag=(el.tagName||'').toLowerCase(),href=String(el.getAttribute('href')||''),inputType=String(el.getAttribute('type')||'').toLowerCase();
+      var mayNavigate=(tag==='a'&&href&&href!=='#'&&!href.endsWith('#'))||((tag==='button'||tag==='input')&&inputType==='submit');
+      var shouldDefer=(type==='click'&&i===actions.length-1&&mayNavigate),activated=el,effectObserved=false,verification='no_immediate_effect',fallbackKey='';
+      if(type==='double_click') activated=__mcpDoubleActivate(el);
+      else if(shouldDefer) setTimeout(function(node){return function(){try{__mcpActivate(node);}catch(e){}};}(el),0);
+      else activated=__mcpActivate(el);
+      if(shouldDefer){effectObserved=true;verification='deferred_navigation';}
+      else{
+        effectObserved=pageEffect(beforeRevision,beforeUrl,beforeTitle,beforeState,activated||el);
+        if(effectObserved) verification='state_changed';
+        else{
+          fallbackKey=__mcpKeyboardActivate(activated||el);
+          effectObserved=pageEffect(beforeRevision,beforeUrl,beforeTitle,beforeState,activated||el);
+          if(effectObserved) verification='keyboard_fallback';
+        }
+      }
+      var clickResult={index:i,type:type,element_id:a.element_id,ok:true,deferred:shouldDefer,activation_target:activated?__mcpId(activated,s):a.element_id,effect_observed:effectObserved,verification:verification,_verify_revision:beforeRevision,_verify_url:beforeUrl,_verify_title:beforeTitle};
+      if(fallbackKey&&verification==='keyboard_fallback')clickResult.fallback_key=fallbackKey;
+      if(!effectObserved)clickResult.observe_again=true;
+      results.push(clickResult);
+    } else if(type==='type'||type==='type_text'||type==='paste'){
       if(!el) throw new Error('element_id is required');
-      el.focus();
       var value=String(a.text==null?'':a.text);
-      if(a.clear!==false){{try{{el.value='';}}catch(e){{}}}}
-      try{{el.value=value;}}catch(e){{el.textContent=value;}}
-      emit(el,'input');emit(el,'change');
-      results.push({{index:i,type:type,element_id:a.element_id,ok:true,value:String(el.value||'').slice(0,200)}});
-    }} else if(type==='select'){{
+      __mcpSetText(el,value,a.clear!==false);__mcpFlushMutations(s);
+      var actual='';try{actual=('value' in el)?String(el.value||''):String(el.textContent||'');}catch(e){}
+      var applied=actual===value;
+      var typed={index:i,type:type,element_id:a.element_id,ok:applied,value:actual.slice(0,200),effect_observed:applied,verification:applied?'value_applied':'input_not_applied',observe_again:!applied};
+      if(!applied)typed.error='input_not_applied';results.push(typed);if(!applied)break;
+    } else if(type==='select'){
       if(!el) throw new Error('element_id is required');
-      var wanted=String(a.option==null?'':a.option).trim().toLowerCase();
-      var chosen=null;
-      if((el.tagName||'').toLowerCase()==='select'){{
+      var wanted=String(a.option==null?'':a.option).trim().toLowerCase(),chosen=null;
+      if((el.tagName||'').toLowerCase()==='select'){
         var opts=Array.from(el.options||[]);
-        chosen=opts.find(function(o){{return String(o.value).toLowerCase()===wanted||String(o.text).trim().toLowerCase()===wanted;}}) ||
-               opts.find(function(o){{return String(o.text).trim().toLowerCase().indexOf(wanted)>=0;}});
-        if(!chosen) throw new Error('option_not_found');
-        el.value=chosen.value;emit(el,'input');emit(el,'change');
-      }} else {{
-        el.click();
-        var candidates=Array.from(document.querySelectorAll('[role="option"],option,[role="menuitem"],li,button,a')).filter(__mcpVisible);
-        chosen=candidates.find(function(o){{return __mcpText(o).toLowerCase()===wanted;}}) || candidates.find(function(o){{return __mcpText(o).toLowerCase().indexOf(wanted)>=0;}});
-        if(!chosen) throw new Error('option_not_found');
-        chosen.click();
-      }}
-      results.push({{index:i,type:type,element_id:a.element_id,ok:true,selected:chosen?__mcpText(chosen):wanted}});
-    }} else if(type==='scroll'){{
-      if(el) el.scrollIntoView({{block:String(a.block||'center'),inline:'nearest'}});
-      else window.scrollBy(Number(a.dx||0),Number(a.dy||300));
-      results.push({{index:i,type:type,element_id:a.element_id||null,ok:true}});
-    }} else if(type==='focus'){{
-      if(!el) throw new Error('element_id is required');el.focus();results.push({{index:i,type:type,element_id:a.element_id,ok:true}});
-    }} else throw new Error('unsupported_batch_action:'+type);
-  }}catch(e){{results.push({{index:i,type:type,element_id:a.element_id||null,ok:false,error:String(e&&e.message||e)}});break;}}
-}}
-return __mcpB64({{ok:results.every(function(r){{return r.ok;}}),actions:results,dom_changed_since_observe:changed,dom_revision:s.mutationRevision,url:location.href,title:document.title,scroll:{{x:scrollX,y:scrollY}}}});
-}})()'''
+        chosen=opts.find(function(o){return String(o.value).toLowerCase()===wanted||String(o.text).trim().toLowerCase()===wanted;})||opts.find(function(o){return String(o.text).trim().toLowerCase().indexOf(wanted)>=0;});
+        if(!chosen)throw new Error('option_not_found');
+        __mcpNativeValueSetter(el,chosen.value);emit(el,'input');emit(el,'change');
+      }else{
+        __mcpActivate(el);
+        var candidates=__mcpQueryAll('[role="option"],option,[role="menuitem"],li,button,a').filter(__mcpVisible);
+        chosen=candidates.find(function(o){return __mcpText(o).toLowerCase()===wanted;})||candidates.find(function(o){return __mcpText(o).toLowerCase().indexOf(wanted)>=0;});
+        if(!chosen)throw new Error('option_not_found');__mcpActivate(chosen);
+      }
+      __mcpFlushMutations(s);results.push({index:i,type:type,element_id:a.element_id,ok:true,selected:chosen?__mcpText(chosen):wanted,effect_observed:pageEffect(beforeRevision,beforeUrl,beforeTitle,beforeState,el)});
+    } else if(type==='scroll'){
+      if(el)__mcpScrollIntoView(el);else window.scrollBy(Number(a.dx||0),Number(a.dy||300));
+      results.push({index:i,type:type,element_id:a.element_id||null,ok:true,effect_observed:true,verification:'scroll_applied'});
+    } else if(type==='focus'){
+      if(!el)throw new Error('element_id is required');el.focus();results.push({index:i,type:type,element_id:a.element_id,ok:true,effect_observed:true,verification:'focus_applied'});
+    } else throw new Error('unsupported_batch_action:'+type);
+  }catch(e){results.push({index:i,type:type,element_id:a.element_id||null,ok:false,error:String(e&&e.message||e)});break;}
+}
+__mcpFlushMutations(s);
+var active=document.activeElement;
+var compact={ok:true,url:location.href,title:document.title,scroll:{x:scrollX,y:scrollY},dom_revision:s.mutationRevision,active_element:active&&active.nodeType===1?__mcpDescribe(active,s):null};
+return __mcpB64({ok:results.every(function(r){return r.ok;}),actions:results,dom_changed_since_observe:changed,dom_revision:s.mutationRevision,url:location.href,title:document.title,scroll:{x:scrollX,y:scrollY},state:compact});
+})()'''
+    return template.replace('__BOOTSTRAP__', _browser_state_bootstrap()).replace('__OBS__', obs_json).replace('__ACTIONS__', actions_json)
 
 
 def _select_prepare_js(element_id: str, observation_id: Optional[str], option: Any) -> str:
@@ -1198,8 +1307,8 @@ if((el.tagName||'').toLowerCase()==='select'){{
   try{{el.dispatchEvent(new Event('input',{{bubbles:true}}));el.dispatchEvent(new Event('change',{{bubbles:true}}));}}catch(e){{}}
   return __mcpB64({{ok:true,native:true,selected:String(chosen.text||chosen.value),element_id:eid}});
 }}
-el.scrollIntoView({{block:'center',inline:'nearest'}});
-el.click();
+__mcpScrollIntoView(el);
+__mcpActivate(el);
 return __mcpB64({{ok:true,native:false,needs_option_wait:true,element_id:eid,revision:s.mutationRevision}});
 }})()'''
 
@@ -1219,7 +1328,7 @@ function rendered(el){{
 var s=__mcpState(), origin=s.elements[{eid}], wanted=norm({wanted});
 var originRect=origin&&origin.getBoundingClientRect?origin.getBoundingClientRect():{{left:0,top:0,width:0,height:0}};
 var selectors='[role="option"],[role="menuitem"],option,li,[class*="option"],[class*="suggest"],[class*="dropdown"] a,[class*="menu"] a,button,a';
-var all=Array.from(document.querySelectorAll(selectors)).filter(rendered);
+var all=__mcpQueryAll(selectors).filter(rendered);
 function label(el){{return norm(__mcpText(el)||el.getAttribute('aria-label')||el.getAttribute('title')||'');}}
 function clickPriority(el){{
   var tag=(el.tagName||'').toLowerCase(), role=(el.getAttribute('role')||'').toLowerCase();
@@ -1236,8 +1345,8 @@ var prefix=all.filter(function(el){{var t=label(el);return t.indexOf(wanted+' ')
 var chosen=(best(exact)||best(prefix)||null);
 if(!chosen) return __mcpB64({{ok:true,found:false,candidate_count:all.length}});
 var txt=__mcpText(chosen);
-chosen.scrollIntoView({{block:'nearest',inline:'nearest'}});
-chosen.click();
+__mcpScrollIntoView(chosen);
+__mcpActivate(chosen);
 return __mcpB64({{ok:true,found:true,selected:txt,tag:(chosen.tagName||'').toLowerCase(),role:chosen.getAttribute('role')||''}});
 }})()'''
 
@@ -1318,6 +1427,117 @@ return __mcpB64({{ok:true,url:location.href,title:document.title,scroll:{{x:scro
 }})()'''
 
 
+
+def _element_effect_state_js(element_id: str) -> str:
+    eid = json.dumps(str(element_id or ""))
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var s=__mcpState(),el=__mcpRecoverElement({eid},s);
+if(!el) return __mcpB64({{ok:true,connected:false,url:location.href,title:document.title,dom_revision:s.mutationRevision}});
+var tag=String(el.tagName||'').toLowerCase(),role=__mcpRole(el),value='',text='';
+try{{value=('value' in el)?String(el.value==null?'':el.value):'';}}catch(e){{}}
+try{{if(!value&&(el.isContentEditable||role==='textbox'||role==='searchbox'))text=String(el.textContent||'');}}catch(e){{}}
+var focused=false;try{{focused=!!(el.ownerDocument&&el.ownerDocument.activeElement===el);}}catch(e){{}}
+return __mcpB64({{ok:true,connected:!!el.isConnected,url:location.href,title:document.title,dom_revision:s.mutationRevision,tag:tag,role:role,value:value,text:text,
+checked:typeof el.checked==='boolean'?!!el.checked:null,aria_expanded:el.getAttribute('aria-expanded'),aria_selected:el.getAttribute('aria-selected'),aria_pressed:el.getAttribute('aria-pressed'),aria_checked:el.getAttribute('aria-checked'),class_name:String(el.className||''),focused:focused}});
+}})()'''
+
+
+def _keyboard_activation_js(element_id: str) -> str:
+    eid = json.dumps(str(element_id or ""))
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var s=__mcpState(),el=__mcpRecoverElement({eid},s);if(!el)return __mcpB64({{ok:false,error:'stale_element'}});
+var role=String(__mcpRole(el)||'').toLowerCase(),key=(role==='combobox'||role==='listbox')?'ArrowDown':((role==='checkbox'||role==='switch'||role==='radio')?' ':'Enter');
+try{{el.focus({{preventScroll:true}});}}catch(e){{try{{el.focus();}}catch(_){{}}}}
+var win=__mcpOwnerWindow(el);
+function fire(type){{try{{el.dispatchEvent(new win.KeyboardEvent(type,{{bubbles:true,cancelable:true,composed:true,key:key,code:key===' '?'Space':key}}));}}catch(e){{}}}}
+fire('keydown');fire('keypress');fire('keyup');return __mcpB64({{ok:true,key:key}});
+}})()'''
+
+
+def _effect_changed(before: Dict[str, Any], after: Dict[str, Any]) -> bool:
+    if not before or not after:
+        return False
+    if before.get("url") != after.get("url") or before.get("title") != after.get("title"):
+        return True
+    if not after.get("connected", True):
+        return True
+    if before.get("dom_revision") != after.get("dom_revision"):
+        return True
+    for key in ("value", "text", "checked", "aria_expanded", "aria_selected", "aria_pressed", "aria_checked", "class_name"):
+        if before.get(key) != after.get(key):
+            return True
+    return False
+
+
+def _verified_dom_action(
+    settings: Settings,
+    browser: str,
+    action: Dict[str, Any],
+    observation_id: Optional[str],
+    window_index: int,
+    tab_index: Optional[int],
+    tab_handle: Optional[str],
+) -> Dict[str, Any]:
+    typ = str(action.get("type") or "").lower().replace("-", "_")
+    element_id = str(action.get("element_id") or "")
+    js_calls = 0
+    out = _run_json_js(
+        settings, browser, _batch_js([action], observation_id),
+        window_index, tab_index, tab_handle,
+    )
+    js_calls += 1
+    result = dict((out.get("actions") or [out])[0])
+    if "type" not in result:
+        result["type"] = typ
+    if element_id and "element_id" not in result:
+        result["element_id"] = element_id
+
+    before_revision = result.pop("_verify_revision", None)
+    before_url = result.pop("_verify_url", None)
+    before_title = result.pop("_verify_title", None)
+    compact_state = out.get("state") if isinstance(out.get("state"), dict) else None
+
+    # React/Vue/portal controls often commit after the synchronous click handler returns.
+    # Only when the immediate verifier saw no effect, do one short delayed state read.
+    if (
+        result.get("ok")
+        and typ in {"click", "double_click"}
+        and not result.get("deferred")
+        and not result.get("effect_observed")
+    ):
+        time.sleep(0.14)
+        try:
+            post = _run_json_js(
+                settings, browser, _light_state_js(),
+                window_index, tab_index, tab_handle,
+            )
+            js_calls += 1
+            progressed = (
+                (before_revision is not None and post.get("dom_revision") != before_revision)
+                or (before_url is not None and post.get("url") != before_url)
+                or (before_title is not None and post.get("title") != before_title)
+            )
+            if progressed:
+                result["effect_observed"] = True
+                result["verification"] = "async_state_changed"
+                result.pop("observe_again", None)
+                compact_state = post
+        except HTTPException:
+            # Navigation can invalidate the old document between click and verification.
+            # That itself is progress for a click, so avoid retry loops.
+            result["effect_observed"] = True
+            result["verification"] = "async_navigation"
+            result.pop("observe_again", None)
+
+    result["_js_calls"] = js_calls
+    if isinstance(compact_state, dict):
+        result["_compact_state"] = compact_state
+    return result
+
 def _network_idle_state_js() -> str:
     return f'''(function(){{
 {_browser_state_bootstrap()}
@@ -1326,7 +1546,7 @@ var s=__mcpState();
 var bodyText='';
 try{{bodyText=String((document.body&&document.body.innerText)||'').replace(/\\s+/g,' ').trim();}}catch(e){{}}
 var controls=0;
-try{{controls=document.querySelectorAll('a,button,input,textarea,select,[role="button"],[role="link"],[role="combobox"],[role="textbox"]').length;}}catch(e){{}}
+try{{controls=__mcpQueryAll('a,button,input,textarea,select,[role="button"],[role="link"],[role="combobox"],[role="textbox"]').length;}}catch(e){{}}
 var ready=location.href!=='about:blank'&&document.readyState==='complete'&&bodyText.length>0;
 var signature=[location.href,document.title,bodyText.length,controls].join('|');
 return __mcpB64({{ok:true,matched:ready,url:location.href,title:document.title,ready_state:document.readyState,body_text_length:bodyText.length,control_count:controls,content_signature:signature,dom_revision:s.mutationRevision,scroll:{{x:scrollX,y:scrollY}}}});
@@ -1337,7 +1557,7 @@ def _condition_js(action: Dict[str, Any], initial_url: str) -> str:
     kind = str(action.get("for") or action.get("condition") or "selector").lower().strip()
     if kind == "selector":
         selector = json.dumps(str(action.get("selector") or ""))
-        expr = f"!!document.querySelector({selector})"
+        expr = f"!!__mcpQueryOne({selector})"
     elif kind == "text":
         text = json.dumps(str(action.get("text") or "").lower())
         expr = f"(document.body&&String(document.body.innerText||'').toLowerCase().indexOf({text})>=0)"
@@ -1406,7 +1626,7 @@ var semanticCache=null;
 function semanticCandidates(){{
   if(semanticCache!==null) return semanticCache;
   var nodes=[]; semanticCache=[];
-  try{{nodes=Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li,dt,dd,label,button,a,span,strong,b,small,div'));}}catch(e){{return semanticCache;}}
+  try{{nodes=__mcpQueryAll('h1,h2,h3,h4,h5,h6,p,li,dt,dd,label,button,a,span,strong,b,small,div');}}catch(e){{return semanticCache;}}
   if(nodes.length>6000) nodes=nodes.slice(0,6000);
   for(var i=0;i<nodes.length;i++){{
     var el=nodes[i]; if(!visible(el)) continue;
@@ -1515,7 +1735,7 @@ for(var i=0;i<specs.length;i++){{
     vals=semanticValues(sp,name,maxItems); counts[name]=vals.length; vals=vals.map(bounded);
   }}else{{
     var sel=String(sp.selector||'body'), els=[];
-    try{{els=Array.from(document.querySelectorAll(sel));}}catch(e){{data[name]=null;counts[name]=0;continue;}}
+    try{{els=__mcpQueryAll(sel);}}catch(e){{data[name]=null;counts[name]=0;continue;}}
     counts[name]=els.length;
     vals=els.slice(0,maxItems).map(function(el){{return bounded(readValue(el,sp.attr));}});
   }}
@@ -1655,6 +1875,7 @@ def browser_act(
     if normalized_return_state not in _RETURN_STATE_MODES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")
     b = _norm_browser(browser)
+    _ensure_visual_companion(settings, b, window_index, tab_index, tab_handle)
     with _tab_lease(b, tab_handle, window_index, tab_index) as target:
         return _browser_act_locked(
             settings=settings,
@@ -1769,10 +1990,26 @@ def _browser_act_locked(
                 results.append({"type": typ, **resolved_target})
                 break
 
-        if typ in {"wait", "key", "keyboard", "shortcut", "select", "extract"}:
+        if typ in {"wait", "key", "keyboard", "shortcut", "select", "extract", "click", "double_click", "type", "type_text", "paste"}:
             if not flush_pending():
                 break
-            if typ == "extract":
+            if typ in {"click", "double_click", "type", "type_text", "paste"}:
+                action_result = _verified_dom_action(
+                    settings, browser, work_action, current_observation_id,
+                    window_index, tab_index, tab_handle,
+                )
+                internal_js_calls += int(action_result.pop("_js_calls", 0))
+                compact_state_candidate = action_result.pop("_compact_state", None)
+                if resolved_target:
+                    action_result["resolved_target"] = {
+                        k: resolved_target.get(k)
+                        for k in ("element_id", "text", "role", "tag", "confidence")
+                    }
+                results.append(action_result)
+                if not action_result.get("ok"):
+                    break
+                current_observation_id = None
+            elif typ == "extract":
                 extract_result = _extract_action(
                     settings, browser, action, window_index, tab_index, tab_handle,
                 )
