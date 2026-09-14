@@ -156,4 +156,7 @@ function connect() {
 
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
+chrome.runtime.onMessage.addListener((message) => {
+  if (message && message.type === 'mac_mcp_bridge_wake') connect();
+});
 connect();

@@ -48,6 +48,11 @@ class ChromeBackgroundTransportTests(unittest.TestCase):
         self.assertIn("chrome.tabs.create", worker)
         self.assertIn("active: false", worker)
         self.assertNotIn("chrome.tabs.update", worker)
+        self.assertIn("mac_mcp_bridge_wake", worker)
+        wake = (ROOT / "menu_app/ChromeVisualCompanion/bridge_wake.js").read_text()
+        self.assertIn("chrome.runtime.sendMessage", wake)
+        self.assertIn("mac_mcp_bridge_wake", wake)
+        self.assertIn("bridge_wake.js", manifest["content_scripts"][0]["js"])
 
     def test_bridge_config_uses_dedicated_owner_only_token_and_no_url_secret(self) -> None:
         with tempfile.TemporaryDirectory() as td:
