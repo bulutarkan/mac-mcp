@@ -4,6 +4,7 @@ import asyncio
 import hmac
 import json
 import os
+import re
 import secrets
 import sys
 import tempfile
@@ -66,7 +67,24 @@ def ensure_chrome_companion_token(path: Optional[Path] = None) -> str:
     return token
 
 
-def _resolve_chrome_companion_port() -> int:
+def _existing_chrome_companion_port(config_path: Optional[Path]) -> Optional[int]:
+    if config_path is None or not config_path.is_file() or config_path.is_symlink():
+        return None
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r'"port"\s*:\s*(\d+)', text)
+    if not match:
+        return None
+    try:
+        port = int(match.group(1))
+    except ValueError:
+        return None
+    return port if 1 <= port <= 65535 else None
+
+
+def _resolve_chrome_companion_port(existing_config: Optional[Path] = None) -> int:
     configured = str(os.getenv("MAC_MCP_PORT", "") or "").strip()
     if configured:
         try:
@@ -90,6 +108,10 @@ def _resolve_chrome_companion_port() -> int:
                     return port
             except ValueError:
                 pass
+
+    existing_port = _existing_chrome_companion_port(existing_config)
+    if existing_port is not None:
+        return existing_port
     return 8000
 
 
@@ -98,14 +120,14 @@ def ensure_chrome_companion_config(runtime_root: Optional[Path] = None) -> Optio
     extension_dir = runtime / "menu_app" / "ChromeVisualCompanion"
     if not extension_dir.is_dir():
         return None
+    path = extension_dir / "bridge_config.js"
     token = str(os.getenv("MAC_MCP_CHROME_BRIDGE_TOKEN", "") or "").strip() or ensure_chrome_companion_token()
-    port = _resolve_chrome_companion_port()
+    port = _resolve_chrome_companion_port(path)
     payload = (
         "globalThis.MAC_MCP_CHROME_BRIDGE = "
         + json.dumps({"port": port, "token": token, "reconnect_ms": 1000}, separators=(",", ":"))
         + ";\n"
     )
-    path = extension_dir / "bridge_config.js"
     fd, tmp_name = tempfile.mkstemp(prefix=".bridge-config-", dir=str(extension_dir), text=True)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:

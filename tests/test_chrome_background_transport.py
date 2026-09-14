@@ -69,6 +69,18 @@ class ChromeBackgroundTransportTests(unittest.TestCase):
              patch("sys.argv", ["uvicorn", "mcp_server.main:app", "--port=18768"]):
             self.assertEqual(18768, _resolve_chrome_companion_port())
 
+    def test_bridge_port_preserves_existing_config_without_runtime_port_context(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-chrome-port-preserve-") as tmp:
+            config = Path(tmp) / "bridge_config.js"
+            config.write_text('globalThis.MAC_MCP_CHROME_BRIDGE = {"port":18769,"token":"redacted"};\n')
+            with patch("mcp_server.chrome_background_bridge.os.getenv", side_effect=lambda key, default=None: "" if key == "MAC_MCP_PORT" else os.environ.get(key, default)), \
+                 patch("sys.argv", ["helper-script"]):
+                self.assertEqual(18769, _resolve_chrome_companion_port(config))
+
+            with patch.dict(os.environ, {"MAC_MCP_PORT": "18770"}, clear=False), \
+                 patch("sys.argv", ["helper-script"]):
+                self.assertEqual(18770, _resolve_chrome_companion_port(config))
+
     def test_bridge_config_uses_dedicated_owner_only_token_and_no_url_secret(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
