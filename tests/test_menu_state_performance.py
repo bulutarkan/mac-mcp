@@ -19,6 +19,8 @@ class MenuStatePerformanceTests(unittest.TestCase):
         self.assertIn("idlePollIntervalSeconds = 12.0", source)
         self.assertIn("ngrokProcessCheckIntervalSeconds = 30.0", source)
         self.assertIn("private func updatePulseTask()", source)
+        self.assertIn("private var shouldPulse: Bool", source)
+        self.assertIn("activeAgents > 0", source[source.index("private var shouldPulse"):source.index("private func refreshNgrokStateIfNeeded")])
         start_tasks = source[source.index("func startTasks()"):source.index("func refresh() async")]
         self.assertNotIn("pulseTask = Task", start_tasks)
 

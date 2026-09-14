@@ -619,6 +619,10 @@ final class AppState: ObservableObject {
         hasActiveWork ? Self.activePollIntervalSeconds : Self.idlePollIntervalSeconds
     }
 
+    private var shouldPulse: Bool {
+        activeAgents > 0
+    }
+
     private func refreshNgrokStateIfNeeded(now: Double = ProcessInfo.processInfo.systemUptime) {
         guard lastNgrokProcessCheckAt == 0 || now - lastNgrokProcessCheckAt >= Self.ngrokProcessCheckIntervalSeconds else { return }
         lastNgrokProcessCheckAt = now
@@ -626,7 +630,7 @@ final class AppState: ObservableObject {
     }
 
     private func updatePulseTask() {
-        guard hasActiveWork else {
+        guard shouldPulse else {
             pulseTask?.cancel()
             pulseTask = nil
             setIfChanged(\.pulse, false)
@@ -635,12 +639,10 @@ final class AppState: ObservableObject {
         guard pulseTask == nil else { return }
         pulseTask = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self, self.hasActiveWork else { break }
+                guard let self else { return }
                 self.setIfChanged(\.pulse, !self.pulse)
                 try? await Task.sleep(nanoseconds: 550_000_000)
             }
-            guard let self else { return }
-            self.setIfChanged(\.pulse, false)
         }
     }
 
