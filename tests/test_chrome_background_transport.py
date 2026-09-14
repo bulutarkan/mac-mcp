@@ -12,7 +12,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 from mcp_server import browser_tabs
-from mcp_server.chrome_background_bridge import ensure_chrome_companion_config, ensure_chrome_companion_token
+from mcp_server.chrome_background_bridge import _resolve_chrome_companion_port, ensure_chrome_companion_config, ensure_chrome_companion_token
 from mcp_server.policy import PolicyContext, reset_policy_context, set_policy_context
 from mcp_server.security import load_settings
 from mcp_server.tools_browser import browser_open_url
@@ -53,6 +53,21 @@ class ChromeBackgroundTransportTests(unittest.TestCase):
         self.assertIn("chrome.runtime.sendMessage", wake)
         self.assertIn("mac_mcp_bridge_wake", wake)
         self.assertIn("bridge_wake.js", manifest["content_scripts"][0]["js"])
+
+    def test_bridge_port_prefers_env_then_running_uvicorn_argv(self) -> None:
+        with patch.dict(os.environ, {"MAC_MCP_PORT": "18766"}, clear=False), \
+             patch("sys.argv", ["uvicorn", "mcp_server.main:app", "--port", "19999"]):
+            self.assertEqual(18766, _resolve_chrome_companion_port())
+
+        with patch.dict(os.environ, {}, clear=False), \
+             patch("mcp_server.chrome_background_bridge.os.getenv", side_effect=lambda key, default=None: "" if key == "MAC_MCP_PORT" else os.environ.get(key, default)), \
+             patch("sys.argv", ["uvicorn", "mcp_server.main:app", "--host", "0.0.0.0", "--port", "18767"]):
+            self.assertEqual(18767, _resolve_chrome_companion_port())
+
+        with patch.dict(os.environ, {}, clear=False), \
+             patch("mcp_server.chrome_background_bridge.os.getenv", side_effect=lambda key, default=None: "" if key == "MAC_MCP_PORT" else os.environ.get(key, default)), \
+             patch("sys.argv", ["uvicorn", "mcp_server.main:app", "--port=18768"]):
+            self.assertEqual(18768, _resolve_chrome_companion_port())
 
     def test_bridge_config_uses_dedicated_owner_only_token_and_no_url_secret(self) -> None:
         with tempfile.TemporaryDirectory() as td:

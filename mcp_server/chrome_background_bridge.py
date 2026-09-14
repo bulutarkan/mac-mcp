@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import secrets
+import sys
 import tempfile
 import threading
 import uuid
@@ -65,18 +66,40 @@ def ensure_chrome_companion_token(path: Optional[Path] = None) -> str:
     return token
 
 
+def _resolve_chrome_companion_port() -> int:
+    configured = str(os.getenv("MAC_MCP_PORT", "") or "").strip()
+    if configured:
+        try:
+            port = int(configured)
+            if 1 <= port <= 65535:
+                return port
+        except ValueError:
+            pass
+
+    args = list(sys.argv[1:])
+    for index, arg in enumerate(args):
+        value = ""
+        if arg == "--port" and index + 1 < len(args):
+            value = args[index + 1]
+        elif arg.startswith("--port="):
+            value = arg.split("=", 1)[1]
+        if value:
+            try:
+                port = int(value)
+                if 1 <= port <= 65535:
+                    return port
+            except ValueError:
+                pass
+    return 8000
+
+
 def ensure_chrome_companion_config(runtime_root: Optional[Path] = None) -> Optional[Path]:
     runtime = (runtime_root or Path(__file__).resolve().parent.parent).resolve()
     extension_dir = runtime / "menu_app" / "ChromeVisualCompanion"
     if not extension_dir.is_dir():
         return None
     token = str(os.getenv("MAC_MCP_CHROME_BRIDGE_TOKEN", "") or "").strip() or ensure_chrome_companion_token()
-    try:
-        port = int(os.getenv("MAC_MCP_PORT", "8000"))
-    except ValueError:
-        port = 8000
-    if not 1 <= port <= 65535:
-        port = 8000
+    port = _resolve_chrome_companion_port()
     payload = (
         "globalThis.MAC_MCP_CHROME_BRIDGE = "
         + json.dumps({"port": port, "token": token, "reconnect_ms": 1000}, separators=(",", ":"))
