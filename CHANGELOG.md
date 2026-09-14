@@ -1,3 +1,14 @@
+## [2.1.3] - 2026-09-14
+
+- Added the dedicated **Mac MCP Chrome Companion** with a Manifest V3 service worker for focus-safe background tab creation, Chrome debugger-backed DOM/page execution, and background-safe visual capture.
+- Added Chrome cold-start handling that launches the first requested tab without foregrounding Chrome, while preserving existing active tabs when Chrome is already running.
+- Hardened Safari and Chrome interaction reliability on JS-heavy pages with bounded mutation watching, stable tab leases/handles, improved action verification, and fail-closed foreground-only fallbacks.
+- Expanded the shared Browser Visual Companion with claimed-tab scoping and activity history while removing idle animation/backdrop-filter wakeups.
+- Reduced idle menu/server overhead with adaptive polling, less frequent ngrok process checks, agent-only pulse wakeups, dashboard/agent caching, telemetry summary caching, and deterministic SQLite connection cleanup.
+- Fixed Chrome bridge port generation to honor the actual runtime/custom port and preserve it across helper-process imports; this prevents the unpacked extension from reconnecting to the default `8000` port after a backend restart.
+- Updated installer guidance and runtime preparation for the Chrome companion while keeping Safari bundled inside `Mac MCP.app`. Chrome unpacked-extension registration remains a one-time per-profile setup.
+- Verified the release with 278 Python regression tests plus real background `browser_do` → `browser_observe` → `browser_act` smoke tests and Chrome cold-start focus monitoring.
+
 ## [2.1.1] - 2026-09-13
 
 - Fixed the Safari Activity onboarding for locally built/ad-hoc-signed `Mac MCP.app` bundles. Safari does not register those bundles as normal installed Safari extensions, so `showPreferencesForExtension` could fail with “Could not open Safari extension settings.”

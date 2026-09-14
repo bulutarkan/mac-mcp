@@ -2,49 +2,20 @@
   <img src="assets/screenshots/mac-mcp.png" alt="Mac MCP" width="760">
 </p>
 
-# Mac MCP 2.1.1
+# Mac MCP 2.1.3
 
 Mac MCP is a local macOS control server for AI agents. It exposes your Mac through a native MCP endpoint and a REST/OpenAPI surface, with shell, files, browser automation, macOS UI control, delegated OpenCode/Codex agents, memory, Agent Skills, voice interaction, self-update tooling, and a local operations dashboard.
 
 > **Security:** Mac MCP can execute commands, read/write files, and control desktop apps. Keep MCP authentication enabled whenever the service is reachable outside localhost and expose it only to clients you trust. The operations dashboard is loopback-only **and** requires a separate per-user dashboard Bearer token; localhost is machine-local transport, not a same-user sandbox.
 
-## What's new in 2.1.1
+## What's new in 2.1.3
 
-- Expanded the **Visual Companion** to Safari **and Google Chrome**. Both browsers use the same browser-agnostic WebExtension source for the page frame, `Mac MCP · …` activity badge, synthetic cursor feedback, and per-tab activity history.
-- Visual feedback is driven by the existing high-level browser actions, including **Inspecting, Finding, Reading, Clicking, Typing, Selecting, Focusing, and Scrolling**. It works with the same real Safari/Chrome tabs used by Mac MCP; it does not replace the browser automation layer or require a separate browser profile.
-- The visual event channel is intentionally metadata-only: it sends a bounded action label, optional viewport coordinates, effect type, and TTL. Typed text, selectors, URLs, titles, DOM content, and secrets are not copied into extension events.
-- Added a native **Browser Activity** card to `Mac MCP.app`. Registered Apple-signed builds offer **Enable in Safari…**; local ad-hoc builds now show **Developer Setup…** instead of failing when Safari has not registered the extension.
-- The installer and updater carry the Safari extension with the menu app and verify the nested extension signature. The installer now distinguishes a normal Apple-signed distribution from an ad-hoc local source build and prints the correct Safari setup for each.
-- Kept the overlay display-only. It is useful for watching what an agent is doing, but it is **not** a trust, permission, or security indicator; Mac MCP's existing access profiles, approvals, provenance, secret-egress guard, tab leases, and no-progress protections remain authoritative.
-- The 2.1 release also includes the recent browser resilience and security work: source-aware web-to-host approval, secret-egress protection, sticky untrusted provenance, no-progress circuit breaking, delegated tab leases, steering idempotency/recovery, and dedicated-user hardening guidance.
-
-## What's new in 2.0.5
-
-- Mac MCP now presents a **21-tool core surface by default** instead of sending the full tool catalog to every MCP client. The complete registry remains available through `tool_discover` + `tool_invoke`, so older capabilities are not removed.
-- The registered capability set is now **84 tools total**: the previous 81 tools plus `browser_do`, `tool_discover`, and `tool_invoke`. All previous 81 tools remain callable.
-- Added `browser_do` for one-call browser transactions: open a URL, wait, interact, extract targeted fields, optionally verify state, and optionally close the newly opened tab without extra MCP round trips.
-- Added targeted browser `extract` actions so agents can request only the data they need instead of pulling large DOM/HTML payloads into context.
-- `browser_find` and `browser_act` are now part of the default core surface; visual observations retain compact DOM IDs alongside the image, and semantic browser extraction is more resilient on dynamic pages such as Google Maps.
-- Reduced default browser observation payloads and disabled macOS screenshots by default for `mac_observe`, cutting unnecessary context and capture work.
-- Hardened `network_idle` waits against Safari's transient `about:blank` state and preserved normal risk/profile enforcement for dynamically invoked tools.
-- In local compatibility testing, tool-schema context fell from about **16.7k to 4.5k tokens (~73% less)** while all previous 81 tools retained an access path.
-- Set `MAC_MCP_TOOL_PROFILE=full` if a client explicitly needs the entire registered catalog advertised up front.
-
-## What's new in 2.0
-
-- Native **Mac MCP.app** menu bar controller written in SwiftUI. It runs without a Dock icon and remains independent from the Python server.
-- Start, Stop, Restart, Update, Dashboard, server status, ngrok status, success rate, recent tool usage, and delegated-agent status are available from the menu bar.
-- **Latest Tool Usage** shows up to five rows at once and scrolls internally for older calls.
-- **Delegated Agents** keeps a compact fixed-height list and scrolls internally when multiple active/recent agents exist. Active work also triggers a lightweight animated robot and a pulsing menu bar status icon.
-- **Live agent steering** adds persistent logical Sessions to the menu bar, so you can redirect a specific agent while it is working or queue a new instruction while it is idle without sending the prompt to the wrong conversation.
-- The menu bar treats dashboard reachability as a first-class state: **Connected**, **Degraded**, **Disconnected**, or **Connecting**. Failed fetches never masquerade as an empty session list; the last successful session snapshot is retained and marked **stale** until a successful refresh replaces it.
-- Polling uses bounded exponential backoff after failures (`1s → 2s → 4s → 8s → 16s → 30s max`) and resets to the normal 2.5-second interval after recovery. A manual **Retry** performs an immediate refresh.
-- **Voice** is a collapsed disclosure section by default. `ask_user_voice` can be enabled/disabled live without removing the MCP tool from discovery.
-- When voice is disabled, calls return `experimental_tool_disabled` and instruct the agent to fall back to `ask_user`.
-- Groq API keys can be stored in **macOS Keychain** instead of plaintext configuration.
-- Voice input/output pickers enumerate connected CoreAudio devices such as AirPods, built-in microphone, and speakers.
-- Runtime settings are read live from `~/.mac-mcp/settings.json`; voice changes do not require an MCP restart.
-- The updater now carries the native `menu_app/` runtime alongside `mcp_server/` and refreshes an already-installed menu app after updates.
+- Added a dedicated **Mac MCP Chrome Companion** for true non-focus-stealing background tabs, Chrome DOM/page actions, and background-safe visual capture. Running Chrome uses `tabs.create({active:false})`; cold starts also stay in the background.
+- Hardened **Safari + Chrome** browser automation for JS-heavy pages with bounded interaction observers, stable tab ownership, safer action verification, and fail-closed foreground fallbacks.
+- Reduced idle energy use in `Mac MCP.app`: adaptive menu polling, less ngrok/process polling, event-driven agent pulse updates, telemetry caching, closed SQLite connections, and no idle Visual Companion animation/blur loops.
+- Fixed Chrome Companion bridge configuration so custom/runtime ports survive backend restarts and helper-process imports instead of silently falling back to port `8000`.
+- Installer/updater carry the latest Safari and Chrome companion sources. Safari is bundled into `Mac MCP.app`; Chrome's owner-only bridge config is prepared automatically and the unpacked extension is a one-time Chrome profile setup.
+- Regression-tested the release with the full Python suite plus real Safari/Chrome background browser smoke tests, including Chrome cold start without stealing application focus.
 
 ## Browser automation that doesn't hijack your Mac
 
