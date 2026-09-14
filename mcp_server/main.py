@@ -22,6 +22,7 @@ from .observability import ObservedFastMCP, TelemetryManager
 from .policy import current_policy_context, reset_policy_context, set_policy_context
 from .scoped_auth import resolve_request_identity
 from .dashboard_routes import create_dashboard_routes, rest_telemetry_middleware
+from .chrome_background_bridge import create_chrome_background_bridge_routes
 from .tools_terminal import run_command, process_list, kill_process, get_system_info
 from .tools_jobs import (
     start_background_job, get_job_status, get_job_output,
@@ -1451,6 +1452,7 @@ def create_app():
         return JSONResponse({"ok": True, "server": "mac-mcp"})
 
     app.router.routes.append(Route("/health", health, methods=["GET"]))
+    app.router.routes.extend(create_chrome_background_bridge_routes())
     app.router.routes.extend(create_dashboard_routes(telemetry, settings, dashboard_token, mcp.steering, mcp.security_context))
 
     # REST API — FastAPI sub-app mounted at /api

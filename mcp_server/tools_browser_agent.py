@@ -213,12 +213,11 @@ def _ensure_dom_rasterizer(
         )
 
     b = _norm_browser(browser)
-    path_literal = json.dumps(str(_DOM_RASTERIZER_PATH))
-    pre = _js_escape(
+    pre_raw = (
         "window.__macMcpHadHtml2Canvas=Object.prototype.hasOwnProperty.call(window,'html2canvas');"
         "window.__macMcpPreviousHtml2Canvas=window.html2canvas;"
     )
-    post = _js_escape(
+    post_raw = (
         f"window.{_DOM_RASTERIZER_GLOBAL}=window.html2canvas;"
         "if(window.__macMcpHadHtml2Canvas){window.html2canvas=window.__macMcpPreviousHtml2Canvas;}"
         "else{try{delete window.html2canvas;}catch(e){window.html2canvas=undefined;}}"
@@ -226,8 +225,16 @@ def _ensure_dom_rasterizer(
         f"typeof window.{_DOM_RASTERIZER_GLOBAL};"
     )
     with _tab_lease(b, tab_handle, window_index, tab_index) as target:
-        guard = _tab_identity_guard(target)
-        if b == "Safari":
+        if b == "Google Chrome":
+            source = _DOM_RASTERIZER_PATH.read_text(encoding="utf-8")
+            _execute_js_for_target(b, pre_raw, target, timeout_s=10)
+            _execute_js_for_target(b, source, target, timeout_s=30)
+            loaded = _execute_js_for_target(b, post_raw, target, timeout_s=10)
+        else:
+            path_literal = json.dumps(str(_DOM_RASTERIZER_PATH))
+            pre = _js_escape(pre_raw)
+            post = _js_escape(post_raw)
+            guard = _tab_identity_guard(target)
             script = f'''set js to read POSIX file {path_literal} as «class utf8»
 tell application "Safari"
     tell window {target.window_index}
@@ -238,18 +245,7 @@ tell application "Safari"
         return r
     end tell
 end tell'''
-        else:
-            script = f'''set js to read POSIX file {path_literal} as «class utf8»
-tell application "Google Chrome"
-    tell window {target.window_index}
-        {guard}
-        execute javascript "{pre}" in targetTab
-        execute javascript js in targetTab
-        set r to execute javascript "{post}" in targetTab
-        return r
-    end tell
-end tell'''
-        loaded = _run_osascript(script, timeout_s=30)
+            loaded = _run_osascript(script, timeout_s=30)
     if loaded.strip() != "function":
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,

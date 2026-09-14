@@ -1,0 +1,5 @@
+globalThis.MAC_MCP_CHROME_BRIDGE = {
+  port: 8765,
+  token: "generated-at-install-time",
+  reconnect_ms: 1000
+};

@@ -493,6 +493,16 @@ install_python_environment() {
   ok "Python environment verified."
 }
 
+prepare_chrome_companion() {
+  section "Chrome Background Companion"
+  MAC_MCP_STATE_DIR="$STATE_DIR" MAC_MCP_PORT="${MAC_MCP_PORT:-8000}" PYTHONPATH="$RUNTIME_DIR" \
+    "$RUNTIME_DIR/.venv/bin/python" -c 'from mcp_server.chrome_background_bridge import ensure_chrome_companion_config; p=ensure_chrome_companion_config(); assert p and p.is_file()' \
+    || fail "Could not prepare the Chrome background companion configuration."
+  /bin/chmod 600 "$STATE_DIR/chrome-companion-token" "$RUNTIME_DIR/menu_app/ChromeVisualCompanion/bridge_config.js" \
+    || fail "Could not secure the Chrome background companion credentials."
+  ok "Chrome background companion configured with a dedicated local credential."
+}
+
 install_update_state_and_cli() {
   local profile="$HOME/.zprofile"
   local path_line='export PATH="$HOME/.local/bin:$PATH"'
@@ -597,13 +607,14 @@ print_completion() {
     printf '  This source install is ad-hoc signed, so Safari will not register the bundled extension as a normal installed extension.\n'
     printf '  In Mac MCP.app choose "Developer Setup…", then in Safari enable Develop → Allow Unsigned Extensions and use Develop → Add Temporary Extension….\n'
     printf '  Select: %s/menu_app/BrowserVisualCompanion\n' "$RUNTIME_DIR"
-    printf '\n%sChrome Visual Companion%s\n' "$C_BOLD" "$C_RESET"
-    printf '  Required for Chrome browser tools: manually enable View → Developer → Allow JavaScript from Apple Events.\n'
-    printf '  Optional visual extension: open chrome://extensions, enable Developer mode, choose Load unpacked, and select the same folder.\n'
-    printf '  Browser-tool fallback/self-injection works even when the Chrome extension is not loaded.\n'
   else
     printf '  Open the Mac MCP menu and choose "Enable in Safari…" once, then allow website access in Safari.\n'
   fi
+  printf '\n%sChrome Background Companion%s\n' "$C_BOLD" "$C_RESET"
+  printf '  For true non-focus-stealing background tabs, open chrome://extensions, enable Developer mode, choose Load unpacked, and select:\n'
+  printf '  %s/menu_app/ChromeVisualCompanion\n' "$RUNTIME_DIR"
+  printf '  The companion also provides Chrome DOM/page execution and background-safe visual capture; no Apple Events JavaScript toggle is required while it is connected.\n'
+  printf '  If the companion is unavailable, background tab creation fails closed instead of bringing Chrome to the front.\n'
   printf '  The page overlay is activity feedback only; it is not a security or trust indicator.\n'
 
   printf '\n%sSubagents%s\n' "$C_BOLD" "$C_RESET"
@@ -630,6 +641,7 @@ main() {
   clone_source_and_runtime
   configure_runtime
   install_python_environment
+  prepare_chrome_companion
   install_menu_app
   install_update_state_and_cli
   optionally_start_server

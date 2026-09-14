@@ -589,7 +589,7 @@ final class AppState: ObservableObject {
 
     func openChromeExtensionSetup() {
         let extensionSourceURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("mac-mcp/menu_app/BrowserVisualCompanion", isDirectory: true)
+            .appendingPathComponent("mac-mcp/menu_app/ChromeVisualCompanion", isDirectory: true)
         let manifestURL = extensionSourceURL.appendingPathComponent("manifest.json")
         if FileManager.default.fileExists(atPath: manifestURL.path) {
             NSWorkspace.shared.activateFileViewerSelecting([manifestURL])
@@ -602,7 +602,7 @@ final class AppState: ObservableObject {
         }
         actionNotice = ActionNotice(
             kind: .info,
-            message: "Chrome setup: first manually enable View → Developer → Allow JavaScript from Apple Events. For the optional extension, enable Developer mode at chrome://extensions, choose Load unpacked, then select BrowserVisualCompanion. Browser-tool fallback remains active without the extension."
+            message: "Chrome setup: enable Developer mode at chrome://extensions, choose Load unpacked, then select ChromeVisualCompanion. This companion provides focus-safe background tabs plus DOM/page execution and background-safe visual capture."
         )
     }
 

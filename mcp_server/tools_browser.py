@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import subprocess
+import threading
 import time
 import uuid
 from contextlib import ExitStack, contextmanager
@@ -15,6 +16,7 @@ from fastapi import HTTPException, status
 
 from .security import Settings, truncate, validate_url as _http_validate_url
 from . import browser_tabs
+from .chrome_background_bridge import chrome_background_bridge
 
 
 def validate_url(settings: Settings, url: str) -> None:
@@ -60,6 +62,7 @@ BROWSERS = {
 _TAB_IDENTITY_CHANGED = "MAC_MCP_TAB_IDENTITY_CHANGED"
 _CHROME_NATIVE_JS_DENIED = False
 _CHROME_BRIDGE_INLINE_LIMIT = 2400
+_CHROME_BACKGROUND_OPEN_LOCK = threading.Lock()
 
 
 def _norm_browser(browser: str) -> str:
@@ -257,6 +260,166 @@ def _claim_safari_tab_visual(tab_index: int, expected_url: str) -> bool:
     return _claim_tab_visual("Safari", tab_index, expected_url)
 
 
+def _chrome_is_running() -> bool:
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/pgrep", "-x", "Google Chrome"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=3, check=False,
+        )
+        return proc.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _chrome_cold_launch_command(url: str) -> list[str]:
+    # The optional user-data-dir override is intentionally argv-only (never shell
+    # parsed). It is useful for isolated Chrome profiles and lets the production
+    # cold-start path be exercised without touching a user's normal profile.
+    profile = str(os.getenv("MAC_MCP_CHROME_USER_DATA_DIR", "") or "").strip()
+    if profile:
+        profile_path = str(Path(profile).expanduser().resolve())
+        chrome_args = [
+            f"--user-data-dir={profile_path}", "--use-mock-keychain",
+            "--no-first-run", "--no-default-browser-check",
+        ]
+        debug_port = str(os.getenv("MAC_MCP_CHROME_REMOTE_DEBUGGING_PORT", "") or "").strip()
+        if debug_port:
+            try:
+                port = int(debug_port)
+            except ValueError:
+                port = 0
+            if 1 <= port <= 65535:
+                chrome_args.extend([f"--remote-debugging-port={port}", "--enable-unsafe-extension-debugging"])
+        return [
+            "/usr/bin/open", "-g", "-n", "-a", "Google Chrome", "--args",
+            *chrome_args, str(url),
+        ]
+    return ["/usr/bin/open", "-g", "-a", "Google Chrome", str(url)]
+
+
+def _open_chrome_cold_background(url: str) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Launch Chrome directly on the first requested URL without taking focus.
+
+    This path is used only when the Chrome application process is not running, so
+    there is no extension worker available yet to create an inactive tab. The URL
+    is therefore supplied to LaunchServices at process launch time; creating an
+    about:blank window first and navigating afterward can foreground Chrome.
+    """
+    with _CHROME_BACKGROUND_OPEN_LOCK:
+        if _chrome_is_running():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"ok": False, "error": "chrome_cold_start_raced", "retryable": True},
+            )
+        try:
+            proc = subprocess.run(
+                _chrome_cold_launch_command(url),
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                text=True, timeout=10, check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                f"Could not launch Chrome in the background: {exc}",
+            ) from exc
+        if proc.returncode != 0:
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                f"Could not launch Chrome in the background: {(proc.stderr or '').strip() or 'open failed'}",
+            )
+
+        deadline = time.monotonic() + 8.0
+        last_error = ""
+        rows: list[Dict[str, Any]] = []
+        while time.monotonic() < deadline:
+            try:
+                rows = browser_tabs.list_tabs("Google Chrome")
+            except Exception as exc:
+                last_error = str(exc)
+                time.sleep(0.08)
+                continue
+            exact = [row for row in rows if str(row.get("url") or "") == str(url)]
+            resolved = exact[0] if len(exact) == 1 else None
+            if resolved is None and len(rows) == 1 and str(rows[0].get("url") or ""):
+                # Redirecting first loads are unambiguous because Chrome had no
+                # process before this launch and the open lock excludes another
+                # Mac MCP cold-start request.
+                resolved = rows[0]
+            if resolved is not None:
+                companion_deadline = time.monotonic() + 8.0
+                while not chrome_background_bridge.is_connected() and time.monotonic() < companion_deadline:
+                    time.sleep(0.05)
+                return resolved, {
+                    "chrome_tab_id": resolved.get("native_id"),
+                    "cold_start": True,
+                    "companion_connected": chrome_background_bridge.is_connected(),
+                }
+            time.sleep(0.08)
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "ok": False,
+                "error": "chrome_cold_start_tab_not_resolved",
+                "retryable": True,
+                "message": "Chrome launched in the background but its first tab could not be resolved safely.",
+                "candidate_count": len(rows),
+                "last_error": last_error or None,
+            },
+        )
+
+
+def _open_chrome_background_tab_via_extension(url: str) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Create an inactive Chrome tab through the MV3 companion without foregrounding Chrome.
+
+    New-tab discovery is serialized so two agents opening different tabs concurrently
+    cannot confuse each other's newly-created native tab. This lock is deliberately
+    separate from per-tab leases: after discovery the normal stable-handle ownership
+    system remains authoritative for all actions on the created tab.
+    """
+    with _CHROME_BACKGROUND_OPEN_LOCK:
+        before = browser_tabs.list_tabs("Google Chrome")
+        before_ids = {str(row.get("native_id") or "") for row in before}
+        bridge_result = chrome_background_bridge.request_open_tab(url, timeout_s=6.0)
+        chrome_tab_id = str(bridge_result.get("chrome_tab_id") or "")
+        deadline = time.monotonic() + 4.0
+        latest_new: list[Dict[str, Any]] = []
+        while time.monotonic() < deadline:
+            rows = browser_tabs.list_tabs("Google Chrome")
+            latest_new = [
+                row for row in rows
+                if str(row.get("native_id") or "") not in before_ids
+            ]
+            if chrome_tab_id:
+                native_match = [
+                    row for row in latest_new
+                    if str(row.get("native_id") or "") == chrome_tab_id
+                ]
+                if len(native_match) == 1:
+                    return native_match[0], bridge_result
+            exact_url = [row for row in latest_new if str(row.get("url") or "") == str(url)]
+            if len(exact_url) == 1:
+                return exact_url[0], bridge_result
+            if len(latest_new) == 1 and str(latest_new[0].get("url") or ""):
+                # Redirecting pages can replace the requested URL almost immediately.
+                # A single newly-created native tab is unambiguous while this transport
+                # lock excludes other Mac MCP background-open requests.
+                return latest_new[0], bridge_result
+            time.sleep(0.05)
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "ok": False,
+                "error": "chrome_background_tab_not_resolved",
+                "retryable": True,
+                "message": "Chrome created the background tab but Mac MCP could not resolve its stable native identity safely.",
+                "candidate_count": len(latest_new),
+            },
+        )
+
+
 def browser_open_url(
     settings: Settings,
     browser: str,
@@ -293,6 +456,49 @@ def browser_open_url(
         end tell
         '''
     else:
+        if background and not _chrome_is_running():
+            created, transport = _open_chrome_cold_background(url)
+            tab_index = int(created["tab_index"])
+            handle = str(created.get("tab_handle") or "") or None
+            lease = browser_tabs.claim_created_tab(b, handle) if handle else None
+            # The companion may still be waking after a cold launch. Visual claim is
+            # optional and must never turn this focus-safe open into a failure.
+            visual_claimed = _claim_tab_visual(b, tab_index, url, handle)
+            return {
+                "ok": True,
+                "browser": b,
+                "url": url,
+                "background": True,
+                "window_index": int(created["window_index"]),
+                "tab_index": tab_index,
+                "tab_handle": handle,
+                "lease_generation": (lease or {}).get("generation"),
+                "visual_claimed": visual_claimed,
+                "foreground_forced": False,
+                "background_transport": "chrome_cold_launch",
+                "chrome_tab_id": transport.get("chrome_tab_id"),
+                "companion_connected": bool(transport.get("companion_connected")),
+            }
+        if new_tab and background:
+            created, transport = _open_chrome_background_tab_via_extension(url)
+            tab_index = int(created["tab_index"])
+            handle = str(created.get("tab_handle") or "") or None
+            lease = browser_tabs.claim_created_tab(b, handle) if handle else None
+            visual_claimed = _claim_tab_visual(b, tab_index, url, handle)
+            return {
+                "ok": True,
+                "browser": b,
+                "url": url,
+                "background": True,
+                "window_index": int(created["window_index"]),
+                "tab_index": tab_index,
+                "tab_handle": handle,
+                "lease_generation": (lease or {}).get("generation"),
+                "visual_claimed": visual_claimed,
+                "foreground_forced": False,
+                "background_transport": "chrome_extension",
+                "chrome_tab_id": transport.get("chrome_tab_id"),
+            }
         script = f'''
         tell application "Google Chrome"
             if (count of windows) = 0 then
@@ -665,6 +871,8 @@ def _execute_js_for_target(
     timeout_s: int,
 ) -> str:
     global _CHROME_NATIVE_JS_DENIED
+    if browser == "Google Chrome" and chrome_background_bridge.is_connected() and target.native_id:
+        return chrome_background_bridge.request_execute_js(target.native_id, js, timeout_s=timeout_s)
     if browser == "Google Chrome" and _CHROME_NATIVE_JS_DENIED:
         return _chrome_execute_js_via_url_bridge(js, target, timeout_s)
     js_escaped = _js_escape(js)

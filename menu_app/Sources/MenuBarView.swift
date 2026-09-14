@@ -489,7 +489,7 @@ struct MenuBarView: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Chrome Visual Companion").font(.caption.weight(.semibold))
-                    Text("Requires Chrome’s Apple Events JS toggle; the unpacked visual extension itself is optional.")
+                    Text("Chrome companion enables focus-safe background tabs plus DOM/page actions and background-safe visual capture.")
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

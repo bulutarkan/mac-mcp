@@ -20,7 +20,7 @@ UI copy follows the canonical definitions in [`../docs/TERMINOLOGY.md`](../docs/
 
 ## Browser activity visibility
 
-Safari and Chrome share `BrowserVisualCompanion/manifest.json` + `visual.js`. Chrome can load that folder unpacked; browser tools inject the same source as a fallback. Chrome automation itself also requires the user to manually enable **View → Developer → Allow JavaScript from Apple Events** once. Chrome builds with the `execute javascript` `-1723` regression fall back to the same user-gated JavaScript channel without activating the tab.
+Safari keeps its bundled `BrowserVisualCompanion` WebExtension. Chrome uses the separate `ChromeVisualCompanion` unpacked extension so Chrome-only background transport does not change Safari's extension lifecycle. Both use the same visual overlay source. The Chrome companion creates new tabs with `active:false` and provides DOM/page execution through Chrome's `debugger` API, so normal Chrome browser tools do not require the Apple Events JavaScript toggle while the companion is connected.
 
 For Mac MCP, **background browser automation** means **visible, non-focus-stealing browser automation** inside a normal Safari or Chrome tab. It does not mean headless, hidden, or invisible automation.
 

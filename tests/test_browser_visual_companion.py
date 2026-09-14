@@ -273,7 +273,9 @@ class BrowserVisualCompanionTests(unittest.TestCase):
         self.assertIn("Chrome Visual Companion", menu)
         self.assertIn("Browser Activity", menu)
         self.assertIn("openChromeExtensionSetup", app_state)
-        self.assertIn("Allow JavaScript from Apple Events", app_state)
+        self.assertIn("menu_app/ChromeVisualCompanion", app_state)
+        self.assertIn("focus-safe background tabs", app_state)
+        self.assertIn("background-safe visual capture", menu)
 
     def test_installer_explains_adhoc_safari_setup(self) -> None:
         source = (ROOT / "install.sh").read_text(encoding="utf-8")
@@ -283,7 +285,9 @@ class BrowserVisualCompanionTests(unittest.TestCase):
         self.assertIn("menu_app/BrowserVisualCompanion", source)
         self.assertIn("chrome://extensions", source)
         self.assertIn("Load unpacked", source)
-        self.assertIn("Allow JavaScript from Apple Events", source)
+        self.assertIn("menu_app/ChromeVisualCompanion", source)
+        self.assertIn("no Apple Events JavaScript toggle is required", source)
+        self.assertIn("prepare_chrome_companion", source)
 
     def test_updater_tracks_and_syncs_new_safari_extension_files(self) -> None:
         with tempfile.TemporaryDirectory() as td:
