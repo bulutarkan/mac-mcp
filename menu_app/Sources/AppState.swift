@@ -502,7 +502,10 @@ final class AppState: ObservableObject {
     private var pendingSteeringClientInstructionID: String?
     private var pendingSteeringSessionID: String?
     private var pendingSteeringText: String?
-    private static let normalPollIntervalSeconds = 2.5
+    private var lastNgrokProcessCheckAt = 0.0
+    private static let activePollIntervalSeconds = 2.5
+    private static let idlePollIntervalSeconds = 12.0
+    private static let ngrokProcessCheckIntervalSeconds = 30.0
     private static let maxRetryIntervalSeconds = 30.0
 
     init(startBackgroundTasks: Bool = true) {
@@ -604,8 +607,41 @@ final class AppState: ObservableObject {
     }
 
     static func pollDelaySeconds(forFailureCount failureCount: Int) -> Double {
-        guard failureCount > 0 else { return normalPollIntervalSeconds }
+        guard failureCount > 0 else { return activePollIntervalSeconds }
         return min(pow(2.0, Double(failureCount - 1)), maxRetryIntervalSeconds)
+    }
+
+    private var hasActiveWork: Bool {
+        activeAgents > 0 || sessionActiveCount > 0
+    }
+
+    private var successfulPollIntervalSeconds: Double {
+        hasActiveWork ? Self.activePollIntervalSeconds : Self.idlePollIntervalSeconds
+    }
+
+    private func refreshNgrokStateIfNeeded(now: Double = ProcessInfo.processInfo.systemUptime) {
+        guard lastNgrokProcessCheckAt == 0 || now - lastNgrokProcessCheckAt >= Self.ngrokProcessCheckIntervalSeconds else { return }
+        lastNgrokProcessCheckAt = now
+        setIfChanged(\.ngrokRunning, Self.processExists(matching: "ngrok http"))
+    }
+
+    private func updatePulseTask() {
+        guard hasActiveWork else {
+            pulseTask?.cancel()
+            pulseTask = nil
+            setIfChanged(\.pulse, false)
+            return
+        }
+        guard pulseTask == nil else { return }
+        pulseTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.hasActiveWork else { break }
+                self.setIfChanged(\.pulse, !self.pulse)
+                try? await Task.sleep(nanoseconds: 550_000_000)
+            }
+            guard let self else { return }
+            self.setIfChanged(\.pulse, false)
+        }
     }
 
     var connectionStatusText: String {
@@ -649,17 +685,10 @@ final class AppState: ObservableObject {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
         }
-        pulseTask = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let self else { return }
-                self.pulse = self.activeAgents > 0 ? !self.pulse : false
-                try? await Task.sleep(nanoseconds: 550_000_000)
-            }
-        }
     }
 
     func refresh() async {
-        setIfChanged(\.ngrokRunning, Self.processExists(matching: "ngrok http"))
+        refreshNgrokStateIfNeeded()
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else {
             recordDisconnected(issue: "Invalid server URL.")
             return
@@ -730,7 +759,7 @@ final class AppState: ObservableObject {
         setIfChanged(\.connectionState, .connecting)
         setIfChanged(\.connectionIssue, nil)
         consecutiveRefreshFailures = 0
-        setIfChanged(\.nextPollDelaySeconds, Self.normalPollIntervalSeconds)
+        setIfChanged(\.nextPollDelaySeconds, Self.activePollIntervalSeconds)
         await refresh()
     }
 
@@ -738,7 +767,8 @@ final class AppState: ObservableObject {
         consecutiveRefreshFailures = 0
         setIfChanged(\.connectionState, .connected)
         setIfChanged(\.connectionIssue, nil)
-        setIfChanged(\.nextPollDelaySeconds, Self.normalPollIntervalSeconds)
+        setIfChanged(\.nextPollDelaySeconds, successfulPollIntervalSeconds)
+        updatePulseTask()
     }
 
     private func recordDisconnected(issue: String) {
@@ -751,6 +781,13 @@ final class AppState: ObservableObject {
         setIfChanged(\.connectionState, state)
         setIfChanged(\.connectionIssue, issue)
         setIfChanged(\.nextPollDelaySeconds, Self.pollDelaySeconds(forFailureCount: consecutiveRefreshFailures))
+        if state == .disconnected {
+            pulseTask?.cancel()
+            pulseTask = nil
+            setIfChanged(\.pulse, false)
+        } else {
+            updatePulseTask()
+        }
     }
 
     nonisolated private static func failureState(for error: Error) -> DashboardConnectionState {

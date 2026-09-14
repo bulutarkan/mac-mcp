@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -298,6 +299,7 @@ class TelemetryManager:
         self._subscribers: List[Tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = []
         self._lock = threading.RLock()
         self._writes = 0
+        self._summary_cache: Dict[float, tuple[float, int, Dict[str, Any]]] = {}
         self._init_db()
         self._load_recent()
 
@@ -376,7 +378,7 @@ class TelemetryManager:
 
     def _init_db(self) -> None:
         migrated = False
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             self._ensure_schema(conn)
             migrated = _migrate_sensitive_telemetry(conn, preview_chars=self.preview_chars)
         if migrated:
@@ -391,7 +393,7 @@ class TelemetryManager:
                 conn.close()
 
     def _load_recent(self) -> None:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             rows = conn.execute(
                 "SELECT * FROM tool_events ORDER BY timestamp DESC LIMIT ?", (RECENT_MEMORY_EVENTS,)
             ).fetchall()
@@ -555,7 +557,7 @@ class TelemetryManager:
         return event
 
     def _insert_event(self, event: Dict[str, Any]) -> None:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO tool_events (
@@ -582,7 +584,7 @@ class TelemetryManager:
 
     def _prune(self) -> None:
         cutoff = time.time() - (self.retention_days * 86400)
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             conn.execute("DELETE FROM tool_events WHERE timestamp < ?", (cutoff,))
             conn.execute("DELETE FROM security_events WHERE timestamp < ?", (cutoff,))
             conn.execute(
@@ -625,7 +627,7 @@ class TelemetryManager:
             "agent_id": str(agent_id) if agent_id else None,
             "target_summary": sanitize_value(target_summary, preview_chars=240) if target_summary else None,
         }
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             conn.execute(
                 """INSERT INTO security_events (
                     event_id,timestamp,session_id,event_type,tool,tool_class,origin,decision,reason_code,
@@ -651,7 +653,7 @@ class TelemetryManager:
             clauses.append("session_id = ?")
             params.append(str(session_id))
         params.append(bounded_limit)
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             rows = conn.execute(
                 "SELECT * FROM security_events WHERE " + " AND ".join(clauses) + " ORDER BY timestamp DESC LIMIT ?",
                 params,
@@ -695,14 +697,24 @@ class TelemetryManager:
             params.append(f"%{tool}%")
         params.append(bounded_limit)
         sql = "SELECT * FROM tool_events WHERE " + " AND ".join(clauses) + " ORDER BY timestamp DESC LIMIT ?"
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._row_to_event(row) for row in rows]
 
     def summary(self, hours: float = 24) -> Dict[str, Any]:
         bounded_hours = max(0.05, min(float(hours), 24 * 365))
-        cutoff = time.time() - bounded_hours * 3600
-        with self._connect() as conn:
+        now = time.time()
+        cache_key = round(bounded_hours, 4)
+        cached = self._summary_cache.get(cache_key)
+        if cached is not None:
+            cached_at, cached_writes, cached_payload = cached
+            if cached_writes == self._writes and now - cached_at < 10.0:
+                payload = dict(cached_payload)
+                payload["active_calls"] = len(self.active_calls())
+                payload["uptime_seconds"] = max(0, int(now - self.started_at))
+                return payload
+        cutoff = now - bounded_hours * 3600
+        with closing(self._connect()) as conn, conn:
             totals = conn.execute(
                 """
                 SELECT COUNT(*) AS total,
@@ -745,7 +757,7 @@ class TelemetryManager:
             # samples honest instead of rounding the slowest call away.
             import math
             p95 = durations[min(len(durations) - 1, max(0, math.ceil(len(durations) * 0.95) - 1))]
-        return {
+        payload = {
             "window_hours": bounded_hours,
             "total_calls": total,
             "success_calls": success,
@@ -754,12 +766,14 @@ class TelemetryManager:
             "avg_duration_ms": int(round(float(totals["avg_duration"] or 0))),
             "p95_duration_ms": int(p95),
             "active_calls": len(self.active_calls()),
-            "uptime_seconds": max(0, int(time.time() - self.started_at)),
+            "uptime_seconds": max(0, int(now - self.started_at)),
             "top_tools": top_tools,
             "sources": source_rows,
             "retention_days": self.retention_days,
             "max_events": self.max_events,
         }
+        self._summary_cache[cache_key] = (now, self._writes, dict(payload))
+        return payload
 
 
 _STEERING_PARENT_EVENT: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(

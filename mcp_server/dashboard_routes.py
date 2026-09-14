@@ -5,6 +5,7 @@ import ipaddress
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlsplit
@@ -215,6 +216,20 @@ def create_dashboard_routes(
     telemetry: TelemetryManager, settings: Settings, dashboard_token: str,
     steering: Optional[SteeringManager] = None, security_context: Optional[SecurityContextManager] = None,
 ) -> list[Route]:
+    agent_cache: Dict[str, Any] = {"at": 0.0, "limit": 0, "data": None}
+
+    def cached_agents(limit: int) -> Dict[str, Any]:
+        bounded = max(1, min(int(limit), 100))
+        now = time.monotonic()
+        cached = agent_cache.get("data")
+        if cached is not None and now - float(agent_cache.get("at") or 0) < 1.0 and int(agent_cache.get("limit") or 0) >= bounded:
+            items = list(cached.get("agents", []))[:bounded]
+            return {"ok": True, "count": len(items), "agents": items}
+        data = list_agents(settings, limit=max(50, bounded))
+        agent_cache.update({"at": now, "limit": max(50, bounded), "data": data})
+        items = list(data.get("agents", []))[:bounded]
+        return {"ok": True, "count": len(items), "agents": items}
+
     async def index(request: Request) -> Response:
         denied = _local_only(request)
         if denied:
@@ -239,7 +254,7 @@ def create_dashboard_routes(
         hours = _float_query(request, "hours", 24)
         payload = telemetry.summary(hours)
         try:
-            agents = list_agents(settings, limit=50).get("agents", [])
+            agents = cached_agents(50).get("agents", [])
         except Exception:
             agents = []
         payload.update({
@@ -389,7 +404,7 @@ def create_dashboard_routes(
         if denied:
             return denied
         try:
-            data = list_agents(settings, limit=max(1, min(_int_query(request, "limit", 20), 100)))
+            data = cached_agents(max(1, min(_int_query(request, "limit", 20), 100)))
         except Exception as exc:
             return JSONResponse({"ok": False, "count": 0, "agents": [], "error": str(sanitize_value(exc))})
         public_agents = []

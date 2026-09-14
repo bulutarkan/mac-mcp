@@ -16,6 +16,11 @@ class MenuStatePerformanceTests(unittest.TestCase):
         self.assertIn("private func setIfChanged<Value: Equatable>", source)
         self.assertIn("SteeringSessionGrouping.diff(current: steeringSessions, incoming: envelope.sessions)", source)
         self.assertIn("func applySteeringSnapshot(_ envelope: SteeringEnvelope)", source)
+        self.assertIn("idlePollIntervalSeconds = 12.0", source)
+        self.assertIn("ngrokProcessCheckIntervalSeconds = 30.0", source)
+        self.assertIn("private func updatePulseTask()", source)
+        start_tasks = source[source.index("func startTasks()"):source.index("func refresh() async")]
+        self.assertNotIn("pulseTask = Task", start_tasks)
 
     def test_stable_session_diff_handles_identical_update_add_remove_at_scale(self):
         harness = r'''

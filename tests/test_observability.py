@@ -564,5 +564,16 @@ class SteeringIdempotencyRouteTests(unittest.TestCase):
             self.assertEqual(2, steering.sessions()[0]["pending_instruction_count"])
 
 
+
+class TelemetrySummaryCacheTests(unittest.TestCase):
+    def test_summary_reuses_cached_sql_when_no_events_changed(self):
+        with tempfile.TemporaryDirectory() as td:
+            manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
+            first = manager.summary(1)
+            with patch.object(manager, "_connect", side_effect=AssertionError("summary cache missed")):
+                second = manager.summary(1)
+            self.assertEqual(first["total_calls"], second["total_calls"])
+            self.assertEqual(first["success_rate"], second["success_rate"])
+
 if __name__ == "__main__":
     unittest.main()

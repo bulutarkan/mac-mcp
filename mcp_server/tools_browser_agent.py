@@ -513,18 +513,21 @@ function __mcpTopRect(el){
   while(win&&win!==window&&guard++<10){var frame=null;try{frame=win.frameElement;}catch(e){}if(!frame)break;var fr=frame.getBoundingClientRect();left+=fr.left;top+=fr.top;win=__mcpOwnerWindow(frame);}
   return {left:left,top:top,right:left+w,bottom:top+h,width:w,height:h};
 }
-function __mcpRefreshObservers(s){
-  if(!s.observedRoots)s.observedRoots=new WeakSet();if(!s.rootObservers)s.rootObservers=[];
-  var roots=__mcpRoots();
-  for(var i=0;i<roots.length;i++){var root=roots[i];if(s.observedRoots.has(root))continue;try{
-    var ob=new MutationObserver(function(records){for(var j=0;j<records.length;j++){var rec=records[j];if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')continue;s.mutationRevision+=1;break;}});
-    ob.observe(root,{subtree:true,childList:true,attributes:true,characterData:true});s.observedRoots.add(root);s.rootObservers.push(ob);
-  }catch(e){}}
+function __mcpStopMutationWatch(s){
+  if(s.observerTimer){try{clearTimeout(s.observerTimer);}catch(e){}s.observerTimer=null;}
+  var obs=s.rootObservers||[];for(var i=0;i<obs.length;i++){try{obs[i].disconnect();}catch(e){}}s.rootObservers=[];
+}
+function __mcpStartMutationWatch(s,ttl){
+  __mcpStopMutationWatch(s);var roots=__mcpRoots(),bump=function(records){
+    for(var j=0;j<records.length;j++){var rec=records[j];if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')continue;s.mutationRevision+=1;break;}
+  };
+  for(var i=0;i<roots.length;i++){try{var ob=new MutationObserver(bump);ob.observe(roots[i],{subtree:true,childList:true,attributes:true,characterData:true});s.rootObservers.push(ob);}catch(e){}}
+  s.observerTimer=setTimeout(function(){__mcpStopMutationWatch(s);},Math.max(500,Math.min(Number(ttl||3000),8000)));
 }
 function __mcpState(){
   var s=window.__macMcpBrowserAgent;
-  if(!s){s=window.__macMcpBrowserAgent={counter:0,ids:new WeakMap(),elements:Object.create(null),pageToken:Math.random().toString(36).slice(2,10),mutationRevision:0,observations:Object.create(null),rootObservers:[],observedRoots:new WeakSet()};}
-  __mcpRefreshObservers(s);return s;
+  if(!s){s=window.__macMcpBrowserAgent={counter:0,ids:new WeakMap(),elements:Object.create(null),pageToken:Math.random().toString(36).slice(2,10),mutationRevision:0,observations:Object.create(null),rootObservers:[],observerTimer:null};}
+  return s;
 }
 function __mcpVisualTarget(el){
   try{if(!el||el.nodeType!==1)return 'Page';var tag=(el.tagName||'').toLowerCase(),role=(el.getAttribute('role')||'').toLowerCase(),type=(el.getAttribute('type')||'').toLowerCase(),aria=(el.getAttribute('aria-label')||'');
@@ -702,6 +705,7 @@ function __mcpContentCandidate(el,actionable){{
   return false;
 }}
 var s=__mcpState();
+__mcpStartMutationWatch(s,5000);
 __mcpVisual('Inspecting',null,'',1800);
 Object.keys(s.elements).forEach(function(k){{var e=s.elements[k];if(!e||!e.isConnected)delete s.elements[k];}});
 var scope={scope_js};
@@ -1201,6 +1205,7 @@ __BOOTSTRAP__
 function __mcpB64(obj){return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}
 var s=__mcpState();
 __mcpFlushMutations(s);
+__mcpStartMutationWatch(s,3000);
 var expected=__OBS__;
 if(expected && !(expected in s.observations)) return __mcpB64({ok:false,error:'stale_observation',observe_again:true});
 var changed=expected ? (s.observations[expected]!==s.mutationRevision) : false;
@@ -1293,6 +1298,7 @@ def _select_prepare_js(element_id: str, observation_id: Optional[str], option: A
 function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
 function norm(v){{return String(v||'').normalize('NFKD').toLowerCase().replace(/[\u0300-\u036f]/g,'').replace(/\\s+/g,' ').trim();}}
 var s=__mcpState(), expected={obs}, eid={eid}, wanted=norm({wanted});
+__mcpStartMutationWatch(s,3000);
 if(expected && !(expected in s.observations)) return __mcpB64({{ok:false,error:'stale_observation',observe_again:true}});
 var el=s.elements[eid];
 if(!el||!el.isConnected) return __mcpB64({{ok:false,error:'stale_element',observe_again:true,element_id:eid}});
@@ -1326,6 +1332,7 @@ function rendered(el){{
   var r=el.getBoundingClientRect(); return r.width>0&&r.height>0;
 }}
 var s=__mcpState(), origin=s.elements[{eid}], wanted=norm({wanted});
+__mcpStartMutationWatch(s,3000);
 var originRect=origin&&origin.getBoundingClientRect?origin.getBoundingClientRect():{{left:0,top:0,width:0,height:0}};
 var selectors='[role="option"],[role="menuitem"],option,li,[class*="option"],[class*="suggest"],[class*="dropdown"] a,[class*="menu"] a,button,a';
 var all=__mcpQueryAll(selectors).filter(rendered);

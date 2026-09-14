@@ -301,9 +301,14 @@ def browser_open_url(
             {activate_line}
             if {str(new_tab).lower()} then
                 tell window 1
+                    set previousIndex to active tab index
                     set newTab to make new tab with properties {{URL:"{url}"}}
                     set newIndex to count of tabs
-                    if {str(not background).lower()} then set active tab index to newIndex
+                    if {str(not background).lower()} then
+                        set active tab index to newIndex
+                    else
+                        set active tab index to previousIndex
+                    end if
                 end tell
                 return newIndex
             else

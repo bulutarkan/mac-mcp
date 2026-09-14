@@ -19,6 +19,7 @@ from mcp_server.tools_browser import (
     _execute_js_for_target,
     _chrome_execute_js_via_url_bridge,
     _claim_tab_visual,
+    browser_open_url,
 )
 from mcp_server.tools_browser_agent import _batch_js, _browser_state_bootstrap, _observe_js, _ensure_visual_companion
 from mcp_server.update_helper import _sync_runtime, _tracked_files
@@ -167,6 +168,12 @@ class BrowserVisualCompanionTests(unittest.TestCase):
         self.assertEqual("OK", out)
         self.assertEqual(4, run.call_count)
 
+    def test_chrome_background_open_restores_previous_active_tab(self) -> None:
+        import inspect
+        source = inspect.getsource(browser_open_url)
+        self.assertIn("set previousIndex to active tab index", source)
+        self.assertIn("set active tab index to previousIndex", source)
+
     def test_chrome_open_url_claim_uses_same_private_shared_companion(self) -> None:
         expected = "https://www.google.com/travel/flights?q=private"
         js = _visual_claim_js(expected)
@@ -218,6 +225,16 @@ class BrowserVisualCompanionTests(unittest.TestCase):
         self.assertIn("continue;", bootstrap)
         observe = _observe_js("interactive", 20)
         self.assertIn("__mcpVisual('Inspecting'", observe)
+
+
+    def test_visual_companion_has_no_idle_infinite_animation_or_hidden_blur(self) -> None:
+        source = (ROOT / "menu_app/BrowserVisualCompanion/visual.js").read_text(encoding="utf-8")
+        self.assertIn(".frame.active { opacity: 1; animation: mcpPulse", source)
+        self.assertIn(".pill.active .dot { animation: mcpDot", source)
+        self.assertIn(".history-panel {", source)
+        self.assertIn("visibility: hidden", source)
+        self.assertIn(".companion.sidebar-open .history-panel", source)
+        self.assertIn("visibility: visible", source)
 
     def test_manifest_is_visual_content_script_without_privileged_browser_permissions(self) -> None:
         manifest = json.loads((ROOT / "menu_app/BrowserVisualCompanion/manifest.json").read_text(encoding="utf-8"))

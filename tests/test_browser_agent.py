@@ -208,6 +208,20 @@ class BrowserAgentLayerTests(unittest.TestCase):
         self.assertTrue(_effect_changed(base, {**base, "connected": False}))
         self.assertFalse(_effect_changed(base, dict(base)))
 
+
+    def test_mutation_watch_is_bounded_and_not_installed_by_idle_state_reads(self):
+        bootstrap = _browser_state_bootstrap()
+        self.assertIn("function __mcpStartMutationWatch", bootstrap)
+        self.assertIn("function __mcpStopMutationWatch", bootstrap)
+        self.assertIn("observerTimer=setTimeout", bootstrap)
+        state_start = bootstrap.index("function __mcpState()")
+        state_end = bootstrap.index("function __mcpVisualTarget", state_start)
+        self.assertNotIn("__mcpStartMutationWatch", bootstrap[state_start:state_end])
+        observe = __import__('mcp_server.tools_browser_agent', fromlist=['_observe_js'])._observe_js('interactive', 20)
+        self.assertIn("__mcpStartMutationWatch(s,5000)", observe)
+        act = _batch_js([{"type": "click", "element_id": "e_test"}], None)
+        self.assertIn("__mcpStartMutationWatch(s,3000)", act)
+
     def test_full_page_is_a_supported_visual_mode(self):
         self.assertIn('full_page', _VISUAL_MODES)
 
