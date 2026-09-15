@@ -858,6 +858,20 @@ final class AppState: ObservableObject {
         }
     }
 
+    func refreshProviders() async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        do {
+            let envelope: ProvidersEnvelope = try await fetch(
+                base.appendingPathComponent("dashboard/api/providers"),
+                query: [:]
+            )
+            setIfChanged(\.providerStatuses, envelope.providers)
+        } catch {
+            // Provider detection is supplemental Settings data. Keep the last
+            // known values and let the normal dashboard poll own connection UI.
+        }
+    }
+
     func retryConnection() async {
         setIfChanged(\.connectionState, .connecting)
         setIfChanged(\.connectionIssue, nil)

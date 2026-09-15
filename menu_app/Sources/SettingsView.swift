@@ -49,7 +49,7 @@ struct SettingsView: View {
         .background(.regularMaterial)
         .task {
             audio.refresh()
-            await state.retryConnection()
+            await state.refreshProviders()
         }
     }
 
@@ -459,7 +459,7 @@ struct SettingsView: View {
             Spacer()
             if refresh {
                 Button {
-                    Task { await state.retryConnection() }
+                    Task { await state.refreshProviders() }
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
@@ -521,7 +521,7 @@ struct SettingsView: View {
                 do {
                     try settings.save()
                     notice = "\(providerDisplayName(id)) is now \(enabled ? "enabled" : "disabled")."
-                    Task { await state.retryConnection() }
+                    Task { await state.refreshProviders() }
                 } catch {
                     settings.load()
                     notice = "Could not save provider settings."

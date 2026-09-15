@@ -9,13 +9,12 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     func show(state: AppState, settings: SettingsStore) {
         settings.load()
+        let transientWindows = NSApplication.shared.windows.filter { candidate in
+            candidate.isVisible && candidate.title.isEmpty
+        }
 
         if let window = windowController?.window {
-            window.center()
-            NSApplication.shared.activate(ignoringOtherApps: true)
-            windowController?.showWindow(nil)
-            window.makeKeyAndOrderFront(nil)
-            Task { await state.retryConnection() }
+            present(window: window, transientWindows: transientWindows)
             return
         }
 
@@ -34,9 +33,27 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
         let controller = NSWindowController(window: window)
         windowController = controller
+        present(window: window, transientWindows: transientWindows)
+    }
 
+    private func present(window: NSWindow, transientWindows: [NSWindow]) {
+        window.center()
         NSApplication.shared.activate(ignoringOtherApps: true)
-        controller.showWindow(nil)
+        windowController?.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+
+        // MenuBarExtra(.window) owns a transient untitled popup at a higher
+        // window level than normal app windows. When Settings is launched from
+        // its gear button, explicitly dismiss that source popup instead of
+        // making Settings permanently floating/always-on-top.
+        for transientWindow in transientWindows where transientWindow !== window {
+            transientWindow.orderOut(nil)
+        }
+
+        DispatchQueue.main.async {
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+        }
     }
 }
