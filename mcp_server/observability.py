@@ -784,13 +784,17 @@ _SECURITY_SESSION: contextvars.ContextVar[Optional[tuple[str, str]]] = contextva
 )
 
 
+def current_security_session() -> Optional[tuple[str, str]]:
+    return _SECURITY_SESSION.get()
+
+
 _CORE_TOOL_NAMES = {
     "run_command", "run_commands_parallel",
     "read_file", "write_file", "edit_file", "search_files", "http_request",
     "mac_observe", "mac_act",
     "browser_list_tabs", "browser_close_tab", "browser_observe", "browser_find", "browser_act", "browser_do",
     "spawn_agents", "wait_agents",
-    "memory_search", "ask_user",
+    "memory_search", "lesson_search", "lesson_feedback", "ask_user",
     "tool_discover", "tool_invoke",
 }
 

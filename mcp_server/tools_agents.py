@@ -25,6 +25,10 @@ from .policy_scope import (
 from .scoped_auth import get_scoped_credential_store
 from .security import BASE_DIR, Settings, truncate
 from .runtime_settings import provider_enabled, provider_setting
+from .tools_lessons import (
+    VALID_ROLES, TAINTED_PROVENANCE, extract_lesson_candidates, lesson_candidate_instruction,
+    lesson_context, lesson_record_agent_candidate,
+)
 from . import browser_tabs
 
 AGENTS_DIR = BASE_DIR / "agents"
@@ -1081,6 +1085,7 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "status": meta.get("status"),
         "phase": meta.get("phase"),
         "title": meta.get("title"),
+        "role": meta.get("role"),
         "provider": meta.get("provider"),
         "model": meta.get("model"),
         "reasoning": meta.get("reasoning"),
@@ -1089,6 +1094,10 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "access_mode": meta.get("access_mode"),
         "permission_profile": meta.get("permission_profile"),
         "capability_profile": meta.get("capability_profile"),
+        "provenance_class": meta.get("provenance_class"),
+        "injected_lesson_ids": list(meta.get("injected_lesson_ids") or []),
+        "lesson_context_chars": int(meta.get("lesson_context_chars") or 0),
+        "lesson_candidate_ids": list(meta.get("lesson_candidate_ids") or []),
         "scope": meta.get("scope"),
         "scoped_mcp": bool(meta.get("scoped_mcp")),
         "access_mode_enforced": access_info["enforced"],
@@ -1181,8 +1190,14 @@ def _spawn_internal(
     idle_timeout_s: Optional[int] = None,
     retries: int = 0,
     project: Optional[str] = None,
+    role: Optional[str] = None,
+    provenance_class: str = "local",
 ) -> Dict[str, Any]:
     provider = provider.lower().strip()
+    clean_role = str(role or "").strip().lower() or None
+    if clean_role and clean_role not in VALID_ROLES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"role must be one of: {', '.join(sorted(VALID_ROLES))}.")
+    provenance_class = str(provenance_class or "local").strip().lower() or "local"
     if provider not in _PROVIDER_NAMES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"provider must be one of: {', '.join(sorted(_PROVIDER_NAMES))}")
     if not provider_enabled(provider):
@@ -1220,10 +1235,22 @@ def _spawn_internal(
         if access_mode == "read_only" else ""
     )
     scope_instruction = _scope_prompt(scope, permission_profile, provider)
+    injected_lesson_ids: List[str] = []
+    lesson_context_chars = 0
+    role_learning_instruction = ""
+    if clean_role:
+        learned_context = {"lesson_ids": [], "text": "", "chars": 0}
+        if provenance_class == "local":
+            learned_context = lesson_context(clean_role, user_prompt)
+        injected_lesson_ids = list(learned_context.get("lesson_ids") or [])
+        lesson_context_chars = int(learned_context.get("chars") or 0)
+        pieces = [str(learned_context.get("text") or "").strip(), lesson_candidate_instruction(clean_role)]
+        role_learning_instruction = "\n\n".join(piece for piece in pieces if piece)
     effective_prompt = (
         user_prompt
         + ("\n\n" + access_instruction if access_instruction else "")
         + "\n\n" + scope_instruction
+        + ("\n\n" + role_learning_instruction if role_learning_instruction else "")
         + "\n\n" + _handoff_instruction(result_style)
     )
     (path / "prompt.txt").write_text(user_prompt, encoding="utf-8")
@@ -1239,6 +1266,7 @@ def _spawn_internal(
         "agent_id": agent_id,
         "team_id": team_id,
         "title": (title or user_prompt.splitlines()[0][:100]).strip(),
+        "role": clean_role,
         "provider": provider,
         "binary": binary,
         "model": model,
@@ -1248,6 +1276,10 @@ def _spawn_internal(
         "access_mode": access_mode,
         "permission_profile": permission_profile,
         "capability_profile": capability_profile,
+        "provenance_class": provenance_class,
+        "injected_lesson_ids": injected_lesson_ids,
+        "lesson_context_chars": lesson_context_chars,
+        "lesson_candidate_ids": [],
         "scope": scope.to_dict(),
         "scoped_mcp": provider in {"opencode", "codex"},
         "mcp_endpoint": os.getenv("MAC_MCP_AGENT_ENDPOINT", "http://127.0.0.1:8765/mcp"),
@@ -1349,6 +1381,8 @@ def spawn_agent(
     parent_profile: str = "trusted",
     capability_profile: Optional[str] = None,
     project: Optional[str] = None,
+    role: Optional[str] = None,
+    provenance_class: str = "local",
 ) -> Dict[str, Any]:
     workdir = _resolve_cwd(cwd)
     effective_scope, permission_profile, effective_capability_profile = _requested_agent_scope(
@@ -1358,6 +1392,7 @@ def spawn_agent(
         settings, provider, prompt, model, reasoning, str(workdir), timeout_s, title,
         result_style, effective_scope.access_mode.value, effective_scope, permission_profile,
         capability_profile=effective_capability_profile, idle_timeout_s=idle_timeout_s, retries=retries, project=project,
+        role=role, provenance_class=provenance_class,
     )
 
 
@@ -1380,12 +1415,17 @@ def spawn_agents(
     parent_profile: str = "trusted",
     capability_profile: Optional[str] = None,
     project: Optional[str] = None,
+    role: Optional[str] = None,
+    provenance_class: str = "local",
 ) -> Dict[str, Any]:
     provider = str(provider or "").strip().lower()
     if provider not in _PROVIDER_NAMES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"provider must be one of: {', '.join(sorted(_PROVIDER_NAMES))}")
     if not provider_enabled(provider):
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"provider_disabled: {provider} is disabled in Mac MCP Settings > Subagents.")
+    team_role = str(role or "").strip().lower() or None
+    if team_role and team_role not in VALID_ROLES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"role must be one of: {', '.join(sorted(VALID_ROLES))}.")
     if not tasks or not isinstance(tasks, list):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "tasks is required.")
     if len(tasks) > MAX_TEAM_SIZE:
@@ -1407,11 +1447,18 @@ def spawn_agents(
         child_scope_raw = task.get("scope")
         if child_scope_raw is not None and not isinstance(child_scope_raw, dict):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].scope must be an object.")
+        child_role = str(task.get("role") or team_role or "").strip().lower() or None
+        if child_role and child_role not in VALID_ROLES:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"tasks[{index - 1}].role must be one of: {', '.join(sorted(VALID_ROLES))}.",
+            )
         normalized.append({
             "prompt": prompt,
             "title": str(task.get("title") or f"Agent {index}").strip(),
             "scope": child_scope_raw,
             "project": str(task.get("project") or project or "").strip() or None,
+            "role": child_role,
         })
 
     workdir = _resolve_cwd(cwd)
@@ -1424,6 +1471,8 @@ def spawn_agents(
     team_meta: Dict[str, Any] = {
         "team_id": team_id,
         "title": (title or f"{provider} team ({len(normalized)} agents)").strip(),
+        "role": team_role,
+        "provenance_class": str(provenance_class or "local").strip().lower() or "local",
         "provider": provider,
         "model": model,
         "reasoning": reasoning,
@@ -1480,6 +1529,7 @@ def spawn_agents(
                 result_style=result_style, access_mode=access_mode, scope=effective_scope,
                 permission_profile=permission_profile, capability_profile=effective_capability_profile, team_id=team_id,
                 idle_timeout_s=idle_timeout_s, retries=retries, project=task.get("project"),
+                role=task.get("role"), provenance_class=provenance_class,
             )
             spawned.append(item)
             team_meta["agent_ids"].append(item["agent_id"])
@@ -1573,6 +1623,9 @@ def wait_agents(
             "phase": item.get("phase"),
             "provider": item.get("provider"),
             "model": item.get("model"),
+            "role": item.get("role"),
+            "injected_lesson_ids": list(item.get("injected_lesson_ids") or []),
+            "lesson_candidate_ids": list(item.get("lesson_candidate_ids") or []),
             "duration_ms": item.get("duration_ms"),
             "first_event_latency_ms": item.get("first_event_latency_ms"),
             "idle_seconds": item.get("idle_seconds"),
@@ -1701,6 +1754,8 @@ def _agent_action_single(
             idle_timeout_s=meta.get("idle_timeout_s"),
             retries=int(meta.get("retries") or 0),
             project=meta.get("project"),
+            role=meta.get("role"),
+            provenance_class=str(meta.get("provenance_class") or "local"),
         )
 
     if not message or not message.strip():
@@ -1730,6 +1785,8 @@ def _agent_action_single(
         idle_timeout_s=meta.get("idle_timeout_s"),
         retries=int(meta.get("retries") or 0),
         project=meta.get("project"),
+        role=meta.get("role"),
+        provenance_class=str(meta.get("provenance_class") or "local"),
     )
 
 
@@ -1782,6 +1839,7 @@ def agent_action(
                 "prompt": prompt_path.read_text(encoding="utf-8", errors="replace"),
                 "title": child.get("title") or f"Agent {index}",
                 "project": child.get("project"),
+                "role": child.get("role"),
             })
         return spawn_agents(
             settings=settings, tasks=tasks, provider=team["provider"], model=team.get("model"),
@@ -1790,6 +1848,7 @@ def agent_action(
             result_style=team.get("result_style", "concise"), access_mode=team.get("access_mode", "read_only"),
             title=f"Retry: {team.get('title') or team_id}", parent_team_id=str(team_id),
             scope=team.get("scope"), parent_profile="trusted", project=team.get("project"),
+            role=team.get("role"), provenance_class=str(team.get("provenance_class") or "local"),
         )
     raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be cancel, message, retry, or despawn.")
 
@@ -2346,6 +2405,27 @@ def _worker(agent_id: str) -> int:
         if result_path.exists():
             result = result_path.read_text(encoding="utf-8", errors="replace").strip()
 
+    lesson_candidate_ids: List[str] = []
+    lesson_candidate_error: Optional[str] = None
+    role = str(meta.get("role") or "").strip().lower() or None
+    if result and role in VALID_ROLES:
+        clean_result, candidates = extract_lesson_candidates(result, role)
+        result = clean_result
+        evidence_refs = [f"agent:{agent_id}", f"attempt:{int(meta.get('attempt') or 1)}", f"provider:{meta.get('provider')}"]
+        if meta.get("team_id"):
+            evidence_refs.append(f"team:{meta.get('team_id')}")
+        if session_id:
+            evidence_refs.append(f"session:{session_id}")
+        for candidate in candidates:
+            try:
+                recorded = lesson_record_agent_candidate(
+                    **candidate, evidence_refs=evidence_refs, source="agent_run",
+                    provenance_class=str(meta.get("provenance_class") or "local"),
+                )
+                lesson_candidate_ids.append(str(recorded["lesson"]["lesson_id"]))
+            except Exception as exc:
+                lesson_candidate_error = str(exc)[:300]
+
     if not result:
         error_tail = _tail_text(stderr_path, max_lines=30, max_chars=3000)
         result = error_tail or "Agent finished without a final handoff. Check logs with get_agent(include_logs=true)."
@@ -2368,6 +2448,7 @@ def _worker(agent_id: str) -> int:
             "exit_code": exit_code, "ended_at": now, "updated_at": now,
             "session_id": session_id or current.get("resume_session_id"), "usage": usage,
             "result_truncated": was_truncated, "result_chars": len(result), "provider_pid": None,
+            "lesson_candidate_ids": lesson_candidate_ids, "lesson_candidate_error": lesson_candidate_error,
         })
         if final_status != "completed":
             if final_reason == "rate_limited":

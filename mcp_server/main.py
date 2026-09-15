@@ -18,7 +18,7 @@ from starlette.routing import Route, Mount
 
 from mcp.server.transport_security import TransportSecuritySettings
 from .security import RateLimiter, Settings, authenticate, client_ip, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger
-from .observability import ObservedFastMCP, TelemetryManager
+from .observability import ObservedFastMCP, TelemetryManager, current_security_session
 from .policy import current_policy_context, reset_policy_context, set_policy_context
 from .scoped_auth import resolve_request_identity
 from .dashboard_routes import create_dashboard_routes, rest_telemetry_middleware
@@ -57,6 +57,7 @@ from .tools_interactive import ask_choice, ask_confirmation, ask_user
 from .tools_voice import ask_user_voice
 from .tools_update import mac_mcp_update
 from .tools_memory import memory_add, memory_search, memory_get, memory_update, memory_delete
+from .tools_lessons import lesson_consolidate, lesson_feedback, lesson_record, lesson_search
 from .tools_skills import skill_list, skill_search, skill_get, skill_register, skill_update_index
 from .menu_app_bootstrap import bootstrap_menu_app_and_legacy_state
 from .data_guard import format_security_approval_question
@@ -206,6 +207,13 @@ def create_app():
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
         security_approval_provider=security_approval,
     )
+
+    def current_provenance_class() -> str:
+        pair = current_security_session()
+        if pair is None:
+            return "local"
+        state = mcp.security_context.state_for_public_session(pair[1])
+        return str((state or {}).get("provenance_class") or "local")
 
     class SecurityMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
@@ -401,7 +409,8 @@ def create_app():
             "ChatGPT accepts project=...; when omitted it uses CHATGPT_SUBAGENT_PROJECT if locally configured, "
             "otherwise it starts a normal new chat. ChatGPT long turns use bounded checkpoint/continue and "
             "rate-limit cooldown/resume protection; reasoning defaults to high unless explicitly overridden. "
-            "Supports idle timeout and bounded retries. "
+            "Supports idle timeout and bounded retries. Optional role=coder|reviewer|orchestrator injects only relevant, approved "
+            "role lessons with bounded context; candidates never auto-activate. "
             "Codex enforces access_mode; OpenCode read_only is refused; ChatGPT access_mode is behavioral."
         ),
     )
@@ -412,7 +421,7 @@ def create_app():
                      idle_timeout_s: Optional[int] = None, retries: int = 0,
                      scope: Optional[Dict[str, Any]] = None,
                      capability_profile: Optional[str] = None,
-                     project: Optional[str] = None) -> Dict[str, Any]:
+                     project: Optional[str] = None, role: Optional[str] = None) -> Dict[str, Any]:
         context = current_policy_context()
         return _log(audit_logger, "spawn_agent",
                     lambda: spawn_agent(settings, provider=provider, prompt=prompt, model=model,
@@ -420,7 +429,8 @@ def create_app():
                                         title=title, result_style=result_style, access_mode=access_mode,
                                         idle_timeout_s=idle_timeout_s, retries=retries, scope=scope,
                                         parent_scope=context.scope, parent_profile=context.profile,
-                                        capability_profile=capability_profile, project=project))
+                                        capability_profile=capability_profile, project=project, role=role,
+                                        provenance_class=current_provenance_class()))
 
     @mcp.tool(
         name="spawn_agents",
@@ -428,7 +438,8 @@ def create_app():
             "Spawn 1-10 background agents as one team in a single call. All children inherit provider, model, "
             "reasoning and access_mode. ChatGPT accepts project=... as the team default and task.project overrides. "
             "If neither is set it uses CHATGPT_SUBAGENT_PROJECT when locally configured. ChatGPT workers share "
-            "post-throttle cooldown/staggering so a temporary web limit does not trigger a retry storm. Returns immediately."
+            "post-throttle cooldown/staggering so a temporary web limit does not trigger a retry storm. Optional team role or "
+            "task.role enables bounded role-learning context per child. Returns immediately."
         ),
     )
     def _spawn_agents(tasks: List[Dict[str, Any]], provider: str, model: Optional[str] = None,
@@ -438,7 +449,7 @@ def create_app():
                       access_mode: str = "read_only", title: Optional[str] = None,
                       scope: Optional[Dict[str, Any]] = None,
                       capability_profile: Optional[str] = None,
-                      project: Optional[str] = None) -> Dict[str, Any]:
+                      project: Optional[str] = None, role: Optional[str] = None) -> Dict[str, Any]:
         context = current_policy_context()
         return _log(audit_logger, "spawn_agents",
                     lambda: spawn_agents(settings, tasks=tasks, provider=provider, model=model,
@@ -446,7 +457,8 @@ def create_app():
                                          idle_timeout_s=idle_timeout_s, retries=retries,
                                          result_style=result_style, access_mode=access_mode, title=title,
                                          scope=scope, parent_scope=context.scope, parent_profile=context.profile,
-                                         capability_profile=capability_profile, project=project))
+                                         capability_profile=capability_profile, project=project, role=role,
+                                         provenance_class=current_provenance_class()))
 
     @mcp.tool(
         name="wait_agents",
@@ -1172,6 +1184,70 @@ def create_app():
             _log, audit_logger, "memory_delete",
             lambda: memory_delete(memory_id=memory_id, confirm=confirm, date=date,
                                   date_from=date_from, date_to=date_to, limit=limit),
+        )
+
+    # ── Role-learning lessons ────────────────────────────────────────────────
+    @mcp.tool(
+        name="lesson_search",
+        description=(
+            "Search structured role-learning lessons for coder/reviewer/orchestrator. Only explicitly approved active lessons "
+            "are injected into future workers; candidates remain quarantined until lesson_feedback(outcome='approve')."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    )
+    async def _lesson_search(role: Optional[str] = None, query: Optional[str] = None,
+                             state: Optional[str] = None, limit: int = 20) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "lesson_search",
+            lambda: lesson_search(role=role, query=query, state=state, limit=limit),
+        )
+
+    @mcp.tool(
+        name="lesson_record",
+        description=(
+            "Record a structured role-learning candidate from a verified correction or workflow finding. This never auto-activates; "
+            "approve it separately with lesson_feedback. Web-tainted provenance is rejected."
+        ),
+    )
+    async def _lesson_record(role: str, trigger_context: str, mistake_pattern: str, preferred_action: str,
+                             evidence_refs: Optional[List[str]] = None, confidence: float = 0.5,
+                             source: Optional[str] = None) -> Dict[str, Any]:
+        provenance = current_provenance_class()
+        return await asyncio.to_thread(
+            _log, audit_logger, "lesson_record",
+            lambda: lesson_record(role=role, trigger_context=trigger_context, mistake_pattern=mistake_pattern,
+                                  preferred_action=preferred_action, evidence_refs=evidence_refs, confidence=confidence,
+                                  source=source, provenance_class=provenance),
+        )
+
+    @mcp.tool(
+        name="lesson_feedback",
+        description=(
+            "Review or update one lesson. outcome: approve, success, failure, disable, enable. Failure lowers confidence and repeated "
+            "failure can auto-disable; web-tainted provenance cannot modify trusted lessons."
+        ),
+    )
+    async def _lesson_feedback(lesson_id: str, outcome: str, evidence_ref: Optional[str] = None,
+                               note: Optional[str] = None) -> Dict[str, Any]:
+        provenance = current_provenance_class()
+        return await asyncio.to_thread(
+            _log, audit_logger, "lesson_feedback",
+            lambda: lesson_feedback(lesson_id=lesson_id, outcome=outcome, evidence_ref=evidence_ref, note=note,
+                                    provenance_class=provenance),
+        )
+
+    @mcp.tool(
+        name="lesson_consolidate",
+        description=(
+            "Inspect duplicate/conflicting role lessons. apply=false is a dry report; apply=true only disables stale low-confidence "
+            "lessons and never silently chooses a winner between contradictory preferred actions."
+        ),
+    )
+    async def _lesson_consolidate(role: Optional[str] = None, apply: bool = False) -> Dict[str, Any]:
+        provenance = current_provenance_class()
+        return await asyncio.to_thread(
+            _log, audit_logger, "lesson_consolidate",
+            lambda: lesson_consolidate(role=role, apply=apply, provenance_class=provenance),
         )
 
     # ── Agent Skills tools ───────────────────────────────────────────────────

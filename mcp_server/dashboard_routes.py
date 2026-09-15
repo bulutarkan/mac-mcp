@@ -427,8 +427,9 @@ def create_dashboard_routes(
         for item in data.get("agents", []):
             public_agents.append({
                 key: item.get(key) for key in (
-                    "agent_id", "team_id", "status", "phase", "title", "provider", "model", "reasoning",
-                    "access_mode", "capability_profile", "started_at", "ended_at", "duration_ms", "first_event_latency_ms",
+                    "agent_id", "team_id", "status", "phase", "title", "role", "provider", "model", "reasoning",
+                    "access_mode", "capability_profile", "provenance_class", "injected_lesson_ids",
+                    "lesson_context_chars", "lesson_candidate_ids", "started_at", "ended_at", "duration_ms", "first_event_latency_ms",
                     "idle_seconds", "step_count", "tool_call_count", "last_tool", "last_tool_duration_ms",
                     "turn_count", "turn_elapsed_ms", "turn_budget_s", "hard_tool_budget_s",
                     "checkpoint_count", "checkpoint_pending", "last_checkpoint_at",
