@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CryptoKit
 import Darwin
 import Foundation
 import SafariServices
@@ -450,6 +451,79 @@ enum SteeringPostError: Error {
     case server(status: Int, code: String, reason: String?)
 }
 
+struct PersistedPendingSteeringSubmission: Codable, Equatable {
+    let schemaVersion: Int
+    let clientInstructionID: String
+    let sessionID: String
+    let textHash: String
+    let createdAt: Double
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case clientInstructionID = "client_instruction_id"
+        case sessionID = "session_id"
+        case textHash = "text_hash"
+        case createdAt = "created_at"
+    }
+}
+
+enum PendingSteeringSubmissionStore {
+    static let schemaVersion = 1
+    static let defaultMaxAgeSeconds: Double = 3600
+
+    static func stateURL() -> URL {
+        let env = ProcessInfo.processInfo.environment
+        if let configured = env["MAC_MCP_PENDING_STEERING_STATE_FILE"], !configured.isEmpty {
+            return URL(fileURLWithPath: NSString(string: configured).expandingTildeInPath)
+        }
+        let stateDirectory: URL
+        if let configured = env["MAC_MCP_STATE_DIR"], !configured.isEmpty {
+            stateDirectory = URL(fileURLWithPath: NSString(string: configured).expandingTildeInPath)
+        } else {
+            stateDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".mac-mcp")
+        }
+        return stateDirectory.appendingPathComponent("pending-steering.json")
+    }
+
+    static func textHash(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func load(now: Double = Date().timeIntervalSince1970, maxAgeSeconds: Double = defaultMaxAgeSeconds) -> PersistedPendingSteeringSubmission? {
+        let url = stateURL()
+        guard let data = try? Data(contentsOf: url),
+              let state = try? JSONDecoder().decode(PersistedPendingSteeringSubmission.self, from: data),
+              state.schemaVersion == schemaVersion,
+              !state.clientInstructionID.isEmpty,
+              !state.sessionID.isEmpty,
+              !state.textHash.isEmpty else {
+            return nil
+        }
+        guard now - state.createdAt <= max(60, maxAgeSeconds), now + 60 >= state.createdAt else {
+            clear()
+            return nil
+        }
+        return state
+    }
+
+    static func save(_ state: PersistedPendingSteeringSubmission) throws {
+        let url = stateURL()
+        let parent = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: parent,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let data = try JSONEncoder().encode(state)
+        try data.write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    static func clear() {
+        try? FileManager.default.removeItem(at: stateURL())
+    }
+}
+
 enum DashboardConnectionState: String, Equatable {
     case connecting
     case connected
@@ -519,6 +593,8 @@ final class AppState: ObservableObject {
     private var pendingSteeringClientInstructionID: String?
     private var pendingSteeringSessionID: String?
     private var pendingSteeringText: String?
+    private var pendingSteeringTextHash: String?
+    private var pendingSteeringRestoredFromDisk = false
     private var lastNgrokProcessCheckAt = 0.0
     private static let activePollIntervalSeconds = 2.5
     private static let idlePollIntervalSeconds = 12.0
@@ -526,6 +602,7 @@ final class AppState: ObservableObject {
     private static let maxRetryIntervalSeconds = 30.0
 
     init(startBackgroundTasks: Bool = true) {
+        restorePendingSteeringSubmission()
         refreshSafariExtensionState()
         if startBackgroundTasks { startTasks() }
     }
@@ -956,16 +1033,47 @@ final class AppState: ObservableObject {
         }
     }
 
+    private func restorePendingSteeringSubmission() {
+        guard let restored = PendingSteeringSubmissionStore.load() else { return }
+        pendingSteeringClientInstructionID = restored.clientInstructionID
+        pendingSteeringSessionID = restored.sessionID
+        pendingSteeringTextHash = restored.textHash
+        pendingSteeringText = nil
+        pendingSteeringRestoredFromDisk = true
+        steeringStatus = "Checking the outcome of a steering send from the previous menu-app run…"
+    }
+
+    private func persistPendingSteeringSubmission(clientInstructionID: String, sessionID: String, textHash: String) {
+        let state = PersistedPendingSteeringSubmission(
+            schemaVersion: PendingSteeringSubmissionStore.schemaVersion,
+            clientInstructionID: clientInstructionID,
+            sessionID: sessionID,
+            textHash: textHash,
+            createdAt: Date().timeIntervalSince1970
+        )
+        try? PendingSteeringSubmissionStore.save(state)
+    }
+
     private func steeringClientInstructionID(sessionID: String, text: String) -> String {
+        let textHash = PendingSteeringSubmissionStore.textHash(text)
         if pendingSteeringSessionID == sessionID,
-           pendingSteeringText == text,
+           (pendingSteeringText == text || pendingSteeringTextHash == textHash),
            let existing = pendingSteeringClientInstructionID {
+            pendingSteeringText = text
+            pendingSteeringTextHash = textHash
             return existing
         }
         let created = UUID().uuidString.lowercased()
         pendingSteeringClientInstructionID = created
         pendingSteeringSessionID = sessionID
         pendingSteeringText = text
+        pendingSteeringTextHash = textHash
+        pendingSteeringRestoredFromDisk = false
+        persistPendingSteeringSubmission(
+            clientInstructionID: created,
+            sessionID: sessionID,
+            textHash: textHash
+        )
         return created
     }
 
@@ -973,6 +1081,9 @@ final class AppState: ObservableObject {
         pendingSteeringClientInstructionID = nil
         pendingSteeringSessionID = nil
         pendingSteeringText = nil
+        pendingSteeringTextHash = nil
+        pendingSteeringRestoredFromDisk = false
+        PendingSteeringSubmissionStore.clear()
     }
 
     private func recoverSteeringMessageID(clientInstructionID: String, sessionID: String) -> String? {
@@ -1073,6 +1184,7 @@ final class AppState: ObservableObject {
                         return
                     case "queue_full":
                         steeringStatus = "That agent already has too many queued steering messages."
+                        clearPendingSteeringSubmission()
                     case "idempotency_conflict":
                         steeringStatus = reason == "client_instruction_id_belongs_to_another_session"
                             ? "The steering retry key no longer belongs to this agent session."
@@ -1080,6 +1192,7 @@ final class AppState: ObservableObject {
                         clearPendingSteeringSubmission()
                     default:
                         steeringStatus = "Could not queue steering message (\(code))."
+                        clearPendingSteeringSubmission()
                     }
                 }
                 await refresh()
@@ -1148,19 +1261,37 @@ final class AppState: ObservableObject {
             setIfChanged(\.selectedSteeringSessionID, nil)
         }
 
+        var recoveredPendingThisSnapshot = false
         if lastSteeringMessageID == nil,
            let clientInstructionID = pendingSteeringClientInstructionID,
-           let pendingSessionID = pendingSteeringSessionID,
-           let recovered = envelope.recent.first(where: {
-               $0.clientInstructionID == clientInstructionID && $0.sessionID == pendingSessionID
-           }) {
-            lastSteeringMessageID = recovered.id
-            steeringPrompt = ""
-            clearPendingSteeringSubmission()
-            setIfChanged(\.steeringStatus, "Recovered steering after a delayed response.")
+           let pendingSessionID = pendingSteeringSessionID {
+            if let recovered = envelope.recent.first(where: {
+                $0.clientInstructionID == clientInstructionID && $0.sessionID == pendingSessionID
+            }) {
+                let restoredFromDisk = pendingSteeringRestoredFromDisk
+                lastSteeringMessageID = recovered.id
+                recoveredPendingThisSnapshot = true
+                steeringPrompt = ""
+                clearPendingSteeringSubmission()
+                setIfChanged(
+                    \.steeringStatus,
+                    restoredFromDisk
+                        ? "Recovered steering after the menu app relaunched."
+                        : "Recovered steering after a delayed response."
+                )
+            } else if pendingSteeringRestoredFromDisk {
+                let liveSessionStillExists = sessionsForSelection.contains(where: { $0.sessionID == pendingSessionID })
+                setIfChanged(
+                    \.steeringStatus,
+                    liveSessionStillExists
+                        ? "Previous steering outcome is uncertain after relaunch. Re-enter the same prompt to retry with its original idempotency key."
+                        : "Previous steering outcome could not be confirmed because that agent session is no longer active."
+                )
+            }
         }
 
-        if let messageID = lastSteeringMessageID,
+        if !recoveredPendingThisSnapshot,
+           let messageID = lastSteeringMessageID,
            let recent = envelope.recent.first(where: { $0.id == messageID }) {
             switch recent.effectiveLifecycleState {
             case .queued:
