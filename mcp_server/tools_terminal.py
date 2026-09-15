@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 from fastapi import HTTPException, status
 
 from .security import Settings, require_shell_enabled, truncate
+from .workspace_sandbox import shell_execution_plan
 
 
 def _timeout(settings: Settings, timeout_s: Optional[int]) -> int:
@@ -40,17 +41,9 @@ def run_command(settings: Settings, command: str, timeout_s: Optional[int] = Non
     """Run any shell command in zsh login mode."""
     require_shell_enabled(settings)
     timeout = _timeout(settings, timeout_s)
-    env = os.environ.copy()
-    env.update({
-        "HOME": str(Path.home()),
-        "USER": os.getenv("USER", Path.home().name),
-        "LOGNAME": os.getenv("LOGNAME", os.getenv("USER", Path.home().name)),
-        "PATH": f"{os.environ.get('PATH', '')}:/usr/local/bin:/opt/homebrew/bin:/opt/homebrew/sbin",
-        "LANG": "en_US.UTF-8",
-        "LC_ALL": "en_US.UTF-8",
-    })
-
-    argv = ["/bin/zsh", "-lc", command]
+    plan = shell_execution_plan(settings.workdir)
+    env = plan.env
+    argv = plan.argv(command)
     start = time.perf_counter()
     proc = subprocess.Popen(
         argv,
@@ -59,7 +52,7 @@ def run_command(settings: Settings, command: str, timeout_s: Optional[int] = Non
         stderr=subprocess.PIPE,
         text=True,
         env=env,
-        cwd=str(settings.workdir),
+        cwd=str(plan.cwd),
         start_new_session=True,
     )
     try:
@@ -80,6 +73,8 @@ def run_command(settings: Settings, command: str, timeout_s: Optional[int] = Non
         "stderr": stderr,
         "duration_ms": duration_ms,
         "command": command,
+        "sandboxed": plan.sandboxed,
+        "cwd": str(plan.cwd),
     }
 
 

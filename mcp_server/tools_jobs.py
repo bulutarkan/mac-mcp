@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import HTTPException, status
 
 from .security import BASE_DIR, Settings, require_shell_enabled, truncate
+from .workspace_sandbox import shell_execution_plan
 
 JOBS_DIR = BASE_DIR / "jobs"
 DEFAULT_JOB_ENV = {
@@ -282,11 +283,9 @@ def start_background_job(
     (job_path / "stdout.log").touch()
     (job_path / "stderr.log").touch()
 
-    workdir = Path(cwd).expanduser().resolve() if cwd else settings.workdir
-    if not workdir.exists() or not workdir.is_dir():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"cwd does not exist or is not a directory: {workdir}")
-
-    argv = ["/bin/zsh", "-lc", command]
+    plan = shell_execution_plan(settings.workdir, requested_cwd=cwd, extra_env=env)
+    workdir = plan.cwd
+    argv = plan.argv(command)
     started_at = _now()
     meta = {
         "job_id": job_id,
@@ -301,6 +300,7 @@ def start_background_job(
         "ended_at": None,
         "timeout_s": timeout_s,
         "no_output_timeout_s": no_output_timeout_s,
+        "sandboxed": plan.sandboxed,
     }
     _write_meta(job_id, meta)
 
@@ -308,7 +308,7 @@ def start_background_job(
         proc = subprocess.Popen(
             argv,
             cwd=str(workdir),
-            env=_base_env(env),
+            env=plan.env if plan.sandboxed else _base_env(env),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -330,7 +330,10 @@ def start_background_job(
     threading.Thread(target=_append_stream, args=(job_id, proc.stderr, "stderr.log"), daemon=True).start()
     threading.Thread(target=_watch_process, args=(job_id, timeout_s, no_output_timeout_s), daemon=True).start()
 
-    return {"ok": True, "job_id": job_id, "pid": proc.pid, "status": "running", "command": command, "cwd": str(workdir)}
+    return {
+        "ok": True, "job_id": job_id, "pid": proc.pid, "status": "running",
+        "command": command, "cwd": str(workdir), "sandboxed": plan.sandboxed,
+    }
 
 
 def get_job_status(settings: Settings, job_id: str) -> Dict[str, Any]:
