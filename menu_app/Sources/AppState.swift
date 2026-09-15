@@ -142,6 +142,22 @@ struct AgentInfo: Decodable, Identifiable, Equatable {
 
 struct AgentsEnvelope: Decodable { let agents: [AgentInfo] }
 
+struct ProviderInfo: Decodable, Identifiable, Equatable {
+    let id: String
+    let name: String
+    let enabled: Bool
+    let detected: Bool
+    let binaryPath: String?
+    let version: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, enabled, detected, version
+        case binaryPath = "binary_path"
+    }
+}
+
+struct ProvidersEnvelope: Decodable { let providers: [ProviderInfo] }
+
 enum SteeringActivityState: String, Decodable, Equatable {
     case working
     case idle
@@ -480,6 +496,7 @@ final class AppState: ObservableObject {
     @Published var securitySemantics: SecuritySemanticsEnvelope?
     @Published var permissionProfileChanging = false
     @Published var agents: [AgentInfo] = []
+    @Published var providerStatuses: [ProviderInfo] = []
     @Published var steeringSessions: [SteeringSession] = []
     @Published var steeringRecent: [SteeringRecent] = []
     @Published var selectedSteeringSessionID: String?
@@ -700,6 +717,7 @@ final class AppState: ObservableObject {
 
             async let eventsFetch: EventsEnvelope = fetch(base.appendingPathComponent("dashboard/api/events"), query: ["hours": "1", "limit": "20"])
             async let agentsFetch: AgentsEnvelope = fetch(base.appendingPathComponent("dashboard/api/agents"), query: ["limit": "20"])
+            async let providersFetch: ProvidersEnvelope = fetch(base.appendingPathComponent("dashboard/api/providers"), query: [:])
             async let steeringFetch: SteeringEnvelope = fetch(base.appendingPathComponent("dashboard/api/steering"), query: [:])
             async let securityFetch: SecuritySemanticsEnvelope = fetch(base.appendingPathComponent("dashboard/api/security/semantics"), query: [:])
 
@@ -726,6 +744,12 @@ final class AppState: ObservableObject {
                 secondaryIssue = secondaryIssue ?? "Agents: \(Self.issueText(for: error))"
             }
             setIfChanged(\.activeAgents, resolvedActiveAgents)
+            do {
+                let providersEnvelope = try await providersFetch
+                setIfChanged(\.providerStatuses, providersEnvelope.providers)
+            } catch {
+                secondaryIssue = secondaryIssue ?? "Providers: \(Self.issueText(for: error))"
+            }
             do {
                 let steeringEnvelope = try await steeringFetch
                 applySteeringSnapshot(steeringEnvelope)

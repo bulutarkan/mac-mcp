@@ -19,18 +19,32 @@ struct MenuSettings: Codable {
     struct Steering: Codable {
         var session_ttl_minutes: Int
     }
+    struct Provider: Codable {
+        var enabled: Bool
+        var binary_path: String?
+        var default_project: String?
+    }
+    struct Subagents: Codable {
+        var providers: [String: Provider]
+    }
 
     var experimental_tools: [String: ExperimentalTool]
     var voice: Voice
     var server: Server
     var steering: Steering?
+    var subagents: Subagents?
 
     static func defaults() -> MenuSettings {
         MenuSettings(
             experimental_tools: ["ask_user_voice": ExperimentalTool(enabled: true)],
             voice: Voice(language: "auto", input_device: "auto", output_device: "system", tts_rate: "-5%", timeout_s: 45, voice: "tr-TR-AhmetNeural"),
             server: Server(port: 8000, cli_path: "", ngrok_on_start: false),
-            steering: Steering(session_ttl_minutes: 10)
+            steering: Steering(session_ttl_minutes: 10),
+            subagents: Subagents(providers: [
+                "opencode": Provider(enabled: true, binary_path: nil, default_project: nil),
+                "codex": Provider(enabled: true, binary_path: nil, default_project: nil),
+                "chatgpt": Provider(enabled: false, binary_path: nil, default_project: nil),
+            ])
         )
     }
 }
@@ -48,6 +62,13 @@ final class SettingsStore: ObservableObject {
     @Published var cliPath = ""
     @Published var ngrokOnStart = false
     @Published var steeringSessionMinutes = 10
+    @Published var opencodeEnabled = true
+    @Published var codexEnabled = true
+    @Published var chatgptEnabled = false
+    @Published var opencodeBinaryPath = ""
+    @Published var codexBinaryPath = ""
+    @Published var chatgptBinaryPath = ""
+    @Published var chatgptDefaultProject = ""
     @Published var hasGroqKey = false
 
     let path: URL
@@ -81,6 +102,14 @@ final class SettingsStore: ObservableObject {
         cliPath = current.server.cli_path
         ngrokOnStart = current.server.ngrok_on_start
         steeringSessionMinutes = max(1, current.steering?.session_ttl_minutes ?? 10)
+        let providers = current.subagents?.providers ?? MenuSettings.defaults().subagents?.providers ?? [:]
+        opencodeEnabled = providers["opencode"]?.enabled ?? true
+        codexEnabled = providers["codex"]?.enabled ?? true
+        chatgptEnabled = providers["chatgpt"]?.enabled ?? false
+        opencodeBinaryPath = providers["opencode"]?.binary_path ?? ""
+        codexBinaryPath = providers["codex"]?.binary_path ?? ""
+        chatgptBinaryPath = providers["chatgpt"]?.binary_path ?? ""
+        chatgptDefaultProject = providers["chatgpt"]?.default_project ?? ""
         if cliPath.isEmpty { cliPath = defaultCLIPath() }
     }
 
@@ -89,11 +118,34 @@ final class SettingsStore: ObservableObject {
             experimental_tools: ["ask_user_voice": .init(enabled: voiceEnabled)],
             voice: .init(language: language, input_device: inputDevice, output_device: outputDevice, tts_rate: ttsRate, timeout_s: timeoutSeconds, voice: voiceName),
             server: .init(port: serverPort, cli_path: cliPath, ngrok_on_start: ngrokOnStart),
-            steering: .init(session_ttl_minutes: max(1, steeringSessionMinutes))
+            steering: .init(session_ttl_minutes: max(1, steeringSessionMinutes)),
+            subagents: .init(providers: [
+                "opencode": .init(enabled: opencodeEnabled, binary_path: opencodeBinaryPath.nilIfEmpty, default_project: nil),
+                "codex": .init(enabled: codexEnabled, binary_path: codexBinaryPath.nilIfEmpty, default_project: nil),
+                "chatgpt": .init(enabled: chatgptEnabled, binary_path: chatgptBinaryPath.nilIfEmpty, default_project: chatgptDefaultProject.nilIfEmpty),
+            ])
         )
         let data = try JSONEncoder.pretty.encode(payload)
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: path, options: .atomic)
+    }
+
+    func providerEnabled(_ id: String) -> Bool {
+        switch id {
+        case "opencode": return opencodeEnabled
+        case "codex": return codexEnabled
+        case "chatgpt": return chatgptEnabled
+        default: return false
+        }
+    }
+
+    func setProviderEnabled(_ id: String, enabled: Bool) {
+        switch id {
+        case "opencode": opencodeEnabled = enabled
+        case "codex": codexEnabled = enabled
+        case "chatgpt": chatgptEnabled = enabled
+        default: return
+        }
     }
 
     func saveGroqKey(_ value: String) throws {
@@ -124,5 +176,12 @@ private extension JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return encoder
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        let value = trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 }

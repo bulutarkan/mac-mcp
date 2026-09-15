@@ -12,6 +12,14 @@ struct MacMCPMenuApp: App {
                 .accessibilityLabel(menuBarAccessibilityLabel)
         }
         .menuBarExtraStyle(.window)
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    SettingsWindowController.shared.show(state: state, settings: state.settings)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+        }
     }
 
     private var menuBarSymbol: String {

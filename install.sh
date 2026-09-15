@@ -14,10 +14,17 @@ BIN_DIR="${MAC_MCP_BIN_DIR:-$HOME/.local/bin}"
 CLI_PATH="$BIN_DIR/mac-mcp"
 APP_PATH="${MAC_MCP_APP_PATH:-$HOME/Applications/Mac MCP.app}"
 STATE_DIR="${MAC_MCP_STATE_DIR:-$HOME/.mac-mcp}"
+CHATGPT_CLI_REPO_URL="${MAC_MCP_CHATGPT_CLI_REPO_URL:-https://github.com/bulutarkan/chatgpt-web-cli.git}"
+CHATGPT_CLI_SOURCE_DIR="${MAC_MCP_CHATGPT_CLI_SOURCE_DIR:-$HOME/Projects/chatgpt-web-cli}"
+CHATGPT_CLI_LINK="$BIN_DIR/chatgpt-web"
 
 BREW_BIN=""
 GIT_BIN=""
 PYTHON_BIN=""
+NODE_BIN=""
+NPM_BIN=""
+CHATGPT_CLI_BINARY=""
+CHATGPT_PROVIDER_ENABLED=0
 MACOS_MAJOR=""
 MAC_ARCH=""
 INSTALL_TMP=""
@@ -26,6 +33,8 @@ CREATED_SOURCE=0
 CREATED_RUNTIME=0
 CREATED_CLI=0
 CREATED_APP=0
+CREATED_CHATGPT_SOURCE=0
+CREATED_CHATGPT_LINK=0
 BACKED_UP_APP=0
 APP_BACKUP_PATH=""
 
@@ -98,6 +107,12 @@ cleanup() {
     fi
     if [[ "$CREATED_SOURCE" -eq 1 && -d "$SOURCE_DIR" ]]; then
       /bin/rm -rf "$SOURCE_DIR" || true
+    fi
+    if [[ "$CREATED_CHATGPT_LINK" -eq 1 && -L "$CHATGPT_CLI_LINK" ]]; then
+      /bin/rm -f "$CHATGPT_CLI_LINK" || true
+    fi
+    if [[ "$CREATED_CHATGPT_SOURCE" -eq 1 && -d "$CHATGPT_CLI_SOURCE_DIR" ]]; then
+      /bin/rm -rf "$CHATGPT_CLI_SOURCE_DIR" || true
     fi
   fi
 }
@@ -211,6 +226,43 @@ resolve_python() {
       return 0
     fi
   done
+  return 1
+}
+
+resolve_node() {
+  local candidate=""
+  for candidate in "${MAC_MCP_NODE:-}" /opt/homebrew/bin/node /usr/local/bin/node "$(command -v node 2>/dev/null || true)"; do
+    [[ -z "$candidate" ]] && continue
+    if [[ -x "$candidate" ]] && "$candidate" --version >/dev/null 2>&1; then
+      NODE_BIN="$candidate"
+      break
+    fi
+  done
+  [[ -n "$NODE_BIN" ]] || return 1
+  for candidate in "${MAC_MCP_NPM:-}" /opt/homebrew/bin/npm /usr/local/bin/npm "$(command -v npm 2>/dev/null || true)"; do
+    [[ -z "$candidate" ]] && continue
+    if [[ -x "$candidate" ]] && "$candidate" --version >/dev/null 2>&1; then
+      NPM_BIN="$candidate"
+      return 0
+    fi
+  done
+  NODE_BIN=""
+  return 1
+}
+
+resolve_chatgpt_cli() {
+  local candidate=""
+  for candidate in \
+    "${CHATGPT_WEB_CLI_BINARY:-}" \
+    "$(command -v chatgpt-web 2>/dev/null || true)" \
+    "$CHATGPT_CLI_SOURCE_DIR/bin/chatgpt"; do
+    [[ -z "$candidate" ]] && continue
+    if [[ -x "$candidate" ]]; then
+      CHATGPT_CLI_BINARY="$candidate"
+      return 0
+    fi
+  done
+  CHATGPT_CLI_BINARY=""
   return 1
 }
 
@@ -387,6 +439,121 @@ handle_optional_helpers() {
   fi
 }
 
+handle_optional_chatgpt_cli() {
+  section "Optional ChatGPT Web CLI"
+  warn "This experimental provider automates chatgpt.com through your own authenticated browser session."
+  warn "It is not an official OpenAI CLI or API integration. Use it at your own risk."
+
+  if resolve_chatgpt_cli; then
+    ok "Detected ChatGPT Web CLI: $CHATGPT_CLI_BINARY"
+    if ask_yes_no "Enable the detected ChatGPT Web CLI for Mac MCP Subagents?" "yes" "MAC_MCP_ENABLE_CHATGPT_CLI"; then
+      CHATGPT_PROVIDER_ENABLED=1
+    else
+      CHATGPT_PROVIDER_ENABLED=0
+      info "ChatGPT Web CLI will remain disabled and hidden from the Subagent catalog."
+    fi
+    return 0
+  fi
+
+  info "ChatGPT Web CLI is not installed."
+  if ! ask_yes_no "Install the experimental ChatGPT Web CLI? (Use it at your own risk)" "no" "MAC_MCP_INSTALL_CHATGPT_CLI"; then
+    CHATGPT_PROVIDER_ENABLED=0
+    info "Skipping ChatGPT Web CLI. The provider will be disabled and hidden from the Subagent catalog."
+    return 0
+  fi
+
+  if ! resolve_node; then
+    if resolve_brew && ask_yes_no "Node.js is required. Install Node.js with Homebrew?" "yes" "MAC_MCP_INSTALL_NODE"; then
+      "$BREW_BIN" install node || { warn "Node.js installation failed. ChatGPT Web CLI will remain disabled."; CHATGPT_PROVIDER_ENABLED=0; return 0; }
+      resolve_node || { warn "Node.js/npm could not be detected after installation. ChatGPT Web CLI will remain disabled."; CHATGPT_PROVIDER_ENABLED=0; return 0; }
+    else
+      warn "Node.js and npm are required for ChatGPT Web CLI. Provider will remain disabled."
+      CHATGPT_PROVIDER_ENABLED=0
+      return 0
+    fi
+  fi
+
+  if [[ -e "$CHATGPT_CLI_SOURCE_DIR" || -L "$CHATGPT_CLI_SOURCE_DIR" ]]; then
+    warn "ChatGPT Web CLI target already exists but no executable was detected: $CHATGPT_CLI_SOURCE_DIR"
+    warn "The installer will not overwrite it. Provider will remain disabled."
+    CHATGPT_PROVIDER_ENABLED=0
+    return 0
+  fi
+
+  /bin/mkdir -p "$(/usr/bin/dirname "$CHATGPT_CLI_SOURCE_DIR")"
+  info "Cloning the optional ChatGPT Web CLI."
+  if ! "$GIT_BIN" clone --quiet "$CHATGPT_CLI_REPO_URL" "$CHATGPT_CLI_SOURCE_DIR"; then
+    warn "ChatGPT Web CLI could not be downloaded. Mac MCP installation will continue with that provider disabled."
+    /bin/rm -rf "$CHATGPT_CLI_SOURCE_DIR" || true
+    CHATGPT_PROVIDER_ENABLED=0
+    return 0
+  fi
+  CREATED_CHATGPT_SOURCE=1
+
+  if ! (cd "$CHATGPT_CLI_SOURCE_DIR" && "$NPM_BIN" install --omit=dev --ignore-scripts --no-audit --no-fund); then
+    warn "ChatGPT Web CLI dependencies could not be installed. Provider will remain disabled."
+    /bin/rm -rf "$CHATGPT_CLI_SOURCE_DIR" || true
+    CREATED_CHATGPT_SOURCE=0
+    CHATGPT_PROVIDER_ENABLED=0
+    return 0
+  fi
+
+  /bin/chmod +x "$CHATGPT_CLI_SOURCE_DIR/bin/chatgpt" 2>/dev/null || true
+  if ! resolve_chatgpt_cli; then
+    warn "ChatGPT Web CLI installed but its executable was not found. Provider will remain disabled."
+    CHATGPT_PROVIDER_ENABLED=0
+    return 0
+  fi
+  CHATGPT_PROVIDER_ENABLED=1
+  ok "ChatGPT Web CLI installed. Run '$CHATGPT_CLI_BINARY login' once before first use."
+}
+
+configure_subagent_provider_settings() {
+  local settings_file="$STATE_DIR/settings.json"
+  /bin/mkdir -p "$STATE_DIR"
+  "$PYTHON_BIN" - "$settings_file" "$CHATGPT_PROVIDER_ENABLED" "$CHATGPT_CLI_BINARY" <<'PYSETTINGS'
+import json
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+enabled = sys.argv[2] == "1"
+binary = sys.argv[3].strip()
+try:
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+except (OSError, json.JSONDecodeError):
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+subagents = data.setdefault("subagents", {})
+if not isinstance(subagents, dict):
+    subagents = data["subagents"] = {}
+providers = subagents.setdefault("providers", {})
+if not isinstance(providers, dict):
+    providers = subagents["providers"] = {}
+providers.setdefault("opencode", {}).setdefault("enabled", True)
+providers.setdefault("codex", {}).setdefault("enabled", True)
+chatgpt = providers.setdefault("chatgpt", {})
+chatgpt["enabled"] = enabled
+if binary:
+    chatgpt["binary_path"] = binary
+else:
+    chatgpt.pop("binary_path", None)
+chatgpt.setdefault("default_project", "")
+tmp = path.with_name(path.name + ".tmp")
+tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PYSETTINGS
+  /bin/chmod 600 "$settings_file"
+  if [[ "$CHATGPT_PROVIDER_ENABLED" -eq 1 ]]; then
+    ok "ChatGPT Web CLI provider enabled in local Subagent settings."
+  else
+    info "ChatGPT Web CLI provider disabled in local Subagent settings."
+  fi
+}
+
 check_install_targets() {
   section "Install plan"
   printf '  Source checkout: %s\n' "$SOURCE_DIR"
@@ -394,7 +561,7 @@ check_install_targets() {
   printf '  CLI:             %s\n' "$CLI_PATH"
   printf '  Menu bar app:    %s\n' "$APP_PATH"
   printf '  Branch:          %s\n' "$BRANCH"
-  info "OpenCode and Codex are not installed by this installer."
+  info "OpenCode and Codex are not installed by this installer. ChatGPT Web CLI is optional and handled separately."
 
   if [[ -e "$SOURCE_DIR" || -L "$SOURCE_DIR" ]]; then
     fail "Source path already exists: $SOURCE_DIR. This installer will not overwrite an existing checkout. Use 'mac-mcp update' for an existing installation."
@@ -620,6 +787,11 @@ print_completion() {
   printf '\n%sSubagents%s\n' "$C_BOLD" "$C_RESET"
   printf '  OpenCode and Codex are not installed by Mac MCP.\n'
   printf '  If you plan to use Subagents, installing OpenCode and/or Codex separately is recommended.\n'
+  if [[ "$CHATGPT_PROVIDER_ENABLED" -eq 1 ]]; then
+    printf '  Optional web provider: enabled locally.\n'
+  else
+    printf '  Optional web provider: disabled locally.\n'
+  fi
 
   if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     printf '\n'
@@ -638,8 +810,10 @@ main() {
   ensure_required_tools
   handle_optional_helpers
   check_install_targets
+  handle_optional_chatgpt_cli
   clone_source_and_runtime
   configure_runtime
+  configure_subagent_provider_settings
   install_python_environment
   prepare_chrome_companion
   install_menu_app

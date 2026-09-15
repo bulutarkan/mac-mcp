@@ -35,6 +35,30 @@ class RuntimeSettingsTests(unittest.TestCase):
                 path.write_text(json.dumps({"steering": {"session_ttl_minutes": 120}}))
                 self.assertEqual(120, runtime_settings.steering_setting("session_ttl_minutes", 10))
 
+    def test_provider_settings_are_live_and_default_safely(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "settings.json"
+            with patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(path)}):
+                self.assertTrue(runtime_settings.provider_enabled("opencode"))
+                self.assertTrue(runtime_settings.provider_enabled("codex"))
+                self.assertFalse(runtime_settings.provider_enabled("chatgpt"))
+                path.write_text(json.dumps({
+                    "subagents": {
+                        "providers": {
+                            "opencode": {"enabled": False},
+                            "chatgpt": {
+                                "enabled": True,
+                                "binary_path": "/tmp/chatgpt-web",
+                                "default_project": "Subagents",
+                            },
+                        }
+                    }
+                }))
+                self.assertFalse(runtime_settings.provider_enabled("opencode"))
+                self.assertTrue(runtime_settings.provider_enabled("chatgpt"))
+                self.assertEqual("/tmp/chatgpt-web", runtime_settings.provider_setting("chatgpt", "binary_path"))
+                self.assertEqual("Subagents", runtime_settings.provider_setting("chatgpt", "default_project"))
+
     def test_keychain_lookup_uses_service_and_account_without_logging_secret(self):
         fake = type("Result", (), {"stdout": "secret-value\n"})()
         with patch.object(runtime_settings.subprocess, "run", return_value=fake) as run:

@@ -21,11 +21,7 @@ struct MenuBarView: View {
                 serverCard
                 if state.activeAgents > 0 || !state.agents.isEmpty { agentCard }
                 activityCard
-                safariVisualCard
-                securityCard
                 steeringCard
-                voiceCard
-                advancedCard
                 footer
             }
             .padding(16)
@@ -115,6 +111,7 @@ struct MenuBarView: View {
                             .buttonStyle(.borderedProminent).accessibilityLabel("Start Server")
                     }
                     Spacer()
+                    Button { SettingsWindowController.shared.show(state: state, settings: settings) } label: { Image(systemName: "gearshape") }.help("Settings")
                     Button { state.openDashboard() } label: { Image(systemName: "chart.xyaxis.line") }.help("Open Dashboard")
                     Button { Task { await state.retryConnection() } } label: { Image(systemName: "arrow.triangle.2.circlepath") }.help("Refresh now")
                 }
@@ -683,7 +680,7 @@ struct MenuBarView: View {
 
     private var footer: some View {
         HStack {
-            Text("Settings apply live; server controls stay available when Voice is collapsed.").font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+            Text("Configuration is available from Settings.").font(.caption2).foregroundStyle(.secondary).lineLimit(2)
             Spacer(); Button("Quit") { state.quitApp() }
         }
     }
@@ -777,6 +774,7 @@ struct MenuBarView: View {
         switch provider?.lowercased() {
         case "opencode": return "OpenCode"
         case "codex": return "Codex"
+        case "chatgpt": return "ChatGPT"
         case .some(let value): return value.capitalized
         case .none: return "AI"
         }

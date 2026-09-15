@@ -146,7 +146,7 @@
 
   function renderAgents(agents) {
     if (!agents.length) {
-      els.agentList.innerHTML = `<div class="no-agents">No delegated agents yet. Spawned OpenCode or Codex workers will appear here live.</div>`;
+      els.agentList.innerHTML = `<div class="no-agents">No delegated agents yet. Enabled Subagent providers will appear here live.</div>`;
       return;
     }
     const activeStatuses = new Set(["starting", "running"]);

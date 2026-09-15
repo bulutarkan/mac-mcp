@@ -24,6 +24,7 @@ from .policy_scope import (
 )
 from .scoped_auth import get_scoped_credential_store
 from .security import BASE_DIR, Settings, truncate
+from .runtime_settings import provider_enabled, provider_setting
 from . import browser_tabs
 
 AGENTS_DIR = BASE_DIR / "agents"
@@ -38,7 +39,7 @@ DEFAULT_WAIT_TIMEOUT_S = 30
 MAX_WAIT_TIMEOUT_S = 300
 MAX_TEAM_SIZE = 10
 
-_PROVIDER_NAMES = {"opencode", "codex"}
+_PROVIDER_NAMES = {"opencode", "codex", "chatgpt"}
 _ACCESS_MODES = {"read_only", "workspace_write", "full"}
 _RESULT_STYLES = {"concise", "detailed"}
 _WAIT_MODES = {"all", "any", "majority"}
@@ -201,6 +202,7 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         "provider": team.get("provider"),
         "model": team.get("model"),
         "reasoning": team.get("reasoning"),
+        "project": team.get("project"),
         "access_mode": team.get("access_mode"),
         "permission_profile": team.get("permission_profile"),
         "scope": team.get("scope"),
@@ -319,9 +321,20 @@ def _base_env() -> Dict[str, str]:
     return env
 
 
-def _provider_env(agent_id: str, meta: Dict[str, Any], scoped_token: str) -> Tuple[Dict[str, str], Optional[Path]]:
+def _chatgpt_env() -> Dict[str, str]:
     env = _base_env()
-    env["MAC_MCP_AGENT_TOKEN"] = scoped_token
+    # This provider drives an authenticated interactive web browser. CI=1 changes
+    # browser/automation behavior and can prevent ChatGPT UI controls from hydrating.
+    env.pop("CI", None)
+    return env
+
+
+def _provider_env(agent_id: str, meta: Dict[str, Any], scoped_token: str) -> Tuple[Dict[str, str], Optional[Path]]:
+    env = _chatgpt_env() if str(meta.get("provider") or "").lower() == "chatgpt" else _base_env()
+    if scoped_token:
+        env["MAC_MCP_AGENT_TOKEN"] = scoped_token
+    else:
+        env.pop("MAC_MCP_AGENT_TOKEN", None)
     cleanup_root: Optional[Path] = None
     if str(meta.get("provider") or "").lower() == "opencode":
         cleanup_root = _agent_dir(agent_id) / "provider_config"
@@ -384,6 +397,7 @@ def _find_binary(provider: str) -> Optional[str]:
     home = Path.home()
     if provider == "opencode":
         candidates = [
+            provider_setting("opencode", "binary_path", ""),
             os.getenv("OPENCODE_BINARY"),
             shutil.which("opencode"),
             "/opt/homebrew/bin/opencode",
@@ -392,12 +406,22 @@ def _find_binary(provider: str) -> Optional[str]:
         ]
     elif provider == "codex":
         candidates = [
+            provider_setting("codex", "binary_path", ""),
             os.getenv("CODEX_BINARY"),
             shutil.which("codex"),
             "/opt/homebrew/bin/codex",
             "/Applications/ChatGPT.app/Contents/Resources/codex",
             "/usr/local/bin/codex",
             str(home / ".npm-global" / "bin" / "codex"),
+        ]
+    elif provider == "chatgpt":
+        candidates = [
+            provider_setting("chatgpt", "binary_path", ""),
+            os.getenv("CHATGPT_WEB_CLI_BINARY"),
+            os.getenv("CHATGPT_CLI_BINARY"),
+            shutil.which("chatgpt-web"),
+            shutil.which("chatgpt"),
+            str(home / "Projects" / "chatgpt-web-cli" / "bin" / "chatgpt"),
         ]
     else:
         return None
@@ -448,11 +472,90 @@ def _codex_known_models() -> Tuple[List[str], Optional[str], Optional[str]]:
     return models, default_model, default_reasoning_match.group(1) if default_reasoning_match else None
 
 
+def _chatgpt_cached_models(binary: str) -> Tuple[List[str], Optional[str]]:
+    try:
+        root = Path(binary).resolve().parent.parent
+        payload = json.loads((root / "state.json").read_text(encoding="utf-8"))
+        rows = payload.get("modelCache") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            return [], None
+        models: List[str] = []
+        selected: Optional[str] = None
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            models.append(name)
+            if row.get("selected"):
+                selected = name
+        return models, selected
+    except Exception:
+        return [], None
+
+
+def _chatgpt_models(binary: str) -> Tuple[List[str], Optional[str]]:
+    # Catalog/model discovery should not generate browser traffic on every MCP call.
+    # A successful `chatgpt models` run persists this cache; use it first and only
+    # touch the live web UI when no cache exists yet.
+    cached_models, cached_selected = _chatgpt_cached_models(binary)
+    if cached_models:
+        return cached_models, cached_selected
+    try:
+        proc = subprocess.run([binary, "models", "--json"], capture_output=True, text=True, timeout=40, env=_chatgpt_env())
+        if proc.returncode == 0:
+            rows = json.loads(proc.stdout or "[]")
+            if isinstance(rows, list):
+                models: List[str] = []
+                selected: Optional[str] = None
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    name = str(row.get("name") or "").strip()
+                    if not name:
+                        continue
+                    models.append(name)
+                    if row.get("selected"):
+                        selected = name
+                if models:
+                    return models, selected
+    except Exception:
+        pass
+    return [], None
+
+
+def _chatgpt_effort(value: Optional[str]) -> Optional[str]:
+    raw = str(value or "").strip().lower().replace("_", "-").replace(" ", "-")
+    if not raw or raw == "none":
+        return None
+    aliases = {
+        "low": "low", "medium": "medium", "high": "high",
+        "xhigh": "extra-high", "extra-high": "extra-high", "extrahigh": "extra-high", "max": "extra-high",
+    }
+    return aliases.get(raw)
+
+
+def _chatgpt_default_project() -> Optional[str]:
+    configured = provider_setting("chatgpt", "default_project", "")
+    value = str(configured or os.getenv("CHATGPT_SUBAGENT_PROJECT", "") or "").strip()
+    return value or None
+
+
 def _access_mode_info(provider: str, access_mode: str) -> Dict[str, Any]:
     if provider == "codex":
         return {
             "enforced": True,
             "note": "Codex sandbox and approval policy are explicitly applied on initial and resumed runs.",
+        }
+    if provider == "chatgpt":
+        return {
+            "enforced": False,
+            "note": (
+                "ChatGPT Web CLI runs in the authenticated ChatGPT web account. Mac MCP access_mode is a "
+                "behavioral delegation boundary for this provider, not an OS sandbox; the spawning Mac MCP "
+                "scoped credential is not attached automatically."
+            ),
         }
     if access_mode == "read_only":
         return {
@@ -552,7 +655,30 @@ def _scope_prompt(scope: ResourceScope, profile: str, provider: str) -> str:
               "do not read, write, inspect, execute, or navigate outside the allowed path roots/resources. "
               "Mac MCP tool calls are enforced server-side and will fail closed outside scope."
         )
+    if provider == "chatgpt":
+        return (
+            "This delegated agent runs through the authenticated ChatGPT web UI and is not automatically "
+            "attached to the spawning Mac MCP server. Treat the requested permission profile and scope as a "
+            f"mandatory behavioral boundary. Permission profile: {profile}. Scope: {scope_json}. "
+            "Do not invoke account-connected tools, plugins, files, browsers, or other resources outside that boundary."
+        )
     return base
+
+
+def provider_overview() -> Dict[str, Any]:
+    labels = {"opencode": "OpenCode", "codex": "Codex", "chatgpt": "ChatGPT Web CLI"}
+    rows: List[Dict[str, Any]] = []
+    for provider in ("opencode", "codex", "chatgpt"):
+        binary = _find_binary(provider)
+        rows.append({
+            "id": provider,
+            "name": labels[provider],
+            "enabled": provider_enabled(provider),
+            "detected": bool(binary),
+            "binary_path": binary,
+            "version": _version(binary),
+        })
+    return {"ok": True, "providers": rows}
 
 
 def agent_catalog(
@@ -566,9 +692,11 @@ def agent_catalog(
     limit = max(1, min(int(limit), 200))
     if requested and requested not in _PROVIDER_NAMES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"provider must be one of: {', '.join(sorted(_PROVIDER_NAMES))}")
+    if requested and not provider_enabled(requested):
+        return {"ok": True, "providers": {}}
 
     providers: Dict[str, Any] = {}
-    if not requested or requested == "opencode":
+    if (not requested or requested == "opencode") and provider_enabled("opencode"):
         binary = _find_binary("opencode")
         all_models = _opencode_models(binary) if binary else []
         free_models = [m for m in all_models if "free" in m.lower()]
@@ -591,7 +719,7 @@ def agent_catalog(
                 "full": {"supported": True, **_access_mode_info("opencode", "full")},
             },
         }
-    if not requested or requested == "codex":
+    if (not requested or requested == "codex") and provider_enabled("codex"):
         binary = _find_binary("codex")
         models, default_model, default_reasoning = _codex_known_models()
         providers["codex"] = {
@@ -603,6 +731,28 @@ def agent_catalog(
             "reasoning_values": ["none", "low", "medium", "high", "xhigh", "max"],
             "access_modes": {
                 mode: {"supported": True, **_access_mode_info("codex", mode)}
+                for mode in sorted(_ACCESS_MODES)
+            },
+        }
+    if (not requested or requested == "chatgpt") and provider_enabled("chatgpt"):
+        binary = _find_binary("chatgpt")
+        models, default_model = _chatgpt_models(binary) if binary else ([], None)
+        matched = models
+        if model_filter:
+            q = model_filter.lower().strip()
+            matched = [m for m in matched if q in m.lower()]
+        providers["chatgpt"] = {
+            "available": bool(binary),
+            "version": _version(binary),
+            "models": matched[:limit],
+            "default_model": default_model,
+            "reasoning_values": ["low", "medium", "high", "extra-high"],
+            "default_project": _chatgpt_default_project(),
+            "supports_project_override": True,
+            "supports_resume": True,
+            "scoped_mcp": False,
+            "access_modes": {
+                mode: {"supported": True, **_access_mode_info("chatgpt", mode)}
                 for mode in sorted(_ACCESS_MODES)
             },
         }
@@ -650,6 +800,7 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "provider": meta.get("provider"),
         "model": meta.get("model"),
         "reasoning": meta.get("reasoning"),
+        "project": meta.get("project"),
         "cwd": meta.get("cwd"),
         "access_mode": meta.get("access_mode"),
         "permission_profile": meta.get("permission_profile"),
@@ -734,10 +885,19 @@ def _spawn_internal(
     team_id: Optional[str] = None,
     idle_timeout_s: Optional[int] = None,
     retries: int = 0,
+    project: Optional[str] = None,
 ) -> Dict[str, Any]:
     provider = provider.lower().strip()
     if provider not in _PROVIDER_NAMES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"provider must be one of: {', '.join(sorted(_PROVIDER_NAMES))}")
+    if not provider_enabled(provider):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"provider_disabled: {provider} is disabled in Mac MCP Settings > Subagents.")
+    if provider == "chatgpt":
+        if reasoning and str(reasoning).strip().lower() != "none" and not _chatgpt_effort(reasoning):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "chatgpt reasoning must be low, medium, high, or extra-high.")
+        project = str(project or _chatgpt_default_project() or "").strip() or None
+    elif project:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "project is only supported by provider=chatgpt.")
     binary = _find_binary(provider)
     if not binary:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"{provider} CLI is not installed or not executable.")
@@ -785,12 +945,13 @@ def _spawn_internal(
         "binary": binary,
         "model": model,
         "reasoning": reasoning,
+        "project": project,
         "cwd": str(workdir),
         "access_mode": access_mode,
         "permission_profile": permission_profile,
         "capability_profile": capability_profile,
         "scope": scope.to_dict(),
-        "scoped_mcp": True,
+        "scoped_mcp": provider in {"opencode", "codex"},
         "mcp_endpoint": os.getenv("MAC_MCP_AGENT_ENDPOINT", "http://127.0.0.1:8765/mcp"),
         "result_style": result_style,
         "timeout_s": effective_timeout,
@@ -873,6 +1034,7 @@ def spawn_agent(
     parent_scope: Optional[ResourceScope] = None,
     parent_profile: str = "trusted",
     capability_profile: Optional[str] = None,
+    project: Optional[str] = None,
 ) -> Dict[str, Any]:
     workdir = _resolve_cwd(cwd)
     effective_scope, permission_profile, effective_capability_profile = _requested_agent_scope(
@@ -881,7 +1043,7 @@ def spawn_agent(
     return _spawn_internal(
         settings, provider, prompt, model, reasoning, str(workdir), timeout_s, title,
         result_style, effective_scope.access_mode.value, effective_scope, permission_profile,
-        capability_profile=effective_capability_profile, idle_timeout_s=idle_timeout_s, retries=retries,
+        capability_profile=effective_capability_profile, idle_timeout_s=idle_timeout_s, retries=retries, project=project,
     )
 
 
@@ -903,7 +1065,13 @@ def spawn_agents(
     parent_scope: Optional[ResourceScope] = None,
     parent_profile: str = "trusted",
     capability_profile: Optional[str] = None,
+    project: Optional[str] = None,
 ) -> Dict[str, Any]:
+    provider = str(provider or "").strip().lower()
+    if provider not in _PROVIDER_NAMES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"provider must be one of: {', '.join(sorted(_PROVIDER_NAMES))}")
+    if not provider_enabled(provider):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"provider_disabled: {provider} is disabled in Mac MCP Settings > Subagents.")
     if not tasks or not isinstance(tasks, list):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "tasks is required.")
     if len(tasks) > MAX_TEAM_SIZE:
@@ -929,6 +1097,7 @@ def spawn_agents(
             "prompt": prompt,
             "title": str(task.get("title") or f"Agent {index}").strip(),
             "scope": child_scope_raw,
+            "project": str(task.get("project") or project or "").strip() or None,
         })
 
     workdir = _resolve_cwd(cwd)
@@ -944,6 +1113,7 @@ def spawn_agents(
         "provider": provider,
         "model": model,
         "reasoning": reasoning,
+        "project": (str(project or _chatgpt_default_project() or "").strip() or None) if provider.lower().strip() == "chatgpt" else None,
         "cwd": str(workdir),
         "timeout_s": timeout_s,
         "idle_timeout_s": idle_timeout_s,
@@ -995,7 +1165,7 @@ def spawn_agents(
                 reasoning=reasoning, cwd=str(workdir), timeout_s=timeout_s, title=task["title"],
                 result_style=result_style, access_mode=access_mode, scope=effective_scope,
                 permission_profile=permission_profile, capability_profile=effective_capability_profile, team_id=team_id,
-                idle_timeout_s=idle_timeout_s, retries=retries,
+                idle_timeout_s=idle_timeout_s, retries=retries, project=task.get("project"),
             )
             spawned.append(item)
             team_meta["agent_ids"].append(item["agent_id"])
@@ -1168,7 +1338,12 @@ def _agent_action_single(
         meta = _update_meta(agent_id, mark_cancelled)
         get_scoped_credential_store().revoke_agent(agent_id)
         browser_tabs.release_agent_leases(agent_id)
-        _kill_group(meta.get("provider_pid"), allowed[sig_name])
+        provider_signal = allowed[sig_name]
+        if meta.get("provider") == "chatgpt" and sig_name == "TERM":
+            provider_signal = signal_module.SIGINT
+        _kill_group(meta.get("provider_pid"), provider_signal)
+        if meta.get("provider") == "chatgpt" and provider_signal == signal_module.SIGINT:
+            time.sleep(0.5)
         _kill_group(meta.get("worker_pid"), allowed[sig_name])
         with _WORKERS_LOCK:
             worker_proc = _WORKERS.get(agent_id)
@@ -1211,6 +1386,7 @@ def _agent_action_single(
             attempt=int(meta.get("attempt", 1)) + 1,
             idle_timeout_s=meta.get("idle_timeout_s"),
             retries=int(meta.get("retries") or 0),
+            project=meta.get("project"),
         )
 
     if not message or not message.strip():
@@ -1239,6 +1415,7 @@ def _agent_action_single(
         attempt=int(meta.get("attempt", 1)) + 1,
         idle_timeout_s=meta.get("idle_timeout_s"),
         retries=int(meta.get("retries") or 0),
+        project=meta.get("project"),
     )
 
 
@@ -1290,6 +1467,7 @@ def agent_action(
             tasks.append({
                 "prompt": prompt_path.read_text(encoding="utf-8", errors="replace"),
                 "title": child.get("title") or f"Agent {index}",
+                "project": child.get("project"),
             })
         return spawn_agents(
             settings=settings, tasks=tasks, provider=team["provider"], model=team.get("model"),
@@ -1297,7 +1475,7 @@ def agent_action(
             idle_timeout_s=team.get("idle_timeout_s"), retries=int(team.get("retries") or 0),
             result_style=team.get("result_style", "concise"), access_mode=team.get("access_mode", "read_only"),
             title=f"Retry: {team.get('title') or team_id}", parent_team_id=str(team_id),
-            scope=team.get("scope"), parent_profile="trusted",
+            scope=team.get("scope"), parent_profile="trusted", project=team.get("project"),
         )
     raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be cancel, message, retry, or despawn.")
 
@@ -1332,6 +1510,28 @@ def _extract_opencode(path: Path) -> Tuple[str, Optional[str], Optional[Dict[str
             if isinstance(part.get("tokens"), dict):
                 usage = part["tokens"]
     return (final or candidate).strip(), session_id, usage
+
+
+def _extract_chatgpt(path: Path) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
+    final = ""
+    session_id: Optional[str] = None
+    if not path.exists():
+        return "", None, None
+    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        found_session = event.get("sessionId") or event.get("session_id")
+        if found_session:
+            session_id = str(found_session)
+        if str(event.get("type") or "") == "final":
+            text = event.get("text")
+            if text:
+                final = str(text).strip()
+    return final, session_id, None
 
 
 def _find_key_recursive(value: Any, keys: set) -> Optional[Any]:
@@ -1381,6 +1581,21 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
             cmd += ["--variant", reasoning]
         if resume_session_id:
             cmd += ["--session", resume_session_id]
+        cmd.append(prompt)
+        return cmd
+
+    if provider == "chatgpt":
+        if resume_session_id:
+            cmd = [binary, "resume", str(resume_session_id)]
+        else:
+            project = str(meta.get("project") or _chatgpt_default_project() or "").strip()
+            cmd = [binary, "project", project, "new"] if project else [binary, "new"]
+        cmd += ["--json-stream", "--timeout", str(int(meta.get("timeout_s") or DEFAULT_AGENT_TIMEOUT_S))]
+        if model:
+            cmd += ["--model", str(model)]
+        effort = _chatgpt_effort(reasoning)
+        if effort:
+            cmd += ["--effort", effort]
         cmd.append(prompt)
         return cmd
 
@@ -1434,7 +1649,40 @@ def _apply_provider_event(meta: Dict[str, Any], event: Dict[str, Any], now: floa
     meta["last_activity_at"] = now
     meta["last_event_type"] = event_type
 
-    if provider == "codex":
+    if provider == "chatgpt":
+        session_id = event.get("sessionId") or event.get("session_id")
+        if session_id:
+            meta["session_id"] = str(session_id)
+        if event_type == "job_started":
+            meta["phase"] = "starting"
+        elif event_type == "status":
+            if int(meta.get("step_count") or 0) == 0:
+                meta["step_count"] = 1
+            meta["phase"] = "reasoning"
+        elif event_type == "tool_activity":
+            meta["phase"] = "tool" if bool(event.get("active")) else "reasoning"
+        elif event_type == "tool_update":
+            text = str(event.get("text") or "").strip()
+            if text:
+                meta["last_tool"] = text
+            meta["phase"] = "tool"
+        elif event_type == "tool_start":
+            meta["tool_call_count"] = int(meta.get("tool_call_count") or 0) + 1
+            meta["last_tool"] = str(event.get("text") or event.get("toolId") or "tool")
+            if not meta.get("first_tool_at"):
+                meta["first_tool_at"] = now
+            meta["phase"] = "tool"
+        elif event_type == "tool_end":
+            meta["phase"] = "reasoning"
+        elif event_type == "assistant_delta":
+            meta["phase"] = "finalizing"
+        elif event_type == "final":
+            meta["phase"] = "finalizing"
+        elif event_type in {"stopped", "error"}:
+            meta["phase"] = "failed" if event_type == "error" else "cancelled"
+        else:
+            meta["phase"] = meta.get("phase") or "working"
+    elif provider == "codex":
         item = event.get("item") if isinstance(event.get("item"), dict) else {}
         if event_type == "thread.started":
             meta["phase"] = "starting"
@@ -1543,19 +1791,22 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
 
     scope = ResourceScope.from_dict(meta.get("scope"))
     store = get_scoped_credential_store()
-    scoped_token, credential_id = store.issue(
-        agent_id=agent_id,
-        team_id=meta.get("team_id"),
-        profile=str(meta.get("permission_profile") or "trusted"),
-        scope=scope,
-        ttl_s=int(meta.get("timeout_s") or DEFAULT_AGENT_TIMEOUT_S) + 300,
-    )
+    scoped_token = ""
+    credential_id: Optional[str] = None
+    if meta.get("scoped_mcp"):
+        scoped_token, credential_id = store.issue(
+            agent_id=agent_id,
+            team_id=meta.get("team_id"),
+            profile=str(meta.get("permission_profile") or "trusted"),
+            scope=scope,
+            ttl_s=int(meta.get("timeout_s") or DEFAULT_AGENT_TIMEOUT_S) + 300,
+        )
 
-    def record_credential(current: Dict[str, Any]) -> None:
-        current["scoped_credential_id"] = credential_id
-        current["updated_at"] = _now()
+        def record_credential(current: Dict[str, Any]) -> None:
+            current["scoped_credential_id"] = credential_id
+            current["updated_at"] = _now()
 
-    _update_meta(agent_id, record_credential)
+        _update_meta(agent_id, record_credential)
     env, cleanup_root = _provider_env(agent_id, meta, scoped_token)
     try:
         cmd = _build_provider_command(meta, prompt, result_path)
@@ -1597,9 +1848,10 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
             elif idle_timeout_s and _now() - float(latest.get("last_activity_at") or latest.get("provider_started_at") or _now()) >= int(idle_timeout_s):
                 stop_reason = "stalled"
             if stop_reason:
-                _kill_group(proc.pid, signal_module.SIGTERM)
+                provider_signal = signal_module.SIGINT if meta.get("provider") == "chatgpt" else signal_module.SIGTERM
+                _kill_group(proc.pid, provider_signal)
                 try:
-                    proc.wait(timeout=3)
+                    proc.wait(timeout=4 if meta.get("provider") == "chatgpt" else 3)
                 except subprocess.TimeoutExpired:
                     _kill_group(proc.pid, signal_module.SIGKILL)
                 break
@@ -1608,20 +1860,22 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
         out_thread.join(timeout=2); err_thread.join(timeout=2)
         return exit_code, stop_reason
     finally:
-        store.revoke_token_id(credential_id)
+        if credential_id:
+            store.revoke_token_id(credential_id)
         _cleanup_provider_config(cleanup_root)
 
-        def clear_credential(current: Dict[str, Any]) -> Optional[bool]:
-            if current.get("scoped_credential_id") == credential_id:
-                current["scoped_credential_id"] = None
-                current["updated_at"] = _now()
-                return True
-            return False
+        if credential_id:
+            def clear_credential(current: Dict[str, Any]) -> Optional[bool]:
+                if current.get("scoped_credential_id") == credential_id:
+                    current["scoped_credential_id"] = None
+                    current["updated_at"] = _now()
+                    return True
+                return False
 
-        try:
-            _update_meta(agent_id, clear_credential)
-        except HTTPException:
-            pass
+            try:
+                _update_meta(agent_id, clear_credential)
+            except HTTPException:
+                pass
 
 
 def _worker(agent_id: str) -> int:
@@ -1669,7 +1923,23 @@ def _worker(agent_id: str) -> int:
                 latest = _update_meta(agent_id, record_retry)
                 if latest.get("status") == "cancelled":
                     return 0
-                time.sleep(min(2.0, 0.75 * attempt_index))
+                retry_delay = min(2.0, 0.75 * attempt_index)
+                if latest.get("provider") == "chatgpt":
+                    error_tail = _tail_text(stderr_path, max_lines=40, max_chars=4000).lower()
+                    if "temporarily rate-limited" in error_tail or "too many requests" in error_tail:
+                        try:
+                            retry_delay = max(retry_delay, float(os.getenv("CHATGPT_PROVIDER_RATE_LIMIT_BACKOFF_S", "90")))
+                        except ValueError:
+                            retry_delay = max(retry_delay, 90.0)
+                        def record_rate_limit_backoff(current: Dict[str, Any]) -> Optional[bool]:
+                            if current.get("status") == "cancelled":
+                                return False
+                            current["phase"] = "retrying"
+                            current["note"] = f"ChatGPT web rate-limited; backing off {int(retry_delay)}s before retry."
+                            current["updated_at"] = _now()
+                            return True
+                        latest = _update_meta(agent_id, record_rate_limit_backoff)
+                time.sleep(retry_delay)
             exit_code, stop_reason = _run_provider_attempt(agent_id, latest, prompt, attempt_index)
             final_reason = stop_reason
             latest = _read_meta(agent_id)
@@ -1704,6 +1974,8 @@ def _worker(agent_id: str) -> int:
     result = ""
     if meta["provider"] == "opencode":
         result, session_id, usage = _extract_opencode(stdout_path)
+    elif meta["provider"] == "chatgpt":
+        result, session_id, usage = _extract_chatgpt(stdout_path)
     else:
         session_id = _extract_codex_session(stdout_path)
         usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else None

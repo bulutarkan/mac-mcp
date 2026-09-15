@@ -384,7 +384,7 @@ def create_app():
     # ── Agent delegation tools ──────────────────────────────────────────────
     @mcp.tool(
         name="agent_catalog",
-        description="List available OpenCode/Codex providers, models, and reasoning options without starting an agent.",
+        description="List available OpenCode, Codex, and ChatGPT Web CLI providers, models, reasoning options, and ChatGPT project configuration without starting an agent.",
     )
     async def _agent_catalog(provider: Optional[str] = None, model_filter: Optional[str] = None,
                              free_only: bool = False, limit: int = 80) -> Dict[str, Any]:
@@ -397,9 +397,10 @@ def create_app():
     @mcp.tool(
         name="spawn_agent",
         description=(
-            "Delegate one task to OpenCode or Codex in a non-blocking background process. "
-            "Supports idle timeout and same-model retries; concise final handoff is the default. "
-            "Codex enforces access_mode; OpenCode read_only is refused and its other modes are not a hard sandbox."
+            "Delegate one task to OpenCode, Codex, or ChatGPT Web CLI in a non-blocking background process. "
+            "ChatGPT accepts project=...; when omitted it uses CHATGPT_SUBAGENT_PROJECT if locally configured, "
+            "otherwise it starts a normal new chat. Supports idle timeout and same-model retries. "
+            "Codex enforces access_mode; OpenCode read_only is refused; ChatGPT access_mode is behavioral."
         ),
     )
     def _spawn_agent(provider: str, prompt: str, model: Optional[str] = None,
@@ -408,7 +409,8 @@ def create_app():
                      result_style: str = "concise", access_mode: str = "workspace_write",
                      idle_timeout_s: Optional[int] = None, retries: int = 0,
                      scope: Optional[Dict[str, Any]] = None,
-                     capability_profile: Optional[str] = None) -> Dict[str, Any]:
+                     capability_profile: Optional[str] = None,
+                     project: Optional[str] = None) -> Dict[str, Any]:
         context = current_policy_context()
         return _log(audit_logger, "spawn_agent",
                     lambda: spawn_agent(settings, provider=provider, prompt=prompt, model=model,
@@ -416,14 +418,14 @@ def create_app():
                                         title=title, result_style=result_style, access_mode=access_mode,
                                         idle_timeout_s=idle_timeout_s, retries=retries, scope=scope,
                                         parent_scope=context.scope, parent_profile=context.profile,
-                                        capability_profile=capability_profile))
+                                        capability_profile=capability_profile, project=project))
 
     @mcp.tool(
         name="spawn_agents",
         description=(
-            "Spawn 1-10 background agents as one team in a single call. All children inherit the same "
-            "provider, model, reasoning and access_mode. Codex enforces access_mode; OpenCode read_only is refused "
-            "and its other modes are not a hard sandbox. Returns immediately with team_id and agent_ids."
+            "Spawn 1-10 background agents as one team in a single call. All children inherit provider, model, "
+            "reasoning and access_mode. ChatGPT accepts project=... as the team default and task.project overrides. "
+            "If neither is set it uses CHATGPT_SUBAGENT_PROJECT when locally configured. Returns immediately."
         ),
     )
     def _spawn_agents(tasks: List[Dict[str, Any]], provider: str, model: Optional[str] = None,
@@ -432,7 +434,8 @@ def create_app():
                       retries: int = 1, result_style: str = "concise",
                       access_mode: str = "read_only", title: Optional[str] = None,
                       scope: Optional[Dict[str, Any]] = None,
-                      capability_profile: Optional[str] = None) -> Dict[str, Any]:
+                      capability_profile: Optional[str] = None,
+                      project: Optional[str] = None) -> Dict[str, Any]:
         context = current_policy_context()
         return _log(audit_logger, "spawn_agents",
                     lambda: spawn_agents(settings, tasks=tasks, provider=provider, model=model,
@@ -440,7 +443,7 @@ def create_app():
                                          idle_timeout_s=idle_timeout_s, retries=retries,
                                          result_style=result_style, access_mode=access_mode, title=title,
                                          scope=scope, parent_scope=context.scope, parent_profile=context.profile,
-                                         capability_profile=capability_profile))
+                                         capability_profile=capability_profile, project=project))
 
     @mcp.tool(
         name="wait_agents",

@@ -50,6 +50,28 @@ def steering_setting(name: str, default: Any = None) -> Any:
     return steering.get(name, default)
 
 
+
+
+def provider_setting(provider: str, name: str, default: Any = None) -> Any:
+    subagents = load_runtime_settings().get("subagents", {})
+    if not isinstance(subagents, dict):
+        return default
+    providers = subagents.get("providers", {})
+    if not isinstance(providers, dict):
+        return default
+    item = providers.get(str(provider or "").strip().lower(), {})
+    if not isinstance(item, dict):
+        return default
+    return item.get(name, default)
+
+
+def provider_enabled(provider: str, default: bool | None = None) -> bool:
+    key = str(provider or "").strip().lower()
+    if default is None:
+        default = key in {"opencode", "codex"}
+    value = provider_setting(key, "enabled", default)
+    return value if isinstance(value, bool) else bool(default)
+
 def keychain_password() -> str | None:
     service = os.getenv("MAC_MCP_VOICE_GROQ_KEYCHAIN_SERVICE", "com.bulutarkan.mac-mcp").strip()
     account = os.getenv("MAC_MCP_VOICE_GROQ_KEYCHAIN_ACCOUNT", "groq-api-key").strip()
