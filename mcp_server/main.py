@@ -399,7 +399,9 @@ def create_app():
         description=(
             "Delegate one task to OpenCode, Codex, or ChatGPT Web CLI in a non-blocking background process. "
             "ChatGPT accepts project=...; when omitted it uses CHATGPT_SUBAGENT_PROJECT if locally configured, "
-            "otherwise it starts a normal new chat. Supports idle timeout and same-model retries. "
+            "otherwise it starts a normal new chat. ChatGPT long turns use bounded checkpoint/continue and "
+            "rate-limit cooldown/resume protection; reasoning defaults to high unless explicitly overridden. "
+            "Supports idle timeout and bounded retries. "
             "Codex enforces access_mode; OpenCode read_only is refused; ChatGPT access_mode is behavioral."
         ),
     )
@@ -425,7 +427,8 @@ def create_app():
         description=(
             "Spawn 1-10 background agents as one team in a single call. All children inherit provider, model, "
             "reasoning and access_mode. ChatGPT accepts project=... as the team default and task.project overrides. "
-            "If neither is set it uses CHATGPT_SUBAGENT_PROJECT when locally configured. Returns immediately."
+            "If neither is set it uses CHATGPT_SUBAGENT_PROJECT when locally configured. ChatGPT workers share "
+            "post-throttle cooldown/staggering so a temporary web limit does not trigger a retry storm. Returns immediately."
         ),
     )
     def _spawn_agents(tasks: List[Dict[str, Any]], provider: str, model: Optional[str] = None,

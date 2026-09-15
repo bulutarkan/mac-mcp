@@ -96,7 +96,7 @@ The installer is designed specifically to work safely through `curl | bash` whil
 - installs the `mac-mcp` CLI at `~/.local/bin/mac-mcp` and records the deployed commit for the built-in updater;
 - builds and code-sign verifies the native `Mac MCP.app` menu bar controller in `~/Applications`;
 - shows both Bearer-token and `?ApiKey=` connection formats at the end;
-- does **not** install OpenCode or Codex. If you want to use Subagents, install either provider separately.
+- does **not** install OpenCode, Codex, or ChatGPT Web CLI. If you want to use Subagents, install the provider you plan to use separately.
 
 Existing source/runtime/CLI paths are never silently overwritten. If Mac MCP is already installed, use the built-in updater instead of re-running the installer over the same paths.
 
@@ -286,6 +286,12 @@ Non-secret settings are stored in:
 ```
 
 Environment variables remain supported as fallbacks, including `MAC_MCP_VOICE_GROQ_API_KEY`, `GROQ_API_KEY`, `MAC_MCP_VOICE_LANGUAGE`, `MAC_MCP_VOICE_INPUT_DEVICE`, `MAC_MCP_VOICE_OUTPUT_DEVICE`, and `MAC_MCP_VOICE_TTS_RATE`.
+
+## ChatGPT subagent resilience
+
+When ChatGPT Web CLI is used as a delegated-agent provider, Mac MCP keeps long web turns bounded without treating the budget as a hard task timeout. The default soft turn budget is 15 minutes; if a tool is still active Mac MCP waits for it, with a 20-minute hard tool ceiling, then requests a controlled ChatGPT `interrupt` that continues the same task in a fresh turn. The continuation explicitly avoids repeating completed work or external side effects. ChatGPT subagents default to **High** reasoning; `extra-high` remains opt-in.
+
+If ChatGPT reports request throttling, Mac MCP records the reason/time, applies bounded exponential cooldown, recovers the existing ChatGPT session for retry when possible, and staggers other ChatGPT worker starts during the recovery window instead of launching a retry storm. Dashboard and menu-bar agent rows expose turn elapsed time plus checkpoint/throttle counts. These values can be tuned with `CHATGPT_PROVIDER_TURN_BUDGET_S`, `CHATGPT_PROVIDER_HARD_TOOL_BUDGET_S`, `CHATGPT_PROVIDER_RATE_LIMIT_BACKOFF_S`, and `CHATGPT_PROVIDER_RATE_LIMIT_BACKOFF_CAP_S`.
 
 ## Operations dashboard
 

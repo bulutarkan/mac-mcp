@@ -331,7 +331,11 @@ struct MenuBarView: View {
                 HStack(spacing: 8) {
                     Text(agent.title ?? agent.agentID).font(.caption.weight(.semibold)).lineLimit(1)
                     Spacer()
-                    if let duration = agent.durationMS { Text(compactDuration(duration)).font(.caption2).foregroundStyle(.tertiary) }
+                    if agent.isActive, let turnElapsed = agent.turnElapsedMS, turnElapsed > 0 {
+                        Text("turn \(compactDuration(turnElapsed))").font(.caption2).foregroundStyle(.tertiary)
+                    } else if let duration = agent.durationMS {
+                        Text(compactDuration(duration)).font(.caption2).foregroundStyle(.tertiary)
+                    }
                 }
 
                 HStack(spacing: 6) {
@@ -367,6 +371,14 @@ struct MenuBarView: View {
                     Spacer()
                     Image(systemName: "wrench.and.screwdriver.fill").font(.system(size: 8)).foregroundStyle(.tertiary)
                     Text("\(agent.toolCallCount ?? 0)").font(.caption2).foregroundStyle(.secondary)
+                    if let checkpoints = agent.checkpointCount, checkpoints > 0 {
+                        Image(systemName: "arrow.trianglehead.branch").font(.system(size: 8)).foregroundStyle(.secondary)
+                        Text("\(checkpoints)").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if let throttles = agent.throttleCount, throttles > 0 {
+                        Image(systemName: "gauge.with.dots.needle.33percent").font(.system(size: 8)).foregroundStyle(.orange)
+                        Text("\(throttles)").font(.caption2).foregroundStyle(.orange)
+                    }
                     if let retries = agent.retryCount, retries > 0 {
                         Image(systemName: "arrow.clockwise").font(.system(size: 8)).foregroundStyle(.orange)
                         Text("\(retries)").font(.caption2).foregroundStyle(.orange)
@@ -718,6 +730,8 @@ struct MenuBarView: View {
         case "tool": return "tool"
         case "finalizing": return "finalizing"
         case "retrying": return "retrying"
+        case "checkpointing": return "checkpointing"
+        case "throttled": return "throttled"
         case "completed": return "completed"
         case "failed": return "failed"
         case "cancelled": return "cancelled"
@@ -734,6 +748,8 @@ struct MenuBarView: View {
         case "tool": return "hammer.fill"
         case "finalizing": return "text.bubble.fill"
         case "retrying": return "arrow.clockwise.circle.fill"
+        case "checkpointing": return "arrow.trianglehead.branch"
+        case "throttled": return "gauge.with.dots.needle.33percent"
         case "completed": return "checkmark.circle.fill"
         case "failed": return "xmark.octagon.fill"
         case "cancelled": return "stop.circle.fill"
@@ -750,6 +766,8 @@ struct MenuBarView: View {
         case "tool": return "Using a tool"
         case "finalizing": return "Finalizing"
         case "retrying": return "Retrying"
+        case "checkpointing": return "Checkpointing"
+        case "throttled": return "Provider cooldown"
         case "completed": return "Completed"
         case "failed": return "Failed"
         case "cancelled": return "Cancelled"

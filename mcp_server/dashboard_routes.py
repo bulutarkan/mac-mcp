@@ -430,6 +430,9 @@ def create_dashboard_routes(
                     "agent_id", "team_id", "status", "phase", "title", "provider", "model", "reasoning",
                     "access_mode", "capability_profile", "started_at", "ended_at", "duration_ms", "first_event_latency_ms",
                     "idle_seconds", "step_count", "tool_call_count", "last_tool", "last_tool_duration_ms",
+                    "turn_count", "turn_elapsed_ms", "turn_budget_s", "hard_tool_budget_s",
+                    "checkpoint_count", "checkpoint_pending", "last_checkpoint_at",
+                    "throttle_count", "last_throttled_at", "last_throttle_reason", "cooldown_until",
                     "retry_count", "output_tokens", "result_preview",
                 )
             })

@@ -160,6 +160,11 @@
       const phase = agent.phase || status;
       const model = [agent.provider, agent.model].filter(Boolean).join(" · ") || "Provider unavailable";
       const last = agent.last_tool ? `Last tool <b>${esc(agent.last_tool)}</b>` : `${number(agent.step_count)} steps`;
+      const turn = Number(agent.turn_elapsed_ms || 0) > 0 ? ` · turn ${duration(agent.turn_elapsed_ms)}` : '';
+      const resilience = [
+        Number(agent.checkpoint_count || 0) > 0 ? `${number(agent.checkpoint_count)} checkpoints` : '',
+        Number(agent.throttle_count || 0) > 0 ? `${number(agent.throttle_count)} throttles` : ''
+      ].filter(Boolean).join(' · ');
       const avatar = String(agent.provider || "AI").slice(0, 2);
       return `<div class="agent-card" data-status="${esc(status)}">
         <div class="agent-avatar" aria-hidden="true">${esc(avatar)}</div>
@@ -168,7 +173,7 @@
             <strong title="${esc(agent.title || agent.agent_id)}">${esc(agent.title || agent.agent_id)}</strong>
             <span class="agent-phase">${esc(phase)}</span>
           </div>
-          <div class="agent-meta">${esc(model)}<br>${last} · ${number(agent.tool_call_count)} calls · ${duration(agent.duration_ms)}</div>
+          <div class="agent-meta">${esc(model)}<br>${last} · ${number(agent.tool_call_count)} calls · ${duration(agent.duration_ms)}${turn}${resilience ? `<br>${esc(resilience)}` : ''}</div>
         </div>
       </div>`;
     };

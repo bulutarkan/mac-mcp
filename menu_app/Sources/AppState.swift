@@ -124,9 +124,19 @@ struct AgentInfo: Decodable, Identifiable, Equatable {
     let accessMode: String?
     let capabilityProfile: String?
     let lastTool: String?
+    let lastToolDurationMS: Int?
     let toolCallCount: Int?
     let retryCount: Int?
     let durationMS: Int?
+    let turnCount: Int?
+    let turnElapsedMS: Int?
+    let turnBudgetS: Int?
+    let checkpointCount: Int?
+    let checkpointPending: Bool?
+    let throttleCount: Int?
+    let lastThrottledAt: Double?
+    let lastThrottleReason: String?
+    let cooldownUntil: Double?
     var id: String { agentID }
     var isActive: Bool { status == "starting" || status == "running" }
     enum CodingKeys: String, CodingKey {
@@ -135,9 +145,19 @@ struct AgentInfo: Decodable, Identifiable, Equatable {
         case accessMode = "access_mode"
         case capabilityProfile = "capability_profile"
         case lastTool = "last_tool"
+        case lastToolDurationMS = "last_tool_duration_ms"
         case toolCallCount = "tool_call_count"
         case retryCount = "retry_count"
         case durationMS = "duration_ms"
+        case turnCount = "turn_count"
+        case turnElapsedMS = "turn_elapsed_ms"
+        case turnBudgetS = "turn_budget_s"
+        case checkpointCount = "checkpoint_count"
+        case checkpointPending = "checkpoint_pending"
+        case throttleCount = "throttle_count"
+        case lastThrottledAt = "last_throttled_at"
+        case lastThrottleReason = "last_throttle_reason"
+        case cooldownUntil = "cooldown_until"
     }
 }
 

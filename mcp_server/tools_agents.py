@@ -38,6 +38,12 @@ TEAM_RESULT_LIMIT = 2000
 DEFAULT_WAIT_TIMEOUT_S = 30
 MAX_WAIT_TIMEOUT_S = 300
 MAX_TEAM_SIZE = 10
+DEFAULT_CHATGPT_TURN_BUDGET_S = 900
+DEFAULT_CHATGPT_HARD_TOOL_BUDGET_S = 1200
+DEFAULT_CHATGPT_RATE_LIMIT_BACKOFF_S = 90
+MAX_CHATGPT_RATE_LIMIT_BACKOFF_S = 600
+DEFAULT_CHATGPT_REDUCED_CONCURRENCY_S = 900
+DEFAULT_CHATGPT_START_SPACING_S = 15
 
 _PROVIDER_NAMES = {"opencode", "codex", "chatgpt"}
 _ACCESS_MODES = {"read_only", "workspace_write", "full"}
@@ -542,6 +548,280 @@ def _chatgpt_default_project() -> Optional[str]:
     return value or None
 
 
+def _chatgpt_int_setting(name: str, env_name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.getenv(env_name)
+    if raw is None or not str(raw).strip():
+        raw = provider_setting("chatgpt", name, default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return min(maximum, max(minimum, value))
+
+
+def _chatgpt_budget_config() -> Tuple[int, int]:
+    soft = _chatgpt_int_setting(
+        "turn_budget_s", "CHATGPT_PROVIDER_TURN_BUDGET_S",
+        DEFAULT_CHATGPT_TURN_BUDGET_S, 60, 3600,
+    )
+    hard = _chatgpt_int_setting(
+        "hard_tool_budget_s", "CHATGPT_PROVIDER_HARD_TOOL_BUDGET_S",
+        DEFAULT_CHATGPT_HARD_TOOL_BUDGET_S, 120, 7200,
+    )
+    return soft, max(soft, hard)
+
+
+def _chatgpt_rate_limit_reason_text(text: str) -> Optional[str]:
+    normalized = str(text or "").lower().replace("’", "'")
+    patterns = (
+        ("requesting_too_fast", r"you(?:'re| are) (?:making )?requests too (?:quickly|fast)"),
+        ("temporarily_limited", r"temporarily limited access to your conversations"),
+        ("provider_rate_limited", r"chatgpt(?:_web)?_rate_limited|temporarily rate-limited"),
+        ("too_many_requests", r"too many requests|http\s*429|\b429\b"),
+        ("rate_limit", r"rate[- ]?limit(?:ed|ing)?"),
+    )
+    for reason, pattern in patterns:
+        if re.search(pattern, normalized, re.IGNORECASE):
+            return reason
+    return None
+
+
+def _log_text_since(path: Path, offset: int = 0, max_chars: int = 8000) -> str:
+    try:
+        with path.open("rb") as handle:
+            handle.seek(max(0, int(offset)))
+            data = handle.read(max_chars * 4)
+    except OSError:
+        return ""
+    return data.decode("utf-8", errors="replace")[-max_chars:]
+
+
+def _chatgpt_rate_limit_reason(
+    stdout_path: Path,
+    stderr_path: Path,
+    stdout_offset: int = 0,
+    stderr_offset: int = 0,
+) -> Optional[str]:
+    text = _log_text_since(stdout_path, stdout_offset) + "\n" + _log_text_since(stderr_path, stderr_offset)
+    return _chatgpt_rate_limit_reason_text(text)
+
+
+def _chatgpt_cooldown_seconds(throttle_count: int) -> int:
+    base = _chatgpt_int_setting(
+        "rate_limit_backoff_s", "CHATGPT_PROVIDER_RATE_LIMIT_BACKOFF_S",
+        DEFAULT_CHATGPT_RATE_LIMIT_BACKOFF_S, 5, 600,
+    )
+    cap = _chatgpt_int_setting(
+        "rate_limit_backoff_cap_s", "CHATGPT_PROVIDER_RATE_LIMIT_BACKOFF_CAP_S",
+        MAX_CHATGPT_RATE_LIMIT_BACKOFF_S, base, 1800,
+    )
+    exponent = max(0, min(6, int(throttle_count) - 1))
+    return min(cap, base * (2 ** exponent))
+
+
+def _chatgpt_provider_state_path() -> Path:
+    return AGENTS_DIR / ".chatgpt-provider-state.json"
+
+
+def _update_chatgpt_provider_state(update: Callable[[Dict[str, Any]], None]) -> Dict[str, Any]:
+    AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = AGENTS_DIR / ".chatgpt-provider-state.lock"
+    state_path = _chatgpt_provider_state_path()
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+            except (OSError, json.JSONDecodeError):
+                state = {}
+            update(state)
+            fd, tmp_name = tempfile.mkstemp(prefix=".chatgpt-provider-state.", suffix=".tmp", dir=AGENTS_DIR)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(json.dumps(state, ensure_ascii=False, sort_keys=True))
+                    handle.flush(); os.fsync(handle.fileno())
+                os.replace(tmp_name, state_path)
+            finally:
+                Path(tmp_name).unlink(missing_ok=True)
+            return state
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _record_chatgpt_shared_throttle(cooldown_until: float, reason: str, now: Optional[float] = None) -> Dict[str, Any]:
+    current = float(now if now is not None else _now())
+    reduced_for = _chatgpt_int_setting(
+        "reduced_concurrency_s", "CHATGPT_PROVIDER_REDUCED_CONCURRENCY_S",
+        DEFAULT_CHATGPT_REDUCED_CONCURRENCY_S, 60, 3600,
+    )
+    def mutate(state: Dict[str, Any]) -> None:
+        state["throttle_count"] = int(state.get("throttle_count") or 0) + 1
+        state["last_throttled_at"] = current
+        state["last_throttle_reason"] = reason
+        state["cooldown_until"] = max(float(state.get("cooldown_until") or 0), float(cooldown_until))
+        state["reduced_until"] = max(float(state.get("reduced_until") or 0), current + reduced_for)
+        state["next_allowed_at"] = max(float(state.get("next_allowed_at") or 0), float(cooldown_until))
+    return _update_chatgpt_provider_state(mutate)
+
+
+def _reserve_chatgpt_provider_start(now: Optional[float] = None) -> float:
+    current = float(now if now is not None else _now())
+    spacing = _chatgpt_int_setting(
+        "post_throttle_start_spacing_s", "CHATGPT_PROVIDER_POST_THROTTLE_SPACING_S",
+        DEFAULT_CHATGPT_START_SPACING_S, 1, 120,
+    )
+    delay = 0.0
+    def mutate(state: Dict[str, Any]) -> None:
+        nonlocal delay
+        cooldown_until = float(state.get("cooldown_until") or 0)
+        reduced_until = float(state.get("reduced_until") or 0)
+        if current >= reduced_until and current >= cooldown_until:
+            state["next_allowed_at"] = current
+            delay = 0.0
+            return
+        reserved = max(current, cooldown_until, float(state.get("next_allowed_at") or 0))
+        state["next_allowed_at"] = reserved + spacing
+        delay = max(0.0, reserved - current)
+    _update_chatgpt_provider_state(mutate)
+    return delay
+
+
+def _wait_chatgpt_provider_gate(agent_id: str) -> bool:
+    delay = _reserve_chatgpt_provider_start()
+    if delay <= 0:
+        return True
+    def mark_waiting(current: Dict[str, Any]) -> Optional[bool]:
+        if current.get("status") == "cancelled":
+            return False
+        current["phase"] = "throttled"
+        current["note"] = f"ChatGPT provider cooldown active; next safe start in about {int(delay)}s."
+        current["updated_at"] = _now()
+        return True
+    _update_meta(agent_id, mark_waiting)
+    deadline = time.monotonic() + delay
+    while time.monotonic() < deadline:
+        try:
+            if _read_meta(agent_id).get("status") == "cancelled":
+                return False
+        except HTTPException:
+            return False
+        time.sleep(min(0.5, max(0.05, deadline - time.monotonic())))
+    def mark_ready(current: Dict[str, Any]) -> Optional[bool]:
+        if current.get("status") == "cancelled":
+            return False
+        current["phase"] = "retrying" if int(current.get("retry_count") or 0) > 0 else "provider_starting"
+        current["updated_at"] = _now()
+        return True
+    _update_meta(agent_id, mark_ready)
+    return True
+
+
+def _chatgpt_turn_budget_action(meta: Dict[str, Any], now: Optional[float] = None) -> Optional[str]:
+    if str(meta.get("provider") or "").lower() != "chatgpt" or meta.get("checkpoint_pending"):
+        return None
+    current = float(now if now is not None else _now())
+    turn_started = float(meta.get("turn_started_at") or meta.get("provider_started_at") or current)
+    soft = int(meta.get("turn_budget_s") or DEFAULT_CHATGPT_TURN_BUDGET_S)
+    hard = int(meta.get("hard_tool_budget_s") or DEFAULT_CHATGPT_HARD_TOOL_BUDGET_S)
+    active_tool_started = meta.get("active_tool_started_at")
+    if active_tool_started:
+        if current - float(active_tool_started) >= hard:
+            return "hard_tool_budget"
+        if current - turn_started >= soft:
+            return "wait_for_tool"
+        return None
+    if current - turn_started >= soft:
+        return "turn_budget"
+    return None
+
+
+def _chatgpt_checkpoint_prompt(reason: str) -> str:
+    detail = "the current tool exceeded the hard safety budget" if reason == "hard_tool_budget" else "the current turn reached its budget"
+    return (
+        "Continue the same delegated task from the current conversation state. This is an automatic checkpoint because "
+        f"{detail}. Do not repeat completed work or duplicate external side effects. Reconcile the latest visible tool/results "
+        "first, then continue toward the original goal and finish with the requested handoff when complete."
+    )
+
+
+def _chatgpt_checkpoint_command(meta: Dict[str, Any], reason: str) -> Optional[List[str]]:
+    target = str(meta.get("provider_job_id") or meta.get("session_id") or "").strip()
+    binary = str(meta.get("binary") or "").strip()
+    if not target or not binary:
+        return None
+    cmd = [binary, "interrupt", target]
+    model = str(meta.get("model") or "").strip()
+    if model:
+        cmd += ["--model", model]
+    effort = _chatgpt_effort(meta.get("reasoning"))
+    if effort:
+        cmd += ["--effort", effort]
+    cmd.append(_chatgpt_checkpoint_prompt(reason))
+    return cmd
+
+
+def _request_chatgpt_checkpoint(agent_id: str, meta: Dict[str, Any], reason: str) -> bool:
+    cmd = _chatgpt_checkpoint_command(meta, reason)
+    if not cmd:
+        return False
+    requested_at = _now()
+    def mark_pending(current: Dict[str, Any]) -> Optional[bool]:
+        if current.get("status") == "cancelled" or current.get("checkpoint_pending"):
+            return False
+        current.update({
+            "checkpoint_pending": True, "phase": "checkpointing", "last_checkpoint_reason": reason,
+            "last_checkpoint_requested_at": requested_at,
+            "note": "ChatGPT turn budget reached; checkpointing into a fresh turn.", "updated_at": requested_at,
+        })
+        return True
+    latest = _update_meta(agent_id, mark_pending)
+    if not latest.get("checkpoint_pending"):
+        return False
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20, env=_chatgpt_env())
+    except (OSError, subprocess.SubprocessError) as exc:
+        proc = None
+        error = str(exc)
+    else:
+        error = (proc.stderr or proc.stdout or "").strip()
+    if proc is None or proc.returncode != 0:
+        def mark_failed(current: Dict[str, Any]) -> None:
+            current["checkpoint_pending"] = False
+            current["checkpoint_failures"] = int(current.get("checkpoint_failures") or 0) + 1
+            current["phase"] = "tool" if current.get("active_tool_started_at") else "reasoning"
+            current["note"] = "Automatic ChatGPT checkpoint failed; continuing current turn without duplicate retry."
+            current["last_checkpoint_error"] = str(error or "checkpoint request failed")[-500:]
+            current["updated_at"] = _now()
+        _update_meta(agent_id, mark_failed)
+        return False
+    def mark_requested(current: Dict[str, Any]) -> None:
+        current["checkpoint_count"] = int(current.get("checkpoint_count") or 0) + 1
+        current["last_checkpoint_at"] = _now()
+        current["updated_at"] = _now()
+    _update_meta(agent_id, mark_requested)
+    return True
+
+
+def _chatgpt_session_for_job(meta: Dict[str, Any]) -> Optional[str]:
+    existing = str(meta.get("session_id") or "").strip()
+    if existing:
+        return existing
+    job_id = str(meta.get("provider_job_id") or "").strip()
+    binary = str(meta.get("binary") or "").strip()
+    if not job_id or not binary:
+        return None
+    try:
+        proc = subprocess.run([binary, "jobs", "--all", "--json"], capture_output=True, text=True, timeout=10, env=_chatgpt_env())
+        rows = json.loads(proc.stdout or "[]") if proc.returncode == 0 else []
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return None
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and str(row.get("id") or "") == job_id:
+            session_id = str(row.get("sessionId") or row.get("session_id") or "").strip()
+            return session_id or None
+    return None
+
+
 def _access_mode_info(provider: str, access_mode: str) -> Dict[str, Any]:
     if provider == "codex":
         return {
@@ -747,6 +1027,10 @@ def agent_catalog(
             "models": matched[:limit],
             "default_model": default_model,
             "reasoning_values": ["low", "medium", "high", "extra-high"],
+            "default_reasoning": str(provider_setting("chatgpt", "default_reasoning", "high") or "high"),
+            "turn_budget_s": _chatgpt_budget_config()[0],
+            "hard_tool_budget_s": _chatgpt_budget_config()[1],
+            "rate_limit_backoff_s": _chatgpt_cooldown_seconds(1),
             "default_project": _chatgpt_default_project(),
             "supports_project_override": True,
             "supports_resume": True,
@@ -824,6 +1108,17 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "tool_call_count": int(meta.get("tool_call_count") or 0),
         "last_tool": meta.get("last_tool"),
         "last_tool_duration_ms": meta.get("last_tool_duration_ms"),
+        "turn_count": int(meta.get("turn_count") or 0),
+        "turn_elapsed_ms": int(max(0.0, current - float(meta.get("turn_started_at") or current)) * 1000) if meta.get("turn_started_at") else None,
+        "turn_budget_s": meta.get("turn_budget_s"),
+        "hard_tool_budget_s": meta.get("hard_tool_budget_s"),
+        "checkpoint_count": int(meta.get("checkpoint_count") or 0),
+        "checkpoint_pending": bool(meta.get("checkpoint_pending")),
+        "last_checkpoint_at": meta.get("last_checkpoint_at"),
+        "throttle_count": int(meta.get("throttle_count") or 0),
+        "last_throttled_at": meta.get("last_throttled_at"),
+        "last_throttle_reason": meta.get("last_throttle_reason"),
+        "cooldown_until": meta.get("cooldown_until"),
         "last_event_type": meta.get("last_event_type"),
         "idle_timeout_s": meta.get("idle_timeout_s"),
         "retries": int(meta.get("retries") or 0),
@@ -893,6 +1188,8 @@ def _spawn_internal(
     if not provider_enabled(provider):
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"provider_disabled: {provider} is disabled in Mac MCP Settings > Subagents.")
     if provider == "chatgpt":
+        if reasoning is None:
+            reasoning = str(provider_setting("chatgpt", "default_reasoning", "high") or "high").strip() or "high"
         if reasoning and str(reasoning).strip().lower() != "none" and not _chatgpt_effort(reasoning):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "chatgpt reasoning must be low, medium, high, or extra-high.")
         project = str(project or _chatgpt_default_project() or "").strip() or None
@@ -937,6 +1234,7 @@ def _spawn_internal(
     (path / "result.txt").touch()
 
     started = _now()
+    chatgpt_turn_budget_s, chatgpt_hard_tool_budget_s = _chatgpt_budget_config() if provider == "chatgpt" else (None, None)
     meta: Dict[str, Any] = {
         "agent_id": agent_id,
         "team_id": team_id,
@@ -979,6 +1277,22 @@ def _spawn_internal(
         "tool_call_count": 0,
         "last_tool": None,
         "last_tool_duration_ms": None,
+        "provider_job_id": None,
+        "turn_count": 0,
+        "turn_started_at": None,
+        "turn_budget_s": chatgpt_turn_budget_s,
+        "hard_tool_budget_s": chatgpt_hard_tool_budget_s,
+        "active_tool_started_at": None,
+        "checkpoint_count": 0,
+        "checkpoint_pending": False,
+        "checkpoint_waiting_for_tool": False,
+        "checkpoint_failures": 0,
+        "last_checkpoint_at": None,
+        "last_checkpoint_reason": None,
+        "throttle_count": 0,
+        "last_throttled_at": None,
+        "last_throttle_reason": None,
+        "cooldown_until": None,
         "updated_at": started,
         "ended_at": None,
     }
@@ -1653,8 +1967,13 @@ def _apply_provider_event(meta: Dict[str, Any], event: Dict[str, Any], now: floa
         session_id = event.get("sessionId") or event.get("session_id")
         if session_id:
             meta["session_id"] = str(session_id)
+        provider_job_id = event.get("jobId") or event.get("job_id")
+        if provider_job_id:
+            meta["provider_job_id"] = str(provider_job_id)
         if event_type == "job_started":
             meta["phase"] = "starting"
+            meta["turn_count"] = max(1, int(meta.get("turn_count") or 0))
+            meta["turn_started_at"] = now
         elif event_type == "status":
             if int(meta.get("step_count") or 0) == 0:
                 meta["step_count"] = 1
@@ -1671,8 +1990,24 @@ def _apply_provider_event(meta: Dict[str, Any], event: Dict[str, Any], now: floa
             meta["last_tool"] = str(event.get("text") or event.get("toolId") or "tool")
             if not meta.get("first_tool_at"):
                 meta["first_tool_at"] = now
+            meta["active_tool_started_at"] = now
             meta["phase"] = "tool"
         elif event_type == "tool_end":
+            tool_started = meta.get("active_tool_started_at")
+            if tool_started:
+                meta["last_tool_duration_ms"] = max(0, int((now - float(tool_started)) * 1000))
+            meta["active_tool_started_at"] = None
+            meta["checkpoint_waiting_for_tool"] = False
+            meta["phase"] = "reasoning"
+        elif event_type == "interrupting":
+            meta["phase"] = "checkpointing"
+        elif event_type == "interrupted":
+            meta["turn_count"] = int(meta.get("turn_count") or 0) + 1
+            meta["turn_started_at"] = now
+            meta["active_tool_started_at"] = None
+            meta["checkpoint_pending"] = False
+            meta["checkpoint_waiting_for_tool"] = False
+            meta["note"] = "ChatGPT checkpoint resumed in a fresh turn."
             meta["phase"] = "reasoning"
         elif event_type == "assistant_delta":
             meta["phase"] = "finalizing"
@@ -1826,6 +2161,9 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
                 "provider_pid": proc.pid, "provider_started_at": now, "last_activity_at": now,
                 "phase": "provider_starting", "updated_at": now, "retry_count": attempt_index,
             })
+            if str(current.get("provider") or "").lower() == "chatgpt" and not current.get("turn_started_at"):
+                current["turn_started_at"] = now
+                current["turn_count"] = max(1, int(current.get("turn_count") or 0))
             return True
 
         latest = _update_meta(agent_id, record_provider_start)
@@ -1843,9 +2181,20 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
             latest = _read_meta(agent_id)
             if latest.get("status") == "cancelled":
                 stop_reason = "cancelled"
-            elif time.monotonic() - attempt_started >= timeout_s:
+            elif meta.get("provider") == "chatgpt":
+                budget_action = _chatgpt_turn_budget_action(latest)
+                if budget_action == "wait_for_tool":
+                    if not latest.get("checkpoint_waiting_for_tool"):
+                        def mark_waiting(current: Dict[str, Any]) -> None:
+                            current["checkpoint_waiting_for_tool"] = True
+                            current["note"] = "ChatGPT turn budget reached; waiting for the active tool to finish before checkpointing."
+                            current["updated_at"] = _now()
+                        _update_meta(agent_id, mark_waiting)
+                elif budget_action in {"turn_budget", "hard_tool_budget"}:
+                    _request_chatgpt_checkpoint(agent_id, latest, budget_action)
+            if stop_reason is None and time.monotonic() - attempt_started >= timeout_s:
                 stop_reason = "timeout"
-            elif idle_timeout_s and _now() - float(latest.get("last_activity_at") or latest.get("provider_started_at") or _now()) >= int(idle_timeout_s):
+            elif stop_reason is None and idle_timeout_s and _now() - float(latest.get("last_activity_at") or latest.get("provider_started_at") or _now()) >= int(idle_timeout_s):
                 stop_reason = "stalled"
             if stop_reason:
                 provider_signal = signal_module.SIGINT if meta.get("provider") == "chatgpt" else signal_module.SIGTERM
@@ -1908,41 +2257,56 @@ def _worker(agent_id: str) -> int:
             latest = _read_meta(agent_id)
             if latest.get("status") == "cancelled":
                 return 0
+            attempt_prompt = prompt
             if attempt_index > 0:
+                recovered_session_id = _chatgpt_session_for_job(latest) if latest.get("provider") == "chatgpt" else None
                 def record_retry(current: Dict[str, Any]) -> Optional[bool]:
                     if current.get("status") == "cancelled":
                         return False
                     now = _now()
+                    if recovered_session_id:
+                        current["session_id"] = recovered_session_id
+                        current["resume_session_id"] = recovered_session_id
                     current.update({
                         "phase": "retrying", "retry_count": attempt_index, "provider_pid": None,
                         "provider_started_at": None, "last_activity_at": now,
-                        "note": f"Retrying same model after {final_reason or 'provider_error'}.", "updated_at": now,
+                        "turn_started_at": None if current.get("provider") == "chatgpt" else current.get("turn_started_at"),
+                        "checkpoint_pending": False if current.get("provider") == "chatgpt" else current.get("checkpoint_pending", False),
+                        "checkpoint_waiting_for_tool": False if current.get("provider") == "chatgpt" else current.get("checkpoint_waiting_for_tool", False),
+                        "note": f"Retrying same task after {final_reason or 'provider_error'}.", "updated_at": now,
                     })
                     return True
 
                 latest = _update_meta(agent_id, record_retry)
                 if latest.get("status") == "cancelled":
                     return 0
-                retry_delay = min(2.0, 0.75 * attempt_index)
-                if latest.get("provider") == "chatgpt":
-                    error_tail = _tail_text(stderr_path, max_lines=40, max_chars=4000).lower()
-                    if "temporarily rate-limited" in error_tail or "too many requests" in error_tail:
-                        try:
-                            retry_delay = max(retry_delay, float(os.getenv("CHATGPT_PROVIDER_RATE_LIMIT_BACKOFF_S", "90")))
-                        except ValueError:
-                            retry_delay = max(retry_delay, 90.0)
-                        def record_rate_limit_backoff(current: Dict[str, Any]) -> Optional[bool]:
-                            if current.get("status") == "cancelled":
-                                return False
-                            current["phase"] = "retrying"
-                            current["note"] = f"ChatGPT web rate-limited; backing off {int(retry_delay)}s before retry."
-                            current["updated_at"] = _now()
-                            return True
-                        latest = _update_meta(agent_id, record_rate_limit_backoff)
-                time.sleep(retry_delay)
-            exit_code, stop_reason = _run_provider_attempt(agent_id, latest, prompt, attempt_index)
+                if latest.get("provider") == "chatgpt" and latest.get("resume_session_id"):
+                    attempt_prompt = _chatgpt_checkpoint_prompt("rate_limit" if final_reason == "rate_limited" else "turn_budget")
+                if final_reason != "rate_limited":
+                    time.sleep(min(2.0, 0.75 * attempt_index))
+            if latest.get("provider") == "chatgpt" and not _wait_chatgpt_provider_gate(agent_id):
+                return 0
+            stdout_offset = stdout_path.stat().st_size if stdout_path.exists() else 0
+            stderr_offset = stderr_path.stat().st_size if stderr_path.exists() else 0
+            exit_code, stop_reason = _run_provider_attempt(agent_id, latest, attempt_prompt, attempt_index)
             final_reason = stop_reason
             latest = _read_meta(agent_id)
+            if latest.get("provider") == "chatgpt" and exit_code != 0 and stop_reason is None:
+                throttle_reason = _chatgpt_rate_limit_reason(stdout_path, stderr_path, stdout_offset, stderr_offset)
+                if throttle_reason:
+                    def record_throttle(current: Dict[str, Any]) -> None:
+                        count = int(current.get("throttle_count") or 0) + 1
+                        cooldown_s = _chatgpt_cooldown_seconds(count)
+                        now = _now()
+                        current.update({
+                            "phase": "throttled", "throttle_count": count, "last_throttled_at": now,
+                            "last_throttle_reason": throttle_reason, "cooldown_until": now + cooldown_s,
+                            "note": f"ChatGPT web throttled ({throttle_reason}); cooling down {cooldown_s}s before retry.",
+                            "updated_at": now,
+                        })
+                    latest = _update_meta(agent_id, record_throttle)
+                    _record_chatgpt_shared_throttle(float(latest.get("cooldown_until") or _now()), throttle_reason)
+                    final_reason = "rate_limited"
             if latest.get("status") == "cancelled" or stop_reason == "cancelled":
                 return 0
             if exit_code == 0 and stop_reason is None:
@@ -2006,7 +2370,10 @@ def _worker(agent_id: str) -> int:
             "result_truncated": was_truncated, "result_chars": len(result), "provider_pid": None,
         })
         if final_status != "completed":
-            current["note"] = f"Provider ended as {final_status} with code {exit_code}."
+            if final_reason == "rate_limited":
+                current["note"] = f"ChatGPT remained rate-limited after bounded retries; last provider code {exit_code}."
+            else:
+                current["note"] = f"Provider ended as {final_status} with code {exit_code}."
         return True
 
     meta = _update_meta(agent_id, record_completion)

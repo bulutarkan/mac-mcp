@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Added ChatGPT delegated-agent turn budgeting: 15-minute soft checkpoints continue the same live job/session, wait for active tools, and enforce a 20-minute hard tool ceiling without replaying completed side effects.
+- Added ChatGPT web-throttle resilience with expanded “requesting too fast” detection, bounded exponential cooldown, post-throttle worker staggering, session-aware retry continuation, and checkpoint/throttle telemetry in the dashboard and menu app. ChatGPT subagents now default to High reasoning while extra-high remains opt-in.
 - Added steering daemon generation/epoch safety: ambiguous retries are now bound to the daemon lifetime and old-generation retries fail as `stale_generation`/`outcome=unknown` instead of being replayed after a restart.
 - Added bounded idempotency tombstones so late same-generation retries whose canonical dedupe entry aged out fail as `idempotency_expired` rather than silently enqueueing a duplicate instruction.
 - Extended the menu-app pending steering correlation marker with the daemon generation while still persisting only metadata and the prompt SHA-256, never raw steering text.
