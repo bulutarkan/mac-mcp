@@ -43,6 +43,14 @@ _DOM_CAPTURE_VIEWPORT_TIMEOUT_S = 18.0
 _DOM_CAPTURE_FULL_PAGE_TIMEOUT_S = 30.0
 _DOM_CAPTURE_MAX_CSS_HEIGHT = 20_000
 _DOM_CAPTURE_MAX_DATA_URL_CHARS = 1_800_000
+_RENDER_READINESS_TIMEOUT_S = 1.5
+_RENDER_READINESS_POLL_S = 0.08
+_RENDER_READINESS_STABLE_MS = 120
+_ELEMENT_READINESS_TIMEOUT_S = 0.8
+_ELEMENT_READINESS_POLL_S = 0.06
+_ELEMENT_READINESS_STABLE_MS = 300
+_ACTION_VERIFY_TIMEOUT_S = 0.55
+_ACTION_VERIFY_POLL_S = 0.07
 _GENERIC_QUERY_WORDS = {
     "button", "link", "input", "field", "select", "dropdown", "combobox", "option",
     "filter", "control", "element", "box", "menu", "tab", "checkbox", "radio",
@@ -253,6 +261,92 @@ end tell'''
         )
 
 
+def _render_readiness_js(mode: str, element_id: Optional[str]) -> str:
+    mode_js = json.dumps(mode)
+    element_js = json.dumps(element_id)
+    return f'''(function(){{
+var mode={mode_js},elementId={element_js};
+var de=document.documentElement,body=document.body;
+var alive=!!(de&&de.isConnected&&body&&body.isConnected);
+var vw=Number(innerWidth||0),vh=Number(innerHeight||0);
+var fullW=alive?Math.max(Number(de.scrollWidth||0),Number(de.clientWidth||0),Number(body.scrollWidth||0),Number(body.clientWidth||0),vw):0;
+var fullH=alive?Math.max(Number(de.scrollHeight||0),Number(de.clientHeight||0),Number(body.scrollHeight||0),Number(body.clientHeight||0),vh):0;
+var target=null,rect=null,connected=true;
+if(mode==='element'){{
+  var agent=window.__macMcpBrowserAgent;
+  target=agent&&agent.elements&&elementId?agent.elements[elementId]:null;
+  connected=!!(target&&target.isConnected);
+  if(connected){{try{{rect=target.getBoundingClientRect();}}catch(e){{rect=null;}}}}
+}}
+var rawW=mode==='element'?(rect?Number(rect.width||0):0):(mode==='viewport'?vw:fullW);
+var rawH=mode==='element'?(rect?Number(rect.height||0):0):(mode==='viewport'?vh:fullH);
+var finite=isFinite(rawW)&&isFinite(rawH),positive=finite&&rawW>0&&rawH>0;
+var readyState=String(document.readyState||'');
+var reason='';
+if(!alive)reason='RENDER_NOT_READY';
+else if(mode==='element'&&!connected)reason='ELEMENT_NOT_READY';
+else if(!positive)reason=mode==='element'?'ELEMENT_ZERO_BOUNDS':'ZERO_CONTENT_BOUNDS';
+else if(readyState==='loading')reason='RENDER_NOT_READY';
+var loadAge=-1;
+try{{var nav=performance.getEntriesByType&&performance.getEntriesByType('navigation')[0];if(nav&&nav.loadEventEnd>0)loadAge=Math.max(0,performance.now()-nav.loadEventEnd);}}catch(e){{}}
+var ready=!reason;
+return JSON.stringify({{ok:true,ready:ready,reason_code:reason||null,retryable:!ready,mode:mode,page_alive:alive,ready_state:readyState,raw_width:rawW,raw_height:rawH,viewport_width:vw,viewport_height:vh,full_width:fullW,full_height:fullH,element_connected:connected,load_age_ms:loadAge,signature:[readyState,Math.round(rawW*10)/10,Math.round(rawH*10)/10,Math.round(fullW),Math.round(fullH),connected].join('|')}});
+}})()'''
+
+
+def _wait_for_render_readiness(
+    browser: str,
+    mode: str,
+    element_id: Optional[str],
+    window_index: int,
+    tab_index: Optional[int],
+    tab_handle: str,
+) -> Dict[str, Any]:
+    started = time.perf_counter()
+    deadline = started + _RENDER_READINESS_TIMEOUT_S
+    last_signature: Optional[str] = None
+    stable_since = started
+    attempts = 0
+    last: Dict[str, Any] = {}
+    while True:
+        attempts += 1
+        raw = _execute_js_unbounded(
+            browser,
+            _render_readiness_js(mode, element_id),
+            window_index=window_index,
+            tab_index=tab_index,
+            tab_handle=tab_handle,
+            timeout_s=10,
+        )
+        try:
+            state = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            state = {"ready": False, "reason_code": "RENDER_NOT_READY", "retryable": True}
+        last = state if isinstance(state, dict) else {}
+        now = time.perf_counter()
+        if last.get("ready"):
+            signature = str(last.get("signature") or "")
+            load_age = float(last.get("load_age_ms") or -1)
+            if load_age >= _ELEMENT_READINESS_STABLE_MS:
+                last.update({"attempts": attempts, "duration_ms": int((now - started) * 1000), "settled_by": "loaded"})
+                return last
+            if signature != last_signature:
+                last_signature = signature
+                stable_since = now
+            elif (now - stable_since) * 1000 >= _RENDER_READINESS_STABLE_MS:
+                last.update({"attempts": attempts, "duration_ms": int((now - started) * 1000), "settled_by": "stable_bounds"})
+                return last
+        else:
+            last_signature = None
+            stable_since = now
+        if now >= deadline:
+            last.update({"ready": False, "attempts": attempts, "duration_ms": int((now - started) * 1000), "timed_out": True})
+            if not last.get("reason_code"):
+                last["reason_code"] = "RENDER_NOT_READY"
+            return last
+        time.sleep(_RENDER_READINESS_POLL_S)
+
+
 def _dom_capture_start_js(
     mode: str,
     element_id: Optional[str],
@@ -273,11 +367,14 @@ if(mode==="element"){{
   if(!target||!target.isConnected) return JSON.stringify({{ok:false,error:"element_not_available",element_id:elementId}});
 }}
 var de=document.documentElement, body=document.body||de;
-var fullW=Math.max(de.scrollWidth,de.clientWidth,body.scrollWidth,body.clientWidth,innerWidth);
-var fullH=Math.max(de.scrollHeight,de.clientHeight,body.scrollHeight,body.clientHeight,innerHeight);
+var fullW=Math.max(Number(de.scrollWidth||0),Number(de.clientWidth||0),Number(body.scrollWidth||0),Number(body.clientWidth||0),Number(innerWidth||0));
+var fullH=Math.max(Number(de.scrollHeight||0),Number(de.clientHeight||0),Number(body.scrollHeight||0),Number(body.clientHeight||0),Number(innerHeight||0));
 var rect=mode==="element"?target.getBoundingClientRect():null;
-var sourceW=mode==="element"?Math.max(1,Math.ceil(rect.width)):(mode==="viewport"?Math.max(1,innerWidth):Math.max(1,fullW));
-var actualH=mode==="element"?Math.max(1,Math.ceil(rect.height)):(mode==="viewport"?Math.max(1,innerHeight):Math.max(1,fullH));
+var rawW=mode==="element"?Number(rect.width||0):(mode==="viewport"?Number(innerWidth||0):fullW);
+var rawH=mode==="element"?Number(rect.height||0):(mode==="viewport"?Number(innerHeight||0):fullH);
+if(!isFinite(rawW)||!isFinite(rawH)||rawW<=0||rawH<=0) return JSON.stringify({{ok:false,error:"render_not_ready",reason_code:mode==="element"?"ELEMENT_ZERO_BOUNDS":"ZERO_CONTENT_BOUNDS",retryable:true,raw_width:rawW,raw_height:rawH}});
+var sourceW=Math.max(1,Math.ceil(rawW));
+var actualH=Math.max(1,Math.ceil(rawH));
 var sourceH=mode==="full_page"?Math.min(actualH,{_DOM_CAPTURE_MAX_CSS_HEIGHT}):actualH;
 var truncated=mode==="full_page"&&actualH>sourceH;
 var pixelBudget=7500000;
@@ -380,6 +477,21 @@ def _capture_dom_visual_locked(
             tab_index,
             tab_handle=tab_handle,
         )
+        readiness = _wait_for_render_readiness(
+            browser=browser,
+            mode=mode,
+            element_id=element_id,
+            window_index=window_index,
+            tab_index=tab_index,
+            tab_handle=tab_handle,
+        )
+        meta["readiness"] = readiness
+        meta["readiness_attempts"] = readiness.get("attempts")
+        meta["readiness_duration_ms"] = readiness.get("duration_ms")
+        if not readiness.get("ready"):
+            reason_code = str(readiness.get("reason_code") or "RENDER_NOT_READY")
+            meta["reason_code"] = reason_code
+            return None, f"Render not ready: {reason_code}", meta
         started_raw = _execute_js_unbounded(
             browser,
             _dom_capture_start_js(mode, element_id, state_key),
@@ -393,6 +505,12 @@ def _capture_dom_visual_locked(
         except json.JSONDecodeError:
             started = {}
         if started.get("ok") is False:
+            reason_code = str(started.get("reason_code") or "RENDER_NOT_READY")
+            meta["reason_code"] = reason_code
+            if started.get("raw_width") is not None:
+                meta["raw_width"] = started.get("raw_width")
+            if started.get("raw_height") is not None:
+                meta["raw_height"] = started.get("raw_height")
             return None, str(started.get("error") or "Could not start DOM screenshot capture."), meta
 
         timeout_s = (
@@ -515,14 +633,14 @@ function __mcpStopMutationWatch(s){
 }
 function __mcpStartMutationWatch(s,ttl){
   __mcpStopMutationWatch(s);var roots=__mcpRoots(),bump=function(records){
-    for(var j=0;j<records.length;j++){var rec=records[j];if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')continue;s.mutationRevision+=1;break;}
+    for(var j=0;j<records.length;j++){var rec=records[j];if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')continue;s.mutationRevision+=1;s.lastMutationAt=Date.now();break;}
   };
   for(var i=0;i<roots.length;i++){try{var ob=new MutationObserver(bump);ob.observe(roots[i],{subtree:true,childList:true,attributes:true,characterData:true});s.rootObservers.push(ob);}catch(e){}}
   s.observerTimer=setTimeout(function(){__mcpStopMutationWatch(s);},Math.max(500,Math.min(Number(ttl||3000),8000)));
 }
 function __mcpState(){
   var s=window.__macMcpBrowserAgent;
-  if(!s){s=window.__macMcpBrowserAgent={counter:0,ids:new WeakMap(),elements:Object.create(null),pageToken:Math.random().toString(36).slice(2,10),mutationRevision:0,observations:Object.create(null),rootObservers:[],observerTimer:null};}
+  if(!s){var stableAt=Date.now();try{var nav=performance.getEntriesByType&&performance.getEntriesByType('navigation')[0];if(document.readyState==='complete'&&nav&&nav.loadEventEnd>0&&performance.now()-nav.loadEventEnd>=300)stableAt=Date.now()-1000;}catch(e){}s=window.__macMcpBrowserAgent={counter:0,ids:new WeakMap(),elements:Object.create(null),pageToken:Math.random().toString(36).slice(2,10),mutationRevision:0,lastMutationAt:stableAt,observations:Object.create(null),rootObservers:[],observerTimer:null};}
   return s;
 }
 function __mcpVisualTarget(el){
@@ -555,6 +673,37 @@ function __mcpActionable(el){
     }
   }catch(e){}
   var ti=el.getAttribute('tabindex');return ti!==null&&Number(ti)>=0;
+}
+function __mcpComposedContains(root,node){
+  var cur=node,guard=0;while(cur&&guard++<20){if(cur===root)return true;cur=__mcpParent(cur);}return false;
+}
+function __mcpElementReadiness(el,kind,minStableMs){
+  kind=String(kind||'click').toLowerCase();minStableMs=Math.max(0,Number(minStableMs||0));
+  if(!el||el.nodeType!==1||!el.isConnected)return {ready:false,reason_code:'ELEMENT_DETACHED'};
+  var target=(kind==='click'||kind==='double_click'||kind==='select')?__mcpActivationTarget(el):el;
+  if(!target||!target.isConnected)return {ready:false,reason_code:'ELEMENT_DETACHED'};
+  var s=__mcpState(),st=null,r=null,topRect=null;
+  try{st=__mcpStyle(target);r=target.getBoundingClientRect();topRect=__mcpTopRect(target);}catch(e){return {ready:false,reason_code:'ELEMENT_NOT_READY'};}
+  var base={ready:false,reason_code:null,element_id:__mcpId(target,s),stable_for_ms:Math.max(0,Date.now()-Number(s.lastMutationAt||Date.now())),dom_revision:s.mutationRevision,
+    rect:{x:Math.round(topRect.left),y:Math.round(topRect.top),w:Math.round(topRect.width),h:Math.round(topRect.height)},pointer_events:String(st.pointerEvents||'')};
+  if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0){base.reason_code='ELEMENT_HIDDEN';return base;}
+  if(!isFinite(r.width)||!isFinite(r.height)||r.width<=0||r.height<=0){base.reason_code='ELEMENT_ZERO_BOUNDS';return base;}
+  if(topRect.bottom<=0||topRect.right<=0||topRect.top>=innerHeight||topRect.left>=innerWidth){base.reason_code='ELEMENT_OFFSCREEN';return base;}
+  if(target.disabled===true||target.getAttribute('aria-disabled')==='true'||target.closest&&target.closest('[inert]')){base.reason_code='ELEMENT_DISABLED';return base;}
+  if((kind==='type'||kind==='type_text'||kind==='paste')&&(target.readOnly===true||target.getAttribute('readonly')!==null)){base.reason_code='ELEMENT_READONLY';return base;}
+  if((kind==='type'||kind==='type_text'||kind==='paste')){
+    var tag=String(target.tagName||'').toLowerCase(),role=String(__mcpRole(target)||'').toLowerCase();
+    if(!(tag==='input'||tag==='textarea'||target.isContentEditable||role==='textbox'||role==='searchbox'||tag==='select')){base.reason_code='ELEMENT_NOT_EDITABLE';return base;}
+  }else if((kind==='click'||kind==='double_click'||kind==='select')&&!__mcpActionable(target)){base.reason_code='ELEMENT_NOT_ACTIONABLE';return base;}
+  var p=target,depth=0;while(p&&depth++<12){try{if(__mcpStyle(p).pointerEvents==='none'){base.reason_code='ELEMENT_POINTER_EVENTS_NONE';return base;}if(p.getAttribute&&p.getAttribute('aria-busy')==='true'){base.reason_code='ELEMENT_BUSY';return base;}}catch(e){}p=__mcpParent(p);}
+  if(base.stable_for_ms<minStableMs){base.reason_code='ELEMENT_UNSTABLE';return base;}
+  try{
+    var doc=target.ownerDocument||document,win=doc.defaultView||window,lr=target.getBoundingClientRect(),cx=lr.left+lr.width/2,cy=lr.top+lr.height/2;
+    if(cx<0||cy<0||cx>=win.innerWidth||cy>=win.innerHeight){base.reason_code='ELEMENT_OFFSCREEN';return base;}
+    var hit=doc.elementFromPoint(cx,cy);base.hit_tag=hit?String(hit.tagName||'').toLowerCase():null;
+    if(!hit||(!__mcpComposedContains(target,hit)&&!__mcpComposedContains(hit,target))){base.reason_code='ELEMENT_OCCLUDED';return base;}
+  }catch(e){base.reason_code='ELEMENT_HIT_TEST_FAILED';return base;}
+  base.ready=true;base.reason_code=null;return base;
 }
 function __mcpText(el){var aria=el.getAttribute('aria-label')||'',ph=el.getAttribute('placeholder')||'',title=el.getAttribute('title')||'',txt='';try{txt=(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim();}catch(e){}return(aria||ph||title||txt).slice(0,240);}
 function __mcpRole(el){var role=el.getAttribute('role');if(role)return role;var tag=(el.tagName||'').toLowerCase();if(tag==='a')return'link';if(tag==='button')return'button';if(tag==='select')return'combobox';if(tag==='textarea')return'textbox';if(tag==='input'){var t=(el.type||'text').toLowerCase();if(t==='checkbox')return'checkbox';if(t==='radio')return'radio';if(['button','submit','reset'].indexOf(t)>=0)return'button';return'textbox';}return'';}
@@ -590,6 +739,7 @@ function __mcpContext(el){
 function __mcpRect(el){var r=__mcpTopRect(el),ox=(window.outerWidth-window.innerWidth),oy=(window.outerHeight-window.innerHeight),viewportX=window.screenX+Math.max(0,Math.round(ox/2)),viewportY=window.screenY+Math.max(0,Math.round(oy));return{viewport:{x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)},document:{x:Math.round(r.left+scrollX),y:Math.round(r.top+scrollY),w:Math.round(r.width),h:Math.round(r.height)},screen:{x:Math.round(viewportX+r.left),y:Math.round(viewportY+r.top),w:Math.round(r.width),h:Math.round(r.height),estimated:true}};}
 function __mcpDescribe(el,s){
   var tag=(el.tagName||'').toLowerCase(),rect=__mcpRect(el),out={element_id:__mcpId(el,s),tag:tag,role:__mcpRole(el),text:__mcpText(el),viewport_rect:rect.viewport,screen_rect:rect.screen,actionable:__mcpActionable(el)};
+  if(out.actionable){var rd=__mcpElementReadiness(el,'observe',0);out.ready=!!rd.ready;if(rd.reason_code)out.readiness_reason=rd.reason_code;}
   var context=__mcpContext(el);if(context)out.context=context;
   var aria=el.getAttribute('aria-label')||'',ph=el.getAttribute('placeholder')||'',name=el.getAttribute('name')||'',title=el.getAttribute('title')||'';if(aria)out.aria_label=aria.slice(0,120);if(ph)out.placeholder=ph.slice(0,100);if(name)out.name=name.slice(0,100);if(title)out.title=title.slice(0,100);if(tag==='a'&&el.href)out.href=String(el.href).slice(0,220);if(el.disabled===true||el.getAttribute('aria-disabled')==='true')out.enabled=false;
   try{if(el.ownerDocument&&el.ownerDocument.activeElement===el)out.focused=true;}catch(e){}if(['input','textarea','select'].indexOf(tag)>=0)out.value=String(el.value||'').slice(0,160);if(tag==='input'&&el.type)out.input_type=String(el.type);if(typeof el.checked==='boolean'&&el.checked)out.checked=true;if(tag==='select')out.options=Array.from(el.options||[]).slice(0,24).map(function(o){return{text:String(o.text||'').slice(0,90),value:String(o.value||'').slice(0,90),selected:!!o.selected};});return out;
@@ -649,7 +799,7 @@ function __mcpFlushMutations(s){
     var records=[];try{records=obs[i].takeRecords();}catch(e){}
     for(var j=0;j<records.length;j++){var rec=records[j];if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')continue;changed=true;break;}
   }
-  if(changed)s.mutationRevision+=1;return changed;
+  if(changed){s.mutationRevision+=1;s.lastMutationAt=Date.now();}return changed;
 }
 function __mcpEffectState(el){
   if(!el)return {connected:false};var role=__mcpRole(el),value='',text='';
@@ -812,7 +962,7 @@ def _format_observation(payload: Dict[str, Any], image_data: Optional[bytes]) ->
                 key: element.get(key)
                 for key in (
                     "element_id", "tag", "role", "text", "aria_label", "placeholder",
-                    "name", "title", "value", "href", "actionable", "enabled", "focused",
+                    "name", "title", "value", "href", "actionable", "ready", "readiness_reason", "enabled", "focused",
                     "checked", "input_type", "viewport_rect",
                 )
                 if element.get(key) is not None
@@ -970,7 +1120,8 @@ def _browser_observe_locked(
         }
         for key in (
             "source_width", "source_height", "actual_height", "output_width", "output_height",
-            "scale", "truncated", "elapsed_ms", "bytes",
+            "scale", "truncated", "elapsed_ms", "bytes", "reason_code", "readiness_attempts",
+            "readiness_duration_ms", "raw_width", "raw_height",
         ):
             if key in capture_meta:
                 payload["visual"][key] = capture_meta[key]
@@ -1175,6 +1326,7 @@ def browser_find(
             "title": element.get("title"), "value": element.get("value"), "context": element.get("context"),
             "href": element.get("href"), "viewport_rect": element.get("viewport_rect"),
             "screen_rect": element.get("screen_rect"), "actionable": element.get("actionable"),
+            "ready": element.get("ready"), "readiness_reason": element.get("readiness_reason"),
         })
     return {
         "ok": True,
@@ -1228,22 +1380,16 @@ for(var i=0;i<actions.length;i++){
       __mcpScrollIntoView(el);
       var tag=(el.tagName||'').toLowerCase(),href=String(el.getAttribute('href')||''),inputType=String(el.getAttribute('type')||'').toLowerCase();
       var mayNavigate=(tag==='a'&&href&&href!=='#'&&!href.endsWith('#'))||((tag==='button'||tag==='input')&&inputType==='submit');
-      var shouldDefer=(type==='click'&&i===actions.length-1&&mayNavigate),activated=el,effectObserved=false,verification='no_immediate_effect',fallbackKey='';
+      var shouldDefer=(type==='click'&&i===actions.length-1&&mayNavigate),activated=el,effectObserved=false,verification='no_immediate_effect';
       if(type==='double_click') activated=__mcpDoubleActivate(el);
       else if(shouldDefer) setTimeout(function(node){return function(){try{__mcpActivate(node);}catch(e){}};}(el),0);
       else activated=__mcpActivate(el);
-      if(shouldDefer){effectObserved=true;verification='deferred_navigation';}
+      if(shouldDefer){verification='deferred_pending';}
       else{
         effectObserved=pageEffect(beforeRevision,beforeUrl,beforeTitle,beforeState,activated||el);
         if(effectObserved) verification='state_changed';
-        else{
-          fallbackKey=__mcpKeyboardActivate(activated||el);
-          effectObserved=pageEffect(beforeRevision,beforeUrl,beforeTitle,beforeState,activated||el);
-          if(effectObserved) verification='keyboard_fallback';
-        }
       }
-      var clickResult={index:i,type:type,element_id:a.element_id,ok:true,deferred:shouldDefer,activation_target:activated?__mcpId(activated,s):a.element_id,effect_observed:effectObserved,verification:verification,_verify_revision:beforeRevision,_verify_url:beforeUrl,_verify_title:beforeTitle};
-      if(fallbackKey&&verification==='keyboard_fallback')clickResult.fallback_key=fallbackKey;
+      var clickResult={index:i,type:type,element_id:a.element_id,ok:true,deferred:shouldDefer,activation_target:activated?__mcpId(activated,s):a.element_id,effect_observed:effectObserved,verification:verification,_verify_revision:beforeRevision,_verify_url:beforeUrl,_verify_title:beforeTitle,_verify_state:beforeState};
       if(!effectObserved)clickResult.observe_again=true;
       results.push(clickResult);
     } else if(type==='type'||type==='type_text'||type==='paste'){
@@ -1371,6 +1517,17 @@ def _select_action(
     poll_s = max(0.05, min(float(action.get("poll_ms", 100)) / 1000.0, 0.5))
     started = time.perf_counter()
     js_calls = 0
+    readiness = _wait_for_element_readiness(
+        settings, browser, action, window_index, tab_index, tab_handle,
+    )
+    js_calls += int(readiness.pop("_js_calls", 0))
+    if not readiness.get("ready"):
+        return {
+            "ok": False, "type": "select", "element_id": element_id,
+            "error": "element_not_ready", "reason_code": readiness.get("reason_code") or "ELEMENT_NOT_READY",
+            "readiness": readiness, "observe_again": True,
+            "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
+        }
     prep = _run_json_js(
         settings, browser, _select_prepare_js(element_id, observation_id, option),
         window_index, tab_index, tab_handle,
@@ -1431,6 +1588,62 @@ return __mcpB64({{ok:true,url:location.href,title:document.title,scroll:{{x:scro
 
 
 
+def _element_readiness_js(element_id: str, action_type: str, stable_ms: int) -> str:
+    eid = json.dumps(str(element_id or ""))
+    typ = json.dumps(str(action_type or "click").lower().replace("-", "_"))
+    stable = max(0, min(int(stable_ms), 1500))
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var s=__mcpState();__mcpFlushMutations(s);__mcpStartMutationWatch(s,2000);
+var el=__mcpRecoverElement({eid},s);
+if(!el)return __mcpB64({{ok:true,ready:false,reason_code:'ELEMENT_DETACHED',element_id:{eid},dom_revision:s.mutationRevision}});
+__mcpScrollIntoView(el);
+var rd=__mcpElementReadiness(el,{typ},{stable});rd.ok=true;return __mcpB64(rd);
+}})()'''
+
+
+def _wait_for_element_readiness(
+    settings: Settings,
+    browser: str,
+    action: Dict[str, Any],
+    window_index: int,
+    tab_index: Optional[int],
+    tab_handle: Optional[str],
+) -> Dict[str, Any]:
+    element_id = str(action.get("element_id") or "")
+    typ = str(action.get("type") or "click").lower().replace("-", "_")
+    if not element_id:
+        return {"ready": False, "reason_code": "ELEMENT_NOT_READY", "error": "element_id is required", "_js_calls": 0}
+    timeout_s = max(0.1, min(float(action.get("readiness_timeout_s", _ELEMENT_READINESS_TIMEOUT_S)), 2.5))
+    stable_ms = max(0, min(int(action.get("readiness_stable_ms", _ELEMENT_READINESS_STABLE_MS)), 1500))
+    poll_s = max(0.03, min(float(action.get("readiness_poll_ms", _ELEMENT_READINESS_POLL_S * 1000)) / 1000.0, 0.25))
+    started = time.perf_counter()
+    deadline = started + timeout_s
+    js_calls = 0
+    last: Dict[str, Any] = {}
+    while True:
+        last = _run_json_js(
+            settings,
+            browser,
+            _element_readiness_js(element_id, typ, stable_ms),
+            window_index,
+            tab_index,
+            tab_handle,
+        )
+        js_calls += 1
+        now = time.perf_counter()
+        if last.get("ready"):
+            last.update({"duration_ms": int((now - started) * 1000), "_js_calls": js_calls})
+            return last
+        if now >= deadline:
+            last.update({"ready": False, "timed_out": True, "duration_ms": int((now - started) * 1000), "_js_calls": js_calls})
+            if not last.get("reason_code"):
+                last["reason_code"] = "ELEMENT_NOT_READY"
+            return last
+        time.sleep(poll_s)
+
+
 def _element_effect_state_js(element_id: str) -> str:
     eid = json.dumps(str(element_id or ""))
     return f'''(function(){{
@@ -1488,6 +1701,24 @@ def _verified_dom_action(
     typ = str(action.get("type") or "").lower().replace("-", "_")
     element_id = str(action.get("element_id") or "")
     js_calls = 0
+
+    readiness = _wait_for_element_readiness(
+        settings, browser, action, window_index, tab_index, tab_handle,
+    )
+    js_calls += int(readiness.pop("_js_calls", 0))
+    if not readiness.get("ready"):
+        return {
+            "ok": False,
+            "type": typ,
+            "element_id": element_id or None,
+            "error": "element_not_ready",
+            "reason_code": readiness.get("reason_code") or "ELEMENT_NOT_READY",
+            "readiness": readiness,
+            "observe_again": True,
+            "retryable": True,
+            "_js_calls": js_calls,
+        }
+
     out = _run_json_js(
         settings, browser, _batch_js([action], observation_id),
         window_index, tab_index, tab_handle,
@@ -1498,43 +1729,83 @@ def _verified_dom_action(
         result["type"] = typ
     if element_id and "element_id" not in result:
         result["element_id"] = element_id
+    result["readiness"] = {
+        key: readiness.get(key)
+        for key in ("ready", "reason_code", "stable_for_ms", "dom_revision", "rect", "pointer_events", "hit_tag", "duration_ms")
+        if readiness.get(key) is not None
+    }
 
     before_revision = result.pop("_verify_revision", None)
     before_url = result.pop("_verify_url", None)
     before_title = result.pop("_verify_title", None)
+    before_state = result.pop("_verify_state", None)
+    normalized_before_state: Dict[str, Any] = {
+        "url": before_url,
+        "title": before_title,
+        "dom_revision": before_revision,
+    }
+    if isinstance(before_state, dict):
+        normalized_before_state.update({
+            "connected": before_state.get("connected", True),
+            "value": before_state.get("value"),
+            "text": before_state.get("text"),
+            "checked": before_state.get("checked"),
+            "aria_expanded": before_state.get("expanded"),
+            "aria_selected": before_state.get("selected"),
+            "aria_pressed": before_state.get("pressed"),
+            "aria_checked": before_state.get("ariaChecked"),
+            "class_name": before_state.get("cls"),
+        })
     compact_state = out.get("state") if isinstance(out.get("state"), dict) else None
 
-    # React/Vue/portal controls often commit after the synchronous click handler returns.
-    # Only when the immediate verifier saw no effect, do one short delayed state read.
-    if (
-        result.get("ok")
-        and typ in {"click", "double_click"}
-        and not result.get("deferred")
-        and not result.get("effect_observed")
-    ):
-        time.sleep(0.14)
-        try:
-            post = _run_json_js(
-                settings, browser, _light_state_js(),
-                window_index, tab_index, tab_handle,
-            )
-            js_calls += 1
-            progressed = (
-                (before_revision is not None and post.get("dom_revision") != before_revision)
-                or (before_url is not None and post.get("url") != before_url)
-                or (before_title is not None and post.get("title") != before_title)
-            )
-            if progressed:
+    # A real click is emitted only once. Verification is read-only and bounded so a
+    # delayed SPA commit can be observed without risking a duplicate destructive action.
+    if result.get("ok") and typ in {"click", "double_click"} and not result.get("effect_observed"):
+        deadline = time.perf_counter() + max(
+            0.1,
+            min(float(action.get("verify_timeout_s", _ACTION_VERIFY_TIMEOUT_S)), 2.0),
+        )
+        poll_s = max(
+            0.03,
+            min(float(action.get("verify_poll_ms", _ACTION_VERIFY_POLL_S * 1000)) / 1000.0, 0.25),
+        )
+        while time.perf_counter() < deadline:
+            time.sleep(poll_s)
+            try:
+                post = _run_json_js(
+                    settings, browser, _element_effect_state_js(element_id),
+                    window_index, tab_index, tab_handle,
+                )
+                js_calls += 1
+                progressed = (
+                    _effect_changed(normalized_before_state, post)
+                    or (before_revision is not None and post.get("dom_revision") != before_revision)
+                    or (before_url is not None and post.get("url") != before_url)
+                    or (before_title is not None and post.get("title") != before_title)
+                )
+                if progressed:
+                    result["effect_observed"] = True
+                    result["verification"] = "async_state_changed"
+                    result.pop("observe_again", None)
+                    compact_state = post
+                    break
+            except HTTPException:
+                # Navigation can invalidate the previous document while the deferred click
+                # is taking effect. Losing that document is itself evidence of progress.
                 result["effect_observed"] = True
-                result["verification"] = "async_state_changed"
+                result["verification"] = "async_navigation"
                 result.pop("observe_again", None)
-                compact_state = post
-        except HTTPException:
-            # Navigation can invalidate the old document between click and verification.
-            # That itself is progress for a click, so avoid retry loops.
-            result["effect_observed"] = True
-            result["verification"] = "async_navigation"
-            result.pop("observe_again", None)
+                break
+
+        if not result.get("effect_observed"):
+            result.update({
+                "ok": False,
+                "error": "action_no_effect",
+                "reason_code": "ACTION_NO_EFFECT",
+                "verification": "no_effect_after_bounded_wait",
+                "observe_again": True,
+                "automatic_retry": False,
+            })
 
     result["_js_calls"] = js_calls
     if isinstance(compact_state, dict):
