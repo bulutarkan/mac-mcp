@@ -534,9 +534,12 @@ class SteeringIdempotencyTests(unittest.TestCase):
             manager.prepare_call(identity, tool="read_file", arguments={"path": f"/tmp/ack-{index}"})
         with manager._lock:
             key = manager._public_to_key[sid]
-            self.assertEqual(8, len(manager._sessions[key]["idempotency"]))
-            self.assertEqual(8, len(manager._sessions[key]["idempotency_order"]))
-        self.assertNotIn("cli-0", manager._client_instruction_owners)
+            state = manager._sessions[key]
+            self.assertEqual(8, len(state["idempotency"]))
+            self.assertEqual(8, len(state["idempotency_order"]))
+            self.assertEqual(4, len(state["idempotency_tombstones"]))
+            self.assertEqual(4, len(state["idempotency_tombstone_order"]))
+        self.assertIn("cli-0", manager._client_instruction_owners)
         self.assertIn("cli-11", manager._client_instruction_owners)
 
 

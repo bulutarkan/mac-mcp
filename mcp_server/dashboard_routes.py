@@ -18,7 +18,13 @@ from .observability import TelemetryManager, sanitize_value
 from .policy import PROFILES, RISK_REGISTRY, permission_semantics
 from .security import Settings, dashboard_authorized
 from .security_context import SecurityContextManager
-from .steering import STEERING_SCHEMA_VERSION, SteeringIdempotencyConflict, SteeringManager
+from .steering import (
+    STEERING_SCHEMA_VERSION,
+    SteeringGenerationMismatch,
+    SteeringIdempotencyConflict,
+    SteeringIdempotencyExpired,
+    SteeringManager,
+)
 from .tools_agents import list_agents, provider_overview
 from .tools_browser import browser_activate_tab
 from .version import __version__
@@ -440,6 +446,7 @@ def create_dashboard_routes(
                 "sessions": [],
                 "recent": [],
                 "session_ttl_minutes": 10,
+                "generation_id": None,
             })
         return JSONResponse({
             "ok": True,
@@ -447,6 +454,7 @@ def create_dashboard_routes(
             "sessions": steering.sessions(),
             "recent": steering.recent(30),
             "session_ttl_minutes": steering.session_ttl_minutes,
+            "generation_id": steering.generation_id,
         })
 
     async def steering_send(request: Request) -> Response:
@@ -464,6 +472,7 @@ def create_dashboard_routes(
         session_id = str(payload.get("session_id") or "").strip()
         text = str(payload.get("text") or "")
         client_instruction_id = str(payload.get("client_instruction_id") or "").strip() or None
+        generation_id = str(payload.get("generation_id") or "").strip() or None
         if not session_id:
             return JSONResponse({"ok": False, "error": "session_required"}, status_code=400)
         try:
@@ -471,7 +480,26 @@ def create_dashboard_routes(
                 session_id,
                 text,
                 client_instruction_id=client_instruction_id,
+                generation_id=generation_id,
             )
+        except SteeringGenerationMismatch as exc:
+            return JSONResponse({
+                "ok": False,
+                "error": "stale_generation",
+                "outcome": "unknown",
+                "provided_generation_id": exc.provided_generation_id,
+                "current_generation_id": exc.current_generation_id,
+            }, status_code=409)
+        except SteeringIdempotencyExpired as exc:
+            return JSONResponse({
+                "ok": False,
+                "error": "idempotency_expired",
+                "outcome": "unknown",
+                "reason": "canonical_result_outside_active_dedupe_window",
+                "client_instruction_id": exc.client_instruction_id,
+                "canonical_message_id": exc.canonical_message_id,
+                "generation_id": steering.generation_id,
+            }, status_code=409)
         except SteeringIdempotencyConflict as exc:
             return JSONResponse({
                 "ok": False,
@@ -490,6 +518,7 @@ def create_dashboard_routes(
         return JSONResponse({
             "ok": True,
             "schema_version": STEERING_SCHEMA_VERSION,
+            "generation_id": steering.generation_id,
             "status": message.get("status") or "queued",
             "message": {
                 "id": message["id"],

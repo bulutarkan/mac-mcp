@@ -40,6 +40,20 @@ class SteeringIdempotencyConflict(ValueError):
         self.canonical_message_id = canonical_message_id
 
 
+class SteeringGenerationMismatch(ValueError):
+    def __init__(self, provided_generation_id: str, current_generation_id: str) -> None:
+        super().__init__("stale_generation")
+        self.provided_generation_id = str(provided_generation_id)
+        self.current_generation_id = str(current_generation_id)
+
+
+class SteeringIdempotencyExpired(ValueError):
+    def __init__(self, *, client_instruction_id: str, canonical_message_id: Optional[str] = None) -> None:
+        super().__init__("idempotency_expired")
+        self.client_instruction_id = str(client_instruction_id)
+        self.canonical_message_id = canonical_message_id
+
+
 _LIFECYCLE_TRANSITIONS: dict[str, frozenset[str]] = {
     "ready": frozenset({"queued", "disconnected", "expired"}),
     "queued": frozenset({"delivered", "failed", "disconnected", "expired"}),
@@ -215,6 +229,8 @@ class SteeringManager:
         max_text_chars: int = 4_000,
         session_ttl_s: Optional[int] = None,
         max_idempotency_keys_per_session: Optional[int] = None,
+        max_idempotency_tombstones_per_session: Optional[int] = None,
+        generation_id: Optional[str] = None,
     ) -> None:
         self.max_messages_per_session = max(1, int(max_messages_per_session))
         self.max_text_chars = max(64, int(max_text_chars))
@@ -224,6 +240,14 @@ class SteeringManager:
             self.max_messages_per_session,
             min(int(max_idempotency_keys_per_session), 512),
         )
+        if max_idempotency_tombstones_per_session is None:
+            max_idempotency_tombstones_per_session = max(32, self.max_idempotency_keys_per_session * 4)
+        self.max_idempotency_tombstones_per_session = max(
+            self.max_idempotency_keys_per_session,
+            min(int(max_idempotency_tombstones_per_session), 2_048),
+        )
+        normalized_generation = str(generation_id or "").strip()
+        self.generation_id = normalized_generation or ("gen_" + uuid.uuid4().hex)
         configured_ttl = session_ttl_s
         if configured_ttl is None:
             env_ttl = os.getenv("MAC_MCP_STEERING_SESSION_TTL_S", "").strip()
@@ -377,7 +401,9 @@ class SteeringManager:
             self._transition_locked(state, terminal_state)
         public_id = str(state.get("session_id") or "")
         self._public_to_key.pop(public_id, None)
-        for client_instruction_id in list((state.get("idempotency") or {}).keys()):
+        tracked_client_ids = set((state.get("idempotency") or {}).keys())
+        tracked_client_ids.update((state.get("idempotency_tombstones") or {}).keys())
+        for client_instruction_id in tracked_client_ids:
             if self._client_instruction_owners.get(client_instruction_id) == public_id:
                 self._client_instruction_owners.pop(client_instruction_id, None)
         self._used_flow_numbers.discard(int(state.get("flow_number") or 0))
@@ -443,6 +469,8 @@ class SteeringManager:
                 "awaiting_ack": [],
                 "idempotency": {},
                 "idempotency_order": [],
+                "idempotency_tombstones": {},
+                "idempotency_tombstone_order": [],
                 "active": {},
                 "lifecycle_state": "ready",
                 "last_transition_at": now,
@@ -641,11 +669,26 @@ class SteeringManager:
         index[client_instruction_id] = entry
         order.append(client_instruction_id)
         self._client_instruction_owners[client_instruction_id] = str(state["session_id"])
+        tombstones = state["idempotency_tombstones"]
+        tombstone_order = state["idempotency_tombstone_order"]
         while len(order) > self.max_idempotency_keys_per_session:
             expired = order.pop(0)
             old = index.pop(expired, None)
-            if old is not None and self._client_instruction_owners.get(expired) == state["session_id"]:
-                self._client_instruction_owners.pop(expired, None)
+            if old is None:
+                continue
+            tombstones[expired] = {
+                "client_instruction_id": expired,
+                "text_hash": old.get("text_hash"),
+                "message_id": old.get("message_id"),
+                "created_at": old.get("created_at"),
+                "expired_at": time.time(),
+            }
+            tombstone_order.append(expired)
+        while len(tombstone_order) > self.max_idempotency_tombstones_per_session:
+            forgotten = tombstone_order.pop(0)
+            tombstones.pop(forgotten, None)
+            if self._client_instruction_owners.get(forgotten) == state["session_id"]:
+                self._client_instruction_owners.pop(forgotten, None)
         return entry
 
     def enqueue(
@@ -653,6 +696,7 @@ class SteeringManager:
         session_id: str,
         text: str,
         client_instruction_id: Optional[str] = None,
+        generation_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         clean = str(text or "").strip()
         if not clean:
@@ -661,7 +705,10 @@ class SteeringManager:
             raise ValueError("message_too_long")
         client_id = self._normalize_client_instruction_id(client_instruction_id)
         text_hash = self._instruction_text_hash(clean) if client_id else None
+        provided_generation = str(generation_id or "").strip() or None
         with self._lock:
+            if provided_generation is not None and provided_generation != self.generation_id:
+                raise SteeringGenerationMismatch(provided_generation, self.generation_id)
             self._prune_locked()
             public_session_id = str(session_id)
             key = self._public_to_key.get(public_session_id)
@@ -685,6 +732,18 @@ class SteeringManager:
                             canonical_message_id=existing.get("message_id"),
                         )
                     return self._idempotency_response_locked(state, existing, clean, replay=True)
+                tombstone = state["idempotency_tombstones"].get(client_id)
+                if tombstone is not None:
+                    if tombstone.get("text_hash") != text_hash:
+                        raise SteeringIdempotencyConflict(
+                            "client_instruction_id_reused_with_different_text",
+                            client_instruction_id=client_id,
+                            canonical_message_id=tombstone.get("message_id"),
+                        )
+                    raise SteeringIdempotencyExpired(
+                        client_instruction_id=client_id,
+                        canonical_message_id=tombstone.get("message_id"),
+                    )
 
             queue = state["pending"]
             if len(queue) >= self.max_messages_per_session:

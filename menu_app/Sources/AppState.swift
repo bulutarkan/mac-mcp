@@ -295,11 +295,21 @@ struct SteeringRecent: Decodable, Equatable {
 
 struct SteeringEnvelope: Decodable {
     let schemaVersion: Int?
+    let generationID: String?
     let sessions: [SteeringSession]
     let recent: [SteeringRecent]
+
+    init(schemaVersion: Int?, generationID: String? = nil, sessions: [SteeringSession], recent: [SteeringRecent]) {
+        self.schemaVersion = schemaVersion
+        self.generationID = generationID
+        self.sessions = sessions
+        self.recent = recent
+    }
+
     enum CodingKeys: String, CodingKey {
         case sessions, recent
         case schemaVersion = "schema_version"
+        case generationID = "generation_id"
     }
 }
 
@@ -456,13 +466,31 @@ struct PersistedPendingSteeringSubmission: Codable, Equatable {
     let clientInstructionID: String
     let sessionID: String
     let textHash: String
+    let generationID: String?
     let createdAt: Double
+
+    init(
+        schemaVersion: Int,
+        clientInstructionID: String,
+        sessionID: String,
+        textHash: String,
+        generationID: String? = nil,
+        createdAt: Double
+    ) {
+        self.schemaVersion = schemaVersion
+        self.clientInstructionID = clientInstructionID
+        self.sessionID = sessionID
+        self.textHash = textHash
+        self.generationID = generationID
+        self.createdAt = createdAt
+    }
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
         case clientInstructionID = "client_instruction_id"
         case sessionID = "session_id"
         case textHash = "text_hash"
+        case generationID = "generation_id"
         case createdAt = "created_at"
     }
 }
@@ -573,6 +601,7 @@ final class AppState: ObservableObject {
     @Published var providerStatuses: [ProviderInfo] = []
     @Published var steeringSessions: [SteeringSession] = []
     @Published var steeringRecent: [SteeringRecent] = []
+    @Published private(set) var steeringGenerationID: String?
     @Published var selectedSteeringSessionID: String?
     @Published var steeringPrompt = ""
     @Published var steeringStatus = "No agent sessions yet."
@@ -594,6 +623,7 @@ final class AppState: ObservableObject {
     private var pendingSteeringSessionID: String?
     private var pendingSteeringText: String?
     private var pendingSteeringTextHash: String?
+    private var pendingSteeringGenerationID: String?
     private var pendingSteeringRestoredFromDisk = false
     private var lastNgrokProcessCheckAt = 0.0
     private static let activePollIntervalSeconds = 2.5
@@ -1052,25 +1082,28 @@ final class AppState: ObservableObject {
         pendingSteeringClientInstructionID = restored.clientInstructionID
         pendingSteeringSessionID = restored.sessionID
         pendingSteeringTextHash = restored.textHash
+        pendingSteeringGenerationID = restored.generationID
         pendingSteeringText = nil
         pendingSteeringRestoredFromDisk = true
         steeringStatus = "Checking the outcome of a steering send from the previous menu-app run…"
     }
 
-    private func persistPendingSteeringSubmission(clientInstructionID: String, sessionID: String, textHash: String) {
+    private func persistPendingSteeringSubmission(clientInstructionID: String, sessionID: String, textHash: String, generationID: String) {
         let state = PersistedPendingSteeringSubmission(
             schemaVersion: PendingSteeringSubmissionStore.schemaVersion,
             clientInstructionID: clientInstructionID,
             sessionID: sessionID,
             textHash: textHash,
+            generationID: generationID,
             createdAt: Date().timeIntervalSince1970
         )
         try? PendingSteeringSubmissionStore.save(state)
     }
 
-    private func steeringClientInstructionID(sessionID: String, text: String) -> String {
+    private func steeringClientInstructionID(sessionID: String, text: String, generationID: String) -> String {
         let textHash = PendingSteeringSubmissionStore.textHash(text)
         if pendingSteeringSessionID == sessionID,
+           pendingSteeringGenerationID == generationID,
            (pendingSteeringText == text || pendingSteeringTextHash == textHash),
            let existing = pendingSteeringClientInstructionID {
             pendingSteeringText = text
@@ -1082,11 +1115,13 @@ final class AppState: ObservableObject {
         pendingSteeringSessionID = sessionID
         pendingSteeringText = text
         pendingSteeringTextHash = textHash
+        pendingSteeringGenerationID = generationID
         pendingSteeringRestoredFromDisk = false
         persistPendingSteeringSubmission(
             clientInstructionID: created,
             sessionID: sessionID,
-            textHash: textHash
+            textHash: textHash,
+            generationID: generationID
         )
         return created
     }
@@ -1096,6 +1131,7 @@ final class AppState: ObservableObject {
         pendingSteeringSessionID = nil
         pendingSteeringText = nil
         pendingSteeringTextHash = nil
+        pendingSteeringGenerationID = nil
         pendingSteeringRestoredFromDisk = false
         PendingSteeringSubmissionStore.clear()
     }
@@ -1114,7 +1150,12 @@ final class AppState: ObservableObject {
             return
         }
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
-        let clientInstructionID = steeringClientInstructionID(sessionID: sessionID, text: text)
+        guard let generationID = steeringGenerationID, !generationID.isEmpty else {
+            steeringStatus = "Refreshing server generation before sending…"
+            Task { await refresh() }
+            return
+        }
+        let clientInstructionID = steeringClientInstructionID(sessionID: sessionID, text: text, generationID: generationID)
         steeringSending = true
         steeringStatus = "Sending…"
         Task {
@@ -1131,6 +1172,7 @@ final class AppState: ObservableObject {
                             "session_id": sessionID,
                             "text": text,
                             "client_instruction_id": clientInstructionID,
+                            "generation_id": generationID,
                         ]
                     )
                     guard response.ok, let message = response.message else {
@@ -1199,6 +1241,12 @@ final class AppState: ObservableObject {
                     case "queue_full":
                         steeringStatus = "That agent already has too many queued steering messages."
                         clearPendingSteeringSubmission()
+                    case "stale_generation":
+                        steeringStatus = "Server restarted after the steering result became uncertain. Delivery outcome is unknown; review and send again to create a new instruction."
+                        clearPendingSteeringSubmission()
+                    case "idempotency_expired":
+                        steeringStatus = "The safe retry window for that steering instruction expired. Delivery outcome is unknown; review and send again to create a new instruction."
+                        clearPendingSteeringSubmission()
                     case "idempotency_conflict":
                         steeringStatus = reason == "client_instruction_id_belongs_to_another_session"
                             ? "The steering retry key no longer belongs to this agent session."
@@ -1264,6 +1312,20 @@ final class AppState: ObservableObject {
     }
 
     func applySteeringSnapshot(_ envelope: SteeringEnvelope) {
+        let previousGenerationID = steeringGenerationID
+        setIfChanged(\.steeringGenerationID, envelope.generationID)
+        if let pendingGenerationID = pendingSteeringGenerationID,
+           let currentGenerationID = envelope.generationID,
+           pendingGenerationID != currentGenerationID {
+            clearPendingSteeringSubmission()
+            setIfChanged(\.steeringStatus, "Server restarted while a steering result was uncertain. Delivery outcome is unknown; review and send again to create a new instruction.")
+        } else if previousGenerationID != nil,
+                  let currentGenerationID = envelope.generationID,
+                  previousGenerationID != currentGenerationID,
+                  lastSteeringMessageID != nil {
+            lastSteeringMessageID = nil
+            setIfChanged(\.steeringStatus, "Server restarted; the previous steering lifecycle can no longer be confirmed.")
+        }
         let sessionDiff = SteeringSessionGrouping.diff(current: steeringSessions, incoming: envelope.sessions)
         if sessionDiff.hasChanges { setIfChanged(\.steeringSessions, envelope.sessions) }
         setIfChanged(\.steeringRecent, envelope.recent)

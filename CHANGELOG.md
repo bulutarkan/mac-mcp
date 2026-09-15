@@ -1,3 +1,9 @@
+## Unreleased
+
+- Added steering daemon generation/epoch safety: ambiguous retries are now bound to the daemon lifetime and old-generation retries fail as `stale_generation`/`outcome=unknown` instead of being replayed after a restart.
+- Added bounded idempotency tombstones so late same-generation retries whose canonical dedupe entry aged out fail as `idempotency_expired` rather than silently enqueueing a duplicate instruction.
+- Extended the menu-app pending steering correlation marker with the daemon generation while still persisting only metadata and the prompt SHA-256, never raw steering text.
+
 ## [2.1.3] - 2026-09-14
 
 - Preserved ambiguous menu-bar steering submissions across native app relaunches with a short-lived owner-only correlation record, allowing the relaunched app to reconcile daemon state or reuse the original idempotency key without persisting raw prompt text.
