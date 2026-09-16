@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Added durable delegated-workflow checkpoints with task input hashes, sanitized provider cursors, provider/session lineage, resume generations, integrity-checked owner-only state, and two-phase hashed side-effect intents/receipts that survive daemon/worker restarts without storing raw tool payloads.
+- Added fail-closed `agent_action(action="resume")`: verified interrupted work continues the same provider session without replaying completed side effects, while corrupt/mismatched checkpoints and unverifiable provider-native mutations return outcome-unknown conflicts; fresh `retry` is blocked after a side-effect boundary.
 - Added `mac-mcp doctor` with stable diagnostic reason codes, human/JSON output, read-only Accessibility/runtime/dependency/companion checks, and an owner-only redacted support bundle that excludes credential values, raw configuration, logs, prompts, and chat content.
 - Added a deterministic Computer Use conformance lab (`mac-mcp conformance`) with 14 CI-safe contracts covering focus-safe browser defaults, stable tab identity, stale-state handling, render/element readiness, bounded action batches, and no-effect action verification; optional `--live` mode adds read-only Mac/companion health checks.
 - Added role-scoped learning for delegated `coder`, `reviewer`, and `orchestrator` agents: approved relevant lessons are injected with bounded top-k context, while run-generated lessons remain reviewable candidates until explicitly approved.

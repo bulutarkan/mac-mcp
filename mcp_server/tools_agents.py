@@ -29,6 +29,13 @@ from .tools_lessons import (
     VALID_ROLES, TAINTED_PROVENANCE, extract_lesson_candidates, lesson_candidate_instruction,
     lesson_context, lesson_record_agent_candidate,
 )
+from .workflow_checkpoints import (
+    CheckpointConflictError, CheckpointUnknownError, WorkflowCheckpointError,
+    abort_resume, bind_resumed_agent, create_workflow, mark_terminal as workflow_mark_terminal,
+    note_provider_event, prepare_resume, public_state as workflow_public_state,
+    resume_prompt as durable_resume_prompt, rollback_resumed_agent, update_provider_state,
+    workflow_for_agent, workflow_input_hash,
+)
 from . import browser_tabs
 
 AGENTS_DIR = BASE_DIR / "agents"
@@ -1079,7 +1086,7 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     provider = str(meta.get("provider") or "opencode").lower()
     access_mode = str(meta.get("access_mode") or "workspace_write")
     access_info = _access_mode_info(provider, access_mode)
-    return {
+    public = {
         "agent_id": agent_id,
         "team_id": meta.get("team_id"),
         "status": meta.get("status"),
@@ -1140,6 +1147,8 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "usage": usage,
         "output_tokens": usage.get("output") if usage else None,
     }
+    public.update(workflow_public_state(agent_id))
+    return public
 
 
 def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -1166,6 +1175,10 @@ def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
             meta = _update_meta(agent_id, mark_failed)
             if meta.get("status") == "failed":
                 browser_tabs.release_agent_leases(agent_id)
+                try:
+                    workflow_mark_terminal(agent_id, "failed")
+                except WorkflowCheckpointError:
+                    pass
     return meta
 
 
@@ -1192,6 +1205,11 @@ def _spawn_internal(
     project: Optional[str] = None,
     role: Optional[str] = None,
     provenance_class: str = "local",
+    workflow_id: Optional[str] = None,
+    workflow_input_hash_value: Optional[str] = None,
+    resume_generation: int = 0,
+    resume_token: Optional[str] = None,
+    resume_parent_agent_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     provider = provider.lower().strip()
     clean_role = str(role or "").strip().lower() or None
@@ -1229,6 +1247,11 @@ def _spawn_internal(
     path = _agent_dir(agent_id)
     path.mkdir(parents=True, exist_ok=False)
     user_prompt = prompt.strip()
+    workflow_hash = str(workflow_input_hash_value or "").strip() or workflow_input_hash(
+        prompt=user_prompt, provider=provider, cwd=str(workdir), access_mode=access_mode,
+        scope=scope.to_dict(), role=clean_role,
+    )
+    workflow_id_value = str(workflow_id or "").strip() or ("wf_" + uuid.uuid4().hex[:16])
     access_instruction = (
         "This task is read-only. Do not modify files, configuration, services, repositories, or external state. "
         "Use only inspection/read commands and tools."
@@ -1296,6 +1319,9 @@ def _spawn_internal(
         "resume_session_id": resume_session_id,
         "parent_agent_id": parent_agent_id,
         "attempt": attempt,
+        "workflow_id": workflow_id_value,
+        "workflow_input_hash": workflow_hash,
+        "resume_generation": int(resume_generation or 0),
         "exit_code": None,
         "started_at": started,
         "spawn_requested_at": started,
@@ -1329,6 +1355,23 @@ def _spawn_internal(
         "ended_at": None,
     }
     _write_meta(agent_id, meta)
+    try:
+        if resume_token:
+            if not resume_parent_agent_id or not resume_session_id:
+                raise CheckpointConflictError("resume binding requires parent agent and provider session")
+            bind_resumed_agent(
+                workflow_id=workflow_id_value, parent_agent_id=resume_parent_agent_id, agent_id=agent_id,
+                input_hash=workflow_hash, resume_generation=int(resume_generation or 0),
+                resume_token=resume_token, session_id=str(resume_session_id),
+            )
+        else:
+            create_workflow(
+                agent_id=agent_id, input_hash=workflow_hash, provider=provider, workflow_id=workflow_id_value,
+            )
+    except WorkflowCheckpointError as exc:
+        shutil.rmtree(path, ignore_errors=True)
+        status_code = status.HTTP_409_CONFLICT if isinstance(exc, (CheckpointConflictError, CheckpointUnknownError)) else status.HTTP_500_INTERNAL_SERVER_ERROR
+        raise HTTPException(status_code, f"{exc.code}: {exc}") from exc
 
     worker_log = (path / "worker.log").open("a", encoding="utf-8")
     try:
@@ -1348,6 +1391,16 @@ def _spawn_internal(
             current.update({"status": "failed", "ended_at": _now(), "updated_at": _now(), "note": str(exc)})
 
         _update_meta(agent_id, mark_spawn_failed)
+        try:
+            if resume_token and resume_parent_agent_id:
+                rollback_resumed_agent(
+                    workflow_id_value, parent_agent_id=resume_parent_agent_id, agent_id=agent_id,
+                    reason="agent_worker_spawn_failed",
+                )
+            else:
+                workflow_mark_terminal(agent_id, "failed")
+        except WorkflowCheckpointError:
+            pass
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Could not start agent worker: {exc}") from exc
     worker_log.close()
     with _WORKERS_LOCK:
@@ -1632,6 +1685,16 @@ def wait_agents(
             "tool_call_count": item.get("tool_call_count"),
             "last_tool": item.get("last_tool"),
             "retry_count": item.get("retry_count"),
+            "workflow_id": item.get("workflow_id"),
+            "resume_generation": item.get("resume_generation"),
+            "checkpoint_state": item.get("checkpoint_state"),
+            "checkpoint_safety": item.get("checkpoint_safety"),
+            "checkpoint_reason": item.get("checkpoint_reason"),
+            "side_effect_receipt_count": item.get("side_effect_receipt_count"),
+            "pending_side_effect_count": item.get("pending_side_effect_count"),
+            "checkpoint_cursor": item.get("checkpoint_cursor"),
+            "last_durable_checkpoint_at": item.get("last_durable_checkpoint_at"),
+            "resumable": item.get("resumable"),
         }
         if include_results and "result" in item:
             row["result"] = truncate(str(item.get("result") or ""), TEAM_RESULT_LIMIT)[0]
@@ -1673,6 +1736,48 @@ def get_agent(
     return result
 
 
+def _recover_provider_session_id(meta: Dict[str, Any], agent_id: str) -> Optional[str]:
+    existing = str(meta.get("session_id") or meta.get("resume_session_id") or "").strip()
+    if existing:
+        return existing
+    if str(meta.get("provider") or "").lower() == "chatgpt":
+        recovered = _chatgpt_session_for_job(meta)
+        if recovered:
+            return str(recovered)
+
+    stdout_path = _agent_dir(agent_id) / "stdout.log"
+    if not stdout_path.exists():
+        return None
+
+    def find(value: Any) -> Optional[str]:
+        if isinstance(value, dict):
+            for key in ("sessionID", "sessionId", "session_id", "thread_id"):
+                found = value.get(key)
+                if found:
+                    return str(found)
+            for child in value.values():
+                found = find(child)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for child in value:
+                found = find(child)
+                if found:
+                    return found
+        return None
+
+    lines = stdout_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    for raw in reversed(lines):
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        found = find(event)
+        if found:
+            return found
+    return None
+
+
 def _agent_action_single(
     settings: Settings,
     agent_id: str,
@@ -1681,8 +1786,8 @@ def _agent_action_single(
     signal: str = "TERM",
 ) -> Dict[str, Any]:
     action = action.lower().strip()
-    if action not in {"cancel", "message", "retry", "despawn"}:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be cancel, message, retry, or despawn.")
+    if action not in {"cancel", "message", "retry", "resume", "despawn"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be cancel, message, retry, resume, or despawn.")
     meta = _normalize(agent_id, _read_meta(agent_id))
 
     if action == "cancel":
@@ -1703,6 +1808,10 @@ def _agent_action_single(
             })
 
         meta = _update_meta(agent_id, mark_cancelled)
+        try:
+            workflow_mark_terminal(agent_id, "cancelled")
+        except WorkflowCheckpointError:
+            pass
         get_scoped_credential_store().revoke_agent(agent_id)
         browser_tabs.release_agent_leases(agent_id)
         provider_signal = allowed[sig_name]
@@ -1735,6 +1844,29 @@ def _agent_action_single(
 
     original_prompt = (_agent_dir(agent_id) / "prompt.txt").read_text(encoding="utf-8", errors="replace")
     if action == "retry":
+        try:
+            checkpoint = workflow_for_agent(agent_id)
+        except WorkflowCheckpointError as exc:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"retry_replay_unsafe: durable checkpoint is {exc.code}; use action=resume only after the checkpoint is trustworthy.",
+            ) from exc
+        if checkpoint is None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "retry_replay_unsafe: this legacy agent has no durable checkpoint, so original-prompt replay is outcome-unknown.",
+            )
+        unsafe = (
+            str(checkpoint.get("safety") or "unknown") != "verified"
+            or int(checkpoint.get("receipt_count") or 0) > 0
+            or int(checkpoint.get("resume_generation") or 0) > 0
+            or bool(checkpoint.get("pending_effects"))
+        )
+        if unsafe:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "retry_replay_unsafe: this task crossed a durable side-effect/resume boundary; use action=resume so the existing provider session and receipts are preserved.",
+            )
         return _spawn_internal(
             settings=settings,
             provider=meta["provider"],
@@ -1757,6 +1889,74 @@ def _agent_action_single(
             role=meta.get("role"),
             provenance_class=str(meta.get("provenance_class") or "local"),
         )
+
+    if action == "resume":
+        if meta.get("status") not in {"failed", "timeout", "stalled", "cancelled"}:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Durable resume is only available for an interrupted failed/timeout/stalled/cancelled agent.",
+            )
+        input_hash = str(meta.get("workflow_input_hash") or "").strip()
+        if not input_hash:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "resume_outcome_unknown: this legacy agent has no durable workflow input hash.",
+            )
+        session_id = _recover_provider_session_id(meta, agent_id)
+        if not session_id:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "resume_outcome_unknown: provider session id could not be recovered safely.",
+            )
+        try:
+            _update_meta(agent_id, lambda current: current.update({"session_id": session_id, "updated_at": _now()}))
+            update_provider_state(agent_id, session_id=session_id)
+            checkpoint = prepare_resume(
+                agent_id, expected_input_hash=input_hash, session_id=session_id,
+            )
+        except CheckpointUnknownError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"{exc.code}: {exc}") from exc
+        except CheckpointConflictError as exc:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"{exc.code}: {exc}") from exc
+        except WorkflowCheckpointError as exc:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, f"resume_outcome_unknown: checkpoint {exc.code}; refusing replay."
+            ) from exc
+        try:
+            return _spawn_internal(
+                settings=settings,
+                provider=meta["provider"],
+                prompt=durable_resume_prompt(checkpoint),
+                model=meta.get("model"),
+                reasoning=meta.get("reasoning"),
+                cwd=meta.get("cwd"),
+                timeout_s=meta.get("timeout_s"),
+                title=f"Resume: {meta.get('title') or agent_id}",
+                result_style=meta.get("result_style", "concise"),
+                access_mode=meta.get("access_mode", "workspace_write"),
+                scope=ResourceScope.from_dict(meta.get("scope")),
+                permission_profile=str(meta.get("permission_profile") or "trusted"),
+                capability_profile=str(meta.get("capability_profile") or "legacy"),
+                parent_agent_id=agent_id,
+                resume_session_id=session_id,
+                attempt=int(meta.get("attempt", 1)) + 1,
+                idle_timeout_s=meta.get("idle_timeout_s"),
+                retries=int(meta.get("retries") or 0),
+                project=meta.get("project"),
+                role=meta.get("role"),
+                provenance_class=str(meta.get("provenance_class") or "local"),
+                workflow_id=str(checkpoint["workflow_id"]),
+                workflow_input_hash_value=str(checkpoint["input_hash"]),
+                resume_generation=int(checkpoint["resume_generation"]),
+                resume_token=str(checkpoint["resume_token"]),
+                resume_parent_agent_id=agent_id,
+            )
+        except Exception:
+            abort_resume(
+                str(checkpoint["workflow_id"]), resume_token=str(checkpoint["resume_token"]),
+                reason="resume_spawn_failed_before_provider",
+            )
+            raise
 
     if not message or not message.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "message is required for action=message.")
@@ -1806,8 +2006,8 @@ def agent_action(
     team = _read_team(str(team_id))
     ids = list(team.get("agent_ids") or [])
     normalized_action = action.lower().strip()
-    if normalized_action == "message":
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "message is only supported for an individual agent session.")
+    if normalized_action in {"message", "resume"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{normalized_action} is only supported for an individual agent session.")
     if normalized_action == "cancel":
         results = []
         for child_id in ids:
@@ -1835,6 +2035,22 @@ def agent_action(
         for index, child_id in enumerate(ids, start=1):
             prompt_path = _agent_dir(child_id) / "prompt.txt"
             child = _read_meta(child_id)
+            try:
+                checkpoint = workflow_for_agent(child_id)
+            except WorkflowCheckpointError as exc:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    f"retry_replay_unsafe: child {child_id} checkpoint is {exc.code}; resume the child explicitly instead.",
+                ) from exc
+            if checkpoint is not None and (
+                str(checkpoint.get("safety") or "unknown") != "verified"
+                or int(checkpoint.get("receipt_count") or 0) > 0
+                or int(checkpoint.get("resume_generation") or 0) > 0
+            ):
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    f"retry_replay_unsafe: child {child_id} crossed a durable side-effect/resume boundary; resume that child explicitly.",
+                )
             tasks.append({
                 "prompt": prompt_path.read_text(encoding="utf-8", errors="replace"),
                 "title": child.get("title") or f"Agent {index}",
@@ -1850,7 +2066,7 @@ def agent_action(
             scope=team.get("scope"), parent_profile="trusted", project=team.get("project"),
             role=team.get("role"), provenance_class=str(team.get("provenance_class") or "local"),
         )
-    raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be cancel, message, retry, or despawn.")
+    raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be cancel, message, retry, resume, or despawn.")
 
 
 def _extract_opencode(path: Path) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
@@ -2017,6 +2233,9 @@ def _apply_provider_event(meta: Dict[str, Any], event: Dict[str, Any], now: floa
     event_type = str(event.get("type") or "output")
     provider = str(meta.get("provider") or "opencode").lower()
     part = event.get("part") if isinstance(event.get("part"), dict) else {}
+    generic_session = event.get("sessionID") or event.get("sessionId") or event.get("session_id") or part.get("sessionID")
+    if generic_session:
+        meta["session_id"] = str(generic_session)
     if not meta.get("first_event_at"):
         meta["first_event_at"] = now
     meta["last_activity_at"] = now
@@ -2151,7 +2370,15 @@ def _record_provider_event(agent_id: str, raw_line: str) -> None:
     except json.JSONDecodeError:
         event = {"type": "output"}
     try:
-        _update_meta(agent_id, lambda meta: _apply_provider_event(meta, event, now))
+        saved = _update_meta(agent_id, lambda meta: _apply_provider_event(meta, event, now))
+        try:
+            update_provider_state(
+                agent_id, session_id=str(saved.get("session_id") or "") or None,
+                provider_job_id=str(saved.get("provider_job_id") or "") or None,
+            )
+            note_provider_event(agent_id, str(saved.get("provider") or ""), event)
+        except Exception:
+            pass
     except HTTPException:
         return
 
@@ -2318,6 +2545,20 @@ def _worker(agent_id: str) -> int:
                 return 0
             attempt_prompt = prompt
             if attempt_index > 0:
+                if latest.get("provider") != "chatgpt":
+                    try:
+                        checkpoint = workflow_for_agent(agent_id)
+                    except WorkflowCheckpointError:
+                        checkpoint = {"safety": "unknown", "receipt_count": 0}
+                    if checkpoint is None:
+                        final_reason = "outcome_unknown"
+                        break
+                    if str(checkpoint.get("safety") or "unknown") != "verified" or bool(checkpoint.get("pending_effects")):
+                        final_reason = "outcome_unknown"
+                        break
+                    if int(checkpoint.get("receipt_count") or 0) > 0:
+                        final_reason = "resume_required"
+                        break
                 recovered_session_id = _chatgpt_session_for_job(latest) if latest.get("provider") == "chatgpt" else None
                 def record_retry(current: Dict[str, Any]) -> Optional[bool]:
                     if current.get("status") == "cancelled":
@@ -2386,6 +2627,10 @@ def _worker(agent_id: str) -> int:
         meta = _update_meta(agent_id, record_worker_failure)
         if meta.get("status") != "cancelled":
             result_path.write_text(f"Agent worker error: {exc}", encoding="utf-8")
+            try:
+                workflow_mark_terminal(agent_id, "failed")
+            except WorkflowCheckpointError:
+                pass
         return 1
 
     meta = _read_meta(agent_id)
@@ -2453,11 +2698,23 @@ def _worker(agent_id: str) -> int:
         if final_status != "completed":
             if final_reason == "rate_limited":
                 current["note"] = f"ChatGPT remained rate-limited after bounded retries; last provider code {exit_code}."
+            elif final_reason == "resume_required":
+                current["note"] = "Automatic replay stopped after a verified side-effect boundary; use agent_action(action=resume)."
+            elif final_reason == "outcome_unknown":
+                current["note"] = "Automatic replay stopped because provider-native activity made the side-effect outcome unknown."
             else:
                 current["note"] = f"Provider ended as {final_status} with code {exit_code}."
         return True
 
     meta = _update_meta(agent_id, record_completion)
+    try:
+        update_provider_state(
+            agent_id, session_id=str(meta.get("session_id") or "") or None,
+            provider_job_id=str(meta.get("provider_job_id") or "") or None,
+        )
+        workflow_mark_terminal(agent_id, final_status)
+    except WorkflowCheckpointError:
+        pass
     if meta.get("status") == "cancelled":
         return 0
     return 0 if final_status == "completed" else 1

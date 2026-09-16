@@ -24,7 +24,13 @@ class AgentResilienceDashboardTests(unittest.TestCase):
                 "provider": "chatgpt", "model": "GPT-5.6 Sol", "reasoning": "high",
                 "turn_count": 3, "turn_elapsed_ms": 620000, "turn_budget_s": 900,
                 "hard_tool_budget_s": 1200, "checkpoint_count": 2, "checkpoint_pending": False,
-                "last_checkpoint_at": 100.0, "throttle_count": 1, "last_throttled_at": 110.0,
+                "last_checkpoint_at": 100.0, "workflow_id": "wf_testresume1234",
+                "resume_generation": 2, "checkpoint_state": "interrupted",
+                "checkpoint_safety": "verified", "checkpoint_reason": None,
+                "side_effect_receipt_count": 3, "pending_side_effect_count": 0,
+                "checkpoint_cursor": {"seq": 7, "kind": "mcp_tool_completed", "resume_generation": 2, "at": 119.0},
+                "last_durable_checkpoint_at": 120.0,
+                "resumable": True, "throttle_count": 1, "last_throttled_at": 110.0,
                 "last_throttle_reason": "requesting_too_fast", "cooldown_until": 200.0,
             }
             with patch("mcp_server.dashboard_routes.list_agents", return_value={"ok": True, "count": 1, "agents": [agent]}):
@@ -35,6 +41,14 @@ class AgentResilienceDashboardTests(unittest.TestCase):
             self.assertEqual(2, row["checkpoint_count"])
             self.assertEqual(1, row["throttle_count"])
             self.assertEqual("requesting_too_fast", row["last_throttle_reason"])
+            self.assertEqual("wf_testresume1234", row["workflow_id"])
+            self.assertEqual(2, row["resume_generation"])
+            self.assertEqual("verified", row["checkpoint_safety"])
+            self.assertEqual(3, row["side_effect_receipt_count"])
+            self.assertEqual(0, row["pending_side_effect_count"])
+            self.assertEqual("mcp_tool_completed", row["checkpoint_cursor"]["kind"])
+            self.assertEqual(7, row["checkpoint_cursor"]["seq"])
+            self.assertTrue(row["resumable"])
 
     def test_dashboard_js_surfaces_resilience_counts(self):
         source = (Path(__file__).resolve().parents[1] / "mcp_server/dashboard/dashboard.js").read_text(encoding="utf-8")

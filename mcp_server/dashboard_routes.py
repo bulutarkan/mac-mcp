@@ -444,6 +444,8 @@ def create_dashboard_routes(
                     "idle_seconds", "step_count", "tool_call_count", "last_tool", "last_tool_duration_ms",
                     "turn_count", "turn_elapsed_ms", "turn_budget_s", "hard_tool_budget_s",
                     "checkpoint_count", "checkpoint_pending", "last_checkpoint_at",
+                    "workflow_id", "resume_generation", "checkpoint_state", "checkpoint_safety",
+                    "checkpoint_reason", "side_effect_receipt_count", "pending_side_effect_count", "checkpoint_cursor", "last_durable_checkpoint_at", "resumable",
                     "throttle_count", "last_throttled_at", "last_throttle_reason", "cooldown_until",
                     "retry_count", "output_tokens", "result_preview",
                 )

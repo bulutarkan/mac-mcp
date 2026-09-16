@@ -498,8 +498,9 @@ def create_app():
     @mcp.tool(
         name="agent_action",
         description=(
-            "Control one agent or a whole team. action: cancel, retry, despawn; message is available "
-            "for individual resumable agent sessions. Team cancel cascades to all children."
+            "Control one agent or a whole team. action: cancel, retry, resume, despawn; message is available "
+            "for individual resumable agent sessions. retry is refused after a verified side-effect or uncertain crash "
+            "boundary; resume preserves the provider session and durable receipts. Team cancel cascades to all children."
         ),
     )
     def _agent_action(action: str, agent_id: Optional[str] = None, team_id: Optional[str] = None,

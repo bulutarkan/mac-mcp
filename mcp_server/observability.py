@@ -20,6 +20,10 @@ from mcp.server.fastmcp.exceptions import ToolError
 from .steering import SteeringManager, attach_steering, preemption_error, steering_identity_from_context
 from .security_context import SecurityContextManager
 from .data_guard import redact_sensitive_source_result, redact_sensitive_text, sanitize_tool_arguments
+from .workflow_checkpoints import (
+    WorkflowCheckpointError, abandon_side_effect, begin_side_effect,
+    mark_checkpoint_unknown, record_side_effect_outcome, risk_has_side_effect,
+)
 
 from .policy import (
     PolicyContext,
@@ -879,6 +883,12 @@ class ObservedFastMCP(FastMCP):
     async def call_tool(self, name: str, arguments: dict[str, Any]):
         declared, effective = resolve_risk(name, arguments)
         policy_context = self._policy_context_provider()
+        receipt_capabilities = [capability.value for capability in effective.capabilities]
+        receipt_required = bool(
+            policy_context.agent_id
+            and risk_has_side_effect(receipt_capabilities, effective.destructive)
+            and name != "tool_invoke"
+        )
         decision = evaluate_profile(policy_context.profile, effective)
         metadata = policy_metadata(policy_context, declared, effective, decision)
         event_id = self.telemetry.start_call("mcp", name, arguments, metadata=metadata)
@@ -1054,15 +1064,65 @@ class ObservedFastMCP(FastMCP):
                 self.steering.begin_call(steering_identity, event_id, tool=name, arguments=arguments)
                 call_registered = True
 
+            side_effect_intent: Optional[Dict[str, Any]] = None
+            if receipt_required and policy_context.agent_id:
+                try:
+                    side_effect_intent = begin_side_effect(
+                        policy_context.agent_id, tool=name, family=effective.family,
+                        capabilities=receipt_capabilities, destructive=effective.destructive,
+                        arguments=arguments, event_id=event_id,
+                    )
+                except WorkflowCheckpointError as exc:
+                    self.telemetry.finish_call(
+                        event_id,
+                        result={"ok": False, "error": exc.code, "tool": name},
+                        metadata={"policy_decision": exc.code},
+                    )
+                    if call_registered and steering_identity is not None:
+                        self.steering.finish_call(steering_identity, event_id, delivered=False)
+                    raise ToolError(
+                        f"{exc.code}: tool={name}; durable side-effect intent could not be established; action was not executed"
+                    ) from exc
+
             try:
                 result = await self._call_registered_tool(name, arguments)
             except BaseException as exc:
+                if receipt_required and policy_context.agent_id:
+                    try:
+                        if side_effect_intent is not None:
+                            abandon_side_effect(
+                                policy_context.agent_id, side_effect_intent.get("intent_id"),
+                                "side_effect_call_raised", tool=name, event_type=exc.__class__.__name__,
+                            )
+                        else:
+                            mark_checkpoint_unknown(
+                                policy_context.agent_id, "side_effect_call_raised",
+                                tool=name, event_type=exc.__class__.__name__,
+                            )
+                    except Exception:
+                        pass
                 self.telemetry.finish_call(event_id, error=exc)
                 if call_registered and steering_identity is not None:
                     self.steering.finish_call(steering_identity, event_id, delivered=False)
                 raise
 
             result = filter_scoped_result(policy_context.scope, name, result)
+            if receipt_required and policy_context.agent_id:
+                try:
+                    record_side_effect_outcome(
+                        policy_context.agent_id, tool=name, family=effective.family,
+                        capabilities=receipt_capabilities, destructive=effective.destructive,
+                        arguments=arguments, result=result, event_id=event_id,
+                        intent_id=(side_effect_intent or {}).get("intent_id"),
+                    )
+                except Exception:
+                    try:
+                        mark_checkpoint_unknown(
+                            policy_context.agent_id, "receipt_persist_failed",
+                            tool=name, event_type="receipt_write",
+                        )
+                    except Exception:
+                        pass
             self.security_context.observe_host_result(
                 key=security_key,
                 public_session_id=public_session_id,

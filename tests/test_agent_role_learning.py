@@ -19,7 +19,14 @@ class AgentRoleLearningTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.agents_root = self.root / "agents"
         self.lesson_root = self.root / "lessons"
-        self.env = patch.dict(os.environ, {"MAC_MCP_LESSON_DIR": str(self.lesson_root)}, clear=False)
+        self.env = patch.dict(
+            os.environ,
+            {
+                "MAC_MCP_LESSON_DIR": str(self.lesson_root),
+                "MAC_MCP_STATE_DIR": str(self.root / "state"),
+            },
+            clear=False,
+        )
         self.env.start()
 
     def tearDown(self) -> None:
@@ -204,7 +211,10 @@ class AgentRoleLearningTests(unittest.TestCase):
             "session_id": "ses_parent", "started_at": 1.0, "last_activity_at": 1.0,
         }
         (adir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
-        with patch.object(agents, "AGENTS_DIR", self.agents_root), patch.object(agents, "_spawn_internal", return_value={"ok": True}) as spawn:
+        safe_checkpoint = {"safety": "verified", "receipt_count": 0, "resume_generation": 0, "pending_effects": []}
+        with patch.object(agents, "AGENTS_DIR", self.agents_root), \
+             patch.object(agents, "workflow_for_agent", return_value=safe_checkpoint), \
+             patch.object(agents, "_spawn_internal", return_value={"ok": True}) as spawn:
             agents._agent_action_single(None, agent_id, "retry")
             retry_kwargs = spawn.call_args.kwargs
             self.assertEqual("reviewer", retry_kwargs["role"])

@@ -206,7 +206,9 @@ class ChatGPTTurnBudgetTests(unittest.TestCase):
             self.assertEqual("completed", saved["status"])
 
     def test_chatgpt_spawn_defaults_to_high_reasoning_and_budget(self) -> None:
-        with tempfile.TemporaryDirectory() as td, patch.object(agents, "AGENTS_DIR", Path(td) / "agents"), \
+        with tempfile.TemporaryDirectory() as td, patch.dict(
+             os.environ, {"MAC_MCP_STATE_DIR": str(Path(td) / "state")}, clear=False
+        ), patch.object(agents, "AGENTS_DIR", Path(td) / "agents"), \
              patch.object(agents, "provider_enabled", return_value=True), \
              patch.object(agents, "_find_binary", return_value="/tmp/chatgpt"), \
              patch.object(agents, "_base_env", return_value={}), \
