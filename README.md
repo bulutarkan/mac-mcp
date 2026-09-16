@@ -2,20 +2,21 @@
   <img src="assets/screenshots/mac-mcp.png" alt="Mac MCP" width="760">
 </p>
 
-# Mac MCP 2.1.3
+# Mac MCP 2.1.4
 
 Mac MCP is a local macOS control server for AI agents. It exposes your Mac through a native MCP endpoint and a REST/OpenAPI surface, with shell, files, browser automation, macOS UI control, delegated OpenCode/Codex agents, memory, Agent Skills, voice interaction, self-update tooling, and a local operations dashboard.
 
 > **Security:** Mac MCP can execute commands, read/write files, and control desktop apps. Keep MCP authentication enabled whenever the service is reachable outside localhost and expose it only to clients you trust. The operations dashboard is loopback-only **and** requires a separate per-user dashboard Bearer token; localhost is machine-local transport, not a same-user sandbox.
 
-## What's new in 2.1.3
+## What's new in 2.1.4
 
-- Added a dedicated **Mac MCP Chrome Companion** for true non-focus-stealing background tabs, Chrome DOM/page actions, and background-safe visual capture. Running Chrome uses `tabs.create({active:false})`; cold starts also stay in the background.
-- Hardened **Safari + Chrome** browser automation for JS-heavy pages with bounded interaction observers, stable tab ownership, safer action verification, and fail-closed foreground fallbacks.
-- Reduced idle energy use in `Mac MCP.app`: adaptive menu polling, less ngrok/process polling, event-driven agent pulse updates, telemetry caching, closed SQLite connections, and no idle Visual Companion animation/blur loops.
-- Fixed Chrome Companion bridge configuration so custom/runtime ports survive backend restarts and helper-process imports instead of silently falling back to port `8000`.
-- Installer/updater carry the latest Safari and Chrome companion sources. Safari is bundled into `Mac MCP.app`; Chrome's owner-only bridge config is prepared automatically and the unpacked extension is a one-time Chrome profile setup.
-- Regression-tested the release with the full Python suite plus real Safari/Chrome background browser smoke tests, including Chrome cold start without stealing application focus.
+- Added first-class **public endpoint modes** across CLI and the native app: Local only, managed ngrok, managed Cloudflare Tunnel, or Custom HTTPS.
+- Added secure **Cloudflare Tunnel** lifecycle management with owner-only token storage, `--token-file`, a per-user `launchd` `KeepAlive` job, automatic crash recovery, and Start/Stop control that requires no persistent Terminal session.
+- Expanded `install.sh` with public-endpoint onboarding: choose a provider, optionally install `cloudflared`/ngrok through Homebrew, follow Cloudflare Published application guidance, and save the tunnel token through hidden stdin without placing it in settings, `.env`, or process arguments.
+- Hardened outbound HTTP and browser navigation against **SSRF, DNS rebinding, and public-to-private redirects**, with explicit private-development allowlists rather than wildcard bypasses.
+- Hardened scoped file operations against **symlink/TOCTOU escapes** and added owner-only filesystem transaction journaling with atomic mixed write/move/delete batches and conflict-aware undo.
+- Added durable delegated-workflow checkpoints/resume, stronger steering/idempotency recovery, role-scoped lesson controls, ChatGPT turn budgeting, and bounded web-throttle recovery without replaying verified side effects.
+- Added `mac-mcp doctor`, redacted support bundles, and a deterministic Computer Use conformance lab; the 2.1.4 release is regression-tested with the full Python suite plus installer and native-app build/signing checks.
 
 ## Browser automation that doesn't hijack your Mac
 

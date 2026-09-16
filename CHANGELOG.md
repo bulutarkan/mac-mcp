@@ -1,5 +1,7 @@
 ## Unreleased
 
+## [2.1.4] - 2026-09-16
+
 - Added switchable public endpoint modes (`Local only`, managed `ngrok`, managed `Cloudflare Tunnel`, or externally managed `Custom HTTPS`) across CLI, native Settings, installer migration, status, and doctor; existing `ngrok_on_start` installations remain backward compatible.
 - Cloudflare Tunnel mode now accepts a tunnel token once from native Settings, stores it atomically in an owner-only `0600` credential file, and launches `cloudflared` with `--token-file` so the secret never enters settings, `.env`, or process argv; named-tunnel credentials remain an advanced option. The tunnel connects Cloudflare directly to the Mac without a VPS/public inbound port, while doctor verifies credential safety and the public `/health` route without sending connector credentials. Cloudflare is supervised by a user `launchd` job with `KeepAlive`; Start enables/bootstraps it and Stop boots it out/disables it, so no Terminal session is required.
 - The interactive installer now includes public-endpoint onboarding: it asks for Local/Cloudflare/ngrok/Custom mode, offers Homebrew installation of the selected tunnel provider, guides Cloudflare Published application setup, accepts the tunnel token through hidden stdin, and safely falls back to Local only when public setup is deferred.
