@@ -25,6 +25,14 @@ NODE_BIN=""
 NPM_BIN=""
 CHATGPT_CLI_BINARY=""
 CHATGPT_PROVIDER_ENABLED=0
+PUBLIC_ENDPOINT_MODE="none"
+PUBLIC_ENDPOINT_URL=""
+PUBLIC_ENDPOINT_CONFIGURED=0
+PUBLIC_PROVIDER_AVAILABLE=1
+PUBLIC_PROVIDER_BIN=""
+NGROK_DOMAIN_INPUT=""
+TEXT_REPLY=""
+SECRET_REPLY=""
 MACOS_MAJOR=""
 MAC_ARCH=""
 INSTALL_TMP=""
@@ -170,6 +178,76 @@ ask_yes_no() {
     esac
   done
 }
+ask_text() {
+  local prompt="$1"
+  local override_name="${2:-}"
+  local override_value=""
+  TEXT_REPLY=""
+
+  if [[ -n "$override_name" ]]; then
+    override_value="${!override_name:-}"
+  fi
+  if [[ -n "$override_value" ]]; then
+    TEXT_REPLY="$override_value"
+    return 0
+  fi
+  if [[ "$TTY_AVAILABLE" -ne 1 ]]; then
+    return 1
+  fi
+  printf '%s%s%s ' "$C_BOLD" "$prompt" "$C_RESET" >&3
+  IFS= read -r TEXT_REPLY <&3 || return 1
+}
+
+read_secret() {
+  local prompt="$1"
+  SECRET_REPLY=""
+  if [[ "$TTY_AVAILABLE" -ne 1 ]]; then
+    return 1
+  fi
+  printf '%s%s%s ' "$C_BOLD" "$prompt" "$C_RESET" >&3
+  IFS= read -r -s SECRET_REPLY <&3 || return 1
+  printf '\n' >&3
+}
+
+choose_public_endpoint_mode() {
+  local requested="${MAC_MCP_INSTALL_PUBLIC_MODE:-}"
+  local reply=""
+  section "Public endpoint"
+  info "Choose how Mac MCP should be reachable. Local only is the safest default and can be changed later in Settings."
+
+  while true; do
+    if [[ -n "$requested" ]]; then
+      reply="$(lowercase "$requested")"
+    else
+      if [[ "$TTY_AVAILABLE" -ne 1 ]]; then
+        PUBLIC_ENDPOINT_MODE="none"
+        info "No interactive terminal is available; defaulting to Local only."
+        return 0
+      fi
+      printf '  1) Local only (default)\n' >&3
+      printf '  2) Cloudflare Tunnel\n' >&3
+      printf '  3) ngrok\n' >&3
+      printf '  4) Custom HTTPS\n' >&3
+      printf '%sSelect public endpoint [1]:%s ' "$C_BOLD" "$C_RESET" >&3
+      IFS= read -r reply <&3 || fail "Could not read public endpoint selection from /dev/tty."
+      [[ -n "$reply" ]] || reply="1"
+    fi
+
+    case "$reply" in
+      1|none|local|local-only|local_only) PUBLIC_ENDPOINT_MODE="none"; return 0 ;;
+      2|cloudflare|cloudflare-tunnel|cloudflare_tunnel) PUBLIC_ENDPOINT_MODE="cloudflare"; return 0 ;;
+      3|ngrok) PUBLIC_ENDPOINT_MODE="ngrok"; return 0 ;;
+      4|custom|custom-https|custom_https) PUBLIC_ENDPOINT_MODE="custom"; return 0 ;;
+      *)
+        if [[ -n "$requested" ]]; then
+          fail "Invalid MAC_MCP_INSTALL_PUBLIC_MODE: '$requested'. Use local, cloudflare, ngrok, or custom."
+        fi
+        warn "Choose 1, 2, 3, or 4."
+        ;;
+    esac
+  done
+}
+
 version_at_least_310() {
   "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1
 }
@@ -396,6 +474,62 @@ ensure_required_tools() {
     || fail "Python venv was created, but pip is unavailable."
   /bin/rm -rf "$INSTALL_TMP/venv-check"
   ok "Python venv and pip"
+}
+
+resolve_public_provider_binary() {
+  local name="$1"
+  local candidate=""
+  PUBLIC_PROVIDER_BIN=""
+  for candidate in \
+    "$(command -v "$name" 2>/dev/null || true)" \
+    "/opt/homebrew/bin/$name" \
+    "/usr/local/bin/$name"; do
+    [[ -z "$candidate" ]] && continue
+    if [[ -x "$candidate" ]]; then
+      PUBLIC_PROVIDER_BIN="$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+install_selected_public_provider() {
+  local package=""
+  local override=""
+  PUBLIC_PROVIDER_AVAILABLE=1
+  case "$PUBLIC_ENDPOINT_MODE" in
+    cloudflare) package="cloudflared"; override="MAC_MCP_INSTALL_CLOUDFLARED" ;;
+    ngrok) package="ngrok"; override="MAC_MCP_INSTALL_NGROK" ;;
+    *) return 0 ;;
+  esac
+
+  section "Public endpoint provider"
+  if resolve_public_provider_binary "$package"; then
+    ok "$package is already available at $PUBLIC_PROVIDER_BIN"
+    return 0
+  fi
+
+  warn "$package is required for the selected public endpoint mode but is not installed."
+  if ! resolve_brew; then
+    info "Homebrew can install $package for you."
+    if ! install_homebrew; then
+      PUBLIC_PROVIDER_AVAILABLE=0
+      warn "$package was not installed. Mac MCP core installation will continue in Local only mode."
+      return 0
+    fi
+  fi
+
+  if ask_yes_no "Install $package with Homebrew?" "yes" "$override"; then
+    if "$BREW_BIN" install "$package"; then
+      resolve_public_provider_binary "$package" || true
+    fi
+  fi
+  if [[ -z "$PUBLIC_PROVIDER_BIN" ]]; then
+    PUBLIC_PROVIDER_AVAILABLE=0
+    warn "$package is still unavailable. Mac MCP core installation will continue in Local only mode."
+    return 0
+  fi
+  ok "$package installed and available at $PUBLIC_PROVIDER_BIN"
 }
 
 handle_optional_helpers() {
@@ -746,6 +880,205 @@ install_menu_app() {
   ok "Menu bar app and bundled Safari Visual Companion installed and code-signature verified."
 }
 
+persist_public_endpoint_config() {
+  local mode="$1"
+  local public_url="$2"
+  local ngrok_domain="$3"
+  local settings_file="$STATE_DIR/settings.json"
+  local env_file="$RUNTIME_DIR/mcp_server/.env"
+
+  "$PYTHON_BIN" - "$settings_file" "$env_file" "$mode" "$public_url" "$ngrok_domain" <<'PYPUBLIC'
+import json
+import os
+import sys
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
+settings_path = Path(sys.argv[1])
+env_path = Path(sys.argv[2])
+mode = sys.argv[3]
+public_url = sys.argv[4].strip()
+ngrok_domain = sys.argv[5].strip()
+
+if mode not in {"none", "ngrok", "cloudflare", "custom"}:
+    raise SystemExit("invalid public endpoint mode")
+
+if public_url:
+    parts = urlsplit(public_url)
+    if parts.scheme.lower() != "https" or not parts.netloc or parts.username or parts.password or parts.query or parts.fragment:
+        raise SystemExit("public URL must be a plain https:// hostname without credentials, query, or fragment")
+    path = parts.path.rstrip("/")
+    if not path:
+        path = "/mcp"
+    public_url = urlunsplit(("https", parts.netloc, path, "", ""))
+
+if mode == "ngrok":
+    normalized_domain = ngrok_domain.lower().rstrip("/")
+    if (not normalized_domain or "." not in normalized_domain or normalized_domain.startswith("http://")
+            or normalized_domain.startswith("https://") or "/" in normalized_domain):
+        raise SystemExit("ngrok domain must contain only a hostname such as example.ngrok-free.app")
+    ngrok_domain = normalized_domain
+
+try:
+    data = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {}
+except (OSError, json.JSONDecodeError):
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+server = data.setdefault("server", {})
+if not isinstance(server, dict):
+    server = data["server"] = {}
+server["public_endpoint_mode"] = mode
+server["public_url"] = public_url
+server["ngrok_on_start"] = mode == "ngrok"
+server.setdefault("cloudflare_tunnel", "")
+tmp = settings_path.with_name(settings_path.name + ".tmp")
+tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+os.chmod(tmp, 0o600)
+os.replace(tmp, settings_path)
+
+if env_path.exists():
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+else:
+    lines = []
+out = []
+seen = False
+for line in lines:
+    if line.startswith("NGROK_DOMAIN="):
+        out.append("NGROK_DOMAIN=" + ngrok_domain)
+        seen = True
+    else:
+        out.append(line)
+if not seen:
+    out.append("NGROK_DOMAIN=" + ngrok_domain)
+env_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+os.chmod(env_path, 0o600)
+PYPUBLIC
+}
+
+configure_public_endpoint() {
+  local url=""
+  local domain=""
+  local port="8000"
+  PUBLIC_ENDPOINT_CONFIGURED=0
+
+  section "Configure public endpoint"
+  case "$PUBLIC_ENDPOINT_MODE" in
+    none)
+      persist_public_endpoint_config "none" "" ""
+      PUBLIC_ENDPOINT_CONFIGURED=1
+      ok "Local only selected. No public tunnel provider will start."
+      return 0
+      ;;
+    custom)
+      if ! ask_text "Custom HTTPS MCP URL (for example https://mac.example.com; blank = configure later):" "MAC_MCP_INSTALL_PUBLIC_URL"; then
+        TEXT_REPLY=""
+      fi
+      url="$TEXT_REPLY"
+      if [[ -z "$url" ]]; then
+        persist_public_endpoint_config "none" "" ""
+        warn "Custom HTTPS configuration deferred. Local only will remain active."
+        return 0
+      fi
+      if ! persist_public_endpoint_config "custom" "$url" ""; then
+        persist_public_endpoint_config "none" "" ""
+        warn "Invalid custom HTTPS URL. Local only will remain active; configure it later in Settings."
+        return 0
+      fi
+      PUBLIC_ENDPOINT_URL="$url"
+      PUBLIC_ENDPOINT_CONFIGURED=1
+      ok "Custom HTTPS endpoint configured."
+      return 0
+      ;;
+    ngrok)
+      if [[ "$PUBLIC_PROVIDER_AVAILABLE" -ne 1 ]]; then
+        persist_public_endpoint_config "none" "" ""
+        warn "ngrok is unavailable. Local only will remain active."
+        return 0
+      fi
+      if ! ask_text "ngrok domain (for example example.ngrok-free.app; blank = configure later):" "MAC_MCP_INSTALL_NGROK_DOMAIN"; then
+        TEXT_REPLY=""
+      fi
+      domain="$TEXT_REPLY"
+      if [[ -z "$domain" ]]; then
+        persist_public_endpoint_config "none" "" ""
+        warn "ngrok configuration deferred. Local only will remain active."
+        return 0
+      fi
+      persist_public_endpoint_config "ngrok" "" "$domain"
+      NGROK_DOMAIN_INPUT="$domain"
+      PUBLIC_ENDPOINT_CONFIGURED=1
+      ok "ngrok public endpoint configured."
+      return 0
+      ;;
+    cloudflare)
+      if [[ "$PUBLIC_PROVIDER_AVAILABLE" -ne 1 ]]; then
+        persist_public_endpoint_config "none" "" ""
+        warn "cloudflared is unavailable. Local only will remain active."
+        return 0
+      fi
+      port="$($PYTHON_BIN - "$STATE_DIR/settings.json" <<'PYPORT'
+import json, sys
+from pathlib import Path
+p=Path(sys.argv[1])
+try:
+    d=json.loads(p.read_text())
+    print(int(d.get("server",{}).get("port",8000)))
+except Exception:
+    print(8000)
+PYPORT
+)"
+      info "Cloudflare setup (remotely-managed tunnel):"
+      info "1. In Cloudflare Dashboard, go to Networking > Tunnels and create/select a tunnel."
+      info "2. In the tunnel Routes tab, Add route > Published application."
+      info "3. Choose your subdomain/domain and set Service URL to http://localhost:$port."
+      info "4. Copy the tunnel token from the generated cloudflared command (or Add a replica). Do not run Cloudflare's service-install command; Mac MCP manages cloudflared itself."
+      info "Official guide: https://developers.cloudflare.com/tunnel/get-started/"
+
+      if ! ask_text "Public hostname (for example https://mac.example.com; blank = configure later):" "MAC_MCP_INSTALL_PUBLIC_URL"; then
+        TEXT_REPLY=""
+      fi
+      url="$TEXT_REPLY"
+      if [[ -z "$url" ]]; then
+        persist_public_endpoint_config "none" "" ""
+        warn "Cloudflare configuration deferred. Local only will remain active; finish it later in Settings > Advanced."
+        return 0
+      fi
+      if ! ask_yes_no "Paste the Cloudflare tunnel token securely now?" "yes" "MAC_MCP_INSTALL_CLOUDFLARE_TOKEN_NOW"; then
+        persist_public_endpoint_config "none" "" ""
+        warn "Cloudflare token was not saved. Local only will remain active; paste it later in Settings > Advanced."
+        return 0
+      fi
+      if ! read_secret "Cloudflare tunnel token (input hidden):"; then
+        persist_public_endpoint_config "none" "" ""
+        warn "No interactive secret input was available. Local only will remain active."
+        return 0
+      fi
+      if [[ -z "$SECRET_REPLY" ]]; then
+        persist_public_endpoint_config "none" "" ""
+        warn "Empty Cloudflare token. Local only will remain active."
+        return 0
+      fi
+      if ! printf '%s\n' "$SECRET_REPLY" | "$CLI_PATH" credential cloudflare save >/dev/null; then
+        SECRET_REPLY=""
+        persist_public_endpoint_config "none" "" ""
+        warn "Cloudflare credential could not be saved. Local only will remain active."
+        return 0
+      fi
+      SECRET_REPLY=""
+      if ! persist_public_endpoint_config "cloudflare" "$url" ""; then
+        persist_public_endpoint_config "none" "" ""
+        warn "Invalid Cloudflare public hostname. Credential was saved, but Local only remains active until the URL is corrected in Settings."
+        return 0
+      fi
+      PUBLIC_ENDPOINT_URL="$url"
+      PUBLIC_ENDPOINT_CONFIGURED=1
+      ok "Cloudflare Tunnel configured. Mac MCP will run it with --token-file under a KeepAlive user LaunchAgent."
+      return 0
+      ;;
+  esac
+}
+
 optionally_start_server() {
   section "Start Mac MCP"
   if ask_yes_no "Start the local Mac MCP server now?" "no" "MAC_MCP_START_NOW"; then
@@ -774,8 +1107,8 @@ print_completion() {
   printf '  The key is stored locally in: %s/mcp_server/.env\n' "$RUNTIME_DIR"
 
   printf '\n'
-  info "A public HTTPS endpoint is optional. Choose Local only, ngrok, Cloudflare Tunnel, or Custom HTTPS in Mac MCP Settings."
-  info "Cloudflare users can paste the tunnel token once in Settings > Advanced; it is stored in an owner-only credential file and used via --token-file. Named tunnels remain an advanced option."
+  info "Public endpoint selection is part of this installer and can be changed later in Mac MCP Settings."
+  info "Cloudflare users can paste the tunnel token once during install or later in Settings > Advanced; it is stored in an owner-only credential file and used via --token-file."
   info "CLI users can use --public-mode ngrok/cloudflare/custom/none; the legacy --ngrok flag remains supported."
   info "macOS may ask for Accessibility, Screen Recording, Automation, or Microphone permissions when you first use features that need them."
 
@@ -819,6 +1152,8 @@ main() {
   INSTALL_TMP="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-mcp-install.XXXXXX")"
   print_header
   ensure_required_tools
+  choose_public_endpoint_mode
+  install_selected_public_provider
   handle_optional_helpers
   check_install_targets
   handle_optional_chatgpt_cli
@@ -829,8 +1164,11 @@ main() {
   prepare_chrome_companion
   install_menu_app
   install_update_state_and_cli
+  configure_public_endpoint
   optionally_start_server
   print_completion
 }
 
-main "$@"
+if [[ "${MAC_MCP_INSTALLER_LIBRARY_ONLY:-0}" != "1" ]]; then
+  main "$@"
+fi
