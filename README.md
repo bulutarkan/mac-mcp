@@ -255,7 +255,13 @@ mac-mcp status
 mac-mcp restart --ngrok
 mac-mcp stop
 mac-mcp dashboard
+mac-mcp doctor
+mac-mcp conformance
 ```
+
+`mac-mcp doctor` performs read-only checks for the local runtime, Python/version, disk space, state/settings validity, Accessibility, required/optional helpers, server health, dashboard credential file metadata, and Safari/Chrome companion state. Use `--json` for automation. `--support-bundle [PATH]` writes an owner-only (`0600`) structured support report; it intentionally excludes raw `.env`, settings values, logs, credentials, cookies, prompts, and chat content.
+
+`mac-mcp conformance` runs the deterministic Computer Use regression lab. Its default suite is CI-safe and verifies contracts such as background browser behavior, explicit foreground fallbacks, stable tab identity, stale-handle rejection, render/element readiness, bounded action batches, and no-effect click handling. `--live` adds read-only checks against this Mac without clicking or typing in the user's applications.
 
 Default local endpoint:
 

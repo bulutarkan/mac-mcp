@@ -299,6 +299,40 @@ def dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def doctor(args: argparse.Namespace) -> int:
+    from .diagnostics import format_report, run_doctor, write_support_bundle
+
+    report = run_doctor()
+    support_path = None
+    if args.support_bundle is not None:
+        support_path = write_support_bundle(report, args.support_bundle or None)
+        report = dict(report)
+        report["support_bundle"] = str(support_path)
+    if args.json:
+        import json
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(format_report(report))
+        if support_path is not None:
+            print(f"Support bundle: {support_path}")
+    return 0 if report.get("ok") else 1
+
+
+def conformance(args: argparse.Namespace) -> int:
+    from .conformance import run_conformance
+    from .diagnostics import format_report
+
+    report = run_conformance(live=bool(args.live))
+    if args.json:
+        import json
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(format_report(report, title="Mac MCP Computer Use Conformance"))
+        metrics = report.get("metrics", {})
+        print(f"Deterministic pass rate: {metrics.get('deterministic_pass_rate', 0)}% | focus regressions={metrics.get('focus_safety_regressions', 0)} | duration={report.get('duration_ms', 0)}ms")
+    return 0 if report.get("ok") else 1
+
+
 def update(args: argparse.Namespace) -> int:
     try:
         if args.check:
@@ -349,6 +383,16 @@ def main(argv: list[str] | None = None) -> int:
 
     p_dashboard = sub.add_parser("dashboard", help="Open the local Mac MCP operations dashboard.")
     p_dashboard.set_defaults(func=dashboard)
+
+    p_doctor = sub.add_parser("doctor", help="Diagnose local Mac MCP runtime, permissions, dependencies, and companions.")
+    p_doctor.add_argument("--json", action="store_true", help="Print the diagnostic report as JSON.")
+    p_doctor.add_argument("--support-bundle", nargs="?", const="", default=None, metavar="PATH", help="Write an owner-only redacted support bundle. Optional PATH overrides the default location.")
+    p_doctor.set_defaults(func=doctor)
+
+    p_conformance = sub.add_parser("conformance", help="Run deterministic Computer Use contract/regression checks.")
+    p_conformance.add_argument("--json", action="store_true", help="Print the conformance report as JSON.")
+    p_conformance.add_argument("--live", action="store_true", help="Also include read-only live Mac/companion health checks.")
+    p_conformance.set_defaults(func=conformance)
 
     p_update = sub.add_parser("update", help="Update Mac MCP from the latest commit on a Git branch.")
     p_update.add_argument("--check", action="store_true", help="Check for updates without changing files.")
