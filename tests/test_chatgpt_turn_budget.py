@@ -207,6 +207,7 @@ class ChatGPTTurnBudgetTests(unittest.TestCase):
 
     def test_chatgpt_spawn_defaults_to_high_reasoning_and_budget(self) -> None:
         with tempfile.TemporaryDirectory() as td, patch.object(agents, "AGENTS_DIR", Path(td) / "agents"), \
+             patch.object(agents, "provider_enabled", return_value=True), \
              patch.object(agents, "_find_binary", return_value="/tmp/chatgpt"), \
              patch.object(agents, "_base_env", return_value={}), \
              patch.object(agents.subprocess, "Popen", return_value=SimpleNamespace(pid=43210)), \
