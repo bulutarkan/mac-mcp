@@ -113,11 +113,13 @@ class Settings:
     max_output_chars: int
     workdir: Path
     http_allowlist: List[str]
+    http_private_allowlist: List[str]
     http_https_only: bool
     http_max_response_bytes: int
     http_timeout_s: int
     # Browser tool settings
     browser_allowlist: List[str]
+    browser_private_allowlist: List[str]
     browser_https_only: bool
     download_dir: Path
     max_js_result_chars: int
@@ -144,11 +146,13 @@ def load_settings() -> Settings:
         max_output_chars=_int("MAX_OUTPUT_CHARS", 100000),
         workdir=workdir,
         http_allowlist=_strlist("HTTP_ALLOWLIST", ["*"]),
+        http_private_allowlist=_strlist("HTTP_PRIVATE_ALLOWLIST", []),
         http_https_only=_bool("HTTP_HTTPS_ONLY", False),
         http_max_response_bytes=_int("HTTP_MAX_RESPONSE_BYTES", 5_000_000),
         http_timeout_s=_int("HTTP_TIMEOUT_S", 60),
         # Browser
         browser_allowlist=_strlist("BROWSER_ALLOWLIST", ["*"]),
+        browser_private_allowlist=_strlist("BROWSER_PRIVATE_ALLOWLIST", []),
         browser_https_only=_bool("BROWSER_HTTPS_ONLY", False),
         download_dir=download_dir,
         max_js_result_chars=_int("MAX_JS_RESULT_CHARS", 20000),
@@ -278,50 +282,103 @@ def truncate(text: str, limit: int) -> Tuple[str, bool]:
     return text[: max(0, limit - len(suffix))] + suffix, True
 
 
-# ── HTTP URL validation ──────────────────────────────────────────────────────
-_PRIVATE_NETWORKS = [
-    ipaddress.ip_network(n) for n in [
-        "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
-        "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16",
-        "::1/128", "fc00::/7", "fe80::/10",
-    ]
-]
+# ── URL destination validation ───────────────────────────────────────────────
+
+def _hostname_allowed(hostname: str, allowlist: List[str]) -> bool:
+    host = hostname.lower().rstrip(".")
+    if "*" in allowlist:
+        return True
+    return any(host == item.rstrip(".") or host.endswith("." + item.rstrip(".")) for item in allowlist)
 
 
-def _is_private(ip: str) -> bool:
+def _private_host_allowed(hostname: str, allowlist: List[str]) -> bool:
+    # Private-network exceptions must be explicit. A wildcard is intentionally ignored.
+    host = hostname.lower().rstrip(".")
+    return any(
+        item != "*" and (host == item.rstrip(".") or host.endswith("." + item.rstrip(".")))
+        for item in allowlist
+    )
+
+
+def _address_is_blocked(ip: str) -> bool:
     try:
-        addr = ipaddress.ip_address(ip)
-        return any(addr in net for net in _PRIVATE_NETWORKS)
+        addr = ipaddress.ip_address(ip.split("%", 1)[0])
     except ValueError:
-        return False
+        return True
+    # is_global excludes loopback, private, link-local, carrier-grade NAT, multicast,
+    # unspecified, reserved/documentation ranges, and metadata-style link-local IPs.
+    return not addr.is_global
 
 
-def validate_url(settings: Settings, url: str) -> None:
+def resolve_host_addresses(hostname: str) -> Tuple[str, ...]:
+    host = str(hostname or "").strip().lower().rstrip(".")
+    if not host:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "URL hostname is required.")
+    try:
+        literal = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        literal = None
+    if literal is not None:
+        return (str(literal),)
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Cannot resolve hostname: {e}") from e
+    addresses: list[str] = []
+    for _, _, _, _, sockaddr in infos:
+        value = str(sockaddr[0]).split("%", 1)[0]
+        if value not in addresses:
+            addresses.append(value)
+    if not addresses:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Hostname resolved to no usable addresses.")
+    return tuple(addresses)
+
+
+def validate_destination_url(
+    url: str, *, allowlist: List[str], private_allowlist: List[str], https_only: bool,
+) -> Tuple[str, Tuple[str, ...]]:
     parsed = urlparse(url)
     if not parsed.scheme or not parsed.netloc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "URL must include scheme and host.")
     scheme = parsed.scheme.lower()
-    hostname = (parsed.hostname or "").lower()
-
-    if settings.http_https_only and scheme != "https":
+    if scheme not in {"http", "https"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Only http/https URLs are allowed.")
+    if parsed.username is not None or parsed.password is not None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "URL userinfo is not allowed.")
+    if https_only and scheme != "https":
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Only HTTPS URLs are allowed.")
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if not hostname:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "URL hostname is required.")
+    if not _hostname_allowed(hostname, allowlist):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Hostname not in allowlist.")
 
-    allowlist = settings.http_allowlist
-    if "*" not in allowlist:
-        host = hostname.rstrip(".")
-        if not any(host == a.rstrip(".") or host.endswith("." + a.rstrip(".")) for a in allowlist):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Hostname not in HTTP allowlist.")
-
+    private_exception = _private_host_allowed(hostname, private_allowlist)
     try:
-        ipaddress.ip_address(hostname)
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Direct IP URLs are not allowed.")
+        literal = ipaddress.ip_address(hostname.split("%", 1)[0])
     except ValueError:
-        pass
+        literal = None
+    if literal is not None and not private_exception:
+        # Preserve the historical no-direct-IP default; private IPs may only be
+        # enabled by an exact/suffix private allowlist entry.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Direct IP URLs are not allowed.")
 
-    try:
-        infos = socket.getaddrinfo(hostname, None)
-    except socket.gaierror as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Cannot resolve hostname: {e}") from e
-    for _, _, _, _, sockaddr in infos:
-        if _is_private(sockaddr[0]):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Resolved IP is private; blocked.")
+    addresses = resolve_host_addresses(hostname)
+    blocked = [ip for ip in addresses if _address_is_blocked(ip)]
+    if blocked and not private_exception:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Resolved IP is local/private/non-global; blocked.")
+    return hostname, addresses
+
+
+def validate_url(settings: Settings, url: str) -> None:
+    validate_destination_url(
+        url, allowlist=settings.http_allowlist, private_allowlist=settings.http_private_allowlist,
+        https_only=settings.http_https_only,
+    )
+
+
+def validate_browser_url(settings: Settings, url: str) -> None:
+    validate_destination_url(
+        url, allowlist=settings.browser_allowlist, private_allowlist=settings.browser_private_allowlist,
+        https_only=settings.browser_https_only,
+    )

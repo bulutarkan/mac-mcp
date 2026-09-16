@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Hardened outbound HTTP against SSRF by revalidating every redirect hop, rejecting non-global DNS answers, disabling inherited proxy routing, and re-resolving/pinning the validated IP at TCP connect time so DNS rebinding cannot pivot a public hostname into loopback/private/metadata space.
+- Browser navigation now applies the same public/private destination policy before navigation and to the browser-observed destination afterward; unsafe redirected/rebound tabs are blocked with best-effort close/restore containment, while explicit local development exceptions require separate `HTTP_PRIVATE_ALLOWLIST` / `BROWSER_PRIVATE_ALLOWLIST` host entries.
 - Hardened delegated file scopes against symlink/TOCTOU escapes with operation-time `dir_fd`/`O_NOFOLLOW` traversal for scoped read/write/edit/move/copy/delete/search and transaction snapshot/undo paths; adversarial post-validation swaps now fail closed without touching outside-workspace sentinels.
 - Scoped recursive search/find/tree traversal no longer follows symlink directories, while local/unscoped file behavior remains unchanged; scoped cross-device moves fail explicitly rather than weakening the filesystem boundary.
 - Added owner-only bounded filesystem transaction journaling for write/edit/move/delete operations, including reversible preimage snapshots, transaction receipts, post-state conflict detection, and `file_transaction_undo`.

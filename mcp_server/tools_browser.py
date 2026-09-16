@@ -14,36 +14,81 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from fastapi import HTTPException, status
 
-from .security import Settings, truncate, validate_url as _http_validate_url
+from .security import Settings, truncate, validate_browser_url as _validate_browser_destination
 from . import browser_tabs
 from .chrome_background_bridge import chrome_background_bridge
 
 
 def validate_url(settings: Settings, url: str) -> None:
-    """Validate URL using browser_allowlist and browser_https_only settings."""
-    from urllib.parse import urlparse
-    import ipaddress, socket
-    from fastapi import HTTPException, status as st
-    parsed = urlparse(url)
-    if not parsed.scheme or not parsed.netloc:
-        raise HTTPException(st.HTTP_400_BAD_REQUEST, "URL must include scheme and host.")
-    scheme = parsed.scheme.lower()
-    hostname = (parsed.hostname or "").lower()
-    if scheme not in {"http", "https"}:
-        raise HTTPException(st.HTTP_400_BAD_REQUEST, "Only http/https URLs are allowed.")
-    if settings.browser_https_only and scheme != "https":
-        raise HTTPException(st.HTTP_400_BAD_REQUEST, "Only HTTPS URLs are allowed.")
-    allowlist = settings.browser_allowlist
-    if "*" not in allowlist:
-        host = hostname.rstrip(".")
-        if not any(host == a.rstrip(".") or host.endswith("." + a.rstrip(".")) for a in allowlist):
-            raise HTTPException(st.HTTP_400_BAD_REQUEST, "Hostname not in BROWSER_ALLOWLIST.")
+    """Validate a browser destination with browser-specific allow/private policy."""
+    _validate_browser_destination(settings, url)
+
+
+def _close_unsafe_new_tab_best_effort(browser: str, row: Dict[str, Any]) -> None:
     try:
-        ipaddress.ip_address(hostname)
-        raise HTTPException(st.HTTP_400_BAD_REQUEST, "Direct IP URLs are not allowed.")
-    except ValueError:
+        wi = int(row.get("window_index") or 1)
+        ti = int(row.get("tab_index") or 1)
+        script = f'''
+        tell application "{browser}"
+            if (count of windows) >= {wi} then
+                tell window {wi}
+                    if (count of tabs) >= {ti} then close tab {ti}
+                end tell
+            end if
+        end tell
+        '''
+        _run_osascript(script, timeout_s=10)
+    except Exception:
+        pass
+    browser_tabs.forget(str(row.get("tab_handle") or "") or None)
+
+
+def _restore_previous_tab_url_best_effort(
+    settings: Settings, browser: str, row: Dict[str, Any], previous_url: Optional[str],
+) -> None:
+    if not previous_url:
+        return
+    try:
+        validate_url(settings, previous_url)
+        wi = int(row.get("window_index") or 1)
+        ti = int(row.get("tab_index") or 1)
+        escaped = previous_url.replace("\\", "\\\\").replace('"', '\\"')
+        script = f'''
+        tell application "{browser}"
+            if (count of windows) >= {wi} then
+                tell window {wi}
+                    if (count of tabs) >= {ti} then set URL of tab {ti} to "{escaped}"
+                end tell
+            end if
+        end tell
+        '''
+        _run_osascript(script, timeout_s=10)
+    except Exception:
         pass
 
+
+def _validate_observed_navigation(
+    settings: Settings, browser: str, requested_url: str, row: Optional[Dict[str, Any]],
+    *, new_tab: bool, previous_url: Optional[str] = None,
+) -> str:
+    observed = str((row or {}).get("url") or requested_url)
+    try:
+        validate_url(settings, observed)
+    except HTTPException as exc:
+        if row is not None:
+            if new_tab:
+                _close_unsafe_new_tab_best_effort(browser, row)
+            else:
+                _restore_previous_tab_url_best_effort(settings, browser, row, previous_url)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "ok": False,
+                "error": "browser_redirect_blocked",
+                "message": "Browser navigation resolved to a destination outside the allowed network trust boundary.",
+            },
+        ) from exc
+    return observed
 
 _VISUAL_COMPANION_PATH = Path(__file__).resolve().parents[1] / "menu_app" / "BrowserVisualCompanion" / "visual.js"
 
@@ -459,15 +504,17 @@ def browser_open_url(
         if background and not _chrome_is_running():
             created, transport = _open_chrome_cold_background(url)
             tab_index = int(created["tab_index"])
+            observed_url = _validate_observed_navigation(settings, b, url, created, new_tab=True)
             handle = str(created.get("tab_handle") or "") or None
             lease = browser_tabs.claim_created_tab(b, handle) if handle else None
             # The companion may still be waking after a cold launch. Visual claim is
             # optional and must never turn this focus-safe open into a failure.
-            visual_claimed = _claim_tab_visual(b, tab_index, url, handle)
+            visual_claimed = _claim_tab_visual(b, tab_index, observed_url, handle)
             return {
                 "ok": True,
                 "browser": b,
-                "url": url,
+                "url": observed_url,
+                "requested_url": url,
                 "background": True,
                 "window_index": int(created["window_index"]),
                 "tab_index": tab_index,
@@ -482,13 +529,15 @@ def browser_open_url(
         if new_tab and background:
             created, transport = _open_chrome_background_tab_via_extension(url)
             tab_index = int(created["tab_index"])
+            observed_url = _validate_observed_navigation(settings, b, url, created, new_tab=True)
             handle = str(created.get("tab_handle") or "") or None
             lease = browser_tabs.claim_created_tab(b, handle) if handle else None
-            visual_claimed = _claim_tab_visual(b, tab_index, url, handle)
+            visual_claimed = _claim_tab_visual(b, tab_index, observed_url, handle)
             return {
                 "ok": True,
                 "browser": b,
-                "url": url,
+                "url": observed_url,
+                "requested_url": url,
                 "background": True,
                 "window_index": int(created["window_index"]),
                 "tab_index": tab_index,
@@ -524,12 +573,14 @@ def browser_open_url(
         end tell
         '''
 
+    previous_url: Optional[str] = None
     if not new_tab:
         # Existing-tab navigation is a mutation of a shared browser resource. For
         # delegated agents, acquire logical ownership before changing the URL.
         existing_tabs = browser_tabs.list_tabs(b)
         if existing_tabs:
-            with _tab_lease(b, None, 1, None):
+            with _tab_lease(b, None, 1, None) as existing_target:
+                previous_url = existing_target.url
                 raw = _run_osascript(script, timeout_s=30)
         else:
             raw = _run_osascript(script, timeout_s=30)
@@ -540,13 +591,17 @@ def browser_open_url(
     except Exception:
         tab_index = 1
     created = browser_tabs.find_created(b, 1, tab_index)
+    observed_url = _validate_observed_navigation(
+        settings, b, url, created, new_tab=new_tab, previous_url=previous_url,
+    )
     handle = created.get("tab_handle") if created else None
     lease = browser_tabs.claim_created_tab(b, handle) if handle else None
-    visual_claimed = _claim_tab_visual(b, tab_index, url, handle)
+    visual_claimed = _claim_tab_visual(b, tab_index, observed_url, handle)
     return {
         "ok": True,
         "browser": b,
-        "url": url,
+        "url": observed_url,
+        "requested_url": url,
         "background": bool(background),
         "window_index": 1,
         "tab_index": tab_index,
