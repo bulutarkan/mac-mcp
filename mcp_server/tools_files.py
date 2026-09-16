@@ -13,7 +13,12 @@ from fastapi import HTTPException, status
 
 from .security import Settings, resolve_path, truncate
 from .policy import current_policy_context
-from .policy_scope import AccessMode, ScopeRequest, evaluate_scope
+from .policy_scope import AccessMode, ResourceScope, ScopeRequest, evaluate_scope
+from .scoped_fs import (
+    ScopedFilesystemError, scope_needs_path_guard, scoped_copy, scoped_create_directory,
+    scoped_delete, scoped_directory_tree, scoped_find, scoped_get_info, scoped_list_directory,
+    scoped_move, scoped_read_text, scoped_stat, scoped_write_text_atomic,
+)
 from .file_transactions import (
     FileTransactionError, TransactionConflict, TransactionExpired, TransactionIrreversible,
     TransactionNotFound, TransactionPrepareFailed, TransactionRestoreFailed,
@@ -24,9 +29,48 @@ MAX_READ_CHARS = 200_000
 _FILE_OPERATION_LOCK = threading.RLock()
 
 
+def _current_path_scope() -> Optional[ResourceScope]:
+    scope = current_policy_context().scope
+    return scope if scope_needs_path_guard(scope) else None
+
+
+def _scoped_http_error(exc: ScopedFilesystemError) -> HTTPException:
+    if exc.reason == "path_missing":
+        code = status.HTTP_404_NOT_FOUND
+    elif exc.reason in {"recursive_required", "not_regular_file", "invalid_search_pattern"}:
+        code = status.HTTP_400_BAD_REQUEST
+    elif exc.reason in {"destination_exists", "cross_device_move"}:
+        code = status.HTTP_409_CONFLICT
+    else:
+        code = status.HTTP_403_FORBIDDEN
+    return HTTPException(code, {"error": exc.code, "reason": exc.reason, "message": str(exc)})
+
+
+def _scoped_call(fn):
+    try:
+        return fn()
+    except ScopedFilesystemError as exc:
+        raise _scoped_http_error(exc) from exc
+
+
+def _scoped_final_destination(scope: ResourceScope, source: Path, destination: Path) -> Path:
+    try:
+        st = scoped_stat(scope, destination, access_mode=AccessMode.WORKSPACE_WRITE)
+    except ScopedFilesystemError as exc:
+        if exc.reason == "path_missing":
+            return destination
+        raise _scoped_http_error(exc) from exc
+    if stat_module.S_ISLNK(st.st_mode):
+        raise _scoped_http_error(ScopedFilesystemError("symlink_final_target", "Scoped move refuses a symlink destination."))
+    return destination / source.name if stat_module.S_ISDIR(st.st_mode) else destination
+
+
 # ── Transaction helpers ──────────────────────────────────────────────────────
 
 def _write_text_atomic(target: Path, content: str) -> int:
+    scope = _current_path_scope()
+    if scope is not None:
+        return _scoped_call(lambda: scoped_write_text_atomic(scope, target, content))
     target.parent.mkdir(parents=True, exist_ok=True)
     encoded = content.encode("utf-8")
     previous_mode: Optional[int] = None
@@ -59,6 +103,9 @@ def _write_text_atomic(target: Path, content: str) -> int:
 
 
 def _delete_raw(target: Path, *, recursive: bool) -> None:
+    scope = _current_path_scope()
+    if scope is not None:
+        return _scoped_call(lambda: scoped_delete(scope, target, recursive=recursive))
     if not target.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Path not found: {target}")
     if target.is_dir():
@@ -85,7 +132,8 @@ def _transaction_targets(primary: List[Path]) -> List[Path]:
         for candidate in (target, _missing_parent_root(target)):
             if candidate is None:
                 continue
-            key = str(candidate.resolve(strict=False))
+            key = (str(Path(os.path.abspath(str(candidate)))) if _current_path_scope() is not None
+                   else str(candidate.resolve(strict=False)))
             if key not in seen:
                 seen.add(key)
                 targets.append(candidate)
@@ -97,7 +145,7 @@ def _prepare_file_transaction(operation: str, paths: List[Path], *, require_undo
     try:
         return prepare_transaction(
             operation, _transaction_targets(paths), require_undoable=require_undoable,
-            actor=context.actor, agent_id=context.agent_id,
+            actor=context.actor, agent_id=context.agent_id, scope=_current_path_scope(),
         )
     except FileTransactionError as exc:
         code = status.HTTP_409_CONFLICT if isinstance(exc, TransactionIrreversible) else status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -106,10 +154,10 @@ def _prepare_file_transaction(operation: str, paths: List[Path], *, require_undo
 
 def _finish_file_transaction(transaction_id: str, result: Dict[str, Any]) -> Dict[str, Any]:
     try:
-        receipt = commit_transaction(transaction_id)
+        receipt = commit_transaction(transaction_id, scope=_current_path_scope())
     except FileTransactionError as exc:
         try:
-            rollback_transaction(transaction_id)
+            rollback_transaction(transaction_id, scope=_current_path_scope())
         except FileTransactionError:
             pass
         raise HTTPException(
@@ -122,7 +170,7 @@ def _finish_file_transaction(transaction_id: str, result: Dict[str, Any]) -> Dic
 
 def _rollback_after_error(transaction_id: str, exc: BaseException) -> None:
     try:
-        receipt = rollback_transaction(transaction_id)
+        receipt = rollback_transaction(transaction_id, scope=_current_path_scope())
     except FileTransactionError as rollback_exc:
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -192,7 +240,7 @@ def _write_files_batch_locked(settings: Settings, files: List[Dict[str, str]], a
             _rollback_after_error(transaction_id, exc)
             raise AssertionError("unreachable")
         try:
-            receipt = commit_transaction(transaction_id)
+            receipt = commit_transaction(transaction_id, scope=_current_path_scope())
         except FileTransactionError as commit_exc:
             raise HTTPException(
                 status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -239,7 +287,8 @@ def _file_transaction_batch_locked(settings: Settings, actions: List[Dict[str, A
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Action {index} move requires source and destination.")
             src = resolve_path(raw_source)
             dst = resolve_path(raw_destination)
-            final_dst = (dst / src.name) if dst.exists() and dst.is_dir() else dst
+            scope = _current_path_scope()
+            final_dst = _scoped_final_destination(scope, src, dst) if scope is not None else ((dst / src.name) if dst.exists() and dst.is_dir() else dst)
             normalized.append({"type": kind, "source": src, "destination": dst, "final_destination": final_dst})
             targets.extend((src, final_dst))
         elif kind == "delete":
@@ -264,10 +313,14 @@ def _file_transaction_batch_locked(settings: Settings, actions: List[Dict[str, A
                 results.append({"index": index, "type": kind, "ok": True, "path": str(target), "bytes": size})
             elif kind == "move":
                 src, dst = action["source"], action["destination"]
-                if not src.exists():
-                    raise HTTPException(status.HTTP_404_NOT_FOUND, f"Batch move source not found at action {index}.")
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                actual = Path(shutil.move(str(src), str(dst))).resolve(strict=False)
+                scope = _current_path_scope()
+                if scope is not None:
+                    actual = _scoped_call(lambda: scoped_move(scope, src, dst))
+                else:
+                    if not src.exists():
+                        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Batch move source not found at action {index}.")
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    actual = Path(shutil.move(str(src), str(dst))).resolve(strict=False)
                 results.append({"index": index, "type": kind, "ok": True, "source": str(src), "destination": str(actual)})
             else:
                 target = action["path"]
@@ -288,9 +341,13 @@ def _file_transaction_batch_locked(settings: Settings, actions: List[Dict[str, A
 
 def read_file(settings: Settings, path: str, offset: int = 0, length: Optional[int] = None) -> Dict[str, Any]:
     target = resolve_path(path)
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"File not found: {path}")
-    content = target.read_text(encoding="utf-8", errors="replace")
+    scope = _current_path_scope()
+    if scope is not None:
+        content = _scoped_call(lambda: scoped_read_text(scope, target, errors="replace"))
+    else:
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"File not found: {path}")
+        content = target.read_text(encoding="utf-8", errors="replace")
     if offset or length is not None:
         lines = content.splitlines(keepends=True)
         sliced = lines[offset: offset + length if length else None]
@@ -304,12 +361,25 @@ def read_multiple_files(settings: Settings, paths: List[str]) -> Dict[str, Any]:
     for path in paths:
         try:
             target = resolve_path(path)
-            if target.exists() and target.is_file():
+            scope = _current_path_scope()
+            if scope is not None:
+                try:
+                    content = scoped_read_text(scope, target, errors="replace")
+                except ScopedFilesystemError as exc:
+                    if exc.reason not in {"path_missing"}:
+                        raise _scoped_http_error(exc) from exc
+                    results.append({"path": path, "error": "Not found", "status": "error"})
+                    continue
+                bounded, _ = truncate(content, 50_000)
+                results.append({"path": path, "content": bounded, "status": "ok"})
+            elif target.exists() and target.is_file():
                 content = target.read_text(encoding="utf-8", errors="replace")
                 bounded, _ = truncate(content, 50_000)
                 results.append({"path": path, "content": bounded, "status": "ok"})
             else:
                 results.append({"path": path, "error": "Not found", "status": "error"})
+        except HTTPException:
+            raise
         except Exception as e:
             results.append({"path": path, "error": str(e), "status": "error"})
     return {"ok": True, "files": results}
@@ -321,9 +391,13 @@ def edit_file(settings: Settings, path: str, old_string: str, new_string: str,
               expected_replacements: int = 1) -> Dict[str, Any]:
     """Find-and-replace in a file. Fails if count doesn't match expected_replacements."""
     target = resolve_path(path)
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"File not found: {path}")
-    content = target.read_text(encoding="utf-8")
+    scope = _current_path_scope()
+    if scope is not None:
+        content = _scoped_call(lambda: scoped_read_text(scope, target, errors="strict"))
+    else:
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"File not found: {path}")
+        content = target.read_text(encoding="utf-8")
     count = content.count(old_string)
     if count == 0:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "old_string not found in file.")
@@ -342,22 +416,31 @@ def edit_file(settings: Settings, path: str, old_string: str, new_string: str,
 
 def list_directory(settings: Settings, path: str) -> Dict[str, Any]:
     target = resolve_path(path)
-    if not target.exists() or not target.is_dir():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Directory not found: {path}")
-    entries = []
-    for entry in sorted(target.iterdir()):
-        stat = entry.stat()
-        entries.append({
-            "name": entry.name,
-            "type": "directory" if entry.is_dir() else "file",
-            "size": stat.st_size if entry.is_file() else None,
-            "modified": time.ctime(stat.st_mtime),
-        })
+    scope = _current_path_scope()
+    if scope is not None:
+        rows = _scoped_call(lambda: scoped_list_directory(scope, target))
+        entries = [{**row, "modified": time.ctime(float(row["modified"]))} for row in rows]
+    else:
+        if not target.exists() or not target.is_dir():
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Directory not found: {path}")
+        entries = []
+        for entry in sorted(target.iterdir()):
+            stat = entry.stat()
+            entries.append({
+                "name": entry.name,
+                "type": "directory" if entry.is_dir() else "file",
+                "size": stat.st_size if entry.is_file() else None,
+                "modified": time.ctime(stat.st_mtime),
+            })
     return {"ok": True, "path": str(target), "count": len(entries), "entries": entries}
 
 
 def directory_tree(settings: Settings, path: str, depth: int = 3) -> Dict[str, Any]:
     target = resolve_path(path)
+    scope = _current_path_scope()
+    if scope is not None:
+        tree = _scoped_call(lambda: scoped_directory_tree(scope, target, depth))
+        return {"ok": True, "path": str(target), "tree": tree}
     if not target.exists() or not target.is_dir():
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Directory not found: {path}")
 
@@ -383,7 +466,11 @@ def directory_tree(settings: Settings, path: str, depth: int = 3) -> Dict[str, A
 
 def create_directory(settings: Settings, path: str) -> Dict[str, Any]:
     target = resolve_path(path)
-    target.mkdir(parents=True, exist_ok=True)
+    scope = _current_path_scope()
+    if scope is not None:
+        _scoped_call(lambda: scoped_create_directory(scope, target))
+    else:
+        target.mkdir(parents=True, exist_ok=True)
     return {"ok": True, "path": str(target)}
 
 
@@ -392,12 +479,16 @@ def create_directory(settings: Settings, path: str) -> Dict[str, Any]:
 def move_file(settings: Settings, source: str, destination: str) -> Dict[str, Any]:
     src = resolve_path(source)
     dst = resolve_path(destination)
-    if not src.exists():
+    scope = _current_path_scope()
+    if scope is None and not src.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Source not found: {source}")
-    final_dst = (dst / src.name) if dst.exists() and dst.is_dir() else dst
+    final_dst = _scoped_final_destination(scope, src, dst) if scope is not None else ((dst / src.name) if dst.exists() and dst.is_dir() else dst)
     def mutate() -> Dict[str, Any]:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        actual = Path(shutil.move(str(src), str(dst))).resolve(strict=False)
+        if scope is not None:
+            actual = _scoped_call(lambda: scoped_move(scope, src, dst))
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            actual = Path(shutil.move(str(src), str(dst))).resolve(strict=False)
         return {"ok": True, "source": str(src), "destination": str(actual)}
     return _journaled("move_file", [src, final_dst], mutate)
 
@@ -405,6 +496,14 @@ def move_file(settings: Settings, source: str, destination: str) -> Dict[str, An
 def copy_file(settings: Settings, source: str, destination: str) -> Dict[str, Any]:
     src = resolve_path(source)
     dst = resolve_path(destination)
+    scope = _current_path_scope()
+    if scope is not None:
+        src_stat = _scoped_call(lambda: scoped_stat(scope, src, access_mode=AccessMode.READ_ONLY))
+        if stat_module.S_ISLNK(src_stat.st_mode):
+            raise _scoped_http_error(ScopedFilesystemError("symlink_source", "Scoped copy refuses a symlink source."))
+        final_dst = _scoped_final_destination(scope, src, dst) if stat_module.S_ISREG(src_stat.st_mode) else dst
+        actual = _scoped_call(lambda: scoped_copy(scope, src, final_dst))
+        return {"ok": True, "source": str(src), "destination": str(actual)}
     if not src.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Source not found: {source}")
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -417,11 +516,13 @@ def copy_file(settings: Settings, source: str, destination: str) -> Dict[str, An
 
 def delete_path(settings: Settings, path: str, recursive: bool = False) -> Dict[str, Any]:
     target = resolve_path(path)
-    if not target.exists():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Path not found: {path}")
-    if target.is_dir() and not recursive:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            "Path is a directory. Set recursive=true to delete it.")
+    scope = _current_path_scope()
+    if scope is None:
+        if not target.exists():
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Path not found: {path}")
+        if target.is_dir() and not recursive:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                                "Path is a directory. Set recursive=true to delete it.")
     def mutate() -> Dict[str, Any]:
         _delete_raw(target, recursive=recursive)
         return {"ok": True, "deleted": str(target)}
@@ -453,7 +554,7 @@ def _undo_file_transaction_locked(settings: Settings, transaction_id: str, force
                      "reasons": list(decision.reasons)},
                 )
     try:
-        receipt = undo_transaction(transaction_id, force=force)
+        receipt = undo_transaction(transaction_id, force=force, scope=_current_path_scope())
     except FileTransactionError as exc:
         if isinstance(exc, TransactionNotFound):
             code = status.HTTP_404_NOT_FOUND
@@ -469,6 +570,14 @@ def _undo_file_transaction_locked(settings: Settings, transaction_id: str, force
 
 def get_file_info(settings: Settings, path: str) -> Dict[str, Any]:
     target = resolve_path(path)
+    scope = _current_path_scope()
+    if scope is not None:
+        info = _scoped_call(lambda: scoped_get_info(scope, target))
+        return {
+            "ok": True, "path": str(target), "type": info["type"], "size": info["size"],
+            "created": time.ctime(float(info["created"])), "modified": time.ctime(float(info["modified"])),
+            "mode": oct(int(info["mode"])), "suffix": target.suffix,
+        }
     if not target.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Path not found: {path}")
     stat = target.stat()
@@ -484,12 +593,17 @@ def get_file_info(settings: Settings, path: str) -> Dict[str, Any]:
     }
 
 
+
 # ── Find files by name ────────────────────────────────────────────────────────
 
 def find_files(settings: Settings, pattern: str, path: str = str(Path.home()),
                file_type: str = "any") -> Dict[str, Any]:
     """Find files/directories by name pattern (glob). file_type: file | dir | any."""
     root = resolve_path(path)
+    scope = _current_path_scope()
+    if scope is not None:
+        results = _scoped_call(lambda: scoped_find(scope, root, pattern, file_type, 500))
+        return {"ok": True, "count": len(results), "results": results}
     if not root.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Path not found: {path}")
     results = []

@@ -14,6 +14,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, Optional, Sequence
 
+from .policy_scope import ResourceScope
+from .scoped_fs import (
+    ScopedFilesystemError, scope_needs_path_guard, scoped_estimate_bytes, scoped_fingerprint,
+    scoped_kind, scoped_restore, scoped_snapshot,
+)
+
 SCHEMA_VERSION = 1
 DEFAULT_RETENTION_S = 7 * 24 * 60 * 60
 DEFAULT_MAX_TRANSACTIONS = 64
@@ -268,6 +274,39 @@ def _fingerprint(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _transaction_path(raw: Path, scope: Optional[ResourceScope]) -> Path:
+    if scope_needs_path_guard(scope):
+        return Path(os.path.abspath(os.path.expanduser(str(raw))))
+    return Path(raw).expanduser().resolve(strict=False)
+
+
+def _estimate_for(path: Path, scope: Optional[ResourceScope]) -> int:
+    if scope_needs_path_guard(scope):
+        try:
+            return scoped_estimate_bytes(scope, path)  # type: ignore[arg-type]
+        except ScopedFilesystemError as exc:
+            raise TransactionPrepareFailed("scoped transaction path changed during size check") from exc
+    return _estimate_bytes(path)
+
+
+def _kind_for(path: Path, scope: Optional[ResourceScope]) -> str:
+    if scope_needs_path_guard(scope):
+        try:
+            return scoped_kind(scope, path)  # type: ignore[arg-type]
+        except ScopedFilesystemError as exc:
+            raise TransactionPrepareFailed("scoped transaction path changed during type check") from exc
+    return _path_kind(path)
+
+
+def _fingerprint_for(path: Path, scope: Optional[ResourceScope]) -> str:
+    if scope_needs_path_guard(scope):
+        try:
+            return scoped_fingerprint(scope, path)  # type: ignore[arg-type]
+        except ScopedFilesystemError as exc:
+            raise TransactionConflict("scoped transaction path changed during fingerprint verification") from exc
+    return _fingerprint(path)
+
+
 def _open_secure_tar(path: Path) -> tuple[tarfile.TarFile, Any]:
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     fileobj = os.fdopen(fd, "wb")
@@ -280,7 +319,41 @@ def _open_secure_tar(path: Path) -> tuple[tarfile.TarFile, Any]:
     return archive, fileobj
 
 
-def _snapshot(path: Path, txn_dir: Path, index: int) -> Dict[str, Any]:
+def _snapshot(path: Path, txn_dir: Path, index: int, scope: Optional[ResourceScope] = None) -> Dict[str, Any]:
+    snapshots = txn_dir / "snapshots"
+    snapshots.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(snapshots, 0o700)
+    except OSError:
+        pass
+
+    if scope_needs_path_guard(scope):
+        backup = snapshots / f"{index:04d}.safe"
+        try:
+            meta = scoped_snapshot(scope, path, backup)  # type: ignore[arg-type]
+        except ScopedFilesystemError as exc:
+            raise TransactionPrepareFailed("scoped filesystem snapshot could not be captured safely") from exc
+        kind = str(meta.get("kind") or "absent")
+        if kind == "absent":
+            digest = hashlib.sha256(); digest.update(b"absent\0")
+            fingerprint = digest.hexdigest()
+            estimated = 0
+            backup_rel = None
+        else:
+            fingerprint = _fingerprint(backup)
+            estimated = _estimate_bytes(backup)
+            backup_rel = str(backup.relative_to(txn_dir))
+        return {
+            "path": str(path),
+            "before_kind": kind,
+            "before_fingerprint": fingerprint,
+            "estimated_bytes": estimated,
+            "backup": backup_rel,
+            "backup_format": "safe-tree",
+            "before_mode": meta.get("mode"),
+            "post_fingerprint": None,
+        }
+
     kind = _path_kind(path)
     item: Dict[str, Any] = {
         "path": str(path),
@@ -288,18 +361,14 @@ def _snapshot(path: Path, txn_dir: Path, index: int) -> Dict[str, Any]:
         "before_fingerprint": _fingerprint(path),
         "estimated_bytes": _estimate_bytes(path),
         "backup": None,
+        "backup_format": "tar",
+        "before_mode": None,
         "post_fingerprint": None,
     }
     if kind == "absent":
         return item
     if kind == "other":
         raise TransactionPrepareFailed("unsupported filesystem object cannot be snapshotted")
-    snapshots = txn_dir / "snapshots"
-    snapshots.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(snapshots, 0o700)
-    except OSError:
-        pass
     backup = snapshots / f"{index:04d}.tar"
     archive, fileobj = _open_secure_tar(backup)
     try:
@@ -340,13 +409,24 @@ def _remove_path(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-def _restore_snapshot(txn_dir: Path, snapshot: Mapping[str, Any]) -> None:
+def _restore_snapshot(txn_dir: Path, snapshot: Mapping[str, Any], scope: Optional[ResourceScope] = None) -> None:
     target = Path(str(snapshot.get("path") or ""))
     before_kind = str(snapshot.get("before_kind") or "absent")
+    backup_rel = str(snapshot.get("backup") or "")
+    if scope_needs_path_guard(scope):
+        backup = (txn_dir / backup_rel) if backup_rel else None
+        try:
+            scoped_restore(
+                scope, target, before_kind, backup,
+                int(snapshot.get("before_mode")) if snapshot.get("before_mode") is not None else None,
+            )  # type: ignore[arg-type]
+            return
+        except ScopedFilesystemError as exc:
+            raise TransactionRestoreFailed("scoped filesystem rollback could not be completed safely") from exc
+
     _remove_path(target)
     if before_kind == "absent":
         return
-    backup_rel = str(snapshot.get("backup") or "")
     if not backup_rel:
         raise TransactionRestoreFailed("snapshot backup is unavailable")
     backup = txn_dir / backup_rel
@@ -448,11 +528,12 @@ def prepare_transaction(
     require_undoable: bool = False,
     actor: Optional[str] = None,
     agent_id: Optional[str] = None,
+    scope: Optional[ResourceScope] = None,
 ) -> Dict[str, Any]:
     clean_paths: list[Path] = []
     seen: set[str] = set()
     for raw in paths:
-        path = Path(raw).expanduser().resolve(strict=False)
+        path = _transaction_path(Path(raw), scope)
         key = str(path)
         if key not in seen:
             seen.add(key)
@@ -486,7 +567,7 @@ def prepare_transaction(
             "snapshots": [],
         }
         _write_manifest(manifest)
-        estimated = sum(_estimate_bytes(path) for path in clean_paths)
+        estimated = sum(_estimate_for(path, scope) for path in clean_paths)
         if estimated > _max_snapshot_bytes():
             manifest["undoable"] = False
             manifest["irreversible_reason"] = "snapshot_limit_exceeded"
@@ -497,9 +578,9 @@ def prepare_transaction(
             manifest["snapshots"] = [
                 {
                     "path": str(path),
-                    "before_kind": _path_kind(path),
+                    "before_kind": _kind_for(path, scope),
                     "before_fingerprint": None,
-                    "estimated_bytes": _estimate_bytes(path),
+                    "estimated_bytes": _estimate_for(path, scope),
                     "backup": None,
                     "post_fingerprint": None,
                 }
@@ -510,14 +591,21 @@ def prepare_transaction(
             return dict(manifest)
         try:
             for index, path in enumerate(clean_paths):
-                snapshot = _snapshot(path, txn_dir, index)
+                snapshot = _snapshot(path, txn_dir, index, scope=scope)
                 manifest["snapshots"].append(snapshot)
                 _write_manifest(manifest)
+            actual_estimated = sum(int(item.get("estimated_bytes") or 0) for item in manifest["snapshots"])
+            if require_undoable and actual_estimated > _max_snapshot_bytes():
+                raise TransactionIrreversible("atomic operation exceeds the reversible snapshot limit")
         except Exception as exc:
             manifest["state"] = "aborted"
             manifest["undoable"] = False
-            manifest["irreversible_reason"] = "snapshot_prepare_failed"
+            manifest["irreversible_reason"] = (
+                "snapshot_limit_exceeded" if isinstance(exc, TransactionIrreversible) else "snapshot_prepare_failed"
+            )
             _write_manifest(manifest)
+            if isinstance(exc, TransactionIrreversible):
+                raise
             raise TransactionPrepareFailed("could not prepare reversible filesystem snapshot") from exc
         manifest["state"] = "prepared"
         _write_manifest(manifest)
@@ -530,14 +618,14 @@ def transaction_paths(transaction_id: str) -> tuple[str, ...]:
         return tuple(str(item.get("path") or "") for item in manifest.get("snapshots") or [] if item.get("path"))
 
 
-def commit_transaction(transaction_id: str) -> Dict[str, Any]:
+def commit_transaction(transaction_id: str, *, scope: Optional[ResourceScope] = None) -> Dict[str, Any]:
     with _journal_lock():
         manifest = _read_manifest(transaction_id)
         if manifest.get("state") != "prepared":
             raise TransactionConflict("transaction is not prepared")
         if manifest.get("undoable"):
             for item in manifest.get("snapshots") or []:
-                item["post_fingerprint"] = _fingerprint(Path(str(item.get("path") or "")))
+                item["post_fingerprint"] = _fingerprint_for(Path(str(item.get("path") or "")), scope)
         manifest["state"] = "committed"
         manifest["committed_at"] = _now()
         _write_manifest(manifest)
@@ -545,7 +633,9 @@ def commit_transaction(transaction_id: str) -> Dict[str, Any]:
         return transaction_receipt(manifest)
 
 
-def _rollback_locked(manifest: Dict[str, Any], *, terminal_state: str) -> Dict[str, Any]:
+def _rollback_locked(
+    manifest: Dict[str, Any], *, terminal_state: str, scope: Optional[ResourceScope] = None
+) -> Dict[str, Any]:
     transaction_id = str(manifest["transaction_id"])
     if not manifest.get("undoable"):
         manifest["state"] = "rollback_failed"
@@ -555,7 +645,7 @@ def _rollback_locked(manifest: Dict[str, Any], *, terminal_state: str) -> Dict[s
     txn_dir = _txn_dir(transaction_id)
     try:
         for snapshot in reversed(list(manifest.get("snapshots") or [])):
-            _restore_snapshot(txn_dir, snapshot)
+            _restore_snapshot(txn_dir, snapshot, scope=scope)
     except Exception as exc:
         manifest["state"] = "rollback_failed"
         manifest["rollback_error"] = exc.__class__.__name__
@@ -570,15 +660,17 @@ def _rollback_locked(manifest: Dict[str, Any], *, terminal_state: str) -> Dict[s
     return transaction_receipt(manifest)
 
 
-def rollback_transaction(transaction_id: str) -> Dict[str, Any]:
+def rollback_transaction(transaction_id: str, *, scope: Optional[ResourceScope] = None) -> Dict[str, Any]:
     with _journal_lock():
         manifest = _read_manifest(transaction_id)
         if manifest.get("state") not in {"prepared", "committed"}:
             raise TransactionConflict("transaction cannot be rolled back in its current state")
-        return _rollback_locked(manifest, terminal_state="rolled_back")
+        return _rollback_locked(manifest, terminal_state="rolled_back", scope=scope)
 
 
-def undo_transaction(transaction_id: str, *, force: bool = False) -> Dict[str, Any]:
+def undo_transaction(
+    transaction_id: str, *, force: bool = False, scope: Optional[ResourceScope] = None
+) -> Dict[str, Any]:
     with _journal_lock():
         manifest = _read_manifest(transaction_id)
         state = str(manifest.get("state") or "")
@@ -587,7 +679,7 @@ def undo_transaction(transaction_id: str, *, force: bool = False) -> Dict[str, A
                 raise TransactionConflict(
                     "transaction stopped between prepare and commit; outcome is unknown, use force=true only to restore the recorded pre-state"
                 )
-            return _rollback_locked(manifest, terminal_state="undone")
+            return _rollback_locked(manifest, terminal_state="undone", scope=scope)
         if state != "committed":
             raise TransactionConflict("only a committed transaction can be undone")
         if float(manifest.get("expires_at") or 0.0) <= _now():
@@ -598,14 +690,14 @@ def undo_transaction(transaction_id: str, *, force: bool = False) -> Dict[str, A
             conflicts: list[int] = []
             for index, item in enumerate(manifest.get("snapshots") or []):
                 expected = str(item.get("post_fingerprint") or "")
-                current = _fingerprint(Path(str(item.get("path") or "")))
+                current = _fingerprint_for(Path(str(item.get("path") or "")), scope)
                 if not expected or current != expected:
                     conflicts.append(index)
             if conflicts:
                 raise TransactionConflict(
                     "filesystem changed after this transaction; refusing to overwrite newer changes"
                 )
-        return _rollback_locked(manifest, terminal_state="undone")
+        return _rollback_locked(manifest, terminal_state="undone", scope=scope)
 
 
 def get_transaction(transaction_id: str) -> Dict[str, Any]:
