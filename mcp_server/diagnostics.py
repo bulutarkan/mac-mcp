@@ -17,6 +17,12 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from .runtime_settings import load_runtime_settings, settings_path
+from .public_endpoint import (
+    PublicEndpointError,
+    inspect_cloudflare_credential,
+    public_health_url,
+    resolve_public_endpoint,
+)
 from .security import dashboard_token_path
 from .version import __version__
 
@@ -352,15 +358,18 @@ def _listener_pid(port: int) -> int | None:
 
 def _check_managed_process(name: str) -> CheckResult:
     started = time.perf_counter()
-    if name not in {"server", "ngrok"}:
+    if name not in {"server", "ngrok", "cloudflared"}:
         raise ValueError("unsupported managed process")
 
     if name == "server":
         label = "mac-mcp-uvicorn"
         candidates = [state_dir() / "mac-mcp.pid", Path("/tmp/mac-mcp-uvicorn.pid")]
-    else:
+    elif name == "ngrok":
         label = "mac-mcp-ngrok"
         candidates = [state_dir() / "ngrok.pid", Path("/tmp/mac-mcp-ngrok.pid")]
+    else:
+        label = "mac-mcp-cloudflared"
+        candidates = [state_dir() / "cloudflared.pid", Path("/tmp/mac-mcp-cloudflared.pid")]
 
     stale: list[str] = []
     for path in candidates:
@@ -595,6 +604,156 @@ def _check_runtime_companion_state() -> CheckResult:
     )
 
 
+def _check_cloudflared_dependency() -> CheckResult:
+    started = time.perf_counter()
+    candidates = [
+        shutil.which("cloudflared"),
+        "/opt/homebrew/bin/cloudflared",
+        "/usr/local/bin/cloudflared",
+    ]
+    found = next((item for item in candidates if item and Path(item).is_file() and os.access(item, os.X_OK)), None)
+    if found:
+        return result(
+            "dependency.cloudflared", "dependencies", PASS, "CLOUDFLARED_AVAILABLE",
+            "cloudflared is available (Cloudflare Tunnel public endpoint).", started=started,
+            details={"path": _safe_path(found)},
+        )
+    return result(
+        "dependency.cloudflared", "dependencies", WARN, "CLOUDFLARED_MISSING",
+        "cloudflared is not installed (Cloudflare Tunnel public endpoint).", started=started,
+        remediation="Install cloudflared only if you plan to use Cloudflare Tunnel mode.",
+    )
+
+
+def _check_cloudflare_credential() -> CheckResult:
+    started = time.perf_counter()
+    try:
+        public = resolve_public_endpoint()
+    except PublicEndpointError as exc:
+        mode = str(load_runtime_settings().get("server", {}).get("public_endpoint_mode", "") or "").strip().lower()
+        if mode != "cloudflare":
+            return result(
+                "credential.cloudflare", "security", INFO, "CLOUDFLARE_NOT_SELECTED",
+                "Cloudflare Tunnel is not the selected public endpoint mode.", started=started,
+            )
+        return result(
+            "credential.cloudflare", "security", FAIL, "CLOUDFLARE_CREDENTIAL_MISSING",
+            "Cloudflare Tunnel mode is selected but no usable credential is configured.", started=started,
+            remediation="Save the tunnel token from Mac MCP Settings > Advanced or configure a named tunnel.",
+            details={"error": str(exc)},
+        )
+    if public.mode != "cloudflare":
+        return result(
+            "credential.cloudflare", "security", INFO, "CLOUDFLARE_NOT_SELECTED",
+            "Cloudflare Tunnel is not the selected public endpoint mode.", started=started,
+            details={"mode": public.mode},
+        )
+    if not public.cloudflare_token_file:
+        return result(
+            "credential.cloudflare", "security", INFO, "CLOUDFLARE_NAMED_TUNNEL_CREDENTIALS",
+            "Cloudflare uses named-tunnel credentials managed outside Mac MCP.", started=started,
+        )
+    credential = inspect_cloudflare_credential(public.cloudflare_token_file)
+    details = {"path": _safe_path(credential.path), "reason": credential.reason}
+    if credential.configured and credential.secure:
+        return result(
+            "credential.cloudflare", "security", PASS, "CLOUDFLARE_CREDENTIAL_SECURE",
+            "Cloudflare Tunnel credential is configured as an owner-only 0600 file.", started=started,
+            details=details,
+        )
+    return result(
+        "credential.cloudflare", "security", FAIL, "CLOUDFLARE_CREDENTIAL_UNSAFE",
+        "Cloudflare Tunnel credential file is missing or has unsafe ownership/permissions.", started=started,
+        remediation="Save/replace the token from Mac MCP Settings so it is written atomically as an owner-only 0600 file.",
+        details=details,
+    )
+
+
+def _check_public_endpoint() -> CheckResult:
+    started = time.perf_counter()
+    try:
+        public = resolve_public_endpoint()
+    except PublicEndpointError as exc:
+        return result(
+            "public.endpoint", "network", FAIL, "PUBLIC_ENDPOINT_CONFIG_INVALID",
+            "Public endpoint configuration is invalid.", started=started,
+            remediation="Fix the public endpoint mode/URL in Settings or the MAC_MCP_PUBLIC_* environment variables.",
+            details={"error": str(exc)},
+        )
+    if public.mode == "none":
+        return result(
+            "public.endpoint", "network", INFO, "PUBLIC_ENDPOINT_LOCAL_ONLY",
+            "Public endpoint mode is Local only; no external endpoint is expected.", started=started,
+            details={"mode": public.mode, "source": public.source},
+        )
+
+    health_url = public_health_url(public)
+    details = {"mode": public.mode, "endpoint": public.endpoint_url, "source": public.source}
+    try:
+        status_code, payload = _request_json(
+            str(health_url), headers={"User-Agent": f"Mac-MCP-Doctor/{__version__}"}, timeout=3.0
+        )
+    except urllib.error.HTTPError as exc:
+        return result(
+            "public.endpoint", "network", WARN, "PUBLIC_ENDPOINT_HTTP_ERROR",
+            "Configured public endpoint is not healthy from this Mac.", started=started,
+            remediation="Check the selected public endpoint provider/reverse proxy and rerun doctor.",
+            details={**details, "http_status": int(exc.code)},
+        )
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
+        return result(
+            "public.endpoint", "network", WARN, "PUBLIC_ENDPOINT_UNREACHABLE",
+            "Configured public endpoint could not be reached from this Mac.", started=started,
+            remediation="Check DNS/TLS/routing for the configured public endpoint and rerun doctor.",
+            details={**details, "error_type": type(exc).__name__},
+        )
+    healthy = status_code == 200 and bool(payload.get("ok"))
+    return result(
+        "public.endpoint", "network", PASS if healthy else WARN,
+        "PUBLIC_ENDPOINT_HEALTHY" if healthy else "PUBLIC_ENDPOINT_UNEXPECTED_RESPONSE",
+        "Configured public endpoint is healthy." if healthy else "Configured public endpoint returned an unexpected health response.",
+        started=started,
+        remediation=None if healthy else "Check the reverse proxy/tunnel target and rerun doctor.",
+        details={**details, "health_url": health_url, "http_status": status_code},
+    )
+
+
+def _check_ngrok_for_selected_mode() -> CheckResult:
+    started = time.perf_counter()
+    try:
+        public = resolve_public_endpoint()
+    except PublicEndpointError:
+        return result(
+            "process.ngrok", "process", INFO, "NGROK_MODE_UNRESOLVED",
+            "ngrok process state was not evaluated because public endpoint configuration is invalid.", started=started,
+        )
+    if public.mode != "ngrok":
+        return result(
+            "process.ngrok", "process", INFO, "NGROK_NOT_SELECTED",
+            "ngrok is not the selected public endpoint mode.", started=started,
+            details={"mode": public.mode},
+        )
+    return _check_managed_process("ngrok")
+
+
+def _check_cloudflare_for_selected_mode() -> CheckResult:
+    started = time.perf_counter()
+    try:
+        public = resolve_public_endpoint()
+    except PublicEndpointError:
+        return result(
+            "process.cloudflared", "process", INFO, "CLOUDFLARE_MODE_UNRESOLVED",
+            "cloudflared process state was not evaluated because public endpoint configuration is invalid.", started=started,
+        )
+    if public.mode != "cloudflare":
+        return result(
+            "process.cloudflared", "process", INFO, "CLOUDFLARE_NOT_SELECTED",
+            "Cloudflare Tunnel is not the selected public endpoint mode.", started=started,
+            details={"mode": public.mode},
+        )
+    return _check_managed_process("cloudflared")
+
+
 def doctor_checks() -> list[CheckResult]:
     checks: list[Callable[[], CheckResult]] = [
         _check_runtime,
@@ -603,11 +762,15 @@ def doctor_checks() -> list[CheckResult]:
         _check_disk,
         lambda: _binary_result("dependency.osascript", "osascript", required=True, purpose="macOS automation"),
         lambda: _binary_result("dependency.cliclick", "cliclick", required=False, purpose="coordinate/input fallback"),
-        lambda: _binary_result("dependency.ngrok", "ngrok", required=False, purpose="public tunnel"),
+        lambda: _binary_result("dependency.ngrok", "ngrok", required=False, purpose="ngrok public tunnel"),
+        _check_cloudflared_dependency,
         _check_accessibility,
         lambda: _check_managed_process("server"),
-        lambda: _check_managed_process("ngrok"),
+        _check_ngrok_for_selected_mode,
+        _check_cloudflare_for_selected_mode,
+        _check_cloudflare_credential,
         _check_server_health,
+        _check_public_endpoint,
         _check_dashboard_token,
         _check_menu_app,
         _check_safari_companion,

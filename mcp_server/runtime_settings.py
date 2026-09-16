@@ -36,6 +36,13 @@ def tool_enabled(name: str, default: bool = True) -> bool:
     return default
 
 
+def server_setting(name: str, default: Any = None) -> Any:
+    server = load_runtime_settings().get("server", {})
+    if not isinstance(server, dict):
+        return default
+    return server.get(name, default)
+
+
 def voice_setting(name: str, default: Any = None) -> Any:
     voice = load_runtime_settings().get("voice", {})
     if not isinstance(voice, dict):

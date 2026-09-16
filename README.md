@@ -64,10 +64,14 @@ No separate browser profile, helper daemon, or Xcode project is required. `menu_
 - Python 3.10+
 - Git
 - Xcode Command Line Tools (`swiftc`)
-- ngrok only if you want a public HTTPS MCP endpoint
+- ngrok only if you choose the built-in ngrok public endpoint mode
+- cloudflared only if you choose the built-in Cloudflare Tunnel mode
 
 ```bash
-brew install python git ngrok
+brew install python git
+# Optional public providers:
+brew install ngrok       # ngrok mode
+brew install cloudflared # Cloudflare Tunnel mode
 ```
 
 Optional helpers:
@@ -121,8 +125,13 @@ MCP_ALLOW_NO_AUTH=false
 MCP_ALLOW_SHELL=true
 RATE_LIMIT_PER_MINUTE=120
 
-# Optional public tunnel
+# Optional built-in ngrok provider
 NGROK_DOMAIN=your-domain.ngrok-free.dev
+
+# Optional environment overrides for public endpoint selection.
+# Normally these are managed from Mac MCP Settings instead.
+# MAC_MCP_PUBLIC_ENDPOINT_MODE=cloudflare
+# MAC_MCP_PUBLIC_URL=https://mac.example.com/mcp
 ```
 
 Generate a strong token:
@@ -145,6 +154,14 @@ For MCP clients/connectors that cannot set an `Authorization` header, Mac MCP al
 ```text
 https://your-domain.example/mcp?ApiKey=<MCP_API_KEY>
 ```
+
+### Public endpoint modes
+
+Mac MCP treats the local server and its public transport as separate layers. **Local only** exposes no managed public endpoint. **ngrok** runs a managed ngrok process and uses `NGROK_DOMAIN`. **Cloudflare Tunnel** runs `cloudflared` directly on the Mac and connects the selected named tunnel (or an owner-controlled token file) to `127.0.0.1:<port>`; no VPS, reverse proxy, inbound port-forward, or public Mac IP is required. **Custom HTTPS** records an externally managed HTTPS MCP endpoint and does not start a tunnel provider.
+
+The native Settings window provides a four-way `Local only / ngrok / Cloudflare / Custom HTTPS` switch. The selection is persisted under `server.public_endpoint_mode` and `server.public_url` in `~/.mac-mcp/settings.json`; optional named-tunnel metadata may use the non-secret `server.cloudflare_tunnel` field. Existing installations that only have `ngrok_on_start=true` continue to behave as ngrok mode until the new setting is saved. Environment variables `MAC_MCP_PUBLIC_ENDPOINT_MODE` and `MAC_MCP_PUBLIC_URL` can override persisted values for managed/headless deployments.
+
+For the simplest Cloudflare setup, create the tunnel and hostname in Cloudflare, then paste the tunnel token once into **Settings → Advanced → Cloudflare**. Mac MCP writes it atomically to `~/.mac-mcp/cloudflare-tunnel-token` as an owner-only `0600` file, never writes the token into `settings.json` or `.env`, never re-displays it, and starts `cloudflared` with `--token-file` so the secret is not exposed in process arguments. `CLOUDFLARE_TUNNEL_TOKEN_FILE` may override the credential-file path without putting the token value in the environment. Named-tunnel credentials remain available as an advanced alternative. The tunnel connects Cloudflare directly to `http://127.0.0.1:<port>` on the Mac: no VPS, public IP, router port forwarding, or inbound firewall opening is required. Custom mode is for operators who already provide their own external HTTPS routing. All public URLs must be HTTPS and may not contain query strings, fragments, or URL userinfo. `mac-mcp status` shows the selected connector URL and `mac-mcp doctor` checks the selected provider, credential-file safety, and public `/health` route without sending the MCP API key. Switching providers stops any managed ngrok/cloudflared process that is no longer selected. In Cloudflare mode, `mac-mcp start` (and the native app Start action) installs/enables a user LaunchAgent with `KeepAlive`, so the tunnel stays independent of Terminal and is automatically restarted if `cloudflared` exits; `mac-mcp stop` boots out and disables that job.
 
 `Authorization` remains authoritative when both forms are supplied. Empty, duplicate, or invalid `ApiKey` query credentials are rejected while authentication is enabled. The server removes `ApiKey` from its local access-log URL before logging, but upstream proxies/tunnels can still observe query strings, so Bearer headers should be preferred whenever the client supports them.
 
@@ -260,16 +277,22 @@ A transport failure such as timeout or connection refusal enters `disconnected`;
 
 ```bash
 mac-mcp start
-mac-mcp start --ngrok
+mac-mcp start --public-mode ngrok
+# Save the Cloudflare token once in Mac MCP Settings → Advanced.
+mac-mcp start --public-mode cloudflare --public-url https://mac.example.com/mcp
+mac-mcp start --public-mode custom --public-url https://mac.example.com/mcp
+mac-mcp start --public-mode none
 mac-mcp status
-mac-mcp restart --ngrok
+mac-mcp restart
 mac-mcp stop
 mac-mcp dashboard
 mac-mcp doctor
 mac-mcp conformance
 ```
 
-`mac-mcp doctor` performs read-only checks for the local runtime, Python/version, disk space, state/settings validity, Accessibility, required/optional helpers, server health, dashboard credential file metadata, and Safari/Chrome companion state. Use `--json` for automation. `--support-bundle [PATH]` writes an owner-only (`0600`) structured support report; it intentionally excludes raw `.env`, settings values, logs, credentials, cookies, prompts, and chat content.
+The legacy `--ngrok` flag remains supported as an alias for `--public-mode ngrok`. When no CLI override is supplied, `start`/`restart` use the public endpoint mode saved by the native Settings window (or the `MAC_MCP_PUBLIC_*` environment overrides).
+
+`mac-mcp doctor` performs read-only checks for the local runtime, Python/version, disk space, state/settings validity, Accessibility, required/optional helpers, local server health, selected public endpoint health/configuration, dashboard credential file metadata, and Safari/Chrome companion state. Use `--json` for automation. `--support-bundle [PATH]` writes an owner-only (`0600`) structured support report; it intentionally excludes raw `.env`, settings values, logs, credentials, cookies, prompts, and chat content.
 
 `mac-mcp conformance` runs the deterministic Computer Use regression lab. Its default suite is CI-safe and verifies contracts such as background browser behavior, explicit foreground fallbacks, stable tab identity, stale-handle rejection, render/element readiness, bounded action batches, and no-effect click handling. `--live` adds read-only checks against this Mac without clicking or typing in the user's applications.
 

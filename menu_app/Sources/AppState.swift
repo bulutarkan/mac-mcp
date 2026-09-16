@@ -603,6 +603,8 @@ struct ActionNotice: Identifiable, Equatable {
 final class AppState: ObservableObject {
     @Published var serverRunning = false
     @Published var ngrokRunning = false
+    @Published var cloudflareRunning = false
+    @Published private(set) var cloudflareCredentialConfigured = false
     @Published private(set) var connectionState: DashboardConnectionState = .connecting
     @Published private(set) var connectionIssue: String?
     @Published private(set) var steeringSnapshotStale = false
@@ -645,15 +647,17 @@ final class AppState: ObservableObject {
     private var pendingSteeringTextHash: String?
     private var pendingSteeringGenerationID: String?
     private var pendingSteeringRestoredFromDisk = false
-    private var lastNgrokProcessCheckAt = 0.0
+    private var lastPublicProcessCheckAt = 0.0
     private static let activePollIntervalSeconds = 2.5
     private static let idlePollIntervalSeconds = 12.0
     private static let ngrokProcessCheckIntervalSeconds = 30.0
+    private static let publicProcessCheckIntervalSeconds = ngrokProcessCheckIntervalSeconds
     private static let maxRetryIntervalSeconds = 30.0
 
     init(startBackgroundTasks: Bool = true) {
         restorePendingSteeringSubmission()
         refreshSafariExtensionState()
+        refreshCloudflareCredentialState()
         if startBackgroundTasks { startTasks() }
     }
     deinit { pollTask?.cancel(); pulseTask?.cancel(); noticeTask?.cancel() }
@@ -768,9 +772,16 @@ final class AppState: ObservableObject {
     }
 
     private func refreshNgrokStateIfNeeded(now: Double = ProcessInfo.processInfo.systemUptime) {
-        guard lastNgrokProcessCheckAt == 0 || now - lastNgrokProcessCheckAt >= Self.ngrokProcessCheckIntervalSeconds else { return }
-        lastNgrokProcessCheckAt = now
-        setIfChanged(\.ngrokRunning, Self.processExists(matching: "ngrok http"))
+        guard lastPublicProcessCheckAt == 0 || now - lastPublicProcessCheckAt >= Self.publicProcessCheckIntervalSeconds else { return }
+        lastPublicProcessCheckAt = now
+        let mode = settings.publicEndpointMode
+        setIfChanged(\.ngrokRunning, mode == "ngrok" && Self.processExists(matching: "ngrok http"))
+        setIfChanged(\.cloudflareRunning, mode == "cloudflare" && Self.processExists(matching: "cloudflared tunnel"))
+        refreshCloudflareCredentialState()
+    }
+
+    func refreshCloudflareCredentialState() {
+        setIfChanged(\.cloudflareCredentialConfigured, Self.cloudflareCredentialFileIsSecure())
     }
 
     private func updatePulseTask() {
@@ -1002,17 +1013,50 @@ final class AppState: ObservableObject {
         }
     }
 
-    func startServer() {
-        var args = ["start"]
-        if settings.ngrokOnStart { args.append("--ngrok") }
-        runAction(title: "Starting", args: args)
+    private func lifecycleArgs(_ command: String) -> [String] {
+        var args = [command, "--public-mode", settings.publicEndpointMode]
+        if settings.publicEndpointMode == "custom" || settings.publicEndpointMode == "cloudflare" {
+            let url = settings.publicURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !url.isEmpty { args += ["--public-url", url] }
+        }
+        if settings.publicEndpointMode == "cloudflare" {
+            let tunnel = settings.cloudflareTunnel.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !tunnel.isEmpty { args += ["--cloudflare-tunnel", tunnel] }
+        }
+        return args
     }
+
+    func saveCloudflareCredential(_ rawValue: String) {
+        guard busyAction == nil else { return }
+        let token = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            showNotice(ActionNotice(kind: .error, message: "Paste a Cloudflare Tunnel token first."))
+            return
+        }
+        busyAction = "Saving credential"
+        actionNotice = nil
+        let cliPath = settings.cliPath
+        let settingsPath = settings.path.path
+        Task {
+            let result = await Self.runCLI(
+                args: ["credential", "cloudflare", "save"],
+                configuredPath: cliPath,
+                settingsPath: settingsPath,
+                input: token + "\n"
+            )
+            busyAction = nil
+            refreshCloudflareCredentialState()
+            if result.code == 0 {
+                showNotice(ActionNotice(kind: .success, message: "Cloudflare credential saved securely."))
+            } else {
+                showNotice(ActionNotice(kind: .error, message: "Couldn’t save the Cloudflare credential."))
+            }
+        }
+    }
+
+    func startServer() { runAction(title: "Starting", args: lifecycleArgs("start")) }
     func stopServer() { runAction(title: "Stopping", args: ["stop"]) }
-    func restartServer() {
-        var args = ["restart"]
-        if settings.ngrokOnStart { args.append("--ngrok") }
-        runAction(title: "Restarting", args: args)
-    }
+    func restartServer() { runAction(title: "Restarting", args: lifecycleArgs("restart")) }
     func checkForUpdates() { runAction(title: "Checking update", args: ["update", "--check"]) }
     func installUpdate() { runAction(title: "Updating", args: ["update"]) }
     func openDashboard() {
@@ -1560,13 +1604,36 @@ final class AppState: ObservableObject {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
+    nonisolated private static func cloudflareCredentialFileIsSecure() -> Bool {
+        let environment = ProcessInfo.processInfo.environment
+        let path: String
+        if let configured = environment["CLOUDFLARE_TUNNEL_TOKEN_FILE"], !configured.isEmpty {
+            path = NSString(string: configured).expandingTildeInPath
+        } else {
+            let stateDirectory: String
+            if let configured = environment["MAC_MCP_STATE_DIR"], !configured.isEmpty {
+                stateDirectory = NSString(string: configured).expandingTildeInPath
+            } else {
+                stateDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".mac-mcp").path
+            }
+            path = URL(fileURLWithPath: stateDirectory).appendingPathComponent("cloudflare-tunnel-token").path
+        }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              let permissions = attributes[.posixPermissions] as? NSNumber,
+              permissions.intValue == 0o600,
+              let owner = attributes[.ownerAccountID] as? NSNumber,
+              owner.uint32Value == getuid() else { return false }
+        return true
+    }
+
     nonisolated private static func processExists(matching needle: String) -> Bool {
         let proc = Process(); proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep"); proc.arguments = ["-f", needle]
         proc.standardOutput = FileHandle.nullDevice; proc.standardError = FileHandle.nullDevice
         do { try proc.run(); proc.waitUntilExit(); return proc.terminationStatus == 0 } catch { return false }
     }
 
-    nonisolated private static func runCLI(args: [String], configuredPath: String, settingsPath: String) async -> (code: Int32, output: String) {
+    nonisolated private static func runCLI(args: [String], configuredPath: String, settingsPath: String, input: String? = nil) async -> (code: Int32, output: String) {
         await Task.detached(priority: .userInitiated) {
             let process = Process()
             let home = FileManager.default.homeDirectoryForCurrentUser
@@ -1590,9 +1657,16 @@ final class AppState: ObservableObject {
             environment["MAC_MCP_SKIP_MENU_APP"] = "1"
             environment["MAC_MCP_SETTINGS_PATH"] = settingsPath
             process.environment = environment
-            let pipe = Pipe(); process.standardOutput = pipe; process.standardError = pipe; process.standardInput = FileHandle.nullDevice
+            let pipe = Pipe(); process.standardOutput = pipe; process.standardError = pipe
+            let inputPipe = input == nil ? nil : Pipe()
+            process.standardInput = inputPipe ?? FileHandle.nullDevice
             do {
-                try process.run(); process.waitUntilExit()
+                try process.run()
+                if let input, let inputPipe {
+                    if let data = input.data(using: .utf8) { inputPipe.fileHandleForWriting.write(data) }
+                    try? inputPipe.fileHandleForWriting.close()
+                }
+                process.waitUntilExit()
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
             } catch { return (127, error.localizedDescription) }

@@ -64,8 +64,16 @@ struct MenuBarView: View {
                 }
             }
             Spacer()
-            if state.ngrokRunning {
-                Label("Tunnel", systemImage: "network")
+            if settings.publicEndpointMode == "cloudflare" && state.cloudflareRunning {
+                Label("Cloudflare", systemImage: "network")
+                    .font(.caption2.weight(.medium)).padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(.thinMaterial, in: Capsule())
+            } else if settings.publicEndpointMode == "ngrok" && state.ngrokRunning {
+                Label("ngrok", systemImage: "network")
+                    .font(.caption2.weight(.medium)).padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(.thinMaterial, in: Capsule())
+            } else if settings.publicEndpointMode == "custom" {
+                Label("Custom", systemImage: "network")
                     .font(.caption2.weight(.medium)).padding(.horizontal, 8).padding(.vertical, 5)
                     .background(.thinMaterial, in: Capsule())
             }
@@ -676,7 +684,14 @@ struct MenuBarView: View {
         GroupBox {
             DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
                 VStack(spacing: 10) {
-                    Toggle("Start ngrok with server", isOn: $settings.ngrokOnStart).onChange(of: settings.ngrokOnStart) { _ in persistSettings() }
+                    HStack {
+                        Text("Public endpoint")
+                        Spacer()
+                        Text(settings.publicEndpointMode == "none" ? "Local only" : settings.publicEndpointMode.capitalized)
+                            .foregroundStyle(.secondary)
+                        Button("Configure…") { SettingsWindowController.shared.show(state: state, settings: settings) }
+                    }
+                    .font(.caption)
                     HStack {
                         Text("Port")
                         TextField("8000", value: $settings.serverPort, format: .number).frame(width: 70).onSubmit { persistSettings(); Task { await state.refresh() } }

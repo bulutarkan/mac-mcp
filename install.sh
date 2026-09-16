@@ -526,6 +526,15 @@ except (OSError, json.JSONDecodeError):
     data = {}
 if not isinstance(data, dict):
     data = {}
+server = data.setdefault("server", {})
+if not isinstance(server, dict):
+    server = data["server"] = {}
+server.setdefault("port", 8000)
+server.setdefault("cli_path", "")
+server.setdefault("ngrok_on_start", False)
+server.setdefault("public_endpoint_mode", "ngrok" if bool(server.get("ngrok_on_start")) else "none")
+server.setdefault("public_url", "")
+server.setdefault("cloudflare_tunnel", "")
 subagents = data.setdefault("subagents", {})
 if not isinstance(subagents, dict):
     subagents = data["subagents"] = {}
@@ -765,7 +774,9 @@ print_completion() {
   printf '  The key is stored locally in: %s/mcp_server/.env\n' "$RUNTIME_DIR"
 
   printf '\n'
-  info "A public HTTPS endpoint is optional. Install/configure ngrok separately, set NGROK_DOMAIN in mcp_server/.env, then use 'mac-mcp start --ngrok'."
+  info "A public HTTPS endpoint is optional. Choose Local only, ngrok, Cloudflare Tunnel, or Custom HTTPS in Mac MCP Settings."
+  info "Cloudflare users can paste the tunnel token once in Settings > Advanced; it is stored in an owner-only credential file and used via --token-file. Named tunnels remain an advanced option."
+  info "CLI users can use --public-mode ngrok/cloudflare/custom/none; the legacy --ngrok flag remains supported."
   info "macOS may ask for Accessibility, Screen Recording, Automation, or Microphone permissions when you first use features that need them."
 
   printf '\n%sSafari Visual Companion%s\n' "$C_BOLD" "$C_RESET"

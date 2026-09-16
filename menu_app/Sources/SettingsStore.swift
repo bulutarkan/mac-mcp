@@ -15,6 +15,9 @@ struct MenuSettings: Codable {
         var port: Int
         var cli_path: String
         var ngrok_on_start: Bool
+        var public_endpoint_mode: String?
+        var public_url: String?
+        var cloudflare_tunnel: String?
     }
     struct Steering: Codable {
         var session_ttl_minutes: Int
@@ -38,7 +41,7 @@ struct MenuSettings: Codable {
         MenuSettings(
             experimental_tools: ["ask_user_voice": ExperimentalTool(enabled: true)],
             voice: Voice(language: "auto", input_device: "auto", output_device: "system", tts_rate: "-5%", timeout_s: 45, voice: "tr-TR-AhmetNeural"),
-            server: Server(port: 8000, cli_path: "", ngrok_on_start: false),
+            server: Server(port: 8000, cli_path: "", ngrok_on_start: false, public_endpoint_mode: "none", public_url: "", cloudflare_tunnel: ""),
             steering: Steering(session_ttl_minutes: 10),
             subagents: Subagents(providers: [
                 "opencode": Provider(enabled: true, binary_path: nil, default_project: nil),
@@ -61,6 +64,9 @@ final class SettingsStore: ObservableObject {
     @Published var serverPort = 8000
     @Published var cliPath = ""
     @Published var ngrokOnStart = false
+    @Published var publicEndpointMode = "none"
+    @Published var publicURL = ""
+    @Published var cloudflareTunnel = ""
     @Published var steeringSessionMinutes = 10
     @Published var opencodeEnabled = true
     @Published var codexEnabled = true
@@ -100,7 +106,15 @@ final class SettingsStore: ObservableObject {
         voiceName = current.voice.voice
         serverPort = current.server.port
         cliPath = current.server.cli_path
-        ngrokOnStart = current.server.ngrok_on_start
+        let rawMode = current.server.public_endpoint_mode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if ["none", "ngrok", "cloudflare", "custom"].contains(rawMode) {
+            publicEndpointMode = rawMode
+        } else {
+            publicEndpointMode = current.server.ngrok_on_start ? "ngrok" : "none"
+        }
+        publicURL = current.server.public_url ?? ""
+        cloudflareTunnel = current.server.cloudflare_tunnel ?? ""
+        ngrokOnStart = publicEndpointMode == "ngrok"
         steeringSessionMinutes = max(1, current.steering?.session_ttl_minutes ?? 10)
         let providers = current.subagents?.providers ?? MenuSettings.defaults().subagents?.providers ?? [:]
         opencodeEnabled = providers["opencode"]?.enabled ?? true
@@ -117,7 +131,14 @@ final class SettingsStore: ObservableObject {
         let payload = MenuSettings(
             experimental_tools: ["ask_user_voice": .init(enabled: voiceEnabled)],
             voice: .init(language: language, input_device: inputDevice, output_device: outputDevice, tts_rate: ttsRate, timeout_s: timeoutSeconds, voice: voiceName),
-            server: .init(port: serverPort, cli_path: cliPath, ngrok_on_start: ngrokOnStart),
+            server: .init(
+                port: serverPort,
+                cli_path: cliPath,
+                ngrok_on_start: publicEndpointMode == "ngrok",
+                public_endpoint_mode: publicEndpointMode,
+                public_url: publicURL,
+                cloudflare_tunnel: cloudflareTunnel
+            ),
             steering: .init(session_ttl_minutes: max(1, steeringSessionMinutes)),
             subagents: .init(providers: [
                 "opencode": .init(enabled: opencodeEnabled, binary_path: opencodeBinaryPath.nilIfEmpty, default_project: nil),
@@ -125,9 +146,33 @@ final class SettingsStore: ObservableObject {
                 "chatgpt": .init(enabled: chatgptEnabled, binary_path: chatgptBinaryPath.nilIfEmpty, default_project: chatgptDefaultProject.nilIfEmpty),
             ])
         )
-        let data = try JSONEncoder.pretty.encode(payload)
+        let payloadData = try JSONEncoder.pretty.encode(payload)
+        guard let payloadObject = try JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        var existing: [String: Any] = [:]
+        if let currentData = try? Data(contentsOf: path),
+           let currentObject = try? JSONSerialization.jsonObject(with: currentData) as? [String: Any] {
+            existing = currentObject
+        }
+        let merged = Self.deepMerge(existing, payloadObject)
+        let data = try JSONSerialization.data(withJSONObject: merged, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: path, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+    }
+
+    private static func deepMerge(_ base: [String: Any], _ overlay: [String: Any]) -> [String: Any] {
+        var result = base
+        for (key, value) in overlay {
+            if let overlayDictionary = value as? [String: Any],
+               let baseDictionary = result[key] as? [String: Any] {
+                result[key] = deepMerge(baseDictionary, overlayDictionary)
+            } else {
+                result[key] = value
+            }
+        }
+        return result
     }
 
     func providerEnabled(_ id: String) -> Bool {

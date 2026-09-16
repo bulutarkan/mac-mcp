@@ -38,6 +38,7 @@ struct SettingsView: View {
     @State private var selection: SettingsSection = .subagents
     @State private var notice = ""
     @State private var groqKey = ""
+    @State private var cloudflareToken = ""
 
     var body: some View {
         HStack(spacing: 0) {
@@ -49,6 +50,7 @@ struct SettingsView: View {
         .background(.regularMaterial)
         .task {
             audio.refresh()
+            state.refreshCloudflareCredentialState()
             await state.refreshProviders()
         }
     }
@@ -398,8 +400,71 @@ struct SettingsView: View {
 
                 GroupBox("Server") {
                     VStack(alignment: .leading, spacing: 12) {
-                        Toggle("Start ngrok with server", isOn: $settings.ngrokOnStart)
-                            .onChange(of: settings.ngrokOnStart) { _ in persistSettings() }
+                        HStack {
+                            Text("Public endpoint")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 105, alignment: .leading)
+                            Picker("", selection: $settings.publicEndpointMode) {
+                                Text("Local only").tag("none")
+                                Text("ngrok").tag("ngrok")
+                                Text("Cloudflare").tag("cloudflare")
+                                Text("Custom HTTPS").tag("custom")
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .onChange(of: settings.publicEndpointMode) { _ in
+                                settings.ngrokOnStart = settings.publicEndpointMode == "ngrok"
+                                persistSettings()
+                            }
+                        }
+                        if settings.publicEndpointMode == "custom" || settings.publicEndpointMode == "cloudflare" {
+                            HStack {
+                                Text("Public URL")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 105, alignment: .leading)
+                                TextField("https://example.com/mcp", text: $settings.publicURL)
+                                    .textFieldStyle(.roundedBorder)
+                                    .onSubmit { persistSettings() }
+                            }
+                        }
+                        if settings.publicEndpointMode == "cloudflare" {
+                            HStack {
+                                Text("Tunnel token")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 105, alignment: .leading)
+                                SecureField("Paste once; it is never written to settings.json", text: $cloudflareToken)
+                                    .textFieldStyle(.roundedBorder)
+                                Button(state.cloudflareCredentialConfigured ? "Replace credential" : "Save credential") {
+                                    let token = cloudflareToken
+                                    cloudflareToken = ""
+                                    state.saveCloudflareCredential(token)
+                                }
+                                .disabled(cloudflareToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.busyAction != nil)
+                            }
+                            HStack(spacing: 8) {
+                                Text("")
+                                    .frame(width: 105)
+                                Label(
+                                    state.cloudflareCredentialConfigured ? "Credential configured" : "Credential not configured",
+                                    systemImage: state.cloudflareCredentialConfigured ? "checkmark.shield.fill" : "exclamationmark.shield"
+                                )
+                                .foregroundStyle(state.cloudflareCredentialConfigured ? Color.secondary : Color.orange)
+                                Spacer()
+                            }
+                            .font(.caption)
+                            HStack {
+                                Text("Named tunnel")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 105, alignment: .leading)
+                                TextField("Optional name or UUID (token-file is preferred)", text: $settings.cloudflareTunnel)
+                                    .textFieldStyle(.roundedBorder)
+                                    .onSubmit { persistSettings() }
+                            }
+                            Text("cloudflared runs directly on this Mac and forwards to localhost. Install it with `brew install cloudflared` if it is not already available. The tunnel token is stored only in an owner-only 0600 credential file.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         HStack {
                             Text("Port")
                                 .foregroundStyle(.secondary)
