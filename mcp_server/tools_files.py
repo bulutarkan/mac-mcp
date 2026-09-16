@@ -1,39 +1,287 @@
 from __future__ import annotations
 
+import os
 import shutil
+import stat as stat_module
+import tempfile
+import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import HTTPException, status
 
 from .security import Settings, resolve_path, truncate
+from .policy import current_policy_context
+from .policy_scope import AccessMode, ScopeRequest, evaluate_scope
+from .file_transactions import (
+    FileTransactionError, TransactionConflict, TransactionExpired, TransactionIrreversible,
+    TransactionNotFound, TransactionPrepareFailed, TransactionRestoreFailed,
+    commit_transaction, prepare_transaction, rollback_transaction, transaction_paths, undo_transaction,
+)
 
 MAX_READ_CHARS = 200_000
+_FILE_OPERATION_LOCK = threading.RLock()
+
+
+# ── Transaction helpers ──────────────────────────────────────────────────────
+
+def _write_text_atomic(target: Path, content: str) -> int:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    encoded = content.encode("utf-8")
+    previous_mode: Optional[int] = None
+    if target.exists() and target.is_file():
+        try:
+            previous_mode = stat_module.S_IMODE(target.stat().st_mode)
+        except OSError:
+            previous_mode = None
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if previous_mode is not None:
+            os.chmod(tmp, previous_mode)
+        os.replace(tmp, target)
+        try:
+            dir_fd = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+    finally:
+        tmp.unlink(missing_ok=True)
+    return len(encoded)
+
+
+def _delete_raw(target: Path, *, recursive: bool) -> None:
+    if not target.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Path not found: {target}")
+    if target.is_dir():
+        if not recursive:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Path is a directory. Set recursive=true to delete it.")
+        shutil.rmtree(str(target))
+    else:
+        target.unlink()
+
+
+def _missing_parent_root(target: Path) -> Optional[Path]:
+    current = target.parent
+    missing: list[Path] = []
+    while not current.exists() and current != current.parent:
+        missing.append(current)
+        current = current.parent
+    return missing[-1] if missing else None
+
+
+def _transaction_targets(primary: List[Path]) -> List[Path]:
+    targets: list[Path] = []
+    seen: set[str] = set()
+    for target in primary:
+        for candidate in (target, _missing_parent_root(target)):
+            if candidate is None:
+                continue
+            key = str(candidate.resolve(strict=False))
+            if key not in seen:
+                seen.add(key)
+                targets.append(candidate)
+    return targets
+
+
+def _prepare_file_transaction(operation: str, paths: List[Path], *, require_undoable: bool = False) -> Dict[str, Any]:
+    context = current_policy_context()
+    try:
+        return prepare_transaction(
+            operation, _transaction_targets(paths), require_undoable=require_undoable,
+            actor=context.actor, agent_id=context.agent_id,
+        )
+    except FileTransactionError as exc:
+        code = status.HTTP_409_CONFLICT if isinstance(exc, TransactionIrreversible) else status.HTTP_500_INTERNAL_SERVER_ERROR
+        raise HTTPException(code, {"error": exc.code, "message": str(exc), "action_executed": False}) from exc
+
+
+def _finish_file_transaction(transaction_id: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        receipt = commit_transaction(transaction_id)
+    except FileTransactionError as exc:
+        try:
+            rollback_transaction(transaction_id)
+        except FileTransactionError:
+            pass
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            {"error": exc.code, "message": "Filesystem action could not be durably committed and was rolled back when possible.",
+             "transaction_id": transaction_id},
+        ) from exc
+    return {**result, **receipt}
+
+
+def _rollback_after_error(transaction_id: str, exc: BaseException) -> None:
+    try:
+        receipt = rollback_transaction(transaction_id)
+    except FileTransactionError as rollback_exc:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            {"error": rollback_exc.code, "message": "Filesystem action failed and rollback could not be verified.",
+             "transaction_id": transaction_id, "outcome": "unknown"},
+        ) from exc
+    if isinstance(exc, HTTPException):
+        raise HTTPException(
+            exc.status_code,
+            {"error": "filesystem_action_failed_rolled_back", "message": str(exc.detail),
+             "transaction_id": transaction_id, "rolled_back": True, "transaction": receipt},
+        ) from exc
+    raise HTTPException(
+        status.HTTP_500_INTERNAL_SERVER_ERROR,
+        {"error": "filesystem_action_failed_rolled_back", "message": exc.__class__.__name__,
+         "transaction_id": transaction_id, "rolled_back": True, "transaction": receipt},
+    ) from exc
+
+
+def _journaled(operation: str, paths: List[Path], mutate: Callable[[], Dict[str, Any]], *, require_undoable: bool = False) -> Dict[str, Any]:
+    with _FILE_OPERATION_LOCK:
+        prepared = _prepare_file_transaction(operation, paths, require_undoable=require_undoable)
+        transaction_id = str(prepared["transaction_id"])
+        try:
+            result = mutate()
+        except BaseException as exc:
+            _rollback_after_error(transaction_id, exc)
+            raise AssertionError("unreachable")
+        return _finish_file_transaction(transaction_id, result)
 
 
 # ── Write ────────────────────────────────────────────────────────────────────
 
 def write_file(settings: Settings, path: str, content: str) -> Dict[str, Any]:
     target = resolve_path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
-    return {"ok": True, "path": str(target), "bytes": len(content.encode())}
+    def mutate() -> Dict[str, Any]:
+        size = _write_text_atomic(target, content)
+        return {"ok": True, "path": str(target), "bytes": size}
+    return _journaled("write_file", [target], mutate)
 
 
 def write_files_batch(settings: Settings, files: List[Dict[str, str]], atomic: bool = True) -> Dict[str, Any]:
+    with _FILE_OPERATION_LOCK:
+        return _write_files_batch_locked(settings, files, atomic=atomic)
+
+
+def _write_files_batch_locked(settings: Settings, files: List[Dict[str, str]], atomic: bool = True) -> Dict[str, Any]:
     if not files:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "files list is empty.")
-    written = []
+    prepared_items: list[tuple[Path, str]] = []
     for item in files:
         p, c = item.get("path", ""), item.get("content", "")
         if not p:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Each file needs a 'path'.")
-        t = resolve_path(p)
-        t.parent.mkdir(parents=True, exist_ok=True)
-        t.write_text(c, encoding="utf-8")
-        written.append(str(t))
-    return {"ok": True, "written_count": len(written), "written": written}
+        prepared_items.append((resolve_path(p), c))
+    prepared = _prepare_file_transaction(
+        "write_files_batch", [target for target, _ in prepared_items], require_undoable=bool(atomic),
+    )
+    transaction_id = str(prepared["transaction_id"])
+    written: list[str] = []
+    try:
+        for target, content in prepared_items:
+            _write_text_atomic(target, content)
+            written.append(str(target))
+    except BaseException as exc:
+        if atomic:
+            _rollback_after_error(transaction_id, exc)
+            raise AssertionError("unreachable")
+        try:
+            receipt = commit_transaction(transaction_id)
+        except FileTransactionError as commit_exc:
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                {"error": commit_exc.code, "message": "Partial batch write could not be journaled safely.",
+                 "transaction_id": transaction_id, "outcome": "unknown"},
+            ) from exc
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            {"error": "partial_batch_write", "message": exc.__class__.__name__, "transaction_id": transaction_id,
+             "written_count": len(written), "transaction": receipt},
+        ) from exc
+    return _finish_file_transaction(
+        transaction_id, {"ok": True, "written_count": len(written), "written": written, "atomic": bool(atomic)},
+    )
+
+
+def file_transaction_batch(settings: Settings, actions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    with _FILE_OPERATION_LOCK:
+        return _file_transaction_batch_locked(settings, actions)
+
+
+def _file_transaction_batch_locked(settings: Settings, actions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Execute write/move/delete actions as one reversible all-or-nothing filesystem transaction."""
+    if not actions:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "actions list is empty.")
+    if len(actions) > 50:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "actions list is limited to 50 items.")
+
+    normalized: list[Dict[str, Any]] = []
+    targets: list[Path] = []
+    for index, item in enumerate(actions):
+        kind = str(item.get("type") or "").strip().lower()
+        if kind == "write":
+            raw_path = str(item.get("path") or "").strip()
+            if not raw_path or not isinstance(item.get("content", ""), str):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Action {index} write requires path and string content.")
+            target = resolve_path(raw_path)
+            normalized.append({"type": kind, "path": target, "content": item.get("content", "")})
+            targets.append(target)
+        elif kind == "move":
+            raw_source = str(item.get("source") or "").strip()
+            raw_destination = str(item.get("destination") or "").strip()
+            if not raw_source or not raw_destination:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Action {index} move requires source and destination.")
+            src = resolve_path(raw_source)
+            dst = resolve_path(raw_destination)
+            final_dst = (dst / src.name) if dst.exists() and dst.is_dir() else dst
+            normalized.append({"type": kind, "source": src, "destination": dst, "final_destination": final_dst})
+            targets.extend((src, final_dst))
+        elif kind == "delete":
+            raw_path = str(item.get("path") or "").strip()
+            if not raw_path:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Action {index} delete requires path.")
+            target = resolve_path(raw_path)
+            normalized.append({"type": kind, "path": target, "recursive": bool(item.get("recursive", False))})
+            targets.append(target)
+        else:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Action {index} type must be write, move, or delete.")
+
+    prepared = _prepare_file_transaction("file_transaction_batch", targets, require_undoable=True)
+    transaction_id = str(prepared["transaction_id"])
+    results: list[Dict[str, Any]] = []
+    try:
+        for index, action in enumerate(normalized):
+            kind = action["type"]
+            if kind == "write":
+                target = action["path"]
+                size = _write_text_atomic(target, action["content"])
+                results.append({"index": index, "type": kind, "ok": True, "path": str(target), "bytes": size})
+            elif kind == "move":
+                src, dst = action["source"], action["destination"]
+                if not src.exists():
+                    raise HTTPException(status.HTTP_404_NOT_FOUND, f"Batch move source not found at action {index}.")
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                actual = Path(shutil.move(str(src), str(dst))).resolve(strict=False)
+                results.append({"index": index, "type": kind, "ok": True, "source": str(src), "destination": str(actual)})
+            else:
+                target = action["path"]
+                try:
+                    _delete_raw(target, recursive=bool(action["recursive"]))
+                except HTTPException as exc:
+                    raise HTTPException(exc.status_code, f"Batch delete failed at action {index}: {exc.detail}") from exc
+                results.append({"index": index, "type": kind, "ok": True, "deleted": str(target)})
+    except BaseException as exc:
+        _rollback_after_error(transaction_id, exc)
+        raise AssertionError("unreachable")
+    return _finish_file_transaction(
+        transaction_id, {"ok": True, "atomic": True, "action_count": len(results), "actions": results},
+    )
 
 
 # ── Read ─────────────────────────────────────────────────────────────────────
@@ -84,8 +332,10 @@ def edit_file(settings: Settings, path: str, old_string: str, new_string: str,
                             f"Found {count} occurrences but expected {expected_replacements}. "
                             "Be more specific or set expected_replacements correctly.")
     new_content = content.replace(old_string, new_string)
-    target.write_text(new_content, encoding="utf-8")
-    return {"ok": True, "path": str(target), "replacements": count}
+    def mutate() -> Dict[str, Any]:
+        _write_text_atomic(target, new_content)
+        return {"ok": True, "path": str(target), "replacements": count}
+    return _journaled("edit_file", [target], mutate)
 
 
 # ── Directory ops ─────────────────────────────────────────────────────────────
@@ -144,9 +394,12 @@ def move_file(settings: Settings, source: str, destination: str) -> Dict[str, An
     dst = resolve_path(destination)
     if not src.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Source not found: {source}")
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(src), str(dst))
-    return {"ok": True, "source": str(src), "destination": str(dst)}
+    final_dst = (dst / src.name) if dst.exists() and dst.is_dir() else dst
+    def mutate() -> Dict[str, Any]:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        actual = Path(shutil.move(str(src), str(dst))).resolve(strict=False)
+        return {"ok": True, "source": str(src), "destination": str(actual)}
+    return _journaled("move_file", [src, final_dst], mutate)
 
 
 def copy_file(settings: Settings, source: str, destination: str) -> Dict[str, Any]:
@@ -166,14 +419,50 @@ def delete_path(settings: Settings, path: str, recursive: bool = False) -> Dict[
     target = resolve_path(path)
     if not target.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Path not found: {path}")
-    if target.is_dir():
-        if not recursive:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                                "Path is a directory. Set recursive=true to delete it.")
-        shutil.rmtree(str(target))
-    else:
-        target.unlink()
-    return {"ok": True, "deleted": str(target)}
+    if target.is_dir() and not recursive:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Path is a directory. Set recursive=true to delete it.")
+    def mutate() -> Dict[str, Any]:
+        _delete_raw(target, recursive=recursive)
+        return {"ok": True, "deleted": str(target)}
+    return _journaled("delete_path", [target], mutate)
+
+
+def undo_file_transaction(settings: Settings, transaction_id: str, force: bool = False) -> Dict[str, Any]:
+    with _FILE_OPERATION_LOCK:
+        return _undo_file_transaction_locked(settings, transaction_id, force=force)
+
+
+def _undo_file_transaction_locked(settings: Settings, transaction_id: str, force: bool = False) -> Dict[str, Any]:
+    context = current_policy_context()
+    try:
+        paths = transaction_paths(transaction_id)
+    except FileTransactionError as exc:
+        code = status.HTTP_404_NOT_FOUND if isinstance(exc, TransactionNotFound) else status.HTTP_409_CONFLICT
+        raise HTTPException(code, {"error": exc.code, "message": str(exc)}) from exc
+    if context.scope is not None:
+        for path in paths:
+            decision = evaluate_scope(
+                context.scope,
+                ScopeRequest(path=path, tool_family="files", access_mode=AccessMode.WORKSPACE_WRITE),
+            )
+            if not decision.allowed:
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    {"error": "scope_denied", "message": "Transaction contains a path outside the current scope.",
+                     "reasons": list(decision.reasons)},
+                )
+    try:
+        receipt = undo_transaction(transaction_id, force=force)
+    except FileTransactionError as exc:
+        if isinstance(exc, TransactionNotFound):
+            code = status.HTTP_404_NOT_FOUND
+        elif isinstance(exc, TransactionExpired):
+            code = status.HTTP_410_GONE
+        else:
+            code = status.HTTP_409_CONFLICT
+        raise HTTPException(code, {"error": exc.code, "message": str(exc)}) from exc
+    return {"ok": True, **receipt}
 
 
 # ── File info ─────────────────────────────────────────────────────────────────

@@ -42,8 +42,8 @@ import mcp_server.tools_agents as agents
 
 
 class RiskAndScopeTests(unittest.TestCase):
-    def test_registry_covers_current_88_tool_surface(self) -> None:
-        self.assertEqual(88, len(RISK_REGISTRY))
+    def test_registry_covers_current_90_tool_surface(self) -> None:
+        self.assertEqual(90, len(RISK_REGISTRY))
         for required in ("run_command", "browser_observe", "browser_do", "tool_discover", "tool_invoke", "spawn_agent", "mac_act", "read_file", "lesson_search", "lesson_record", "lesson_feedback", "lesson_consolidate"):
             self.assertIn(required, RISK_REGISTRY)
 

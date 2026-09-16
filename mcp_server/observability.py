@@ -794,7 +794,7 @@ def current_security_session() -> Optional[tuple[str, str]]:
 
 _CORE_TOOL_NAMES = {
     "run_command", "run_commands_parallel",
-    "read_file", "write_file", "edit_file", "search_files", "http_request",
+    "read_file", "write_file", "edit_file", "file_transaction_undo", "search_files", "http_request",
     "mac_observe", "mac_act",
     "browser_list_tabs", "browser_close_tab", "browser_observe", "browser_find", "browser_act", "browser_do",
     "spawn_agents", "wait_agents",

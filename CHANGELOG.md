@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Added owner-only bounded filesystem transaction journaling for write/edit/move/delete operations, including reversible preimage snapshots, transaction receipts, post-state conflict detection, and `file_transaction_undo`.
+- Made `write_files_batch(..., atomic=true)` genuinely all-or-nothing and added mixed `file_transaction_batch` write/move/delete transactions; injected mid-batch failures restore every preimage byte-for-byte, while oversized or unavailable snapshots are explicitly marked irreversible or refused before atomic mutation.
 - Added durable delegated-workflow checkpoints with task input hashes, sanitized provider cursors, provider/session lineage, resume generations, integrity-checked owner-only state, and two-phase hashed side-effect intents/receipts that survive daemon/worker restarts without storing raw tool payloads.
 - Added fail-closed `agent_action(action="resume")`: verified interrupted work continues the same provider session without replaying completed side effects, while corrupt/mismatched checkpoints and unverifiable provider-native mutations return outcome-unknown conflicts; fresh `retry` is blocked after a side-effect boundary.
 - Added `mac-mcp doctor` with stable diagnostic reason codes, human/JSON output, read-only Accessibility/runtime/dependency/companion checks, and an owner-only redacted support bundle that excludes credential values, raw configuration, logs, prompts, and chat content.

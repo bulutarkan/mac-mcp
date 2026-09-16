@@ -281,6 +281,8 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "move_file": _r("move_file", "files", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
     "copy_file": _r("copy_file", "files", _caps(Capability.READ, Capability.LOCAL_WRITE), destructive=True, sensitive=True),
     "delete_path": _r("delete_path", "files", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
+    "file_transaction_batch": _r("file_transaction_batch", "files", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
+    "file_transaction_undo": _r("file_transaction_undo", "files", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
     "list_directory": _r("list_directory", "files", _caps(Capability.READ), sensitive=True),
     "directory_tree": _r("directory_tree", "files", _caps(Capability.READ), sensitive=True),
     "create_directory": _r("create_directory", "files", _caps(Capability.LOCAL_WRITE), sensitive=True),
@@ -647,6 +649,14 @@ def _scope_paths(tool: str, arguments: Mapping[str, Any]) -> tuple[str, ...]:
                 value = item.get("path")
                 if isinstance(value, str) and value.strip():
                     paths.append(value)
+    raw_actions = arguments.get("actions")
+    if isinstance(raw_actions, (list, tuple)):
+        for item in raw_actions:
+            if isinstance(item, Mapping):
+                for key in ("path", "source", "destination"):
+                    value = item.get(key)
+                    if isinstance(value, str) and value.strip():
+                        paths.append(value)
     # browser_screenshot.path is intentionally included by the generic path key.
     return tuple(dict.fromkeys(paths))
 

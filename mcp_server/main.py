@@ -32,9 +32,10 @@ from .tools_agents import (
     agent_catalog, spawn_agent, spawn_agents, wait_agents,
     list_agents, get_agent, agent_action,
 )
+from .file_transactions import prune_transactions
 from .tools_files import (
     write_file, write_files_batch, read_file, read_multiple_files,
-    edit_file, move_file, copy_file, delete_path,
+    edit_file, move_file, copy_file, delete_path, file_transaction_batch, undo_file_transaction,
     list_directory, directory_tree, create_directory, get_file_info, find_files,
 )
 from .tools_macos import (
@@ -172,6 +173,7 @@ def _log(audit_logger, tool: str, fn):
 
 def create_app():
     bootstrap_menu_app_and_legacy_state()
+    prune_transactions()
     settings = load_settings()
     limiter = RateLimiter(settings.rate_limit_per_minute)
     audit_logger = setup_audit_logger()
@@ -511,13 +513,13 @@ def create_app():
 
     # ── File tools ──────────────────────────────────────────────────────────
     @mcp.tool(name="write_file",
-              description="Write content to a file. Creates parent directories if needed.")
+              description="Write content to a file with a bounded reversible transaction journal. Creates parent directories if needed.")
     def _write_file(path: str, content: str) -> Dict[str, Any]:
         return _log(audit_logger, "write_file",
                     lambda: write_file(settings, path=path, content=content))
 
     @mcp.tool(name="write_files_batch",
-              description="Write multiple files in one call. Pass a list of objects, each with 'path' and 'content' string fields.")
+              description="Write multiple files in one call with transaction journaling. atomic=true rolls back the whole batch if any write fails.")
     def _write_files_batch(files: List[Dict[str, str]], atomic: bool = True) -> Dict[str, Any]:
         return _log(audit_logger, "write_files_batch",
                     lambda: write_files_batch(settings, files=files, atomic=atomic))
@@ -535,14 +537,14 @@ def create_app():
                     lambda: read_multiple_files(settings, paths=paths))
 
     @mcp.tool(name="edit_file",
-              description="Find-and-replace in a file. Fails if occurrence count != expected_replacements.")
+              description="Find-and-replace in a file with reversible transaction journaling. Fails if occurrence count != expected_replacements.")
     def _edit_file(path: str, old_string: str, new_string: str,
                    expected_replacements: int = 1) -> Dict[str, Any]:
         return _log(audit_logger, "edit_file",
                     lambda: edit_file(settings, path=path, old_string=old_string,
                                       new_string=new_string, expected_replacements=expected_replacements))
 
-    @mcp.tool(name="move_file", description="Move or rename a file/directory.")
+    @mcp.tool(name="move_file", description="Move or rename a file/directory with a bounded reversible transaction journal.")
     def _move_file(source: str, destination: str) -> Dict[str, Any]:
         return _log(audit_logger, "move_file",
                     lambda: move_file(settings, source=source, destination=destination))
@@ -553,10 +555,32 @@ def create_app():
                     lambda: copy_file(settings, source=source, destination=destination))
 
     @mcp.tool(name="delete_path",
-              description="Delete a file or directory. Set recursive=true for directories.")
+              description="Delete a file or directory. Set recursive=true for directories. Returns a bounded undo transaction when reversible.")
     def _delete_path(path: str, recursive: bool = False) -> Dict[str, Any]:
         return _log(audit_logger, "delete_path",
                     lambda: delete_path(settings, path=path, recursive=recursive))
+
+    @mcp.tool(
+        name="file_transaction_batch",
+        description=(
+            "Execute up to 50 write/move/delete actions as one reversible all-or-nothing filesystem transaction. "
+            "If any action fails, the whole batch is restored byte-for-byte from the prepared journal snapshots."
+        ),
+    )
+    def _file_transaction_batch(actions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return _log(audit_logger, "file_transaction_batch",
+                    lambda: file_transaction_batch(settings, actions=actions))
+
+    @mcp.tool(
+        name="file_transaction_undo",
+        description=(
+            "Undo a recent reversible write/edit/move/delete filesystem transaction by transaction_id. "
+            "By default refuses to overwrite filesystem changes made after the original transaction; force=true overrides that conflict check."
+        ),
+    )
+    def _file_transaction_undo(transaction_id: str, force: bool = False) -> Dict[str, Any]:
+        return _log(audit_logger, "file_transaction_undo",
+                    lambda: undo_file_transaction(settings, transaction_id=transaction_id, force=force))
 
     @mcp.tool(name="list_directory", description="List files and directories in a path.")
     def _list_directory(path: str) -> Dict[str, Any]:
