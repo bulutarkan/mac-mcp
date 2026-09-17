@@ -128,6 +128,50 @@ async function handleExecuteJs(message) {
   }
 }
 
+
+async function handleSetFileInput(message) {
+  const requestId = String(message.request_id || '');
+  const tabId = Number(message.chrome_tab_id);
+  const selector = String(message.css_selector || '');
+  const filePath = String(message.file_path || '');
+  if (!requestId || !Number.isInteger(tabId) || tabId < 0 || !selector || selector.length > 10000 || !filePath || filePath.length > 4096 || filePath.includes('\0')) {
+    send({type: 'result', request_id: requestId, ok: false, error: 'invalid_set_file_input_request'});
+    return;
+  }
+  const target = {tabId};
+  let attached = false;
+  try {
+    await chrome.tabs.get(tabId);
+    await debuggerAttach(target);
+    attached = true;
+    const expression = `document.querySelector(${JSON.stringify(selector)})`;
+    const lookup = await debuggerCommand(target, 'Runtime.evaluate', {
+      expression, returnByValue: false, awaitPromise: false, userGesture: false
+    });
+    if (lookup.exceptionDetails) throw new Error(lookup.exceptionDetails.text || 'file_input_lookup_failed');
+    const remote = lookup.result || {};
+    if (!remote.objectId) throw new Error('file_input_not_found');
+    await debuggerCommand(target, 'DOM.setFileInputFiles', {
+      files: [filePath], objectId: remote.objectId
+    });
+    const verifyExpr = `(()=>{const el=document.querySelector(${JSON.stringify(selector)});const f=el&&el.files&&el.files[0];return f?JSON.stringify({count:el.files.length,name:f.name,size:f.size,lastModified:f.lastModified}):''})()`;
+    const verify = await debuggerCommand(target, 'Runtime.evaluate', {
+      expression: verifyExpr, returnByValue: true, awaitPromise: false, userGesture: false
+    });
+    if (verify.exceptionDetails) throw new Error(verify.exceptionDetails.text || 'file_input_verify_failed');
+    const metadata = String((verify.result || {}).value || '');
+    if (!metadata) throw new Error('file_input_not_set');
+    send({type: 'result', request_id: requestId, ok: true, chrome_tab_id: tabId, metadata});
+  } catch (error) {
+    send({
+      type: 'result', request_id: requestId, ok: false,
+      error: 'chrome_set_file_input_failed', message: String(error && error.message || error || 'unknown')
+    });
+  } finally {
+    if (attached) { try { await debuggerDetach(target); } catch (_) {} }
+  }
+}
+
 function connect() {
   if (!PORT || !TOKEN) return;
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
@@ -143,6 +187,7 @@ function connect() {
     try { message = JSON.parse(String(event.data || '')); } catch (_) { return; }
     if (message && message.type === 'open_tab') void handleOpenTab(message);
     else if (message && message.type === 'execute_js') void handleExecuteJs(message);
+    else if (message && message.type === 'set_file_input') void handleSetFileInput(message);
   });
   ws.addEventListener('close', () => {
     if (socket === ws) socket = null;

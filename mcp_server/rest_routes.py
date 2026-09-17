@@ -45,13 +45,14 @@ from .tools_http import http_request
 from .tools_browser import (
     browser_open_url, browser_list_tabs, browser_activate_tab, browser_close_tab,
     browser_execute_js, browser_click_selector, browser_type_selector,
-    browser_wait_for_selector, browser_get_html, browser_wait_for_download,
+    browser_wait_for_selector, browser_get_html, browser_wait_for_download, browser_upload_artifact,
     browser_screenshot, browser_scroll, browser_press_key,
     browser_coordinate_click, browser_get_snapshot,
 )
 from .tools_interactive import ask_choice, ask_confirmation, ask_user
 from .tools_ui import act_ui, observe_ui
 from .tools_snapshot import unified_read_snapshot
+from .artifact_pipeline import artifact_pipeline
 
 _settings: Optional[Settings] = None
 _rest_security_context: Optional[SecurityContextManager] = None
@@ -300,6 +301,7 @@ class BrowserRequest(BaseModel):
     new_tab: Optional[bool] = True
     window_index: Optional[int] = 1
     tab_index: Optional[int] = None
+    tab_handle: Optional[str] = None
     js: Optional[str] = None
     css_selector: Optional[str] = None
     text: Optional[str] = None
@@ -307,6 +309,10 @@ class BrowserRequest(BaseModel):
     timeout_s: Optional[int] = 20
     max_chars: Optional[int] = None
     filename_contains: Optional[str] = None
+    started_after_epoch_ms: Optional[int] = None
+    stable_ms: Optional[int] = 500
+    artifact_id: Optional[str] = None
+    preserve_focus: Optional[bool] = True
     # browser_screenshot
     path: Optional[str] = None
     return_base64: Optional[bool] = True
@@ -589,8 +595,17 @@ def api_browser(req: BrowserRequest, request: Request, settings: Settings = Depe
         result = browser_get_html(settings, browser=req.browser, max_chars=req.max_chars,
                                   window_index=req.window_index or 1, tab_index=req.tab_index)
     elif t == "browser_wait_for_download":
-        result = browser_wait_for_download(settings, filename_contains=req.filename_contains,
-                                           timeout_s=req.timeout_s or 60)
+        result = browser_wait_for_download(
+            settings, filename_contains=req.filename_contains, timeout_s=req.timeout_s or 60,
+            started_after_epoch_ms=req.started_after_epoch_ms, stable_ms=req.stable_ms or 500,
+        )
+    elif t == "browser_upload_artifact":
+        result = browser_upload_artifact(
+            settings, browser=req.browser, css_selector=req.css_selector,
+            artifact_id=req.artifact_id, path=req.path,
+            window_index=req.window_index or 1, tab_index=req.tab_index, tab_handle=req.tab_handle,
+            timeout_s=req.timeout_s or 20, preserve_focus=req.preserve_focus if req.preserve_focus is not None else True,
+        )
     elif t == "browser_screenshot":
         result = browser_screenshot(settings, browser=req.browser, path=req.path,
                                     window_index=req.window_index or 1,
@@ -689,7 +704,7 @@ _BROWSER_ALIAS_TOOLS = (
     "browser_open_url", "browser_list_tabs", "browser_activate_tab",
     "browser_close_tab", "browser_execute_js", "browser_click_selector",
     "browser_type_selector", "browser_wait_for_selector", "browser_get_html",
-    "browser_wait_for_download", "browser_screenshot", "browser_scroll",
+    "browser_wait_for_download", "browser_upload_artifact", "browser_screenshot", "browser_scroll",
     "browser_press_key", "browser_coordinate_click", "browser_get_snapshot",
 )
 _SEARCH_ALIAS_TOOLS = ("search_files", "spotlight_search")
@@ -717,6 +732,22 @@ def _make_group_alias(handler: Any, request_model: Any, tool_name: str) -> Any:
 def _payload_value(data: Dict[str, Any], key: str, default: Any) -> Any:
     value = data.get(key)
     return default if value is None else value
+
+
+def _api_artifact_pipeline_alias(
+    request: Request,
+    payload: Optional[Dict[str, Any]] = Body(default=None),
+    settings: Settings = Depends(get_settings),
+) -> Any:
+    data = _request_payload(payload)
+    result = artifact_pipeline(
+        action=str(data.get("action") or ""),
+        path=data.get("path"), artifact_id=data.get("artifact_id"), destination=data.get("destination"),
+        overwrite=bool(_payload_value(data, "overwrite", False)),
+        preserve_focus=bool(_payload_value(data, "preserve_focus", True)),
+        timeout_s=float(_payload_value(data, "timeout_s", 15.0)),
+    )
+    return _filter_rest_result(request, "artifact_pipeline", result)
 
 
 def _api_mac_snapshot_alias(
@@ -814,6 +845,13 @@ for _tool_name in _SEARCH_ALIAS_TOOLS:
         operation_id=_tool_name,
     )
 
+router.add_api_route(
+    "/artifact_pipeline",
+    _api_artifact_pipeline_alias,
+    methods=["POST"],
+    name="artifact_pipeline",
+    operation_id="artifact_pipeline",
+)
 router.add_api_route(
     "/mac_snapshot",
     _api_mac_snapshot_alias,

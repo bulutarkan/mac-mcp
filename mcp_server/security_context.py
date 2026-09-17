@@ -547,6 +547,10 @@ class SecurityContextManager:
 
     @staticmethod
     def _privileged_host_action(tool: str, risk: RiskAssessment, arguments: Mapping[str, Any]) -> bool:
+        # File upload is browser-facing but crosses from local host storage into web content.
+        # Treat it as a privileged web→host boundary even though normal browser actions are safe.
+        if tool == "browser_upload_artifact":
+            return True
         if risk.family in _SAFE_WHILE_WEB_SCOPED_FAMILIES:
             return False
         if tool in {"spawn_agent", "spawn_agents"}:

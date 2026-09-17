@@ -38,6 +38,7 @@ from .native_targets import (
     window_handle_map as _window_handle_map,
 )
 from .security import Settings, truncate
+from .artifact_pipeline import ArtifactError, drive_native_file_dialog
 
 
 _FIELD_SEPARATOR = chr(31)
@@ -1297,7 +1298,7 @@ def _action_requires_foreground(action: Dict[str, Any]) -> bool:
         return element_id is None
     if action_type in {"action", "accessibility_action", "menu"}:
         return False
-    if action_type in {"type", "type_text", "paste", "key", "keyboard", "shortcut"}:
+    if action_type in {"type", "type_text", "paste", "key", "keyboard", "shortcut", "file_dialog"}:
         return True
     if action_type == "drag":
         return True
@@ -2752,18 +2753,41 @@ def act_ui(
 
             started = time.perf_counter()
             timed_out = False
+            dialog_details: Optional[Dict[str, Any]] = None
             try:
-                ok, message = _perform_action(
-                    str(target.get("app") or ""),
-                    resolved_action,
-                    node,
-                    deadline,
-                    int(target["pid"]) if target.get("pid") else None,
-                    activate_target,
-                )
+                if action_type == "file_dialog":
+                    if not target.get("pid"):
+                        raise ArtifactError(
+                            "FILE_DIALOG_PROCESS_IDENTITY_REQUIRED",
+                            "file_dialog requires a process-bound app/window handle from mac_observe.",
+                        )
+                    dialog_details = drive_native_file_dialog(
+                        pid=int(target["pid"]),
+                        mode=str(resolved_action.get("mode") or ""),
+                        artifact_id=resolved_action.get("artifact_id"),
+                        path=resolved_action.get("path"),
+                        destination=resolved_action.get("destination"),
+                        overwrite=bool(resolved_action.get("overwrite", False)),
+                        cancel=bool(resolved_action.get("cancel", False)),
+                        timeout_s=float(resolved_action.get("timeout_s", 10.0)),
+                    )
+                    ok = bool(dialog_details.get("ok"))
+                    message = "native file dialog completed" if ok else "native file dialog failed"
+                else:
+                    ok, message = _perform_action(
+                        str(target.get("app") or ""),
+                        resolved_action,
+                        node,
+                        deadline,
+                        int(target["pid"]) if target.get("pid") else None,
+                        activate_target,
+                    )
             except TimeoutError as exc:
                 ok, message = False, str(exc)
                 timed_out = True
+            except ArtifactError as exc:
+                ok, message = False, str(exc)
+                dialog_details = {"ok": False, "reason_code": exc.code, "error": str(exc), **exc.extra}
             except ValueError as exc:
                 ok, message = False, str(exc)
 
@@ -2828,6 +2852,10 @@ def act_ui(
                 }
             if timed_out:
                 result["timed_out"] = True
+            if dialog_details is not None:
+                result["file_dialog"] = dialog_details
+                if dialog_details.get("reason_code"):
+                    result["reason_code"] = dialog_details.get("reason_code")
 
             if (
                 result.get("ok")

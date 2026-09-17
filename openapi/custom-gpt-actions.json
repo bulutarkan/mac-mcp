@@ -1311,6 +1311,71 @@
         }
       }
     },
+    "/api/artifact_pipeline": {
+      "post": {
+        "operationId": "artifact_pipeline",
+        "x-openai-isConsequential": true,
+        "summary": "Register, verify, open, or Save As a local artifact",
+        "description": "Uses explicit artifact_id + matching path and SHA-256 identity. register/inspect verify local identity; open_preview verifies Preview opened the same file; preview_save_as drives the native Save panel and verifies the saved artifact.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "register",
+                      "inspect",
+                      "open_preview",
+                      "preview_save_as"
+                    ]
+                  },
+                  "path": {
+                    "type": "string",
+                    "description": "Local file path. Existing artifact operations require this to match artifact_id."
+                  },
+                  "artifact_id": {
+                    "type": "string",
+                    "description": "Artifact handle returned by register or browser_wait_for_download."
+                  },
+                  "destination": {
+                    "type": "string",
+                    "description": "Destination path for preview_save_as."
+                  },
+                  "overwrite": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Allow an existing destination only after native Replace confirmation is observed."
+                  },
+                  "preserve_focus": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "timeout_s": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "default": 15
+                  }
+                },
+                "required": [
+                  "action"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Artifact operation result returned as JSON."
+          }
+        }
+      }
+    },
     "/api/mac_snapshot": {
       "post": {
         "operationId": "mac_snapshot",
@@ -2155,6 +2220,18 @@
                     "description": "Maximum wait in seconds.",
                     "minimum": 1,
                     "default": 60
+                  },
+                  "started_after_epoch_ms": {
+                    "type": "integer",
+                    "description": "Optional epoch milliseconds captured immediately before the download-triggering action; allows fast downloads completed before this wait call to be identified safely.",
+                    "minimum": 0
+                  },
+                  "stable_ms": {
+                    "type": "integer",
+                    "description": "Required unchanged size/mtime window before completion is accepted.",
+                    "minimum": 100,
+                    "maximum": 5000,
+                    "default": 500
                   }
                 }
               }
@@ -2164,6 +2241,80 @@
         "responses": {
           "200": {
             "description": "Tool result returned as JSON."
+          }
+        },
+        "description": "Returns completed=true only after a new/matching file is stable, then returns artifact_id plus SHA-256 identity for downstream Preview/open/upload operations."
+      }
+    },
+    "/api/browser_upload_artifact": {
+      "post": {
+        "operationId": "browser_upload_artifact",
+        "x-openai-isConsequential": true,
+        "summary": "Select a verified artifact into a browser file input",
+        "description": "Selects only the file; does not submit the surrounding form. Safari uses the native Open panel; Chrome uses the private debugger bridge. The exact registered artifact is re-verified before and after selection.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "browser": {
+                    "type": "string",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
+                  },
+                  "css_selector": {
+                    "type": "string",
+                    "description": "CSS selector resolving to input[type=file]."
+                  },
+                  "artifact_id": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string",
+                    "description": "Must exactly match the path bound to artifact_id."
+                  },
+                  "window_index": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 1
+                  },
+                  "tab_index": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "timeout_s": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "maximum": 60,
+                    "default": 20
+                  },
+                  "preserve_focus": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "tab_handle": {
+                    "type": "string",
+                    "description": "Stable tab handle from browser_list_tabs; preferred over tab_index."
+                  }
+                },
+                "required": [
+                  "browser",
+                  "css_selector",
+                  "artifact_id",
+                  "path"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Verified file-input selection result returned as JSON."
           }
         }
       }

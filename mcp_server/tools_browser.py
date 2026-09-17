@@ -17,6 +17,9 @@ from fastapi import HTTPException, status
 from .security import Settings, truncate, validate_browser_url as _validate_browser_destination
 from . import browser_tabs
 from .chrome_background_bridge import chrome_background_bridge
+from .artifact_pipeline import (
+    ArtifactError, drive_native_file_dialog, register_artifact, resolve_artifact, wait_for_file_dialog,
+)
 
 
 def validate_url(settings: Settings, url: str) -> None:
@@ -936,6 +939,7 @@ def _execute_js_for_target(
         script = f'''tell application "Safari"
     tell window {target.window_index}
         {guard}
+        set r to ""
         set r to do JavaScript "{js_escaped}" in targetTab
         return r
     end tell
@@ -944,6 +948,7 @@ end tell'''
         script = f'''tell application "Google Chrome"
     tell window {target.window_index}
         {guard}
+        set r to ""
         set r to execute javascript "{js_escaped}" in targetTab
         return r
     end tell
@@ -1004,9 +1009,10 @@ def browser_click_selector(
     tab_index: Optional[int] = None,
     tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
+    started_at_epoch_ms = int(time.time() * 1000)
     sel = json.dumps(css_selector)
     js = f"(function(){{var el=document.querySelector({sel}); if(!el) return 'NOT_FOUND'; el.click(); return 'OK';}})()"
-    return browser_execute_js(
+    result = browser_execute_js(
         settings,
         browser,
         js,
@@ -1014,6 +1020,8 @@ def browser_click_selector(
         tab_index=tab_index,
         tab_handle=tab_handle,
     )
+    result["started_at_epoch_ms"] = started_at_epoch_ms
+    return result
 
 
 def browser_type_selector(
@@ -1112,40 +1120,355 @@ def browser_wait_for_download(
     settings: Settings,
     filename_contains: Optional[str] = None,
     timeout_s: int = 60,
+    started_after_epoch_ms: Optional[int] = None,
+    stable_ms: int = 500,
 ) -> Dict[str, Any]:
     timeout_s = max(1, min(timeout_s, settings.max_wait_s))
+    stable_ms = max(100, min(int(stable_ms), 5_000))
     needle = (filename_contains or "").strip().lower()
+    started_after = int(started_after_epoch_ms) if started_after_epoch_ms is not None else None
 
     dl = settings.download_dir
     if not dl.exists() or not dl.is_dir():
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Download dir not found: {dl}")
 
-    start = time.time()
-    # Snapshot existing files
-    before: Dict[str, float] = {p.name: p.stat().st_mtime for p in dl.iterdir() if p.is_file()}
+    before: Dict[str, Tuple[int, int]] = {}
+    for p in dl.iterdir():
+        try:
+            if p.is_file():
+                stat = p.stat()
+                before[p.name] = (int(stat.st_size), int(stat.st_mtime_ns))
+        except OSError:
+            continue
 
+    started = time.monotonic()
+    stable: Dict[str, Tuple[Tuple[int, int], float]] = {}
     while True:
-        candidates: List[Tuple[float, Path]] = []
+        partial_names = {
+            p.name.lower()
+            for p in dl.iterdir()
+            if p.name.lower().endswith((".download", ".crdownload", ".part", ".tmp"))
+        }
+        candidates: List[Tuple[int, Path, Tuple[int, int]]] = []
         for p in dl.iterdir():
-            if not p.is_file():
+            try:
+                if not p.is_file():
+                    continue
+                lowered = p.name.lower()
+                if lowered.endswith((".download", ".crdownload", ".part", ".tmp")):
+                    continue
+                if needle and needle not in lowered:
+                    continue
+                stat = p.stat()
+                signature = (int(stat.st_size), int(stat.st_mtime_ns))
+                changed = p.name not in before or signature != before.get(p.name)
+                since_match = started_after is not None and int(stat.st_mtime_ns // 1_000_000) >= started_after
+                if not changed and not since_match:
+                    continue
+                # A browser partial artifact that still names the final file means completion is not verified yet.
+                if any(name.startswith(lowered) or lowered.startswith(name.rsplit(".", 1)[0]) for name in partial_names):
+                    continue
+                candidates.append((int(stat.st_mtime_ns), p, signature))
+            except OSError:
                 continue
-            if p.name.endswith(".download") or p.name.endswith(".crdownload"):
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        now = time.monotonic()
+        for _, candidate, signature in candidates:
+            key = str(candidate)
+            previous = stable.get(key)
+            if previous is None or previous[0] != signature:
+                stable[key] = (signature, now)
                 continue
-            if needle and needle not in p.name.lower():
+            if (now - previous[1]) * 1000 < stable_ms:
                 continue
-            m = p.stat().st_mtime
-            if p.name not in before or m > before.get(p.name, 0):
-                candidates.append((m, p))
+            try:
+                artifact = register_artifact(candidate, source="browser_download")
+            except ArtifactError:
+                stable.pop(key, None)
+                continue
+            return {
+                "ok": True,
+                "completed": True,
+                "path": str(candidate),
+                "filename": candidate.name,
+                "artifact_id": artifact["artifact_id"],
+                "artifact": artifact,
+                "stable_ms": stable_ms,
+                "elapsed_s": round(now - started, 3),
+            }
 
-        if candidates:
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            newest = candidates[0][1]
-            return {"ok": True, "path": str(newest), "filename": newest.name}
+        if now - started >= timeout_s:
+            return {
+                "ok": True,
+                "completed": False,
+                "path": None,
+                "filename": None,
+                "artifact_id": None,
+                "artifact": None,
+                "stable_ms": stable_ms,
+                "elapsed_s": round(now - started, 3),
+            }
+        time.sleep(0.1)
 
-        if time.time() - start >= timeout_s:
-            return {"ok": True, "path": None, "filename": None}
 
-        time.sleep(0.25)
+def _browser_file_metadata_js(css_selector: str) -> str:
+    sel = json.dumps(css_selector)
+    return (
+        "(()=>{const el=document.querySelector(" + sel + ");"
+        "if(!el)return JSON.stringify({ok:false,error:'not_found'});"
+        "if(!(el instanceof HTMLInputElement)||el.type!=='file')return JSON.stringify({ok:false,error:'not_file_input'});"
+        "const f=el.files&&el.files[0];"
+        "return JSON.stringify({ok:true,count:el.files?el.files.length:0,name:f?f.name:null,size:f?f.size:null,lastModified:f?f.lastModified:null});})()"
+    )
+
+
+def _prepare_safari_upload_tab(target: browser_tabs.TabTarget) -> Dict[str, Any]:
+    rows = browser_tabs.list_tabs("Safari")
+    previous = next(
+        (row for row in rows if int(row.get("window_index") or 0) == int(target.window_index) and bool(row.get("active"))),
+        None,
+    )
+    previous_handle = str((previous or {}).get("tab_handle") or "") or None
+    changed = bool(previous_handle and previous_handle != target.tab_handle)
+    if changed:
+        leases = browser_tabs.logical_lease_snapshot()
+        previous_lease = leases.get(str(previous_handle)) or {}
+        current_owner = browser_tabs._logical_owner()[0]
+        lease_owner = previous_lease.get("owner")
+        if lease_owner and lease_owner != current_owner:
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "ok": False, "error": "previous_safari_tab_busy", "retryable": True,
+                "tab_handle": previous_handle,
+                "message": "Safari's current tab in the target window is owned by another agent; upload will not replace it.",
+            })
+    guard = _tab_identity_guard(target)
+    script = f'''
+    tell application "Safari"
+        tell window {target.window_index}
+            {guard}
+            set current tab to targetTab
+        end tell
+        activate
+    end tell
+    '''
+    _run_osascript(script, timeout_s=10)
+    return {
+        "changed": changed,
+        "previous_tab_handle": previous_handle,
+        "target_tab_handle": target.tab_handle,
+        "window_index": target.window_index,
+    }
+
+
+def _restore_safari_upload_tab(state: Dict[str, Any]) -> Dict[str, Any]:
+    if not state.get("changed"):
+        return {"attempted": False, "ok": True, "exact": True, "skipped_user_change": False}
+    previous_handle = str(state.get("previous_tab_handle") or "")
+    target_handle = str(state.get("target_tab_handle") or "")
+    original_window = int(state.get("window_index") or 0)
+    rows = browser_tabs.list_tabs("Safari")
+    active = next(
+        (row for row in rows if int(row.get("window_index") or 0) == original_window and bool(row.get("active"))),
+        None,
+    )
+    active_handle = str((active or {}).get("tab_handle") or "") or None
+    if active_handle == previous_handle:
+        return {"attempted": False, "ok": True, "exact": True, "skipped_user_change": False}
+    if active_handle != target_handle:
+        return {
+            "attempted": False, "ok": True, "exact": False, "skipped_user_change": True,
+            "message": "Safari tab restoration skipped because the current tab changed during upload.",
+        }
+    try:
+        wi, _, row = browser_tabs.resolve_tab("Safari", previous_handle)
+    except KeyError:
+        return {"attempted": True, "ok": False, "exact": False, "skipped_user_change": False, "message": "Previous Safari tab closed before restoration."}
+    if int(wi) != original_window:
+        return {
+            "attempted": False, "ok": True, "exact": False, "skipped_user_change": True,
+            "message": "Safari tab restoration skipped because the previous tab moved to another window.",
+        }
+    previous_target = browser_tabs._target_from_row(row)
+    guard = _tab_identity_guard(previous_target)
+    script = f'''
+    tell application "Safari"
+        tell window {previous_target.window_index}
+            {guard}
+            set current tab to targetTab
+        end tell
+    end tell
+    '''
+    try:
+        _run_osascript(script, timeout_s=10)
+        _, _, verified = browser_tabs.resolve_tab("Safari", previous_handle)
+        exact = bool(verified.get("active"))
+        return {
+            "attempted": True, "ok": exact, "exact": exact, "skipped_user_change": False,
+            "message": "previous Safari tab restored" if exact else "Previous Safari tab could not be verified after restoration.",
+        }
+    except Exception as exc:
+        return {"attempted": True, "ok": False, "exact": False, "skipped_user_change": False, "message": str(exc)}
+
+
+def browser_upload_artifact(
+    settings: Settings,
+    browser: str,
+    css_selector: str,
+    artifact_id: str,
+    path: str,
+    window_index: int = 1,
+    tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
+    timeout_s: int = 20,
+    preserve_focus: bool = True,
+) -> Dict[str, Any]:
+    artifact = resolve_artifact(artifact_id, expected_path=path, verify_hash=True)
+    b = _norm_browser(browser)
+    timeout_s = max(2, min(int(timeout_s), settings.max_wait_s, 60))
+    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+        if b == "Google Chrome":
+            try:
+                response = chrome_background_bridge.request_set_file_input(
+                    target.native_id, css_selector, str(artifact["path"]), timeout_s=timeout_s,
+                )
+                metadata = json.loads(str(response.get("metadata") or "{}"))
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Chrome file input verification failed: {exc}") from exc
+            if int(metadata.get("count") or 0) < 1 or metadata.get("name") != artifact.get("filename") or int(metadata.get("size") or -1) != int(artifact.get("size") or -2):
+                raise HTTPException(status.HTTP_409_CONFLICT, {
+                    "ok": False, "error": "artifact_upload_identity_mismatch",
+                    "message": "Chrome file input metadata did not match the registered artifact.",
+                })
+            artifact = resolve_artifact(artifact_id, expected_path=path, verify_hash=True)
+            return {
+                "ok": True, "browser": b, "tab_handle": target.tab_handle,
+                "artifact": artifact, "file_input": metadata,
+                "transport": "chrome_debugger_dom_set_file_input", "focus_preserved": True,
+            }
+
+        # Safari permits a file-input click through AppleScript JavaScript, but the actual file
+        # selection is still performed by the native NSOpenPanel using exact artifact identity.
+        from .tools_ui import _capture_focus_context, _post_action_focus_decision, _restore_focus_context
+        focus_context = None
+        if preserve_focus:
+            focus_context, focus_error = _capture_focus_context()
+            if focus_context is None:
+                raise HTTPException(status.HTTP_409_CONFLICT, {
+                    "ok": False, "error": "focus_snapshot_failed", "message": focus_error,
+                })
+        pid_text = _run_osascript('tell application "System Events" to get unix id of application process "Safari"')
+        try:
+            safari_pid = int(str(pid_text).strip())
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Could not resolve Safari process identity.") from exc
+        if (
+            preserve_focus and focus_context is not None
+            and int(focus_context.get("pid") or 0) != safari_pid
+            and int(focus_context.get("window_count") or 0) > 1
+            and not focus_context.get("window_handle")
+        ):
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "ok": False, "error": "focus_snapshot_ambiguous", "retryable": False,
+                "message": "The current user window has no stable identity, so Safari upload cannot restore focus safely.",
+            })
+        focus_restore_attempted = False
+        focus_restore_ok: Optional[bool] = None
+        focus_restore_message: Optional[str] = None
+        focus_restore_exact = False
+        focus_user_changed = False
+        safari_tab_state: Optional[Dict[str, Any]] = None
+        safari_tab_restore: Optional[Dict[str, Any]] = None
+        try:
+            safari_tab_state = _prepare_safari_upload_tab(target)
+            sel = json.dumps(css_selector)
+            open_js = (
+                "(()=>{const el=document.querySelector(" + sel + ");"
+                "if(!el)return JSON.stringify({ok:false,error:'not_found'});"
+                "if(!(el instanceof HTMLInputElement)||el.type!=='file')return JSON.stringify({ok:false,error:'not_file_input'});"
+                "el.click();return JSON.stringify({ok:true});})()"
+            )
+            opened_raw = _execute_js_for_target(b, open_js, target, timeout_s=min(timeout_s, 20))
+            try:
+                opened = json.loads(opened_raw or "{}")
+            except json.JSONDecodeError:
+                opened = {"ok": False, "error": "invalid_trigger_result"}
+            if not opened.get("ok"):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+                    "ok": False, "error": str(opened.get("error") or "file_input_trigger_failed"),
+                })
+            if not wait_for_file_dialog(safari_pid, "open", timeout_s=min(timeout_s, 8)):
+                raise HTTPException(status.HTTP_409_CONFLICT, {
+                    "ok": False, "error": "file_dialog_not_opened", "retryable": False,
+                })
+            try:
+                dialog = drive_native_file_dialog(
+                    pid=safari_pid, mode="open", artifact_id=artifact_id, path=path, timeout_s=timeout_s,
+                )
+            except ArtifactError as exc:
+                raise HTTPException(status.HTTP_409_CONFLICT, {
+                    "ok": False, "error": exc.code.lower(), "reason_code": exc.code,
+                    "message": str(exc), **exc.extra,
+                }) from exc
+            verify_raw = _execute_js_for_target(b, _browser_file_metadata_js(css_selector), target, timeout_s=min(timeout_s, 20))
+            try:
+                metadata = json.loads(verify_raw or "{}")
+            except json.JSONDecodeError as exc:
+                raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Safari file input verification returned invalid JSON.") from exc
+            if not metadata.get("ok") or int(metadata.get("count") or 0) < 1 or metadata.get("name") != artifact.get("filename") or int(metadata.get("size") or -1) != int(artifact.get("size") or -2):
+                raise HTTPException(status.HTTP_409_CONFLICT, {
+                    "ok": False, "error": "artifact_upload_identity_mismatch",
+                    "message": "Safari file input metadata did not match the registered artifact.",
+                })
+            artifact = resolve_artifact(artifact_id, expected_path=path, verify_hash=True)
+            result: Dict[str, Any] = {
+                "ok": True, "browser": b, "tab_handle": target.tab_handle,
+                "artifact": artifact, "file_input": metadata, "dialog": dialog,
+                "transport": "safari_native_open_panel",
+            }
+        finally:
+            if safari_tab_state is not None:
+                safari_tab_restore = _restore_safari_upload_tab(safari_tab_state)
+            if preserve_focus and focus_context is not None:
+                decision, _ = _post_action_focus_decision(
+                    focus_context, {"pid": safari_pid, "window_index": target.window_index}
+                )
+                if decision == "restore":
+                    focus_restore_attempted = True
+                    focus_restore_ok, focus_restore_message, focus_restore_exact = _restore_focus_context(focus_context)
+                elif decision == "user_changed":
+                    focus_user_changed = True
+                else:
+                    focus_restore_ok = True
+        if safari_tab_restore is not None:
+            result["tab_restore_attempted"] = bool(safari_tab_restore.get("attempted"))
+            result["tab_restore_ok"] = bool(safari_tab_restore.get("ok"))
+            result["tab_restore_exact"] = bool(safari_tab_restore.get("exact"))
+            if safari_tab_restore.get("skipped_user_change"):
+                result["tab_restore_skipped_user_change"] = True
+            if safari_tab_restore.get("message"):
+                result["tab_restore_message"] = safari_tab_restore.get("message")
+            if safari_tab_restore.get("ok") is False:
+                return {
+                    **result, "ok": False, "reason_code": "TAB_RESTORE_FAILED",
+                    "error": "artifact upload succeeded but the previous Safari tab could not be restored",
+                    "automatic_retry": False,
+                }
+        if preserve_focus:
+            result["focus_restore_attempted"] = focus_restore_attempted
+            result["focus_restore_ok"] = focus_restore_ok
+            result["focus_restore_exact"] = bool(focus_restore_exact)
+            result["focus_user_changed"] = focus_user_changed
+            if focus_restore_message:
+                result["focus_restore_message"] = focus_restore_message
+            result["focus_preserved"] = bool(focus_restore_ok or focus_user_changed)
+            if focus_restore_attempted and focus_restore_ok is False:
+                return {
+                    **result, "ok": False, "reason_code": "FOCUS_RESTORE_FAILED",
+                    "error": "artifact upload succeeded but previous focus could not be restored",
+                    "automatic_retry": False,
+                }
+        return result
 
 
 # Advanced browser tools

@@ -44,13 +44,14 @@ from .tools_macos import (
     screenshot, set_reminder, get_running_apps,
 )
 from .tools_ui import observe_ui, act_ui
+from .artifact_pipeline import artifact_pipeline
 from .tools_snapshot import unified_read_snapshot
 from .tools_search import search_files, spotlight_search
 from .tools_http import http_request
 from .tools_browser import (
     browser_open_url, browser_list_tabs, browser_activate_tab, browser_close_tab,
     browser_execute_js, browser_click_selector, browser_type_selector,
-    browser_wait_for_selector, browser_get_html, browser_wait_for_download,
+    browser_wait_for_selector, browser_get_html, browser_wait_for_download, browser_upload_artifact,
     browser_screenshot, browser_scroll, browser_press_key,
     browser_coordinate_click, browser_get_snapshot,
 )
@@ -680,6 +681,33 @@ def create_app():
         return _log(audit_logger, "get_running_apps", lambda: get_running_apps(settings))
 
     @mcp.tool(
+        name="artifact_pipeline",
+        title="Artifact Pipeline",
+        description=(
+            "Register and verify explicit local file artifacts by stable handle + SHA-256, open a verified artifact in Preview, "
+            "or run a verified Preview Save As. action: register|inspect|open_preview|preview_save_as. "
+            "Pass both artifact_id and matching path for operations that consume an existing artifact; stale/replaced files fail closed."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False),
+    )
+    def _artifact_pipeline(
+        action: str,
+        path: Optional[str] = None,
+        artifact_id: Optional[str] = None,
+        destination: Optional[str] = None,
+        overwrite: bool = False,
+        preserve_focus: bool = True,
+        timeout_s: float = 15.0,
+    ) -> Dict[str, Any]:
+        return _log(
+            audit_logger, "artifact_pipeline",
+            lambda: artifact_pipeline(
+                action=action, path=path, artifact_id=artifact_id, destination=destination,
+                overwrite=overwrite, preserve_focus=preserve_focus, timeout_s=timeout_s,
+            ),
+        )
+
+    @mcp.tool(
         name="mac_snapshot",
         title="Read Mac Snapshot",
         description=(
@@ -1100,11 +1128,39 @@ def create_app():
                                              tab_handle=tab_handle))
 
     @mcp.tool(name="browser_wait_for_download",
-              description="Wait for a new file to appear in ~/Downloads. filename_contains filters by name.")
+              description=(
+                  "Wait for a browser download to reach a stable completed file, then register it as a SHA-256 artifact. "
+                  "Pass started_after_epoch_ms from the initiating click when available so fast downloads completed before this call are still detected."
+              ))
     def _browser_wait_for_download(filename_contains: Optional[str] = None,
-                                    timeout_s: int = 60) -> Dict[str, Any]:
+                                    timeout_s: int = 60,
+                                    started_after_epoch_ms: Optional[int] = None,
+                                    stable_ms: int = 500) -> Dict[str, Any]:
         return _log(audit_logger, "browser_wait_for_download",
-                    lambda: browser_wait_for_download(settings, filename_contains=filename_contains, timeout_s=timeout_s))
+                    lambda: browser_wait_for_download(
+                        settings, filename_contains=filename_contains, timeout_s=timeout_s,
+                        started_after_epoch_ms=started_after_epoch_ms, stable_ms=stable_ms,
+                    ))
+
+    @mcp.tool(
+        name="browser_upload_artifact",
+        description=(
+            "Select an explicitly registered artifact into an HTML input[type=file] and verify browser file metadata. "
+            "Requires artifact_id plus the matching path. Safari uses the native Open panel; Chrome uses the private debugger bridge DOM.setFileInputFiles. "
+            "This selects the file only; it does not submit the surrounding form."
+        ),
+    )
+    def _browser_upload_artifact(
+        browser: str, css_selector: str, artifact_id: str, path: str,
+        window_index: int = 1, tab_index: Optional[int] = None, tab_handle: Optional[str] = None,
+        timeout_s: int = 20, preserve_focus: bool = True,
+    ) -> Dict[str, Any]:
+        return _log(audit_logger, "browser_upload_artifact",
+                    lambda: browser_upload_artifact(
+                        settings, browser=browser, css_selector=css_selector, artifact_id=artifact_id, path=path,
+                        window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
+                        timeout_s=timeout_s, preserve_focus=preserve_focus,
+                    ))
 
     @mcp.tool(name="browser_screenshot",
               description=(

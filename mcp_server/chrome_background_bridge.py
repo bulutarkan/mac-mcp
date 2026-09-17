@@ -244,6 +244,19 @@ class ChromeBackgroundBridge:
         )
         return str(response.get("result") or "")
 
+    def request_set_file_input(
+        self, chrome_tab_id: str | int, css_selector: str, file_path: str, *, timeout_s: float = 20.0,
+    ) -> Dict[str, Any]:
+        return self._request(
+            "set_file_input",
+            {
+                "chrome_tab_id": int(chrome_tab_id),
+                "css_selector": str(css_selector),
+                "file_path": str(file_path),
+            },
+            timeout_s=timeout_s,
+        )
+
     def handle_message(self, message: Dict[str, Any]) -> None:
         message_type = str(message.get("type") or "")
         if message_type == "pong":

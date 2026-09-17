@@ -35,7 +35,7 @@ _SOURCE_TOOLS = frozenset({
 })
 _BROWSER_EGRESS_TOOLS = frozenset({
     "browser_open_url", "browser_act", "browser_do", "browser_execute_js",
-    "browser_type_selector", "browser_press_key", "open_url", "http_request",
+    "browser_type_selector", "browser_press_key", "browser_upload_artifact", "open_url", "http_request",
 })
 
 
@@ -287,6 +287,12 @@ def scan_sensitive_egress(
     if name not in _BROWSER_EGRESS_TOOLS:
         return EgressScan(False)
 
+    if name == "browser_upload_artifact":
+        path_class = sensitive_path_class(arguments.get("path"))
+        if path_class:
+            return EgressScan(True, "sensitive_artifact_path", path_class)
+        return EgressScan(False)
+
     if name == "browser_press_key":
         key = str(arguments.get("key") or "").strip().lower()
         modifiers = {str(item).strip().lower() for item in (arguments.get("modifiers") or [])}
@@ -324,6 +330,8 @@ def safe_target_summary(tool: str, arguments: Mapping[str, Any], *, secret_egres
             return "outbound HTTP request includes sensitive value"
         if name == "browser_press_key":
             return "browser paste from sensitive clipboard"
+        if name == "browser_upload_artifact":
+            return "browser upload of sensitive local artifact"
     if name in {"run_command", "start_background_job"}:
         raw_command = str(args.get("command") or "")
         lower = raw_command.lower()

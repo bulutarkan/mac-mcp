@@ -203,6 +203,28 @@ def _update_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     )
 
 
+def _artifact_pipeline_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    action = str(arguments.get("action") or "").strip().lower().replace("-", "_")
+    if action in {"register", "inspect"}:
+        return RiskOverride(
+            capabilities=_caps(Capability.READ),
+            destructive=False,
+            sensitive=True,
+            requested_access_mode=AccessMode.READ_ONLY,
+        )
+    if action == "open_preview":
+        return RiskOverride(
+            capabilities=_caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.UI_ACTION),
+            destructive=False,
+            sensitive=True,
+        )
+    return RiskOverride(
+        capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.UI_ACTION),
+        destructive=bool(arguments.get("overwrite", False)),
+        sensitive=True,
+    )
+
+
 def _agent_spawn_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     capability_profile = str(arguments.get("capability_profile") or "").strip().lower()
     profile_modes = {
@@ -301,6 +323,11 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "screenshot": _r("screenshot", "macos", _caps(Capability.READ, Capability.LOCAL_WRITE), sensitive=True),
     "set_reminder": _r("set_reminder", "macos", _caps(Capability.LOCAL_WRITE, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
     "get_running_apps": _r("get_running_apps", "macos", _caps(Capability.READ), sensitive=True),
+    "artifact_pipeline": _r(
+        "artifact_pipeline", "files",
+        _caps(Capability.READ, Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.UI_ACTION),
+        sensitive=True, resolver=_artifact_pipeline_risk,
+    ),
     "mac_snapshot": _r("mac_snapshot", "macos", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY, Capability.BROWSER_CONTROL), sensitive=True),
     "mac_observe": _r("mac_observe", "accessibility", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY), sensitive=True),
     "mac_act": _r("mac_act", "accessibility", _caps(Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True),
@@ -323,6 +350,11 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "browser_wait_for_selector": _r("browser_wait_for_selector", "browser", _caps(Capability.READ, Capability.BROWSER_CONTROL), sensitive=True),
     "browser_get_html": _r("browser_get_html", "browser", _caps(Capability.READ, Capability.BROWSER_CONTROL), sensitive=True),
     "browser_wait_for_download": _r("browser_wait_for_download", "browser", _caps(Capability.READ, Capability.BROWSER_CONTROL, Capability.LOCAL_WRITE), sensitive=True),
+    "browser_upload_artifact": _r(
+        "browser_upload_artifact", "browser",
+        _caps(Capability.READ, Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.EXTERNAL_SIDE_EFFECT),
+        destructive=True, sensitive=True,
+    ),
     "browser_screenshot": _r("browser_screenshot", "browser", _caps(Capability.READ, Capability.LOCAL_WRITE, Capability.BROWSER_CONTROL), sensitive=True),
     "browser_scroll": _r("browser_scroll", "browser", _caps(Capability.UI_ACTION, Capability.BROWSER_CONTROL)),
     "browser_press_key": _r("browser_press_key", "browser", _caps(Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.EXTERNAL_SIDE_EFFECT), destructive=True),
