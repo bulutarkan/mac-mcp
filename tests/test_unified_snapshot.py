@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import time
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -16,35 +16,43 @@ class UnifiedSnapshotTests(unittest.TestCase):
         self.settings = load_settings()
 
     def test_default_snapshot_runs_six_independent_reads_in_parallel(self) -> None:
-        delay = 0.08
+        section_count = len(tools_snapshot.DEFAULT_SECTIONS)
+        rendezvous = threading.Barrier(section_count)
+        lock = threading.Lock()
+        active = 0
+        max_active = 0
+        started_sections = set()
         readers = {}
+
         for section in tools_snapshot.DEFAULT_SECTIONS:
             def make_reader(name: str):
                 def reader(settings, **kwargs):
-                    time.sleep(delay)
-                    return {"section": name}
+                    nonlocal active, max_active
+                    with lock:
+                        active += 1
+                        max_active = max(max_active, active)
+                        started_sections.add(name)
+                    try:
+                        # Every section must enter before any reader can finish.
+                        # This proves actual fan-out without relying on CI wall-clock timing.
+                        rendezvous.wait(timeout=5)
+                        return {"section": name}
+                    finally:
+                        with lock:
+                            active -= 1
                 return reader
             readers[section] = make_reader(section)
 
-        serial_start = time.perf_counter()
-        for name in tools_snapshot.DEFAULT_SECTIONS:
-            readers[name](self.settings)
-        serial_s = time.perf_counter() - serial_start
-
         with patch.object(tools_snapshot, "_SECTION_READERS", readers):
-            started = time.perf_counter()
             result = tools_snapshot.unified_read_snapshot(self.settings)
-            parallel_s = time.perf_counter() - started
 
         self.assertTrue(result["ok"])
         self.assertFalse(result["partial"])
         self.assertEqual(list(tools_snapshot.DEFAULT_SECTIONS), result["requested_sections"])
-        self.assertEqual(6, result["parallelism"])
-        self.assertEqual(6, len(result["sections"]))
-        # Roadmap acceptance: wall time stays within slowest read + 25%, with a
-        # small fixed scheduler allowance for loaded CI hosts.
-        self.assertLessEqual(parallel_s, delay * 1.25 + 0.04)
-        self.assertLess(parallel_s, serial_s * 0.4)
+        self.assertEqual(section_count, result["parallelism"])
+        self.assertEqual(section_count, len(result["sections"]))
+        self.assertEqual(set(tools_snapshot.DEFAULT_SECTIONS), started_sections)
+        self.assertEqual(section_count, max_active)
 
     def test_partial_failure_does_not_drop_successful_sections(self) -> None:
         def ok_reader(settings, **kwargs):
