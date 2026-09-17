@@ -927,10 +927,12 @@ def create_app():
                   "a stable tab_handle; set background=false only when foreground activation is explicitly wanted."
               ))
     def _browser_open_url(browser: str, url: str, new_tab: bool = True,
-                          background: bool = True) -> Dict[str, Any]:
+                          background: bool = True, window_index: int = 1,
+                          tab_index: Optional[int] = None, tab_handle: Optional[str] = None) -> Dict[str, Any]:
         return _log(audit_logger, "browser_open_url",
                     lambda: browser_open_url(settings, browser=browser, url=url,
-                                             new_tab=new_tab, background=background))
+                                             new_tab=new_tab, background=background,
+                                             window_index=window_index, tab_index=tab_index, tab_handle=tab_handle))
 
     @mcp.tool(name="browser_list_tabs",
               description="List all open tabs with title, URL, indices, and stable tab_handle values that survive tab index shifts.")
@@ -1057,10 +1059,19 @@ def create_app():
             automatic_actions = (1 if semantic_fields else 0) + (1 if url and wait_after_open else 0)
             if len(work_actions) + automatic_actions > 20:
                 raise HTTPException(status.HTTP_400_BAD_REQUEST, "browser_do transaction may contain at most 20 actions including automatic wait/extract actions.")
+            if close_after and not new_tab:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "close_after is only allowed for a tab newly opened by browser_do.")
             if url:
                 opened = browser_open_url(
-                    settings, browser=browser, url=url, new_tab=new_tab, background=background
+                    settings, browser=browser, url=url, new_tab=new_tab, background=background,
+                    window_index=window_index, tab_index=(tab_index if not new_tab else None),
+                    tab_handle=(tab_handle if not new_tab else None),
                 )
+                if not new_tab and tab_handle and opened.get("tab_handle") != tab_handle:
+                    raise HTTPException(
+                        status.HTTP_409_CONFLICT,
+                        {"ok": False, "error": "browser_do_target_changed", "retryable": True, "tab_handle": tab_handle},
+                    )
                 handle = opened.get("tab_handle") or handle
                 if wait_after_open:
                     work_actions.insert(0, {"type": "wait", "for": "network_idle", "timeout_s": 4, "stable_ms": 300, "required": False})

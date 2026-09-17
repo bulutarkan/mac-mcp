@@ -18,6 +18,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 from .steering import SteeringManager, attach_steering, preemption_error, steering_identity_from_context
+from . import browser_tabs
 from .security_context import SecurityContextManager
 from .data_guard import redact_sensitive_source_result, redact_sensitive_text, sanitize_tool_arguments
 from .workflow_checkpoints import (
@@ -1084,8 +1085,16 @@ class ObservedFastMCP(FastMCP):
                         f"{exc.code}: tool={name}; durable side-effect intent could not be established; action was not executed"
                     ) from exc
 
+            browser_owner = None
+            if policy_context.agent_id:
+                browser_owner = f"agent:{policy_context.agent_id}"
+            elif steering_identity is not None:
+                browser_owner = f"session:{steering_identity.key}"
             try:
-                result = await self._call_registered_tool(name, arguments)
+                with browser_tabs.logical_owner_scope(
+                    browser_owner, agent_id=policy_context.agent_id, profile=policy_context.profile,
+                ):
+                    result = await self._call_registered_tool(name, arguments)
             except BaseException as exc:
                 if receipt_required and policy_context.agent_id:
                     try:

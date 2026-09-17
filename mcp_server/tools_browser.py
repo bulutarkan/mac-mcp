@@ -123,6 +123,25 @@ def _norm_browser(browser: str) -> str:
     raise HTTPException(status.HTTP_400_BAD_REQUEST, "browser must be 'Safari' or 'Google Chrome'.")
 
 
+def _require_stable_handle_for_mutation(
+    browser: str, tab_handle: Optional[str], window_index: int, operation: str,
+) -> None:
+    if str(tab_handle or "").strip() or not browser_tabs._logical_owner()[0]:
+        return
+    rows = [row for row in browser_tabs.list_tabs(browser) if int(row.get("window_index") or 0) == int(window_index)]
+    if len(rows) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "ok": False,
+                "error": "stable_tab_handle_required",
+                "retryable": True,
+                "operation": operation,
+                "message": "This mutation is ambiguous while multiple tabs are open; list/observe tabs and retry with tab_handle.",
+            },
+        )
+
+
 def _resolve_tab_target(
     browser: str,
     tab_handle: Optional[str],
@@ -478,6 +497,9 @@ def browser_open_url(
     new_tab: bool = True,
     background: bool = True,
     activate: Optional[bool] = None,
+    window_index: int = 1,
+    tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     b = _norm_browser(browser)
     validate_url(settings, url)
@@ -485,6 +507,110 @@ def browser_open_url(
     if activate is not None:
         background = not bool(activate)
     activate_line = "" if background else "activate"
+    escaped_url = _js_escape(url)
+
+    if not new_tab:
+        current_tabs = browser_tabs.list_tabs(b)
+        if not current_tabs:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No existing browser tab is available for navigation.")
+        selected_handle = str(tab_handle or "").strip()
+        if not selected_handle:
+            window_tabs = [
+                row for row in current_tabs
+                if int(row.get("window_index") or 0) == int(window_index)
+            ]
+            if not window_tabs:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, f"Browser window {window_index} has no tabs.")
+            owner = browser_tabs._logical_owner()[0]
+            if len(window_tabs) != 1 and owner:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "ok": False,
+                        "error": "stable_tab_handle_required",
+                        "retryable": True,
+                        "message": "Existing-tab navigation is ambiguous while multiple tabs are open; list/observe tabs and retry with tab_handle.",
+                    },
+                )
+            selected = (
+                window_tabs[0] if len(window_tabs) == 1 else
+                next((row for row in window_tabs if row.get("active")), window_tabs[0])
+            )
+            selected_handle = str(selected.get("tab_handle") or "")
+
+        with _tab_lease(b, selected_handle, window_index, tab_index) as target:
+            guard = _tab_identity_guard(target)
+            native_property = "id" if b == "Google Chrome" else "pid"
+            script = f'''
+            tell application "{b}"
+                {activate_line}
+                tell window {target.window_index}
+                    {guard}
+                    set URL of targetTab to "{escaped_url}"
+                    set newIndex to index of targetTab
+                    set newNativeId to ""
+                    try
+                        set newNativeId to ({native_property} of targetTab) as text
+                    end try
+                    return (newIndex as text) & tab & newNativeId
+                end tell
+            end tell
+            '''
+            previous_url = target.url
+            raw = _run_osascript(script, timeout_s=30)
+            parts = str(raw or "").strip().split("\t", 1)
+            try:
+                resolved_index = int(parts[0])
+            except (TypeError, ValueError, IndexError) as exc:
+                raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Browser did not return the navigated tab identity.") from exc
+            returned_native = parts[1].strip() if len(parts) > 1 else ""
+            scanned = browser_tabs._scan(b)
+            candidates = [
+                row for row in scanned
+                if int(row.get("window_index") or 0) == target.window_index
+                and int(row.get("tab_index") or 0) == resolved_index
+            ]
+            if returned_native and returned_native != "0":
+                native_matches = [row for row in scanned if str(row.get("native_id") or "") == returned_native]
+                if len(native_matches) == 1:
+                    candidates = native_matches
+            if len(candidates) != 1:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "ok": False,
+                        "error": "navigated_tab_identity_unresolved",
+                        "retryable": True,
+                        "tab_handle": target.tab_handle,
+                        "message": "The target tab changed during navigation and could not be re-identified safely.",
+                    },
+                )
+            row = dict(candidates[0])
+            row["tab_handle"] = target.tab_handle
+            if b == "Safari":
+                row = browser_tabs.rebind_safari_handle(target.tab_handle, row)
+            elif returned_native and returned_native != "0" and str(row.get("native_id") or "") != target.native_id:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"ok": False, "error": "tab_identity_changed", "retryable": True, "tab_handle": target.tab_handle},
+                )
+            observed_url = _validate_observed_navigation(
+                settings, b, url, row, new_tab=False, previous_url=previous_url,
+            )
+            visual_claimed = _claim_tab_visual(b, resolved_index, observed_url, target.tab_handle)
+            return {
+                "ok": True,
+                "browser": b,
+                "url": observed_url,
+                "requested_url": url,
+                "background": bool(background),
+                "window_index": int(row.get("window_index") or target.window_index),
+                "tab_index": int(row.get("tab_index") or resolved_index),
+                "tab_handle": target.tab_handle,
+                "lease_generation": target.lease_generation,
+                "visual_claimed": visual_claimed,
+                "foreground_forced": False if background else True,
+            }
 
     if b == "Safari":
         script = f'''
@@ -493,65 +619,44 @@ def browser_open_url(
                 make new document
             end if
             {activate_line}
-            if {str(new_tab).lower()} then
-                tell window 1
-                    set newTab to make new tab with properties {{URL:"{url}"}}
-                    set newIndex to index of newTab
-                    if {str(not background).lower()} then set current tab to newTab
-                end tell
-                return newIndex
-            else
-                set URL of current tab of window 1 to "{url}"
-                return index of current tab of window 1
-            end if
+            tell window 1
+                set newTab to make new tab with properties {{URL:"{escaped_url}"}}
+                set newIndex to index of newTab
+                if {str(not background).lower()} then set current tab to newTab
+            end tell
+            return newIndex
         end tell
         '''
     else:
         if background and not _chrome_is_running():
             created, transport = _open_chrome_cold_background(url)
-            tab_index = int(created["tab_index"])
+            opened_index = int(created["tab_index"])
             observed_url = _validate_observed_navigation(settings, b, url, created, new_tab=True)
             handle = str(created.get("tab_handle") or "") or None
             lease = browser_tabs.claim_created_tab(b, handle) if handle else None
-            # The companion may still be waking after a cold launch. Visual claim is
-            # optional and must never turn this focus-safe open into a failure.
-            visual_claimed = _claim_tab_visual(b, tab_index, observed_url, handle)
+            visual_claimed = _claim_tab_visual(b, opened_index, observed_url, handle)
             return {
-                "ok": True,
-                "browser": b,
-                "url": observed_url,
-                "requested_url": url,
-                "background": True,
-                "window_index": int(created["window_index"]),
-                "tab_index": tab_index,
-                "tab_handle": handle,
-                "lease_generation": (lease or {}).get("generation"),
-                "visual_claimed": visual_claimed,
-                "foreground_forced": False,
-                "background_transport": "chrome_cold_launch",
+                "ok": True, "browser": b, "url": observed_url, "requested_url": url,
+                "background": True, "window_index": int(created["window_index"]),
+                "tab_index": opened_index, "tab_handle": handle,
+                "lease_generation": (lease or {}).get("generation"), "visual_claimed": visual_claimed,
+                "foreground_forced": False, "background_transport": "chrome_cold_launch",
                 "chrome_tab_id": transport.get("chrome_tab_id"),
                 "companion_connected": bool(transport.get("companion_connected")),
             }
-        if new_tab and background:
+        if background:
             created, transport = _open_chrome_background_tab_via_extension(url)
-            tab_index = int(created["tab_index"])
+            opened_index = int(created["tab_index"])
             observed_url = _validate_observed_navigation(settings, b, url, created, new_tab=True)
             handle = str(created.get("tab_handle") or "") or None
             lease = browser_tabs.claim_created_tab(b, handle) if handle else None
-            visual_claimed = _claim_tab_visual(b, tab_index, observed_url, handle)
+            visual_claimed = _claim_tab_visual(b, opened_index, observed_url, handle)
             return {
-                "ok": True,
-                "browser": b,
-                "url": observed_url,
-                "requested_url": url,
-                "background": True,
-                "window_index": int(created["window_index"]),
-                "tab_index": tab_index,
-                "tab_handle": handle,
-                "lease_generation": (lease or {}).get("generation"),
-                "visual_claimed": visual_claimed,
-                "foreground_forced": False,
-                "background_transport": "chrome_extension",
+                "ok": True, "browser": b, "url": observed_url, "requested_url": url,
+                "background": True, "window_index": int(created["window_index"]),
+                "tab_index": opened_index, "tab_handle": handle,
+                "lease_generation": (lease or {}).get("generation"), "visual_claimed": visual_claimed,
+                "foreground_forced": False, "background_transport": "chrome_extension",
                 "chrome_tab_id": transport.get("chrome_tab_id"),
             }
         script = f'''
@@ -560,49 +665,30 @@ def browser_open_url(
                 make new window
             end if
             {activate_line}
-            if {str(new_tab).lower()} then
-                tell window 1
-                    set previousIndex to active tab index
-                    set newTab to make new tab with properties {{URL:"{url}"}}
-                    set newIndex to count of tabs
-                    if {str(not background).lower()} then
-                        set active tab index to newIndex
-                    else
-                        set active tab index to previousIndex
-                    end if
-                end tell
-                return newIndex
-            else
-                set URL of active tab of window 1 to "{url}"
-                return active tab index of window 1
-            end if
+            tell window 1
+                set previousIndex to active tab index
+                set newTab to make new tab with properties {{URL:"{escaped_url}"}}
+                set newIndex to count of tabs
+                if {str(not background).lower()} then
+                    set active tab index to newIndex
+                else
+                    set active tab index to previousIndex
+                end if
+            end tell
+            return newIndex
         end tell
         '''
 
-    previous_url: Optional[str] = None
-    if not new_tab:
-        # Existing-tab navigation is a mutation of a shared browser resource. For
-        # delegated agents, acquire logical ownership before changing the URL.
-        existing_tabs = browser_tabs.list_tabs(b)
-        if existing_tabs:
-            with _tab_lease(b, None, 1, None) as existing_target:
-                previous_url = existing_target.url
-                raw = _run_osascript(script, timeout_s=30)
-        else:
-            raw = _run_osascript(script, timeout_s=30)
-    else:
-        raw = _run_osascript(script, timeout_s=30)
+    raw = _run_osascript(script, timeout_s=30)
     try:
-        tab_index = int(str(raw).strip())
+        opened_index = int(str(raw).strip())
     except Exception:
-        tab_index = 1
-    created = browser_tabs.find_created(b, 1, tab_index)
-    observed_url = _validate_observed_navigation(
-        settings, b, url, created, new_tab=new_tab, previous_url=previous_url,
-    )
+        opened_index = 1
+    created = browser_tabs.find_created(b, 1, opened_index)
+    observed_url = _validate_observed_navigation(settings, b, url, created, new_tab=True)
     handle = created.get("tab_handle") if created else None
     lease = browser_tabs.claim_created_tab(b, handle) if handle else None
-    visual_claimed = _claim_tab_visual(b, tab_index, observed_url, handle)
+    visual_claimed = _claim_tab_visual(b, opened_index, observed_url, handle)
     return {
         "ok": True,
         "browser": b,
@@ -610,7 +696,7 @@ def browser_open_url(
         "requested_url": url,
         "background": bool(background),
         "window_index": 1,
-        "tab_index": tab_index,
+        "tab_index": opened_index,
         "tab_handle": handle,
         "lease_generation": (lease or {}).get("generation"),
         "visual_claimed": visual_claimed,
@@ -641,6 +727,7 @@ def browser_activate_tab(
     b = _norm_browser(browser)
     if not tab_handle and (window_index < 1 or tab_index < 1):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "window_index and tab_index must be >= 1")
+    _require_stable_handle_for_mutation(b, tab_handle, window_index, "activate_tab")
 
     with _tab_lease(b, tab_handle, window_index, tab_index) as target:
         guard = _tab_identity_guard(target)

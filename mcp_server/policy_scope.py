@@ -64,6 +64,23 @@ def _normalize_values(values: Optional[Iterable[str]]) -> Optional[tuple[str, ..
     return tuple(sorted({str(value) for value in values}))
 
 
+def _canonical_browser_app(value: str) -> str:
+    key = str(value or "").strip().lower()
+    if key == "*":
+        return "*"
+    if key == "safari":
+        return "Safari"
+    if key in {"chrome", "google chrome"}:
+        return "Google Chrome"
+    return str(value or "").strip()
+
+
+def _normalize_browser_apps(values: Optional[Iterable[str]]) -> Optional[tuple[str, ...]]:
+    if values is None:
+        return None
+    return tuple(sorted({_canonical_browser_app(value) for value in values if str(value or "").strip()}))
+
+
 def _normalize_roots(values: Optional[Iterable[str | os.PathLike[str]]]) -> Optional[tuple[str, ...]]:
     if values is None:
         return None
@@ -81,6 +98,7 @@ class ResourceScope:
 
     path_roots: Optional[tuple[str, ...]] = None
     browser_tabs: Optional[tuple[str, ...]] = None
+    browser_apps: Optional[tuple[str, ...]] = None
     terminal_ids: Optional[tuple[str, ...]] = None
     job_ids: Optional[tuple[str, ...]] = None
     tool_families: Optional[tuple[str, ...]] = None
@@ -89,6 +107,7 @@ class ResourceScope:
     def __post_init__(self) -> None:
         object.__setattr__(self, "path_roots", _normalize_roots(self.path_roots))
         object.__setattr__(self, "browser_tabs", _normalize_values(self.browser_tabs))
+        object.__setattr__(self, "browser_apps", _normalize_browser_apps(self.browser_apps))
         object.__setattr__(self, "terminal_ids", _normalize_values(self.terminal_ids))
         object.__setattr__(self, "job_ids", _normalize_values(self.job_ids))
         object.__setattr__(self, "tool_families", _normalize_values(self.tool_families))
@@ -102,13 +121,14 @@ class ResourceScope:
     def from_dict(cls, value: Optional[dict[str, Any]]) -> "ResourceScope":
         if not value:
             return cls.unrestricted()
-        allowed = {"path_roots", "browser_tabs", "terminal_ids", "job_ids", "tool_families", "access_mode"}
+        allowed = {"path_roots", "browser_tabs", "browser_apps", "terminal_ids", "job_ids", "tool_families", "access_mode"}
         unknown = sorted(set(value) - allowed)
         if unknown:
             raise ValueError(f"Unknown scope field(s): {', '.join(unknown)}")
         return cls(
             path_roots=value.get("path_roots"),
             browser_tabs=value.get("browser_tabs"),
+            browser_apps=value.get("browser_apps"),
             terminal_ids=value.get("terminal_ids"),
             job_ids=value.get("job_ids"),
             tool_families=value.get("tool_families"),
@@ -122,6 +142,7 @@ class ResourceScope:
         return {
             "path_roots": None if self.path_roots is None else list(self.path_roots),
             "browser_tabs": None if self.browser_tabs is None else list(self.browser_tabs),
+            "browser_apps": None if self.browser_apps is None else list(self.browser_apps),
             "terminal_ids": None if self.terminal_ids is None else list(self.terminal_ids),
             "job_ids": None if self.job_ids is None else list(self.job_ids),
             "tool_families": None if self.tool_families is None else list(self.tool_families),
@@ -133,6 +154,7 @@ class ResourceScope:
 class ScopeRequest:
     path: Optional[str] = None
     browser_tab: Optional[str] = None
+    browser_app: Optional[str] = None
     terminal_id: Optional[str] = None
     job_id: Optional[str] = None
     tool_family: Optional[str] = None
@@ -177,6 +199,7 @@ def intersect_scopes(left: ResourceScope, right: ResourceScope) -> ResourceScope
     return ResourceScope(
         path_roots=_intersect_roots(left.path_roots, right.path_roots),
         browser_tabs=_intersect_values(left.browser_tabs, right.browser_tabs),
+        browser_apps=_intersect_values(left.browser_apps, right.browser_apps),
         terminal_ids=_intersect_values(left.terminal_ids, right.terminal_ids),
         job_ids=_intersect_values(left.job_ids, right.job_ids),
         tool_families=_intersect_values(left.tool_families, right.tool_families),
@@ -191,6 +214,7 @@ def evaluate_scope(scope: ResourceScope, request: ScopeRequest) -> ScopeDecision
             reasons.append("path_not_allowed")
     for value, allowed, reason in (
         (request.browser_tab, scope.browser_tabs, "browser_tab_not_allowed"),
+        (_canonical_browser_app(request.browser_app) if request.browser_app is not None else None, scope.browser_apps, "browser_app_not_allowed"),
         (request.terminal_id, scope.terminal_ids, "terminal_id_not_allowed"),
         (request.job_id, scope.job_ids, "job_id_not_allowed"),
         (request.tool_family, scope.tool_families, "tool_family_not_allowed"),

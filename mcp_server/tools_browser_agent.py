@@ -19,6 +19,7 @@ from .security import Settings
 from .tools_browser import (
     _execute_js_for_target,
     _norm_browser,
+    _require_stable_handle_for_mutation,
     _resolve_tab_target,
     _run_osascript,
     _js_escape,
@@ -2149,6 +2150,7 @@ def browser_act(
     if normalized_return_state not in _RETURN_STATE_MODES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")
     b = _norm_browser(browser)
+    _require_stable_handle_for_mutation(b, tab_handle, window_index, "browser_act")
     _ensure_visual_companion(settings, b, window_index, tab_index, tab_handle)
     with _tab_lease(b, tab_handle, window_index, tab_index) as target:
         return _browser_act_locked(

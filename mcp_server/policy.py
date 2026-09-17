@@ -738,6 +738,15 @@ def evaluate_tool_scope(
     for path in _scope_paths(tool, arguments):
         reasons.extend(evaluate_scope(scope, ScopeRequest(path=path)).reasons)
 
+    if (risk.family == "browser" or tool == "context_handoff") and scope.browser_apps is not None and "*" not in scope.browser_apps:
+        browser_values: list[str] = []
+        for key in ("browser", "source_browser", "target_browser"):
+            candidate = str(arguments.get(key) or "").strip()
+            if candidate:
+                browser_values.append(candidate)
+        for selected_browser in dict.fromkeys(browser_values):
+            reasons.extend(evaluate_scope(scope, ScopeRequest(browser_app=selected_browser)).reasons)
+
     if (risk.family == "browser" or tool == "context_handoff") and scope.browser_tabs is not None and "*" not in scope.browser_tabs:
         handles: list[str] = []
         handle = str(arguments.get("tab_handle") or "").strip()

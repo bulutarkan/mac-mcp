@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import os
 import subprocess
@@ -24,6 +25,9 @@ _RESOURCE_LOCKS: weakref.WeakValueDictionary[Tuple[str, str], threading.RLock] =
 _LOGICAL_LEASES: Dict[str, Dict[str, Any]] = {}
 _LEASE_HISTORY: Dict[str, Dict[str, Any]] = {}
 _LEASE_LOCK = threading.RLock()
+_OWNER_OVERRIDE: contextvars.ContextVar[Optional[tuple[str, Optional[str], Optional[str]]]] = contextvars.ContextVar(
+    "mac_mcp_browser_owner_override", default=None
+)
 
 
 @dataclass(frozen=True)
@@ -99,7 +103,21 @@ def _origin(url: Any) -> Optional[str]:
     return f"{parsed.scheme}://{host}{suffix}"
 
 
+@contextmanager
+def logical_owner_scope(
+    owner: Optional[str], *, agent_id: Optional[str] = None, profile: Optional[str] = None,
+) -> Iterator[None]:
+    token = _OWNER_OVERRIDE.set((str(owner), agent_id, profile) if owner else None)
+    try:
+        yield
+    finally:
+        _OWNER_OVERRIDE.reset(token)
+
+
 def _logical_owner() -> tuple[Optional[str], Optional[str], Optional[str]]:
+    override = _OWNER_OVERRIDE.get()
+    if override is not None:
+        return override
     # Imported lazily to avoid creating a browser_tabs -> policy import cycle at module load.
     try:
         from .policy import current_policy_context
@@ -308,6 +326,9 @@ def _best_existing_safari(row: Dict[str, Any], used: set[str]) -> Optional[str]:
         for handle, record in candidates:
             if str(record.get("native_id") or "") == pid:
                 return handle
+        # A real Safari WebContent identity changed. Never resurrect an old handle
+        # from URL/title/index heuristics; explicit guarded navigation may rebind it.
+        return None
 
     url = str(row.get("url") or "")
     title = str(row.get("title") or "")
@@ -332,9 +353,17 @@ def _best_existing_safari(row: Dict[str, Any], used: set[str]) -> Optional[str]:
     return None
 
 
+def _retire_logical_lease(handle: str) -> None:
+    with _LEASE_LOCK:
+        lease = _LOGICAL_LEASES.pop(str(handle), None)
+        if lease is not None:
+            _LEASE_HISTORY[str(handle)] = dict(lease)
+
+
 def list_tabs(browser: str) -> List[Dict[str, Any]]:
     rows = _scan(browser)
     app = _browser_key(browser)
+    stale_handles: List[str] = []
     with _LOCK:
         used: set[str] = set()
         for row in rows:
@@ -347,7 +376,39 @@ def list_tabs(browser: str) -> List[Dict[str, Any]]:
             record["tab_handle"] = handle
             _REGISTRY[handle] = record
             row["tab_handle"] = handle
+        stale_handles = [
+            handle for handle, record in list(_REGISTRY.items())
+            if record.get("browser") == app and handle not in used
+        ]
+        for handle in stale_handles:
+            _REGISTRY.pop(handle, None)
+    for handle in stale_handles:
+        _retire_logical_lease(handle)
     return rows
+
+
+def rebind_safari_handle(tab_handle: str, row: Dict[str, Any]) -> Dict[str, Any]:
+    handle = str(tab_handle or "").strip()
+    if not handle or _browser_key(str(row.get("browser") or "Safari")) != "Safari":
+        raise ValueError("Safari tab handle and row are required")
+    conflicting: List[str] = []
+    native_id = str(row.get("native_id") or "")
+    with _LOCK:
+        if native_id and native_id != "0":
+            conflicting = [
+                other for other, record in _REGISTRY.items()
+                if other != handle and record.get("browser") == "Safari"
+                and str(record.get("native_id") or "") == native_id
+            ]
+            for other in conflicting:
+                _REGISTRY.pop(other, None)
+        record = dict(row)
+        record["browser"] = "Safari"
+        record["tab_handle"] = handle
+        _REGISTRY[handle] = record
+    for other in conflicting:
+        _retire_logical_lease(other)
+    return record
 
 
 def resolve_tab(browser: str, tab_handle: str) -> Tuple[int, int, Dict[str, Any]]:
@@ -468,10 +529,7 @@ def forget(tab_handle: Optional[str]) -> None:
     handle = str(tab_handle)
     with _LOCK:
         _REGISTRY.pop(handle, None)
-    with _LEASE_LOCK:
-        lease = _LOGICAL_LEASES.pop(handle, None)
-        if lease is not None:
-            _LEASE_HISTORY[handle] = dict(lease)
+    _retire_logical_lease(handle)
 
 
 def registry_snapshot() -> Dict[str, Dict[str, Any]]:
