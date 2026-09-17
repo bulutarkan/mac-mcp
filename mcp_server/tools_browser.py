@@ -142,6 +142,31 @@ def _require_stable_handle_for_mutation(
         )
 
 
+def _stale_tab_http_error(tab_handle: Optional[str]) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "ok": False,
+            "error": "stale_tab_handle",
+            "retryable": True,
+            "tab_handle": str(tab_handle or ""),
+            "required_action": "browser_list_tabs",
+            "do_not_fallback_to_active_tab": True,
+            "message": "The requested tab no longer has the same stable identity. Refresh tabs and retry with the new tab_handle; never fall back to the active tab.",
+        },
+    )
+
+
+def _new_tab_window(
+    browser: str, window_index: int, tab_handle: Optional[str],
+) -> int:
+    if str(tab_handle or "").strip():
+        with _tab_lease(browser, tab_handle, window_index, None, allow_rebind=True) as anchor:
+            return int(anchor.window_index)
+    preferred = browser_tabs.preferred_window_for_owner(browser)
+    return int(preferred if preferred is not None else window_index)
+
+
 def _resolve_tab_target(
     browser: str,
     tab_handle: Optional[str],
@@ -154,7 +179,7 @@ def _resolve_tab_target(
         wi, ti, _ = browser_tabs.resolve_tab(browser, tab_handle)
         return wi, ti
     except KeyError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        raise _stale_tab_http_error(tab_handle) from exc
 
 
 @contextmanager
@@ -178,7 +203,7 @@ def _tab_lease(
                 )
             )
         except KeyError as exc:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+            raise _stale_tab_http_error(tab_handle) from exc
         yield target
 
 
@@ -508,6 +533,9 @@ def browser_open_url(
         background = not bool(activate)
     activate_line = "" if background else "activate"
     escaped_url = _js_escape(url)
+    target_window = int(window_index)
+    if new_tab and b == "Safari":
+        target_window = _new_tab_window(b, window_index, tab_handle)
 
     if not new_tab:
         current_tabs = browser_tabs.list_tabs(b)
@@ -552,13 +580,13 @@ def browser_open_url(
                     try
                         set newNativeId to ({native_property} of targetTab) as text
                     end try
-                    return (newIndex as text) & tab & newNativeId
+                    return (newIndex as text) & "|" & newNativeId
                 end tell
             end tell
             '''
             previous_url = target.url
             raw = _run_osascript(script, timeout_s=30)
-            parts = str(raw or "").strip().split("\t", 1)
+            parts = str(raw or "").strip().split("|", 1)
             try:
                 resolved_index = int(parts[0])
             except (TypeError, ValueError, IndexError) as exc:
@@ -619,7 +647,7 @@ def browser_open_url(
                 make new document
             end if
             {activate_line}
-            tell window 1
+            tell window {target_window}
                 set newTab to make new tab with properties {{URL:"{escaped_url}"}}
                 set newIndex to index of newTab
                 if {str(not background).lower()} then set current tab to newTab
@@ -684,7 +712,8 @@ def browser_open_url(
         opened_index = int(str(raw).strip())
     except Exception:
         opened_index = 1
-    created = browser_tabs.find_created(b, 1, opened_index)
+    created_window = target_window if b == "Safari" else 1
+    created = browser_tabs.find_created(b, created_window, opened_index)
     observed_url = _validate_observed_navigation(settings, b, url, created, new_tab=True)
     handle = created.get("tab_handle") if created else None
     lease = browser_tabs.claim_created_tab(b, handle) if handle else None
@@ -695,7 +724,7 @@ def browser_open_url(
         "url": observed_url,
         "requested_url": url,
         "background": bool(background),
-        "window_index": 1,
+        "window_index": created_window,
         "tab_index": opened_index,
         "tab_handle": handle,
         "lease_generation": (lease or {}).get("generation"),

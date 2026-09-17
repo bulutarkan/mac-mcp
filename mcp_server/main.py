@@ -1065,7 +1065,7 @@ def create_app():
                 opened = browser_open_url(
                     settings, browser=browser, url=url, new_tab=new_tab, background=background,
                     window_index=window_index, tab_index=(tab_index if not new_tab else None),
-                    tab_handle=(tab_handle if not new_tab else None),
+                    tab_handle=tab_handle,
                 )
                 if not new_tab and tab_handle and opened.get("tab_handle") != tab_handle:
                     raise HTTPException(

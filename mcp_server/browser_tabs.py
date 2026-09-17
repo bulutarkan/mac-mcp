@@ -242,6 +242,34 @@ def logical_lease_snapshot() -> Dict[str, Dict[str, Any]]:
         return {handle: dict(lease) for handle, lease in _LOGICAL_LEASES.items()}
 
 
+def preferred_window_for_owner(browser: str) -> Optional[int]:
+    """Return the one browser window currently associated with this logical owner.
+
+    Multiple owned windows are intentionally ambiguous and return ``None`` so callers
+    do not guess. The tab registry is refreshed before consulting active leases.
+    """
+    owner, _, _ = _logical_owner()
+    if not owner:
+        return None
+    rows = list_tabs(browser)
+    by_handle = {str(row.get("tab_handle") or ""): row for row in rows}
+    app = _browser_key(browser)
+    with _LEASE_LOCK:
+        _prune_logical_leases_locked()
+        owned = [
+            handle for handle, lease in _LOGICAL_LEASES.items()
+            if lease.get("owner") == owner
+        ]
+    windows = {
+        int(by_handle[handle]["window_index"])
+        for handle in owned
+        if handle in by_handle and _browser_key(str(by_handle[handle].get("browser") or "")) == app
+    }
+    if len(windows) == 1:
+        return next(iter(windows))
+    return None
+
+
 def _scan(browser: str) -> List[Dict[str, Any]]:
     app = _browser_key(browser)
     if app == "Safari":

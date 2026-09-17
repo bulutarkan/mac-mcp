@@ -48,7 +48,7 @@ class BrowserTargetHardeningTests(unittest.TestCase):
         with patch("mcp_server.browser_tabs._scan", side_effect=[before, before, before, after]), \
              patch("mcp_server.tools_browser.validate_url"), \
              patch("mcp_server.tools_browser._claim_tab_visual", return_value=False), \
-             patch("mcp_server.tools_browser._run_osascript", return_value="2\t2002") as osa:
+             patch("mcp_server.tools_browser._run_osascript", return_value="2|2002") as osa:
             target_handle = browser_tabs.list_tabs("Safari")[1]["tab_handle"]
             result = browser_open_url(
                 None, "Safari", "https://example.test/results",
@@ -88,6 +88,64 @@ class BrowserTargetHardeningTests(unittest.TestCase):
                     with browser_tabs.tab_lease("Safari", tab_handle=handle, allow_rebind=True):
                         pass
         self.assertEqual("tab_owned_by_other_agent", ctx.exception.detail["error"])
+
+
+    def test_logical_owner_window_affinity_follows_owned_tab(self) -> None:
+        rows = [
+            {"browser": "Safari", "window_index": 1, "tab_index": 1, "active": True,
+             "native_id": "8101", "title": "Other", "url": "https://example.test/other"},
+            {"browser": "Safari", "window_index": 2, "tab_index": 1, "active": True,
+             "native_id": "8201", "title": "Owned", "url": "https://example.test/owned"},
+        ]
+        with patch("mcp_server.browser_tabs._scan", return_value=rows):
+            owned_handle = browser_tabs.list_tabs("Safari")[1]["tab_handle"]
+            with browser_tabs.logical_owner_scope("session:owner", profile="trusted"):
+                with browser_tabs.tab_lease("Safari", tab_handle=owned_handle, allow_rebind=True):
+                    pass
+                self.assertEqual(2, browser_tabs.preferred_window_for_owner("Safari"))
+
+    def test_new_safari_tab_uses_logical_owner_window_not_global_window_one(self) -> None:
+        rows = [
+            {"browser": "Safari", "window_index": 1, "tab_index": 1, "active": True,
+             "native_id": "9101", "title": "Other", "url": "https://example.test/other"},
+            {"browser": "Safari", "window_index": 2, "tab_index": 1, "active": True,
+             "native_id": "9201", "title": "Owned", "url": "https://example.test/owned"},
+        ]
+        created = {
+            "browser": "Safari", "window_index": 2, "tab_index": 2, "active": False,
+            "native_id": "9202", "title": "New", "url": "https://example.test/new",
+            "tab_handle": "btab_safari_new",
+        }
+        with patch("mcp_server.browser_tabs._scan", return_value=rows),              patch("mcp_server.tools_browser.validate_url"),              patch("mcp_server.tools_browser.browser_tabs.find_created", return_value=created),              patch("mcp_server.tools_browser.browser_tabs.claim_created_tab", return_value={"generation": 2}),              patch("mcp_server.tools_browser._claim_tab_visual", return_value=False),              patch("mcp_server.tools_browser._run_osascript", return_value="2") as osa:
+            owned_handle = browser_tabs.list_tabs("Safari")[1]["tab_handle"]
+            with browser_tabs.logical_owner_scope("session:owner", profile="trusted"):
+                with browser_tabs.tab_lease("Safari", tab_handle=owned_handle, allow_rebind=True):
+                    pass
+                result = browser_open_url(
+                    None, "Safari", "https://example.test/new",
+                    new_tab=True, background=True,
+                )
+        script = osa.call_args.args[0]
+        self.assertIn("tell window 2", script)
+        self.assertNotIn("tell window 1\n                set newTab", script)
+        self.assertEqual(2, result["window_index"])
+
+    def test_stale_handle_error_forbids_active_tab_fallback(self) -> None:
+        rows = [{
+            "browser": "Safari", "window_index": 1, "tab_index": 1, "active": True,
+            "native_id": "9301", "title": "Active", "url": "https://example.test/active",
+        }]
+        with patch("mcp_server.tools_browser.validate_url"),              patch("mcp_server.browser_tabs._scan", return_value=rows),              patch("mcp_server.tools_browser._run_osascript") as osa,              browser_tabs.logical_owner_scope("session:owner", profile="trusted"):
+            with self.assertRaises(HTTPException) as ctx:
+                browser_open_url(
+                    None, "Safari", "https://example.test/new",
+                    new_tab=False, background=True, tab_handle="btab_safari_gone",
+                )
+        self.assertEqual(404, ctx.exception.status_code)
+        self.assertEqual("stale_tab_handle", ctx.exception.detail["error"])
+        self.assertTrue(ctx.exception.detail["do_not_fallback_to_active_tab"])
+        self.assertEqual("browser_list_tabs", ctx.exception.detail["required_action"])
+        osa.assert_not_called()
 
     def test_browser_app_scope_blocks_unexpected_chrome_switch(self) -> None:
         scope = ResourceScope(browser_apps=("Safari",), tool_families=("browser",), access_mode="read_only")
