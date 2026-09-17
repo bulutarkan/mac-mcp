@@ -763,6 +763,7 @@ values = {
     "MCP_API_KEY": key,
     "MCP_ALLOW_NO_AUTH": "false",
     "MCP_ALLOW_SHELL": "true",
+    "MAC_MCP_PERMISSION_PROFILE": "standard",
     "NGROK_DOMAIN": "",
 }
 out = []
@@ -784,6 +785,7 @@ PY
   /bin/chmod 600 "$env_file"
   API_KEY="$api_key"
   ok "Generated a strong MCP API key and stored it in mcp_server/.env (mode 600)."
+  info "Secure bootstrap profile: standard. Enable Trusted/Full Access explicitly in Settings when needed."
 }
 
 install_python_environment() {

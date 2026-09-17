@@ -23,10 +23,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ChromeBackgroundTransportTests(unittest.TestCase):
     def setUp(self) -> None:
+        # These tests exercise Chrome transport semantics, not bootstrap allowlist policy.
+        # Public browser access is therefore made explicit under secure-bootstrap defaults.
+        self._browser_allowlist = patch.dict(os.environ, {"BROWSER_ALLOWLIST": "*"}, clear=False)
+        self._browser_allowlist.start()
         browser_tabs._REGISTRY.clear()
         browser_tabs._RESOURCE_LOCKS.clear()
         browser_tabs._LOGICAL_LEASES.clear()
         browser_tabs._LEASE_HISTORY.clear()
+
+    def tearDown(self) -> None:
+        self._browser_allowlist.stop()
 
     def test_safari_extension_sources_are_untouched_by_chrome_transport(self) -> None:
         safari_manifest = json.loads((ROOT / "menu_app/BrowserVisualCompanion/manifest.json").read_text())

@@ -6,6 +6,7 @@ import logging
 import os
 import secrets
 import socket
+import sys
 import tempfile
 import time
 from collections import deque
@@ -138,26 +139,117 @@ def load_settings() -> Settings:
 
     return Settings(
         api_key=os.getenv("MCP_API_KEY", "").strip(),
-        allow_no_auth=_bool("MCP_ALLOW_NO_AUTH", True),
-        allow_shell=_bool("MCP_ALLOW_SHELL", True),
+        allow_no_auth=_bool("MCP_ALLOW_NO_AUTH", False),
+        allow_shell=_bool("MCP_ALLOW_SHELL", False),
         rate_limit_per_minute=_int("RATE_LIMIT_PER_MINUTE", 1000),
         default_command_timeout_s=_int("DEFAULT_COMMAND_TIMEOUT_S", 120),
         max_command_timeout_s=_int("MAX_COMMAND_TIMEOUT_S", 600),
         max_output_chars=_int("MAX_OUTPUT_CHARS", 100000),
         workdir=workdir,
-        http_allowlist=_strlist("HTTP_ALLOWLIST", ["*"]),
+        http_allowlist=_strlist("HTTP_ALLOWLIST", []),
         http_private_allowlist=_strlist("HTTP_PRIVATE_ALLOWLIST", []),
         http_https_only=_bool("HTTP_HTTPS_ONLY", False),
         http_max_response_bytes=_int("HTTP_MAX_RESPONSE_BYTES", 5_000_000),
         http_timeout_s=_int("HTTP_TIMEOUT_S", 60),
         # Browser
-        browser_allowlist=_strlist("BROWSER_ALLOWLIST", ["*"]),
+        browser_allowlist=_strlist("BROWSER_ALLOWLIST", []),
         browser_private_allowlist=_strlist("BROWSER_PRIVATE_ALLOWLIST", []),
         browser_https_only=_bool("BROWSER_HTTPS_ONLY", False),
         download_dir=download_dir,
         max_js_result_chars=_int("MAX_JS_RESULT_CHARS", 20000),
         max_html_chars=_int("MAX_HTML_CHARS", 200000),
         max_wait_s=_int("MAX_WAIT_S", 120),
+    )
+
+
+def _loopback_host(host: str) -> bool:
+    value = str(host or "").strip().lower().strip("[]")
+    return value in {"127.0.0.1", "::1", "localhost"}
+
+
+def _effective_bind_host(host: Optional[str] = None) -> str:
+    explicit = str(host or "").strip()
+    if explicit:
+        return explicit
+    env_host = os.getenv("MAC_MCP_HOST", "").strip()
+    if env_host:
+        return env_host
+    argv = list(sys.argv[1:])
+    for index, item in enumerate(argv):
+        if item == "--host" and index + 1 < len(argv):
+            candidate = str(argv[index + 1]).strip()
+            if candidate:
+                return candidate
+        if item.startswith("--host="):
+            candidate = item.split("=", 1)[1].strip()
+            if candidate:
+                return candidate
+    return "127.0.0.1"
+
+
+def _normalize_public_endpoint_mode(value: object) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_")
+    return "none" if raw in {"", "none", "off", "disabled", "local", "local_only"} else raw
+
+
+def _public_endpoint_mode() -> str:
+    raw = os.getenv("MAC_MCP_PUBLIC_ENDPOINT_MODE", "").strip()
+    if raw:
+        return _normalize_public_endpoint_mode(raw)
+    try:
+        from .runtime_settings import server_setting
+        configured = str(server_setting("public_endpoint_mode", "") or "").strip()
+        if configured:
+            return _normalize_public_endpoint_mode(configured)
+        if bool(server_setting("ngrok_on_start", False)):
+            return "ngrok"
+    except Exception:
+        # Settings parse/read failures must never weaken auth. Treat an unknown
+        # public mode as local-only here; the endpoint layer performs its own
+        # validation before starting a connector.
+        pass
+    return "none"
+
+
+def validate_bootstrap_security(
+    settings: Settings, *, host: Optional[str] = None, public_endpoint_mode: Optional[str] = None,
+) -> None:
+    """Reject unsafe bootstrap states before the MCP app starts serving requests.
+
+    Missing configuration is intentionally fail-closed. Deliberate no-auth mode
+    remains available for loopback-only development, but it cannot be combined
+    with a non-loopback bind or a managed public endpoint.
+    """
+    if not settings.allow_no_auth and not settings.api_key:
+        raise RuntimeError(
+            "secure_bootstrap_missing_api_key: MCP_API_KEY is required when "
+            "MCP_ALLOW_NO_AUTH=false. Run the installer or configure a strong API key."
+        )
+
+    if not settings.allow_no_auth:
+        return
+
+    effective_host = _effective_bind_host(host)
+    if not _loopback_host(effective_host):
+        raise RuntimeError(
+            "secure_bootstrap_no_auth_non_loopback: MCP_ALLOW_NO_AUTH=true is only "
+            "permitted on a loopback bind. Enable authentication before using a non-loopback host."
+        )
+
+    public_mode = (
+        _normalize_public_endpoint_mode(public_endpoint_mode)
+        if public_endpoint_mode is not None
+        else _public_endpoint_mode()
+    )
+    if public_mode != "none":
+        raise RuntimeError(
+            "secure_bootstrap_no_auth_public_endpoint: MCP_ALLOW_NO_AUTH=true cannot be "
+            f"combined with public endpoint mode {public_mode!r}. Enable MCP authentication first."
+        )
+
+    logging.getLogger("mac_mcp.security").warning(
+        "secure_bootstrap_no_auth_loopback: running explicitly without MCP authentication; "
+        "keep the server loopback-only and do not start a public tunnel."
     )
 
 

@@ -476,7 +476,7 @@ def evaluate_profile(profile_name: str, risk: RiskAssessment) -> PolicyDecision:
 
 
 def permission_profile_name() -> str:
-    return (os.getenv("MAC_MCP_PERMISSION_PROFILE", "trusted").strip().lower() or "trusted")
+    return (os.getenv("MAC_MCP_PERMISSION_PROFILE", "standard").strip().lower() or "standard")
 
 
 def permission_semantics(profile_name: Optional[str] = None) -> dict[str, Any]:

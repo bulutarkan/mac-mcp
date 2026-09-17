@@ -17,7 +17,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, Mount
 
 from mcp.server.transport_security import TransportSecuritySettings
-from .security import RateLimiter, Settings, authenticate, client_ip, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger
+from .security import RateLimiter, Settings, authenticate, client_ip, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
 from .observability import ObservedFastMCP, TelemetryManager, current_security_session
 from .policy import current_policy_context, reset_policy_context, set_policy_context
 from .scoped_auth import resolve_request_identity
@@ -175,6 +175,7 @@ def create_app():
     bootstrap_menu_app_and_legacy_state()
     prune_transactions()
     settings = load_settings()
+    validate_bootstrap_security(settings)
     limiter = RateLimiter(settings.rate_limit_per_minute)
     audit_logger = setup_audit_logger()
     telemetry = TelemetryManager()

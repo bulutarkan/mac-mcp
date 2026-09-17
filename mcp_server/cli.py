@@ -14,7 +14,7 @@ from urllib.parse import quote
 
 from dotenv import load_dotenv
 
-from .security import dashboard_token_path
+from .security import dashboard_token_path, load_settings, validate_bootstrap_security
 from .public_endpoint import (
     PublicEndpointError,
     inspect_cloudflare_credential,
@@ -543,6 +543,13 @@ def start(args: argparse.Namespace) -> int:
         public = _public_endpoint_config(args)
     except PublicEndpointError as exc:
         print(f"Public endpoint configuration error: {exc}")
+        return 2
+    try:
+        validate_bootstrap_security(
+            load_settings(), host=args.host, public_endpoint_mode=public.mode,
+        )
+    except RuntimeError as exc:
+        print(f"Security bootstrap error: {exc}")
         return 2
     server_code = _start_server(args)
     if server_code != 0:
