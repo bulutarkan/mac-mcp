@@ -1,0 +1,32 @@
+name: Native App Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "menu_app/**"
+      - ".github/workflows/native-build.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "menu_app/**"
+      - ".github/workflows/native-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify Mac app
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build native app and Safari extension
+        run: ./menu_app/build_app.sh "$RUNNER_TEMP/mac-mcp-build"
+      - name: Verify app signature
+        run: /usr/bin/codesign --verify --deep --strict "$RUNNER_TEMP/mac-mcp-build/Mac MCP.app"
+      - name: Verify Safari extension signature
+        run: /usr/bin/codesign --verify --strict "$RUNNER_TEMP/mac-mcp-build/Mac MCP.app/Contents/PlugIns/Mac MCP Safari Visual Companion.appex"

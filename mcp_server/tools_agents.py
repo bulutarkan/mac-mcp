@@ -1387,8 +1387,9 @@ def _spawn_internal(
         )
     except OSError as exc:
         worker_log.close()
+        spawn_error = str(exc)
         def mark_spawn_failed(current: Dict[str, Any]) -> None:
-            current.update({"status": "failed", "ended_at": _now(), "updated_at": _now(), "note": str(exc)})
+            current.update({"status": "failed", "ended_at": _now(), "updated_at": _now(), "note": spawn_error})
 
         _update_meta(agent_id, mark_spawn_failed)
         try:
@@ -2614,19 +2615,20 @@ def _worker(agent_id: str) -> int:
             if attempt_index + 1 >= max_attempts:
                 break
     except Exception as exc:
+        worker_error = f"Agent worker error: {exc}"
         def record_worker_failure(current: Dict[str, Any]) -> Optional[bool]:
             if current.get("status") == "cancelled":
                 return False
             now = _now()
             current.update({
                 "status": "failed", "phase": "failed", "exit_code": None, "ended_at": now, "updated_at": now,
-                "note": f"Agent worker error: {exc}",
+                "note": worker_error,
             })
             return True
 
         meta = _update_meta(agent_id, record_worker_failure)
         if meta.get("status") != "cancelled":
-            result_path.write_text(f"Agent worker error: {exc}", encoding="utf-8")
+            result_path.write_text(worker_error, encoding="utf-8")
             try:
                 workflow_mark_terminal(agent_id, "failed")
             except WorkflowCheckpointError:
