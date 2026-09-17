@@ -301,6 +301,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "screenshot": _r("screenshot", "macos", _caps(Capability.READ, Capability.LOCAL_WRITE), sensitive=True),
     "set_reminder": _r("set_reminder", "macos", _caps(Capability.LOCAL_WRITE, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
     "get_running_apps": _r("get_running_apps", "macos", _caps(Capability.READ), sensitive=True),
+    "mac_snapshot": _r("mac_snapshot", "macos", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY, Capability.BROWSER_CONTROL), sensitive=True),
     "mac_observe": _r("mac_observe", "accessibility", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY), sensitive=True),
     "mac_act": _r("mac_act", "accessibility", _caps(Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True),
     # Local search and HTTP
@@ -740,6 +741,44 @@ def filter_scoped_result(
 ) -> Any:
     if scope is None or not isinstance(result, dict):
         return result
+    if tool == "mac_snapshot":
+        copied = dict(result)
+        sections = copied.get("sections")
+        if isinstance(sections, dict):
+            sections = {str(k): (dict(v) if isinstance(v, dict) else v) for k, v in sections.items()}
+            copied["sections"] = sections
+            browser_section = sections.get("browser_tabs")
+            if isinstance(browser_section, dict) and scope.browser_tabs is not None and "*" not in scope.browser_tabs:
+                data = browser_section.get("data")
+                if isinstance(data, dict):
+                    data = dict(data)
+                    tabs = data.get("tabs")
+                    if isinstance(tabs, list):
+                        allowed = set(scope.browser_tabs)
+                        data["tabs"] = [
+                            item for item in tabs
+                            if isinstance(item, dict) and str(item.get("tab_handle") or "") in allowed
+                        ]
+                        data["count"] = len(data["tabs"])
+                    browser_section["data"] = data
+            selected_section = sections.get("selected_context")
+            if isinstance(selected_section, dict) and scope.path_roots is not None:
+                data = selected_section.get("data")
+                if isinstance(data, dict):
+                    data = dict(data)
+                    selected = data.get("selected_paths")
+                    if isinstance(selected, list):
+                        selected = [
+                            path for path in selected
+                            if isinstance(path, str) and evaluate_scope(scope, ScopeRequest(path=path)).allowed
+                        ]
+                        data["selected_paths"] = selected
+                        data["selected_count"] = len(selected)
+                    folder = data.get("folder")
+                    if isinstance(folder, str) and not evaluate_scope(scope, ScopeRequest(path=folder)).allowed:
+                        data["folder"] = None
+                    selected_section["data"] = data
+        return copied
     if tool == "browser_list_tabs" and scope.browser_tabs is not None and "*" not in scope.browser_tabs:
         allowed = set(scope.browser_tabs)
         copied = dict(result)

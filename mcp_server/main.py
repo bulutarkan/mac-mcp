@@ -44,6 +44,7 @@ from .tools_macos import (
     screenshot, set_reminder, get_running_apps,
 )
 from .tools_ui import observe_ui, act_ui
+from .tools_snapshot import unified_read_snapshot
 from .tools_search import search_files, spotlight_search
 from .tools_http import http_request
 from .tools_browser import (
@@ -677,6 +678,44 @@ def create_app():
               description="Get list of currently running macOS applications (visible apps only).")
     def _get_running_apps() -> Dict[str, Any]:
         return _log(audit_logger, "get_running_apps", lambda: get_running_apps(settings))
+
+    @mcp.tool(
+        name="mac_snapshot",
+        title="Read Mac Snapshot",
+        description=(
+            "Collect a compact read-only Mac context snapshot in parallel. By default returns six bounded sections: "
+            "visible apps, frontmost native windows, Finder selected paths/context, Safari/Chrome tabs, clipboard metadata "
+            "without clipboard contents, and basic system health. Use sections to request a subset and limits to bound output. "
+            "Independent section failures are reported as partial results instead of failing the whole snapshot."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+    )
+    def _mac_snapshot(
+        sections: Optional[List[str]] = None,
+        app_limit: int = 20,
+        window_limit: int = 12,
+        browser_tab_limit: int = 12,
+        selected_file_limit: int = 10,
+        max_output_bytes: int = 16384,
+    ) -> Dict[str, Any]:
+        return _log(
+            audit_logger,
+            "mac_snapshot",
+            lambda: unified_read_snapshot(
+                settings,
+                sections=sections,
+                app_limit=app_limit,
+                window_limit=window_limit,
+                browser_tab_limit=browser_tab_limit,
+                selected_file_limit=selected_file_limit,
+                max_output_bytes=max_output_bytes,
+            ),
+        )
 
     # ── Unified macOS UI tools ──────────────────────────────────────────────
     @mcp.tool(

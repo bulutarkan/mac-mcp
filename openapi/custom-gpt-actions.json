@@ -1311,6 +1311,80 @@
         }
       }
     },
+    "/api/mac_snapshot": {
+      "post": {
+        "operationId": "mac_snapshot",
+        "x-openai-isConsequential": false,
+        "summary": "Read a compact unified Mac snapshot",
+        "description": "Collect independent read-only Mac context in parallel. Defaults to apps, native windows, Finder context, browser tabs, clipboard metadata without clipboard contents, and basic system info. Section failures are returned as partial results.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "sections": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "apps",
+                        "windows",
+                        "selected_context",
+                        "browser_tabs",
+                        "clipboard",
+                        "system"
+                      ]
+                    },
+                    "minItems": 1,
+                    "maxItems": 6,
+                    "description": "Optional subset of snapshot sections; all six are returned by default."
+                  },
+                  "app_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "default": 20
+                  },
+                  "window_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "default": 12
+                  },
+                  "browser_tab_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "default": 12
+                  },
+                  "selected_file_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "default": 10
+                  },
+                  "max_output_bytes": {
+                    "type": "integer",
+                    "minimum": 4096,
+                    "maximum": 64000,
+                    "default": 16384,
+                    "description": "Approximate maximum JSON response size; oversized section data is compacted."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Compact snapshot result returned as JSON."
+          }
+        }
+      }
+    },
     "/api/mac_observe": {
       "post": {
         "operationId": "mac_observe",

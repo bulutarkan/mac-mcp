@@ -51,6 +51,7 @@ from .tools_browser import (
 )
 from .tools_interactive import ask_choice, ask_confirmation, ask_user
 from .tools_ui import act_ui, observe_ui
+from .tools_snapshot import unified_read_snapshot
 
 _settings: Optional[Settings] = None
 _rest_security_context: Optional[SecurityContextManager] = None
@@ -718,6 +719,24 @@ def _payload_value(data: Dict[str, Any], key: str, default: Any) -> Any:
     return default if value is None else value
 
 
+def _api_mac_snapshot_alias(
+    request: Request,
+    payload: Optional[Dict[str, Any]] = Body(default=None),
+    settings: Settings = Depends(get_settings),
+) -> Any:
+    data = _request_payload(payload)
+    result = unified_read_snapshot(
+        settings,
+        sections=data.get("sections"),
+        app_limit=_payload_value(data, "app_limit", 20),
+        window_limit=_payload_value(data, "window_limit", 12),
+        browser_tab_limit=_payload_value(data, "browser_tab_limit", 12),
+        selected_file_limit=_payload_value(data, "selected_file_limit", 10),
+        max_output_bytes=_payload_value(data, "max_output_bytes", 16384),
+    )
+    return _filter_rest_result(request, "mac_snapshot", result)
+
+
 def _api_mac_observe_alias(
     payload: Optional[Dict[str, Any]] = Body(default=None),
     settings: Settings = Depends(get_settings),
@@ -795,6 +814,13 @@ for _tool_name in _SEARCH_ALIAS_TOOLS:
         operation_id=_tool_name,
     )
 
+router.add_api_route(
+    "/mac_snapshot",
+    _api_mac_snapshot_alias,
+    methods=["POST"],
+    name="mac_snapshot",
+    operation_id="mac_snapshot",
+)
 router.add_api_route(
     "/mac_observe",
     _api_mac_observe_alias,
