@@ -753,6 +753,7 @@ def _api_mac_act_alias(
         window_handle=data.get("window_handle"),
         return_state=_payload_value(data, "return_state", True),
         allow_risky=_payload_value(data, "allow_risky", False),
+        preserve_focus=_payload_value(data, "preserve_focus", True),
     )
 
 

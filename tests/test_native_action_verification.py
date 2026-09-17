@@ -112,6 +112,7 @@ class NativeVerificationIntegrationTests(unittest.TestCase):
             app="DemoApp",
             return_state=False,
             allow_risky=True,
+            preserve_focus=False,
         )
 
     def test_readiness_wait_recovers_when_element_becomes_enabled(self) -> None:

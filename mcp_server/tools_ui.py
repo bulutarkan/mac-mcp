@@ -954,6 +954,215 @@ end tell''',
     return stdout.strip(), None
 
 
+
+def _capture_focus_context(deadline: Optional[float] = None) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    metadata, error = _scan_native_windows(None, None, deadline)
+    if metadata is None:
+        return None, error or "Could not capture the current frontmost app/window."
+    windows = [row for row in (metadata.get("windows") or []) if isinstance(row, dict)]
+    focused = next((row for row in windows if row.get("focused") is True), None)
+    if focused is None:
+        focused = next((row for row in windows if row.get("main") is True), None)
+    if focused is None and windows:
+        focused = windows[0]
+    return {
+        "app": str(metadata.get("active_app") or ""),
+        "pid": int(metadata.get("pid") or 0),
+        "app_handle": metadata.get("app_handle"),
+        "window_count": int(metadata.get("window_count") or len(windows)),
+        "window_index": int((focused or {}).get("index") or 0),
+        "window_handle": (focused or {}).get("window_handle"),
+        "window_identity_status": (focused or {}).get("identity_status"),
+    }, None
+
+
+def _current_focus_key(deadline: Optional[float] = None) -> Tuple[Optional[Tuple[int, int]], Optional[str]]:
+    ok, stdout, stderr = _run_osascript(
+        '''tell application "System Events"
+    set p to first application process whose frontmost is true
+    set pidText to unix id of p as text
+    set focusedIndex to 0
+    set windowCount to count of windows of p
+    repeat with wi from 1 to windowCount
+        try
+            set w to window wi of p
+            set isFocused to false
+            set isMain to false
+            try
+                set isFocused to value of attribute "AXFocused" of w
+            end try
+            try
+                set isMain to value of attribute "AXMain" of w
+            end try
+            if isFocused or isMain then
+                set focusedIndex to wi
+                exit repeat
+            end if
+        end try
+    end repeat
+    return pidText & tab & (focusedIndex as text)
+end tell''',
+        timeout_s=_operation_timeout(deadline, 5),
+    )
+    if not ok:
+        return None, stderr or "Could not read the current frontmost focus."
+    parts = stdout.strip().split("\t")
+    if len(parts) != 2:
+        return None, "Invalid frontmost focus response."
+    try:
+        return (int(parts[0]), int(parts[1])), None
+    except ValueError:
+        return None, "Invalid frontmost focus identifiers."
+
+
+def _focus_context_matches_current(
+    context: Dict[str, Any], deadline: Optional[float] = None,
+) -> Tuple[Optional[bool], Optional[str]]:
+    current, error = _current_focus_key(deadline)
+    if current is None:
+        return None, error
+    expected = (int(context.get("pid") or 0), int(context.get("window_index") or 0))
+    return current == expected, None
+
+
+def _post_action_focus_decision(
+    context: Dict[str, Any], target: Dict[str, Any], deadline: Optional[float] = None,
+) -> Tuple[str, Optional[str]]:
+    """Decide whether to restore, preserving a user's concurrent focus change.
+
+    Returns preserved, restore, user_changed, or unknown. The decision is read-only.
+    """
+    current, error = _current_focus_key(deadline)
+    if current is None:
+        return "unknown", error
+
+    previous_pid = int(context.get("pid") or 0)
+    previous_window = int(context.get("window_index") or 0)
+    target_pid = int(target.get("pid") or 0)
+    target_window = int(target.get("window_index") or 0)
+    current_pid, current_window = current
+
+    if current_pid == previous_pid and (previous_window <= 0 or current_window == previous_window):
+        return "preserved", None
+    if current_pid == target_pid and previous_pid != target_pid:
+        if target_window <= 0 or current_window == target_window:
+            return "restore", None
+        return "user_changed", None
+    if current_pid not in {previous_pid, target_pid}:
+        return "user_changed", None
+
+    # Same-app window transitions need stable handles because AX window indices can move.
+    if previous_pid == target_pid == current_pid:
+        metadata, scan_error = _scan_native_windows(None, None, deadline)
+        if metadata is None:
+            return "unknown", scan_error or error
+        focused = next(
+            (row for row in (metadata.get("windows") or [])
+             if isinstance(row, dict) and (row.get("focused") is True or row.get("main") is True)),
+            None,
+        )
+        current_handle = (focused or {}).get("window_handle")
+        previous_handle = context.get("window_handle")
+        target_handle = target.get("window_handle")
+        if previous_handle and current_handle == previous_handle:
+            return "preserved", None
+        if target_handle and current_handle == target_handle:
+            return "restore", None
+        return "user_changed", None
+
+    # The user returned to the previous app but selected a different window while the
+    # action was running. Do not overwrite that explicit focus choice.
+    if current_pid == previous_pid:
+        return "user_changed", None
+    return "restore", None
+
+
+def _restore_focus_context(
+    context: Dict[str, Any], deadline: Optional[float] = None,
+) -> Tuple[bool, str, bool]:
+    pid = int(context.get("pid") or 0)
+    if pid <= 0:
+        return False, "Previous frontmost process identity is unavailable.", False
+
+    resolved_index = int(context.get("window_index") or 0)
+    exact_window = False
+    window_handle = context.get("window_handle")
+    if window_handle:
+        app_name, resolved_pid, window_index, _, target_error = _resolve_registered_native_target(
+            str(context.get("app") or ""),
+            str(context.get("app_handle")) if context.get("app_handle") else None,
+            str(window_handle),
+            deadline,
+        )
+        if target_error is not None or not resolved_pid or not window_index:
+            return False, "Previous frontmost window no longer has a valid stable identity.", False
+        if int(resolved_pid) != pid:
+            return False, "Previous frontmost process changed before focus restoration.", False
+        resolved_index = int(window_index)
+        exact_window = True
+
+    window_body = ""
+    if resolved_index > 0:
+        window_body = f'''\n        try\n            perform action "AXRaise" of window {resolved_index}\n        end try\n        try\n            set value of attribute "AXMain" of window {resolved_index} to true\n        end try\n        try\n            set value of attribute "AXFocused" of window {resolved_index} to true\n        end try'''
+    ok, _, error = _run_osascript(
+        f'''tell application "System Events"
+    set p to first application process whose unix id is {pid}
+    tell p
+        set frontmost to true{window_body}
+    end tell
+end tell''',
+        timeout_s=_operation_timeout(deadline, 8),
+    )
+    if not ok:
+        return False, error or "Could not restore the previous frontmost app/window.", exact_window
+
+    matches, verify_error = _focus_context_matches_current(context, deadline)
+    if matches is True:
+        return True, "previous focus restored", exact_window
+    if exact_window:
+        # Window indices can move after the target app changes its window ordering. Re-scan
+        # the now-frontmost app and verify against the stable native window handle.
+        metadata, scan_error = _scan_native_windows(None, None, deadline)
+        if metadata is not None:
+            current = next(
+                (row for row in (metadata.get("windows") or [])
+                 if isinstance(row, dict) and (row.get("focused") is True or row.get("main") is True)),
+                None,
+            )
+            if metadata.get("app_handle") == context.get("app_handle") and current and current.get("window_handle") == window_handle:
+                return True, "previous focus restored", True
+        verify_error = verify_error or scan_error
+    return False, verify_error or "Previous focus could not be verified after restoration.", exact_window
+
+
+def _action_requires_foreground(action: Dict[str, Any]) -> bool:
+    action_type = str(action.get("type") or "").strip().lower().replace("-", "_")
+    element_id = action.get("element_id")
+    if action_type in {"click", "double_click"}:
+        try:
+            click_count = int(action.get("click_count", 2 if action_type == "double_click" else 1))
+        except (TypeError, ValueError):
+            return True
+        button = str(action.get("button", "left")).lower()
+        return not (element_id is not None and action_type == "click" and click_count == 1 and button == "left")
+    if action_type == "scroll":
+        return element_id is None
+    if action_type in {"action", "accessibility_action", "menu"}:
+        return False
+    if action_type in {"type", "type_text", "paste", "key", "keyboard", "shortcut"}:
+        return True
+    if action_type == "drag":
+        return True
+    return True
+
+
+def _focus_transition_needed(context: Dict[str, Any], target: Dict[str, Any]) -> bool:
+    if int(context.get("pid") or 0) != int(target.get("pid") or 0):
+        return True
+    target_window = int(target.get("window_index") or 0)
+    current_window = int(context.get("window_index") or 0)
+    return bool(target_window and target_window != current_window)
+
 def _target_script(
     app: str, element_id: str, body: str, activate: bool = True, app_pid: Optional[int] = None,
 ) -> str:
@@ -1688,6 +1897,7 @@ def _click(
     node: Optional[Dict[str, Any]],
     deadline: Optional[float] = None,
     app_pid: Optional[int] = None,
+    activate_target: bool = True,
 ) -> Tuple[bool, str]:
     click_count = int(action.get("click_count", 2 if action.get("type") == "double_click" else 1))
     if click_count not in {1, 2}:
@@ -1712,7 +1922,7 @@ def _click(
             )
         )
         ok, _, error = _run_osascript(
-            _target_script(app, element_id, click_body, app_pid=app_pid),
+            _target_script(app, element_id, click_body, activate=activate_target, app_pid=app_pid),
             timeout_s=_operation_timeout(deadline, 30),
         )
         if ok:
@@ -1739,9 +1949,10 @@ def _click(
 
 def _focus_element(
     app: str, element_id: str, deadline: Optional[float] = None, app_pid: Optional[int] = None,
+    activate_target: bool = True,
 ) -> Tuple[bool, str]:
     ok, _, error = _run_osascript(
-        _target_script(app, element_id, "click targetElement", app_pid=app_pid),
+        _target_script(app, element_id, "click targetElement", activate=activate_target, app_pid=app_pid),
         timeout_s=_operation_timeout(deadline, 30),
     )
     return ok, error
@@ -1799,8 +2010,9 @@ def _paste_text(
     text: str,
     deadline: Optional[float] = None,
     app_pid: Optional[int] = None,
+    activate_target: bool = True,
 ) -> Tuple[bool, str]:
-    focused, focus_error = _focus_element(app, element_id, deadline, app_pid)
+    focused, focus_error = _focus_element(app, element_id, deadline, app_pid, activate_target)
     if not focused:
         return False, focus_error or "Could not focus target element"
     previous, previous_error = _get_clipboard(deadline)
@@ -1811,7 +2023,7 @@ def _paste_text(
         return False, copy_error
     try:
         ok, _, error = _run_osascript(
-            _process_script(app, 'keystroke "v" using {command down}', app_pid=app_pid),
+            _process_script(app, 'keystroke "v" using {command down}', activate=activate_target, app_pid=app_pid),
             timeout_s=_operation_timeout(deadline, 30),
         )
         return ok, error or "paste completed"
@@ -1828,8 +2040,9 @@ def _type_text(
     clear: bool,
     deadline: Optional[float] = None,
     app_pid: Optional[int] = None,
+    activate_target: bool = True,
 ) -> Tuple[bool, str]:
-    focused, focus_error = _focus_element(app, element_id, deadline, app_pid)
+    focused, focus_error = _focus_element(app, element_id, deadline, app_pid, activate_target)
     if not focused:
         return False, focus_error or "Could not focus target element"
     if clear:
@@ -1838,6 +2051,7 @@ def _type_text(
                 app,
                 'keystroke "a" using {command down}\n        key code 51',
                 app_pid=app_pid,
+                activate=activate_target,
             ),
             timeout_s=_operation_timeout(deadline, 30),
         )
@@ -1848,7 +2062,7 @@ def _type_text(
     )
     if ok:
         return True, "text typed"
-    pasted, paste_error = _paste_text(app, element_id, text, deadline, app_pid)
+    pasted, paste_error = _paste_text(app, element_id, text, deadline, app_pid, activate_target)
     return pasted, paste_error if not pasted else "text pasted as typing fallback"
 
 
@@ -1858,6 +2072,7 @@ def _key(
     modifiers: Any,
     deadline: Optional[float] = None,
     app_pid: Optional[int] = None,
+    activate_target: bool = True,
 ) -> Tuple[bool, str]:
     if not isinstance(key, str) or not key.strip():
         return False, "key is required"
@@ -1878,7 +2093,7 @@ def _key(
     else:
         return False, "Unknown key names must be a single character or a supported key such as return, tab, escape, or page_down"
     ok, _, error = _run_osascript(
-        _process_script(app, command, app_pid=app_pid), timeout_s=_operation_timeout(deadline, 30)
+        _process_script(app, command, activate=activate_target, app_pid=app_pid), timeout_s=_operation_timeout(deadline, 30)
     )
     return ok, error or "key sent"
 
@@ -1889,6 +2104,7 @@ def _scroll(
     node: Optional[Dict[str, Any]],
     deadline: Optional[float] = None,
     app_pid: Optional[int] = None,
+    activate_target: bool = True,
 ) -> Tuple[bool, str]:
     direction = str(action.get("direction", "down")).lower().replace("-", "_")
     action_name = {
@@ -1912,23 +2128,19 @@ def _scroll(
             return False, str(exc)
         body = (
             f'repeat {pages} times\n'
-            f'            try\n'
-            f'                perform action "{action_name}" of targetElement\n'
-            f'            on error\n'
-            f'                key code {121 if direction == "down" else 116 if direction == "up" else 124 if direction == "right" else 123}\n'
-            f'            end try\n'
+            f'            perform action "{action_name}" of targetElement\n'
             f'            delay 0.1\n'
             f'        end repeat'
         )
         ok, _, error = _run_osascript(
-            _target_script(app, element_id, body, app_pid=app_pid),
+            _target_script(app, element_id, body, activate=activate_target, app_pid=app_pid),
             timeout_s=_operation_timeout(deadline, 30),
         )
         if ok:
             return True, "semantic scroll completed"
-        if app_pid is not None:
-            return False, error or "semantic scroll failed for stable native target; key fallback disabled"
-        # If an app does not expose AXScroll actions, fall back to page keys.
+        if app_pid is not None or not activate_target:
+            return False, error or "semantic scroll failed for stable/background native target; key fallback disabled"
+        # If an app does not expose AXScroll actions, foreground mode may fall back to page keys.
 
     key_name = {
         "down": "pagedown",
@@ -1937,7 +2149,7 @@ def _scroll(
         "right": "right",
     }[direction]
     for _ in range(pages):
-        ok, message = _key(app, key_name, [], deadline, app_pid)
+        ok, message = _key(app, key_name, [], deadline, app_pid, activate_target)
         if not ok:
             return False, message
         if deadline is not None and time.monotonic() >= deadline:
@@ -1950,6 +2162,7 @@ def _accessibility_action(
     action: Dict[str, Any],
     deadline: Optional[float] = None,
     app_pid: Optional[int] = None,
+    activate_target: bool = True,
 ) -> Tuple[bool, str]:
     try:
         element_id = _validate_element_id(action.get("element_id"))
@@ -1959,7 +2172,7 @@ def _accessibility_action(
     if not re.fullmatch(r"AX[A-Za-z0-9]+", action_name):
         return False, "name must be an Accessibility action such as AXPress or AXShowMenu"
     ok, _, error = _run_osascript(
-        _target_script(app, element_id, f'perform action "{action_name}" of targetElement', app_pid=app_pid),
+        _target_script(app, element_id, f'perform action "{action_name}" of targetElement', activate=activate_target, app_pid=app_pid),
         timeout_s=_operation_timeout(deadline, 30),
     )
     return ok, error or f"{action_name} completed"
@@ -2011,12 +2224,13 @@ def _perform_action(
     node: Optional[Dict[str, Any]],
     deadline: Optional[float] = None,
     app_pid: Optional[int] = None,
+    activate_target: bool = True,
 ) -> Tuple[bool, str]:
     action_type = str(action.get("type", "")).strip().lower().replace("-", "_")
     if action_type in {"click", "double_click"}:
-        return _click(app, action, node, deadline, app_pid)
+        return _click(app, action, node, deadline, app_pid, activate_target)
     if action_type == "scroll":
-        return _scroll(app, action, node, deadline, app_pid)
+        return _scroll(app, action, node, deadline, app_pid, activate_target)
     if action_type in {"type", "type_text"}:
         element_id = _validate_element_id(action.get("element_id"))
         text = action.get("text", "")
@@ -2024,7 +2238,7 @@ def _perform_action(
             raise ValueError("text must be a string")
         if len(text) > _MAX_TEXT_CHARS:
             raise ValueError(f"text must be at most {_MAX_TEXT_CHARS} characters")
-        return _type_text(app, element_id, text, bool(action.get("clear", True)), deadline, app_pid)
+        return _type_text(app, element_id, text, bool(action.get("clear", True)), deadline, app_pid, activate_target)
     if action_type == "paste":
         element_id = _validate_element_id(action.get("element_id"))
         text = action.get("text", "")
@@ -2032,11 +2246,11 @@ def _perform_action(
             raise ValueError("text must be a string")
         if len(text) > _MAX_TEXT_CHARS:
             raise ValueError(f"text must be at most {_MAX_TEXT_CHARS} characters")
-        return _paste_text(app, element_id, text, deadline, app_pid)
+        return _paste_text(app, element_id, text, deadline, app_pid, activate_target)
     if action_type in {"key", "keyboard", "shortcut"}:
-        return _key(app, action.get("key"), action.get("modifiers", []), deadline, app_pid)
+        return _key(app, action.get("key"), action.get("modifiers", []), deadline, app_pid, activate_target)
     if action_type in {"action", "accessibility_action", "menu"}:
-        return _accessibility_action(app, action, deadline, app_pid)
+        return _accessibility_action(app, action, deadline, app_pid, activate_target)
     if action_type == "drag":
         return _drag(action, deadline)
     raise ValueError(
@@ -2151,6 +2365,7 @@ def act_ui(
     allow_risky: bool = False,
     app_handle: Optional[str] = None,
     window_handle: Optional[str] = None,
+    preserve_focus: bool = True,
 ) -> Any:
     """Perform bounded macOS UI actions against re-resolved native app/window handles."""
     deadline = time.monotonic() + _ACTION_BUDGET_S
@@ -2290,6 +2505,45 @@ def act_ui(
                         "actions": results,
                     }
 
+            focus_context: Optional[Dict[str, Any]] = None
+            focus_required = _action_requires_foreground(resolved_action)
+            focus_transition = False
+            activate_target = True
+            focus_mode = "foreground_allowed"
+            focus_restore_attempted = False
+            focus_restore_ok: Optional[bool] = None
+            focus_restore_exact = False
+            focus_restore_message: Optional[str] = None
+            focus_user_changed = False
+
+            if preserve_focus:
+                focus_context, focus_error = _capture_focus_context(deadline)
+                if focus_context is None:
+                    return _native_target_error(
+                        "FOCUS_SNAPSHOT_FAILED",
+                        focus_error or "Could not capture the user's current frontmost app/window before acting.",
+                        actions=results,
+                        failed_action_index=index,
+                    )
+                focus_transition = _focus_transition_needed(focus_context, target)
+                if (
+                    focus_required
+                    and focus_transition
+                    and int(focus_context.get("window_count") or 0) > 1
+                    and not focus_context.get("window_handle")
+                ):
+                    return _native_target_error(
+                        "FOCUS_SNAPSHOT_AMBIGUOUS",
+                        "The current user window does not have a stable identity, so a temporary focus switch cannot be restored safely.",
+                        actions=results,
+                        failed_action_index=index,
+                        retryable=False,
+                    )
+                activate_target = bool(focus_required)
+                focus_mode = "temporary_foreground_restore" if focus_required and focus_transition else (
+                    "foreground_same_target" if focus_required else "background_ax"
+                )
+
             started = time.perf_counter()
             timed_out = False
             try:
@@ -2299,12 +2553,39 @@ def act_ui(
                     node,
                     deadline,
                     int(target["pid"]) if target.get("pid") else None,
+                    activate_target,
                 )
             except TimeoutError as exc:
                 ok, message = False, str(exc)
                 timed_out = True
             except ValueError as exc:
                 ok, message = False, str(exc)
+
+            if preserve_focus and focus_context is not None:
+                focus_decision, focus_decision_error = _post_action_focus_decision(
+                    focus_context, target, deadline
+                )
+                if focus_decision == "restore":
+                    focus_restore_attempted = True
+                    try:
+                        focus_restore_ok, restore_message, focus_restore_exact = _restore_focus_context(
+                            focus_context, deadline
+                        )
+                        focus_restore_message = restore_message
+                    except TimeoutError as exc:
+                        focus_restore_ok = False
+                        focus_restore_message = str(exc)
+                elif focus_decision == "preserved":
+                    focus_restore_ok = True
+                elif focus_decision == "user_changed":
+                    focus_user_changed = True
+                    focus_restore_ok = True
+                    focus_restore_message = "focus restoration skipped because the user changed foreground focus during the action"
+                else:
+                    # Never blindly restore when current focus cannot be read: doing so
+                    # could steal focus from a user who moved elsewhere during the action.
+                    focus_restore_ok = False
+                    focus_restore_message = focus_decision_error or "current focus could not be verified after the action"
 
             result: Dict[str, Any] = {
                 "index": index,
@@ -2316,7 +2597,22 @@ def act_ui(
                 "app_handle": target.get("app_handle"),
                 "window_handle": target.get("window_handle"),
                 "resolved_window_index": target.get("window_index"),
+                "focus_mode": focus_mode,
+                "preserve_focus": bool(preserve_focus),
             }
+            if preserve_focus:
+                result["focus_preserved"] = focus_restore_ok is True
+                result["focus_restore_attempted"] = focus_restore_attempted
+                if focus_user_changed:
+                    result["focus_user_changed"] = True
+                    result["focus_restore_skipped_user_change"] = True
+                    if focus_restore_message:
+                        result["focus_restore_message"] = focus_restore_message
+                if focus_restore_attempted:
+                    result["focus_restored"] = focus_restore_ok is True
+                    result["focus_restore_exact"] = bool(focus_restore_exact)
+                    if focus_restore_message:
+                        result["focus_restore_message"] = focus_restore_message
             if resolved_element_id != original_element_id:
                 result["resolved_element_id"] = resolved_element_id
             if readiness is not None:
@@ -2372,6 +2668,17 @@ def act_ui(
             elif result.get("ok") and resolved_element_id is not None:
                 result["verification"] = "readiness_only"
 
+            if preserve_focus and focus_restore_ok is False:
+                result.update({
+                    "ok": False,
+                    "error": "focus_restore_failed",
+                    "reason_code": "FOCUS_RESTORE_FAILED",
+                    "automatic_retry": False,
+                    "observe_again": True,
+                    "message": (
+                        "The native action may have executed, but the user's previous focus could not be restored safely."
+                    ),
+                })
             result["duration_ms"] = int((time.perf_counter() - started) * 1000)
             results.append(result)
             if not result.get("ok"):

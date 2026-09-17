@@ -736,6 +736,7 @@ def create_app():
             "accessibility_action/menu. Use observation_id to prevent stale element paths. "
             "Optional app_handle/window_handle values pin execution to a previously observed native target. "
             "Potentially consequential clicks require allow_risky=true explicitly. "
+            "By default preserve_focus=true keeps background-safe AX actions off the foreground and restores prior focus after global input; set false only for intentional foreground control. "
             "The complete action batch has a 60-second safety budget."
         ),
         annotations=ToolAnnotations(
@@ -754,6 +755,7 @@ def create_app():
         window_handle: Optional[str] = None,
         return_state: bool = True,
         allow_risky: bool = False,
+        preserve_focus: bool = True,
     ) -> Any:
         return _log(
             audit_logger,
@@ -767,6 +769,7 @@ def create_app():
                 window_handle=window_handle,
                 return_state=return_state,
                 allow_risky=allow_risky,
+                preserve_focus=preserve_focus,
             ),
         )
 

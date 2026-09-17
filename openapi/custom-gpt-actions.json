@@ -1382,7 +1382,7 @@
         "operationId": "mac_act",
         "x-openai-isConsequential": true,
         "summary": "Act on the macOS UI",
-        "description": "Use observation_id and native app/window handles for re-resolved targeting. Stale or ambiguous handles fail closed before execution.",
+        "description": "Use observation_id and native app/window handles for re-resolved targeting. Stale or ambiguous handles fail closed before execution. Background-safe AX actions preserve the current user focus by default; global-input actions temporarily focus the target and restore the prior app/window.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1425,6 +1425,11 @@
                     "type": "boolean",
                     "description": "Explicitly allow potentially consequential clicks.",
                     "default": false
+                  },
+                  "preserve_focus": {
+                    "type": "boolean",
+                    "description": "Preserve the user's current frontmost app/window when possible. Temporarily focused global-input actions restore the prior focus. Set false only when intentionally leaving the target foreground.",
+                    "default": true
                   }
                 },
                 "required": [

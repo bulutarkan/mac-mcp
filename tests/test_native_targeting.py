@@ -130,6 +130,7 @@ class NativeTargetActionTests(unittest.TestCase):
                 observation_id=observation_id,
                 return_state=False,
                 allow_risky=True,
+                preserve_focus=False,
             )
 
         self.assertTrue(result["ok"])
