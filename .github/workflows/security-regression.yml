@@ -14,6 +14,12 @@ jobs:
   test:
     name: Python ${{ matrix.python-version }}
     runs-on: macos-15
+    # Secure bootstrap defaults intentionally fail closed. CI opts into only the
+    # capabilities exercised by this regression suite instead of weakening runtime defaults.
+    env:
+      MCP_API_KEY: "ci-regression-only-0123456789abcdef0123456789abcdef"
+      MCP_ALLOW_NO_AUTH: "false"
+      MCP_ALLOW_SHELL: "true"
     strategy:
       fail-fast: false
       matrix:

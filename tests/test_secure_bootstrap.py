@@ -115,6 +115,14 @@ class SecureBootstrapTests(unittest.TestCase):
         key_line = next(line for line in lines if line.startswith("MCP_API_KEY="))
         self.assertEqual("MCP_API_KEY=", key_line)
 
+    def test_security_regression_workflow_declares_explicit_ci_bootstrap(self) -> None:
+        workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "security-regression.yml").read_text(encoding="utf-8")
+        self.assertIn('MCP_API_KEY: "ci-regression-only-', workflow)
+        self.assertIn('MCP_ALLOW_NO_AUTH: "false"', workflow)
+        self.assertIn('MCP_ALLOW_SHELL: "true"', workflow)
+        self.assertNotIn('HTTP_ALLOWLIST: "*"', workflow)
+        self.assertNotIn('BROWSER_ALLOWLIST: "*"', workflow)
+
     def test_explicit_no_auth_loopback_warns_but_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as td, clean_env(
             MCP_ALLOW_NO_AUTH="true",
