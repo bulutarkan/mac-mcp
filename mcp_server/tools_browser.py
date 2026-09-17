@@ -20,6 +20,9 @@ from .chrome_background_bridge import chrome_background_bridge
 from .artifact_pipeline import (
     ArtifactError, drive_native_file_dialog, register_artifact, resolve_artifact, wait_for_file_dialog,
 )
+from .context_handoff import (
+    HandoffError, mark_handoff_consumed, resolve_browser_upload_handoff,
+)
 
 
 def validate_url(settings: Settings, url: str) -> None:
@@ -1322,13 +1325,27 @@ def browser_upload_artifact(
     tab_handle: Optional[str] = None,
     timeout_s: int = 20,
     preserve_focus: bool = True,
+    handoff_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     artifact = resolve_artifact(artifact_id, expected_path=path, verify_hash=True)
     b = _norm_browser(browser)
     timeout_s = max(2, min(int(timeout_s), settings.max_wait_s, 60))
     with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+        if handoff_id:
+            try:
+                resolve_browser_upload_handoff(
+                    handoff_id, browser=b, tab_handle=target.tab_handle, current_url=target.url,
+                    css_selector=css_selector, artifact_id=artifact_id, path=path,
+                )
+            except HandoffError as exc:
+                raise HTTPException(status.HTTP_409_CONFLICT, {
+                    "ok": False, "error": exc.code.lower(), "reason_code": exc.code,
+                    "message": str(exc), **exc.extra,
+                }) from exc
         if b == "Google Chrome":
             try:
+                if handoff_id:
+                    mark_handoff_consumed(handoff_id, consumer="browser_upload_artifact:chrome")
                 response = chrome_background_bridge.request_set_file_input(
                     target.native_id, css_selector, str(artifact["path"]), timeout_s=timeout_s,
                 )
@@ -1345,6 +1362,7 @@ def browser_upload_artifact(
                 "ok": True, "browser": b, "tab_handle": target.tab_handle,
                 "artifact": artifact, "file_input": metadata,
                 "transport": "chrome_debugger_dom_set_file_input", "focus_preserved": True,
+                **({"handoff_id": handoff_id, "handoff_consumed": True} if handoff_id else {}),
             }
 
         # Safari permits a file-input click through AppleScript JavaScript, but the actual file
@@ -1402,9 +1420,16 @@ def browser_upload_artifact(
                     "ok": False, "error": "file_dialog_not_opened", "retryable": False,
                 })
             try:
+                if handoff_id:
+                    mark_handoff_consumed(handoff_id, consumer="browser_upload_artifact:safari")
                 dialog = drive_native_file_dialog(
                     pid=safari_pid, mode="open", artifact_id=artifact_id, path=path, timeout_s=timeout_s,
                 )
+            except HandoffError as exc:
+                raise HTTPException(status.HTTP_409_CONFLICT, {
+                    "ok": False, "error": exc.code.lower(), "reason_code": exc.code,
+                    "message": str(exc), **exc.extra,
+                }) from exc
             except ArtifactError as exc:
                 raise HTTPException(status.HTTP_409_CONFLICT, {
                     "ok": False, "error": exc.code.lower(), "reason_code": exc.code,
@@ -1425,6 +1450,7 @@ def browser_upload_artifact(
                 "ok": True, "browser": b, "tab_handle": target.tab_handle,
                 "artifact": artifact, "file_input": metadata, "dialog": dialog,
                 "transport": "safari_native_open_panel",
+                **({"handoff_id": handoff_id, "handoff_consumed": True} if handoff_id else {}),
             }
         finally:
             if safari_tab_state is not None:

@@ -203,6 +203,26 @@ def _update_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     )
 
 
+def _context_handoff_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    action = str(arguments.get("action") or "").strip().lower().replace("-", "_")
+    capabilities = {Capability.READ}
+    if action == "create_browser_text":
+        capabilities.add(Capability.BROWSER_CONTROL)
+    elif action == "create_artifact":
+        source_type = str(arguments.get("source_type") or "").strip().lower().replace("-", "_")
+        target_kind = str(arguments.get("target_kind") or "").strip().lower().replace("-", "_")
+        if source_type == "finder":
+            capabilities.add(Capability.NATIVE_ACCESSIBILITY)
+        if source_type == "browser_artifact" or target_kind == "browser_upload":
+            capabilities.add(Capability.BROWSER_CONTROL)
+    return RiskOverride(
+        capabilities=frozenset(capabilities),
+        destructive=False,
+        sensitive=True,
+        requested_access_mode=AccessMode.READ_ONLY,
+    )
+
+
 def _artifact_pipeline_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     action = str(arguments.get("action") or "").strip().lower().replace("-", "_")
     if action in {"register", "inspect"}:
@@ -327,6 +347,11 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
         "artifact_pipeline", "files",
         _caps(Capability.READ, Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.UI_ACTION),
         sensitive=True, resolver=_artifact_pipeline_risk,
+    ),
+    "context_handoff": _r(
+        "context_handoff", "macos",
+        _caps(Capability.READ, Capability.BROWSER_CONTROL, Capability.NATIVE_ACCESSIBILITY),
+        sensitive=True, resolver=_context_handoff_risk,
     ),
     "mac_snapshot": _r("mac_snapshot", "macos", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY, Capability.BROWSER_CONTROL), sensitive=True),
     "mac_observe": _r("mac_observe", "accessibility", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY), sensitive=True),
@@ -713,11 +738,16 @@ def evaluate_tool_scope(
     for path in _scope_paths(tool, arguments):
         reasons.extend(evaluate_scope(scope, ScopeRequest(path=path)).reasons)
 
-    if risk.family == "browser" and scope.browser_tabs is not None and "*" not in scope.browser_tabs:
+    if (risk.family == "browser" or tool == "context_handoff") and scope.browser_tabs is not None and "*" not in scope.browser_tabs:
         handles: list[str] = []
         handle = str(arguments.get("tab_handle") or "").strip()
         if handle:
             handles.append(handle)
+        if tool == "context_handoff":
+            for handoff_key in ("source_tab_handle", "target_tab_handle"):
+                candidate = str(arguments.get(handoff_key) or "").strip()
+                if candidate:
+                    handles.append(candidate)
         tab_handles = arguments.get("tab_handles")
         if isinstance(tab_handles, (list, tuple)):
             for value in tab_handles:
@@ -727,6 +757,8 @@ def evaluate_tool_scope(
         handles = list(dict.fromkeys(handles))
         if tool == "browser_list_tabs":
             pass  # result is filtered after execution
+        elif tool == "context_handoff" and not handles:
+            pass
         elif not handles:
             reasons.append("browser_tab_required")
         else:

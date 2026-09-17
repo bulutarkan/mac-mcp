@@ -478,6 +478,52 @@ class SecurityContextManager:
         self, *, key: str, public_session_id: str, tool: str,
         arguments: Mapping[str, Any], result: Any,
     ) -> Optional[ExecutionSecurityState]:
+        if tool == "context_handoff":
+            if not isinstance(result, Mapping) or result.get("ok") is False:
+                return None
+            handoff_action = str(arguments.get("action") or "").strip().lower().replace("-", "_")
+            if handoff_action not in {"create_browser_text", "create_artifact"}:
+                return None
+            source = result.get("source") if isinstance(result.get("source"), Mapping) else {}
+            target = result.get("target") if isinstance(result.get("target"), Mapping) else {}
+            source_is_browser = str(source.get("kind") or "") == "browser"
+            target_is_browser = str(target.get("kind") or "") == "browser_upload"
+            if not source_is_browser and not target_is_browser:
+                return None
+
+            source_origin = self._origin(str(source.get("url") or "")) if source_is_browser else None
+            target_origin = self._origin(str(target.get("url") or "")) if target_is_browser else None
+            current_origin = target_origin if target_is_browser else source_origin
+            current_tab_handle = (
+                str(target.get("tab_handle") or "") if target_is_browser
+                else str(source.get("tab_handle") or "")
+            ) or None
+            current_tab_title = (
+                str(target.get("title") or "") if target_is_browser
+                else str(source.get("title") or "")
+            ) or None
+            state = self.touch(key, public_session_id)
+            with self._lock:
+                if current_origin and state.current_origin and current_origin != state.current_origin:
+                    self._invalidate_session_grants_locked(public_session_id)
+                if current_origin:
+                    state.current_origin = current_origin
+                state.tab_handle = current_tab_handle or state.tab_handle
+                state.tab_title = current_tab_title or state.tab_title
+                if not state.web_scoped:
+                    state.trust_level = self._trust_for_origin(current_origin)
+                if source_is_browser:
+                    source_trust = self._trust_for_origin(source_origin)
+                    if source_trust != "local_trusted":
+                        self._mark_untrusted_provenance_locked(
+                            state, origin=source_origin or state.provenance_origin,
+                            tab_handle=str(source.get("tab_handle") or "") or state.provenance_tab_handle,
+                            tab_title=str(source.get("title") or "") or state.provenance_tab_title,
+                            reason="untrusted_browser_content",
+                        )
+                state.last_seen_at = time.time()
+                return state
+
         if (
             tool not in UNTRUSTED_BROWSER_CONTENT_TOOLS
             and tool not in _BROWSER_NAVIGATION_TOOLS

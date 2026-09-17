@@ -155,6 +155,10 @@ def decorate_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
                         "pid": pid,
                         "bundle_id": bundle_id,
                         "process_token": process_token,
+                        "title": _identity_text(row.get("title")),
+                        "identity_kind": kind,
+                        "identity_value": value,
+                        "identity_status": status,
                         "seen_at": now,
                     }
                 else:

@@ -16,7 +16,7 @@ EXPECTED_TOOLS = {
     "directory_tree", "create_directory", "get_file_info", "find_files",
     "run_applescript", "send_notification", "clipboard_get", "clipboard_set",
     "open_app", "open_url", "set_volume", "get_volume", "set_brightness",
-    "screenshot", "set_reminder", "get_running_apps", "artifact_pipeline", "mac_snapshot", "mac_observe", "mac_act",
+    "screenshot", "set_reminder", "get_running_apps", "artifact_pipeline", "context_handoff", "mac_snapshot", "mac_observe", "mac_act",
     "search_files", "spotlight_search", "http_request", "browser_open_url",
     "browser_list_tabs", "browser_activate_tab", "browser_close_tab",
     "browser_execute_js", "browser_click_selector", "browser_type_selector",
@@ -35,7 +35,7 @@ class OpenAPICoverageTests(unittest.TestCase):
         operations = [item["post"] for item in schema["paths"].values()]
         operation_ids = {operation["operationId"] for operation in operations}
 
-        self.assertEqual(62, len(schema["paths"]))
+        self.assertEqual(63, len(schema["paths"]))
         self.assertEqual(EXPECTED_TOOLS, operation_ids)
         choice_schema = schema["paths"]["/api/interactive/choice"]["post"]["requestBody"]["content"]["application/json"]["schema"]
         self.assertEqual(2, choice_schema["properties"]["choices"]["minItems"])
@@ -57,7 +57,7 @@ class OpenAPICoverageTests(unittest.TestCase):
         ]
         operation_ids = {operation["operationId"] for operation in operations}
 
-        self.assertEqual(62, len(operations))
+        self.assertEqual(63, len(operations))
         self.assertEqual(EXPECTED_TOOLS, operation_ids)
         self.assertEqual(
             3,

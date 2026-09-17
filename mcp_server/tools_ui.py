@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -38,7 +39,11 @@ from .native_targets import (
     window_handle_map as _window_handle_map,
 )
 from .security import Settings, truncate
-from .artifact_pipeline import ArtifactError, drive_native_file_dialog
+from .artifact_pipeline import ArtifactError, drive_native_file_dialog, resolve_artifact
+from .context_handoff import (
+    HandoffError, mark_handoff_consumed, resolve_mail_attachment_handoff,
+    resolve_mail_text_handoff, resolve_native_file_handoff, resolve_native_text_handoff,
+)
 
 
 _FIELD_SEPARATOR = chr(31)
@@ -1296,7 +1301,7 @@ def _action_requires_foreground(action: Dict[str, Any]) -> bool:
         return not (element_id is not None and action_type == "click" and click_count == 1 and button == "left")
     if action_type == "scroll":
         return element_id is None
-    if action_type in {"action", "accessibility_action", "menu"}:
+    if action_type in {"action", "accessibility_action", "menu", "handoff_mail_text", "handoff_mail_attachment"}:
         return False
     if action_type in {"type", "type_text", "paste", "key", "keyboard", "shortcut", "file_dialog"}:
         return True
@@ -2414,6 +2419,126 @@ def _is_risky_click(node: Optional[Dict[str, Any]]) -> bool:
     return any(word in searchable for word in _RISKY_WORDS)
 
 
+def _mail_draft_text_handoff(
+    subject: str,
+    text: str,
+    *,
+    clear: bool,
+    deadline: Optional[float] = None,
+) -> Dict[str, Any]:
+    if not subject.strip():
+        raise HandoffError("HANDOFF_MAIL_DRAFT_IDENTITY_REQUIRED", "Mail draft subject is empty.")
+    mutation = (
+        f"set content of targetMessage to {_apple_string(text)}"
+        if clear
+        else (
+            "tell content of targetMessage\n"
+            f"        make new paragraph at end with data {_apple_string(text)}\n"
+            "    end tell"
+        )
+    )
+    script = f'''tell application "Mail"
+    set subjectText to {_apple_string(subject)}
+    set transferText to {_apple_string(text)}
+    set matches to every outgoing message whose subject is subjectText
+    set matchCount to count of matches
+    if matchCount is not 1 then return "DRAFT_COUNT" & tab & (matchCount as text)
+    set targetMessage to item 1 of matches
+    {mutation}
+    delay 0.15
+    set afterText to content of targetMessage as text
+    set afterLength to length of afterText
+    if not (afterText contains transferText) then return "VERIFY_FAILED" & tab & (afterLength as text)
+    return "OK" & tab & (afterLength as text)
+end tell'''
+    ok, stdout, stderr = _run_osascript(script, timeout_s=_operation_timeout(deadline, 20))
+    if not ok:
+        raise HandoffError("HANDOFF_MAIL_TEXT_FAILED", stderr or "Mail draft text update failed.")
+    parts = (stdout or "").strip().split("\t")
+    status = parts[0] if parts else ""
+    if status == "DRAFT_COUNT":
+        count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        raise HandoffError(
+            "HANDOFF_MAIL_DRAFT_NOT_UNIQUE",
+            "The target Mail draft is missing or no longer uniquely identified by its subject.",
+            draft_match_count=count,
+        )
+    if status != "OK":
+        raise HandoffError(
+            "HANDOFF_MAIL_TEXT_NOT_VERIFIED",
+            "Mail accepted the text operation but the expected draft content was not observed afterward.",
+        )
+    after_len = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+    return {
+        "ok": True,
+        "kind": "mail_draft_text",
+        "verified": True,
+        "draft_subject_sha256": hashlib.sha256(subject.encode("utf-8", errors="replace")).hexdigest(),
+        "after_length": after_len,
+        "clear": bool(clear),
+    }
+
+
+def _mail_draft_attachment_handoff(
+    subject: str,
+    artifact: Dict[str, Any],
+    *,
+    deadline: Optional[float] = None,
+) -> Dict[str, Any]:
+    artifact_id = str(artifact.get("artifact_id") or "")
+    path = str(artifact.get("path") or "")
+    if not artifact_id or not path:
+        raise HandoffError("HANDOFF_ARTIFACT_REQUIRED", "Mail attachment handoff is missing artifact identity.")
+    verified_before = resolve_artifact(artifact_id, expected_path=path, verify_hash=True)
+    script = f'''tell application "Mail"
+    set subjectText to {_apple_string(subject)}
+    set matches to every outgoing message whose subject is subjectText
+    set matchCount to count of matches
+    if matchCount is not 1 then return "DRAFT_COUNT" & tab & (matchCount as text)
+    set targetMessage to item 1 of matches
+    set beforeCount to count of attachments of content of targetMessage
+    set fileRef to POSIX file {_apple_string(path)}
+    tell content of targetMessage
+        make new attachment with properties {{file name:fileRef}} at after the last paragraph
+    end tell
+    delay 0.2
+    set afterCount to count of attachments of content of targetMessage
+    if afterCount is not (beforeCount + 1) then return "VERIFY_FAILED" & tab & (beforeCount as text) & tab & (afterCount as text)
+    return "OK" & tab & (beforeCount as text) & tab & (afterCount as text)
+end tell'''
+    ok, stdout, stderr = _run_osascript(script, timeout_s=_operation_timeout(deadline, 25))
+    if not ok:
+        raise HandoffError("HANDOFF_MAIL_ATTACHMENT_FAILED", stderr or "Mail draft attachment update failed.")
+    parts = (stdout or "").strip().split("\t")
+    status = parts[0] if parts else ""
+    if status == "DRAFT_COUNT":
+        count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        raise HandoffError(
+            "HANDOFF_MAIL_DRAFT_NOT_UNIQUE",
+            "The target Mail draft is missing or no longer uniquely identified by its subject.",
+            draft_match_count=count,
+        )
+    if status != "OK":
+        raise HandoffError(
+            "HANDOFF_MAIL_ATTACHMENT_NOT_VERIFIED",
+            "Mail accepted the attachment operation but attachment-count verification failed.",
+        )
+    verified_after = resolve_artifact(artifact_id, expected_path=path, verify_hash=True)
+    if verified_after.get("sha256") != verified_before.get("sha256"):
+        raise HandoffError("HANDOFF_ARTIFACT_IDENTITY_MISMATCH", "The artifact changed while it was being attached to Mail.")
+    before_count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+    after_count = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+    return {
+        "ok": True,
+        "kind": "mail_draft_attachment",
+        "verified": True,
+        "draft_subject_sha256": hashlib.sha256(subject.encode("utf-8", errors="replace")).hexdigest(),
+        "before_attachment_count": before_count,
+        "after_attachment_count": after_count,
+        "artifact": verified_after,
+    }
+
+
 def _perform_action(
     app: str,
     action: Dict[str, Any],
@@ -2665,9 +2790,77 @@ def act_ui(
                 )
                 resolved_action["element_id"] = resolved_element_id
 
+            handoff_id = str(resolved_action.get("handoff_id") or "").strip() or None
+            handoff_payload: Optional[Dict[str, Any]] = None
+            if action_type == "handoff_mail_text":
+                if not isinstance(node, dict) or node.get("role") != "AXWebArea" or node.get("description") != "message body":
+                    return _native_target_error(
+                        "HANDOFF_MAIL_BODY_TARGET_REQUIRED",
+                        "handoff_mail_text must be bound to the Mail compose AXWebArea with description 'message body'.",
+                        actions=results, failed_action_index=index, retryable=False,
+                    )
+            if handoff_id:
+                try:
+                    if action_type in {"type", "type_text", "paste", "handoff_mail_text"}:
+                        if "text" in resolved_action:
+                            raise HandoffError(
+                                "HANDOFF_TEXT_CONFLICT",
+                                "When handoff_id is supplied, omit text; the sealed handoff payload is used instead.",
+                            )
+                        if original_element_id is None or observation_id is None:
+                            raise HandoffError(
+                                "HANDOFF_TEXT_TARGET_REQUIRED",
+                                "Text handoff consumption requires observation_id and an element_id from the bound target observation.",
+                            )
+                        resolver = resolve_mail_text_handoff if action_type == "handoff_mail_text" else resolve_native_text_handoff
+                        handoff_payload = resolver(
+                            handoff_id, app=str(target.get("app") or ""),
+                            app_handle=str(target.get("app_handle") or ""),
+                            window_handle=str(target.get("window_handle") or ""),
+                            observation_id=str(observation_id), element_id=str(original_element_id),
+                        )
+                        resolved_action["text"] = handoff_payload["text"]
+                        resolved_action["clear"] = bool(handoff_payload["clear"])
+                        if action_type == "handoff_mail_text":
+                            resolved_action["draft_subject"] = handoff_payload["draft_subject"]
+                    elif action_type == "handoff_mail_attachment":
+                        handoff_payload = resolve_mail_attachment_handoff(
+                            handoff_id, app=str(target.get("app") or ""),
+                            app_handle=str(target.get("app_handle") or ""),
+                            window_handle=str(target.get("window_handle") or ""),
+                        )
+                        resolved_action["artifact"] = dict(handoff_payload.get("artifact") or {})
+                        resolved_action["draft_subject"] = handoff_payload["draft_subject"]
+                    elif action_type == "file_dialog":
+                        if str(resolved_action.get("mode") or "open").strip().lower() != "open":
+                            raise HandoffError(
+                                "HANDOFF_FILE_DIALOG_MODE_INVALID",
+                                "Artifact handoffs may only be consumed by an Open file dialog.",
+                            )
+                        handoff_payload = resolve_native_file_handoff(
+                            handoff_id, app=str(target.get("app") or ""),
+                            app_handle=str(target.get("app_handle") or ""),
+                            window_handle=str(target.get("window_handle") or ""),
+                            artifact_id=resolved_action.get("artifact_id"), path=resolved_action.get("path"),
+                        )
+                        artifact = dict(handoff_payload.get("artifact") or {})
+                        resolved_action["mode"] = "open"
+                        resolved_action["artifact_id"] = artifact.get("artifact_id")
+                        resolved_action["path"] = artifact.get("path")
+                    else:
+                        raise HandoffError(
+                            "HANDOFF_ACTION_UNSUPPORTED",
+                            "handoff_id is supported only for type/type_text/paste, handoff_mail_text, handoff_mail_attachment, and file_dialog actions.",
+                        )
+                except HandoffError as exc:
+                    return _native_target_error(
+                        exc.code, str(exc), actions=results, failed_action_index=index,
+                        retryable=False, **exc.extra,
+                    )
+
             readiness: Optional[Dict[str, Any]] = None
             before_state: Optional[Dict[str, Any]] = None
-            if resolved_element_id is not None:
+            if resolved_element_id is not None and action_type != "handoff_mail_text":
                 try:
                     readiness = _wait_for_native_readiness(
                         str(target.get("app") or ""),
@@ -2754,13 +2947,35 @@ def act_ui(
             started = time.perf_counter()
             timed_out = False
             dialog_details: Optional[Dict[str, Any]] = None
+            handoff_details: Optional[Dict[str, Any]] = None
             try:
-                if action_type == "file_dialog":
+                if action_type == "handoff_mail_text":
+                    if handoff_id:
+                        mark_handoff_consumed(handoff_id, consumer="mac_act:handoff_mail_text")
+                    handoff_details = _mail_draft_text_handoff(
+                        str(resolved_action.get("draft_subject") or ""),
+                        str(resolved_action.get("text") or ""),
+                        clear=bool(resolved_action.get("clear", False)),
+                        deadline=deadline,
+                    )
+                    ok, message = True, "verified Mail draft text handoff completed"
+                elif action_type == "handoff_mail_attachment":
+                    if handoff_id:
+                        mark_handoff_consumed(handoff_id, consumer="mac_act:handoff_mail_attachment")
+                    handoff_details = _mail_draft_attachment_handoff(
+                        str(resolved_action.get("draft_subject") or ""),
+                        dict(resolved_action.get("artifact") or {}),
+                        deadline=deadline,
+                    )
+                    ok, message = True, "verified Mail draft attachment handoff completed"
+                elif action_type == "file_dialog":
                     if not target.get("pid"):
                         raise ArtifactError(
                             "FILE_DIALOG_PROCESS_IDENTITY_REQUIRED",
                             "file_dialog requires a process-bound app/window handle from mac_observe.",
                         )
+                    if handoff_id:
+                        mark_handoff_consumed(handoff_id, consumer="mac_act:file_dialog")
                     dialog_details = drive_native_file_dialog(
                         pid=int(target["pid"]),
                         mode=str(resolved_action.get("mode") or ""),
@@ -2774,6 +2989,8 @@ def act_ui(
                     ok = bool(dialog_details.get("ok"))
                     message = "native file dialog completed" if ok else "native file dialog failed"
                 else:
+                    if handoff_id:
+                        mark_handoff_consumed(handoff_id, consumer=f"mac_act:{action_type}")
                     ok, message = _perform_action(
                         str(target.get("app") or ""),
                         resolved_action,
@@ -2788,6 +3005,9 @@ def act_ui(
             except ArtifactError as exc:
                 ok, message = False, str(exc)
                 dialog_details = {"ok": False, "reason_code": exc.code, "error": str(exc), **exc.extra}
+            except HandoffError as exc:
+                ok, message = False, str(exc)
+                handoff_details = {"ok": False, "reason_code": exc.code, "error": str(exc), **exc.extra}
             except ValueError as exc:
                 ok, message = False, str(exc)
 
@@ -2852,6 +3072,13 @@ def act_ui(
                 }
             if timed_out:
                 result["timed_out"] = True
+            if handoff_id:
+                result["handoff_id"] = handoff_id
+                result["handoff_consumed"] = True
+            if handoff_details is not None:
+                result["handoff"] = handoff_details
+                if handoff_details.get("reason_code"):
+                    result["reason_code"] = handoff_details.get("reason_code")
             if dialog_details is not None:
                 result["file_dialog"] = dialog_details
                 if dialog_details.get("reason_code"):
@@ -2915,6 +3142,11 @@ def act_ui(
                         if result["reason_code"] == "ACTION_NO_EFFECT"
                         else "action executed but its effect could not be verified safely"
                     )
+            elif result.get("ok") and handoff_details is not None and handoff_details.get("verified"):
+                result["verification"] = "semantic_handoff_verified"
+                result["effect_observed"] = True
+                delta_structural_refresh = True
+                delta_refresh_reasons.append("semantic_handoff_effect")
             elif result.get("ok") and resolved_element_id is not None:
                 result["verification"] = "readiness_only"
                 delta_structural_refresh = True

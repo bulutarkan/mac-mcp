@@ -1376,6 +1376,142 @@
         }
       }
     },
+    "/api/context_handoff": {
+      "post": {
+        "operationId": "context_handoff",
+        "x-openai-isConsequential": false,
+        "summary": "Create or inspect a typed cross-app context handoff",
+        "description": "Creates a SHA-256 integrity-sealed, TTL-bounded, single-use envelope binding browser text/URL or a verified file artifact to an exact native window/text field or browser upload target. It does not perform the write/upload; consume handoff_id through mac_act or browser_upload_artifact so normal policy, provenance, verification, focus-safety and egress controls remain active.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "create_browser_text",
+                      "create_artifact",
+                      "inspect"
+                    ],
+                    "description": "Create a typed handoff or inspect an existing handoff."
+                  },
+                  "handoff_id": {
+                    "type": "string",
+                    "description": "Single-use handoff handle returned by a create action; required for inspect and supplied later to mac_act/browser_upload_artifact."
+                  },
+                  "browser": {
+                    "type": "string",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ],
+                    "description": "Source browser for create_browser_text."
+                  },
+                  "tab_handle": {
+                    "type": "string",
+                    "description": "Stable source browser tab handle for create_browser_text."
+                  },
+                  "source_type": {
+                    "type": "string",
+                    "enum": [
+                      "finder",
+                      "browser_artifact",
+                      "artifact"
+                    ],
+                    "description": "Artifact source class. Browser downloads must use browser_artifact to preserve provenance."
+                  },
+                  "source_browser": {
+                    "type": "string",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
+                  },
+                  "source_tab_handle": {
+                    "type": "string",
+                    "description": "Stable source tab for browser_artifact provenance."
+                  },
+                  "path": {
+                    "type": "string",
+                    "description": "Exact local artifact path for create_artifact."
+                  },
+                  "artifact_id": {
+                    "type": "string",
+                    "description": "Verified artifact handle when the source already has one."
+                  },
+                  "target_kind": {
+                    "type": "string",
+                    "enum": [
+                      "native_file_dialog",
+                      "mail_draft_attachment",
+                      "browser_upload"
+                    ],
+                    "description": "Target kind for artifact handoffs. mail_draft_attachment binds an exact verified artifact to a uniquely identified Mail compose window."
+                  },
+                  "target_app": {
+                    "type": "string",
+                    "description": "Native target application from mac_observe."
+                  },
+                  "target_app_handle": {
+                    "type": "string",
+                    "description": "Process-bound app handle from mac_observe."
+                  },
+                  "target_window_handle": {
+                    "type": "string",
+                    "description": "Stable native window handle from mac_observe."
+                  },
+                  "target_observation_id": {
+                    "type": "string",
+                    "description": "Target observation id for browser-text to native-text handoff."
+                  },
+                  "target_element_id": {
+                    "type": "string",
+                    "description": "Target text element id from the bound observation."
+                  },
+                  "target_browser": {
+                    "type": "string",
+                    "enum": [
+                      "Safari",
+                      "Google Chrome"
+                    ]
+                  },
+                  "target_tab_handle": {
+                    "type": "string",
+                    "description": "Stable target tab for browser upload."
+                  },
+                  "target_css_selector": {
+                    "type": "string",
+                    "description": "Exact input[type=file] selector bound into the handoff."
+                  },
+                  "include_url": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Append the source URL to selected browser text."
+                  },
+                  "clear": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Whether the eventual native text action should clear the target first."
+                  }
+                },
+                "required": [
+                  "action"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Handoff metadata or structured validation failure returned as JSON."
+          }
+        }
+      }
+    },
     "/api/mac_snapshot": {
       "post": {
         "operationId": "mac_snapshot",
@@ -1534,7 +1670,7 @@
                     "type": "array",
                     "items": {
                       "type": "object",
-                      "description": "Action object; supported types include click, double_click, scroll, type, paste, key, shortcut, drag, accessibility_action, and menu."
+                      "description": "Action object; supported types include click, double_click, scroll, type, paste, key, shortcut, drag, accessibility_action, menu, handoff_mail_text, and handoff_mail_attachment."
                     },
                     "description": "Bounded UI action list.",
                     "minItems": 1
@@ -2251,7 +2387,7 @@
         "operationId": "browser_upload_artifact",
         "x-openai-isConsequential": true,
         "summary": "Select a verified artifact into a browser file input",
-        "description": "Selects only the file; does not submit the surrounding form. Safari uses the native Open panel; Chrome uses the private debugger bridge. The exact registered artifact is re-verified before and after selection.",
+        "description": "Selects only the file; does not submit the surrounding form. Safari uses the native Open panel; Chrome uses the private debugger bridge. The exact registered artifact is re-verified before and after selection. If handoff_id is supplied, its exact source/target binding is validated and consumed before the file-selection side effect.",
         "requestBody": {
           "required": true,
           "content": {
@@ -2300,6 +2436,10 @@
                   "tab_handle": {
                     "type": "string",
                     "description": "Stable tab handle from browser_list_tabs; preferred over tab_index."
+                  },
+                  "handoff_id": {
+                    "type": "string",
+                    "description": "Optional single-use artifact handoff. When supplied, browser/tab/URL/selector/artifact/path must exactly match the sealed target before file selection begins."
                   }
                 },
                 "required": [

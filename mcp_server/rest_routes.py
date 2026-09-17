@@ -53,6 +53,7 @@ from .tools_interactive import ask_choice, ask_confirmation, ask_user
 from .tools_ui import act_ui, observe_ui
 from .tools_snapshot import unified_read_snapshot
 from .artifact_pipeline import artifact_pipeline
+from .context_handoff import context_handoff
 
 _settings: Optional[Settings] = None
 _rest_security_context: Optional[SecurityContextManager] = None
@@ -312,6 +313,7 @@ class BrowserRequest(BaseModel):
     started_after_epoch_ms: Optional[int] = None
     stable_ms: Optional[int] = 500
     artifact_id: Optional[str] = None
+    handoff_id: Optional[str] = None
     preserve_focus: Optional[bool] = True
     # browser_screenshot
     path: Optional[str] = None
@@ -605,6 +607,7 @@ def api_browser(req: BrowserRequest, request: Request, settings: Settings = Depe
             artifact_id=req.artifact_id, path=req.path,
             window_index=req.window_index or 1, tab_index=req.tab_index, tab_handle=req.tab_handle,
             timeout_s=req.timeout_s or 20, preserve_focus=req.preserve_focus if req.preserve_focus is not None else True,
+            handoff_id=req.handoff_id,
         )
     elif t == "browser_screenshot":
         result = browser_screenshot(settings, browser=req.browser, path=req.path,
@@ -750,6 +753,27 @@ def _api_artifact_pipeline_alias(
     return _filter_rest_result(request, "artifact_pipeline", result)
 
 
+def _api_context_handoff_alias(
+    request: Request,
+    payload: Optional[Dict[str, Any]] = Body(default=None),
+    settings: Settings = Depends(get_settings),
+) -> Any:
+    data = _request_payload(payload)
+    result = context_handoff(
+        settings, action=str(data.get("action") or ""), handoff_id=data.get("handoff_id"),
+        browser=data.get("browser"), tab_handle=data.get("tab_handle"),
+        source_type=data.get("source_type"), source_browser=data.get("source_browser"),
+        source_tab_handle=data.get("source_tab_handle"), path=data.get("path"), artifact_id=data.get("artifact_id"),
+        target_kind=data.get("target_kind"), target_app=data.get("target_app"),
+        target_app_handle=data.get("target_app_handle"), target_window_handle=data.get("target_window_handle"),
+        target_observation_id=data.get("target_observation_id"), target_element_id=data.get("target_element_id"),
+        target_browser=data.get("target_browser"), target_tab_handle=data.get("target_tab_handle"),
+        target_css_selector=data.get("target_css_selector"),
+        include_url=bool(_payload_value(data, "include_url", True)), clear=bool(_payload_value(data, "clear", False)),
+    )
+    return _filter_rest_result(request, "context_handoff", result)
+
+
 def _api_mac_snapshot_alias(
     request: Request,
     payload: Optional[Dict[str, Any]] = Body(default=None),
@@ -851,6 +875,13 @@ router.add_api_route(
     methods=["POST"],
     name="artifact_pipeline",
     operation_id="artifact_pipeline",
+)
+router.add_api_route(
+    "/context_handoff",
+    _api_context_handoff_alias,
+    methods=["POST"],
+    name="context_handoff",
+    operation_id="context_handoff",
 )
 router.add_api_route(
     "/mac_snapshot",

@@ -45,6 +45,7 @@ from .tools_macos import (
 )
 from .tools_ui import observe_ui, act_ui
 from .artifact_pipeline import artifact_pipeline
+from .context_handoff import context_handoff
 from .tools_snapshot import unified_read_snapshot
 from .tools_search import search_files, spotlight_search
 from .tools_http import http_request
@@ -708,6 +709,52 @@ def create_app():
         )
 
     @mcp.tool(
+        name="context_handoff",
+        title="Create Cross-App Context Handoff",
+        description=(
+            "Create or inspect a typed, integrity-sealed, single-use handoff between browser/native/file contexts. "
+            "Use action=create_browser_text for selected browser text+URL bound to a specific mac_observe target, "
+            "or action=create_artifact for Finder/browser/local artifacts bound to a native file dialog, a verified Mail draft attachment target, or browser file input. "
+            "This tool does not perform the write/upload itself; consume handoff_id with mac_act (including verified Mail handoff actions) or browser_upload_artifact so existing policy, verification, focus-safety and egress gates remain enforced."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=False, openWorldHint=False),
+    )
+    def _context_handoff(
+        action: str,
+        handoff_id: Optional[str] = None,
+        browser: Optional[str] = None,
+        tab_handle: Optional[str] = None,
+        source_type: Optional[str] = None,
+        source_browser: Optional[str] = None,
+        source_tab_handle: Optional[str] = None,
+        path: Optional[str] = None,
+        artifact_id: Optional[str] = None,
+        target_kind: Optional[str] = None,
+        target_app: Optional[str] = None,
+        target_app_handle: Optional[str] = None,
+        target_window_handle: Optional[str] = None,
+        target_observation_id: Optional[str] = None,
+        target_element_id: Optional[str] = None,
+        target_browser: Optional[str] = None,
+        target_tab_handle: Optional[str] = None,
+        target_css_selector: Optional[str] = None,
+        include_url: bool = True,
+        clear: bool = False,
+    ) -> Dict[str, Any]:
+        return _log(
+            audit_logger, "context_handoff",
+            lambda: context_handoff(
+                settings, action=action, handoff_id=handoff_id, browser=browser, tab_handle=tab_handle,
+                source_type=source_type, source_browser=source_browser, source_tab_handle=source_tab_handle,
+                path=path, artifact_id=artifact_id, target_kind=target_kind, target_app=target_app,
+                target_app_handle=target_app_handle, target_window_handle=target_window_handle,
+                target_observation_id=target_observation_id, target_element_id=target_element_id,
+                target_browser=target_browser, target_tab_handle=target_tab_handle,
+                target_css_selector=target_css_selector, include_url=include_url, clear=clear,
+            ),
+        )
+
+    @mcp.tool(
         name="mac_snapshot",
         title="Read Mac Snapshot",
         description=(
@@ -1153,13 +1200,13 @@ def create_app():
     def _browser_upload_artifact(
         browser: str, css_selector: str, artifact_id: str, path: str,
         window_index: int = 1, tab_index: Optional[int] = None, tab_handle: Optional[str] = None,
-        timeout_s: int = 20, preserve_focus: bool = True,
+        timeout_s: int = 20, preserve_focus: bool = True, handoff_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         return _log(audit_logger, "browser_upload_artifact",
                     lambda: browser_upload_artifact(
                         settings, browser=browser, css_selector=css_selector, artifact_id=artifact_id, path=path,
                         window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
-                        timeout_s=timeout_s, preserve_focus=preserve_focus,
+                        timeout_s=timeout_s, preserve_focus=preserve_focus, handoff_id=handoff_id,
                     ))
 
     @mcp.tool(name="browser_screenshot",
