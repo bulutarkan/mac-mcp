@@ -1382,7 +1382,7 @@
         "operationId": "mac_act",
         "x-openai-isConsequential": true,
         "summary": "Act on the macOS UI",
-        "description": "Use observation_id and native app/window handles for re-resolved targeting. Stale or ambiguous handles fail closed before execution. Background-safe AX actions preserve the current user focus by default; global-input actions temporarily focus the target and restore the prior app/window.",
+        "description": "Use observation_id and native app/window handles for re-resolved targeting. Post-action state defaults to compact delta mode; choose none/delta/full explicitly when needed. Background-safe AX actions preserve the current user focus by default; global-input actions temporarily focus the target and restore the prior app/window.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1416,10 +1416,25 @@
                     "type": "string",
                     "description": "Stable native window handle returned by mac_observe."
                   },
+                  "state_mode": {
+                    "type": "string",
+                    "enum": [
+                      "none",
+                      "delta",
+                      "full"
+                    ],
+                    "description": "Post-action state detail. 'delta' returns only changed UI state and is the default; 'none' skips post-state; 'full' returns a complete Accessibility refresh.",
+                    "default": "delta"
+                  },
+                  "include_screenshot": {
+                    "type": "boolean",
+                    "description": "Include a post-action screen image. Omitted by default in every state mode.",
+                    "default": false
+                  },
                   "return_state": {
                     "type": "boolean",
-                    "description": "Return a fresh UI state after acting.",
-                    "default": true
+                    "description": "Legacy compatibility alias: false maps to state_mode='none' and true maps to state_mode='full'. Prefer state_mode.",
+                    "deprecated": true
                   },
                   "allow_risky": {
                     "type": "boolean",

@@ -751,7 +751,9 @@ def _api_mac_act_alias(
         app=data.get("app"),
         app_handle=data.get("app_handle"),
         window_handle=data.get("window_handle"),
-        return_state=_payload_value(data, "return_state", True),
+        state_mode=data.get("state_mode"),
+        include_screenshot=_payload_value(data, "include_screenshot", False),
+        return_state=data.get("return_state"),
         allow_risky=_payload_value(data, "allow_risky", False),
         preserve_focus=_payload_value(data, "preserve_focus", True),
     )

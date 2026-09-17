@@ -47,17 +47,24 @@ def _process_instance_token(pid: int) -> str:
     return (proc.stdout or "").strip()
 
 
+def _identity_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.lower() in {"missing value", "null", "none", "<null>"}:
+        return ""
+    return text
+
+
 def _window_candidates(window: Dict[str, Any]) -> list[tuple[str, str]]:
     candidates: list[tuple[str, str]] = []
-    document = str(window.get("document") or "").strip()
+    document = _identity_text(window.get("document"))
     if document:
         candidates.append(("document", document))
 
-    identifier = str(window.get("identifier") or "").strip()
+    identifier = _identity_text(window.get("identifier"))
     if identifier:
         candidates.append(("identifier", identifier))
 
-    title = str(window.get("title") or "").strip()
+    title = _identity_text(window.get("title"))
     subrole = str(window.get("subrole") or "").strip()
     if title:
         candidates.append(("title", f"{subrole}|{title}"))

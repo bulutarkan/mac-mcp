@@ -731,12 +731,14 @@ def create_app():
         title="Act on macOS UI",
         description=(
             "Perform one or more bounded macOS UI actions using element_id values from "
-            "mac_observe, then return a fresh state by default. Supported action types: "
+            "mac_observe. Post-action state_mode defaults to 'delta', returning only changed UI state; "
+            "use 'none' for no post-state or 'full' for a complete Accessibility refresh. Supported action types: "
             "click/double_click, scroll, type, paste, key/shortcut, drag, and "
             "accessibility_action/menu. Use observation_id to prevent stale element paths. "
             "Optional app_handle/window_handle values pin execution to a previously observed native target. "
             "Potentially consequential clicks require allow_risky=true explicitly. "
             "By default preserve_focus=true keeps background-safe AX actions off the foreground and restores prior focus after global input; set false only for intentional foreground control. "
+            "Screenshots are omitted after actions unless include_screenshot=true. The legacy return_state boolean remains supported. "
             "The complete action batch has a 60-second safety budget."
         ),
         annotations=ToolAnnotations(
@@ -753,7 +755,9 @@ def create_app():
         app: Optional[str] = None,
         app_handle: Optional[str] = None,
         window_handle: Optional[str] = None,
-        return_state: bool = True,
+        state_mode: Optional[str] = None,
+        include_screenshot: bool = False,
+        return_state: Optional[bool] = None,
         allow_risky: bool = False,
         preserve_focus: bool = True,
     ) -> Any:
@@ -767,6 +771,8 @@ def create_app():
                 app=app,
                 app_handle=app_handle,
                 window_handle=window_handle,
+                state_mode=state_mode,
+                include_screenshot=include_screenshot,
                 return_state=return_state,
                 allow_risky=allow_risky,
                 preserve_focus=preserve_focus,

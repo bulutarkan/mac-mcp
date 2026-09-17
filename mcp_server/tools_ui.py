@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -665,6 +666,153 @@ def _get_observation(observation_id: str) -> Optional[Dict[str, Any]]:
             _OBSERVATIONS.pop(observation_id, None)
             return None
         return observation
+
+
+
+def _normalize_action_state_mode(
+    state_mode: Optional[str], return_state: Optional[bool],
+) -> Tuple[str, bool]:
+    """Resolve the new state_mode contract while keeping the legacy boolean alias."""
+    if state_mode is None:
+        if return_state is None:
+            return "delta", False
+        return ("full" if bool(return_state) else "none"), bool(return_state)
+    mode = str(state_mode).strip().lower()
+    if mode not in {"none", "delta", "full"}:
+        raise ValueError("state_mode must be one of: none, delta, full")
+    if return_state is not None:
+        legacy_mode = "full" if bool(return_state) else "none"
+        if legacy_mode != mode:
+            raise ValueError("state_mode conflicts with legacy return_state; use state_mode only")
+    return mode, False
+
+
+def _merge_effect_state_into_node(
+    node: Optional[Dict[str, Any]], state: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    if not node:
+        return None
+    if state.get("connected") is False:
+        return None
+    merged = copy.deepcopy(node)
+    for key in (
+        "role", "subrole", "title", "description", "value", "enabled",
+        "focused", "child_count", "actions",
+    ):
+        if key in state and state.get(key) is not None:
+            merged[key] = copy.deepcopy(state.get(key))
+    position = state.get("position")
+    if isinstance(position, dict) and all(position.get(k) is not None for k in ("x", "y", "width", "height")):
+        merged["position"] = copy.deepcopy(position)
+    return merged
+
+
+def _effect_state_requires_structural_refresh(
+    before: Optional[Dict[str, Any]], after: Optional[Dict[str, Any]],
+) -> bool:
+    if not before or not after:
+        return True
+    if before.get("connected", True) != after.get("connected", True):
+        return True
+    for key in ("role", "subrole"):
+        if before.get(key) and after.get(key) and before.get(key) != after.get(key):
+            return True
+    for key in (
+        "child_count", "window_title", "window_count", "window_child_count",
+        "sheet_count", "popover_count", "menu_count",
+    ):
+        if key in before and key in after and before.get(key) != after.get(key):
+            return True
+    return False
+
+
+def _store_derived_observation(
+    base_observation_id: str,
+    updates: Dict[str, Optional[Dict[str, Any]]],
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Clone a cached observation with target-only updates, without a full AX traversal."""
+    now = time.time()
+    with _OBSERVATIONS_LOCK:
+        base = _OBSERVATIONS.get(base_observation_id)
+        if base is None or now - float(base.get("created_at", 0)) > _OBSERVATION_TTL_S:
+            return None, None
+        derived = copy.deepcopy(base)
+        nodes = dict(derived.get("nodes") or {})
+        for element_id, node in updates.items():
+            if node is None:
+                nodes.pop(element_id, None)
+            else:
+                nodes[element_id] = copy.deepcopy(node)
+        observation_id = f"obs_{uuid.uuid4().hex}"
+        derived["created_at"] = now
+        derived["nodes"] = nodes
+        _OBSERVATIONS[observation_id] = derived
+        expired = [
+            key for key, value in _OBSERVATIONS.items()
+            if now - float(value.get("created_at", now)) > _OBSERVATION_TTL_S
+        ]
+        for key in expired:
+            _OBSERVATIONS.pop(key, None)
+        while len(_OBSERVATIONS) > _MAX_OBSERVATIONS:
+            oldest = min(_OBSERVATIONS, key=lambda key: _OBSERVATIONS[key].get("created_at", now))
+            _OBSERVATIONS.pop(oldest, None)
+        return observation_id, copy.deepcopy(derived)
+
+
+def _diff_observation_nodes(
+    before_nodes: Dict[str, Dict[str, Any]],
+    after_nodes: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    changed = [
+        copy.deepcopy(after_nodes[element_id])
+        for element_id in sorted(before_nodes.keys() & after_nodes.keys())
+        if before_nodes[element_id] != after_nodes[element_id]
+    ]
+    added = [
+        copy.deepcopy(after_nodes[element_id])
+        for element_id in sorted(after_nodes.keys() - before_nodes.keys())
+    ]
+    removed = sorted(before_nodes.keys() - after_nodes.keys())
+    return {
+        "changed_nodes": changed,
+        "added_nodes": added,
+        "removed_element_ids": removed,
+        "changed_count": len(changed),
+        "added_count": len(added),
+        "removed_count": len(removed),
+    }
+
+
+def _delta_base_payload(
+    *,
+    observation_id: Optional[str],
+    previous_observation_id: Optional[str],
+    active_app: Optional[str],
+    app_handle: Optional[str],
+    window_handle: Optional[str],
+    node_count: int,
+    delta: Dict[str, Any],
+    actions: List[Dict[str, Any]],
+    screenshot_requested: bool = False,
+) -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "state_mode": "delta",
+        "observation_id": observation_id,
+        "previous_observation_id": previous_observation_id,
+        "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "active_app": active_app,
+        "app_handle": app_handle,
+        "window_handle": window_handle,
+        "node_count": int(node_count),
+        "delta": delta,
+        "actions": actions,
+        "screenshot": {
+            "requested": bool(screenshot_requested),
+            "included_as_image_content": False,
+            "mime_type": None,
+        },
+    }
 
 
 def _native_target_error(reason_code: str, message: str, **extra: Any) -> Dict[str, Any]:
@@ -1633,7 +1781,7 @@ def _parse_native_effect_state(raw: str) -> Dict[str, Any]:
     fields = str(raw or "").split(_FIELD_SEPARATOR)
     if not fields or fields[0] != "__EFFECT__" or len(fields) < 13:
         return {"connected": False, "probe_error": "invalid_native_effect_payload"}
-    return {
+    state: Dict[str, Any] = {
         "connected": _parse_bool(fields[1]),
         "value": fields[2],
         "character_count": _parse_number(fields[3]),
@@ -1647,6 +1795,19 @@ def _parse_native_effect_state(raw: str) -> Dict[str, Any]:
         "sheet_count": _parse_number(fields[11]),
         "popover_count": _parse_number(fields[12]),
     }
+    if len(fields) >= 22:
+        state.update({
+            "role": fields[13],
+            "subrole": fields[14],
+            "description": fields[15],
+            "focused": _parse_optional_bool(fields[16]),
+            "position": {
+                "x": _parse_number(fields[17]), "y": _parse_number(fields[18]),
+                "width": _parse_number(fields[19]), "height": _parse_number(fields[20]),
+            },
+            "actions": [item.strip() for item in fields[21].split(",") if item.strip()],
+        })
+    return state
 
 
 def _native_effect_state_script(
@@ -1693,6 +1854,15 @@ set windowCountText to ""
 set windowChildCountText to ""
 set sheetCountText to ""
 set popoverCountText to ""
+set roleText to ""
+set subroleText to ""
+set descriptionText to ""
+set focusedText to ""
+set xText to ""
+set yText to ""
+set widthText to ""
+set heightText to ""
+set actionText to ""
 
 tell application "System Events"
     {selection}
@@ -1746,6 +1916,25 @@ tell application "System Events"
                 set titleText to title of targetElement as text
             end try
             try
+                set descriptionText to description of targetElement as text
+            end try
+            try
+                set focusedText to focused of targetElement as text
+            end try
+            try
+                set tp to position of targetElement
+                set xText to item 1 of tp as text
+                set yText to item 2 of tp as text
+            end try
+            try
+                set ts to size of targetElement
+                set widthText to item 1 of ts as text
+                set heightText to item 2 of ts as text
+            end try
+            try
+                set actionText to name of actions of targetElement as text
+            end try
+            try
                 set childCountText to count of UI elements of targetElement as text
             end try
         end try
@@ -1757,7 +1946,12 @@ return "__EFFECT__" & fs & connectedText & fs & my cleanEffectText(valueText, fs
     my cleanEffectText(enabledText, fs) & fs & my cleanEffectText(titleText, fs) & fs & ¬
     my cleanEffectText(childCountText, fs) & fs & my cleanEffectText(windowTitleText, fs) & fs & ¬
     my cleanEffectText(windowCountText, fs) & fs & my cleanEffectText(windowChildCountText, fs) & fs & ¬
-    my cleanEffectText(sheetCountText, fs) & fs & my cleanEffectText(popoverCountText, fs)
+    my cleanEffectText(sheetCountText, fs) & fs & my cleanEffectText(popoverCountText, fs) & fs & ¬
+    my cleanEffectText(roleText, fs) & fs & my cleanEffectText(subroleText, fs) & fs & ¬
+    my cleanEffectText(descriptionText, fs) & fs & my cleanEffectText(focusedText, fs) & fs & ¬
+    my cleanEffectText(xText, fs) & fs & my cleanEffectText(yText, fs) & fs & ¬
+    my cleanEffectText(widthText, fs) & fs & my cleanEffectText(heightText, fs) & fs & ¬
+    my cleanEffectText(actionText, fs)
 '''
 
 
@@ -1812,6 +2006,7 @@ def _wait_for_native_effect(
                     "verification": verification,
                     "attempts": attempts,
                     "duration_ms": int((now - started) * 1000),
+                    "state": state,
                 }
         elif probe_error:
             last_error = probe_error
@@ -2361,15 +2556,21 @@ def act_ui(
     actions: List[Dict[str, Any]],
     observation_id: Optional[str] = None,
     app: Optional[str] = None,
-    return_state: bool = True,
+    return_state: Optional[bool] = None,
     allow_risky: bool = False,
     app_handle: Optional[str] = None,
     window_handle: Optional[str] = None,
     preserve_focus: bool = True,
+    state_mode: Optional[str] = None,
+    include_screenshot: bool = False,
 ) -> Any:
     """Perform bounded macOS UI actions against re-resolved native app/window handles."""
     deadline = time.monotonic() + _ACTION_BUDGET_S
     try:
+        resolved_state_mode, legacy_full_screenshot = _normalize_action_state_mode(
+            state_mode, return_state
+        )
+        effective_screenshot = bool(include_screenshot or legacy_full_screenshot)
         if not isinstance(actions, list) or not actions:
             return {"ok": False, "error": "actions must be a non-empty list"}
         if len(actions) > _MAX_ACTIONS:
@@ -2390,6 +2591,11 @@ def act_ui(
         stored_nodes = (stored or {}).get("nodes", {})
         results: List[Dict[str, Any]] = []
         last_target: Optional[Dict[str, Any]] = None
+        delta_updates: Dict[str, Optional[Dict[str, Any]]] = {}
+        delta_structural_refresh = stored is None
+        delta_refresh_reasons: List[str] = []
+        if stored is None:
+            delta_refresh_reasons.append("missing_base_observation")
 
         for index, action in enumerate(actions):
             if time.monotonic() >= deadline:
@@ -2650,6 +2856,22 @@ def act_ui(
                     result["verification_attempts"] = verification.get("attempts")
                 if verification.get("duration_ms") is not None:
                     result["verification_duration_ms"] = verification.get("duration_ms")
+                verification_state = verification.get("state")
+                if verification.get("effect_observed") and isinstance(verification_state, dict):
+                    if _effect_state_requires_structural_refresh(before_state, verification_state):
+                        delta_structural_refresh = True
+                        delta_refresh_reasons.append("structural_effect")
+                    elif original_element_id is not None:
+                        base_node = delta_updates.get(original_element_id, node)
+                        merged_node = _merge_effect_state_into_node(base_node, verification_state)
+                        if merged_node is None:
+                            delta_structural_refresh = True
+                            delta_refresh_reasons.append("target_detached")
+                        else:
+                            delta_updates[original_element_id] = merged_node
+                elif verification.get("effect_observed"):
+                    delta_structural_refresh = True
+                    delta_refresh_reasons.append("effect_state_unavailable")
                 if not verification.get("effect_observed"):
                     result.update({
                         "ok": False,
@@ -2667,6 +2889,11 @@ def act_ui(
                     )
             elif result.get("ok") and resolved_element_id is not None:
                 result["verification"] = "readiness_only"
+                delta_structural_refresh = True
+                delta_refresh_reasons.append("unverified_element_effect")
+            elif result.get("ok"):
+                delta_structural_refresh = True
+                delta_refresh_reasons.append("unbound_action_effect")
 
             if preserve_focus and focus_restore_ok is False:
                 result.update({
@@ -2706,9 +2933,10 @@ def act_ui(
                 }
             time.sleep(min(0.08, max(0.0, deadline - time.monotonic())))
 
-        if not return_state:
+        if resolved_state_mode == "none":
             return {
                 "ok": True,
+                "state_mode": "none",
                 "active_app": (last_target or {}).get("app"),
                 "app_handle": (last_target or {}).get("app_handle"),
                 "window_handle": (last_target or {}).get("window_handle"),
@@ -2734,6 +2962,7 @@ def act_ui(
             if target_error is not None:
                 return {
                     "ok": True,
+                    "state_mode": resolved_state_mode,
                     "active_app": post_app,
                     "actions": results,
                     "post_state_ok": False,
@@ -2748,6 +2977,47 @@ def act_ui(
             if target_error is None:
                 post_app, post_pid = resolved_app, resolved_pid
 
+        if resolved_state_mode == "delta" and stored is not None and observation_id and not delta_structural_refresh:
+            derived_observation_id, derived = _store_derived_observation(
+                observation_id, delta_updates
+            )
+            if derived_observation_id and derived is not None:
+                after_nodes = dict(derived.get("nodes") or {})
+                delta = _diff_observation_nodes(stored_nodes, after_nodes)
+                delta.update({
+                    "source": "verification_probe",
+                    "structural_refresh": False,
+                    "refresh_reasons": [],
+                })
+                payload = _delta_base_payload(
+                    observation_id=derived_observation_id,
+                    previous_observation_id=observation_id,
+                    active_app=post_app,
+                    app_handle=(last_target or {}).get("app_handle") or post_app_handle,
+                    window_handle=(last_target or {}).get("window_handle") or post_window_handle,
+                    node_count=len(after_nodes),
+                    delta=delta,
+                    actions=results,
+                    screenshot_requested=effective_screenshot,
+                )
+                image_data: Optional[bytes] = None
+                if effective_screenshot:
+                    try:
+                        image_data, screenshot_error = _capture_screen(
+                            _operation_timeout(deadline, 10)
+                        )
+                    except TimeoutError as exc:
+                        image_data, screenshot_error = None, str(exc)
+                    payload["screenshot"].update({
+                        "included_as_image_content": bool(image_data),
+                        "mime_type": f"image/{_SCREENSHOT_FORMAT}" if image_data else None,
+                    })
+                    if screenshot_error:
+                        payload["screenshot"]["error"] = screenshot_error
+                return _format_result(payload, image_data)
+            delta_structural_refresh = True
+            delta_refresh_reasons.append("base_observation_expired")
+
         try:
             post_payload, image_data = _collect_observation(
                 settings,
@@ -2755,7 +3025,7 @@ def act_ui(
                 post_window_index,
                 max_depth=5,
                 max_children=30,
-                include_screenshot=True,
+                include_screenshot=effective_screenshot,
                 ocr=False,
                 deadline=deadline,
                 app_pid=int(post_pid) if post_pid else None,
@@ -2763,12 +3033,41 @@ def act_ui(
         except TimeoutError as exc:
             return {
                 "ok": True,
+                "state_mode": resolved_state_mode,
                 "active_app": post_app,
                 "actions": results,
                 "post_state_ok": False,
                 "post_state_error": str(exc),
                 "previous_observation_id": observation_id,
             }
+
+        if resolved_state_mode == "delta":
+            post_nodes = {
+                node["element_id"]: node
+                for node in post_payload.get("nodes", [])
+                if isinstance(node, dict) and node.get("element_id")
+            }
+            delta = _diff_observation_nodes(stored_nodes if stored is not None else {}, post_nodes)
+            delta.update({
+                "source": "accessibility_refresh",
+                "structural_refresh": True,
+                "refresh_reasons": sorted(set(delta_refresh_reasons)) or ["delta_refresh_required"],
+            })
+            payload = _delta_base_payload(
+                observation_id=post_payload.get("observation_id"),
+                previous_observation_id=observation_id,
+                active_app=post_payload.get("active_app") or post_app,
+                app_handle=post_payload.get("app_handle") or post_app_handle,
+                window_handle=post_payload.get("window_handle") or post_window_handle,
+                node_count=int(post_payload.get("node_count") or len(post_nodes)),
+                delta=delta,
+                actions=results,
+                screenshot_requested=effective_screenshot,
+            )
+            payload["screenshot"] = post_payload.get("screenshot", payload["screenshot"])
+            return _format_result(payload, image_data)
+
+        post_payload["state_mode"] = "full"
         post_payload["actions"] = results
         post_payload["previous_observation_id"] = observation_id
         return _format_result(post_payload, image_data)

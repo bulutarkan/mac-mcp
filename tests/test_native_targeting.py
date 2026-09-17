@@ -68,6 +68,13 @@ class NativeTargetIdentityTests(unittest.TestCase):
         self.assertIsNone(result["windows"][1]["window_handle"])
         self.assertEqual("ambiguous", result["windows"][0]["identity_status"])
 
+    def test_missing_value_document_sentinel_falls_back_to_title_identity(self) -> None:
+        result = metadata(windows=[window(1, "Editor", 20, document="missing value")])
+        row = result["windows"][0]
+        self.assertEqual("title", row["identity_kind"])
+        self.assertEqual("stable", row["identity_status"])
+        self.assertTrue(row["window_handle"].startswith("mwin_"))
+
     def test_document_identity_beats_title(self) -> None:
         result = metadata(windows=[
             window(1, "Untitled", 20, document="file:///tmp/a.txt"),
