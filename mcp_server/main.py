@@ -688,7 +688,9 @@ def create_app():
             "title, value, position, enabled state and supported actions, plus a screen "
             "image when include_screenshot=true. Screenshots are returned as connector-safe "
             "JPEG image content. Use ocr=true only when Accessibility text is insufficient. "
-            "Pass the observation_id to mac_act for safe targeting."
+            "Returns process-bound app_handle and stable window_handle values when the window "
+            "can be uniquely identified. Pass observation_id to mac_act; handles are re-resolved "
+            "before each action so window reordering cannot silently retarget an element."
         ),
         annotations=ToolAnnotations(
             readOnlyHint=True,
@@ -700,6 +702,8 @@ def create_app():
     )
     def _mac_observe(
         app: Optional[str] = None,
+        app_handle: Optional[str] = None,
+        window_handle: Optional[str] = None,
         window_index: int = 1,
         max_depth: int = 5,
         max_children: int = 30,
@@ -712,6 +716,8 @@ def create_app():
             lambda: observe_ui(
                 settings,
                 app=app,
+                app_handle=app_handle,
+                window_handle=window_handle,
                 window_index=window_index,
                 max_depth=max_depth,
                 max_children=max_children,
@@ -728,6 +734,7 @@ def create_app():
             "mac_observe, then return a fresh state by default. Supported action types: "
             "click/double_click, scroll, type, paste, key/shortcut, drag, and "
             "accessibility_action/menu. Use observation_id to prevent stale element paths. "
+            "Optional app_handle/window_handle values pin execution to a previously observed native target. "
             "Potentially consequential clicks require allow_risky=true explicitly. "
             "The complete action batch has a 60-second safety budget."
         ),
@@ -743,6 +750,8 @@ def create_app():
         actions: List[Dict[str, Any]],
         observation_id: Optional[str] = None,
         app: Optional[str] = None,
+        app_handle: Optional[str] = None,
+        window_handle: Optional[str] = None,
         return_state: bool = True,
         allow_risky: bool = False,
     ) -> Any:
@@ -754,6 +763,8 @@ def create_app():
                 actions=actions,
                 observation_id=observation_id,
                 app=app,
+                app_handle=app_handle,
+                window_handle=window_handle,
                 return_state=return_state,
                 allow_risky=allow_risky,
             ),

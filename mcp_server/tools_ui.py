@@ -15,6 +15,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from mcp.server.fastmcp.utilities.types import Image
 
+from .native_targets import (
+    decorate_metadata as _decorate_native_metadata,
+    lookup_app as _lookup_app_handle,
+    lookup_window as _lookup_window_handle,
+    public_window_rows as _public_window_rows,
+    rebase_element_id as _rebase_element_id,
+    window_by_handle as _window_by_handle,
+    window_handle_map as _window_handle_map,
+)
 from .security import Settings, truncate
 
 
@@ -210,7 +219,7 @@ def _parse_bool(value: str) -> bool:
 
 def _parse_observation(raw: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     records = [record for record in raw.split(_RECORD_SEPARATOR) if record]
-    metadata: Dict[str, Any] = {}
+    metadata: Dict[str, Any] = {"windows": []}
     nodes: List[Dict[str, Any]] = []
 
     for record in records:
@@ -220,12 +229,33 @@ def _parse_observation(raw: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         if fields[0] == "__META__":
             if len(fields) < 5:
                 continue
-            metadata = {
+            metadata.update({
                 "active_app": fields[1],
                 "frontmost": _parse_bool(fields[2]),
                 "window_count": _parse_number(fields[3]) or 0,
                 "window_names": [name for name in fields[4].split(" || ") if name],
-            }
+                "pid": _parse_number(fields[5]) if len(fields) > 5 else None,
+                "bundle_id": fields[6] if len(fields) > 6 else "",
+            })
+            continue
+        if fields[0] == "__WINDOW__":
+            if len(fields) < 12:
+                continue
+            metadata.setdefault("windows", []).append({
+                "index": _parse_number(fields[1]) or 0,
+                "title": fields[2],
+                "document": fields[3],
+                "identifier": fields[4],
+                "position": {
+                    "x": _parse_number(fields[5]),
+                    "y": _parse_number(fields[6]),
+                    "width": _parse_number(fields[7]),
+                    "height": _parse_number(fields[8]),
+                },
+                "subrole": fields[9],
+                "focused": _parse_bool(fields[10]),
+                "main": _parse_bool(fields[11]),
+            })
             continue
         if fields[0] != "__NODE__" or len(fields) < 16:
             continue
@@ -259,12 +289,16 @@ def _observation_script(
     max_depth: int,
     max_children: int,
     max_nodes: int = 500,
+    app_pid: Optional[int] = None,
 ) -> str:
-    app_selection = (
-        "set p to first application process whose frontmost is true"
-        if app is None
-        else f"set p to first application process whose name is {_apple_string(app)}"
-    )
+    if app_pid is not None:
+        app_selection = f"set p to first application process whose unix id is {int(app_pid)}"
+    else:
+        app_selection = (
+            "set p to first application process whose frontmost is true"
+            if app is None
+            else f"set p to first application process whose name is {_apple_string(app)}"
+        )
     window_condition = (
         "if windowIndex is 0 or wi is windowIndex then"
         if window_index == 0
@@ -391,6 +425,14 @@ set counter to {{0}}
 tell application "System Events"
     {app_selection}
     set processName to name of p as text
+    set processPid to ""
+    try
+        set processPid to unix id of p as text
+    end try
+    set bundleId to ""
+    try
+        set bundleId to bundle identifier of p as text
+    end try
     set isFrontmost to false
     try
         set isFrontmost to frontmost of p
@@ -409,16 +451,62 @@ tell application "System Events"
         end if
     end repeat
     set meta to "__META__" & fs & my cleanText(processName, fs, rs) & fs & (isFrontmost as text) & fs & ¬
-        (windowCount as text) & fs & my cleanText(windowNames, fs, rs)
+        (windowCount as text) & fs & my cleanText(windowNames, fs, rs) & fs & ¬
+        my cleanText(processPid, fs, rs) & fs & my cleanText(bundleId, fs, rs)
     set end of recordList to meta
 
     repeat with wi from 1 to windowCount
-        {window_condition}
+        try
+            set w to window wi of p
+            set windowTitle to ""
+            set windowDocument to ""
+            set windowIdentifier to ""
+            set windowX to ""
+            set windowY to ""
+            set windowWidth to ""
+            set windowHeight to ""
+            set windowSubrole to ""
+            set windowFocused to "false"
+            set windowMain to "false"
             try
-                set w to window wi of p
-                my walkNode(w, "w" & wi, "", 0, maxDepth, maxChildren, maxNodes, recordList, counter, fs, rs)
+                set windowTitle to title of w as text
             end try
-        end if
+            try
+                set windowDocument to value of attribute "AXDocument" of w as text
+            end try
+            try
+                set windowIdentifier to value of attribute "AXIdentifier" of w as text
+            end try
+            try
+                set wp to position of w
+                set windowX to item 1 of wp as text
+                set windowY to item 2 of wp as text
+            end try
+            try
+                set ws to size of w
+                set windowWidth to item 1 of ws as text
+                set windowHeight to item 2 of ws as text
+            end try
+            try
+                set windowSubrole to subrole of w as text
+            end try
+            try
+                set windowFocused to value of attribute "AXFocused" of w as text
+            end try
+            try
+                set windowMain to value of attribute "AXMain" of w as text
+            end try
+            set windowRecord to "__WINDOW__" & fs & (wi as text) & fs & ¬
+                my cleanText(windowTitle, fs, rs) & fs & my cleanText(windowDocument, fs, rs) & fs & ¬
+                my cleanText(windowIdentifier, fs, rs) & fs & my cleanText(windowX, fs, rs) & fs & ¬
+                my cleanText(windowY, fs, rs) & fs & my cleanText(windowWidth, fs, rs) & fs & ¬
+                my cleanText(windowHeight, fs, rs) & fs & my cleanText(windowSubrole, fs, rs) & fs & ¬
+                my cleanText(windowFocused, fs, rs) & fs & my cleanText(windowMain, fs, rs)
+            set end of recordList to windowRecord
+            {window_condition}
+                my walkNode(w, "w" & wi, "", 0, maxDepth, maxChildren, maxNodes, recordList, counter, fs, rs)
+            end if
+        end try
     end repeat
 end tell
 
@@ -523,13 +611,24 @@ def _ocr_image(image_data: bytes, timeout_s: float = 20) -> Tuple[Optional[str],
             pass
 
 
-def _save_observation(active_app: str, window_index: int, nodes: List[Dict[str, Any]]) -> str:
+def _save_observation(
+    active_app: str,
+    window_index: int,
+    nodes: List[Dict[str, Any]],
+    metadata: Dict[str, Any],
+) -> str:
     observation_id = f"obs_{uuid.uuid4().hex}"
     now = time.time()
+    window_handles = _window_handle_map(metadata)
     with _OBSERVATIONS_LOCK:
         _OBSERVATIONS[observation_id] = {
             "active_app": active_app,
+            "app_handle": metadata.get("app_handle"),
+            "app_pid": metadata.get("pid"),
+            "bundle_id": metadata.get("bundle_id") or "",
             "window_index": window_index,
+            "window_handles": window_handles,
+            "selected_window_handle": window_handles.get(window_index) if window_index > 0 else None,
             "created_at": now,
             "nodes": {node["element_id"]: node for node in nodes},
         }
@@ -556,6 +655,109 @@ def _get_observation(observation_id: str) -> Optional[Dict[str, Any]]:
         return observation
 
 
+def _native_target_error(reason_code: str, message: str, **extra: Any) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "ok": False,
+        "error": message,
+        "reason_code": reason_code,
+        "retryable": reason_code in {
+            "WINDOW_HANDLE_UNKNOWN", "APP_HANDLE_UNKNOWN", "STALE_WINDOW_HANDLE",
+            "STALE_APP_HANDLE", "WINDOW_IDENTITY_UNAVAILABLE",
+        },
+    }
+    payload.update(extra)
+    return payload
+
+
+def _scan_native_windows(
+    app: Optional[str], app_pid: Optional[int], deadline: Optional[float] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    ok, raw, error = _run_osascript(
+        _observation_script(app, 0, 0, 1, max_nodes=100, app_pid=app_pid),
+        timeout_s=_operation_timeout(deadline, 15),
+    )
+    if not ok:
+        return None, error or "Could not resolve the native application/window target."
+    metadata, _ = _parse_observation(raw)
+    return _decorate_native_metadata(metadata), None
+
+
+def _resolve_registered_native_target(
+    app: Optional[str],
+    app_handle: Optional[str],
+    window_handle: Optional[str],
+    deadline: Optional[float] = None,
+) -> Tuple[Optional[str], Optional[int], Optional[int], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    normalized_app = _normalize_app(app)
+    if window_handle:
+        record = _lookup_window_handle(str(window_handle))
+        if record is None:
+            return None, None, None, None, _native_target_error(
+                "WINDOW_HANDLE_UNKNOWN",
+                "window_handle is unknown or expired; call mac_observe again using app/window_index.",
+                window_handle=window_handle,
+            )
+        if app_handle and record.get("app_handle") != app_handle:
+            return None, None, None, None, _native_target_error(
+                "TARGET_HANDLE_MISMATCH", "app_handle and window_handle refer to different targets."
+            )
+        if normalized_app and normalized_app.lower() != str(record.get("app_name") or "").lower():
+            return None, None, None, None, _native_target_error(
+                "TARGET_HANDLE_MISMATCH", "app does not match the application bound to window_handle."
+            )
+        metadata, error = _scan_native_windows(
+            str(record.get("app_name") or ""), int(record.get("pid") or 0), deadline
+        )
+        if metadata is None or metadata.get("app_handle") != record.get("app_handle"):
+            return None, None, None, None, _native_target_error(
+                "STALE_APP_HANDLE", "The application process bound to window_handle is no longer available.",
+                app_handle=record.get("app_handle"), window_handle=window_handle,
+            )
+        window = _window_by_handle(metadata, str(window_handle))
+        if window is None:
+            return None, None, None, None, _native_target_error(
+                "STALE_WINDOW_HANDLE", "The window bound to window_handle no longer exists or changed identity.",
+                app_handle=record.get("app_handle"), window_handle=window_handle,
+            )
+        return (
+            str(metadata.get("active_app") or record.get("app_name") or ""),
+            int(metadata.get("pid") or record.get("pid") or 0),
+            int(window.get("index") or 0),
+            metadata,
+            None,
+        )
+
+    if app_handle:
+        record = _lookup_app_handle(str(app_handle))
+        if record is None:
+            return None, None, None, None, _native_target_error(
+                "APP_HANDLE_UNKNOWN",
+                "app_handle is unknown or expired; call mac_observe again using the application name.",
+                app_handle=app_handle,
+            )
+        if normalized_app and normalized_app.lower() != str(record.get("app_name") or "").lower():
+            return None, None, None, None, _native_target_error(
+                "TARGET_HANDLE_MISMATCH", "app does not match the application bound to app_handle."
+            )
+        metadata, error = _scan_native_windows(
+            str(record.get("app_name") or ""), int(record.get("pid") or 0), deadline
+        )
+        if metadata is None or metadata.get("app_handle") != app_handle:
+            return None, None, None, None, _native_target_error(
+                "STALE_APP_HANDLE", "The application process bound to app_handle is no longer available.",
+                app_handle=app_handle,
+            )
+        return (
+            str(metadata.get("active_app") or record.get("app_name") or ""),
+            int(metadata.get("pid") or record.get("pid") or 0),
+            None,
+            metadata,
+            None,
+        )
+
+    return normalized_app, None, None, None, None
+
+
 def _format_result(payload: Dict[str, Any], image_data: Optional[bytes] = None) -> Any:
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     if image_data:
@@ -572,12 +774,13 @@ def _collect_observation(
     include_screenshot: bool,
     ocr: bool,
     deadline: Optional[float] = None,
+    app_pid: Optional[int] = None,
 ) -> Tuple[Dict[str, Any], Optional[bytes]]:
     local_deadline = time.monotonic() + _OBSERVE_BUDGET_S
     if deadline is not None:
         local_deadline = min(local_deadline, deadline)
     ok, raw, error = _run_osascript(
-        _observation_script(app, window_index, max_depth, max_children),
+        _observation_script(app, window_index, max_depth, max_children, app_pid=app_pid),
         timeout_s=_operation_timeout(local_deadline, 20),
     )
     if not ok:
@@ -588,8 +791,22 @@ def _collect_observation(
         }, None
 
     metadata, nodes = _parse_observation(raw)
+    metadata = _decorate_native_metadata(metadata)
     active_app = str(metadata.get("active_app") or app or "")
-    observation_id = _save_observation(active_app, window_index, nodes)
+    windows = list(metadata.get("windows") or [])
+    selected_window: Optional[Dict[str, Any]] = None
+    if window_index > 0:
+        selected_window = next(
+            (row for row in windows if int(row.get("index") or 0) == int(window_index)), None
+        )
+        if selected_window is None:
+            return _native_target_error(
+                "WINDOW_NOT_FOUND",
+                f"window_index {window_index} does not exist for {active_app or 'the target application'}.",
+                app_handle=metadata.get("app_handle"),
+            ), None
+
+    observation_id = _save_observation(active_app, window_index, nodes, metadata)
 
     image_data: Optional[bytes] = None
     screenshot_error: Optional[str] = None
@@ -601,14 +818,24 @@ def _collect_observation(
         except TimeoutError as exc:
             image_data, screenshot_error = None, str(exc)
 
+    selected_handle = selected_window.get("window_handle") if selected_window else None
     payload: Dict[str, Any] = {
         "ok": True,
         "observation_id": observation_id,
         "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "active_app": active_app,
+        "app_handle": metadata.get("app_handle"),
+        "app_pid": metadata.get("pid"),
+        "bundle_id": metadata.get("bundle_id") or "",
+        "window_handle": selected_handle,
+        "window_index": window_index,
+        "targeting_status": (
+            selected_window.get("identity_status") if selected_window else "multi_window"
+        ),
         "frontmost": bool(metadata.get("frontmost", False)),
         "window_count": int(metadata.get("window_count") or 0),
         "window_names": metadata.get("window_names", []),
+        "windows": _public_window_rows(metadata),
         "node_count": len(nodes),
         "nodes": nodes,
         "screenshot": {
@@ -617,6 +844,8 @@ def _collect_observation(
             "mime_type": f"image/{_SCREENSHOT_FORMAT}" if image_data and include_screenshot else None,
         },
     }
+    if selected_window is not None and not selected_handle:
+        payload["targeting_reason"] = "WINDOW_IDENTITY_AMBIGUOUS_OR_UNAVAILABLE"
     if screenshot_error:
         payload["screenshot"]["error"] = screenshot_error
 
@@ -654,22 +883,38 @@ def observe_ui(
     max_children: int = 30,
     include_screenshot: bool = True,
     ocr: bool = False,
+    app_handle: Optional[str] = None,
+    window_handle: Optional[str] = None,
 ) -> Any:
-    """Read the frontmost or named macOS app's Accessibility tree and screen."""
+    """Read a macOS app/window Accessibility tree with stable native target handles."""
     try:
         normalized_app = _normalize_app(app)
         if window_index < 0:
             return {"ok": False, "error": "window_index must be 0 (all) or a positive window number."}
         max_depth = max(0, min(int(max_depth), 8))
         max_children = max(1, min(int(max_children), 100))
+        deadline = time.monotonic() + _OBSERVE_BUDGET_S
+        resolved_app, resolved_pid, resolved_window_index, _, target_error = _resolve_registered_native_target(
+            normalized_app, app_handle, window_handle, deadline
+        )
+        if target_error is not None:
+            return target_error
+        if window_handle:
+            if not resolved_window_index:
+                return _native_target_error(
+                    "STALE_WINDOW_HANDLE", "Could not resolve window_handle to a current window."
+                )
+            window_index = int(resolved_window_index)
         payload, image_data = _collect_observation(
             settings,
-            normalized_app,
+            resolved_app,
             int(window_index),
             max_depth,
             max_children,
             bool(include_screenshot),
             bool(ocr),
+            deadline=deadline,
+            app_pid=resolved_pid,
         )
         return _format_result(payload, image_data)
     except ValueError as exc:
@@ -697,11 +942,19 @@ end tell''',
     return stdout.strip(), None
 
 
-def _target_script(app: str, element_id: str, body: str, activate: bool = True) -> str:
+def _target_script(
+    app: str, element_id: str, body: str, activate: bool = True, app_pid: Optional[int] = None,
+) -> str:
     expression = _element_expression(element_id)
     activation = "set frontmost to true" if activate else ""
+    selection = (
+        f"set p to first application process whose unix id is {int(app_pid)}"
+        if app_pid is not None
+        else f"set p to first application process whose name is {_apple_string(app)}"
+    )
     return f'''tell application "System Events"
-    tell application process {_apple_string(app)}
+    {selection}
+    tell p
         {activation}
         set targetElement to {expression}
         {body}
@@ -709,10 +962,18 @@ def _target_script(app: str, element_id: str, body: str, activate: bool = True) 
 end tell'''
 
 
-def _process_script(app: str, body: str, activate: bool = True) -> str:
+def _process_script(
+    app: str, body: str, activate: bool = True, app_pid: Optional[int] = None,
+) -> str:
     activation = "set frontmost to true" if activate else ""
+    selection = (
+        f"set p to first application process whose unix id is {int(app_pid)}"
+        if app_pid is not None
+        else f"set p to first application process whose name is {_apple_string(app)}"
+    )
     return f'''tell application "System Events"
-    tell application process {_apple_string(app)}
+    {selection}
+    tell p
         {activation}
         {body}
     end tell
@@ -778,6 +1039,7 @@ def _click(
     action: Dict[str, Any],
     node: Optional[Dict[str, Any]],
     deadline: Optional[float] = None,
+    app_pid: Optional[int] = None,
 ) -> Tuple[bool, str]:
     click_count = int(action.get("click_count", 2 if action.get("type") == "double_click" else 1))
     if click_count not in {1, 2}:
@@ -802,11 +1064,13 @@ def _click(
             )
         )
         ok, _, error = _run_osascript(
-            _target_script(app, element_id, click_body),
+            _target_script(app, element_id, click_body, app_pid=app_pid),
             timeout_s=_operation_timeout(deadline, 30),
         )
         if ok:
             return True, "semantic click completed"
+        if app_pid is not None:
+            return False, error or "semantic click failed for stable native target; coordinate fallback disabled"
         fallback = _node_coordinates(node)
         if fallback is None:
             return False, error or "semantic click failed"
@@ -825,9 +1089,11 @@ def _click(
     return ok, error or "coordinate click completed"
 
 
-def _focus_element(app: str, element_id: str, deadline: Optional[float] = None) -> Tuple[bool, str]:
+def _focus_element(
+    app: str, element_id: str, deadline: Optional[float] = None, app_pid: Optional[int] = None,
+) -> Tuple[bool, str]:
     ok, _, error = _run_osascript(
-        _target_script(app, element_id, "click targetElement"),
+        _target_script(app, element_id, "click targetElement", app_pid=app_pid),
         timeout_s=_operation_timeout(deadline, 30),
     )
     return ok, error
@@ -884,8 +1150,9 @@ def _paste_text(
     element_id: str,
     text: str,
     deadline: Optional[float] = None,
+    app_pid: Optional[int] = None,
 ) -> Tuple[bool, str]:
-    focused, focus_error = _focus_element(app, element_id, deadline)
+    focused, focus_error = _focus_element(app, element_id, deadline, app_pid)
     if not focused:
         return False, focus_error or "Could not focus target element"
     previous, previous_error = _get_clipboard(deadline)
@@ -896,7 +1163,7 @@ def _paste_text(
         return False, copy_error
     try:
         ok, _, error = _run_osascript(
-            _process_script(app, 'keystroke "v" using {command down}'),
+            _process_script(app, 'keystroke "v" using {command down}', app_pid=app_pid),
             timeout_s=_operation_timeout(deadline, 30),
         )
         return ok, error or "paste completed"
@@ -912,8 +1179,9 @@ def _type_text(
     text: str,
     clear: bool,
     deadline: Optional[float] = None,
+    app_pid: Optional[int] = None,
 ) -> Tuple[bool, str]:
-    focused, focus_error = _focus_element(app, element_id, deadline)
+    focused, focus_error = _focus_element(app, element_id, deadline, app_pid)
     if not focused:
         return False, focus_error or "Could not focus target element"
     if clear:
@@ -921,6 +1189,7 @@ def _type_text(
             _process_script(
                 app,
                 'keystroke "a" using {command down}\n        key code 51',
+                app_pid=app_pid,
             ),
             timeout_s=_operation_timeout(deadline, 30),
         )
@@ -931,7 +1200,7 @@ def _type_text(
     )
     if ok:
         return True, "text typed"
-    pasted, paste_error = _paste_text(app, element_id, text, deadline)
+    pasted, paste_error = _paste_text(app, element_id, text, deadline, app_pid)
     return pasted, paste_error if not pasted else "text pasted as typing fallback"
 
 
@@ -940,6 +1209,7 @@ def _key(
     key: Any,
     modifiers: Any,
     deadline: Optional[float] = None,
+    app_pid: Optional[int] = None,
 ) -> Tuple[bool, str]:
     if not isinstance(key, str) or not key.strip():
         return False, "key is required"
@@ -960,7 +1230,7 @@ def _key(
     else:
         return False, "Unknown key names must be a single character or a supported key such as return, tab, escape, or page_down"
     ok, _, error = _run_osascript(
-        _process_script(app, command), timeout_s=_operation_timeout(deadline, 30)
+        _process_script(app, command, app_pid=app_pid), timeout_s=_operation_timeout(deadline, 30)
     )
     return ok, error or "key sent"
 
@@ -970,6 +1240,7 @@ def _scroll(
     action: Dict[str, Any],
     node: Optional[Dict[str, Any]],
     deadline: Optional[float] = None,
+    app_pid: Optional[int] = None,
 ) -> Tuple[bool, str]:
     direction = str(action.get("direction", "down")).lower().replace("-", "_")
     action_name = {
@@ -1002,11 +1273,13 @@ def _scroll(
             f'        end repeat'
         )
         ok, _, error = _run_osascript(
-            _target_script(app, element_id, body),
+            _target_script(app, element_id, body, app_pid=app_pid),
             timeout_s=_operation_timeout(deadline, 30),
         )
         if ok:
             return True, "semantic scroll completed"
+        if app_pid is not None:
+            return False, error or "semantic scroll failed for stable native target; key fallback disabled"
         # If an app does not expose AXScroll actions, fall back to page keys.
 
     key_name = {
@@ -1016,7 +1289,7 @@ def _scroll(
         "right": "right",
     }[direction]
     for _ in range(pages):
-        ok, message = _key(app, key_name, [], deadline)
+        ok, message = _key(app, key_name, [], deadline, app_pid)
         if not ok:
             return False, message
         if deadline is not None and time.monotonic() >= deadline:
@@ -1028,6 +1301,7 @@ def _accessibility_action(
     app: str,
     action: Dict[str, Any],
     deadline: Optional[float] = None,
+    app_pid: Optional[int] = None,
 ) -> Tuple[bool, str]:
     try:
         element_id = _validate_element_id(action.get("element_id"))
@@ -1037,7 +1311,7 @@ def _accessibility_action(
     if not re.fullmatch(r"AX[A-Za-z0-9]+", action_name):
         return False, "name must be an Accessibility action such as AXPress or AXShowMenu"
     ok, _, error = _run_osascript(
-        _target_script(app, element_id, f'perform action "{action_name}" of targetElement'),
+        _target_script(app, element_id, f'perform action "{action_name}" of targetElement', app_pid=app_pid),
         timeout_s=_operation_timeout(deadline, 30),
     )
     return ok, error or f"{action_name} completed"
@@ -1088,12 +1362,13 @@ def _perform_action(
     action: Dict[str, Any],
     node: Optional[Dict[str, Any]],
     deadline: Optional[float] = None,
+    app_pid: Optional[int] = None,
 ) -> Tuple[bool, str]:
     action_type = str(action.get("type", "")).strip().lower().replace("-", "_")
     if action_type in {"click", "double_click"}:
-        return _click(app, action, node, deadline)
+        return _click(app, action, node, deadline, app_pid)
     if action_type == "scroll":
-        return _scroll(app, action, node, deadline)
+        return _scroll(app, action, node, deadline, app_pid)
     if action_type in {"type", "type_text"}:
         element_id = _validate_element_id(action.get("element_id"))
         text = action.get("text", "")
@@ -1101,7 +1376,7 @@ def _perform_action(
             raise ValueError("text must be a string")
         if len(text) > _MAX_TEXT_CHARS:
             raise ValueError(f"text must be at most {_MAX_TEXT_CHARS} characters")
-        return _type_text(app, element_id, text, bool(action.get("clear", True)), deadline)
+        return _type_text(app, element_id, text, bool(action.get("clear", True)), deadline, app_pid)
     if action_type == "paste":
         element_id = _validate_element_id(action.get("element_id"))
         text = action.get("text", "")
@@ -1109,16 +1384,114 @@ def _perform_action(
             raise ValueError("text must be a string")
         if len(text) > _MAX_TEXT_CHARS:
             raise ValueError(f"text must be at most {_MAX_TEXT_CHARS} characters")
-        return _paste_text(app, element_id, text, deadline)
+        return _paste_text(app, element_id, text, deadline, app_pid)
     if action_type in {"key", "keyboard", "shortcut"}:
-        return _key(app, action.get("key"), action.get("modifiers", []), deadline)
+        return _key(app, action.get("key"), action.get("modifiers", []), deadline, app_pid)
     if action_type in {"action", "accessibility_action", "menu"}:
-        return _accessibility_action(app, action, deadline)
+        return _accessibility_action(app, action, deadline, app_pid)
     if action_type == "drag":
         return _drag(action, deadline)
     raise ValueError(
         "Unsupported action type. Use click, double_click, scroll, type, paste, key, drag, or accessibility_action."
     )
+
+
+def _element_window_index(element_id: Optional[str]) -> Optional[int]:
+    if not element_id:
+        return None
+    match = re.match(r"^w([1-9][0-9]*)", str(element_id))
+    return int(match.group(1)) if match else None
+
+
+def _resolve_action_native_target(
+    *,
+    stored: Optional[Dict[str, Any]],
+    requested_app: Optional[str],
+    app_handle: Optional[str],
+    window_handle: Optional[str],
+    element_id: Optional[str],
+    deadline: Optional[float],
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    stored_app = str((stored or {}).get("active_app") or "") or None
+    stored_app_handle = (stored or {}).get("app_handle")
+    if app_handle and stored_app_handle and app_handle != stored_app_handle:
+        return None, _native_target_error(
+            "TARGET_HANDLE_MISMATCH", "app_handle does not match the application in observation_id."
+        )
+
+    original_window_index = _element_window_index(element_id)
+    stored_window_index = int((stored or {}).get("window_index") or 0)
+    stored_window_handles = (stored or {}).get("window_handles") or {}
+    inferred_window_handle: Optional[str] = None
+    if stored is not None:
+        if stored_window_index > 0:
+            inferred_window_handle = (stored or {}).get("selected_window_handle")
+        elif original_window_index is not None:
+            inferred_window_handle = stored_window_handles.get(original_window_index)
+
+    if window_handle and inferred_window_handle and window_handle != inferred_window_handle:
+        return None, _native_target_error(
+            "TARGET_HANDLE_MISMATCH",
+            "window_handle does not match the window that produced the requested element_id.",
+            window_handle=window_handle,
+            observed_window_handle=inferred_window_handle,
+        )
+
+    effective_window_handle = window_handle or inferred_window_handle
+    effective_app_handle = app_handle or stored_app_handle
+
+    if stored is not None and effective_window_handle is None:
+        if stored_window_index > 0 or original_window_index is not None:
+            return None, _native_target_error(
+                "WINDOW_IDENTITY_UNAVAILABLE",
+                "The observed window did not have a unique stable identity; observe again after making the target window distinguishable.",
+            )
+        return None, _native_target_error(
+            "TARGET_WINDOW_REQUIRED",
+            "This observation contains multiple windows; provide window_handle or use an element_id from a uniquely identified window.",
+        )
+
+    if effective_window_handle:
+        target_app, target_pid, target_window_index, metadata, error = _resolve_registered_native_target(
+            requested_app or stored_app,
+            str(effective_app_handle) if effective_app_handle else None,
+            str(effective_window_handle),
+            deadline,
+        )
+        if error is not None:
+            return None, error
+        return {
+            "app": target_app,
+            "pid": target_pid,
+            "window_index": target_window_index,
+            "app_handle": (metadata or {}).get("app_handle") or effective_app_handle,
+            "window_handle": effective_window_handle,
+        }, None
+
+    if effective_app_handle:
+        target_app, target_pid, _, metadata, error = _resolve_registered_native_target(
+            requested_app or stored_app, str(effective_app_handle), None, deadline
+        )
+        if error is not None:
+            return None, error
+        return {
+            "app": target_app,
+            "pid": target_pid,
+            "window_index": original_window_index,
+            "app_handle": (metadata or {}).get("app_handle") or effective_app_handle,
+            "window_handle": None,
+        }, None
+
+    target_app, resolve_error = _resolve_app(requested_app or stored_app, deadline)
+    if not target_app:
+        return None, {"ok": False, "error": resolve_error or "Could not resolve target application"}
+    return {
+        "app": target_app,
+        "pid": None,
+        "window_index": original_window_index,
+        "app_handle": None,
+        "window_handle": None,
+    }, None
 
 
 def act_ui(
@@ -1128,8 +1501,10 @@ def act_ui(
     app: Optional[str] = None,
     return_state: bool = True,
     allow_risky: bool = False,
+    app_handle: Optional[str] = None,
+    window_handle: Optional[str] = None,
 ) -> Any:
-    """Perform bounded macOS UI actions and optionally return a fresh state."""
+    """Perform bounded macOS UI actions against re-resolved native app/window handles."""
     deadline = time.monotonic() + _ACTION_BUDGET_S
     try:
         if not isinstance(actions, list) or not actions:
@@ -1148,29 +1523,29 @@ def act_ui(
         stored_app = str(stored.get("active_app")) if stored else None
         if requested_app and stored_app and requested_app.lower() != stored_app.lower():
             return {"ok": False, "error": "app does not match the application in observation_id"}
-        target_app, resolve_error = _resolve_app(requested_app or stored_app, deadline)
-        if not target_app:
-            return {"ok": False, "error": resolve_error or "Could not resolve target application"}
 
         stored_nodes = (stored or {}).get("nodes", {})
         results: List[Dict[str, Any]] = []
+        last_target: Optional[Dict[str, Any]] = None
+
         for index, action in enumerate(actions):
             if time.monotonic() >= deadline:
                 return {
                     "ok": False,
                     "timed_out": True,
-                    "active_app": target_app,
+                    "active_app": (last_target or {}).get("app") or stored_app or requested_app,
                     "actions": results,
                     "error": f"mac_act exceeded its {_ACTION_BUDGET_S}s total time budget",
                 }
             if not isinstance(action, dict):
                 return {"ok": False, "error": f"actions[{index}] must be an object"}
+
             action_type = str(action.get("type", "")).strip().lower().replace("-", "_")
-            element_id = action.get("element_id")
+            original_element_id = action.get("element_id")
             node = None
-            if element_id is not None:
-                element_id = _validate_element_id(element_id)
-                node = stored_nodes.get(element_id)
+            if original_element_id is not None:
+                original_element_id = _validate_element_id(original_element_id)
+                node = stored_nodes.get(original_element_id)
                 if observation_id and node is None and action_type not in {"drag"}:
                     return {
                         "ok": False,
@@ -1181,31 +1556,85 @@ def act_ui(
                     "ok": False,
                     "blocked": True,
                     "error": "This element looks like a potentially consequential control. Set allow_risky=true only when the action is intentional.",
-                    "element_id": element_id,
+                    "element_id": original_element_id,
                 }
+
+            target, target_error = _resolve_action_native_target(
+                stored=stored,
+                requested_app=requested_app,
+                app_handle=app_handle,
+                window_handle=window_handle,
+                element_id=original_element_id,
+                deadline=deadline,
+            )
+            if target_error is not None:
+                target_error["actions"] = results
+                target_error["failed_action_index"] = index
+                return target_error
+            assert target is not None
+            last_target = target
+
+            if target.get("window_handle") and (
+                action_type in {"key", "keyboard", "shortcut", "drag"}
+                or (action_type in {"click", "double_click", "scroll"} and original_element_id is None)
+            ):
+                return _native_target_error(
+                    "WINDOW_BOUND_ACTION_REQUIRES_ELEMENT",
+                    "This action cannot yet be bound safely to a specific native window without an element_id. "
+                    "Use an element-targeted action; focus-safe window-level control is handled separately.",
+                    actions=results,
+                    failed_action_index=index,
+                    window_handle=target.get("window_handle"),
+                )
+
+            resolved_action = dict(action)
+            resolved_element_id = original_element_id
+            if original_element_id and target.get("window_index"):
+                resolved_element_id = _rebase_element_id(
+                    original_element_id, int(target["window_index"])
+                )
+                resolved_action["element_id"] = resolved_element_id
 
             started = time.perf_counter()
             timed_out = False
             try:
-                ok, message = _perform_action(target_app, action, node, deadline)
+                ok, message = _perform_action(
+                    str(target.get("app") or ""),
+                    resolved_action,
+                    node,
+                    deadline,
+                    int(target["pid"]) if target.get("pid") else None,
+                )
             except TimeoutError as exc:
                 ok, message = False, str(exc)
                 timed_out = True
             except ValueError as exc:
                 ok, message = False, str(exc)
-            result = {
+
+            result: Dict[str, Any] = {
                 "index": index,
                 "type": action_type,
-                "element_id": element_id,
+                "element_id": original_element_id,
                 "ok": ok,
                 "message": message,
                 "duration_ms": int((time.perf_counter() - started) * 1000),
+                "app_handle": target.get("app_handle"),
+                "window_handle": target.get("window_handle"),
+                "resolved_window_index": target.get("window_index"),
             }
+            if resolved_element_id != original_element_id:
+                result["resolved_element_id"] = resolved_element_id
             if timed_out:
                 result["timed_out"] = True
             results.append(result)
             if not ok:
-                response = {"ok": False, "active_app": target_app, "actions": results}
+                response = {
+                    "ok": False,
+                    "active_app": target.get("app"),
+                    "app_handle": target.get("app_handle"),
+                    "window_handle": target.get("window_handle"),
+                    "actions": results,
+                }
                 if timed_out:
                     response["timed_out"] = True
                 return response
@@ -1213,34 +1642,74 @@ def act_ui(
                 return {
                     "ok": False,
                     "timed_out": True,
-                    "active_app": target_app,
+                    "active_app": target.get("app"),
                     "actions": results,
                     "error": f"mac_act exceeded its {_ACTION_BUDGET_S}s total time budget",
                 }
             time.sleep(min(0.08, max(0.0, deadline - time.monotonic())))
 
         if not return_state:
-            return {"ok": True, "active_app": target_app, "actions": results}
+            return {
+                "ok": True,
+                "active_app": (last_target or {}).get("app"),
+                "app_handle": (last_target or {}).get("app_handle"),
+                "window_handle": (last_target or {}).get("window_handle"),
+                "actions": results,
+            }
 
-        window_index = int((stored or {}).get("window_index") or 1)
+        stored_window_index = int((stored or {}).get("window_index") or 1)
+        post_window_handle = window_handle
+        if post_window_handle is None and stored is not None and stored_window_index > 0:
+            post_window_handle = stored.get("selected_window_handle")
+        post_app_handle = app_handle or (stored or {}).get("app_handle")
+
+        post_app = (last_target or {}).get("app") or requested_app or stored_app
+        post_pid = (last_target or {}).get("pid")
+        post_window_index = stored_window_index
+        if post_window_handle:
+            resolved_app, resolved_pid, resolved_index, _, target_error = _resolve_registered_native_target(
+                post_app,
+                str(post_app_handle) if post_app_handle else None,
+                str(post_window_handle),
+                deadline,
+            )
+            if target_error is not None:
+                return {
+                    "ok": True,
+                    "active_app": post_app,
+                    "actions": results,
+                    "post_state_ok": False,
+                    "post_state_error": target_error,
+                    "previous_observation_id": observation_id,
+                }
+            post_app, post_pid, post_window_index = resolved_app, resolved_pid, int(resolved_index or 1)
+        elif post_app_handle:
+            resolved_app, resolved_pid, _, _, target_error = _resolve_registered_native_target(
+                post_app, str(post_app_handle), None, deadline
+            )
+            if target_error is None:
+                post_app, post_pid = resolved_app, resolved_pid
+
         try:
             post_payload, image_data = _collect_observation(
                 settings,
-                target_app,
-                window_index,
+                post_app,
+                post_window_index,
                 max_depth=5,
                 max_children=30,
                 include_screenshot=True,
                 ocr=False,
                 deadline=deadline,
+                app_pid=int(post_pid) if post_pid else None,
             )
         except TimeoutError as exc:
             return {
-                "ok": False,
-                "timed_out": True,
-                "active_app": target_app,
+                "ok": True,
+                "active_app": post_app,
                 "actions": results,
-                "error": str(exc),
+                "post_state_ok": False,
+                "post_state_error": str(exc),
+                "previous_observation_id": observation_id,
             }
         post_payload["actions"] = results
         post_payload["previous_observation_id"] = observation_id

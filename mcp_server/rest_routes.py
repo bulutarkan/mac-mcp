@@ -726,6 +726,8 @@ def _api_mac_observe_alias(
     return observe_ui(
         settings,
         app=data.get("app"),
+        app_handle=data.get("app_handle"),
+        window_handle=data.get("window_handle"),
         window_index=_payload_value(data, "window_index", 1),
         max_depth=_payload_value(data, "max_depth", 5),
         max_children=_payload_value(data, "max_children", 30),
@@ -747,6 +749,8 @@ def _api_mac_act_alias(
         actions=actions,
         observation_id=data.get("observation_id"),
         app=data.get("app"),
+        app_handle=data.get("app_handle"),
+        window_handle=data.get("window_handle"),
         return_state=_payload_value(data, "return_state", True),
         allow_risky=_payload_value(data, "allow_risky", False),
     )

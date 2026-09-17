@@ -1316,7 +1316,7 @@
         "operationId": "mac_observe",
         "x-openai-isConsequential": false,
         "summary": "Observe the macOS UI",
-        "description": "Returns an observation_id and Accessibility nodes with element_id values for mac_act.",
+        "description": "Returns observation_id plus process-bound app_handle and stable window_handle values when the native window can be uniquely identified.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1328,6 +1328,14 @@
                   "app": {
                     "type": "string",
                     "description": "Optional application; defaults to the frontmost app."
+                  },
+                  "app_handle": {
+                    "type": "string",
+                    "description": "Process-bound app handle returned by a previous mac_observe."
+                  },
+                  "window_handle": {
+                    "type": "string",
+                    "description": "Stable native window handle returned by a previous mac_observe."
                   },
                   "window_index": {
                     "type": "integer",
@@ -1374,7 +1382,7 @@
         "operationId": "mac_act",
         "x-openai-isConsequential": true,
         "summary": "Act on the macOS UI",
-        "description": "Use observation_id for safe targeting. The complete batch has a bounded safety budget.",
+        "description": "Use observation_id and native app/window handles for re-resolved targeting. Stale or ambiguous handles fail closed before execution.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1399,6 +1407,14 @@
                   "app": {
                     "type": "string",
                     "description": "Optional application name."
+                  },
+                  "app_handle": {
+                    "type": "string",
+                    "description": "Process-bound app handle returned by mac_observe."
+                  },
+                  "window_handle": {
+                    "type": "string",
+                    "description": "Stable native window handle returned by mac_observe."
                   },
                   "return_state": {
                     "type": "boolean",
