@@ -108,8 +108,22 @@ class NativeTargetActionTests(unittest.TestCase):
         observation_id = self._observation(first)
         reordered = metadata(windows=[window(1, "Preview", 800), window(2, "Editor", 20)])
 
+        ready = {
+            "ready": True,
+            "state": {
+                "connected": True, "role": "AXButton", "subrole": "", "title": "Safe button",
+                "value": "", "character_count": 0, "selected": False, "enabled": True,
+                "position": {"x": 100, "y": 100, "width": 50, "height": 20},
+                "window_position": {"x": 20, "y": 20, "width": 700, "height": 500},
+                "window_title": "Editor", "window_count": 2, "window_child_count": 1,
+                "sheet_count": 0, "popover_count": 0, "menu_count": 0,
+            },
+        }
+        verified = {"effect_observed": True, "verification": "target_state_changed", "attempts": 1}
         with patch.object(tools_ui, "_scan_native_windows", return_value=(reordered, None)), \
-             patch.object(tools_ui, "_perform_action", return_value=(True, "ok")) as perform:
+             patch.object(tools_ui, "_wait_for_native_readiness", return_value=ready), \
+             patch.object(tools_ui, "_perform_action", return_value=(True, "ok")) as perform, \
+             patch.object(tools_ui, "_wait_for_native_effect", return_value=verified):
             result = tools_ui.act_ui(
                 self.settings,
                 [{"type": "click", "element_id": "w1/1"}],

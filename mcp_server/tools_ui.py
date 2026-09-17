@@ -15,6 +15,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from mcp.server.fastmcp.utilities.types import Image
 
+from .native_action_verification import (
+    ACTION_VERIFY_POLL_S as _NATIVE_ACTION_VERIFY_POLL_S,
+    ACTION_VERIFY_TIMEOUT_S as _NATIVE_ACTION_VERIFY_TIMEOUT_S,
+    READINESS_POLL_S as _NATIVE_READINESS_POLL_S,
+    READINESS_STABLE_MS as _NATIVE_READINESS_STABLE_MS,
+    READINESS_TIMEOUT_S as _NATIVE_READINESS_TIMEOUT_S,
+    effect_changed as _native_effect_changed,
+    geometry_signature as _native_geometry_signature,
+    observed_geometry_matches as _native_observed_geometry_matches,
+    readiness_reason as _native_readiness_reason,
+    verification_required as _native_verification_required,
+)
 from .native_targets import (
     decorate_metadata as _decorate_native_metadata,
     lookup_app as _lookup_app_handle,
@@ -980,6 +992,642 @@ def _process_script(
 end tell'''
 
 
+
+def _parse_optional_bool(value: str) -> Optional[bool]:
+    raw = str(value or "").strip().lower()
+    if raw in {"true", "yes", "1"}:
+        return True
+    if raw in {"false", "no", "0"}:
+        return False
+    return None
+
+
+def _parse_native_action_state(raw: str) -> Dict[str, Any]:
+    fields = str(raw or "").split(_FIELD_SEPARATOR)
+    if not fields or fields[0] != "__STATE__" or len(fields) < 36:
+        return {"connected": False, "probe_error": "invalid_native_state_payload"}
+    state: Dict[str, Any] = {
+        "connected": _parse_bool(fields[1]),
+        "role": fields[2],
+        "subrole": fields[3],
+        "title": fields[4],
+        "description": fields[5],
+        "value": fields[6],
+        "character_count": _parse_number(fields[7]),
+        "selected": _parse_optional_bool(fields[8]),
+        "focused": _parse_optional_bool(fields[9]),
+        "enabled": _parse_optional_bool(fields[10]),
+        "hidden": _parse_optional_bool(fields[11]),
+        "visible": _parse_optional_bool(fields[12]),
+        "offscreen": _parse_optional_bool(fields[13]),
+        "busy": _parse_optional_bool(fields[14]),
+        "position": {
+            "x": _parse_number(fields[15]), "y": _parse_number(fields[16]),
+            "width": _parse_number(fields[17]), "height": _parse_number(fields[18]),
+        },
+        "child_count": _parse_number(fields[19]),
+        "actions": [item.strip() for item in fields[20].split(",") if item.strip()],
+        "window_title": fields[21],
+        "window_count": _parse_number(fields[22]),
+        "window_position": {
+            "x": _parse_number(fields[23]), "y": _parse_number(fields[24]),
+            "width": _parse_number(fields[25]), "height": _parse_number(fields[26]),
+        },
+        "window_minimized": _parse_optional_bool(fields[27]),
+        "window_child_count": _parse_number(fields[28]),
+        "sheet_count": _parse_number(fields[29]),
+        "popover_count": _parse_number(fields[30]),
+        "menu_count": _parse_number(fields[31]),
+        "in_sheet": _parse_optional_bool(fields[32]),
+        "in_popover": _parse_optional_bool(fields[33]),
+        "popover_covers_target": _parse_optional_bool(fields[34]),
+        "process_visible": _parse_optional_bool(fields[35]),
+    }
+    state["modal_sheet_blocks_target"] = bool(
+        (state.get("sheet_count") or 0) > 0 and state.get("in_sheet") is not True
+    )
+    return state
+
+
+def _native_action_state_script(
+    app: str,
+    element_id: str,
+    *,
+    app_pid: Optional[int] = None,
+) -> str:
+    expression = _element_expression(_validate_element_id(element_id))
+    window_index = _element_window_index(element_id) or 1
+    selection = (
+        f"set p to first application process whose unix id is {int(app_pid)}"
+        if app_pid is not None
+        else f"set p to first application process whose name is {_apple_string(app)}"
+    )
+    return f'''use scripting additions
+
+on cleanStateText(v, fs)
+    try
+        set t to v as text
+    on error
+        set t to ""
+    end try
+    set oldDelims to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to {{return, linefeed, tab, fs}}
+    set parts to every text item of t
+    set AppleScript's text item delimiters to " "
+    set t to parts as text
+    set AppleScript's text item delimiters to oldDelims
+    if (length of t) > 4000 then set t to text 1 thru 4000 of t
+    return t
+end cleanStateText
+
+set fs to character id 31
+set connectedText to "false"
+set roleText to ""
+set subroleText to ""
+set titleText to ""
+set descriptionText to ""
+set valueText to ""
+set characterCountText to ""
+set selectedText to ""
+set focusedText to ""
+set enabledText to ""
+set hiddenText to ""
+set visibleText to ""
+set offscreenText to ""
+set busyText to ""
+set xText to ""
+set yText to ""
+set widthText to ""
+set heightText to ""
+set childCountText to ""
+set actionText to ""
+set windowTitleText to ""
+set windowCountText to ""
+set windowXText to ""
+set windowYText to ""
+set windowWidthText to ""
+set windowHeightText to ""
+set windowMinimizedText to ""
+set windowChildCountText to ""
+set sheetCountText to ""
+set popoverCountText to ""
+set menuCountText to ""
+set inSheetText to "false"
+set inPopoverText to "false"
+set popoverCoversText to "false"
+set processVisibleText to ""
+
+tell application "System Events"
+    {selection}
+    try
+        set processVisibleText to visible of p as text
+    end try
+    try
+        set windowCountText to count of windows of p as text
+    end try
+    try
+        set menuCountText to count of menus of p as text
+    end try
+    try
+        set w to window {window_index} of p
+        try
+            set windowTitleText to title of w as text
+        end try
+        try
+            set wp to position of w
+            set windowXText to item 1 of wp as text
+            set windowYText to item 2 of wp as text
+        end try
+        try
+            set ws to size of w
+            set windowWidthText to item 1 of ws as text
+            set windowHeightText to item 2 of ws as text
+        end try
+        try
+            set windowMinimizedText to value of attribute "AXMinimized" of w as text
+        end try
+        try
+            set windowChildCountText to count of UI elements of w as text
+        end try
+        try
+            set sheetCountText to count of sheets of w as text
+        end try
+        try
+            set popoverCountText to count of pop overs of w as text
+        end try
+
+        try
+            tell p
+                set targetElement to {expression}
+            end tell
+            set connectedText to "true"
+            try
+                set roleText to role of targetElement as text
+            end try
+            try
+                set subroleText to subrole of targetElement as text
+            end try
+            try
+                set titleText to title of targetElement as text
+            end try
+            try
+                set descriptionText to description of targetElement as text
+            end try
+            set isSecure to (roleText contains "SecureText" or subroleText contains "Secure")
+            if isSecure then
+                set valueText to "[redacted]"
+            else
+                try
+                    set valueText to value of targetElement as text
+                end try
+            end if
+            try
+                set characterCountText to value of attribute "AXNumberOfCharacters" of targetElement as text
+            end try
+            try
+                set selectedText to selected of targetElement as text
+            end try
+            try
+                set focusedText to focused of targetElement as text
+            end try
+            try
+                set enabledText to enabled of targetElement as text
+            end try
+            try
+                set hiddenText to value of attribute "AXHidden" of targetElement as text
+            end try
+            try
+                set visibleText to value of attribute "AXVisible" of targetElement as text
+            end try
+            try
+                set offscreenText to value of attribute "AXOffScreen" of targetElement as text
+            end try
+            try
+                set busyText to value of attribute "AXElementBusy" of targetElement as text
+            end try
+            try
+                set tp to position of targetElement
+                set xText to item 1 of tp as text
+                set yText to item 2 of tp as text
+            end try
+            try
+                set ts to size of targetElement
+                set widthText to item 1 of ts as text
+                set heightText to item 2 of ts as text
+            end try
+            try
+                set childCountText to count of UI elements of targetElement as text
+            end try
+            try
+                set actionText to name of actions of targetElement as text
+            end try
+
+            set hasOverlay to false
+            try
+                if (sheetCountText as integer) > 0 then set hasOverlay to true
+            end try
+            try
+                if (popoverCountText as integer) > 0 then set hasOverlay to true
+            end try
+            if hasOverlay then
+                set ancestorRef to targetElement
+                repeat 16 times
+                    try
+                        set ancestorRef to value of attribute "AXParent" of ancestorRef
+                        set ancestorRole to ""
+                        try
+                            set ancestorRole to role of ancestorRef as text
+                        end try
+                        if ancestorRole is "AXSheet" then set inSheetText to "true"
+                        if ancestorRole is "AXPopover" then set inPopoverText to "true"
+                    on error
+                        exit repeat
+                    end try
+                end repeat
+            end if
+
+            try
+                if (popoverCountText as integer) > 0 and xText is not "" and yText is not "" and widthText is not "" and heightText is not "" then
+                    set targetCenterX to (xText as number) + ((widthText as number) / 2)
+                    set targetCenterY to (yText as number) + ((heightText as number) / 2)
+                    repeat with popItem in pop overs of w
+                        try
+                            set popRef to contents of popItem
+                            set pp to position of popRef
+                            set ps to size of popRef
+                            set px to item 1 of pp as number
+                            set py to item 2 of pp as number
+                            set pw to item 1 of ps as number
+                            set ph to item 2 of ps as number
+                            if targetCenterX is greater than or equal to px and targetCenterX is less than or equal to (px + pw) and targetCenterY is greater than or equal to py and targetCenterY is less than or equal to (py + ph) then
+                                if inPopoverText is not "true" then set popoverCoversText to "true"
+                            end if
+                        end try
+                    end repeat
+                end if
+            end try
+        end try
+    end try
+end tell
+
+return "__STATE__" & fs & connectedText & fs & ¬
+    my cleanStateText(roleText, fs) & fs & my cleanStateText(subroleText, fs) & fs & ¬
+    my cleanStateText(titleText, fs) & fs & my cleanStateText(descriptionText, fs) & fs & ¬
+    my cleanStateText(valueText, fs) & fs & my cleanStateText(characterCountText, fs) & fs & ¬
+    my cleanStateText(selectedText, fs) & fs & my cleanStateText(focusedText, fs) & fs & ¬
+    my cleanStateText(enabledText, fs) & fs & my cleanStateText(hiddenText, fs) & fs & ¬
+    my cleanStateText(visibleText, fs) & fs & my cleanStateText(offscreenText, fs) & fs & ¬
+    my cleanStateText(busyText, fs) & fs & my cleanStateText(xText, fs) & fs & ¬
+    my cleanStateText(yText, fs) & fs & my cleanStateText(widthText, fs) & fs & ¬
+    my cleanStateText(heightText, fs) & fs & my cleanStateText(childCountText, fs) & fs & ¬
+    my cleanStateText(actionText, fs) & fs & my cleanStateText(windowTitleText, fs) & fs & ¬
+    my cleanStateText(windowCountText, fs) & fs & my cleanStateText(windowXText, fs) & fs & ¬
+    my cleanStateText(windowYText, fs) & fs & my cleanStateText(windowWidthText, fs) & fs & ¬
+    my cleanStateText(windowHeightText, fs) & fs & my cleanStateText(windowMinimizedText, fs) & fs & ¬
+    my cleanStateText(windowChildCountText, fs) & fs & my cleanStateText(sheetCountText, fs) & fs & ¬
+    my cleanStateText(popoverCountText, fs) & fs & my cleanStateText(menuCountText, fs) & fs & ¬
+    my cleanStateText(inSheetText, fs) & fs & my cleanStateText(inPopoverText, fs) & fs & ¬
+    my cleanStateText(popoverCoversText, fs) & fs & my cleanStateText(processVisibleText, fs)
+'''
+
+
+def _probe_native_action_state(
+    app: str,
+    element_id: str,
+    *,
+    app_pid: Optional[int] = None,
+    deadline: Optional[float] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    ok, stdout, stderr = _run_osascript(
+        _native_action_state_script(app, element_id, app_pid=app_pid),
+        timeout_s=_operation_timeout(deadline, 8),
+    )
+    if not ok:
+        return None, stderr or "native Accessibility readiness probe failed"
+    state = _parse_native_action_state(stdout)
+    if state.get("probe_error"):
+        return None, str(state["probe_error"])
+    return state, None
+
+
+def _compact_readiness_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: state.get(key)
+        for key in (
+            "connected", "role", "subrole", "enabled", "hidden", "visible", "offscreen",
+            "busy", "position", "window_position", "window_minimized", "sheet_count",
+            "popover_count", "in_sheet", "in_popover", "popover_covers_target",
+        )
+        if state.get(key) is not None
+    }
+
+
+def _wait_for_native_readiness(
+    app: str,
+    action: Dict[str, Any],
+    observed_node: Optional[Dict[str, Any]],
+    *,
+    app_pid: Optional[int] = None,
+    deadline: Optional[float] = None,
+) -> Dict[str, Any]:
+    element_id = _validate_element_id(action.get("element_id"))
+    timeout_s = max(0.1, min(float(action.get("readiness_timeout_s", _NATIVE_READINESS_TIMEOUT_S)), 2.5))
+    stable_ms = max(0, min(int(action.get("readiness_stable_ms", _NATIVE_READINESS_STABLE_MS)), 1500))
+    poll_s = max(0.03, min(float(action.get("readiness_poll_ms", _NATIVE_READINESS_POLL_S * 1000)) / 1000.0, 0.25))
+    started = time.perf_counter()
+    local_deadline = started + timeout_s
+    if deadline is not None:
+        local_deadline = min(local_deadline, deadline)
+    attempts = 0
+    last_state: Dict[str, Any] = {}
+    last_reason: Optional[str] = None
+    last_signature: Optional[tuple[Any, ...]] = None
+    stable_since: Optional[float] = None
+
+    while True:
+        state, probe_error = _probe_native_action_state(
+            app, element_id, app_pid=app_pid, deadline=local_deadline,
+        )
+        attempts += 1
+        now = time.perf_counter()
+        if probe_error is not None or state is None:
+            return {
+                "ready": False,
+                "reason_code": "READINESS_PROBE_FAILED",
+                "error": probe_error or "native readiness probe failed",
+                "attempts": attempts,
+                "duration_ms": int((now - started) * 1000),
+                "retryable": False,
+            }
+
+        last_state = state
+        last_reason = _native_readiness_reason(state, observed_node=observed_node)
+        if last_reason in {"STALE_ELEMENT_PATH", "ELEMENT_DETACHED"}:
+            return {
+                "ready": False,
+                "reason_code": last_reason,
+                "attempts": attempts,
+                "duration_ms": int((now - started) * 1000),
+                "retryable": False,
+                "state": _compact_readiness_state(state),
+            }
+
+        if last_reason is None:
+            if _native_observed_geometry_matches(state, observed_node):
+                return {
+                    "ready": True,
+                    "reason_code": None,
+                    "attempts": attempts,
+                    "duration_ms": int((now - started) * 1000),
+                    "stable_for_ms": stable_ms,
+                    "settled_by": "observation_geometry_match",
+                    "state": state,
+                    "occlusion_check": "modal_overlay_geometry",
+                    "hit_test": "unavailable_side_effect_free",
+                }
+            signature = _native_geometry_signature(state)
+            if signature != last_signature:
+                last_signature = signature
+                stable_since = now
+            stable_for_ms = int((now - (stable_since or now)) * 1000)
+            if stable_for_ms >= stable_ms:
+                return {
+                    "ready": True,
+                    "reason_code": None,
+                    "attempts": attempts,
+                    "duration_ms": int((now - started) * 1000),
+                    "stable_for_ms": stable_for_ms,
+                    "state": state,
+                    "occlusion_check": "modal_overlay_geometry",
+                    "hit_test": "unavailable_side_effect_free",
+                }
+            last_reason = "ELEMENT_UNSTABLE"
+        else:
+            stable_since = None
+            last_signature = None
+
+        if now >= local_deadline:
+            return {
+                "ready": False,
+                "timed_out": True,
+                "reason_code": last_reason or "ELEMENT_NOT_READY",
+                "attempts": attempts,
+                "duration_ms": int((now - started) * 1000),
+                "retryable": True,
+                "state": _compact_readiness_state(last_state),
+            }
+        time.sleep(min(poll_s, max(0.0, local_deadline - now)))
+
+
+
+def _parse_native_effect_state(raw: str) -> Dict[str, Any]:
+    fields = str(raw or "").split(_FIELD_SEPARATOR)
+    if not fields or fields[0] != "__EFFECT__" or len(fields) < 13:
+        return {"connected": False, "probe_error": "invalid_native_effect_payload"}
+    return {
+        "connected": _parse_bool(fields[1]),
+        "value": fields[2],
+        "character_count": _parse_number(fields[3]),
+        "selected": _parse_optional_bool(fields[4]),
+        "enabled": _parse_optional_bool(fields[5]),
+        "title": fields[6],
+        "child_count": _parse_number(fields[7]),
+        "window_title": fields[8],
+        "window_count": _parse_number(fields[9]),
+        "window_child_count": _parse_number(fields[10]),
+        "sheet_count": _parse_number(fields[11]),
+        "popover_count": _parse_number(fields[12]),
+    }
+
+
+def _native_effect_state_script(
+    app: str,
+    element_id: str,
+    *,
+    app_pid: Optional[int] = None,
+) -> str:
+    expression = _element_expression(_validate_element_id(element_id))
+    window_index = _element_window_index(element_id) or 1
+    selection = (
+        f"set p to first application process whose unix id is {int(app_pid)}"
+        if app_pid is not None
+        else f"set p to first application process whose name is {_apple_string(app)}"
+    )
+    return f'''use scripting additions
+
+on cleanEffectText(v, fs)
+    try
+        set t to v as text
+    on error
+        set t to ""
+    end try
+    set oldDelims to AppleScript's text item delimiters
+    set AppleScript's text item delimiters to {{return, linefeed, tab, fs}}
+    set parts to every text item of t
+    set AppleScript's text item delimiters to " "
+    set t to parts as text
+    set AppleScript's text item delimiters to oldDelims
+    if (length of t) > 4000 then set t to text 1 thru 4000 of t
+    return t
+end cleanEffectText
+
+set fs to character id 31
+set connectedText to "false"
+set valueText to ""
+set characterCountText to ""
+set selectedText to ""
+set enabledText to ""
+set titleText to ""
+set childCountText to ""
+set windowTitleText to ""
+set windowCountText to ""
+set windowChildCountText to ""
+set sheetCountText to ""
+set popoverCountText to ""
+
+tell application "System Events"
+    {selection}
+    try
+        set windowCountText to count of windows of p as text
+    end try
+    try
+        set w to window {window_index} of p
+        try
+            set windowTitleText to title of w as text
+        end try
+        try
+            set windowChildCountText to count of UI elements of w as text
+        end try
+        try
+            set sheetCountText to count of sheets of w as text
+        end try
+        try
+            set popoverCountText to count of pop overs of w as text
+        end try
+        try
+            tell p
+                set targetElement to {expression}
+            end tell
+            set connectedText to "true"
+            set roleText to ""
+            set subroleText to ""
+            try
+                set roleText to role of targetElement as text
+            end try
+            try
+                set subroleText to subrole of targetElement as text
+            end try
+            if roleText contains "SecureText" or subroleText contains "Secure" then
+                set valueText to "[redacted]"
+            else
+                try
+                    set valueText to value of targetElement as text
+                end try
+            end if
+            try
+                set characterCountText to value of attribute "AXNumberOfCharacters" of targetElement as text
+            end try
+            try
+                set selectedText to selected of targetElement as text
+            end try
+            try
+                set enabledText to enabled of targetElement as text
+            end try
+            try
+                set titleText to title of targetElement as text
+            end try
+            try
+                set childCountText to count of UI elements of targetElement as text
+            end try
+        end try
+    end try
+end tell
+
+return "__EFFECT__" & fs & connectedText & fs & my cleanEffectText(valueText, fs) & fs & ¬
+    my cleanEffectText(characterCountText, fs) & fs & my cleanEffectText(selectedText, fs) & fs & ¬
+    my cleanEffectText(enabledText, fs) & fs & my cleanEffectText(titleText, fs) & fs & ¬
+    my cleanEffectText(childCountText, fs) & fs & my cleanEffectText(windowTitleText, fs) & fs & ¬
+    my cleanEffectText(windowCountText, fs) & fs & my cleanEffectText(windowChildCountText, fs) & fs & ¬
+    my cleanEffectText(sheetCountText, fs) & fs & my cleanEffectText(popoverCountText, fs)
+'''
+
+
+def _probe_native_effect_state(
+    app: str,
+    element_id: str,
+    *,
+    app_pid: Optional[int] = None,
+    deadline: Optional[float] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    ok, stdout, stderr = _run_osascript(
+        _native_effect_state_script(app, element_id, app_pid=app_pid),
+        timeout_s=_operation_timeout(deadline, 6),
+    )
+    if not ok:
+        return None, stderr or "native Accessibility effect probe failed"
+    state = _parse_native_effect_state(stdout)
+    if state.get("probe_error"):
+        return None, str(state["probe_error"])
+    return state, None
+
+def _wait_for_native_effect(
+    app: str,
+    action: Dict[str, Any],
+    before_state: Dict[str, Any],
+    *,
+    app_pid: Optional[int] = None,
+    deadline: Optional[float] = None,
+) -> Dict[str, Any]:
+    element_id = _validate_element_id(action.get("element_id"))
+    timeout_s = max(0.1, min(float(action.get("verify_timeout_s", _NATIVE_ACTION_VERIFY_TIMEOUT_S)), 2.0))
+    poll_s = max(0.03, min(float(action.get("verify_poll_ms", _NATIVE_ACTION_VERIFY_POLL_S * 1000)) / 1000.0, 0.25))
+    started = time.perf_counter()
+    local_deadline = started + timeout_s
+    if deadline is not None:
+        local_deadline = min(local_deadline, deadline)
+    attempts = 0
+    last_state: Optional[Dict[str, Any]] = None
+    last_error: Optional[str] = None
+    while True:
+        state, probe_error = _probe_native_effect_state(
+            app, element_id, app_pid=app_pid, deadline=local_deadline,
+        )
+        attempts += 1
+        now = time.perf_counter()
+        if state is not None:
+            last_state = state
+            changed, verification = _native_effect_changed(before_state, state, action)
+            if changed:
+                return {
+                    "effect_observed": True,
+                    "verification": verification,
+                    "attempts": attempts,
+                    "duration_ms": int((now - started) * 1000),
+                }
+        elif probe_error:
+            last_error = probe_error
+
+        if now >= local_deadline:
+            if last_state is None and last_error:
+                return {
+                    "effect_observed": False,
+                    "verification": "verification_unavailable",
+                    "reason_code": "ACTION_VERIFICATION_UNAVAILABLE",
+                    "error": last_error,
+                    "attempts": attempts,
+                    "duration_ms": int((now - started) * 1000),
+                    "automatic_retry": False,
+                }
+            return {
+                "effect_observed": False,
+                "verification": "no_effect_after_bounded_wait",
+                "reason_code": "ACTION_NO_EFFECT",
+                "attempts": attempts,
+                "duration_ms": int((now - started) * 1000),
+                "automatic_retry": False,
+            }
+        time.sleep(min(poll_s, max(0.0, local_deadline - now)))
+
 def _run_cliclick(arguments: List[str], timeout_s: float = 30) -> Tuple[bool, str]:
     executable = shutil.which("cliclick") or "/opt/homebrew/bin/cliclick"
     if not Path(executable).exists():
@@ -1595,6 +2243,53 @@ def act_ui(
                 )
                 resolved_action["element_id"] = resolved_element_id
 
+            readiness: Optional[Dict[str, Any]] = None
+            before_state: Optional[Dict[str, Any]] = None
+            if resolved_element_id is not None:
+                try:
+                    readiness = _wait_for_native_readiness(
+                        str(target.get("app") or ""),
+                        resolved_action,
+                        node,
+                        app_pid=int(target["pid"]) if target.get("pid") else None,
+                        deadline=deadline,
+                    )
+                except TimeoutError as exc:
+                    readiness = {
+                        "ready": False, "timed_out": True,
+                        "reason_code": "READINESS_TIMEOUT", "error": str(exc),
+                        "retryable": True,
+                    }
+                before_state = readiness.get("state") if isinstance(readiness.get("state"), dict) else None
+                if not readiness.get("ready"):
+                    public_readiness = {k: v for k, v in readiness.items() if k != "state"}
+                    failed = {
+                        "index": index,
+                        "type": action_type,
+                        "element_id": original_element_id,
+                        "ok": False,
+                        "error": "element_not_ready",
+                        "reason_code": readiness.get("reason_code") or "ELEMENT_NOT_READY",
+                        "readiness": public_readiness,
+                        "observe_again": True,
+                        "retryable": bool(readiness.get("retryable", True)),
+                        "app_handle": target.get("app_handle"),
+                        "window_handle": target.get("window_handle"),
+                        "resolved_window_index": target.get("window_index"),
+                    }
+                    if resolved_element_id != original_element_id:
+                        failed["resolved_element_id"] = resolved_element_id
+                    results.append(failed)
+                    return {
+                        "ok": False,
+                        "error": "element_not_ready",
+                        "reason_code": failed["reason_code"],
+                        "active_app": target.get("app"),
+                        "app_handle": target.get("app_handle"),
+                        "window_handle": target.get("window_handle"),
+                        "actions": results,
+                    }
+
             started = time.perf_counter()
             timed_out = False
             try:
@@ -1624,10 +2319,62 @@ def act_ui(
             }
             if resolved_element_id != original_element_id:
                 result["resolved_element_id"] = resolved_element_id
+            if readiness is not None:
+                result["readiness"] = {
+                    key: value for key, value in readiness.items()
+                    if key != "state"
+                }
             if timed_out:
                 result["timed_out"] = True
+
+            if (
+                result.get("ok")
+                and before_state is not None
+                and _native_verification_required(action_type, resolved_element_id)
+            ):
+                try:
+                    verification = _wait_for_native_effect(
+                        str(target.get("app") or ""),
+                        resolved_action,
+                        before_state,
+                        app_pid=int(target["pid"]) if target.get("pid") else None,
+                        deadline=deadline,
+                    )
+                except TimeoutError as exc:
+                    verification = {
+                        "effect_observed": False,
+                        "verification": "verification_timeout",
+                        "reason_code": "ACTION_VERIFICATION_UNAVAILABLE",
+                        "error": str(exc),
+                        "automatic_retry": False,
+                    }
+                result["effect_observed"] = bool(verification.get("effect_observed"))
+                result["verification"] = verification.get("verification")
+                if verification.get("attempts") is not None:
+                    result["verification_attempts"] = verification.get("attempts")
+                if verification.get("duration_ms") is not None:
+                    result["verification_duration_ms"] = verification.get("duration_ms")
+                if not verification.get("effect_observed"):
+                    result.update({
+                        "ok": False,
+                        "error": "action_no_effect" if verification.get("reason_code") == "ACTION_NO_EFFECT" else "action_verification_unavailable",
+                        "reason_code": verification.get("reason_code") or "ACTION_NO_EFFECT",
+                        "automatic_retry": False,
+                        "observe_again": True,
+                    })
+                    if verification.get("error"):
+                        result["verification_error"] = verification.get("error")
+                    result["message"] = (
+                        "action executed but no observable native UI effect was detected"
+                        if result["reason_code"] == "ACTION_NO_EFFECT"
+                        else "action executed but its effect could not be verified safely"
+                    )
+            elif result.get("ok") and resolved_element_id is not None:
+                result["verification"] = "readiness_only"
+
+            result["duration_ms"] = int((time.perf_counter() - started) * 1000)
             results.append(result)
-            if not ok:
+            if not result.get("ok"):
                 response = {
                     "ok": False,
                     "active_app": target.get("app"),
@@ -1635,6 +2382,10 @@ def act_ui(
                     "window_handle": target.get("window_handle"),
                     "actions": results,
                 }
+                if result.get("reason_code"):
+                    response["reason_code"] = result.get("reason_code")
+                if result.get("automatic_retry") is False:
+                    response["automatic_retry"] = False
                 if timed_out:
                     response["timed_out"] = True
                 return response
