@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Added bounded delegated-agent DAG scheduling with task `id`/`depends_on`, `max_parallel`, persisted blocked/ready/running states, dependency-failure skipping, and cycle rejection.
+- Added structured reviewer quality gates via `review_of`: reviewers must return exactly one `QUALITY_GATE: PASS|FAIL` marker, failed reviews can trigger bounded coder revisions, and teams cannot report complete until required gates pass.
+
 - Hardened delegated provider process boundaries: restricted OpenCode workers now run inside a macOS Seatbelt filesystem boundary with scoped read/write roots, private provider state, restricted native process tools, and minimal environment inheritance.
 - Codex and ChatGPT Web CLI restricted modes now fail closed when Mac MCP cannot truthfully enforce an OS-level workspace/read-only boundary; explicit `full` access remains available, and provider workers no longer inherit the server environment wholesale.
 

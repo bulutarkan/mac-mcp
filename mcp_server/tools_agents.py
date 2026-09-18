@@ -73,6 +73,11 @@ _WORKERS: Dict[str, subprocess.Popen] = {}
 _WORKERS_LOCK = threading.RLock()
 _META_LOCKS: Dict[str, threading.RLock] = {}
 _META_LOCKS_GUARD = threading.Lock()
+_TEAM_LOCKS: Dict[str, threading.RLock] = {}
+_TEAM_LOCKS_GUARD = threading.Lock()
+_GRAPH_TASK_TERMINAL = {"completed", "failed", "quality_failed", "skipped", "cancelled"}
+_QUALITY_GATE_RE = re.compile(r"(?im)^\s*QUALITY_GATE:\s*(PASS|FAIL)\s*$")
+_TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
 def _now() -> float:
@@ -171,7 +176,32 @@ def _team_meta_path(team_id: str) -> Path:
     return _team_dir(team_id) / "meta.json"
 
 
-def _read_team(team_id: str) -> Dict[str, Any]:
+def _team_thread_lock(team_id: str) -> threading.RLock:
+    with _TEAM_LOCKS_GUARD:
+        return _TEAM_LOCKS.setdefault(team_id, threading.RLock())
+
+
+@contextmanager
+def _locked_team(team_id: str, *, create_parent: bool = False) -> Iterator[None]:
+    """Serialize team metadata across server threads and delegated worker processes."""
+    path = _team_meta_path(team_id)
+    thread_lock = _team_thread_lock(team_id)
+    with thread_lock:
+        if create_parent:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.parent.exists():
+            yield
+            return
+        lock_path = path.parent / ".team.lock"
+        with lock_path.open("a", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _read_team_unlocked(team_id: str) -> Dict[str, Any]:
     path = _team_meta_path(team_id)
     if not path.exists():
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Agent team not found: {team_id}")
@@ -181,16 +211,363 @@ def _read_team(team_id: str) -> Dict[str, Any]:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Corrupt team metadata: {team_id}") from exc
 
 
-def _write_team(team_id: str, meta: Dict[str, Any]) -> None:
+def _write_team_unlocked(team_id: str, meta: Dict[str, Any]) -> None:
     path = _team_meta_path(team_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    tmp.replace(path)
+    fd, tmp_name = tempfile.mkstemp(prefix=".team.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _read_team(team_id: str) -> Dict[str, Any]:
+    with _locked_team(team_id):
+        return _read_team_unlocked(team_id)
+
+
+def _write_team(team_id: str, meta: Dict[str, Any]) -> None:
+    with _locked_team(team_id, create_parent=True):
+        _write_team_unlocked(team_id, meta)
+
+
+def _update_team(team_id: str, update: Callable[[Dict[str, Any]], Optional[bool]]) -> Dict[str, Any]:
+    with _locked_team(team_id):
+        meta = _read_team_unlocked(team_id)
+        if update(meta) is not False:
+            _write_team_unlocked(team_id, meta)
+        return meta
+
+
+def _validate_team_graph(tasks: List[Dict[str, Any]]) -> None:
+    ids = [str(task.get("id") or "") for task in tasks]
+    if len(ids) != len(set(ids)):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Team task ids must be unique.")
+    known = set(ids)
+    reviewer_targets: Dict[str, str] = {}
+    for task in tasks:
+        task_id = str(task["id"])
+        for dep in task.get("depends_on") or []:
+            if dep not in known:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Task {task_id} depends on unknown task: {dep}")
+            if dep == task_id:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Task {task_id} cannot depend on itself.")
+        review_of = str(task.get("review_of") or "").strip() or None
+        if review_of:
+            if review_of not in known:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Task {task_id} reviews unknown task: {review_of}")
+            if review_of == task_id:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Task {task_id} cannot review itself.")
+            if review_of in reviewer_targets:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"Task {review_of} already has quality gate {reviewer_targets[review_of]}; only one reviewer gate per task is supported.",
+                )
+            reviewer_targets[review_of] = task_id
+
+    indegree = {task_id: 0 for task_id in ids}
+    outgoing: Dict[str, List[str]] = {task_id: [] for task_id in ids}
+    for task in tasks:
+        task_id = str(task["id"])
+        deps = list(task.get("depends_on") or [])
+        review_of = str(task.get("review_of") or "").strip() or None
+        if review_of and review_of not in deps:
+            deps.append(review_of)
+            task["depends_on"] = deps
+        for dep in deps:
+            indegree[task_id] += 1
+            outgoing[dep].append(task_id)
+    queue = [task_id for task_id in ids if indegree[task_id] == 0]
+    visited = 0
+    while queue:
+        current = queue.pop(0)
+        visited += 1
+        for child in outgoing[current]:
+            indegree[child] -= 1
+            if indegree[child] == 0:
+                queue.append(child)
+    if visited != len(ids):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Team dependency graph contains a cycle.")
+
+
+def _team_task_map(team: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    return {str(task.get("id")): task for task in list(team.get("tasks") or [])}
+
+
+def _team_reviewer_map(team: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    result: Dict[str, Dict[str, Any]] = {}
+    for task in list(team.get("tasks") or []):
+        review_of = str(task.get("review_of") or "").strip()
+        if review_of:
+            result[review_of] = task
+    return result
+
+
+def _team_task_effectively_completed(
+    task_id: str,
+    task_map: Dict[str, Dict[str, Any]],
+    reviewer_map: Dict[str, Dict[str, Any]],
+) -> bool:
+    task = task_map[task_id]
+    if task.get("state") != "completed":
+        return False
+    reviewer = reviewer_map.get(task_id)
+    if reviewer is None:
+        return True
+    return reviewer.get("state") == "completed" and reviewer.get("gate_result") == "pass"
+
+
+def _team_task_effectively_failed(
+    task_id: str,
+    task_map: Dict[str, Dict[str, Any]],
+    reviewer_map: Dict[str, Dict[str, Any]],
+) -> bool:
+    task = task_map[task_id]
+    if task.get("state") in {"failed", "quality_failed", "skipped", "cancelled"}:
+        return True
+    reviewer = reviewer_map.get(task_id)
+    return bool(reviewer and reviewer.get("state") in {"failed", "quality_failed", "skipped", "cancelled"})
+
+
+def _team_dependency_satisfied(
+    task: Dict[str, Any],
+    dep_id: str,
+    task_map: Dict[str, Dict[str, Any]],
+    reviewer_map: Dict[str, Dict[str, Any]],
+) -> bool:
+    # A reviewer must be allowed to inspect the raw completed target; downstream tasks
+    # wait for the reviewer's PASS through _team_task_effectively_completed().
+    if str(task.get("review_of") or "") == dep_id:
+        return task_map[dep_id].get("state") == "completed"
+    return _team_task_effectively_completed(dep_id, task_map, reviewer_map)
+
+
+def _team_agent_result(agent_id: Optional[str], limit: int = TEAM_RESULT_LIMIT * 2) -> str:
+    if not agent_id:
+        return ""
+    path = _agent_dir(str(agent_id)) / "result.txt"
+    if not path.exists():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    return truncate(text, limit)[0]
+
+
+def _quality_gate_result(text: str) -> Tuple[Optional[str], str]:
+    matches = list(_QUALITY_GATE_RE.finditer(text or ""))
+    if len(matches) != 1:
+        return None, truncate((text or "").strip(), TEAM_RESULT_LIMIT)[0]
+    decision = matches[0].group(1).lower()
+    feedback = ((text or "")[:matches[0].start()] + (text or "")[matches[0].end():]).strip()
+    return decision, truncate(feedback, TEAM_RESULT_LIMIT)[0]
+
+
+def _team_task_prompt(team: Dict[str, Any], task: Dict[str, Any], task_map: Dict[str, Dict[str, Any]]) -> str:
+    pieces = [str(task.get("prompt") or "").strip()]
+    dependency_sections: List[str] = []
+    for dep_id in task.get("depends_on") or []:
+        dep = task_map.get(str(dep_id))
+        if not dep:
+            continue
+        result = _team_agent_result(dep.get("latest_agent_id"))
+        if result:
+            dependency_sections.append(f"### {dep_id}: {dep.get('title') or dep_id}\n{result}")
+    if dependency_sections:
+        pieces.append("Dependency results:\n" + "\n\n".join(dependency_sections))
+
+    review_of = str(task.get("review_of") or "").strip() or None
+    if review_of:
+        target = task_map[review_of]
+        target_result = _team_agent_result(target.get("latest_agent_id"))
+        pieces.append(
+            "Quality gate contract:\n"
+            f"Review the latest result of task '{review_of}' below. Judge whether it satisfies the requested task. "
+            "Your final response MUST contain exactly one standalone marker line: QUALITY_GATE: PASS or QUALITY_GATE: FAIL. "
+            "If FAIL, give concrete revision feedback before the marker. Do not emit both markers.\n\n"
+            f"Latest candidate:\n{target_result or '(no candidate result found)'}"
+        )
+
+    revision_count = int(task.get("revision_count") or 0)
+    revision_feedback = str(task.get("revision_feedback") or "").strip()
+    if revision_count > 0 and revision_feedback:
+        previous = _team_agent_result(task.get("latest_agent_id"))
+        pieces.append(
+            f"Quality-gate revision {revision_count}:\n"
+            f"Address this reviewer feedback before returning the revised result:\n{revision_feedback}"
+            + (f"\n\nPrevious candidate:\n{previous}" if previous else "")
+        )
+    return "\n\n".join(piece for piece in pieces if piece)
+
+
+def _team_tick(team_id: str) -> Dict[str, Any]:
+    """Advance one persisted DAG team. Safe to call concurrently from worker processes."""
+    with _locked_team(team_id):
+        team = _read_team_unlocked(team_id)
+        if int(team.get("scheduler_version") or 0) < 1:
+            return team
+        if team.get("cancelled"):
+            return team
+        tasks = list(team.get("tasks") or [])
+        task_map = _team_task_map(team)
+        reviewer_map = _team_reviewer_map(team)
+        changed = False
+
+        # Reconcile agent terminal states back into graph nodes.
+        for task in tasks:
+            if task.get("state") not in {"spawning", "running"}:
+                continue
+            agent_id = str(task.get("active_agent_id") or "").strip()
+            if not agent_id:
+                task["state"] = "failed"
+                task["failure_reason"] = "missing_active_agent"
+                changed = True
+                continue
+            try:
+                agent_meta = _normalize(agent_id, _read_meta(agent_id))
+            except HTTPException:
+                task["state"] = "failed"
+                task["failure_reason"] = "missing_agent"
+                task["active_agent_id"] = None
+                changed = True
+                continue
+            agent_status = str(agent_meta.get("status") or "")
+            if agent_status not in TERMINAL_STATUSES:
+                continue
+            task["active_agent_id"] = None
+            changed = True
+            if agent_status != "completed":
+                task["state"] = "failed"
+                task["failure_reason"] = f"agent_{agent_status}"
+                continue
+
+            review_of = str(task.get("review_of") or "").strip() or None
+            if not review_of:
+                task["state"] = "completed"
+                task["failure_reason"] = None
+                continue
+
+            decision, feedback = _quality_gate_result(_team_agent_result(agent_id))
+            task["gate_attempts"] = int(task.get("gate_attempts") or 0) + 1
+            task["gate_result"] = decision or "invalid"
+            task["gate_feedback"] = feedback
+            if decision == "pass":
+                task["state"] = "completed"
+                task["failure_reason"] = None
+                continue
+            if decision != "fail":
+                task["state"] = "quality_failed"
+                task["failure_reason"] = "invalid_quality_gate_contract"
+                continue
+
+            target = task_map[review_of]
+            revisions = int(target.get("revision_count") or 0)
+            limit = int(task["max_revisions"] if task.get("max_revisions") is not None else (team.get("max_revisions") or 0))
+            if revisions >= limit:
+                task["state"] = "quality_failed"
+                task["failure_reason"] = "revision_limit_exhausted"
+                continue
+            target["revision_count"] = revisions + 1
+            target["revision_feedback"] = feedback or "Reviewer returned FAIL without written feedback. Re-check the task carefully."
+            target["state"] = "blocked"
+            target["failure_reason"] = None
+            task["state"] = "blocked"
+            task["failure_reason"] = None
+
+        task_map = _team_task_map(team)
+        reviewer_map = _team_reviewer_map(team)
+
+        # Resolve dependency readiness/failure. Repeat because skipping one task can
+        # make another task impossible in the same tick.
+        progressed = True
+        while progressed:
+            progressed = False
+            for task in tasks:
+                if task.get("state") not in {"blocked", "ready"}:
+                    continue
+                deps = [str(dep) for dep in (task.get("depends_on") or [])]
+                failed_dep = next(
+                    (dep for dep in deps if _team_task_effectively_failed(dep, task_map, reviewer_map)),
+                    None,
+                )
+                if failed_dep:
+                    task["state"] = "skipped"
+                    task["failure_reason"] = f"dependency_failed:{failed_dep}"
+                    changed = progressed = True
+                    continue
+                if all(_team_dependency_satisfied(task, dep, task_map, reviewer_map) for dep in deps):
+                    if task.get("state") != "ready":
+                        task["state"] = "ready"
+                        changed = progressed = True
+
+        active = sum(1 for task in tasks if task.get("state") in {"spawning", "running"})
+        max_parallel = min(max(1, int(team.get("max_parallel") or len(tasks) or 1)), MAX_TEAM_SIZE)
+        for task in tasks:
+            if active >= max_parallel:
+                break
+            if task.get("state") != "ready":
+                continue
+            task["state"] = "spawning"
+            team["updated_at"] = _now()
+            _write_team_unlocked(team_id, team)
+            prompt = _team_task_prompt(team, task, task_map)
+            parent_agent_id = str(task.get("latest_agent_id") or "").strip() or None
+            try:
+                item = _spawn_internal(
+                    settings=None,
+                    provider=str(team["provider"]),
+                    prompt=prompt,
+                    model=team.get("model"),
+                    reasoning=team.get("reasoning"),
+                    cwd=team.get("cwd"),
+                    timeout_s=team.get("timeout_s"),
+                    title=task.get("title"),
+                    result_style=str(team.get("result_style") or "concise"),
+                    access_mode=str(team.get("access_mode") or "read_only"),
+                    scope=ResourceScope.from_dict(task.get("scope")),
+                    permission_profile=str(team.get("permission_profile") or "trusted"),
+                    capability_profile=str(team.get("capability_profile") or "legacy"),
+                    parent_agent_id=parent_agent_id,
+                    team_id=team_id,
+                    team_task_id=str(task["id"]),
+                    idle_timeout_s=team.get("idle_timeout_s"),
+                    retries=int(team.get("retries") or 0),
+                    project=task.get("project"),
+                    role=task.get("role"),
+                    provenance_class=str(team.get("provenance_class") or "local"),
+                )
+            except Exception as exc:
+                task["state"] = "failed"
+                task["failure_reason"] = f"spawn_failed:{str(exc)[:240]}"
+                task["active_agent_id"] = None
+                changed = True
+                continue
+            agent_id = str(item["agent_id"])
+            task.setdefault("agent_ids", []).append(agent_id)
+            task["active_agent_id"] = agent_id
+            task["latest_agent_id"] = agent_id
+            task["state"] = "running"
+            if agent_id not in team.setdefault("agent_ids", []):
+                team["agent_ids"].append(agent_id)
+            active += 1
+            changed = True
+
+        if changed:
+            team["updated_at"] = _now()
+            _write_team_unlocked(team_id, team)
+        return team
 
 
 def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     team = dict(meta or _read_team(team_id))
+    if meta is None and int(team.get("scheduler_version") or 0) >= 1:
+        team = dict(_team_tick(team_id))
     agent_ids = list(team.get("agent_ids") or [])
     provider = str(team.get("provider") or "opencode").lower()
     access_mode = str(team.get("access_mode") or "workspace_write")
@@ -206,7 +583,44 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         state = str(public.get("status") or "unknown")
         counts[state] = counts.get(state, 0) + 1
     terminal_count = sum(counts.get(state, 0) for state in TERMINAL_STATUSES)
-    if agent_ids and counts.get("completed", 0) == len(agent_ids):
+
+    public_tasks: List[Dict[str, Any]] = []
+    task_counts: Dict[str, int] = {}
+    tasks = list(team.get("tasks") or [])
+    for task in tasks:
+        state = str(task.get("state") or "blocked")
+        task_counts[state] = task_counts.get(state, 0) + 1
+        public_tasks.append({
+            "id": task.get("id"),
+            "title": task.get("title"),
+            "role": task.get("role"),
+            "state": state,
+            "depends_on": list(task.get("depends_on") or []),
+            "review_of": task.get("review_of"),
+            "revision_count": int(task.get("revision_count") or 0),
+            "max_revisions": int(task["max_revisions"] if task.get("max_revisions") is not None else (team.get("max_revisions") or 0)),
+            "gate_attempts": int(task.get("gate_attempts") or 0),
+            "gate_result": task.get("gate_result"),
+            "failure_reason": task.get("failure_reason"),
+            "active_agent_id": task.get("active_agent_id"),
+            "latest_agent_id": task.get("latest_agent_id"),
+            "agent_ids": list(task.get("agent_ids") or []),
+        })
+
+    if int(team.get("scheduler_version") or 0) >= 1:
+        if team.get("cancelled"):
+            team_status = "cancelled"
+        else:
+            all_terminal = bool(tasks) and all(str(task.get("state") or "") in _GRAPH_TASK_TERMINAL for task in tasks)
+            if all_terminal and all(task.get("state") == "completed" for task in tasks):
+                team_status = "completed"
+            elif all_terminal and any(task.get("state") == "quality_failed" for task in tasks):
+                team_status = "quality_failed"
+            elif all_terminal:
+                team_status = "completed_with_failures"
+            else:
+                team_status = "running"
+    elif agent_ids and counts.get("completed", 0) == len(agent_ids):
         team_status = "completed"
     elif agent_ids and terminal_count >= len(agent_ids):
         team_status = "completed_with_failures"
@@ -227,13 +641,19 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         "process_boundary": access_info.get("boundary"),
         "access_mode_note": access_info["note"],
         "created_at": team.get("created_at"),
+        "updated_at": team.get("updated_at"),
         "agent_ids": agent_ids,
         "count": len(agent_ids),
         "status_counts": counts,
         "terminal_count": terminal_count,
         "parent_team_id": team.get("parent_team_id"),
+        "scheduler_version": team.get("scheduler_version"),
+        "max_parallel": team.get("max_parallel"),
+        "max_revisions": team.get("max_revisions"),
+        "task_count": len(tasks),
+        "task_status_counts": task_counts,
+        "tasks": public_tasks,
     }
-
 
 def _tail_text(path: Path, max_lines: int = 40, max_chars: int = 6000) -> str:
     if not path.exists():
@@ -1283,6 +1703,7 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     public = {
         "agent_id": agent_id,
         "team_id": meta.get("team_id"),
+        "team_task_id": meta.get("team_task_id"),
         "status": meta.get("status"),
         "phase": meta.get("phase"),
         "title": meta.get("title"),
@@ -1395,6 +1816,7 @@ def _spawn_internal(
     resume_session_id: Optional[str] = None,
     attempt: int = 1,
     team_id: Optional[str] = None,
+    team_task_id: Optional[str] = None,
     idle_timeout_s: Optional[int] = None,
     retries: int = 0,
     project: Optional[str] = None,
@@ -1483,6 +1905,7 @@ def _spawn_internal(
     meta: Dict[str, Any] = {
         "agent_id": agent_id,
         "team_id": team_id,
+        "team_task_id": team_task_id,
         "title": (title or user_prompt.splitlines()[0][:100]).strip(),
         "role": clean_role,
         "provider": provider,
@@ -1666,19 +2089,33 @@ def spawn_agents(
     project: Optional[str] = None,
     role: Optional[str] = None,
     provenance_class: str = "local",
+    max_parallel: Optional[int] = None,
+    max_revisions: int = 1,
 ) -> Dict[str, Any]:
     provider = str(provider or "").strip().lower()
     if provider not in _PROVIDER_NAMES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"provider must be one of: {', '.join(sorted(_PROVIDER_NAMES))}")
     if not provider_enabled(provider):
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"provider_disabled: {provider} is disabled in Mac MCP Settings > Subagents.")
+    if not _find_binary(provider):
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"{provider} CLI is not installed or not executable.")
+    if provider != "chatgpt" and project:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "project is only supported by provider=chatgpt.")
     team_role = str(role or "").strip().lower() or None
     if team_role and team_role not in VALID_ROLES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"role must be one of: {', '.join(sorted(VALID_ROLES))}.")
     if not tasks or not isinstance(tasks, list):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "tasks is required.")
     if len(tasks) > MAX_TEAM_SIZE:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"A team can contain at most {MAX_TEAM_SIZE} agents.")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"A team can contain at most {MAX_TEAM_SIZE} tasks.")
+    effective_max_parallel = len(tasks) if max_parallel is None else int(max_parallel)
+    if effective_max_parallel < 1 or effective_max_parallel > MAX_TEAM_SIZE:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"max_parallel must be between 1 and {MAX_TEAM_SIZE}.")
+    effective_max_parallel = min(effective_max_parallel, len(tasks))
+    effective_max_revisions = int(max_revisions)
+    if effective_max_revisions < 0 or effective_max_revisions > 3:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "max_revisions must be between 0 and 3.")
+
     forbidden = {"provider", "model", "reasoning", "access_mode", "result_style"}
     normalized: List[Dict[str, Any]] = []
     for index, task in enumerate(tasks, start=1):
@@ -1693,39 +2130,108 @@ def spawn_agents(
         prompt = str(task.get("prompt") or task.get("task") or "").strip()
         if not prompt:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].prompt is required.")
+        task_id = str(task.get("id") or task.get("task_id") or f"task_{index}").strip()
+        if not _TASK_ID_RE.fullmatch(task_id):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"tasks[{index - 1}].id must match {_TASK_ID_RE.pattern!r}.",
+            )
+        deps_raw = task.get("depends_on") or []
+        if isinstance(deps_raw, str):
+            deps_raw = [deps_raw]
+        if not isinstance(deps_raw, list) or any(not isinstance(dep, str) for dep in deps_raw):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].depends_on must be a list of task ids.")
+        depends_on = [str(dep).strip() for dep in deps_raw if str(dep).strip()]
+        if len(depends_on) != len(set(depends_on)):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].depends_on contains duplicates.")
+        review_of = str(task.get("review_of") or "").strip() or None
+        if provider != "chatgpt" and task.get("project"):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].project is only supported by provider=chatgpt.")
         child_scope_raw = task.get("scope")
         if child_scope_raw is not None and not isinstance(child_scope_raw, dict):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].scope must be an object.")
         child_role = str(task.get("role") or team_role or "").strip().lower() or None
+        if review_of and child_role is None:
+            child_role = "reviewer"
+        if review_of and child_role != "reviewer":
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}] uses review_of and must have role=reviewer.")
         if child_role and child_role not in VALID_ROLES:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 f"tasks[{index - 1}].role must be one of: {', '.join(sorted(VALID_ROLES))}.",
             )
+        task_max_revisions = int(task.get("max_revisions", effective_max_revisions))
+        if task_max_revisions < 0 or task_max_revisions > 3:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].max_revisions must be between 0 and 3.")
         normalized.append({
+            "id": task_id,
             "prompt": prompt,
             "title": str(task.get("title") or f"Agent {index}").strip(),
             "scope": child_scope_raw,
             "project": str(task.get("project") or project or "").strip() or None,
             "role": child_role,
+            "depends_on": depends_on,
+            "review_of": review_of,
+            "max_revisions": task_max_revisions,
         })
 
+    _validate_team_graph(normalized)
     workdir = _resolve_cwd(cwd)
     team_scope, team_profile, effective_capability_profile = _requested_agent_scope(
         workdir, access_mode, scope, parent_scope, parent_profile, capability_profile
     )
     access_mode = team_scope.access_mode.value
+    _validate_provider_access_mode(provider, access_mode)
+
+    persisted_tasks: List[Dict[str, Any]] = []
+    for task in normalized:
+        if task.get("scope") is None:
+            effective_scope = team_scope
+        else:
+            child_data = dict(task["scope"])
+            if "access_mode" in child_data:
+                try:
+                    child_mode = normalize_access_mode(child_data["access_mode"])
+                except ValueError as exc:
+                    raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+                if child_mode.value != access_mode:
+                    raise HTTPException(status.HTTP_400_BAD_REQUEST, "task.scope.access_mode must match the team access_mode.")
+            child_data["access_mode"] = access_mode
+            if "path_roots" not in child_data and access_mode != "full":
+                child_data["path_roots"] = [str(workdir)]
+            try:
+                requested_child = ResourceScope.from_dict(child_data)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid task scope: {exc}") from exc
+            if not scope_contains(team_scope, requested_child):
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "scope_denied: task scope cannot widen the team scope.")
+            effective_scope = child_scope(team_scope, requested_child)
+        persisted_tasks.append({
+            **task,
+            "scope": effective_scope.to_dict(),
+            "state": "blocked",
+            "agent_ids": [],
+            "active_agent_id": None,
+            "latest_agent_id": None,
+            "revision_count": 0,
+            "revision_feedback": None,
+            "gate_attempts": 0,
+            "gate_result": None,
+            "gate_feedback": None,
+            "failure_reason": None,
+        })
+
     team_id = "team_" + uuid.uuid4().hex[:10]
     created = _now()
     team_meta: Dict[str, Any] = {
         "team_id": team_id,
-        "title": (title or f"{provider} team ({len(normalized)} agents)").strip(),
+        "title": (title or f"{provider} team ({len(persisted_tasks)} tasks)").strip(),
         "role": team_role,
         "provenance_class": str(provenance_class or "local").strip().lower() or "local",
         "provider": provider,
         "model": model,
         "reasoning": reasoning,
-        "project": (str(project or _chatgpt_default_project() or "").strip() or None) if provider.lower().strip() == "chatgpt" else None,
+        "project": (str(project or _chatgpt_default_project() or "").strip() or None) if provider == "chatgpt" else None,
         "cwd": str(workdir),
         "timeout_s": timeout_s,
         "idle_timeout_s": idle_timeout_s,
@@ -1739,68 +2245,29 @@ def spawn_agents(
         "updated_at": created,
         "parent_team_id": parent_team_id,
         "agent_ids": [],
+        "scheduler_version": 1,
+        "max_parallel": effective_max_parallel,
+        "max_revisions": effective_max_revisions,
+        "cancelled": False,
+        "tasks": persisted_tasks,
     }
     _write_team(team_id, team_meta)
-    spawned: List[Dict[str, Any]] = []
-    try:
-        for task in normalized:
-            if task.get("scope") is None:
-                effective_scope, permission_profile = team_scope, team_profile
-            else:
-                child_data = dict(task["scope"])
-                if "access_mode" in child_data:
-                    try:
-                        child_mode = normalize_access_mode(child_data["access_mode"])
-                    except ValueError as exc:
-                        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-                    if child_mode.value != access_mode:
-                        raise HTTPException(
-                            status.HTTP_400_BAD_REQUEST,
-                            "task.scope.access_mode must match the team access_mode.",
-                        )
-                child_data["access_mode"] = access_mode
-                if "path_roots" not in child_data and access_mode != "full":
-                    child_data["path_roots"] = [str(workdir)]
-                try:
-                    requested_child = ResourceScope.from_dict(child_data)
-                except (TypeError, ValueError) as exc:
-                    raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Invalid task scope: {exc}") from exc
-                if not scope_contains(team_scope, requested_child):
-                    raise HTTPException(
-                        status.HTTP_403_FORBIDDEN,
-                        "scope_denied: task scope cannot widen the team scope.",
-                    )
-                effective_scope = child_scope(team_scope, requested_child)
-                permission_profile = team_profile
-            item = _spawn_internal(
-                settings=settings, provider=provider, prompt=task["prompt"], model=model,
-                reasoning=reasoning, cwd=str(workdir), timeout_s=timeout_s, title=task["title"],
-                result_style=result_style, access_mode=access_mode, scope=effective_scope,
-                permission_profile=permission_profile, capability_profile=effective_capability_profile, team_id=team_id,
-                idle_timeout_s=idle_timeout_s, retries=retries, project=task.get("project"),
-                role=task.get("role"), provenance_class=provenance_class,
-            )
-            spawned.append(item)
-            team_meta["agent_ids"].append(item["agent_id"])
-            team_meta["updated_at"] = _now()
-            _write_team(team_id, team_meta)
-    except Exception:
-        for item in spawned:
-            try:
-                _agent_action_single(settings, item["agent_id"], "cancel")
-            except Exception:
-                pass
-        team_meta["updated_at"] = _now()
-        team_meta["spawn_error"] = True
-        _write_team(team_id, team_meta)
-        raise
+    team_meta = _team_tick(team_id)
     summary = _team_summary(team_id, team_meta)
-    summary["spawned"] = [
-        {"agent_id": item["agent_id"], "title": item.get("title"), "status": item.get("status")}
-        for item in spawned
-    ]
+    spawned: List[Dict[str, Any]] = []
+    for agent_id in list(team_meta.get("agent_ids") or []):
+        try:
+            child = _public_meta(agent_id, _read_meta(agent_id))
+        except HTTPException:
+            continue
+        spawned.append({
+            "agent_id": agent_id,
+            "task_id": child.get("team_task_id"),
+            "title": child.get("title"),
+            "status": child.get("status"),
+        })
+    summary["spawned"] = spawned
     return {"ok": True, **summary}
-
 
 def list_agents(settings: Settings, status_filter: Optional[str] = None, limit: int = 20,
                 team_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1849,17 +2316,29 @@ def wait_agents(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "mode must be all, any, or majority.")
     if bool(team_id) == bool(agent_ids):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Provide exactly one of team_id or agent_ids.")
-    ids = list(_read_team(team_id).get("agent_ids") or []) if team_id else list(agent_ids or [])
-    if not ids:
+    ids = list(agent_ids or [])
+    if team_id:
+        team = _team_tick(str(team_id))
+        ids = list(team.get("agent_ids") or [])
+    if not ids and not team_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No agents to wait for.")
     bounded_timeout = min(max(0, int(timeout_s)), MAX_WAIT_TIMEOUT_S)
     deadline = time.monotonic() + bounded_timeout
     condition_met = False
     states: List[Dict[str, Any]] = []
+    team_summary: Optional[Dict[str, Any]] = None
     while True:
+        if team_id:
+            team_summary = _team_summary(str(team_id))
+            ids = list(team_summary.get("agent_ids") or [])
         states = [get_agent(settings, agent_id, include_logs=False) for agent_id in ids]
         terminal_count = sum(1 for item in states if item.get("status") in TERMINAL_STATUSES)
-        condition_met = _wait_condition(terminal_count, len(ids), mode)
+        if team_id and mode == "all" and team_summary and int(team_summary.get("scheduler_version") or 0) >= 1:
+            condition_met = str(team_summary.get("status")) in {
+                "completed", "completed_with_failures", "quality_failed", "cancelled"
+            }
+        else:
+            condition_met = _wait_condition(terminal_count, len(ids), mode) if ids else False
         if condition_met or time.monotonic() >= deadline:
             break
         time.sleep(0.25)
@@ -1867,6 +2346,7 @@ def wait_agents(
     for item in states:
         row = {
             "agent_id": item.get("agent_id"),
+            "team_task_id": item.get("team_task_id"),
             "title": item.get("title"),
             "status": item.get("status"),
             "phase": item.get("phase"),
@@ -1906,9 +2386,8 @@ def wait_agents(
         "agents": compact,
     }
     if team_id:
-        response["team"] = _team_summary(team_id)
+        response["team"] = team_summary or _team_summary(str(team_id))
     return response
-
 
 def get_agent(
     settings: Settings,
@@ -2205,6 +2684,16 @@ def agent_action(
     if normalized_action in {"message", "resume"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{normalized_action} is only supported for an individual agent session.")
     if normalized_action == "cancel":
+        if int(team.get("scheduler_version") or 0) >= 1:
+            def mark_team_cancelled(current: Dict[str, Any]) -> None:
+                current["cancelled"] = True
+                current["updated_at"] = _now()
+                for task in current.get("tasks") or []:
+                    if str(task.get("state") or "") not in _GRAPH_TASK_TERMINAL:
+                        task["state"] = "cancelled"
+                        task["failure_reason"] = "team_cancelled"
+            team = _update_team(str(team_id), mark_team_cancelled)
+            ids = list(team.get("agent_ids") or [])
         results = []
         for child_id in ids:
             try:
@@ -2227,6 +2716,49 @@ def agent_action(
         shutil.rmtree(_team_dir(str(team_id)))
         return {"ok": True, "team_id": team_id, "status": "despawned", "results": results}
     if normalized_action == "retry":
+        if int(team.get("scheduler_version") or 0) >= 1:
+            for child_id in ids:
+                try:
+                    checkpoint = workflow_for_agent(child_id)
+                except WorkflowCheckpointError as exc:
+                    raise HTTPException(
+                        status.HTTP_409_CONFLICT,
+                        f"retry_replay_unsafe: child {child_id} checkpoint is {exc.code}; resume the child explicitly instead.",
+                    ) from exc
+                if checkpoint is not None and (
+                    str(checkpoint.get("safety") or "unknown") != "verified"
+                    or int(checkpoint.get("receipt_count") or 0) > 0
+                    or int(checkpoint.get("resume_generation") or 0) > 0
+                    or bool(checkpoint.get("pending_effects"))
+                ):
+                    raise HTTPException(
+                        status.HTTP_409_CONFLICT,
+                        f"retry_replay_unsafe: child {child_id} crossed a durable side-effect/resume boundary; resume that child explicitly.",
+                    )
+            tasks = []
+            for task in team.get("tasks") or []:
+                tasks.append({
+                    "id": task.get("id"),
+                    "prompt": task.get("prompt"),
+                    "title": task.get("title"),
+                    "scope": task.get("scope"),
+                    "project": task.get("project"),
+                    "role": task.get("role"),
+                    "depends_on": list(task.get("depends_on") or []),
+                    "review_of": task.get("review_of"),
+                    "max_revisions": int(task["max_revisions"] if task.get("max_revisions") is not None else (team.get("max_revisions") or 0)),
+                })
+            return spawn_agents(
+                settings=settings, tasks=tasks, provider=team["provider"], model=team.get("model"),
+                reasoning=team.get("reasoning"), cwd=team.get("cwd"), timeout_s=team.get("timeout_s"),
+                idle_timeout_s=team.get("idle_timeout_s"), retries=int(team.get("retries") or 0),
+                result_style=team.get("result_style", "concise"), access_mode=team.get("access_mode", "read_only"),
+                title=f"Retry: {team.get('title') or team_id}", parent_team_id=str(team_id),
+                scope=team.get("scope"), parent_profile="trusted", project=team.get("project"),
+                role=team.get("role"), provenance_class=str(team.get("provenance_class") or "local"),
+                max_parallel=int(team.get("max_parallel") or len(tasks) or 1),
+                max_revisions=int(team.get("max_revisions") or 0),
+            )
         tasks = []
         for index, child_id in enumerate(ids, start=1):
             prompt_path = _agent_dir(child_id) / "prompt.txt"
@@ -2929,7 +3461,20 @@ def _worker(agent_id: str) -> int:
 
 def _main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--worker":
-        return _worker(sys.argv[2])
+        agent_id = sys.argv[2]
+        rc = _worker(agent_id)
+        try:
+            meta = _read_meta(agent_id)
+            team_id = str(meta.get("team_id") or "").strip()
+            if team_id:
+                _team_tick(team_id)
+        except Exception as exc:
+            try:
+                with (_agent_dir(agent_id) / "worker.log").open("a", encoding="utf-8") as handle:
+                    handle.write(f"\n[team scheduler] {type(exc).__name__}: {exc}\n")
+            except OSError:
+                pass
+        return rc
     print("tools_agents is an internal module; use the MCP agent tools.", file=sys.stderr)
     return 2
 

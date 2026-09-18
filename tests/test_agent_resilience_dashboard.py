@@ -20,7 +20,8 @@ class AgentResilienceDashboardTests(unittest.TestCase):
             telemetry = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
             app = Starlette(routes=create_dashboard_routes(telemetry, load_settings(), TOKEN))
             agent = {
-                "agent_id": "agt_resilience", "status": "running", "phase": "throttled",
+                "agent_id": "agt_resilience", "team_id": "team_graph", "team_task_id": "review",
+                "status": "running", "phase": "throttled",
                 "provider": "chatgpt", "model": "GPT-5.6 Sol", "reasoning": "high",
                 "turn_count": 3, "turn_elapsed_ms": 620000, "turn_budget_s": 900,
                 "hard_tool_budget_s": 1200, "checkpoint_count": 2, "checkpoint_pending": False,
@@ -37,6 +38,7 @@ class AgentResilienceDashboardTests(unittest.TestCase):
                 response = TestClient(app).get("/dashboard/api/agents", headers=AUTH)
             self.assertEqual(200, response.status_code)
             row = response.json()["agents"][0]
+            self.assertEqual("review", row["team_task_id"])
             self.assertEqual(620000, row["turn_elapsed_ms"])
             self.assertEqual(2, row["checkpoint_count"])
             self.assertEqual(1, row["throttle_count"])

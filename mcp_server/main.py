@@ -443,11 +443,11 @@ def create_app():
     @mcp.tool(
         name="spawn_agents",
         description=(
-            "Spawn 1-10 background agents as one team in a single call. All children inherit provider, model, "
-            "reasoning and access_mode. ChatGPT accepts project=... as the team default and task.project overrides. "
-            "If neither is set it uses CHATGPT_SUBAGENT_PROJECT when locally configured. ChatGPT workers share "
-            "post-throttle cooldown/staggering so a temporary web limit does not trigger a retry storm. Optional team role or "
-            "task.role enables bounded role-learning context per child. Returns immediately."
+            "Spawn 1-10 background agent tasks as one team. Optional task.id + depends_on create a bounded DAG; "
+            "max_parallel limits concurrent nodes. A reviewer task may set review_of=<task id> and must end with "
+            "QUALITY_GATE: PASS or FAIL; FAIL can trigger up to max_revisions bounded revisions. All children inherit provider, "
+            "model, reasoning and access_mode. ChatGPT accepts project=... as the team default and task.project overrides. "
+            "Optional team role or task.role enables bounded role-learning context per child. Returns immediately."
         ),
     )
     def _spawn_agents(tasks: List[Dict[str, Any]], provider: str, model: Optional[str] = None,
@@ -457,7 +457,8 @@ def create_app():
                       access_mode: str = "read_only", title: Optional[str] = None,
                       scope: Optional[Dict[str, Any]] = None,
                       capability_profile: Optional[str] = None,
-                      project: Optional[str] = None, role: Optional[str] = None) -> Dict[str, Any]:
+                      project: Optional[str] = None, role: Optional[str] = None,
+                      max_parallel: Optional[int] = None, max_revisions: int = 1) -> Dict[str, Any]:
         context = current_policy_context()
         return _log(audit_logger, "spawn_agents",
                     lambda: spawn_agents(settings, tasks=tasks, provider=provider, model=model,
@@ -466,7 +467,8 @@ def create_app():
                                          result_style=result_style, access_mode=access_mode, title=title,
                                          scope=scope, parent_scope=context.scope, parent_profile=context.profile,
                                          capability_profile=capability_profile, project=project, role=role,
-                                         provenance_class=current_provenance_class()))
+                                         provenance_class=current_provenance_class(), max_parallel=max_parallel,
+                                         max_revisions=max_revisions))
 
     @mcp.tool(
         name="wait_agents",
