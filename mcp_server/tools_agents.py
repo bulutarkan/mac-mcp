@@ -2097,8 +2097,6 @@ def spawn_agents(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"provider must be one of: {', '.join(sorted(_PROVIDER_NAMES))}")
     if not provider_enabled(provider):
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"provider_disabled: {provider} is disabled in Mac MCP Settings > Subagents.")
-    if not _find_binary(provider):
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"{provider} CLI is not installed or not executable.")
     if provider != "chatgpt" and project:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "project is only supported by provider=chatgpt.")
     team_role = str(role or "").strip().lower() or None
@@ -2176,6 +2174,10 @@ def spawn_agents(
         })
 
     _validate_team_graph(normalized)
+    # Preserve validation precedence: malformed team/task input must fail with 4xx
+    # even on hosts where the selected provider binary is not installed (e.g. CI).
+    if not _find_binary(provider):
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"{provider} CLI is not installed or not executable.")
     workdir = _resolve_cwd(cwd)
     team_scope, team_profile, effective_capability_profile = _requested_agent_scope(
         workdir, access_mode, scope, parent_scope, parent_profile, capability_profile

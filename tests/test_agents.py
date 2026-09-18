@@ -102,11 +102,14 @@ class AgentOrchestrationTests(unittest.TestCase):
             self.assertIsNotNone(saved["first_tool_at"])
 
     def test_team_children_cannot_override_shared_model(self):
-        with self.assertRaises(HTTPException) as ctx:
-            agents.spawn_agents(
-                load_settings(), tasks=[{"prompt":"x", "model":"different"}],
-                provider="opencode", model="opencode/muse-spark-1.2-contributor-free",
-            )
+        # Input validation must win over provider discovery so CI/hosts without the
+        # provider installed still return the stable 400 contract for malformed teams.
+        with patch.object(agents, "_find_binary", return_value=None):
+            with self.assertRaises(HTTPException) as ctx:
+                agents.spawn_agents(
+                    load_settings(), tasks=[{"prompt":"x", "model":"different"}],
+                    provider="opencode", model="opencode/muse-spark-1.2-contributor-free",
+                )
         self.assertEqual(400, ctx.exception.status_code)
 
     def test_codex_progress_events_normalize_tool_and_usage(self):
