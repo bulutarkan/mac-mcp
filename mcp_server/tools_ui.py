@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -39,6 +40,10 @@ from .native_targets import (
     window_handle_map as _window_handle_map,
 )
 from .security import Settings, truncate
+from .tool_cancellation import (
+    ToolCancelledError, cancellable_sleep, cancellation_checkpoint, cancellation_cleanup_scope,
+    register_cancellation_cleanup, unregister_cancellation_cleanup,
+)
 from .artifact_pipeline import ArtifactError, drive_native_file_dialog, resolve_artifact
 from .context_handoff import (
     HandoffError, mark_handoff_consumed, resolve_mail_attachment_handoff,
@@ -149,6 +154,7 @@ def _resize_screenshot(path: str, timeout_s: float) -> Optional[str]:
     executable = shutil.which("sips") or "/usr/bin/sips"
     if not Path(executable).exists():
         return "sips is not available to resize the screenshot"
+    cancellation_checkpoint()
     proc = subprocess.Popen(
         [executable, "-Z", str(_SCREENSHOT_MAX_DIMENSION), path],
         stdin=subprocess.DEVNULL,
@@ -157,14 +163,23 @@ def _resize_screenshot(path: str, timeout_s: float) -> Optional[str]:
         text=True,
         start_new_session=True,
     )
+    cleanup_token = register_cancellation_cleanup(lambda: _terminate_process_group(proc))
+    cancellation_checkpoint()
     try:
         _, stderr = proc.communicate(timeout=max(0.1, timeout_s))
+        cancellation_checkpoint()
+    except ToolCancelledError:
+        _terminate_process_group(proc)
+        proc.wait()
+        raise
     except subprocess.TimeoutExpired:
         _terminate_process_group(proc)
         proc.wait()
         return f"screenshot resize timed out after {timeout_s}s"
     except Exception as exc:
         return f"Could not resize screenshot: {exc}"
+    finally:
+        unregister_cancellation_cleanup(cleanup_token)
     if proc.returncode != 0:
         return (stderr or "sips failed").strip()
     return None
@@ -172,6 +187,7 @@ def _resize_screenshot(path: str, timeout_s: float) -> Optional[str]:
 
 def _run_osascript(script: str, timeout_s: float = 30) -> Tuple[bool, str, str]:
     timeout_s = max(0.1, min(float(timeout_s), 120.0))
+    cancellation_checkpoint()
     proc = subprocess.Popen(
         ["osascript", "-"],
         stdin=subprocess.PIPE,
@@ -180,14 +196,23 @@ def _run_osascript(script: str, timeout_s: float = 30) -> Tuple[bool, str, str]:
         text=True,
         start_new_session=True,
     )
+    cleanup_token = register_cancellation_cleanup(lambda: _terminate_process_group(proc))
+    cancellation_checkpoint()
     try:
         stdout, stderr = proc.communicate(input=script, timeout=timeout_s)
+        cancellation_checkpoint()
+    except ToolCancelledError:
+        _terminate_process_group(proc)
+        proc.wait()
+        raise
     except subprocess.TimeoutExpired:
         _terminate_process_group(proc)
         proc.wait()
         return False, "", f"AppleScript timed out after {timeout_s}s"
     except Exception as exc:
         return False, "", f"Could not run osascript: {exc}"
+    finally:
+        unregister_cancellation_cleanup(cleanup_token)
 
     return proc.returncode == 0, (stdout or "").strip(), (stderr or "").strip()
 
@@ -541,6 +566,7 @@ def _capture_screen(timeout_s: float = 15) -> Tuple[Optional[bytes], Optional[st
     os.close(fd)
     started = time.monotonic()
     try:
+        cancellation_checkpoint()
         proc = subprocess.Popen(
             ["/usr/sbin/screencapture", "-x", "-t", _SCREENSHOT_FORMAT, path],
             stdin=subprocess.DEVNULL,
@@ -549,12 +575,21 @@ def _capture_screen(timeout_s: float = 15) -> Tuple[Optional[bytes], Optional[st
             text=True,
             start_new_session=True,
         )
+        cleanup_token = register_cancellation_cleanup(lambda: _terminate_process_group(proc))
+        cancellation_checkpoint()
         try:
             _, stderr = proc.communicate(timeout=_operation_timeout(None, timeout_s))
+            cancellation_checkpoint()
+        except ToolCancelledError:
+            _terminate_process_group(proc)
+            proc.wait()
+            raise
         except subprocess.TimeoutExpired:
             _terminate_process_group(proc)
             proc.wait()
             return None, f"screencapture timed out after {timeout_s}s"
+        finally:
+            unregister_cancellation_cleanup(cleanup_token)
         if proc.returncode != 0:
             message = (stderr or "").strip() or "screencapture failed"
             return None, message
@@ -1779,7 +1814,7 @@ def _wait_for_native_readiness(
                 "retryable": True,
                 "state": _compact_readiness_state(last_state),
             }
-        time.sleep(min(poll_s, max(0.0, local_deadline - now)))
+        cancellable_sleep(min(poll_s, max(0.0, local_deadline - now)))
 
 
 
@@ -2036,13 +2071,14 @@ def _wait_for_native_effect(
                 "duration_ms": int((now - started) * 1000),
                 "automatic_retry": False,
             }
-        time.sleep(min(poll_s, max(0.0, local_deadline - now)))
+        cancellable_sleep(min(poll_s, max(0.0, local_deadline - now)))
 
 def _run_cliclick(arguments: List[str], timeout_s: float = 30) -> Tuple[bool, str]:
     executable = shutil.which("cliclick") or "/opt/homebrew/bin/cliclick"
     if not Path(executable).exists():
         return False, "cliclick is not installed; coordinate mouse/typing actions are unavailable."
     timeout_s = max(0.1, min(float(timeout_s), 120.0))
+    cancellation_checkpoint()
     proc = subprocess.Popen(
         [executable, "-w", "20", *arguments],
         stdin=subprocess.DEVNULL,
@@ -2051,14 +2087,23 @@ def _run_cliclick(arguments: List[str], timeout_s: float = 30) -> Tuple[bool, st
         text=True,
         start_new_session=True,
     )
+    cleanup_token = register_cancellation_cleanup(lambda: _terminate_process_group(proc))
+    cancellation_checkpoint()
     try:
         stdout, stderr = proc.communicate(timeout=timeout_s)
+        cancellation_checkpoint()
+    except ToolCancelledError:
+        _terminate_process_group(proc)
+        proc.wait()
+        raise
     except subprocess.TimeoutExpired:
         _terminate_process_group(proc)
         proc.wait()
         return False, f"cliclick timed out after {timeout_s}s"
     except Exception as exc:
         return False, f"Could not run cliclick: {exc}"
+    finally:
+        unregister_cancellation_cleanup(cleanup_token)
     if proc.returncode != 0:
         return False, (stderr or stdout or "").strip() or "cliclick failed"
     return True, ""
@@ -2161,6 +2206,7 @@ def _focus_element(
 
 def _set_clipboard(text: str, deadline: Optional[float] = None) -> Tuple[bool, str]:
     timeout_s = _operation_timeout(deadline, 10)
+    cancellation_checkpoint()
     proc = subprocess.Popen(
         ["pbcopy"],
         stdin=subprocess.PIPE,
@@ -2169,14 +2215,23 @@ def _set_clipboard(text: str, deadline: Optional[float] = None) -> Tuple[bool, s
         text=True,
         start_new_session=True,
     )
+    cleanup_token = register_cancellation_cleanup(lambda: _terminate_process_group(proc))
+    cancellation_checkpoint()
     try:
         _, stderr = proc.communicate(input=text, timeout=timeout_s)
+        cancellation_checkpoint()
+    except ToolCancelledError:
+        _terminate_process_group(proc)
+        proc.wait()
+        raise
     except subprocess.TimeoutExpired:
         _terminate_process_group(proc)
         proc.wait()
         return False, f"pbcopy timed out after {timeout_s}s"
     except Exception as exc:
         return False, f"Could not access clipboard: {exc}"
+    finally:
+        unregister_cancellation_cleanup(cleanup_token)
     if proc.returncode != 0:
         return False, (stderr or "").strip() or "pbcopy failed"
     return True, ""
@@ -2184,6 +2239,7 @@ def _set_clipboard(text: str, deadline: Optional[float] = None) -> Tuple[bool, s
 
 def _get_clipboard(deadline: Optional[float] = None) -> Tuple[Optional[str], Optional[str]]:
     timeout_s = _operation_timeout(deadline, 10)
+    cancellation_checkpoint()
     proc = subprocess.Popen(
         ["pbpaste"],
         stdin=subprocess.DEVNULL,
@@ -2192,14 +2248,23 @@ def _get_clipboard(deadline: Optional[float] = None) -> Tuple[Optional[str], Opt
         text=True,
         start_new_session=True,
     )
+    cleanup_token = register_cancellation_cleanup(lambda: _terminate_process_group(proc))
+    cancellation_checkpoint()
     try:
         stdout, stderr = proc.communicate(timeout=timeout_s)
+        cancellation_checkpoint()
+    except ToolCancelledError:
+        _terminate_process_group(proc)
+        proc.wait()
+        raise
     except subprocess.TimeoutExpired:
         _terminate_process_group(proc)
         proc.wait()
         return None, f"pbpaste timed out after {timeout_s}s"
     except Exception as exc:
         return None, f"Could not access clipboard: {exc}"
+    finally:
+        unregister_cancellation_cleanup(cleanup_token)
     if proc.returncode != 0:
         return None, (stderr or "").strip() or "pbpaste failed"
     return stdout or "", None
@@ -2691,6 +2756,7 @@ def act_ui(
     include_screenshot: bool = False,
 ) -> Any:
     """Perform bounded macOS UI actions against re-resolved native app/window handles."""
+    cancellation_checkpoint()
     deadline = time.monotonic() + _ACTION_BUDGET_S
     try:
         resolved_state_mode, legacy_full_screenshot = _normalize_action_state_mode(
@@ -2724,6 +2790,7 @@ def act_ui(
             delta_refresh_reasons.append("missing_base_observation")
 
         for index, action in enumerate(actions):
+            cancellation_checkpoint()
             if time.monotonic() >= deadline:
                 return {
                     "ok": False,
@@ -2946,6 +3013,7 @@ def act_ui(
 
             started = time.perf_counter()
             timed_out = False
+            cancel_exc: Optional[ToolCancelledError] = None
             dialog_details: Optional[Dict[str, Any]] = None
             handoff_details: Optional[Dict[str, Any]] = None
             try:
@@ -2999,6 +3067,9 @@ def act_ui(
                         int(target["pid"]) if target.get("pid") else None,
                         activate_target,
                     )
+            except ToolCancelledError as exc:
+                ok, message = False, str(exc)
+                cancel_exc = exc
             except TimeoutError as exc:
                 ok, message = False, str(exc)
                 timed_out = True
@@ -3012,30 +3083,34 @@ def act_ui(
                 ok, message = False, str(exc)
 
             if preserve_focus and focus_context is not None:
-                focus_decision, focus_decision_error = _post_action_focus_decision(
-                    focus_context, target, deadline
-                )
-                if focus_decision == "restore":
-                    focus_restore_attempted = True
-                    try:
-                        focus_restore_ok, restore_message, focus_restore_exact = _restore_focus_context(
-                            focus_context, deadline
-                        )
-                        focus_restore_message = restore_message
-                    except TimeoutError as exc:
+                with cancellation_cleanup_scope() if cancel_exc is not None else nullcontext():
+                    focus_decision, focus_decision_error = _post_action_focus_decision(
+                        focus_context, target, deadline
+                    )
+                    if focus_decision == "restore":
+                        focus_restore_attempted = True
+                        try:
+                            focus_restore_ok, restore_message, focus_restore_exact = _restore_focus_context(
+                                focus_context, deadline
+                            )
+                            focus_restore_message = restore_message
+                        except TimeoutError as exc:
+                            focus_restore_ok = False
+                            focus_restore_message = str(exc)
+                    elif focus_decision == "preserved":
+                        focus_restore_ok = True
+                    elif focus_decision == "user_changed":
+                        focus_user_changed = True
+                        focus_restore_ok = True
+                        focus_restore_message = "focus restoration skipped because the user changed foreground focus during the action"
+                    else:
+                        # Never blindly restore when current focus cannot be read: doing so
+                        # could steal focus from a user who moved elsewhere during the action.
                         focus_restore_ok = False
-                        focus_restore_message = str(exc)
-                elif focus_decision == "preserved":
-                    focus_restore_ok = True
-                elif focus_decision == "user_changed":
-                    focus_user_changed = True
-                    focus_restore_ok = True
-                    focus_restore_message = "focus restoration skipped because the user changed foreground focus during the action"
-                else:
-                    # Never blindly restore when current focus cannot be read: doing so
-                    # could steal focus from a user who moved elsewhere during the action.
-                    focus_restore_ok = False
-                    focus_restore_message = focus_decision_error or "current focus could not be verified after the action"
+                        focus_restore_message = focus_decision_error or "current focus could not be verified after the action"
+
+            if cancel_exc is not None:
+                raise cancel_exc
 
             result: Dict[str, Any] = {
                 "index": index,
@@ -3191,7 +3266,7 @@ def act_ui(
                     "actions": results,
                     "error": f"mac_act exceeded its {_ACTION_BUDGET_S}s total time budget",
                 }
-            time.sleep(min(0.08, max(0.0, deadline - time.monotonic())))
+            cancellable_sleep(min(0.08, max(0.0, deadline - time.monotonic())))
 
         if resolved_state_mode == "none":
             return {
@@ -3331,6 +3406,8 @@ def act_ui(
         post_payload["actions"] = results
         post_payload["previous_observation_id"] = observation_id
         return _format_result(post_payload, image_data)
+    except ToolCancelledError:
+        raise
     except TimeoutError as exc:
         return {"ok": False, "timed_out": True, "error": str(exc)}
     except ValueError as exc:

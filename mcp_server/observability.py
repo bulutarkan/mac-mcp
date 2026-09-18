@@ -25,6 +25,10 @@ from .workflow_checkpoints import (
     WorkflowCheckpointError, abandon_side_effect, begin_side_effect,
     mark_checkpoint_unknown, record_side_effect_outcome, risk_has_side_effect,
 )
+from .tool_cancellation import (
+    ToolCancellationContext, current_tool_cancellation, reset_tool_cancellation,
+    set_tool_cancellation,
+)
 
 from .policy import (
     PolicyContext,
@@ -211,7 +215,11 @@ def _mapping_failure_status(value: Any) -> Optional[str]:
         return "denied"
     if value.get("blocked") is True or marker == "blocked" or state == "blocked":
         return "blocked"
-    if value.get("ok") is False or state in {"error", "failed", "failure", "cancelled"}:
+    if marker == "outcome_unknown" or state == "outcome_unknown":
+        return "outcome_unknown"
+    if marker in {"cancelled", "client_cancelled"} or state == "cancelled":
+        return "cancelled"
+    if value.get("ok") is False or state in {"error", "failed", "failure"}:
         return "error"
     return None
 
@@ -919,18 +927,68 @@ class ObservedFastMCP(FastMCP):
         return register
 
     async def _call_registered_tool(self, name: str, arguments: dict[str, Any]):
-        """Keep synchronous tool bodies off the server event loop.
+        """Keep synchronous tool bodies off the event loop with cooperative cancellation.
 
-        FastMCP 1.27 executes sync functions inline. Moving only those registered
-        tool calls to a worker thread keeps localhost dashboard/steering requests
-        responsive while long shell, browser, file, or UI work is in progress.
-        asyncio.to_thread propagates the current contextvars into the worker.
+        Python cannot safely kill a worker thread. A mutable cancellation context is
+        copied into the worker by ``asyncio.to_thread``; on client cancellation the
+        parent sets that token, owned subprocess/UI helpers clean up, and this method
+        waits briefly for the worker to observe cancellation before returning control.
         """
         tool = self._tool_manager.get_tool(name)
+        scope = current_tool_cancellation()
         if tool is not None and not tool.is_async:
             base_call = super(ObservedFastMCP, self).call_tool
-            return await asyncio.to_thread(lambda: asyncio.run(base_call(name, arguments)))
-        return await super().call_tool(name, arguments)
+            worker = asyncio.create_task(
+                asyncio.to_thread(lambda: asyncio.run(base_call(name, arguments)))
+            )
+            try:
+                done, _ = await asyncio.wait({worker}, return_when=asyncio.ALL_COMPLETED)
+                result = next(iter(done)).result()
+                if scope is not None:
+                    scope.mark_worker_finished()
+                return result
+            except asyncio.CancelledError:
+                if scope is not None:
+                    scope.cancel("client_cancelled")
+                cleanup_done = False
+                try:
+                    done, _ = await asyncio.wait(
+                        {worker},
+                        timeout=max(0.1, float(scope.cleanup_wait_s if scope is not None else 1.5)),
+                        return_when=asyncio.ALL_COMPLETED,
+                    )
+                    cleanup_done = worker in done
+                    if cleanup_done:
+                        try:
+                            worker.result()
+                        except BaseException:
+                            pass
+                except BaseException:
+                    cleanup_done = worker.done()
+                    if worker.done():
+                        try:
+                            worker.result()
+                        except BaseException:
+                            pass
+                if not worker.done():
+                    def consume_late_worker(done_task: asyncio.Task[Any]) -> None:
+                        if done_task.cancelled():
+                            return
+                        try:
+                            done_task.exception()
+                        except BaseException:
+                            pass
+                    worker.add_done_callback(consume_late_worker)
+                if scope is not None:
+                    cleanup_threads_done = await asyncio.to_thread(scope.wait_cleanup_threads, 0.35)
+                    scope.cleanup_confirmed = bool(cleanup_done and cleanup_threads_done)
+                raise
+        try:
+            return await super().call_tool(name, arguments)
+        except asyncio.CancelledError:
+            if scope is not None:
+                scope.cancel("client_cancelled")
+            raise
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):
         declared, effective = resolve_risk(name, arguments)
@@ -993,6 +1051,12 @@ class ObservedFastMCP(FastMCP):
                 agent_id=policy_context.agent_id,
                 target_summary=target_summary or f"{effective.family}:{name}",
             )
+
+        cancellation_scope = current_tool_cancellation()
+        cancellation_token = None
+        if cancellation_scope is None:
+            cancellation_scope = ToolCancellationContext()
+            cancellation_token = set_tool_cancellation(cancellation_scope)
 
         try:
             if top_level and steering_identity is not None:
@@ -1184,6 +1248,42 @@ class ObservedFastMCP(FastMCP):
                 ):
                     result = await self._call_registered_tool(name, arguments)
             except BaseException as exc:
+                if isinstance(exc, asyncio.CancelledError):
+                    if cancellation_scope is not None:
+                        cancellation_scope.cancel("client_cancelled")
+                    outcome_unknown = bool(receipt_required and policy_context.agent_id)
+                    if outcome_unknown and policy_context.agent_id:
+                        try:
+                            if side_effect_intent is not None:
+                                abandon_side_effect(
+                                    policy_context.agent_id, side_effect_intent.get("intent_id"),
+                                    "client_cancelled_outcome_unknown", tool=name, event_type="client_cancelled",
+                                )
+                            else:
+                                mark_checkpoint_unknown(
+                                    policy_context.agent_id, "client_cancelled_outcome_unknown",
+                                    tool=name, event_type="client_cancelled",
+                                )
+                        except Exception:
+                            pass
+                    cancellation_result = {
+                        "ok": False,
+                        "status": "outcome_unknown" if outcome_unknown else "cancelled",
+                        "error": "outcome_unknown" if outcome_unknown else "client_cancelled",
+                        "cancelled": True,
+                        "retryable": False if outcome_unknown else None,
+                        "cleanup_confirmed": bool(
+                            cancellation_scope.cleanup_confirmed if cancellation_scope is not None else False
+                        ),
+                        "tool": name,
+                    }
+                    self.telemetry.finish_call(event_id, result=cancellation_result)
+                    if call_registered and steering_identity is not None:
+                        self.steering.finish_call(
+                            steering_identity, event_id, delivered=False,
+                            outcome="outcome_unknown" if outcome_unknown else "cancelled",
+                        )
+                    raise
                 if receipt_required and policy_context.agent_id:
                     try:
                         if side_effect_intent is not None:
@@ -1200,7 +1300,7 @@ class ObservedFastMCP(FastMCP):
                         pass
                 self.telemetry.finish_call(event_id, error=exc)
                 if call_registered and steering_identity is not None:
-                    self.steering.finish_call(steering_identity, event_id, delivered=False)
+                    self.steering.finish_call(steering_identity, event_id, delivered=False, outcome="failed")
                 raise
 
             result = filter_scoped_result(policy_context.scope, name, result)
@@ -1261,9 +1361,11 @@ class ObservedFastMCP(FastMCP):
             self.telemetry.finish_call(event_id, result=result)
             if not call_registered or steering_identity is None:
                 return result
-            messages = self.steering.finish_call(steering_identity, event_id, delivered=True)
+            messages = self.steering.finish_call(steering_identity, event_id, delivered=True, outcome="success")
             return attach_steering(result, messages)
         finally:
+            if cancellation_token is not None:
+                reset_tool_cancellation(cancellation_token)
             if security_token is not None:
                 _SECURITY_SESSION.reset(security_token)
             if top_level and steering_token is not None:

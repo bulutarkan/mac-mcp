@@ -11,6 +11,10 @@ from fastapi import HTTPException, status
 
 from .security import Settings, require_shell_enabled, truncate
 from .workspace_sandbox import shell_execution_plan
+from .tool_cancellation import (
+    ToolCancelledError, cancellation_checkpoint, register_cancellation_cleanup,
+    unregister_cancellation_cleanup,
+)
 
 
 def _timeout(settings: Settings, timeout_s: Optional[int]) -> int:
@@ -45,6 +49,7 @@ def run_command(settings: Settings, command: str, timeout_s: Optional[int] = Non
     env = plan.env
     argv = plan.argv(command)
     start = time.perf_counter()
+    cancellation_checkpoint()
     proc = subprocess.Popen(
         argv,
         stdin=subprocess.DEVNULL,
@@ -55,14 +60,23 @@ def run_command(settings: Settings, command: str, timeout_s: Optional[int] = Non
         cwd=str(plan.cwd),
         start_new_session=True,
     )
+    cleanup_token = register_cancellation_cleanup(lambda: _terminate_process_group(proc))
+    cancellation_checkpoint()
     try:
         stdout_raw, stderr_raw = proc.communicate(timeout=timeout)
+        cancellation_checkpoint()
         duration_ms = int((time.perf_counter() - start) * 1000)
+    except ToolCancelledError:
+        _terminate_process_group(proc)
+        proc.wait()
+        raise
     except subprocess.TimeoutExpired as e:
         _terminate_process_group(proc)
         proc.wait()
         raise HTTPException(status.HTTP_408_REQUEST_TIMEOUT,
                             f"Command timed out after {timeout}s") from e
+    finally:
+        unregister_cancellation_cleanup(cleanup_token)
 
     stdout, _ = truncate(stdout_raw or "", settings.max_output_chars)
     stderr, _ = truncate(stderr_raw or "", settings.max_output_chars)

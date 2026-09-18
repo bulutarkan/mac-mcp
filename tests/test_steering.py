@@ -177,6 +177,27 @@ class SteeringManagerTests(unittest.TestCase):
         self.assertEqual("delivered", retried["lifecycle_state"])
         self.assertIsNone(retried["last_error"])
 
+    def test_tool_outcome_is_separate_from_instruction_lifecycle(self) -> None:
+        manager = SteeringManager()
+        identity = steering_identity_from_context(fake_context(FakeSession(), openai_session="conversation-outcome"))
+        manager.prepare_call(identity, tool="run_command", arguments={"command": "sleep 30"})
+        manager.begin_call(identity, "evt-cancel", tool="run_command", arguments={"command": "sleep 30"})
+        manager.finish_call(identity, "evt-cancel", delivered=False, outcome="cancelled")
+        cancelled = manager.sessions()[0]
+        self.assertEqual("cancelled", cancelled["last_tool_outcome"])
+        self.assertEqual("ready", cancelled["lifecycle_state"])
+
+        manager.begin_call(identity, "evt-unknown", tool="run_command", arguments={"command": "opaque"})
+        manager.finish_call(identity, "evt-unknown", delivered=False, outcome="outcome_unknown")
+        unknown = manager.sessions()[0]
+        self.assertEqual("outcome_unknown", unknown["last_tool_outcome"])
+        self.assertEqual("ready", unknown["lifecycle_state"])
+
+        manager.begin_call(identity, "evt-ok", tool="read_file", arguments={"path": "/tmp/a"})
+        manager.finish_call(identity, "evt-ok", delivered=True, outcome="success")
+        success = manager.sessions()[0]
+        self.assertEqual("success", success["last_tool_outcome"])
+
     def test_illegal_lifecycle_transition_is_rejected(self) -> None:
         manager = SteeringManager()
         identity = steering_identity_from_context(fake_context(FakeSession(), openai_session="conversation-illegal"))

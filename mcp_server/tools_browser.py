@@ -23,6 +23,10 @@ from .artifact_pipeline import (
 from .context_handoff import (
     HandoffError, mark_handoff_consumed, resolve_browser_upload_handoff,
 )
+from .tool_cancellation import (
+    ToolCancelledError, cancellation_checkpoint, register_cancellation_cleanup,
+    unregister_cancellation_cleanup,
+)
 
 
 def validate_url(settings: Settings, url: str) -> None:
@@ -252,6 +256,7 @@ def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) 
 
 def _run_osascript(script: str, timeout_s: int = 30) -> str:
     timeout_s = max(1, min(int(timeout_s), 120))
+    cancellation_checkpoint()
     proc = subprocess.Popen(
         ["osascript", "-e", script],
         stdin=subprocess.DEVNULL,
@@ -260,12 +265,21 @@ def _run_osascript(script: str, timeout_s: int = 30) -> str:
         text=True,
         start_new_session=True,
     )
+    cleanup_token = register_cancellation_cleanup(lambda: _terminate_process_group(proc))
+    cancellation_checkpoint()
     try:
         stdout, stderr = proc.communicate(timeout=timeout_s)
+        cancellation_checkpoint()
+    except ToolCancelledError:
+        _terminate_process_group(proc)
+        proc.wait()
+        raise
     except subprocess.TimeoutExpired:
         _terminate_process_group(proc)
         proc.wait()
         raise HTTPException(status.HTTP_408_REQUEST_TIMEOUT, "AppleScript timed out.")
+    finally:
+        unregister_cancellation_cleanup(cleanup_token)
 
     if proc.returncode != 0:
         msg = (stderr or stdout or "AppleScript error").strip()

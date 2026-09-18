@@ -14,6 +14,7 @@ from fastapi import HTTPException, status
 
 from .security import BASE_DIR, Settings, require_shell_enabled, truncate
 from .workspace_sandbox import shell_execution_plan
+from .tool_cancellation import ToolCancelledError, cancellable_sleep, cancellation_checkpoint
 
 JOBS_DIR = BASE_DIR / "jobs"
 DEFAULT_JOB_ENV = {
@@ -430,7 +431,7 @@ def wait_jobs(
             break
         if time.monotonic() >= deadline:
             break
-        time.sleep(0.25)
+        cancellable_sleep(0.25)
 
     if return_output:
         for item in statuses:
@@ -456,6 +457,18 @@ def run_commands_parallel(
         start_background_job(settings, command=command, cwd=cwd, timeout_s=effective_timeout)
         for command in commands
     ]
-    waited = wait_jobs(settings, [j["job_id"] for j in starts], timeout_s=effective_timeout, return_output=return_output)
+    try:
+        cancellation_checkpoint()
+        waited = wait_jobs(
+            settings, [j["job_id"] for j in starts],
+            timeout_s=effective_timeout, return_output=return_output,
+        )
+    except ToolCancelledError:
+        for started in starts:
+            try:
+                stop_job(settings, str(started.get("job_id") or ""), signal_name="TERM")
+            except Exception:
+                pass
+        raise
     waited["started"] = starts
     return waited

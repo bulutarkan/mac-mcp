@@ -463,6 +463,7 @@ class SteeringManager:
                 "created_at": now,
                 "last_activity_at": now,
                 "last_tool": "",
+                "last_tool_outcome": None,
                 "label": "Agent session",
                 "detail": "Idle",
                 "pending": [],
@@ -570,21 +571,32 @@ class SteeringManager:
             state["last_activity_at"] = now
             return self._public_state_locked(state, now=now)
 
-    def finish_call(self, identity: SteeringIdentity, event_id: str, *, delivered: bool) -> list[Dict[str, Any]]:
-        """Finish one call; failed calls leave pending steering for the next preemption."""
+    def finish_call(
+        self, identity: SteeringIdentity, event_id: str, *, delivered: bool,
+        outcome: Optional[str] = None,
+    ) -> list[Dict[str, Any]]:
+        """Finish one call while keeping tool outcome separate from instruction lifecycle."""
         now = time.time()
+        normalized_outcome = str(outcome or ("success" if delivered else "failed")).strip().lower()
+        if normalized_outcome not in {"success", "failed", "cancelled", "outcome_unknown"}:
+            normalized_outcome = "failed" if not delivered else "success"
         with self._lock:
             state = self._sessions.get(identity.key)
             if state is None:
                 return []
             state["active"].pop(event_id, None)
             state["last_activity_at"] = now
+            state["last_tool_outcome"] = normalized_outcome
             if not delivered:
                 if state.get("pending"):
+                    delivery_error = {
+                        "cancelled": "tool_cancelled_before_steering_delivery",
+                        "outcome_unknown": "tool_outcome_unknown_before_steering_delivery",
+                    }.get(normalized_outcome, "tool_failed_before_steering_delivery")
                     self._transition_locked(
                         state,
                         "failed",
-                        last_error="tool_failed_before_steering_delivery",
+                        last_error=delivery_error,
                         now=now,
                     )
                     for message in state["pending"]:
@@ -592,7 +604,7 @@ class SteeringManager:
                             message,
                             "delivery_failed",
                             tool=state.get("last_tool"),
-                            last_error="tool_failed_before_steering_delivery",
+                            last_error=delivery_error,
                         )
                 return []
             messages = list(state["pending"])
@@ -811,6 +823,7 @@ class SteeringManager:
             "lifecycle_state": state.get("lifecycle_state", "ready"),
             "last_transition_at": state.get("last_transition_at", state["created_at"]),
             "last_error": state.get("last_error"),
+            "last_tool_outcome": state.get("last_tool_outcome"),
             "pending_instruction_count": len(state["pending"]),
             "awaiting_acknowledgement_count": len(state.get("awaiting_ack") or []),
             "created_at": state["created_at"],

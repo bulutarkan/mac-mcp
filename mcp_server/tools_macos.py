@@ -8,6 +8,10 @@ import time
 from typing import Any, Dict, Optional
 
 from .security import Settings, truncate
+from .tool_cancellation import (
+    ToolCancelledError, cancellation_checkpoint, register_cancellation_cleanup,
+    unregister_cancellation_cleanup,
+)
 
 
 def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) -> None:
@@ -29,6 +33,7 @@ def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) 
 
 def _run_apple(script: str, timeout: int = 30) -> Dict[str, Any]:
     timeout = max(1, min(int(timeout), 120))
+    cancellation_checkpoint()
     proc = subprocess.Popen(
         ["osascript", "-e", script],
         stdin=subprocess.DEVNULL,
@@ -37,17 +42,26 @@ def _run_apple(script: str, timeout: int = 30) -> Dict[str, Any]:
         text=True,
         start_new_session=True,
     )
+    cleanup_token = register_cancellation_cleanup(lambda: _terminate_process_group(proc))
+    cancellation_checkpoint()
     try:
         stdout_raw, stderr_raw = proc.communicate(timeout=timeout)
+        cancellation_checkpoint()
         stdout, _ = truncate((stdout_raw or "").strip(), 10_000)
         stderr, _ = truncate((stderr_raw or "").strip(), 10_000)
         return {"ok": proc.returncode == 0, "stdout": stdout, "stderr": stderr, "exit_code": proc.returncode}
+    except ToolCancelledError:
+        _terminate_process_group(proc)
+        proc.wait()
+        raise
     except subprocess.TimeoutExpired:
         _terminate_process_group(proc)
         proc.wait()
         return {"ok": False, "error": f"AppleScript timed out after {timeout}s"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+    finally:
+        unregister_cancellation_cleanup(cleanup_token)
 
 
 def run_applescript(settings: Settings, script: str, timeout_s: int = 30) -> Dict[str, Any]:

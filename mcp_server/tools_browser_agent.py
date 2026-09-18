@@ -16,6 +16,7 @@ from fastapi import HTTPException, status
 from mcp.server.fastmcp.utilities.types import Image
 
 from .security import Settings
+from .tool_cancellation import cancellable_sleep, cancellation_checkpoint
 from .tools_browser import (
     _execute_js_for_target,
     _norm_browser,
@@ -345,7 +346,7 @@ def _wait_for_render_readiness(
             if not last.get("reason_code"):
                 last["reason_code"] = "RENDER_NOT_READY"
             return last
-        time.sleep(_RENDER_READINESS_POLL_S)
+        cancellable_sleep(_RENDER_READINESS_POLL_S)
 
 
 def _dom_capture_start_js(
@@ -543,7 +544,7 @@ def _capture_dom_visual_locked(
                 break
             if state in {"error", "missing"}:
                 return None, str(finished.get("error") or f"DOM screenshot state became {state}."), meta
-            time.sleep(0.12)
+            cancellable_sleep(0.12)
         else:
             return None, f"DOM screenshot timed out after {timeout_s:.0f}s.", meta
 
@@ -1565,13 +1566,13 @@ def _select_action(
                     stable_since = time.perf_counter()
                 elif (time.perf_counter() - stable_since) * 1000 >= stable_ms:
                     break
-                time.sleep(0.06)
+                cancellable_sleep(0.06)
             return {
                 "ok": True, "type": "select", "element_id": element_id,
                 "selected": found.get("selected"), "native": False,
                 "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
             }
-        time.sleep(poll_s)
+        cancellable_sleep(poll_s)
     return {
         "ok": False, "type": "select", "element_id": element_id,
         "error": "option_not_found", "timed_out": True, "native": False,
@@ -1642,7 +1643,7 @@ def _wait_for_element_readiness(
             if not last.get("reason_code"):
                 last["reason_code"] = "ELEMENT_NOT_READY"
             return last
-        time.sleep(poll_s)
+        cancellable_sleep(poll_s)
 
 
 def _element_effect_state_js(element_id: str) -> str:
@@ -1771,7 +1772,7 @@ def _verified_dom_action(
             min(float(action.get("verify_poll_ms", _ACTION_VERIFY_POLL_S * 1000)) / 1000.0, 0.25),
         )
         while time.perf_counter() < deadline:
-            time.sleep(poll_s)
+            cancellable_sleep(poll_s)
             try:
                 post = _run_json_js(
                     settings, browser, _element_effect_state_js(element_id),
@@ -2072,7 +2073,7 @@ def _wait_action(
             if not state.get("matched"):
                 last_signature = None
                 stable_since = time.perf_counter()
-                time.sleep(poll_s)
+                cancellable_sleep(poll_s)
                 continue
             signature = state.get("content_signature")
             if signature != last_signature:
@@ -2084,7 +2085,7 @@ def _wait_action(
                     "settled_by": "content_stable", "duration_ms": int((time.perf_counter()-started)*1000),
                     "url": state.get("url"), "_compact_state": state, "_js_calls": js_calls,
                 }
-            time.sleep(poll_s)
+            cancellable_sleep(poll_s)
         return {
             "ok": True, "type": "wait", "for": kind, "matched": False, "timed_out": True,
             "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
@@ -2105,7 +2106,7 @@ def _wait_action(
                 stable_since = time.perf_counter()
             elif (time.perf_counter() - stable_since) * 1000 >= stable_ms:
                 return {"ok": True, "type": "wait", "for": kind, "matched": True, "duration_ms": int((time.perf_counter()-started)*1000), "_compact_state": state, "_js_calls": js_calls}
-            time.sleep(poll_s)
+            cancellable_sleep(poll_s)
         return {"ok": True, "type": "wait", "for": kind, "matched": False, "timed_out": True, "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls}
 
     while time.perf_counter() - started < timeout_s:
@@ -2121,12 +2122,12 @@ def _wait_action(
             js_calls += 1
         except HTTPException:
             if kind == "url_change":
-                time.sleep(poll_s)
+                cancellable_sleep(poll_s)
                 continue
             raise
         if state.get("matched"):
             return {"ok": True, "type": "wait", "for": kind, "matched": True, "duration_ms": int((time.perf_counter()-started)*1000), "url": state.get("url"), "_compact_state": state, "_js_calls": js_calls}
-        time.sleep(poll_s)
+        cancellable_sleep(poll_s)
     return {"ok": True, "type": "wait", "for": kind, "matched": False, "timed_out": True, "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls}
 
 
@@ -2142,6 +2143,7 @@ def browser_act(
     allow_foreground: bool = False,
 ) -> Dict[str, Any]:
     """Perform one serialized action transaction against a single logical tab."""
+    cancellation_checkpoint()
     if not isinstance(actions, list) or not actions:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "actions must be a non-empty list.")
     if len(actions) > _MAX_ACTIONS:
@@ -2188,6 +2190,7 @@ def _browser_act_locked(
 
     window_index, tab_index = _resolve_tab_target(browser, tab_handle, window_index, tab_index)
 
+    cancellation_checkpoint()
     started = time.perf_counter()
     results: List[Dict[str, Any]] = []
     internal_js_calls = 0
