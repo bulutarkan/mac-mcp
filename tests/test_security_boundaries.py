@@ -634,6 +634,7 @@ class DelegatedCapabilityProfileTests(unittest.TestCase):
             self.assertTrue(evaluate_tool_scope(scope, "browser_open_url", {"url": "https://example.com"}).allowed)
             self.assertFalse(evaluate_tool_scope(scope, "run_command", {"command": "pwd"}).allowed)
 
+    # ASSURANCE: SEC-AUTHZ-001
     def test_browser_only_child_cannot_spawn_full_child(self) -> None:
         parent_scope = ResourceScope(tool_families=("browser",), access_mode="read_only")
         spawn_scope_decision = evaluate_tool_scope(

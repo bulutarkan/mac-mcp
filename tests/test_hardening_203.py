@@ -42,6 +42,7 @@ import mcp_server.tools_agents as agents
 
 
 class RiskAndScopeTests(unittest.TestCase):
+    # ASSURANCE: SEC-AUTHZ-001
     def test_registry_covers_current_96_tool_surface(self) -> None:
         self.assertEqual(96, len(RISK_REGISTRY))
         for required in ("run_command", "browser_observe", "browser_do", "computer_plan", "mac_app", "tool_discover", "tool_invoke", "spawn_agent", "mac_snapshot", "mac_act", "artifact_pipeline", "context_handoff", "browser_upload_artifact", "read_file", "lesson_search", "lesson_record", "lesson_feedback", "lesson_consolidate"):
@@ -53,6 +54,7 @@ class RiskAndScopeTests(unittest.TestCase):
         self.assertTrue(evaluate_profile("read_only", read_risk).allowed)
         self.assertFalse(evaluate_profile("read_only", shell_risk).allowed)
 
+    # ASSURANCE: SEC-AUTHZ-001
     def test_profiles_are_deterministic(self) -> None:
         _, read_risk = resolve_risk("read_file", {"path": "/tmp/a"})
         _, shell_risk = resolve_risk("run_command", {"command": "pwd"})
@@ -108,6 +110,7 @@ class RiskAndScopeTests(unittest.TestCase):
         scope = ResourceScope(browser_tabs=("*",), tool_families=("browser",), access_mode="read_only")
         self.assertTrue(evaluate_tool_scope(scope, "browser_list_tabs", {"browser": "Safari"}).allowed)
 
+    # ASSURANCE: SEC-AUTHZ-001
     def test_child_scope_can_only_narrow_parent(self) -> None:
         parent = ResourceScope(path_roots=("/tmp/project",), browser_tabs=("tab-a", "tab-b"), access_mode="workspace_write")
         child = ResourceScope(path_roots=("/tmp/project/sub",), browser_tabs=("tab-a",), access_mode="read_only")

@@ -89,6 +89,7 @@ class ScopedFileSymlinkSafetyTests(unittest.TestCase):
         self.assertNotIn("SENTINEL_SECRET", result["results"])
         self.assertNotIn(str(secret), result["results"])
 
+    # ASSURANCE: SEC-FS-001
     def test_read_check_then_parent_symlink_swap_is_blocked(self) -> None:
         slot, parked = self._make_slot("read-slot")
         target = slot / "sentinel.txt"
@@ -136,6 +137,7 @@ class ScopedFileSymlinkSafetyTests(unittest.TestCase):
         self.assertEqual(403, ctx.exception.status_code)
         self.assertEqual("needle OUTSIDE_SECRET", outside.read_text(encoding="utf-8"))
 
+    # ASSURANCE: SEC-FS-001
     def test_write_swap_after_safe_snapshot_never_writes_outside(self) -> None:
         slot, parked = self._make_slot("write-slot")
         target = slot / "sentinel.txt"
@@ -215,6 +217,7 @@ class ScopedFileSymlinkSafetyTests(unittest.TestCase):
         self.assertTrue(real_source.exists())
         self.assertEqual("OUTSIDE", outside_file.read_text(encoding="utf-8"))
 
+    # ASSURANCE: SEC-FS-001
     def test_descriptor_guard_blocks_swap_after_operation_time_revalidation(self) -> None:
         slot, parked = self._make_slot("fd-race-slot")
         target = slot / "sentinel.txt"

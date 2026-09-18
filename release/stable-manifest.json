@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "c5a9682d8bf1235061edc27762522c833c91c98a",
+  "base_commit": "3c637f08c71944f723026ac3c0eb1d3d746ee13a",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -19,8 +19,8 @@
     {
       "mode": "100644",
       "path": ".github/workflows/quality-gates.yml",
-      "sha256": "17e92ecdd330306f854255adb66b6eef1200bb868c16fbb6ea970c71b8c8a145",
-      "size": 882
+      "sha256": "7d922726f5537a591a6d42ab51bdf155d10ccb9c692a9c5d4c8fdcbb998c7062",
+      "size": 993
     },
     {
       "mode": "100644",
@@ -43,8 +43,8 @@
     {
       "mode": "100644",
       "path": "CHANGELOG.md",
-      "sha256": "82a3bf4fe683c4698902deb9b7222fbf71261799839bff6b513f31f341bc1107",
-      "size": 35364
+      "sha256": "20b8d73eccba553ca4df59a2354c90bb93808f04825816bfc5c00ca2b40d7fce",
+      "size": 35738
     },
     {
       "mode": "100644",
@@ -55,8 +55,8 @@
     {
       "mode": "100644",
       "path": "README.md",
-      "sha256": "fe64bb6101516c21dd9490ca685bdf0da73c25e984416a5a03e9f48ff00818e6",
-      "size": 49694
+      "sha256": "01d0cc3d0175ed147dcbd00b09dbb7c6c21f67d4f61ee3f723650834f70db0ce",
+      "size": 50164
     },
     {
       "mode": "100644",
@@ -99,6 +99,12 @@
       "path": "docs/TERMINOLOGY.md",
       "sha256": "f33feedb4c1f0c0fe9feb4fc576e037133cc4b8d012286b5ad8bdc59cbbc9dd1",
       "size": 2565
+    },
+    {
+      "mode": "100644",
+      "path": "docs/security-assurance.md",
+      "sha256": "66e070941385738024320bcdec768ae9ab723482d896ed948dcdc829e58ab171",
+      "size": 6533
     },
     {
       "mode": "100755",
@@ -665,6 +671,12 @@
       "size": 3638
     },
     {
+      "mode": "100755",
+      "path": "scripts/verify_security_assurance.py",
+      "sha256": "92d09ac5b3b49a5de8de66bdffbfeb71dec7c2481a6a0dd5a674556e90710c22",
+      "size": 11054
+    },
+    {
       "mode": "100644",
       "path": "tests/fixtures/security/malicious_prompt_injection.html",
       "sha256": "b2951a15ce555b1dc0d3360c620b510b7b120e1f15214f5cffa492af3e1dbb94",
@@ -823,14 +835,14 @@
     {
       "mode": "100644",
       "path": "tests/test_file_transactions.py",
-      "sha256": "564aa6d10ce60b4e1fed979216a03ac68c623a9deda25d7779138c93c8dead81",
-      "size": 15962
+      "sha256": "0aad784029d8277908638065070f90039339af4403d438119757ff70de9f4a44",
+      "size": 16049
     },
     {
       "mode": "100644",
       "path": "tests/test_hardening_203.py",
-      "sha256": "97883e9eb6973f5d0638f5edaebfab6f9655cb894eab791f5808ad44b7df6b83",
-      "size": 19915
+      "sha256": "fbee31303cc622459320c8234cb9964a3933926912e3ded59f7cc3b6fa716f3c",
+      "size": 20008
     },
     {
       "mode": "100644",
@@ -979,8 +991,8 @@
     {
       "mode": "100644",
       "path": "tests/test_scoped_file_symlink_safety.py",
-      "sha256": "1c4e04e1928067402d86c32b5f9b433b0f1078b9fd1c38fa9ce2d62f83d3a8c4",
-      "size": 15457
+      "sha256": "76173cc6ccf3f587b3ace5705311566e188b196f512b6f51425bc40795fc0b87",
+      "size": 15541
     },
     {
       "mode": "100644",
@@ -990,9 +1002,15 @@
     },
     {
       "mode": "100644",
+      "path": "tests/test_security_assurance.py",
+      "sha256": "fb1e1820bbf126dd2159fff912f54b6a764f91bb55c8c4b57b9df97761fbee01",
+      "size": 4554
+    },
+    {
+      "mode": "100644",
       "path": "tests/test_security_boundaries.py",
-      "sha256": "c5626d812c865ed519b660db5b991124b90651e177f3b35b8b8f9eff9e0a37fc",
-      "size": 36087
+      "sha256": "a1bde4c32978ac4549de57e6a83ec70ead97592bfdfbdcfb488996832b20606d",
+      "size": 36118
     },
     {
       "mode": "100644",
@@ -1003,8 +1021,8 @@
     {
       "mode": "100644",
       "path": "tests/test_ssrf_revalidation.py",
-      "sha256": "8373027beceb3c1d6db36c064159aee1d1a5168496505e95010b1d1f52a6a83c",
-      "size": 13508
+      "sha256": "e3087c87c7d3ba12c7cd2db12994d5e2203d229cd8800356a908eb9c62ad4466",
+      "size": 13595
     },
     {
       "mode": "100644",
@@ -1045,8 +1063,8 @@
     {
       "mode": "100644",
       "path": "tests/test_update.py",
-      "sha256": "a0553fb472cae0a6ea15b45b61b71dcc6dc241533a40b255285ee9416ea1e8d3",
-      "size": 30955
+      "sha256": "7e4216c38f88cad1b88e70db9c5949d8572f54c835d31288cfaa733ba7b29a4a",
+      "size": 31042
     },
     {
       "mode": "100644",
@@ -1061,10 +1079,10 @@
       "size": 3924
     }
   ],
-  "generated_at": "2026-09-18T17:22:12Z",
-  "payload_sha256": "9dfe010bb191982c40149e3374241035677e4edcec10c4c2647cf690ca8eb813",
+  "generated_at": "2026-09-18T17:39:01Z",
+  "payload_sha256": "05612f1626276f775593899949ceb28137d5c56927b767938a577b0722fff6b4",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.5-r6",
+  "release_id": "stable-2.1.5-r7",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",

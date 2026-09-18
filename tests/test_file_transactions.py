@@ -115,6 +115,7 @@ class FileTransactionTests(unittest.TestCase):
         self.assertEqual(expected["a.bin"], (directory / "a.bin").read_bytes())
         self.assertEqual(expected["nested/b.bin"], (directory / "nested" / "b.bin").read_bytes())
 
+    # ASSURANCE: SEC-TXN-001
     def test_atomic_batch_fault_in_second_write_restores_all_preimages(self) -> None:
         first = self.work / "first.txt"
         second = self.work / "second.txt"
@@ -143,6 +144,7 @@ class FileTransactionTests(unittest.TestCase):
         txid = ctx.exception.detail["transaction_id"]
         self.assertEqual("rolled_back", journal.get_transaction(txid)["state"])
 
+    # ASSURANCE: SEC-TXN-001
     def test_mixed_write_move_delete_batch_fault_rolls_back_everything(self) -> None:
         write_target = self.work / "write.txt"
         move_source = self.work / "move-source.bin"
@@ -215,6 +217,7 @@ class FileTransactionTests(unittest.TestCase):
         files.undo_file_transaction(None, result["transaction_id"], force=True)
         self.assertEqual("v1", target.read_text(encoding="utf-8"))
 
+    # ASSURANCE: SEC-TXN-001
     def test_atomic_batch_refuses_irreversible_snapshot_before_mutation(self) -> None:
         target = self.work / "large.txt"
         target.write_bytes(b"X" * 2048)

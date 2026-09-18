@@ -368,6 +368,7 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertTrue((self.update_dir / "state.json").exists())
         self.assertTrue((self.update_dir / "backups").exists())
 
+    # ASSURANCE: SEC-UPD-001
     def test_health_failure_rolls_back_split_repo_runtime_and_marker(self):
         _, repo, runtime, old, target = self.make_fixture()
         with patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health") as restart, \
@@ -406,6 +407,7 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertEqual("restored", state["repo_rollback"]["status"])
         self.assertEqual("restored", state["runtime_rollback"]["status"])
 
+    # ASSURANCE: SEC-UPD-001
     def test_health_failure_restores_pre_update_repo_head_not_deployed_marker(self):
         root, repo, runtime, deployed, repo_head = self.make_fixture()
         run("git", "reset", "--hard", "-q", repo_head, cwd=repo)
@@ -466,6 +468,7 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertEqual("skipped", state["repo_rollback"]["status"])
         self.assertIn("did not move", state["repo_rollback"]["reason"])
 
+    # ASSURANCE: SEC-UPD-001
     def test_user_edit_after_merge_skips_repo_rollback_but_restores_runtime(self):
         _, repo, runtime, old, target = self.make_fixture()
         restart_calls = 0

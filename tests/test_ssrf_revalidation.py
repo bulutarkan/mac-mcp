@@ -43,6 +43,7 @@ class SSRFRevalidationTests(unittest.TestCase):
     def settings(self):
         return security.load_settings()
 
+    # ASSURANCE: SEC-NET-001
     def test_public_to_loopback_redirect_is_blocked_before_second_request(self) -> None:
         calls: list[str] = []
 
@@ -92,6 +93,7 @@ class SSRFRevalidationTests(unittest.TestCase):
             with self.assertRaises(HTTPException):
                 security.validate_url(self.settings(), "http://metadata.example/latest/meta-data/")
 
+    # ASSURANCE: SEC-NET-001
     def test_dns_rebinding_between_validation_and_connect_is_blocked_before_socket_connect(self) -> None:
         settings = self.settings()
         with patch.object(security, "resolve_host_addresses", return_value=("93.184.216.34",)):
@@ -201,6 +203,7 @@ class SSRFRevalidationTests(unittest.TestCase):
         self.assertEqual("https://final.example/result", result["url"])
         self.assertEqual("https://public.example/start", result["requested_url"])
 
+    # ASSURANCE: SEC-NET-001
     def test_browser_rebinding_same_hostname_is_caught_on_observed_revalidation(self) -> None:
         import mcp_server.tools_browser as tools_browser
         created = {

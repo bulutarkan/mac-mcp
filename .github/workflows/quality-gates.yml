@@ -28,6 +28,8 @@ jobs:
         run: ruff check mcp_server tests --select E9,F63,F7,F82
       - name: Python compile smoke
         run: python -m compileall -q mcp_server tests
+      - name: Verify security assurance matrix
+        run: python scripts/verify_security_assurance.py --json
       - name: Installer syntax
         run: bash -n install.sh
       - name: OpenAPI JSON syntax
