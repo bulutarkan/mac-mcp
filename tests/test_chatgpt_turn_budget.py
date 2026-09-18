@@ -214,11 +214,11 @@ class ChatGPTTurnBudgetTests(unittest.TestCase):
              patch.object(agents, "_base_env", return_value={}), \
              patch.object(agents.subprocess, "Popen", return_value=SimpleNamespace(pid=43210)), \
              patch.object(agents.threading, "Thread", return_value=SimpleNamespace(start=lambda: None)):
-            scope = agents.ResourceScope.from_dict({"access_mode": "read_only", "path_roots": [td]})
+            scope = agents.ResourceScope.from_dict({"access_mode": "full", "path_roots": [td]})
             spawned = agents._spawn_internal(
                 settings=None, provider="chatgpt", prompt="inspect only", model=None, reasoning=None,
                 cwd=td, timeout_s=1200, title="budget default", result_style="concise",
-                access_mode="read_only", scope=scope, permission_profile="read_only",
+                access_mode="full", scope=scope, permission_profile="trusted",
             )
             saved = agents._read_meta(spawned["agent_id"])
         self.assertEqual("high", saved["reasoning"])

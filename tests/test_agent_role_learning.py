@@ -49,7 +49,7 @@ class AgentRoleLearningTests(unittest.TestCase):
         return lesson_id
 
     def fake_spawn(self, *, role: str | None, provenance_class: str, prompt: str):
-        scope = ResourceScope.from_dict({"access_mode": "read_only", "path_roots": [str(self.root)]})
+        scope = ResourceScope.from_dict({"access_mode": "full", "path_roots": [str(self.root)]})
         fake_proc = SimpleNamespace(pid=43210)
         fake_thread = SimpleNamespace(start=lambda: None)
         with patch.object(agents, "AGENTS_DIR", self.agents_root), \
@@ -67,9 +67,9 @@ class AgentRoleLearningTests(unittest.TestCase):
                 timeout_s=600,
                 title="Role-learning test",
                 result_style="concise",
-                access_mode="read_only",
+                access_mode="full",
                 scope=scope,
-                permission_profile="read_only",
+                permission_profile="trusted",
                 role=role,
                 provenance_class=provenance_class,
             )

@@ -233,9 +233,9 @@ class DelegatedProviderTests(unittest.TestCase):
     def test_opencode_prompt_keeps_native_tool_guard(self) -> None:
         scope = ResourceScope(path_roots=("/tmp/project",), browser_tabs=("tab-a",), access_mode="workspace_write")
         prompt = _scope_prompt(scope, "standard", "opencode")
-        self.assertIn("native bash/filesystem tools are not constrained", prompt)
-        self.assertIn("mandatory behavioral boundary", prompt)
-        self.assertIn("Mac MCP tool calls are enforced server-side", prompt)
+        self.assertIn("macOS Seatbelt filesystem boundary", prompt)
+        self.assertIn("provider process and its descendants", prompt)
+        self.assertIn("Do not attempt to evade that boundary", prompt)
 
     def test_opencode_openrouter_config_uses_env_key_without_secret_in_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:

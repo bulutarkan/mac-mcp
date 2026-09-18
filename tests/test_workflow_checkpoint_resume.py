@@ -360,11 +360,11 @@ class AgentDurableResumeTests(unittest.TestCase):
              patch.object(agents, "_base_env", return_value={}), \
              patch.object(agents.subprocess, "Popen", return_value=SimpleNamespace(pid=999999)), \
              patch.object(agents.threading, "Thread", return_value=SimpleNamespace(start=lambda: None)):
-            scope = agents.ResourceScope.from_dict({"access_mode": "workspace_write", "path_roots": [td]})
+            scope = agents.ResourceScope.from_dict({"access_mode": "full", "path_roots": [td]})
             parent = agents._spawn_internal(
                 settings=None, provider="codex", prompt="create marker once", model=None, reasoning="high",
                 cwd=td, timeout_s=1200, title="crash resume", result_style="concise",
-                access_mode="workspace_write", scope=scope, permission_profile="trusted",
+                access_mode="full", scope=scope, permission_profile="trusted",
             )
             parent_id = parent["agent_id"]
             agents._update_meta(parent_id, lambda current: current.update({"session_id": "sess-durable-1"}))

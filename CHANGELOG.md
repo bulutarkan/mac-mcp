@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Hardened delegated provider process boundaries: restricted OpenCode workers now run inside a macOS Seatbelt filesystem boundary with scoped read/write roots, private provider state, restricted native process tools, and minimal environment inheritance.
+- Codex and ChatGPT Web CLI restricted modes now fail closed when Mac MCP cannot truthfully enforce an OS-level workspace/read-only boundary; explicit `full` access remains available, and provider workers no longer inherit the server environment wholesale.
+
 ## [2.1.5] - 2026-09-18
 
 - Added a cryptographically verified stable release channel using a pinned Ed25519 signer, detached signed manifest, complete tracked-file SHA-256/mode/size inventory, aggregate payload digest, and parent-commit binding to prevent manifest replay.

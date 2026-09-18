@@ -224,6 +224,7 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         "permission_profile": team.get("permission_profile"),
         "scope": team.get("scope"),
         "access_mode_enforced": access_info["enforced"],
+        "process_boundary": access_info.get("boundary"),
         "access_mode_note": access_info["note"],
         "created_at": team.get("created_at"),
         "agent_ids": agent_ids,
@@ -346,14 +347,174 @@ def _chatgpt_env() -> Dict[str, str]:
     return env
 
 
+_PROVIDER_ENV_PASSTHROUGH: Dict[str, Tuple[str, ...]] = {
+    "chatgpt": ("CHATGPT_CLI_PROFILE", "CHATGPT_CLI_CHROME", "CHATGPT_CLI_IDLE_SECONDS"),
+    "codex": ("CODEX_HOME", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID"),
+}
+_OPENCODE_MODEL_ENV: Dict[str, Tuple[str, ...]] = {
+    "openrouter": ("OPENROUTER_API_KEY",),
+    "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"),
+    "openai": ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID"),
+    "google": (
+        "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_VERTEX_API_KEY",
+        "GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION",
+    ),
+    "azure": ("AZURE_API_KEY", "AZURE_OPENAI_API_KEY", "AZURE_RESOURCE_NAME"),
+}
+_SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
+_RESTRICTED_READ_DENY_ROOTS = ("/Users", "/private/tmp", "/private/var/tmp", "/private/var/folders", "/Volumes", "/Network")
+_RESTRICTED_ESCAPE_EXECUTABLES = (
+    "/usr/bin/security", "/usr/bin/osascript", "/usr/bin/open", "/usr/bin/shortcuts",
+    "/bin/launchctl", "/usr/bin/sudo", "/usr/bin/su",
+)
+
+
+def _minimal_provider_env(provider: str, meta: Dict[str, Any]) -> Dict[str, str]:
+    """Build an explicit provider environment instead of inheriting the server environment."""
+    provider = str(provider or "").strip().lower()
+    home = Path.home().resolve()
+    user = os.getenv("USER") or home.name
+    env: Dict[str, str] = {
+        "HOME": str(home),
+        "USER": user,
+        "LOGNAME": os.getenv("LOGNAME") or user,
+        "SHELL": "/bin/zsh",
+        "LANG": "en_US.UTF-8",
+        "LC_ALL": "en_US.UTF-8",
+        "NO_COLOR": "1",
+        "HOMEBREW_NO_AUTO_UPDATE": "1",
+        "PATH": ":".join((
+            str(home / ".opencode" / "bin"), str(home / ".npm-global" / "bin"),
+            str(home / ".local" / "bin"), "/opt/homebrew/bin", "/opt/homebrew/sbin",
+            "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+        )),
+    }
+    if provider != "chatgpt":
+        env["CI"] = "1"
+    for key in _PROVIDER_ENV_PASSTHROUGH.get(provider, ()):
+        value = os.getenv(key)
+        if value:
+            env[key] = value
+    if provider == "opencode":
+        env.update({
+            "OPENCODE_DISABLE_AUTOUPDATE": "1",
+            "OPENCODE_DISABLE_SHARE": "1",
+        })
+        model = str(meta.get("model") or "").strip()
+        model_provider = model.split("/", 1)[0].lower() if "/" in model else ""
+        for key in _OPENCODE_MODEL_ENV.get(model_provider, ()):
+            value = os.getenv(key)
+            if value:
+                env[key] = value
+        if model_provider == "openrouter" and not env.get("OPENROUTER_API_KEY"):
+            service = os.getenv("MAC_MCP_OPENROUTER_KEYCHAIN_SERVICE", "openrouter-api-key").strip()
+            account = os.getenv("MAC_MCP_OPENROUTER_KEYCHAIN_ACCOUNT", user).strip()
+            key = _keychain_secret(service, account)
+            if key:
+                env["OPENROUTER_API_KEY"] = key
+    return env
+
+
+def _sandbox_exec_available() -> bool:
+    return sys.platform == "darwin" and _SANDBOX_EXEC.is_file() and os.access(_SANDBOX_EXEC, os.X_OK)
+
+
+def _canonical_boundary_path(value: str | Path) -> str:
+    return str(Path(value).expanduser().resolve(strict=False))
+
+
+def _sbpl_quote(value: str | Path) -> str:
+    return _canonical_boundary_path(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _restricted_provider_state(agent_id: str) -> Path:
+    root = _agent_dir(agent_id) / "provider_state"
+    for path in (root, root / "home", root / "cache", root / "data", root / "tmp"):
+        path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.chmod(0o700)
+        except OSError:
+            pass
+    return root
+
+
+def _opencode_sandbox_profile(agent_id: str, meta: Dict[str, Any]) -> Path:
+    if not _sandbox_exec_available():
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "OpenCode restricted access requires macOS sandbox-exec; this host cannot enforce the requested process boundary.",
+        )
+    scope = ResourceScope.from_dict(meta.get("scope"))
+    access_mode = str(meta.get("access_mode") or "workspace_write")
+    state_root = _restricted_provider_state(agent_id).resolve()
+    allowed_read = {state_root, (_agent_dir(agent_id) / "provider_config").resolve(strict=False)}
+    for raw in scope.path_roots or ():
+        allowed_read.add(Path(raw).expanduser().resolve(strict=False))
+    binary_raw = str(meta.get("binary") or "").strip()
+    if binary_raw:
+        try:
+            allowed_read.add(Path(binary_raw).expanduser().resolve(strict=False).parent)
+        except OSError:
+            pass
+    deny_specs = " ".join(f'(subpath "{_sbpl_quote(root)}")' for root in _RESTRICTED_READ_DENY_ROOTS)
+    read_specs = " ".join(f'(subpath "{_sbpl_quote(root)}")' for root in sorted(allowed_read, key=lambda item: str(item)))
+    write_roots = {state_root, (_agent_dir(agent_id) / "provider_config").resolve(strict=False)}
+    if access_mode == "workspace_write":
+        write_roots.update(Path(raw).expanduser().resolve(strict=False) for raw in (scope.path_roots or ()))
+    write_specs = " ".join(f'(subpath "{_sbpl_quote(root)}")' for root in sorted(write_roots, key=lambda item: str(item)))
+    exec_denies = "\n".join(
+        f'(deny process-exec (literal "{_sbpl_quote(path)}"))' for path in _RESTRICTED_ESCAPE_EXECUTABLES
+    )
+    profile = _agent_dir(agent_id) / "provider-boundary.sb"
+    profile.write_text(
+        "(version 1)\n"
+        "(allow default)\n"
+        f"(deny file-read* {deny_specs})\n"
+        f"(allow file-read* {read_specs})\n"
+        "(deny file-write*)\n"
+        f"(allow file-write* {write_specs})\n"
+        f"{exec_denies}\n",
+        encoding="utf-8",
+    )
+    profile.chmod(0o600)
+    return profile
+
+
+def _provider_process_command(agent_id: str, meta: Dict[str, Any], cmd: List[str]) -> Tuple[List[str], Optional[Path]]:
+    provider = str(meta.get("provider") or "").lower()
+    access_mode = str(meta.get("access_mode") or "workspace_write")
+    if provider == "opencode" and access_mode != "full":
+        profile = _opencode_sandbox_profile(agent_id, meta)
+        return [str(_SANDBOX_EXEC), "-f", str(profile), *cmd], profile
+    return cmd, None
+
+
 def _provider_env(agent_id: str, meta: Dict[str, Any], scoped_token: str) -> Tuple[Dict[str, str], Optional[Path]]:
-    env = _chatgpt_env() if str(meta.get("provider") or "").lower() == "chatgpt" else _base_env()
+    provider = str(meta.get("provider") or "").lower()
+    env = _minimal_provider_env(provider, meta)
     if scoped_token:
         env["MAC_MCP_AGENT_TOKEN"] = scoped_token
     else:
         env.pop("MAC_MCP_AGENT_TOKEN", None)
     cleanup_root: Optional[Path] = None
-    if str(meta.get("provider") or "").lower() == "opencode":
+    if provider == "opencode":
+        if str(meta.get("access_mode") or "workspace_write") != "full":
+            state_root = _restricted_provider_state(agent_id)
+            env.update({
+                "HOME": str(state_root / "home"),
+                "TMPDIR": str(state_root / "tmp"),
+                "XDG_CACHE_HOME": str(state_root / "cache"),
+                "XDG_DATA_HOME": str(state_root / "data"),
+            })
+            auth_path = Path.home() / ".local" / "share" / "opencode" / "auth.json"
+            try:
+                if auth_path.is_file():
+                    env["OPENCODE_AUTH_CONTENT"] = auth_path.read_text(encoding="utf-8")
+            except OSError:
+                pass
+            # OpenCode receives its scoped MCP credential in the private generated config.
+            # Do not also expose that bearer token through native child-process environment.
+            env.pop("MAC_MCP_AGENT_TOKEN", None)
         cleanup_root = _agent_dir(agent_id) / "provider_config"
         config_dir = cleanup_root / "opencode"
         config_dir.mkdir(parents=True, exist_ok=True)
@@ -373,6 +534,15 @@ def _provider_env(agent_id: str, meta: Dict[str, Any], scoped_token: str) -> Tup
                 }
             },
         }
+        if str(meta.get("access_mode") or "workspace_write") != "full":
+            payload["permission"] = {
+                "bash": "deny",
+                "task": "deny",
+                "lsp": "deny",
+                "skill": "deny",
+                "external_directory": "deny",
+                "edit": "deny" if str(meta.get("access_mode")) == "read_only" else "allow",
+            }
         selected_model = str(meta.get("model") or "").strip()
         if selected_model.startswith("openrouter/"):
             model_id = selected_model.removeprefix("openrouter/")
@@ -834,42 +1004,69 @@ def _chatgpt_session_for_job(meta: Dict[str, Any]) -> Optional[str]:
 
 
 def _access_mode_info(provider: str, access_mode: str) -> Dict[str, Any]:
+    provider = str(provider or "").lower()
+    access_mode = str(access_mode or "workspace_write")
+    if access_mode == "full":
+        return {
+            "enforced": False,
+            "boundary": "explicit_full",
+            "note": "Full mode is an intentional unrestricted provider process; no filesystem sandbox is claimed.",
+        }
     if provider == "codex":
         return {
-            "enforced": True,
-            "note": "Codex sandbox and approval policy are explicitly applied on initial and resumed runs.",
+            "enforced": False,
+            "boundary": "unsupported",
+            "note": (
+                "This Codex CLI build does not enforce workspace-scoped reads for legacy sandbox or permission-profile modes. "
+                "Restricted modes are refused; use full only when intentionally granting broad local access."
+            ),
+        }
+    if provider == "opencode":
+        available = _sandbox_exec_available()
+        return {
+            "enforced": available,
+            "boundary": "macos_seatbelt" if available else "unsupported",
+            "note": (
+                "OpenCode runs inside a Mac MCP macOS Seatbelt boundary with scoped filesystem roots and a sanitized environment."
+                if available else
+                "OpenCode restricted access is unavailable because macOS sandbox-exec is not available; the request is refused."
+            ),
         }
     if provider == "chatgpt":
         return {
             "enforced": False,
+            "boundary": "unsupported",
             "note": (
-                "ChatGPT Web CLI runs in the authenticated ChatGPT web account. Mac MCP access_mode is a "
-                "behavioral delegation boundary for this provider, not an OS sandbox; the spawning Mac MCP "
-                "scoped credential is not attached automatically."
+                "ChatGPT Web CLI cannot truthfully enforce read_only/workspace_write as an OS boundary because the authenticated "
+                "web runtime can act outside the local subprocess filesystem. Restricted modes are refused; use full only when intended."
             ),
         }
-    if access_mode == "read_only":
-        return {
-            "enforced": False,
-            "note": "OpenCode CLI has no enforceable read-only sandbox; this mode is refused.",
-        }
-    return {
-        "enforced": False,
-        "note": (
-            "OpenCode access_mode is not a hard filesystem sandbox; --auto uses OpenCode's permission model "
-            "and may allow access beyond cwd."
-        ),
-    }
+    return {"enforced": False, "boundary": "unsupported", "note": "Provider process boundary is unsupported."}
 
 
 def _validate_provider_access_mode(provider: str, access_mode: str) -> None:
-    if provider == "opencode" and access_mode == "read_only":
+    provider = str(provider or "").lower()
+    access_mode = str(access_mode or "workspace_write")
+    if access_mode == "full":
+        return
+    if provider == "opencode" and not _sandbox_exec_available():
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "OpenCode read_only is unavailable: the installed CLI exposes no enforceable read-only sandbox. "
-            "The request was refused instead of relying on prompt instructions or --auto; use provider=codex.",
+            "OpenCode restricted access is unavailable: macOS sandbox-exec is missing, so Mac MCP refuses to rely on prompt-only boundaries.",
         )
-
+    if provider == "codex":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Codex restricted access is unavailable on this provider build: live boundary probes show that both legacy sandbox and "
+            "permission-profile modes can read outside the requested workspace. The request was refused instead of claiming a false guarantee; "
+            "use full explicitly when broad local access is intended.",
+        )
+    if provider == "chatgpt":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "ChatGPT Web CLI restricted access is unavailable: its authenticated browser/account runtime cannot be OS-confined to the "
+            "requested local scope. The request was refused instead of presenting a false read-only/browser-only guarantee; use full explicitly.",
+        )
 
 def _requested_agent_scope(
     workdir: Path,
@@ -941,17 +1138,14 @@ def _scope_prompt(scope: ResourceScope, profile: str, provider: str) -> str:
     if provider == "opencode":
         return (
             base
-            + " OpenCode's native bash/filesystem tools are not constrained by the Mac MCP server scope. "
-              "Treat the same scope as a mandatory behavioral boundary for native OpenCode tools too: "
-              "do not read, write, inspect, execute, or navigate outside the allowed path roots/resources. "
-              "Mac MCP tool calls are enforced server-side and will fail closed outside scope."
+            + " In restricted access modes, Mac MCP also places the entire OpenCode provider process and its descendants "
+              "inside a macOS Seatbelt filesystem boundary. Do not attempt to evade that boundary or launch external UI/keychain helpers."
         )
     if provider == "chatgpt":
         return (
-            "This delegated agent runs through the authenticated ChatGPT web UI and is not automatically "
-            "attached to the spawning Mac MCP server. Treat the requested permission profile and scope as a "
-            f"mandatory behavioral boundary. Permission profile: {profile}. Scope: {scope_json}. "
-            "Do not invoke account-connected tools, plugins, files, browsers, or other resources outside that boundary."
+            "This delegated agent runs through the authenticated ChatGPT web UI. Mac MCP permits this provider only with "
+            f"explicit full access because restricted local OS confinement is not enforceable. Permission profile: {profile}. "
+            f"Scope metadata: {scope_json}."
         )
     return base
 
@@ -1005,8 +1199,8 @@ def agent_catalog(
             "free_models": free_models[:50],
             "reasoning": "Pass a model-supported OpenCode --variant value such as minimal/low/medium/high/max.",
             "access_modes": {
-                "read_only": {"supported": False, **_access_mode_info("opencode", "read_only")},
-                "workspace_write": {"supported": True, **_access_mode_info("opencode", "workspace_write")},
+                "read_only": {"supported": _sandbox_exec_available(), **_access_mode_info("opencode", "read_only")},
+                "workspace_write": {"supported": _sandbox_exec_available(), **_access_mode_info("opencode", "workspace_write")},
                 "full": {"supported": True, **_access_mode_info("opencode", "full")},
             },
         }
@@ -1021,7 +1215,7 @@ def agent_catalog(
             "default_reasoning": default_reasoning,
             "reasoning_values": ["none", "low", "medium", "high", "xhigh", "max"],
             "access_modes": {
-                mode: {"supported": True, **_access_mode_info("codex", mode)}
+                mode: {"supported": mode == "full", **_access_mode_info("codex", mode)}
                 for mode in sorted(_ACCESS_MODES)
             },
         }
@@ -1047,7 +1241,7 @@ def agent_catalog(
             "supports_resume": True,
             "scoped_mcp": False,
             "access_modes": {
-                mode: {"supported": True, **_access_mode_info("chatgpt", mode)}
+                mode: {"supported": mode == "full", **_access_mode_info("chatgpt", mode)}
                 for mode in sorted(_ACCESS_MODES)
             },
         }
@@ -1108,6 +1302,7 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "scope": meta.get("scope"),
         "scoped_mcp": bool(meta.get("scoped_mcp")),
         "access_mode_enforced": access_info["enforced"],
+        "process_boundary": access_info.get("boundary"),
         "access_mode_note": access_info["note"],
         "started_at": meta.get("started_at"),
         "ended_at": meta.get("ended_at"),
@@ -2165,6 +2360,8 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
     if provider == "opencode":
         _validate_provider_access_mode(provider, access_mode)
         cmd = [binary, "run", "--format", "json", "--auto", "--dir", meta["cwd"]]
+        if access_mode != "full":
+            cmd.insert(2, "--pure")
         if model:
             cmd += ["--model", model]
         if reasoning:
@@ -2195,6 +2392,8 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
         cmd += [
             "--config", 'approval_policy="never"',
             "--config", f'sandbox_mode="{sandbox_map[access_mode]}"',
+            "--config", 'shell_environment_policy.inherit="none"',
+            "--config", 'shell_environment_policy.set.PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"',
         ]
         cmd += _codex_scoped_mcp_args(meta)
         if model:
@@ -2208,6 +2407,8 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
         binary, "exec", "--json", "--color", "never", "--skip-git-repo-check",
         "-C", meta["cwd"], "-o", str(result_path),
         "--config", 'approval_policy="never"',
+        "--config", 'shell_environment_policy.inherit="none"',
+        "--config", 'shell_environment_policy.set.PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"',
     ]
     sandbox_map = {"read_only": "read-only", "workspace_write": "workspace-write", "full": "danger-full-access"}
     cmd += ["--sandbox", sandbox_map[access_mode]]
@@ -2430,8 +2631,10 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
 
         _update_meta(agent_id, record_credential)
     env, cleanup_root = _provider_env(agent_id, meta, scoped_token)
+    boundary_profile: Optional[Path] = None
     try:
         cmd = _build_provider_command(meta, prompt, result_path)
+        cmd, boundary_profile = _provider_process_command(agent_id, meta, cmd)
         proc = subprocess.Popen(
             cmd, cwd=meta["cwd"], env=env, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, start_new_session=True,
@@ -2498,6 +2701,8 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
     finally:
         if credential_id:
             store.revoke_token_id(credential_id)
+        if boundary_profile is not None:
+            boundary_profile.unlink(missing_ok=True)
         _cleanup_provider_config(cleanup_root)
 
         if credential_id:

@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "d07e97cca854a34c8ff1d0928cf6466709454cc7",
+  "base_commit": "955015bc6ffbf11334bd923d805261f8321f57e5",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -43,8 +43,8 @@
     {
       "mode": "100644",
       "path": "CHANGELOG.md",
-      "sha256": "a82e0c3ede3ca0d30f1880afeecda4080c676aba79cf0a904b2eed485c8dc430",
-      "size": 33477
+      "sha256": "2a9d77079457b33200ae6cdff71cb8348700fc60dc66d12cd190f54bac8b5c39",
+      "size": 33989
     },
     {
       "mode": "100644",
@@ -349,8 +349,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/tools_agents.py",
-      "sha256": "3b9f94f00f2980f86c51234304612747e4093139c21f001ba513009a927d7639",
-      "size": 121239
+      "sha256": "8e0be4cbe10f1e09b7f4fa272d7d7b9a510c39c282a24a8d260f392884f7c23a",
+      "size": 131069
     },
     {
       "mode": "100644",
@@ -673,8 +673,8 @@
     {
       "mode": "100644",
       "path": "tests/test_agent_role_learning.py",
-      "sha256": "2edc440e707a830f285748192377f8d4c48ee06ae9b5bcf035f949f6d3bd5d87",
-      "size": 10739
+      "sha256": "33cc8eb397bde62620a447f736bc607d038c0f2af28d5d2cb8a5f251bdfdca0e",
+      "size": 10727
     },
     {
       "mode": "100644",
@@ -763,8 +763,8 @@
     {
       "mode": "100644",
       "path": "tests/test_chatgpt_turn_budget.py",
-      "sha256": "e3e735a9e1238317b45a26d60a1911b1f45eec6bc480aa78c240a61e709a88c5",
-      "size": 13638
+      "sha256": "517f1dba8eb40b9c6f06bcf913a1359e38c513af61a4b76831b41834c62ba81f",
+      "size": 13626
     },
     {
       "mode": "100644",
@@ -805,8 +805,8 @@
     {
       "mode": "100644",
       "path": "tests/test_hardening_203.py",
-      "sha256": "f5750cb9078a5c6af120d94e2878793099b7421ecc64878d9384aedfe3e9b37d",
-      "size": 19928
+      "sha256": "97883e9eb6973f5d0638f5edaebfab6f9655cb894eab791f5808ad44b7df6b83",
+      "size": 19915
     },
     {
       "mode": "100644",
@@ -909,6 +909,12 @@
       "path": "tests/test_provenance_taint.py",
       "sha256": "57ed317f0b124edab5beebc0cc1cbc7ae130328b523f41089569a6b56b6b7bab",
       "size": 8207
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_provider_process_boundary.py",
+      "sha256": "decf256c6b3987bbddb6a05e08b9465033e585d20ffdde9bca274b6efc8f704e",
+      "size": 10054
     },
     {
       "mode": "100644",
@@ -1021,8 +1027,8 @@
     {
       "mode": "100644",
       "path": "tests/test_workflow_checkpoint_resume.py",
-      "sha256": "fdbef0db960e0174d5e491d42bf5a55dac9da2e40d4912c99d42a95e4d3cec66",
-      "size": 23848
+      "sha256": "090c4ddd6e72f2eb08f438479376c856d1b2019f2f76e077e8ca1f3d876322f5",
+      "size": 23826
     },
     {
       "mode": "100644",
@@ -1031,10 +1037,10 @@
       "size": 3924
     }
   ],
-  "generated_at": "2026-09-18T11:04:43Z",
-  "payload_sha256": "783d19fc4b17a867f3369f362751f753db79e5c730e35d8f68d4dc04906719a9",
+  "generated_at": "2026-09-18T12:13:57Z",
+  "payload_sha256": "f2acbd575c395f7821b6ef85e4b91c9719e2f8561def1f956afb7aa1c9525170",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.5-20260918",
+  "release_id": "stable-2.1.5-r2",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",
