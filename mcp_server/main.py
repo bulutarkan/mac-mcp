@@ -480,6 +480,8 @@ def create_app():
         name="wait_agents",
         description=(
             "Bounded wait for a team or explicit agent_ids. mode: all, any, majority. "
+            "any/majority quorum counts only successful completed work; all preserves completion semantics while "
+            "success/outcome separately report failures. timed_out refers only to the waiter deadline. "
             "Returns concise results for agents that finished, avoiding repeated polling."
         ),
     )

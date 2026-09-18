@@ -994,6 +994,43 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
         return team
 
 
+def _aggregate_work_outcome(
+    successful_count: int,
+    failure_count: int,
+    pending_count: int,
+    *,
+    cancelled: bool = False,
+    cancelled_failure_count: int = 0,
+) -> Dict[str, Any]:
+    successful = max(0, int(successful_count))
+    failed = max(0, int(failure_count))
+    pending = max(0, int(pending_count))
+    mixed = successful > 0 and failed > 0
+    if cancelled:
+        outcome = "cancelled"
+    elif pending > 0:
+        outcome = "running"
+    elif failed == 0 and successful > 0:
+        outcome = "completed"
+    elif mixed:
+        outcome = "partial_failure"
+    elif failed > 0 and cancelled_failure_count >= failed:
+        outcome = "cancelled"
+    elif failed > 0:
+        outcome = "failed"
+    else:
+        outcome = "running"
+    return {
+        "success": outcome == "completed",
+        "outcome": outcome,
+        "partial_failure": mixed,
+        "successful_count": successful,
+        "failure_count": failed,
+        "pending_count": pending,
+        "work_count": successful + failed + pending,
+    }
+
+
 def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     team = dict(meta or _read_team(team_id))
     if meta is None and int(team.get("scheduler_version") or 0) >= 1:
@@ -1003,23 +1040,33 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
     access_mode = str(team.get("access_mode") or "workspace_write")
     access_info = _access_mode_info(provider, access_mode)
     counts: Dict[str, int] = {}
+    legacy_failure_reasons: List[Dict[str, Any]] = []
     for agent_id in agent_ids:
         try:
             agent_meta = _normalize(agent_id, _read_meta(agent_id))
         except HTTPException:
             counts["missing"] = counts.get("missing", 0) + 1
+            legacy_failure_reasons.append({
+                "agent_id": agent_id, "status": "missing", "reason": "missing_agent",
+            })
             continue
         public = _public_meta(agent_id, agent_meta)
         state = str(public.get("status") or "unknown")
         counts[state] = counts.get(state, 0) + 1
+        if state in TERMINAL_STATUSES and state != "completed":
+            legacy_failure_reasons.append({
+                "agent_id": agent_id, "status": state, "reason": state,
+            })
     terminal_count = sum(counts.get(state, 0) for state in TERMINAL_STATUSES)
 
     public_tasks: List[Dict[str, Any]] = []
     task_counts: Dict[str, int] = {}
+    task_failure_reasons: List[Dict[str, Any]] = []
     tasks = list(team.get("tasks") or [])
     for task in tasks:
         state = str(task.get("state") or "blocked")
         task_counts[state] = task_counts.get(state, 0) + 1
+        failure_reason = task.get("failure_reason")
         public_tasks.append({
             "id": task.get("id"),
             "title": task.get("title"),
@@ -1031,13 +1078,42 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
             "max_revisions": int(task["max_revisions"] if task.get("max_revisions") is not None else (team.get("max_revisions") or 0)),
             "gate_attempts": int(task.get("gate_attempts") or 0),
             "gate_result": task.get("gate_result"),
-            "failure_reason": task.get("failure_reason"),
+            "failure_reason": failure_reason,
             "active_agent_id": task.get("active_agent_id"),
             "latest_agent_id": task.get("latest_agent_id"),
             "agent_ids": list(task.get("agent_ids") or []),
         })
+        if state in _GRAPH_TASK_TERMINAL and state != "completed":
+            task_failure_reasons.append({
+                "task_id": task.get("id"),
+                "state": state,
+                "reason": str(failure_reason or state),
+            })
 
-    if int(team.get("scheduler_version") or 0) >= 1:
+    scheduler_v1 = int(team.get("scheduler_version") or 0) >= 1
+    if scheduler_v1 and tasks:
+        task_successful = int(task_counts.get("completed", 0))
+        task_failed = sum(int(task_counts.get(state, 0)) for state in _GRAPH_TASK_TERMINAL if state != "completed")
+        task_pending = max(0, len(tasks) - task_successful - task_failed)
+        outcome_state = _aggregate_work_outcome(
+            task_successful, task_failed, task_pending,
+            cancelled=bool(team.get("cancelled")),
+            cancelled_failure_count=int(task_counts.get("cancelled", 0)),
+        )
+        failure_reasons = task_failure_reasons
+    else:
+        agent_successful = int(counts.get("completed", 0))
+        agent_failed = sum(int(counts.get(state, 0)) for state in TERMINAL_STATUSES if state != "completed")
+        agent_failed += int(counts.get("missing", 0))
+        agent_pending = max(0, len(agent_ids) - agent_successful - agent_failed)
+        outcome_state = _aggregate_work_outcome(
+            agent_successful, agent_failed, agent_pending,
+            cancelled=bool(team.get("cancelled")),
+            cancelled_failure_count=int(counts.get("cancelled", 0)),
+        )
+        failure_reasons = legacy_failure_reasons
+
+    if scheduler_v1:
         if team.get("cancelled"):
             team_status = "cancelled"
         else:
@@ -1061,6 +1137,14 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
     return {
         "team_id": team_id,
         "status": team_status,
+        "success": outcome_state["success"],
+        "outcome": outcome_state["outcome"],
+        "partial_failure": outcome_state["partial_failure"],
+        "successful_count": outcome_state["successful_count"],
+        "failure_count": outcome_state["failure_count"],
+        "pending_count": outcome_state["pending_count"],
+        "work_count": outcome_state["work_count"],
+        "failure_reasons": failure_reasons,
         "title": team.get("title"),
         "provider": team.get("provider"),
         "model": team.get("model"),
@@ -2888,12 +2972,73 @@ def list_agents(settings: Settings, status_filter: Optional[str] = None, limit: 
     return result
 
 
-def _wait_condition(terminal_count: int, total: int, mode: str) -> bool:
-    if mode == "all":
-        return terminal_count >= total
+def _wait_success_threshold(total: int, mode: str) -> int:
+    if total <= 0:
+        return 0
     if mode == "any":
-        return terminal_count >= 1
-    return terminal_count >= (total // 2 + 1)
+        return 1
+    if mode == "majority":
+        return total // 2 + 1
+    return total
+
+
+def _wait_condition(successful_count: int, terminal_count: int, total: int, mode: str) -> bool:
+    if total <= 0:
+        return False
+    if mode == "all":
+        # Keep the historical completion meaning for all: the wait is satisfied
+        # once every unit is terminal, while success/outcome report whether the
+        # completed work actually succeeded.
+        return terminal_count >= total
+    return successful_count >= _wait_success_threshold(total, mode)
+
+
+def _wait_quorum_possible(successful_count: int, pending_count: int, total: int, mode: str) -> bool:
+    if total <= 0:
+        return False
+    if mode == "all":
+        return True
+    return successful_count + pending_count >= _wait_success_threshold(total, mode)
+
+
+def _agent_wait_snapshot(states: List[Dict[str, Any]]) -> Dict[str, Any]:
+    successful = sum(1 for item in states if item.get("status") == "completed")
+    failures = [item for item in states if item.get("status") in TERMINAL_STATUSES and item.get("status") != "completed"]
+    failed = len(failures)
+    pending = max(0, len(states) - successful - failed)
+    cancelled_failures = sum(1 for item in failures if item.get("status") == "cancelled")
+    outcome = _aggregate_work_outcome(
+        successful, failed, pending, cancelled_failure_count=cancelled_failures,
+    )
+    outcome["terminal_count"] = successful + failed
+    outcome["failure_reasons"] = [
+        {
+            "agent_id": item.get("agent_id"),
+            "status": item.get("status"),
+            "reason": str(item.get("status") or "failed"),
+        }
+        for item in failures
+    ]
+    return outcome
+
+
+def _wait_snapshot(states: List[Dict[str, Any]], team_summary: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if team_summary and int(team_summary.get("scheduler_version") or 0) >= 1 and int(team_summary.get("task_count") or 0) > 0:
+        successful = int(team_summary.get("successful_count") or 0)
+        failed = int(team_summary.get("failure_count") or 0)
+        pending = int(team_summary.get("pending_count") or 0)
+        return {
+            "success": bool(team_summary.get("success")),
+            "outcome": str(team_summary.get("outcome") or "running"),
+            "partial_failure": bool(team_summary.get("partial_failure")),
+            "successful_count": successful,
+            "failure_count": failed,
+            "pending_count": pending,
+            "work_count": int(team_summary.get("work_count") or (successful + failed + pending)),
+            "terminal_count": successful + failed,
+            "failure_reasons": list(team_summary.get("failure_reasons") or []),
+        }
+    return _agent_wait_snapshot(states)
 
 
 def wait_agents(
@@ -2922,21 +3067,29 @@ def wait_agents(
     bounded_timeout = min(max(0, int(timeout_s)), MAX_WAIT_TIMEOUT_S)
     deadline = time.monotonic() + bounded_timeout
     condition_met = False
+    waiter_timed_out = False
+    quorum_possible = True
     states: List[Dict[str, Any]] = []
     team_summary: Optional[Dict[str, Any]] = None
+    wait_state: Dict[str, Any] = _aggregate_work_outcome(0, 0, 0)
+    wait_state.update({"terminal_count": 0, "failure_reasons": []})
+    quorum_total = 0
     while True:
         if team_id:
             team_summary = _team_summary(str(team_id))
             ids = list(team_summary.get("agent_ids") or [])
         states = [get_agent(settings, agent_id, include_logs=False) for agent_id in ids]
-        terminal_count = sum(1 for item in states if item.get("status") in TERMINAL_STATUSES)
-        if team_id and mode == "all" and team_summary and int(team_summary.get("scheduler_version") or 0) >= 1:
-            condition_met = str(team_summary.get("status")) in {
-                "completed", "completed_with_failures", "quality_failed", "budget_exhausted", "cancelled"
-            }
-        else:
-            condition_met = _wait_condition(terminal_count, len(ids), mode) if ids else False
-        if condition_met or time.monotonic() >= deadline:
+        wait_state = _wait_snapshot(states, team_summary)
+        quorum_total = int(wait_state.get("work_count") or 0)
+        quorum_terminal_count = int(wait_state.get("terminal_count") or 0)
+        successful_count = int(wait_state.get("successful_count") or 0)
+        pending_count = int(wait_state.get("pending_count") or 0)
+        condition_met = _wait_condition(successful_count, quorum_terminal_count, quorum_total, mode)
+        quorum_possible = _wait_quorum_possible(successful_count, pending_count, quorum_total, mode)
+        if condition_met or not quorum_possible:
+            break
+        if time.monotonic() >= deadline:
+            waiter_timed_out = True
             break
         time.sleep(0.25)
     compact: List[Dict[str, Any]] = []
@@ -2973,16 +3126,38 @@ def wait_agents(
             "checkpoint_cursor": item.get("checkpoint_cursor"),
             "last_durable_checkpoint_at": item.get("last_durable_checkpoint_at"),
             "resumable": item.get("resumable"),
+            "failure_reason": (
+                str(item.get("status"))
+                if item.get("status") in TERMINAL_STATUSES and item.get("status") != "completed"
+                else None
+            ),
         }
         if include_results and "result" in item:
             row["result"] = truncate(str(item.get("result") or ""), TEAM_RESULT_LIMIT)[0]
         compact.append(row)
+    successful_count = int(wait_state.get("successful_count") or 0)
+    failure_count = int(wait_state.get("failure_count") or 0)
+    pending_count = int(wait_state.get("pending_count") or 0)
+    quorum_terminal_count = int(wait_state.get("terminal_count") or 0)
+    required_successes = _wait_success_threshold(quorum_total, mode)
+    wait_success = bool(condition_met and (mode != "all" or successful_count >= quorum_total))
     response: Dict[str, Any] = {
         "ok": True,
         "team_id": team_id,
         "mode": mode,
         "condition_met": condition_met,
-        "timed_out": not condition_met,
+        "success": wait_success,
+        "outcome": str(wait_state.get("outcome") or "running"),
+        "partial_failure": bool(wait_state.get("partial_failure")),
+        "timed_out": waiter_timed_out,
+        "quorum_possible": quorum_possible,
+        "required_successes": required_successes,
+        "quorum_total": quorum_total,
+        "quorum_terminal_count": quorum_terminal_count,
+        "successful_count": successful_count,
+        "failure_count": failure_count,
+        "pending_count": pending_count,
+        "failure_reasons": list(wait_state.get("failure_reasons") or []),
         "count": len(ids),
         "terminal_count": sum(1 for item in states if item.get("status") in TERMINAL_STATUSES),
         "agents": compact,

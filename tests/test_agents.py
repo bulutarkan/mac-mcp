@@ -73,10 +73,12 @@ class AgentOrchestrationTests(unittest.TestCase):
         self.assertEqual(1, inspect.signature(agents.spawn_agents).parameters["retries"].default)
 
     def test_wait_modes(self):
-        self.assertFalse(agents._wait_condition(1, 3, "all"))
-        self.assertTrue(agents._wait_condition(1, 3, "any"))
-        self.assertFalse(agents._wait_condition(1, 3, "majority"))
-        self.assertTrue(agents._wait_condition(2, 3, "majority"))
+        self.assertFalse(agents._wait_condition(0, 1, 3, "all"))
+        self.assertFalse(agents._wait_condition(0, 1, 3, "any"))
+        self.assertTrue(agents._wait_condition(1, 1, 3, "any"))
+        self.assertFalse(agents._wait_condition(1, 1, 3, "majority"))
+        self.assertTrue(agents._wait_condition(2, 2, 3, "majority"))
+        self.assertTrue(agents._wait_condition(2, 3, 3, "all"))
 
     def test_opencode_progress_event_tracks_tools(self):
         with tempfile.TemporaryDirectory() as td:

@@ -1,5 +1,6 @@
 ## Unreleased
 
+- Made delegated-team waits failure-aware: `any`/`majority` require successful results, DAG quorum uses task outcomes instead of historical attempts, `all` separates completion from success, normalized outcomes/failure reasons are additive, and waiter timeout is no longer conflated with failed child work.
 - Added lineage-scoped delegated-agent control-plane isolation: agent/team ownership persists across restart, sibling and unrelated result/log/lifecycle access fails closed, direct and `tool_invoke` paths share the same authorization, and denied attempts are security-audited before mutating intents open.
 - Added a public regression-backed security assurance matrix for `SEC-FS-001`, `SEC-NET-001`, `SEC-AUTHZ-001`, `SEC-UPD-001`, `SEC-TXN-001`, and `SEC-AGENT-001`; CI now rejects stale control/test references, orphan assurance tags, missing release-note linkage, and secret-like/private-path content in the public matrix.
 - Added team-level delegated-agent budgets for scheduler deadline, shared retries, concurrency, optional tool calls, and optional token usage, with parent-visible used/remaining values and explicit budget exhaustion reasons.
