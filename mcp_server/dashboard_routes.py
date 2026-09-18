@@ -364,6 +364,24 @@ def create_dashboard_routes(
         )
         return JSONResponse({"ok": True, "grant": grant})
 
+    async def changes(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        hours = _float_query(request, "hours", 24)
+        max_items = max(1, min(_int_query(request, "max_items", 30), 100))
+        session_id = str(request.query_params.get("session_id") or "").strip() or None
+        agent_id = str(request.query_params.get("agent_id") or "").strip() or None
+        team_id = str(request.query_params.get("team_id") or "").strip() or None
+        if session_id or agent_id or team_id:
+            return JSONResponse(telemetry.change_summary(
+                hours=hours, session_id=session_id, agent_id=agent_id, team_id=team_id, max_items=max_items
+            ))
+        sets = telemetry.recent_change_sets(
+            hours=hours, limit=max(1, min(_int_query(request, "limit", 5), 20)), max_items=max_items
+        )
+        return JSONResponse({"ok": True, "change_sets": sets})
+
     async def events(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -612,6 +630,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/security/events", security_events, methods=["GET"]),
         Route("/dashboard/api/security/escalate", security_escalate, methods=["POST"]),
         Route("/dashboard/api/events", events, methods=["GET"]),
+        Route("/dashboard/api/changes", changes, methods=["GET"]),
         Route("/dashboard/api/browser/show-tab", show_browser_tab, methods=["POST"]),
         Route("/dashboard/api/providers", providers, methods=["GET"]),
         Route("/dashboard/api/agents", agents, methods=["GET"]),

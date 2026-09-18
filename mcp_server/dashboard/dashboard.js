@@ -14,6 +14,10 @@
     streamAbort: null,
     streamRetry: null,
     restoreFocus: null,
+    agents: [],
+    changeSets: [],
+    selectedChangeSet: 0,
+    changesRefreshTimer: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -22,6 +26,7 @@
     activeNow: $("activeNow"), lastTool: $("lastTool"), lastLatency: $("lastLatency"), traceBars: $("traceBars"),
     calls: $("metricCalls"), success: $("metricSuccess"), errors: $("metricErrors"), average: $("metricAverage"), p95: $("metricP95"), window: $("metricWindow"),
     rows: $("eventRows"), empty: $("emptyState"), activeStrip: $("activeStrip"), activeStripCount: $("activeStripCount"), topTools: $("topTools"), sourceMix: $("sourceMix"), agentCount: $("agentCount"), agentList: $("agentList"),
+    changeCount: $("changeCount"), changeTaskSwitch: $("changeTaskSwitch"), changeHeadline: $("changeHeadline"), changeList: $("changeList"),
     toolFilter: $("toolFilter"), sourceFilter: $("sourceFilter"), statusFilter: $("statusFilter"),
     drawer: $("detailDrawer"), backdrop: $("drawerBackdrop"), drawerClose: $("drawerClose"), drawerStatus: $("drawerStatus"), drawerTitle: $("drawerTitle"), drawerMeta: $("drawerMeta"),
     drawerRequest: $("drawerRequest"), drawerResult: $("drawerResult"), drawerError: $("drawerError"), resultSize: $("resultSize"), resultSection: $("resultSection"), errorSection: $("errorSection"),
@@ -124,10 +129,77 @@
   async function refreshAgents() {
     try {
       const data = await fetchJSON("/dashboard/api/agents?limit=16");
-      renderAgents(data.agents || []);
+      state.agents = data.agents || [];
+      renderAgents(state.agents);
+      if (state.changeSets.length) renderChanges();
     } catch (error) {
       els.agentList.innerHTML = `<div class="no-agents">Agent state is temporarily unavailable.</div>`;
     }
+  }
+
+  function changeSetLabel(changeSet, index) {
+    const identity = changeSet.identity || {};
+    if (identity.agent_id) {
+      const agent = state.agents.find((item) => item.agent_id === identity.agent_id);
+      if (agent?.title) return agent.title;
+      return `Agent ${String(identity.agent_id).slice(-6)}`;
+    }
+    if (identity.team_id) return `Team ${String(identity.team_id).slice(-6)}`;
+    if (identity.session_id) return index === 0 ? "Latest session" : `Session ${index + 1}`;
+    return index === 0 ? "Latest task" : `Task ${index + 1}`;
+  }
+
+  function changeCategoryCode(category) {
+    return ({files:"F", apps:"A", tabs:"B", commands:"T", external:"E", system:"S", agents:"AI"})[category] || "•";
+  }
+
+  function renderChanges() {
+    const sets = state.changeSets || [];
+    if (!sets.length) {
+      els.changeCount.textContent = "0";
+      els.changeTaskSwitch.innerHTML = "";
+      els.changeHeadline.textContent = "No Mac changes recorded.";
+      els.changeList.innerHTML = `<div class="no-agents">File, app, browser, command and external changes will appear here.</div>`;
+      return;
+    }
+    state.selectedChangeSet = Math.max(0, Math.min(state.selectedChangeSet, sets.length - 1));
+    const selected = sets[state.selectedChangeSet];
+    els.changeCount.textContent = number(selected.change_count || 0);
+    els.changeHeadline.textContent = selected.headline || "Mac changes recorded";
+    els.changeTaskSwitch.innerHTML = sets.slice(0, 4).map((item, index) => `
+      <button class="change-task-chip${index === state.selectedChangeSet ? " is-active" : ""}" type="button" data-change-index="${index}" title="${esc(changeSetLabel(item, index))}">${esc(changeSetLabel(item, index))}</button>`).join("");
+    els.changeTaskSwitch.querySelectorAll("[data-change-index]").forEach((button) => button.addEventListener("click", () => {
+      state.selectedChangeSet = Number(button.dataset.changeIndex || 0);
+      renderChanges();
+    }));
+    const items = (selected.items || []).slice(0, 5);
+    if (!items.length) {
+      els.changeList.innerHTML = `<div class="no-agents">No side effects were recorded for this task.</div>`;
+      return;
+    }
+    els.changeList.innerHTML = items.map((item) => {
+      const detail = [item.target, item.detail].filter(Boolean).join(" · ");
+      return `<div class="change-item">
+        <span class="change-icon" aria-hidden="true">${esc(changeCategoryCode(item.category))}</span>
+        <div class="change-copy"><strong>${esc(item.action || "Changed Mac state")}</strong><span title="${esc(detail)}">${esc(detail || item.tool || "macOS")}</span></div>
+      </div>`;
+    }).join("");
+  }
+
+  async function refreshChanges() {
+    try {
+      const data = await fetchJSON(`/dashboard/api/changes?hours=${encodeURIComponent(state.hours)}&limit=5&max_items=30`);
+      state.changeSets = data.change_sets || [];
+      state.selectedChangeSet = Math.min(state.selectedChangeSet, Math.max(0, state.changeSets.length - 1));
+      renderChanges();
+    } catch {
+      els.changeHeadline.textContent = "Change receipts are temporarily unavailable.";
+    }
+  }
+
+  function scheduleChangesRefresh() {
+    window.clearTimeout(state.changesRefreshTimer);
+    state.changesRefreshTimer = window.setTimeout(refreshChanges, 220);
   }
 
   function renderTopTools(tools) {
@@ -327,6 +399,7 @@
       renderEvents(event.event_id);
       renderActiveCount();
       refreshSummary();
+      scheduleChangesRefresh();
     }
   }
 
@@ -404,7 +477,7 @@
   document.querySelectorAll("[data-hours]").forEach((button) => button.addEventListener("click", async () => {
     state.hours = Number(button.dataset.hours);
     document.querySelectorAll("[data-hours]").forEach((item) => item.classList.toggle("is-active", item === button));
-    await Promise.all([refreshSummary(), refreshEvents()]);
+    await Promise.all([refreshSummary(), refreshEvents(), refreshChanges()]);
   }));
   els.sourceFilter.addEventListener("change", () => { state.source = els.sourceFilter.value; refreshEvents(); });
   els.statusFilter.addEventListener("change", () => { state.status = els.statusFilter.value; refreshEvents(); });
@@ -426,9 +499,10 @@
     }
   });
 
-  Promise.all([refreshSummary(), refreshEvents(), refreshAgents()]).finally(connectStream);
+  Promise.all([refreshSummary(), refreshEvents(), refreshAgents(), refreshChanges()]).finally(connectStream);
   window.setInterval(refreshSummary, 5000);
   window.setInterval(refreshAgents, 2200);
+  window.setInterval(() => { if (!document.hidden) refreshChanges(); }, 10000);
   window.setInterval(() => { if (state.active.size) renderActiveStrip(); }, 1000);
   window.setInterval(() => { if (!document.hidden) refreshEvents(); }, 20000);
 })();

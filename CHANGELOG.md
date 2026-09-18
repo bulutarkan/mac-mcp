@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Added a local **What Changed on My Mac** dashboard view with task/session-scoped, sanitized action receipts for changed files, apps, browser tabs/actions, commands, system changes, agent actions, and external sends.
+- Tool telemetry now persists a public `session_id` alongside agent/team linkage so change summaries can be drilled down per task without exposing raw command text, browser paths/query strings, request bodies, or other secret-bearing payload content.
+
 - Added bounded delegated-agent DAG scheduling with task `id`/`depends_on`, `max_parallel`, persisted blocked/ready/running states, dependency-failure skipping, and cycle rejection.
 - Added structured reviewer quality gates via `review_of`: reviewers must return exactly one `QUALITY_GATE: PASS|FAIL` marker, failed reviews can trigger bounded coder revisions, and teams cannot report complete until required gates pass.
 

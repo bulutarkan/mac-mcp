@@ -189,6 +189,7 @@ _TELEMETRY_METADATA_COLUMNS = {
     "actor": "actor",
     "agent_id": "agent_id",
     "team_id": "team_id",
+    "session_id": "session_id",
     "resource": "resource_json",
     "scope": "scope_json",
     "lock": "lock_json",
@@ -343,6 +344,7 @@ class TelemetryManager:
                 actor TEXT,
                 agent_id TEXT,
                 team_id TEXT,
+                session_id TEXT,
                 resource_json TEXT,
                 scope_json TEXT,
                 lock_json TEXT
@@ -359,6 +361,9 @@ class TelemetryManager:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tool_events_tool_time ON tool_events(tool, timestamp DESC)"
         )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_events_session_time ON tool_events(session_id, timestamp DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_events_agent_time ON tool_events(agent_id, timestamp DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_events_team_time ON tool_events(team_id, timestamp DESC)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS security_events (
@@ -569,8 +574,8 @@ class TelemetryManager:
                     event_id, timestamp, source, tool, status, started_at, ended_at,
                     duration_ms, arguments_json, result_json, result_size, error,
                     declared_risk_json, effective_risk_json, profile, policy_decision,
-                    actor, agent_id, team_id, resource_json, scope_json, lock_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    actor, agent_id, team_id, session_id, resource_json, scope_json, lock_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event["event_id"], event["timestamp"], event["source"], event["tool"],
@@ -579,7 +584,7 @@ class TelemetryManager:
                     int(event.get("result_size") or 0), event.get("error"),
                     _json_text(event.get("declared_risk")), _json_text(event.get("effective_risk")),
                     event.get("profile"), event.get("policy_decision"), event.get("actor"),
-                    event.get("agent_id"), event.get("team_id"), _json_text(event.get("resource")),
+                    event.get("agent_id"), event.get("team_id"), event.get("session_id"), _json_text(event.get("resource")),
                     _json_text(event.get("scope")), _json_text(event.get("lock")),
                 ),
             )
@@ -686,6 +691,9 @@ class TelemetryManager:
         source: Optional[str] = None,
         status: Optional[str] = None,
         tool: Optional[str] = None,
+        session_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        team_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         bounded_hours = max(0.05, min(float(hours), 24 * 365))
         bounded_limit = max(1, min(int(limit), 500))
@@ -700,11 +708,54 @@ class TelemetryManager:
         if tool:
             clauses.append("tool LIKE ?")
             params.append(f"%{tool}%")
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(str(session_id))
+        if agent_id:
+            clauses.append("agent_id = ?")
+            params.append(str(agent_id))
+        if team_id:
+            clauses.append("team_id = ?")
+            params.append(str(team_id))
         params.append(bounded_limit)
         sql = "SELECT * FROM tool_events WHERE " + " AND ".join(clauses) + " ORDER BY timestamp DESC LIMIT ?"
         with closing(self._connect()) as conn, conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._row_to_event(row) for row in rows]
+
+    def change_summary(
+        self, *, hours: float = 24, session_id: Optional[str] = None,
+        agent_id: Optional[str] = None, team_id: Optional[str] = None, max_items: int = 50,
+    ) -> Dict[str, Any]:
+        from .change_summary import build_change_summary
+        events = self.query_events(
+            hours=hours, limit=500, session_id=session_id, agent_id=agent_id, team_id=team_id
+        )
+        identity = {
+            key: value for key, value in {
+                "session_id": session_id, "agent_id": agent_id, "team_id": team_id,
+            }.items() if value
+        }
+        return build_change_summary(events, identity=identity, max_items=max_items)
+
+    def recent_change_sets(self, *, hours: float = 24, limit: int = 5, max_items: int = 20) -> List[Dict[str, Any]]:
+        from .change_summary import build_change_summary, change_items_for_event
+        events = self.query_events(hours=hours, limit=500)
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        identities: Dict[str, Dict[str, Any]] = {}
+        latest: Dict[str, float] = {}
+        for event in events:
+            if not change_items_for_event(event):
+                continue
+            session = str(event.get("session_id") or "").strip()
+            agent = str(event.get("agent_id") or "").strip()
+            team = str(event.get("team_id") or "").strip()
+            key = session or (f"agent:{agent}" if agent else "") or (f"team:{team}" if team else "") or f"actor:{event.get('actor') or 'global'}"
+            grouped.setdefault(key, []).append(event)
+            identities.setdefault(key, {k: v for k, v in {"session_id": session or None, "agent_id": agent or None, "team_id": team or None}.items() if v})
+            latest[key] = max(latest.get(key, 0.0), float(event.get("timestamp") or 0.0))
+        ordered = sorted(grouped, key=lambda key: latest.get(key, 0.0), reverse=True)[:max(1, min(int(limit), 20))]
+        return [build_change_summary(grouped[key], identity=identities[key], max_items=max_items) for key in ordered]
 
     def summary(self, hours: float = 24) -> Dict[str, Any]:
         bounded_hours = max(0.05, min(float(hours), 24 * 365))
@@ -923,6 +974,7 @@ class ObservedFastMCP(FastMCP):
             security_pair = (self.security_context.identity_key(policy_context, None), public_session_id)
 
         security_key, public_session_id = security_pair
+        self.telemetry.update_context(event_id, metadata={"session_id": public_session_id})
 
         def security_event(
             event_type: str, decision_name: str, reason_code: str, *,
