@@ -445,9 +445,11 @@ def create_app():
         description=(
             "Spawn 1-10 background agent tasks as one team. Optional task.id + depends_on create a bounded DAG; "
             "max_parallel limits concurrent nodes. A reviewer task may set review_of=<task id> and must end with "
-            "QUALITY_GATE: PASS or FAIL; FAIL can trigger up to max_revisions bounded revisions. All children inherit provider, "
-            "model, reasoning and access_mode. ChatGPT accepts project=... as the team default and task.project overrides. "
-            "Optional team role or task.role enables bounded role-learning context per child. Returns immediately."
+            "QUALITY_GATE: PASS or FAIL; FAIL can trigger up to max_revisions bounded revisions. Team-level admission controls include "
+            "team_timeout_s, max_team_retries, max_total_tool_calls and max_total_tokens; max_parallel is the concurrency budget. "
+            "Retries are adaptive and only transient/retry-safe failures are replayed. All children inherit provider, model, reasoning "
+            "and access_mode. ChatGPT accepts project=... as the team default and task.project overrides. Optional team role or "
+            "task.role enables bounded role-learning context per child. Returns immediately with parent-visible budget remaining."
         ),
     )
     def _spawn_agents(tasks: List[Dict[str, Any]], provider: str, model: Optional[str] = None,
@@ -458,7 +460,9 @@ def create_app():
                       scope: Optional[Dict[str, Any]] = None,
                       capability_profile: Optional[str] = None,
                       project: Optional[str] = None, role: Optional[str] = None,
-                      max_parallel: Optional[int] = None, max_revisions: int = 1) -> Dict[str, Any]:
+                      max_parallel: Optional[int] = None, max_revisions: int = 1,
+                      team_timeout_s: Optional[int] = None, max_team_retries: Optional[int] = None,
+                      max_total_tool_calls: Optional[int] = None, max_total_tokens: Optional[int] = None) -> Dict[str, Any]:
         context = current_policy_context()
         return _log(audit_logger, "spawn_agents",
                     lambda: spawn_agents(settings, tasks=tasks, provider=provider, model=model,
@@ -468,7 +472,9 @@ def create_app():
                                          scope=scope, parent_scope=context.scope, parent_profile=context.profile,
                                          capability_profile=capability_profile, project=project, role=role,
                                          provenance_class=current_provenance_class(), max_parallel=max_parallel,
-                                         max_revisions=max_revisions))
+                                         max_revisions=max_revisions, team_timeout_s=team_timeout_s,
+                                         max_team_retries=max_team_retries, max_total_tool_calls=max_total_tool_calls,
+                                         max_total_tokens=max_total_tokens))
 
     @mcp.tool(
         name="wait_agents",

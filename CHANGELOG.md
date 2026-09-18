@@ -1,5 +1,8 @@
 ## Unreleased
 
+- Added team-level delegated-agent budgets for scheduler deadline, shared retries, concurrency, optional tool calls, and optional token usage, with parent-visible used/remaining values and explicit budget exhaustion reasons.
+- Added adaptive provider retry classification and atomic shared retry admission: transient/rate-limit failures use bounded staggered retries, while auth/config/quota/unknown failures and unsafe side-effect replay boundaries fail fast without retry storms.
+
 - Added a local **What Changed on My Mac** dashboard view with task/session-scoped, sanitized action receipts for changed files, apps, browser tabs/actions, commands, system changes, agent actions, and external sends.
 - Tool telemetry now persists a public `session_id` alongside agent/team linkage so change summaries can be drilled down per task without exposing raw command text, browser paths/query strings, request bodies, or other secret-bearing payload content.
 

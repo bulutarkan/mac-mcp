@@ -55,6 +55,13 @@ DEFAULT_CHATGPT_RATE_LIMIT_BACKOFF_S = 90
 MAX_CHATGPT_RATE_LIMIT_BACKOFF_S = 600
 DEFAULT_CHATGPT_REDUCED_CONCURRENCY_S = 900
 DEFAULT_CHATGPT_START_SPACING_S = 15
+DEFAULT_TEAM_TIMEOUT_FLOOR_S = 3600
+MAX_TEAM_TIMEOUT_S = 86400
+MAX_TEAM_RETRY_BUDGET = 30
+MAX_TEAM_TOOL_BUDGET = 100000
+MAX_TEAM_TOKEN_BUDGET = 100000000
+TEAM_RETRY_START_SPACING_S = 0.75
+MAX_GENERIC_RETRY_BACKOFF_S = 30.0
 
 _PROVIDER_NAMES = {"opencode", "codex", "chatgpt"}
 _ACCESS_MODES = {"read_only", "workspace_write", "full"}
@@ -242,6 +249,151 @@ def _update_team(team_id: str, update: Callable[[Dict[str, Any]], Optional[bool]
         if update(meta) is not False:
             _write_team_unlocked(team_id, meta)
         return meta
+
+
+def _usage_total_tokens(usage: Any) -> int:
+    if not isinstance(usage, dict):
+        return 0
+    for key in ("total", "total_tokens"):
+        value = usage.get(key)
+        if isinstance(value, (int, float)):
+            return max(0, int(value))
+    total = 0
+    for key in ("input", "input_tokens", "output", "output_tokens", "reasoning", "reasoning_output_tokens"):
+        value = usage.get(key)
+        if isinstance(value, (int, float)):
+            total += max(0, int(value))
+    return total
+
+
+def _team_usage_snapshot(team: Dict[str, Any]) -> Dict[str, int]:
+    tool_calls = 0
+    total_tokens = 0
+    completed_agents = 0
+    for agent_id in list(team.get("agent_ids") or []):
+        try:
+            meta = _read_meta(str(agent_id))
+        except HTTPException:
+            continue
+        tool_calls += max(0, int(meta.get("tool_call_count") or 0))
+        total_tokens += _usage_total_tokens(meta.get("usage"))
+        if str(meta.get("status") or "") in TERMINAL_STATUSES:
+            completed_agents += 1
+    return {
+        "tool_calls": tool_calls,
+        "total_tokens": total_tokens,
+        "completed_agents": completed_agents,
+    }
+
+
+def _team_budget_snapshot(team: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, Any]:
+    current = float(_now() if now is None else now)
+    created = float(team.get("created_at") or current)
+    timeout_s = int(team.get("team_timeout_s") or 0) or None
+    deadline_at = float(team.get("deadline_at") or (created + timeout_s if timeout_s else 0.0)) or None
+    elapsed_s = max(0.0, current - created)
+    remaining_s = max(0.0, deadline_at - current) if deadline_at else None
+    usage = _team_usage_snapshot(team)
+
+    retry_limit = team.get("max_team_retries")
+    retry_limit = int(retry_limit) if retry_limit is not None else None
+    retries_used = max(0, int(team.get("team_retry_count") or 0))
+    retries_remaining = max(0, retry_limit - retries_used) if retry_limit is not None else None
+
+    tool_limit = team.get("max_total_tool_calls")
+    tool_limit = int(tool_limit) if tool_limit is not None else None
+    tools_remaining = max(0, tool_limit - usage["tool_calls"]) if tool_limit is not None else None
+
+    token_limit = team.get("max_total_tokens")
+    token_limit = int(token_limit) if token_limit is not None else None
+    tokens_remaining = max(0, token_limit - usage["total_tokens"]) if token_limit is not None else None
+
+    admission_reason: Optional[str] = None
+    if deadline_at is not None and current >= deadline_at:
+        admission_reason = "team_deadline"
+    elif tool_limit is not None and usage["tool_calls"] >= tool_limit:
+        admission_reason = "tool_call_budget"
+    elif token_limit is not None and usage["total_tokens"] >= token_limit:
+        admission_reason = "token_budget"
+
+    retry_limit_reached = retry_limit is not None and retries_used >= retry_limit
+    retry_blocked = retry_limit_reached and str(team.get("last_retry_block_reason") or "") == "retry_budget"
+    exhausted_reason = admission_reason or ("retry_budget" if retry_blocked else None)
+    active_tasks = sum(1 for task in list(team.get("tasks") or []) if task.get("state") in {"spawning", "running"})
+    max_parallel = min(max(1, int(team.get("max_parallel") or 1)), MAX_TEAM_SIZE)
+    return {
+        "team_timeout_s": timeout_s,
+        "deadline_at": deadline_at,
+        "elapsed_s": round(elapsed_s, 3),
+        "remaining_s": round(remaining_s, 3) if remaining_s is not None else None,
+        "max_parallel": max_parallel,
+        "active": active_tasks,
+        "concurrency_remaining": max(0, max_parallel - active_tasks),
+        "max_team_retries": retry_limit,
+        "retries_used": retries_used,
+        "retries_remaining": retries_remaining,
+        "max_total_tool_calls": tool_limit,
+        "tool_calls_used": usage["tool_calls"],
+        "tool_calls_remaining": tools_remaining,
+        "max_total_tokens": token_limit,
+        "total_tokens_used": usage["total_tokens"],
+        "total_tokens_remaining": tokens_remaining,
+        "admission_open": admission_reason is None,
+        "retry_open": not retry_limit_reached and admission_reason is None,
+        "exhausted": exhausted_reason is not None,
+        "exhausted_reason": exhausted_reason,
+        "admission_exhausted_reason": admission_reason,
+    }
+
+
+def _reserve_team_retry(team_id: Optional[str], agent_id: str, reason: str, requested_backoff_s: float = 0.0) -> Dict[str, Any]:
+    if not team_id:
+        return {"allowed": True, "delay_s": max(0.0, float(requested_backoff_s)), "remaining": None, "reason": reason}
+    with _locked_team(str(team_id)):
+        team = _read_team_unlocked(str(team_id))
+        budget = _team_budget_snapshot(team)
+        if budget.get("admission_exhausted_reason"):
+            team["budget_exhausted_reason"] = budget["admission_exhausted_reason"]
+            team["updated_at"] = _now()
+            _write_team_unlocked(str(team_id), team)
+            return {
+                "allowed": False, "delay_s": 0.0, "remaining": budget.get("retries_remaining"),
+                "reason": str(budget["admission_exhausted_reason"]),
+            }
+        limit = budget.get("max_team_retries")
+        used = int(budget.get("retries_used") or 0)
+        if limit is not None and used >= int(limit):
+            team["retry_budget_exhausted_at"] = _now()
+            team["last_retry_block_reason"] = "retry_budget"
+            team["updated_at"] = _now()
+            _write_team_unlocked(str(team_id), team)
+            return {"allowed": False, "delay_s": 0.0, "remaining": 0, "reason": "retry_budget"}
+
+        now = _now()
+        backoff = min(MAX_GENERIC_RETRY_BACKOFF_S, max(0.0, float(requested_backoff_s)))
+        earliest = max(now + backoff, float(team.get("next_retry_at") or 0.0))
+        deadline = budget.get("deadline_at")
+        if deadline is not None and earliest >= float(deadline):
+            team["budget_exhausted_reason"] = "team_deadline"
+            team["last_retry_block_reason"] = "team_deadline"
+            team["updated_at"] = now
+            _write_team_unlocked(str(team_id), team)
+            return {
+                "allowed": False, "delay_s": 0.0, "remaining": max(0, int(limit) - used) if limit is not None else None,
+                "reason": "team_deadline",
+            }
+        team["team_retry_count"] = used + 1
+        team["next_retry_at"] = earliest + TEAM_RETRY_START_SPACING_S
+        team["last_retry_reason"] = str(reason or "provider_error")[:120]
+        team["last_retry_agent_id"] = agent_id
+        team["last_retry_reserved_at"] = now
+        events = list(team.get("retry_events") or [])[-19:]
+        events.append({"at": now, "agent_id": agent_id, "reason": str(reason or "provider_error")[:120], "scheduled_at": earliest})
+        team["retry_events"] = events
+        team["updated_at"] = now
+        _write_team_unlocked(str(team_id), team)
+        remaining = max(0, int(limit) - (used + 1)) if limit is not None else None
+        return {"allowed": True, "delay_s": max(0.0, earliest - now), "remaining": remaining, "reason": reason}
 
 
 def _validate_team_graph(tasks: List[Dict[str, Any]]) -> None:
@@ -506,6 +658,20 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
                         task["state"] = "ready"
                         changed = progressed = True
 
+        budget = _team_budget_snapshot(team)
+        admission_reason = str(budget.get("admission_exhausted_reason") or "").strip() or None
+        if admission_reason:
+            if not team.get("budget_exhausted_reason"):
+                team["budget_exhausted_reason"] = admission_reason
+                team["budget_exhausted_at"] = _now()
+                changed = True
+            for task in tasks:
+                if task.get("state") not in {"blocked", "ready"}:
+                    continue
+                task["state"] = "skipped"
+                task["failure_reason"] = f"budget_exhausted:{admission_reason}"
+                changed = True
+
         active = sum(1 for task in tasks if task.get("state") in {"spawning", "running"})
         max_parallel = min(max(1, int(team.get("max_parallel") or len(tasks) or 1)), MAX_TEAM_SIZE)
         for task in tasks:
@@ -612,7 +778,9 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
             team_status = "cancelled"
         else:
             all_terminal = bool(tasks) and all(str(task.get("state") or "") in _GRAPH_TASK_TERMINAL for task in tasks)
-            if all_terminal and all(task.get("state") == "completed" for task in tasks):
+            if all_terminal and team.get("budget_exhausted_reason"):
+                team_status = "budget_exhausted"
+            elif all_terminal and all(task.get("state") == "completed" for task in tasks):
                 team_status = "completed"
             elif all_terminal and any(task.get("state") == "quality_failed" for task in tasks):
                 team_status = "quality_failed"
@@ -650,6 +818,10 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         "scheduler_version": team.get("scheduler_version"),
         "max_parallel": team.get("max_parallel"),
         "max_revisions": team.get("max_revisions"),
+        "budget": _team_budget_snapshot(team),
+        "budget_exhausted_reason": team.get("budget_exhausted_reason"),
+        "last_retry_reason": team.get("last_retry_reason"),
+        "last_retry_block_reason": team.get("last_retry_block_reason"),
         "task_count": len(tasks),
         "task_status_counts": task_counts,
         "tasks": public_tasks,
@@ -663,6 +835,78 @@ def _tail_text(path: Path, max_lines: int = 40, max_chars: int = 6000) -> str:
     except OSError:
         return ""
     return "\n".join(lines[-max(1, max_lines):])[-max_chars:]
+
+
+def _adaptive_retry_decision(
+    meta: Dict[str, Any], exit_code: int, stop_reason: Optional[str], stdout_path: Path, stderr_path: Path,
+    stdout_offset: int = 0, stderr_offset: int = 0,
+) -> Dict[str, Any]:
+    reason = str(stop_reason or "").strip().lower()
+    if exit_code == 0 and not reason:
+        return {"retryable": False, "reason": "success", "backoff_s": 0.0}
+    if reason == "cancelled":
+        return {"retryable": False, "reason": "cancelled", "backoff_s": 0.0}
+    if reason == "timeout":
+        return {"retryable": True, "reason": "timeout", "backoff_s": 1.5}
+    if reason == "stalled":
+        return {"retryable": True, "reason": "stalled", "backoff_s": 2.0}
+    if reason == "rate_limited":
+        cooldown_until = float(meta.get("cooldown_until") or 0.0)
+        delay = max(1.0, cooldown_until - _now()) if cooldown_until else 5.0
+        return {"retryable": True, "reason": "rate_limited", "backoff_s": min(MAX_GENERIC_RETRY_BACKOFF_S, delay)}
+    if reason in {"resume_required", "outcome_unknown"}:
+        return {"retryable": False, "reason": reason, "backoff_s": 0.0}
+
+    def attempt_tail(path: Path, offset: int) -> str:
+        if not path.exists():
+            return ""
+        try:
+            raw = path.read_bytes()[max(0, int(offset)):]
+            return raw[-12000:].decode("utf-8", errors="replace")[-6000:]
+        except OSError:
+            return ""
+
+    tail = ("\n".join((
+        attempt_tail(stdout_path, stdout_offset),
+        attempt_tail(stderr_path, stderr_offset),
+    ))).lower()
+    non_retryable = (
+        ("authentication", "auth_error"), ("not authenticated", "auth_error"),
+        ("unauthorized", "auth_error"), ("invalid api key", "auth_error"),
+        ("forbidden", "permission_error"), ("permission denied", "permission_error"),
+        ("insufficient_quota", "quota_exhausted"), ("billing", "quota_exhausted"),
+        ("usage limit", "quota_exhausted"), ("model not found", "invalid_model"),
+        ("unknown model", "invalid_model"), ("invalid model", "invalid_model"),
+        ("invalid argument", "invalid_request"), ("bad request", "invalid_request"),
+        ("400 bad request", "invalid_request"), ("401 unauthorized", "auth_error"),
+        ("403 forbidden", "permission_error"),
+    )
+    for marker, classification in non_retryable:
+        if marker in tail:
+            return {"retryable": False, "reason": classification, "backoff_s": 0.0}
+
+    retryable = (
+        ("rate limit", "rate_limited", 5.0), ("rate_limit", "rate_limited", 5.0),
+        ("too many requests", "rate_limited", 5.0), (" 429", "rate_limited", 5.0),
+        ("temporarily unavailable", "provider_unavailable", 3.0),
+        ("service unavailable", "provider_unavailable", 3.0),
+        ("overloaded", "provider_overloaded", 4.0),
+        ("connection reset", "transient_transport", 2.0),
+        ("connection refused", "transient_transport", 2.0),
+        ("network error", "transient_transport", 2.0),
+        ("econnreset", "transient_transport", 2.0),
+        ("econnrefused", "transient_transport", 2.0),
+        ("timed out", "transient_transport", 2.0),
+        ("gateway timeout", "provider_unavailable", 3.0),
+        ("bad gateway", "provider_unavailable", 3.0),
+        (" 502", "provider_unavailable", 3.0),
+        (" 503", "provider_unavailable", 3.0),
+        (" 504", "provider_unavailable", 3.0),
+    )
+    for marker, classification, backoff in retryable:
+        if marker in tail:
+            return {"retryable": True, "reason": classification, "backoff_s": backoff}
+    return {"retryable": False, "reason": "provider_error_nonretryable", "backoff_s": 0.0}
 
 
 def _is_pid_alive(pid: Optional[int]) -> bool:
@@ -1755,6 +1999,12 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "idle_timeout_s": meta.get("idle_timeout_s"),
         "retries": int(meta.get("retries") or 0),
         "retry_count": int(meta.get("retry_count") or 0),
+        "last_retry_reason": meta.get("last_retry_reason"),
+        "last_retry_classification": meta.get("last_retry_classification"),
+        "last_retryable": meta.get("last_retryable"),
+        "last_retry_delay_s": meta.get("last_retry_delay_s"),
+        "retry_blocked_reason": meta.get("retry_blocked_reason"),
+        "team_retry_remaining": meta.get("team_retry_remaining"),
         "session_id": meta.get("session_id"),
         "parent_agent_id": meta.get("parent_agent_id"),
         "attempt": meta.get("attempt", 1),
@@ -1929,6 +2179,12 @@ def _spawn_internal(
         "idle_timeout_s": effective_idle_timeout,
         "retries": effective_retries,
         "retry_count": 0,
+        "last_retry_reason": None,
+        "last_retry_classification": None,
+        "last_retryable": None,
+        "last_retry_delay_s": None,
+        "retry_blocked_reason": None,
+        "team_retry_remaining": None,
         "status": "starting",
         "phase": "starting",
         "worker_pid": None,
@@ -2091,6 +2347,10 @@ def spawn_agents(
     provenance_class: str = "local",
     max_parallel: Optional[int] = None,
     max_revisions: int = 1,
+    team_timeout_s: Optional[int] = None,
+    max_team_retries: Optional[int] = None,
+    max_total_tool_calls: Optional[int] = None,
+    max_total_tokens: Optional[int] = None,
 ) -> Dict[str, Any]:
     provider = str(provider or "").strip().lower()
     if provider not in _PROVIDER_NAMES:
@@ -2113,6 +2373,42 @@ def spawn_agents(
     effective_max_revisions = int(max_revisions)
     if effective_max_revisions < 0 or effective_max_revisions > 3:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "max_revisions must be between 0 and 3.")
+    effective_child_timeout = min(max(10, int(timeout_s or DEFAULT_AGENT_TIMEOUT_S)), MAX_AGENT_TIMEOUT_S)
+    waves = max(1, (len(tasks) + effective_max_parallel - 1) // effective_max_parallel)
+    default_team_timeout = min(
+        MAX_TEAM_TIMEOUT_S,
+        max(DEFAULT_TEAM_TIMEOUT_FLOOR_S, effective_child_timeout * waves * max(1, 1 + effective_max_revisions)),
+    )
+    effective_team_timeout = default_team_timeout if team_timeout_s is None else int(team_timeout_s)
+    if effective_team_timeout < 60 or effective_team_timeout > MAX_TEAM_TIMEOUT_S:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"team_timeout_s must be between 60 and {MAX_TEAM_TIMEOUT_S} seconds.",
+        )
+    child_retries = min(max(0, int(retries)), 3)
+    effective_team_retries = min(MAX_TEAM_RETRY_BUDGET, child_retries * len(tasks)) if max_team_retries is None else int(max_team_retries)
+    if effective_team_retries < 0 or effective_team_retries > MAX_TEAM_RETRY_BUDGET:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"max_team_retries must be between 0 and {MAX_TEAM_RETRY_BUDGET}.",
+        )
+    effective_tool_budget = None if max_total_tool_calls is None else int(max_total_tool_calls)
+    if effective_tool_budget is not None and (effective_tool_budget < 1 or effective_tool_budget > MAX_TEAM_TOOL_BUDGET):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"max_total_tool_calls must be between 1 and {MAX_TEAM_TOOL_BUDGET} when provided.",
+        )
+    effective_token_budget = None if max_total_tokens is None else int(max_total_tokens)
+    if effective_token_budget is not None and (effective_token_budget < 1 or effective_token_budget > MAX_TEAM_TOKEN_BUDGET):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"max_total_tokens must be between 1 and {MAX_TEAM_TOKEN_BUDGET} when provided.",
+        )
+    if provider == "chatgpt" and effective_token_budget is not None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "max_total_tokens is unavailable for provider=chatgpt because ChatGPT Web does not expose reliable token usage.",
+        )
 
     forbidden = {"provider", "model", "reasoning", "access_mode", "result_style"}
     normalized: List[Dict[str, Any]] = []
@@ -2237,7 +2533,7 @@ def spawn_agents(
         "cwd": str(workdir),
         "timeout_s": timeout_s,
         "idle_timeout_s": idle_timeout_s,
-        "retries": min(max(0, int(retries)), 3),
+        "retries": child_retries,
         "result_style": result_style,
         "access_mode": access_mode,
         "permission_profile": team_profile,
@@ -2250,6 +2546,14 @@ def spawn_agents(
         "scheduler_version": 1,
         "max_parallel": effective_max_parallel,
         "max_revisions": effective_max_revisions,
+        "team_timeout_s": effective_team_timeout,
+        "deadline_at": created + effective_team_timeout,
+        "max_team_retries": effective_team_retries,
+        "team_retry_count": 0,
+        "next_retry_at": None,
+        "max_total_tool_calls": effective_tool_budget,
+        "max_total_tokens": effective_token_budget,
+        "budget_exhausted_reason": None,
         "cancelled": False,
         "tasks": persisted_tasks,
     }
@@ -2337,7 +2641,7 @@ def wait_agents(
         terminal_count = sum(1 for item in states if item.get("status") in TERMINAL_STATUSES)
         if team_id and mode == "all" and team_summary and int(team_summary.get("scheduler_version") or 0) >= 1:
             condition_met = str(team_summary.get("status")) in {
-                "completed", "completed_with_failures", "quality_failed", "cancelled"
+                "completed", "completed_with_failures", "quality_failed", "budget_exhausted", "cancelled"
             }
         else:
             condition_met = _wait_condition(terminal_count, len(ids), mode) if ids else False
@@ -2363,6 +2667,11 @@ def wait_agents(
             "tool_call_count": item.get("tool_call_count"),
             "last_tool": item.get("last_tool"),
             "retry_count": item.get("retry_count"),
+            "last_retry_reason": item.get("last_retry_reason"),
+            "last_retry_classification": item.get("last_retry_classification"),
+            "last_retryable": item.get("last_retryable"),
+            "retry_blocked_reason": item.get("retry_blocked_reason"),
+            "team_retry_remaining": item.get("team_retry_remaining"),
             "workflow_id": item.get("workflow_id"),
             "resume_generation": item.get("resume_generation"),
             "checkpoint_state": item.get("checkpoint_state"),
@@ -2760,6 +3069,10 @@ def agent_action(
                 role=team.get("role"), provenance_class=str(team.get("provenance_class") or "local"),
                 max_parallel=int(team.get("max_parallel") or len(tasks) or 1),
                 max_revisions=int(team.get("max_revisions") or 0),
+                team_timeout_s=team.get("team_timeout_s"),
+                max_team_retries=team.get("max_team_retries"),
+                max_total_tool_calls=team.get("max_total_tool_calls"),
+                max_total_tokens=team.get("max_total_tokens"),
             )
         tasks = []
         for index, child_id in enumerate(ids, start=1):
@@ -3276,6 +3589,7 @@ def _worker(agent_id: str) -> int:
         return 0
 
     final_reason: Optional[str] = None
+    retry_delay_s = 0.0
     exit_code = 1
     max_attempts = int(meta.get("retries") or 0) + 1
     try:
@@ -3322,8 +3636,8 @@ def _worker(agent_id: str) -> int:
                     return 0
                 if latest.get("provider") == "chatgpt" and latest.get("resume_session_id"):
                     attempt_prompt = _chatgpt_checkpoint_prompt("rate_limit" if final_reason == "rate_limited" else "turn_budget")
-                if final_reason != "rate_limited":
-                    time.sleep(min(2.0, 0.75 * attempt_index))
+                if retry_delay_s > 0:
+                    time.sleep(retry_delay_s)
             if latest.get("provider") == "chatgpt" and not _wait_chatgpt_provider_gate(agent_id):
                 return 0
             stdout_offset = stdout_path.stat().st_size if stdout_path.exists() else 0
@@ -3353,6 +3667,73 @@ def _worker(agent_id: str) -> int:
                 break
             if attempt_index + 1 >= max_attempts:
                 break
+
+            # Durable replay safety has precedence over provider error classification.
+            # This preserves the stronger parent-visible reason when side effects occurred.
+            if latest.get("provider") != "chatgpt":
+                try:
+                    checkpoint = workflow_for_agent(agent_id)
+                except WorkflowCheckpointError:
+                    checkpoint = {"safety": "unknown", "receipt_count": 0}
+                if checkpoint is None or str(checkpoint.get("safety") or "unknown") != "verified" or bool(checkpoint.get("pending_effects")):
+                    final_reason = "outcome_unknown"
+                    _update_meta(agent_id, lambda current: current.update({
+                        "retry_blocked_reason": "outcome_unknown",
+                        "note": "Automatic replay stopped because the side-effect outcome is unknown.",
+                        "updated_at": _now(),
+                    }))
+                    break
+                if int(checkpoint.get("receipt_count") or 0) > 0:
+                    final_reason = "resume_required"
+                    _update_meta(agent_id, lambda current: current.update({
+                        "retry_blocked_reason": "resume_required",
+                        "note": "Automatic replay stopped after a verified side-effect boundary; use agent_action(action=resume).",
+                        "updated_at": _now(),
+                    }))
+                    break
+
+            decision = _adaptive_retry_decision(
+                latest, exit_code, final_reason, stdout_path, stderr_path, stdout_offset, stderr_offset,
+            )
+            classification = str(decision.get("reason") or "provider_error_nonretryable")
+            retryable = bool(decision.get("retryable"))
+            def record_retry_decision(current: Dict[str, Any]) -> None:
+                current["last_retry_classification"] = classification
+                current["last_retryable"] = retryable
+                current["last_retry_decision_at"] = _now()
+                current["updated_at"] = _now()
+            latest = _update_meta(agent_id, record_retry_decision)
+            if not retryable:
+                final_reason = classification
+                def record_retry_block(current: Dict[str, Any]) -> None:
+                    current["retry_blocked_reason"] = classification
+                    current["note"] = f"Automatic retry stopped: {classification}."
+                    current["updated_at"] = _now()
+                _update_meta(agent_id, record_retry_block)
+                break
+
+            reservation = _reserve_team_retry(
+                latest.get("team_id"), agent_id, classification, float(decision.get("backoff_s") or 0.0),
+            )
+            if not reservation.get("allowed"):
+                blocked = str(reservation.get("reason") or "retry_budget")
+                final_reason = f"team_{blocked}"
+                def record_team_retry_block(current: Dict[str, Any]) -> None:
+                    current["retry_blocked_reason"] = blocked
+                    current["team_retry_remaining"] = reservation.get("remaining")
+                    current["note"] = f"Automatic retry stopped by team budget: {blocked}."
+                    current["updated_at"] = _now()
+                _update_meta(agent_id, record_team_retry_block)
+                break
+            retry_delay_s = max(0.0, float(reservation.get("delay_s") or 0.0))
+            final_reason = classification
+            def record_retry_slot(current: Dict[str, Any]) -> None:
+                current["last_retry_reason"] = classification
+                current["last_retry_delay_s"] = round(retry_delay_s, 3)
+                current["team_retry_remaining"] = reservation.get("remaining")
+                current["retry_blocked_reason"] = None
+                current["updated_at"] = _now()
+            _update_meta(agent_id, record_retry_slot)
     except Exception as exc:
         worker_error = f"Agent worker error: {exc}"
         def record_worker_failure(current: Dict[str, Any]) -> Optional[bool]:
@@ -3443,6 +3824,13 @@ def _worker(agent_id: str) -> int:
                 current["note"] = "Automatic replay stopped after a verified side-effect boundary; use agent_action(action=resume)."
             elif final_reason == "outcome_unknown":
                 current["note"] = "Automatic replay stopped because provider-native activity made the side-effect outcome unknown."
+            elif str(final_reason or "").startswith("team_"):
+                current["note"] = f"Automatic retry stopped by team budget: {str(final_reason)[5:]}."
+            elif final_reason in {
+                "auth_error", "permission_error", "quota_exhausted", "invalid_model", "invalid_request",
+                "provider_error_nonretryable",
+            }:
+                current["note"] = f"Provider failure is non-retryable ({final_reason}); last provider code {exit_code}."
             else:
                 current["note"] = f"Provider ended as {final_status} with code {exit_code}."
         return True
