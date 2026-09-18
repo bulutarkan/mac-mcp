@@ -48,6 +48,7 @@ from .artifact_pipeline import artifact_pipeline
 from .context_handoff import context_handoff
 from .tools_snapshot import unified_read_snapshot
 from .computer_plan import ComputerPlanError, execute_computer_plan
+from .app_adapters import mac_app
 from .tools_search import search_files, spotlight_search
 from .tools_http import http_request
 from .tools_browser import (
@@ -891,6 +892,55 @@ def create_app():
                 return_state=return_state,
                 allow_risky=allow_risky,
                 preserve_focus=preserve_focus,
+            ),
+        )
+
+    @mcp.tool(
+        name="mac_app",
+        title="Use semantic first-party macOS app adapter",
+        description=(
+            "Use typed semantic adapters for Finder, Notes, Mail, Calendar, Preview, and System Settings. "
+            "Common action=capabilities reports app-specific actions. Finder: selection|select_file. "
+            "Notes: find_notes|open_note. Mail: find_messages|open_message. Calendar: find_events|open_event. "
+            "Preview: list_documents|open_document. System Settings: list_panes|open_pane. "
+            "Unsupported apps/actions return an explicit mac_observe/mac_act fallback; no generic AX action runs automatically. "
+            "Use item_id returned by find/list actions for deterministic open actions when available."
+        ),
+        structured_output=False,
+    )
+    def _mac_app(
+        app: str,
+        action: str = "capabilities",
+        query: Optional[str] = None,
+        item_id: Optional[str] = None,
+        path: Optional[str] = None,
+        mailbox: Optional[str] = None,
+        sender: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        limit: int = 10,
+        exact: bool = False,
+        preserve_focus: bool = True,
+        timeout_s: float = 10.0,
+    ) -> Dict[str, Any]:
+        return _log(
+            audit_logger,
+            "mac_app",
+            lambda: mac_app(
+                settings,
+                app=app,
+                action=action,
+                query=query,
+                item_id=item_id,
+                path=path,
+                mailbox=mailbox,
+                sender=sender,
+                date_from=date_from,
+                date_to=date_to,
+                limit=limit,
+                exact=exact,
+                preserve_focus=preserve_focus,
+                timeout_s=timeout_s,
             ),
         )
 

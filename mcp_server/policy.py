@@ -182,6 +182,26 @@ def _tool_invoke_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     )
 
 
+def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    action = str(arguments.get("action") or "capabilities").strip().lower().replace("-", "_")
+    read_actions = {
+        "capabilities", "selection", "find_notes", "find_messages",
+        "find_events", "list_documents", "list_panes",
+    }
+    if action in read_actions:
+        return RiskOverride(
+            capabilities=_caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY),
+            destructive=False,
+            sensitive=True,
+            requested_access_mode=AccessMode.READ_ONLY,
+        )
+    return RiskOverride(
+        capabilities=_caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY),
+        destructive=False,
+        sensitive=True,
+    )
+
+
 def _computer_plan_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     # The wrapper performs no host/browser action directly. Each allowlisted nested
     # step is dispatched through ObservedFastMCP.call_tool again, where profile,
@@ -368,6 +388,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "mac_snapshot": _r("mac_snapshot", "macos", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY, Capability.BROWSER_CONTROL), sensitive=True),
     "mac_observe": _r("mac_observe", "accessibility", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY), sensitive=True),
     "mac_act": _r("mac_act", "accessibility", _caps(Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True),
+    "mac_app": _r("mac_app", "accessibility", _caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY), sensitive=True, resolver=_mac_app_risk),
     "computer_plan": _r("computer_plan", "meta", _caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True, resolver=_computer_plan_risk),
     # Local search and HTTP
     "search_files": _r("search_files", "search", _caps(Capability.READ), sensitive=True),

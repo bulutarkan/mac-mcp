@@ -10,6 +10,7 @@ _ALLOWED_TOOLS = frozenset({
     "mac_snapshot",
     "mac_observe",
     "mac_act",
+    "mac_app",
     "browser_list_tabs",
     "browser_activate_tab",
     "browser_close_tab",
