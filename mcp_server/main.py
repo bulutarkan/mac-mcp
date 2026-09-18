@@ -47,6 +47,7 @@ from .tools_ui import observe_ui, act_ui
 from .artifact_pipeline import artifact_pipeline
 from .context_handoff import context_handoff
 from .tools_snapshot import unified_read_snapshot
+from .computer_plan import ComputerPlanError, execute_computer_plan
 from .tools_search import search_files, spotlight_search
 from .tools_http import http_request
 from .tools_browser import (
@@ -892,6 +893,31 @@ def create_app():
                 preserve_focus=preserve_focus,
             ),
         )
+
+    @mcp.tool(
+        name="computer_plan",
+        title="Run bounded computer-use plan",
+        description=(
+            "Execute 1-8 bounded macOS/browser steps in one model tool call. "
+            "Only allowlisted computer-use tools are accepted; every nested step is dispatched back through "
+            "Mac MCP policy, scope, security, telemetry and action verification. Execution stops on the first "
+            "tool failure, failed precondition/postcondition, bad step reference or budget boundary. "
+            "Use {'$ref':'step_id.path'} inside later arguments to reuse earlier results."
+        ),
+        structured_output=False,
+    )
+    async def _computer_plan(
+        steps: List[Dict[str, Any]],
+        max_seconds: float = 45.0,
+    ) -> Dict[str, Any]:
+        try:
+            return await execute_computer_plan(
+                mcp.call_tool,
+                steps=steps,
+                max_seconds=max_seconds,
+            )
+        except ComputerPlanError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     # ── Search tools ────────────────────────────────────────────────────────
     @mcp.tool(name="search_files",

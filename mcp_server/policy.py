@@ -182,6 +182,18 @@ def _tool_invoke_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     )
 
 
+def _computer_plan_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    # The wrapper performs no host/browser action directly. Each allowlisted nested
+    # step is dispatched through ObservedFastMCP.call_tool again, where profile,
+    # scope, web-host/egress gates, telemetry and receipts are re-evaluated.
+    return RiskOverride(
+        capabilities=_caps(Capability.READ),
+        destructive=False,
+        sensitive=True,
+        requested_access_mode=AccessMode.READ_ONLY,
+    )
+
+
 def _update_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     check_only = arguments.get("check_only", True)
     if check_only is not False:
@@ -356,6 +368,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "mac_snapshot": _r("mac_snapshot", "macos", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY, Capability.BROWSER_CONTROL), sensitive=True),
     "mac_observe": _r("mac_observe", "accessibility", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY), sensitive=True),
     "mac_act": _r("mac_act", "accessibility", _caps(Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True),
+    "computer_plan": _r("computer_plan", "meta", _caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True, resolver=_computer_plan_risk),
     # Local search and HTTP
     "search_files": _r("search_files", "search", _caps(Capability.READ), sensitive=True),
     "spotlight_search": _r("spotlight_search", "search", _caps(Capability.READ), sensitive=True),
@@ -725,6 +738,8 @@ def evaluate_tool_scope(
     arguments: Mapping[str, Any],
     effective_risk: Optional[RiskAssessment] = None,
 ) -> ScopeDecision:
+    if tool == "computer_plan":
+        return ScopeDecision(True)
     if scope is None:
         return ScopeDecision(True)
     risk = effective_risk or resolve_risk(tool, arguments)[1]
