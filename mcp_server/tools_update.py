@@ -28,6 +28,15 @@ def _public_info(info) -> Dict[str, Any]:
         "behind_by": info.behind_by,
         "update_available": info.update_available,
         "dirty": info.dirty,
+        "release_verified": info.release_verified,
+        "release_id": info.release_id,
+        "release_version": info.release_version,
+        "release_payload_sha256": info.release_payload_sha256,
+        "release_signer_fingerprint": info.release_signer_fingerprint,
+        "release_file_count": info.release_file_count,
+        "release_artifact_count": info.release_artifact_count,
+        "branch_tip_commit": info.branch_tip_commit,
+        "unverified_ahead": info.unverified_ahead,
     }
 
 
@@ -69,10 +78,14 @@ def mac_mcp_update(check_only: bool = True, branch: str = "main") -> Dict[str, A
     log_path = logs_dir / f"{update_id}.log"
     helper_src = Path(__file__).with_name("update_helper.py")
     state_src = helper_src.with_name("update_state.py")
+    release_trust_src = helper_src.with_name("release_trust.py")
+    trusted_signers_src = helper_src.with_name("release_trusted_signers.txt")
     helper_tmp_dir = Path(tempfile.mkdtemp(prefix=f"mac-mcp-update-{update_id}-"))
     helper_tmp = helper_tmp_dir / "update_helper.py"
     shutil.copy2(helper_src, helper_tmp)
     shutil.copy2(state_src, helper_tmp_dir / "update_state.py")
+    shutil.copy2(release_trust_src, helper_tmp_dir / "release_trust.py")
+    shutil.copy2(trusted_signers_src, helper_tmp_dir / "release_trusted_signers.txt")
 
     started_state = {
         "status": "starting",

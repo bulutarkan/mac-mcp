@@ -17,12 +17,14 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 if __package__:
+    from . import release_trust
     from .update_state import backups_root, read_deployed_commit, write_deployed_commit, write_update_state
 else:
     # The detached updater is launched as a staged standalone script. Keep the
     # staged sibling ahead of the repo and site-packages on sys.path so the
-    # helper cannot accidentally load an unrelated update_state module.
+    # helper cannot accidentally load an unrelated update_state/release_trust module.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import release_trust
     from update_state import backups_root, read_deployed_commit, write_deployed_commit, write_update_state
 
 DEFAULT_BRANCH = "main"
@@ -48,6 +50,15 @@ class UpdateInfo:
     behind_by: int
     update_available: bool
     dirty: bool
+    release_verified: bool = False
+    release_id: str | None = None
+    release_version: str | None = None
+    release_payload_sha256: str | None = None
+    release_signer_fingerprint: str | None = None
+    release_file_count: int = 0
+    release_artifact_count: int = 0
+    branch_tip_commit: str | None = None
+    unverified_ahead: int = 0
 
 
 def _run(cmd: list[str], cwd: Path | None = None, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
@@ -108,6 +119,75 @@ def _write_update_state(runtime: Path, payload: dict) -> None:
     del runtime
     write_update_state(payload)
 
+def _release_marker_state(repo: Path, commit: str) -> tuple[bool, bool]:
+    changed = _git(
+        repo,
+        "diff-tree",
+        "--no-commit-id",
+        "--name-only",
+        "-r",
+        commit,
+        "--",
+        release_trust.MANIFEST_RELPATH,
+        release_trust.SIGNATURE_RELPATH,
+    )
+    paths = {line.strip() for line in changed.splitlines() if line.strip()}
+    return (
+        release_trust.MANIFEST_RELPATH in paths,
+        release_trust.SIGNATURE_RELPATH in paths,
+    )
+
+
+def _latest_verified_release(
+    repo: Path,
+    *,
+    deployed: str,
+    branch_tip: str,
+    branch: str,
+    max_commits: int = 512,
+) -> tuple[str, release_trust.VerifiedRelease | None]:
+    if deployed == branch_tip:
+        return deployed, None
+    candidates_text = _git(
+        repo,
+        "rev-list",
+        "--first-parent",
+        f"--max-count={max_commits}",
+        f"{deployed}..{branch_tip}",
+    )
+    for candidate in candidates_text.splitlines():
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        has_manifest, has_signature = _release_marker_state(repo, candidate)
+        if not has_manifest and not has_signature:
+            continue
+        if has_manifest != has_signature:
+            raise UpdateError(
+                f"Verified release channel is blocked at {_short(candidate)}: "
+                "release manifest/signature pair is incomplete."
+            )
+        try:
+            verified = release_trust.verify_release_commit(
+                repo,
+                candidate,
+                expected_branch=branch,
+            )
+        except release_trust.ReleaseVerificationError as exc:
+            raise UpdateError(
+                f"Verified release channel is blocked at {_short(candidate)}: {exc}. "
+                "The updater will not modify the repository or runtime."
+            ) from exc
+        return candidate, verified
+    total_ahead = int(_git(repo, "rev-list", "--count", f"{deployed}..{branch_tip}") or "0")
+    if total_ahead > max_commits:
+        raise UpdateError(
+            f"No verified stable release was found within the newest {max_commits} commits "
+            f"ahead of deployed {_short(deployed)}; refusing to scan an unbounded history."
+        )
+    return deployed, None
+
+
 def check_update(
     repo: str | Path | None = None,
     runtime: str | Path | None = None,
@@ -125,22 +205,47 @@ def check_update(
     if fetch:
         _git(repo_path, "fetch", "--quiet", remote, branch, timeout=120)
     repo_commit = _git(repo_path, "rev-parse", "HEAD")
-    target = _git(repo_path, "rev-parse", f"{remote}/{branch}")
+    branch_tip = _git(repo_path, "rev-parse", f"{remote}/{branch}")
     deployed = _read_state_commit(runtime_path) or repo_commit
 
     if _git(repo_path, "cat-file", "-t", deployed, check=False) != "commit":
         raise UpdateError(f"Deployed commit is not available in the repository: {deployed}")
-    ancestry = _run(["git", "-C", str(repo_path), "merge-base", "--is-ancestor", deployed, target], check=False)
+    ancestry = _run(
+        ["git", "-C", str(repo_path), "merge-base", "--is-ancestor", deployed, branch_tip],
+        check=False,
+    )
     if ancestry.returncode != 0:
         raise UpdateError(
-            f"Cannot fast-forward deployed commit {_short(deployed)} to {_short(target)}. "
+            f"Cannot fast-forward deployed commit {_short(deployed)} to branch tip {_short(branch_tip)}. "
             "The update history diverged; update manually."
         )
+
+    target, verified_release = _latest_verified_release(
+        repo_path,
+        deployed=deployed,
+        branch_tip=branch_tip,
+        branch=branch,
+    )
     behind_text = _git(repo_path, "rev-list", "--count", f"{deployed}..{target}") or "0"
+    unverified_ahead_text = _git(repo_path, "rev-list", "--count", f"{target}..{branch_tip}") or "0"
+    release_fields: dict[str, object] = {}
+    if verified_release is not None:
+        release_fields = {
+            "release_verified": True,
+            "release_id": verified_release.release_id,
+            "release_version": verified_release.version,
+            "release_payload_sha256": verified_release.payload_sha256,
+            "release_signer_fingerprint": verified_release.signer_fingerprint,
+            "release_file_count": verified_release.file_count,
+            "release_artifact_count": verified_release.artifact_count,
+        }
     return UpdateInfo(
         repo=str(repo_path), runtime=str(runtime_path), branch=branch, remote=remote,
         deployed_commit=deployed, repo_commit=repo_commit, target_commit=target,
         behind_by=int(behind_text), update_available=(deployed != target), dirty=dirty,
+        branch_tip_commit=branch_tip,
+        unverified_ahead=int(unverified_ahead_text),
+        **release_fields,
     )
 
 
@@ -157,8 +262,18 @@ def format_check(info: UpdateInfo) -> str:
         lines.append("Status: Update blocked because the repository has local changes.")
     elif info.update_available:
         plural = "commit" if info.behind_by == 1 else "commits"
-        lines.append(f"Status: Update available ({info.behind_by} {plural} behind).")
+        lines.append(f"Status: Verified update available ({info.behind_by} {plural} behind).")
+        if info.release_id:
+            lines.append(f"Verified release: {info.release_id} (v{info.release_version or 'unknown'})")
+        if info.release_signer_fingerprint:
+            lines.append(f"Release signer: {info.release_signer_fingerprint}")
         lines.append("Run: mac-mcp update")
+    elif info.unverified_ahead:
+        plural = "commit" if info.unverified_ahead == 1 else "commits"
+        lines.append(
+            f"Status: No newer verified stable release "
+            f"({info.unverified_ahead} development/unverified {plural} ahead)."
+        )
     else:
         lines.append("Status: Mac MCP is up to date.")
     return "\n".join(lines)
@@ -524,6 +639,32 @@ def apply_update(
         print("[mac-mcp update] Mac MCP is already up to date.", flush=True)
         return {"ok": True, "updated": False, **asdict(info)}
 
+    try:
+        verified_release = release_trust.verify_release_commit(
+            repo_path,
+            info.target_commit,
+            expected_branch=branch,
+        )
+    except release_trust.ReleaseVerificationError as exc:
+        raise UpdateError(
+            f"Verified release re-check failed before swap: {exc}. "
+            "Repository and runtime were left unchanged."
+        ) from exc
+    if (
+        not info.release_verified
+        or verified_release.release_id != info.release_id
+        or verified_release.payload_sha256 != info.release_payload_sha256
+    ):
+        raise UpdateError(
+            "Verified release changed between update check and apply. "
+            "Repository and runtime were left unchanged."
+        )
+    print(
+        f"[mac-mcp update] Verified release: {verified_release.release_id} "
+        f"(v{verified_release.version}, signer {verified_release.signer_fingerprint or 'unknown'}).",
+        flush=True,
+    )
+
     temp_root = Path(tempfile.mkdtemp(prefix="mac-mcp-update-"))
     stage: Optional[Path] = None
     backup: Optional[Path] = None
@@ -631,6 +772,11 @@ def apply_update(
             "from_commit": info.deployed_commit, "to_commit": info.target_commit,
             "from_short": _short(info.deployed_commit), "to_short": _short(info.target_commit),
             "backup": str(backup), "synced_files": synced, "health_url": health_url,
+            "release_verified": True,
+            "release_id": verified_release.release_id,
+            "release_version": verified_release.version,
+            "release_payload_sha256": verified_release.payload_sha256,
+            "release_signer_fingerprint": verified_release.signer_fingerprint,
         }
         _write_update_state(runtime_path, {"status": "completed", **result})
         print(f"[mac-mcp update] Update complete: {_short(info.deployed_commit)} -> {_short(info.target_commit)}", flush=True)

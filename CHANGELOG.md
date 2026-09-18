@@ -1,5 +1,13 @@
 ## Unreleased
 
+## [2.1.5] - 2026-09-18
+
+- Added a cryptographically verified stable release channel using a pinned Ed25519 signer, detached signed manifest, complete tracked-file SHA-256/mode/size inventory, aggregate payload digest, and parent-commit binding to prevent manifest replay.
+- The updater now selects only the newest verified stable-release commit reachable from `origin/main`; ordinary development commits are ignored, while incomplete, tampered, wrong-hash, or invalidly signed release markers fail closed before repository/runtime mutation.
+- The installer verifies a pinned standalone bootstrap verifier and the signed stable payload before persistent source/runtime creation, so failed release verification leaves install targets untouched.
+- Added offline release-signing and verification tools, two-phase signing-key rotation guidance, CI verification of the newest stable release, and a Developer ID + notarization strategy for public native-app artifacts.
+- Preserved the existing updater runtime-overlay merge, backup, restart-health validation, and guarded rollback behavior after cryptographic verification succeeds.
+
 ## [2.1.4] - 2026-09-16
 
 - Added switchable public endpoint modes (`Local only`, managed `ngrok`, managed `Cloudflare Tunnel`, or externally managed `Custom HTTPS`) across CLI, native Settings, installer migration, status, and doctor; existing `ngrok_on_start` installations remain backward compatible.

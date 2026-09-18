@@ -1,0 +1,1 @@
+mac-mcp-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMllSlrqFdnIb1ggvo72blY/JEQkOELwqwtvB7qCY8S2

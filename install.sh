@@ -14,6 +14,15 @@ BIN_DIR="${MAC_MCP_BIN_DIR:-$HOME/.local/bin}"
 CLI_PATH="$BIN_DIR/mac-mcp"
 APP_PATH="${MAC_MCP_APP_PATH:-$HOME/Applications/Mac MCP.app}"
 STATE_DIR="${MAC_MCP_STATE_DIR:-$HOME/.mac-mcp}"
+RELEASE_TRUSTED_SIGNER='mac-mcp-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMllSlrqFdnIb1ggvo72blY/JEQkOELwqwtvB7qCY8S2'
+RELEASE_SIGNATURE_IDENTITY="mac-mcp-release"
+RELEASE_SIGNATURE_NAMESPACE="mac-mcp-release"
+RELEASE_BOOTSTRAP_VERIFIER_PATH="scripts/installer_release_verify.py"
+RELEASE_BOOTSTRAP_VERIFIER_SHA256="9bdf7691f2f30c501554fcf6d1a29498759d30e4b998a40dd2793a5e04ea48d3"
+VERIFIED_RELEASE_ID=""
+VERIFIED_RELEASE_VERSION=""
+VERIFIED_RELEASE_PAYLOAD=""
+VERIFIED_RELEASE_COMMIT=""
 CHATGPT_CLI_REPO_URL="${MAC_MCP_CHATGPT_CLI_REPO_URL:-https://github.com/bulutarkan/chatgpt-web-cli.git}"
 CHATGPT_CLI_SOURCE_DIR="${MAC_MCP_CHATGPT_CLI_SOURCE_DIR:-$HOME/Projects/chatgpt-web-cli}"
 CHATGPT_CLI_LINK="$BIN_DIR/chatgpt-web"
@@ -717,6 +726,72 @@ check_install_targets() {
   fi
 }
 
+verify_release_checkout() {
+  local checkout="$1"
+  local commit="$2"
+  local allowed_signers="$INSTALL_TMP/release-trusted-signers"
+  local verifier_file="$INSTALL_TMP/installer-release-verify.py"
+  local verifier_sha=""
+  local verified=""
+
+  [[ -x /usr/bin/ssh-keygen ]] || fail "ssh-keygen is required to verify Mac MCP releases."
+  [[ -x /usr/bin/shasum ]] || fail "shasum is required to verify Mac MCP releases."
+  printf '%s\n' "$RELEASE_TRUSTED_SIGNER" > "$allowed_signers"
+  /bin/chmod 600 "$allowed_signers" || fail "Could not secure the release trust file."
+
+  "$GIT_BIN" -C "$checkout" show "$commit:$RELEASE_BOOTSTRAP_VERIFIER_PATH" > "$verifier_file" 2>/dev/null \
+    || fail "The selected commit is missing the pinned release verifier."
+  verifier_sha="$(/usr/bin/shasum -a 256 "$verifier_file" | /usr/bin/awk '{print $1}')"
+  [[ "$verifier_sha" == "$RELEASE_BOOTSTRAP_VERIFIER_SHA256" ]] \
+    || fail "Release verifier hash mismatch. Source/runtime were not installed."
+  /bin/chmod 700 "$verifier_file" || fail "Could not secure the release verifier."
+
+  verified="$("$PYTHON_BIN" "$verifier_file" \
+    --repo "$checkout" \
+    --commit "$commit" \
+    --signers "$allowed_signers" \
+    --branch "$BRANCH")" \
+    || fail "Mac MCP signed release verification failed. Source/runtime were not installed."
+
+  VERIFIED_RELEASE_ID="$("$PYTHON_BIN" -c 'import json,sys; print(json.loads(sys.argv[1])["release_id"])' "$verified")"
+  VERIFIED_RELEASE_VERSION="$("$PYTHON_BIN" -c 'import json,sys; print(json.loads(sys.argv[1])["version"])' "$verified")"
+  VERIFIED_RELEASE_PAYLOAD="$("$PYTHON_BIN" -c 'import json,sys; print(json.loads(sys.argv[1])["payload_sha256"])' "$verified")"
+  [[ -n "$VERIFIED_RELEASE_ID" && -n "$VERIFIED_RELEASE_VERSION" && -n "$VERIFIED_RELEASE_PAYLOAD" ]] \
+    || fail "Verified release metadata was incomplete."
+  ok "Verified signed release: $VERIFIED_RELEASE_ID (v$VERIFIED_RELEASE_VERSION)."
+}
+
+select_verified_release_commit() {
+  local checkout="$1"
+  local branch_tip="$2"
+  local candidate=""
+  local has_manifest=0
+  local has_signature=0
+  local scanned=0
+  local changed_markers=""
+
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    scanned=$((scanned + 1))
+    has_manifest=0
+    has_signature=0
+    changed_markers="$("$GIT_BIN" -C "$checkout" diff-tree --no-commit-id --name-only -r "$candidate" -- release/stable-manifest.json release/stable-manifest.json.sig)"
+    printf '%s\n' "$changed_markers" | /usr/bin/grep -qx 'release/stable-manifest.json' && has_manifest=1 || true
+    printf '%s\n' "$changed_markers" | /usr/bin/grep -qx 'release/stable-manifest.json.sig' && has_signature=1 || true
+    if [[ "$has_manifest" -eq 0 && "$has_signature" -eq 0 ]]; then
+      continue
+    fi
+    if [[ "$has_manifest" -ne "$has_signature" ]]; then
+      fail "Verified release channel is blocked at ${candidate:0:8}: manifest/signature pair is incomplete."
+    fi
+    verify_release_checkout "$checkout" "$candidate"
+    VERIFIED_RELEASE_COMMIT="$candidate"
+    return 0
+  done < <("$GIT_BIN" -C "$checkout" rev-list --first-parent --max-count=512 "$branch_tip")
+
+  fail "No verified stable Mac MCP release was found within the newest $scanned commits."
+}
+
 clone_source_and_runtime() {
   local source_stage="$INSTALL_TMP/source"
   local runtime_stage="$INSTALL_TMP/runtime"
@@ -728,6 +803,10 @@ clone_source_and_runtime() {
   "$GIT_BIN" clone --quiet --branch "$BRANCH" --single-branch "$REPO_URL" "$source_stage" \
     || fail "Could not clone $REPO_URL (branch: $BRANCH)."
   commit="$("$GIT_BIN" -C "$source_stage" rev-parse HEAD)"
+  select_verified_release_commit "$source_stage" "$commit"
+  commit="$VERIFIED_RELEASE_COMMIT"
+  "$GIT_BIN" -C "$source_stage" reset --hard --quiet "$commit" \
+    || fail "Could not check out the verified stable release."
   /bin/mv "$source_stage" "$SOURCE_DIR"
   CREATED_SOURCE=1
   ok "Source cloned at commit ${commit:0:8}."
@@ -1099,6 +1178,7 @@ print_completion() {
   printf '  Source:             %s\n' "$SOURCE_DIR"
   printf '  Runtime:            %s\n' "$RUNTIME_DIR"
   printf '  CLI:                %s\n' "$CLI_PATH"
+  printf '  Verified release:   %s (v%s)\n' "$VERIFIED_RELEASE_ID" "$VERIFIED_RELEASE_VERSION"
   printf '  Local MCP endpoint: http://127.0.0.1:8000/mcp\n'
   printf '  Dashboard:          mac-mcp dashboard (authenticated local launch)\n'
 

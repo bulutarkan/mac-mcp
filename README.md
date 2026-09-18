@@ -2,7 +2,7 @@
   <img src="assets/screenshots/mac-mcp.png" alt="Mac MCP" width="760">
 </p>
 
-# Mac MCP 2.1.4
+# Mac MCP 2.1.5
 
 Mac MCP is a local macOS control server for AI agents. It exposes your Mac through a native MCP endpoint and a REST/OpenAPI surface, with shell, files, browser automation, macOS UI control, delegated OpenCode/Codex agents, memory, Agent Skills, voice interaction, self-update tooling, and a local operations dashboard.
 
@@ -10,15 +10,16 @@ Mac MCP is a local macOS control server for AI agents. It exposes your Mac throu
 
 **Secure bootstrap defaults:** missing configuration fails closed. Without explicit settings, MCP authentication is required, shell execution and HTTP/browser host allowlists are disabled, and the global permission profile defaults to `standard` rather than `trusted`. A normal installer run generates the API key and writes the intended settings explicitly. Deliberate `MCP_ALLOW_NO_AUTH=true` is accepted only on loopback with no managed public endpoint; non-loopback or tunneled no-auth startup is refused.
 
-## What's new in 2.1.4
+## What's new in 2.1.5
 
+- Added a **cryptographically verified stable release channel**: pinned Ed25519 trust root, detached signed manifest, complete tracked-file SHA-256/mode/size inventory, fail-closed installer/updater verification, and signed-release-only update selection.
 - Added first-class **public endpoint modes** across CLI and the native app: Local only, managed ngrok, managed Cloudflare Tunnel, or Custom HTTPS.
 - Added secure **Cloudflare Tunnel** lifecycle management with owner-only token storage, `--token-file`, a per-user `launchd` `KeepAlive` job, automatic crash recovery, and Start/Stop control that requires no persistent Terminal session.
 - Expanded `install.sh` with public-endpoint onboarding: choose a provider, optionally install `cloudflared`/ngrok through Homebrew, follow Cloudflare Published application guidance, and save the tunnel token through hidden stdin without placing it in settings, `.env`, or process arguments.
 - Hardened outbound HTTP and browser navigation against **SSRF, DNS rebinding, and public-to-private redirects**, with explicit private-development allowlists rather than wildcard bypasses.
 - Hardened scoped file operations against **symlink/TOCTOU escapes** and added owner-only filesystem transaction journaling with atomic mixed write/move/delete batches and conflict-aware undo.
 - Added durable delegated-workflow checkpoints/resume, stronger steering/idempotency recovery, role-scoped lesson controls, ChatGPT turn budgeting, and bounded web-throttle recovery without replaying verified side effects.
-- Added `mac-mcp doctor`, redacted support bundles, and a deterministic Computer Use conformance lab; the 2.1.4 release is regression-tested with the full Python suite plus installer and native-app build/signing checks.
+- Added `mac-mcp doctor`, redacted support bundles, and a deterministic Computer Use conformance lab; the 2.1.5 release is regression-tested with the full Python suite plus installer and native-app build/signing checks.
 
 ## Browser automation that doesn't hijack your Mac
 
@@ -85,17 +86,22 @@ brew install cliclick brightness
 
 ## Install
 
-### Recommended: one-line installer
+### Installer
 
-The easiest way to install Mac MCP on a new Mac is the interactive installer:
+The interactive installer now installs only a cryptographically verified stable release. It clones `main`, finds the newest signed stable-release commit, verifies the pinned bootstrap verifier, Ed25519 manifest signature, complete tracked-file SHA-256/mode/size inventory, aggregate payload digest, and release lineage **before** creating persistent source/runtime paths.
+
+For convenience, the streamed bootstrap is still available:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bulutarkan/mac-mcp/main/install.sh | bash
 ```
 
-The installer is designed specifically to work safely through `curl | bash` while still reading interactive answers from the real terminal. It:
+A streamed script cannot cryptographically authenticate itself before it starts executing. Treat that command as a lower-assurance bootstrap. For higher-assurance installation, obtain `install.sh` from a trusted signed release commit and independently compare the release-signer fingerprint documented in `release/README.md` before running it. Once the trusted installer is running, the cloned source/runtime payload is fail-closed and cryptographically verified.
+
+The installer:
 
 - verifies macOS 13+, Apple Silicon or Intel, Git, Python 3.10+, Xcode Command Line Tools, and `swiftc`;
+- verifies the selected stable release cryptographically before moving any source/runtime files into persistent install paths;
 - can offer Homebrew when a required dependency is missing, while keeping optional helpers such as `cliclick` and `brightness` optional;
 - asks which public endpoint mode you want (`Local only`, `Cloudflare Tunnel`, `ngrok`, or `Custom HTTPS`) and, when Cloudflare/ngrok is selected, offers to install the matching provider with Homebrew if it is missing;
 - can finish Cloudflare setup during installation by storing the public hostname in settings and accepting the tunnel token through a hidden terminal prompt; the token is sent to `mac-mcp credential cloudflare save` over stdin and is never placed in shell arguments, settings, or `.env`;

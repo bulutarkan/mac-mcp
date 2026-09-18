@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import mcp_server.release_trust as release_trust
 import mcp_server.tools_update as tools_update_module
 import mcp_server.update_helper as update_helper_module
 from mcp_server.tools_update import mac_mcp_update
@@ -26,9 +27,57 @@ class UpdateHelperTests(unittest.TestCase):
     def setUp(self):
         self.update_dir = Path(tempfile.mkdtemp(prefix="mac-mcp-update-state-test-"))
         self.addCleanup(shutil.rmtree, self.update_dir, True)
-        self.env_patcher = patch.dict(os.environ, {"MAC_MCP_UPDATE_DIR": str(self.update_dir)})
+        self.signing_key = self.update_dir / "release-test-key"
+        subprocess.check_call(
+            [
+                "/usr/bin/ssh-keygen", "-q", "-t", "ed25519",
+                "-N", "", "-C", "mac-mcp-test-release", "-f", str(self.signing_key),
+            ]
+        )
+        pub_fields = self.signing_key.with_suffix(".pub").read_text(encoding="utf-8").split()
+        self.trusted_signers = self.update_dir / "trusted-signers"
+        self.trusted_signers.write_text(
+            f"{release_trust.SIGNER_IDENTITY} {pub_fields[0]} {pub_fields[1]}\n",
+            encoding="utf-8",
+        )
+        self.env_patcher = patch.dict(
+            os.environ,
+            {
+                "MAC_MCP_UPDATE_DIR": str(self.update_dir),
+                "MAC_MCP_RELEASE_TRUSTED_SIGNERS": str(self.trusted_signers),
+            },
+        )
         self.env_patcher.start()
         self.addCleanup(self.env_patcher.stop)
+
+    def sign_index_release(self, repo: Path, release_id: str = "test-stable") -> None:
+        manifest = release_trust.build_manifest_from_index(
+            repo,
+            release_id=release_id,
+            generated_at="2026-09-18T00:00:00Z",
+            branch="main",
+        )
+        manifest_path = repo / release_trust.MANIFEST_RELPATH
+        signature_path = repo / release_trust.SIGNATURE_RELPATH
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_bytes(release_trust.canonical_manifest_bytes(manifest))
+        signature_path.unlink(missing_ok=True)
+        subprocess.check_call(
+            [
+                "/usr/bin/ssh-keygen", "-Y", "sign",
+                "-f", str(self.signing_key),
+                "-n", release_trust.SIGNATURE_NAMESPACE,
+                str(manifest_path),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        run(
+            "git", "add",
+            release_trust.MANIFEST_RELPATH,
+            release_trust.SIGNATURE_RELPATH,
+            cwd=repo,
+        )
 
     def test_detached_update_stages_helper_and_keeps_single_checkout_clean(self):
         root = Path(tempfile.mkdtemp(prefix="mac-mcp-detached-bootstrap-test-"))
@@ -59,6 +108,15 @@ class UpdateHelperTests(unittest.TestCase):
             behind_by=1,
             update_available=True,
             dirty=False,
+            release_verified=True,
+            release_id="test-stable",
+            release_version="1.0.0",
+            release_payload_sha256="c" * 64,
+            release_signer_fingerprint="SHA256:test",
+            release_file_count=4,
+            release_artifact_count=0,
+            branch_tip_commit="b" * 40,
+            unverified_ahead=0,
         )
         captured = {}
 
@@ -91,11 +149,17 @@ class UpdateHelperTests(unittest.TestCase):
         cmd = captured["cmd"]
         helper = Path(cmd[1])
         staged_state = helper.with_name("update_state.py")
+        staged_release_trust = helper.with_name("release_trust.py")
+        staged_trusted_signers = helper.with_name("release_trusted_signers.txt")
         self.addCleanup(shutil.rmtree, helper.parent, True)
         self.assertEqual(cmd[0], sys.executable)
         self.assertTrue(helper.is_file())
         self.assertTrue(staged_state.is_file())
+        self.assertTrue(staged_release_trust.is_file())
+        self.assertTrue(staged_trusted_signers.is_file())
         self.assertEqual(helper.parent, staged_state.parent)
+        self.assertEqual(helper.parent, staged_release_trust.parent)
+        self.assertEqual(helper.parent, staged_trusted_signers.parent)
         self.assertNotIn(repo, helper.parents)
         self.assertNotIn(runtime, helper.parents)
         self.assertEqual(
@@ -184,6 +248,11 @@ class UpdateHelperTests(unittest.TestCase):
         helper = staging / "update_helper.py"
         shutil.copy2(Path(update_helper_module.__file__), helper)
         shutil.copy2(Path(update_helper_module.__file__).with_name("update_state.py"), staging / "update_state.py")
+        shutil.copy2(Path(update_helper_module.__file__).with_name("release_trust.py"), staging / "release_trust.py")
+        shutil.copy2(
+            Path(update_helper_module.__file__).with_name("release_trusted_signers.txt"),
+            staging / "release_trusted_signers.txt",
+        )
 
         failed = subprocess.run(
             [
@@ -220,6 +289,10 @@ class UpdateHelperTests(unittest.TestCase):
         (source / "mcp_server/main.py").write_text("VALUE = 'old'\n", encoding="utf-8")
         (source / "mcp_server/requirements.txt").write_text("", encoding="utf-8")
         (source / "mcp_server/security.py").write_text("SECURITY = True\n", encoding="utf-8")
+        (source / "pyproject.toml").write_text(
+            '[project]\nname = "mac-mcp-test"\nversion = "1.0.0"\n',
+            encoding="utf-8",
+        )
         run("git", "add", ".", cwd=source)
         run("git", "commit", "-q", "-m", "old", cwd=source)
         old = run("git", "rev-parse", "HEAD", cwd=source)
@@ -231,7 +304,8 @@ class UpdateHelperTests(unittest.TestCase):
         if delete_old:
             (source / "mcp_server/security.py").unlink()
         run("git", "add", ".", cwd=source)
-        run("git", "commit", "-q", "-m", "new", cwd=source)
+        self.sign_index_release(source, "test-stable")
+        run("git", "commit", "-q", "-m", "new signed release", cwd=source)
         target = run("git", "rev-parse", "HEAD", cwd=source)
         run("git", "push", "-q", str(remote), "main", cwd=source)
 
@@ -254,7 +328,7 @@ class UpdateHelperTests(unittest.TestCase):
         info = check_update(repo, runtime)
         self.assertTrue(info.update_available)
         self.assertEqual(1, info.behind_by)
-        self.assertIn("Update available", format_check(info))
+        self.assertIn("Verified update available", format_check(info))
 
         result = apply_update(repo, runtime, skip_restart=True, skip_deps=True)
         self.assertTrue(result["updated"])
@@ -337,7 +411,8 @@ class UpdateHelperTests(unittest.TestCase):
         run("git", "reset", "--hard", "-q", repo_head, cwd=repo)
         (repo / "mcp_server/main.py").write_text("VALUE = 'latest'\n", encoding="utf-8")
         run("git", "add", ".", cwd=repo)
-        run("git", "commit", "-q", "-m", "latest", cwd=repo)
+        self.sign_index_release(repo, "test-stable-latest")
+        run("git", "commit", "-q", "-m", "latest signed release", cwd=repo)
         target = run("git", "rev-parse", "HEAD", cwd=repo)
         run("git", "push", "-q", "origin", "main", cwd=repo)
         run("git", "reset", "--hard", "-q", repo_head, cwd=repo)

@@ -1,0 +1,1045 @@
+{
+  "artifacts": [],
+  "base_commit": "d07e97cca854a34c8ff1d0928cf6466709454cc7",
+  "branch": "main",
+  "channel": "stable",
+  "files": [
+    {
+      "mode": "100644",
+      "path": ".github/workflows/dependency-audit.yml",
+      "sha256": "cb54e6563ca4695697e71ea2bd8da2bb15ad46a006547082f7f19ab00d929142",
+      "size": 916
+    },
+    {
+      "mode": "100644",
+      "path": ".github/workflows/native-build.yml",
+      "sha256": "464a00915b957a0177dd22868228f83a5f0e0a97194239f1abfd47e1124e7992",
+      "size": 914
+    },
+    {
+      "mode": "100644",
+      "path": ".github/workflows/quality-gates.yml",
+      "sha256": "17e92ecdd330306f854255adb66b6eef1200bb868c16fbb6ea970c71b8c8a145",
+      "size": 882
+    },
+    {
+      "mode": "100644",
+      "path": ".github/workflows/release-channel.yml",
+      "sha256": "018d0f4fdf8fac2dffc86f67a8744f88c3b1c6af96bc5667dbf3268cd15006db",
+      "size": 526
+    },
+    {
+      "mode": "100644",
+      "path": ".github/workflows/security-regression.yml",
+      "sha256": "5f9c2f6277523c8d04640db73449e9c49797134d3bf3e53d1a5f60e20b12dd41",
+      "size": 1348
+    },
+    {
+      "mode": "100644",
+      "path": ".gitignore",
+      "sha256": "855c89025ddc98c597343b1f149521a41130826f836d86b76381957362d61181",
+      "size": 309
+    },
+    {
+      "mode": "100644",
+      "path": "CHANGELOG.md",
+      "sha256": "a82e0c3ede3ca0d30f1880afeecda4080c676aba79cf0a904b2eed485c8dc430",
+      "size": 33477
+    },
+    {
+      "mode": "100644",
+      "path": "LICENSE",
+      "sha256": "f1e67dfbea7a618ab4c32e364528463c2c7a16b66f83498e31cf67b50201b4e3",
+      "size": 1069
+    },
+    {
+      "mode": "100644",
+      "path": "README.md",
+      "sha256": "d1bcb624bb07551ab174bde60e1fb1f35dab7d8965db47b94ba43ef33c79a7f9",
+      "size": 48335
+    },
+    {
+      "mode": "100644",
+      "path": "assets/screenshots/mac-mcp-git-commits.png",
+      "sha256": "5bae22c62bcd929991aceb2bfbd325a7865f2ad87478ba833a7fc76f0dcb2f93",
+      "size": 258982
+    },
+    {
+      "mode": "100644",
+      "path": "assets/screenshots/mac-mcp-system-info-detailed.png",
+      "sha256": "bc65234a5860c0d33592fdb40c2770891c05a3af3571fffaf0790811ff8e55ff",
+      "size": 264093
+    },
+    {
+      "mode": "100644",
+      "path": "assets/screenshots/mac-mcp-system-info.png",
+      "sha256": "b7e115d1e43233db37474b7026b22210636ec3c0f84ed77f4111fec75fb360b7",
+      "size": 294857
+    },
+    {
+      "mode": "100644",
+      "path": "assets/screenshots/mac-mcp.png",
+      "sha256": "514b7ea0663dbe7c78546e58273d4d0ad1d32d7cac95cbc4907a2f37726a10b0",
+      "size": 1536243
+    },
+    {
+      "mode": "100644",
+      "path": "docs/HARDENED_DEDICATED_USER.md",
+      "sha256": "370c09cc50c5a14b61ae1a9e3187e1dbe84ecbec21672517beaf62c166ed4271",
+      "size": 13288
+    },
+    {
+      "mode": "100644",
+      "path": "docs/LOCAL_API_SECURITY.md",
+      "sha256": "7cd26badff2e7eb376b5322f8e8ee54d20d5175115ad10e320bacbfa1aaad11c",
+      "size": 4402
+    },
+    {
+      "mode": "100644",
+      "path": "docs/TERMINOLOGY.md",
+      "sha256": "f33feedb4c1f0c0fe9feb4fc576e037133cc4b8d012286b5ad8bdc59cbbc9dd1",
+      "size": 2565
+    },
+    {
+      "mode": "100755",
+      "path": "install.sh",
+      "sha256": "c7db695ae2acb808bd9da3f4fdf042f8046967f5ba418d20f84b92682d5db103",
+      "size": 46774
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/.env.example",
+      "sha256": "f50d985eabc6d5cfb895ac2c570296a70447c410bea7fc1b7f0de9fed252b77d",
+      "size": 3565
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/__init__.py",
+      "sha256": "94228634d67571575099454fd7b3d40ff0c837407a0a7af44ff0518b5b79a2f2",
+      "size": 41
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/app_adapters.py",
+      "sha256": "6fe9d031184cf0e61c2a9358e267e29f02987954be14360170e848ad664269cc",
+      "size": 40286
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/artifact_pipeline.py",
+      "sha256": "e12ae0c76dc9d4578aae946218ab7daddf5e63a8d932f2b96f08e7d2a4b57db1",
+      "size": 22088
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/audio_route.swift",
+      "sha256": "aab05f12fc917c8b726789fa9ccc99571d2dd63f2535c9bbf611e3ac40c5f51f",
+      "size": 4346
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/browser_tabs.py",
+      "sha256": "2681bc2ca4067bd96f0c9cde9745b87bdcac0b16b502316f1424ed8191096e0f",
+      "size": 19000
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/chrome_background_bridge.py",
+      "sha256": "823c6d81d2cc87213351775bb027bcd3e947db6a04c9b8c24e2405df40cfdcb7",
+      "size": 12082
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/cli.py",
+      "sha256": "540aae0f02b66f68c6489ce810bbce4a7fda69149a6e72c215b818c1d8ea3015",
+      "size": 32150
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/computer_plan.py",
+      "sha256": "f00edc3ad7179f68d5428041e6b1aa29e8b1f606dfbf6eb523bb32fc60ee44a8",
+      "size": 15979
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/conformance.py",
+      "sha256": "78af44aec1207db104c7e8ae288bd239a067c869d23396bce87a9733f182e2e2",
+      "size": 9503
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/context_handoff.py",
+      "sha256": "122ae8cb003b2894a322d07fd9f8074e3cbb933a3cddf616ec78e080d23e04de",
+      "size": 28339
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/dashboard/dashboard.css",
+      "sha256": "585db862ac1beeadcd63ba8afe826bb5a95ecdeaa78579f56b69c9d204dfc627",
+      "size": 26116
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/dashboard/dashboard.js",
+      "sha256": "cde721a3f05e22dbf8d468f9d16f509d9e680aa3ca07e1eb70c2cec33c0219fc",
+      "size": 21015
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/dashboard/index.html",
+      "sha256": "eeb59c0f93a5d1d5bbac3e579e60bceba05d60aaf4ce7363ffe8f359d97248c7",
+      "size": 9370
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/dashboard_routes.py",
+      "sha256": "d1493f8fe8e76e83ba94e2acdfa5be8111cb8646ee75ae05f2a94714532269a0",
+      "size": 28707
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/data_guard.py",
+      "sha256": "cd37f781253223ee987cd1e45c4a0e790bbf298cecf639cd1cce79ead8b84341",
+      "size": 21909
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/diagnostics.py",
+      "sha256": "55c76bb411607690247fe585823a5c8bae6cff9e953f2cfc4bcef9e941c1bddd",
+      "size": 36604
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/embedding_manager.py",
+      "sha256": "eb23e603e604e1874a5f7291c06d62e9f8a58056b87a07626dc657d24040f064",
+      "size": 10291
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/embedding_worker.py",
+      "sha256": "dab453f1ef4f2df03413e490ec8d0c7e9031f17b07f4a9cbbf330e83415de27a",
+      "size": 2988
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/file_transactions.py",
+      "sha256": "c9ef96cb7c1eb87c88b27b2ce60beae42e46cfc8bacb24449363d69b083a37e5",
+      "size": 26449
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/main.py",
+      "sha256": "c41bbe498ca84ed8ab6243dcab9b822f909f366a1701716927e79bc6f3634ebd",
+      "size": 97939
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/memory_embedding.swift",
+      "sha256": "e4590caa69c37fc8e7ed9ff56a2bbfbf0d6969cf014044556d159fdce2eae1d8",
+      "size": 977
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/memory_fastembed_worker.py",
+      "sha256": "3cebc4a84e8fb9d8104580caefb73de6cdc201d8fbf3ec6d750be71cd20853d0",
+      "size": 311
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/menu_app_bootstrap.py",
+      "sha256": "fcfbce920460eccd48af0638a703be35606128e615adb640a03806eb7750cb4f",
+      "size": 3147
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/native_action_verification.py",
+      "sha256": "7cf52802c3770667c3472e9e5f3551b2094466b60935692f06e537a7ca1ecb27",
+      "size": 4766
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/native_targets.py",
+      "sha256": "8ea0884402df0b681c07452588e99ce10706b24e01471a6c89c135be3907ec33",
+      "size": 8743
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/observability.py",
+      "sha256": "c59cfaf3af62aadde85547ec4642f58df6b6765abddb18d4a8733bc09db236c7",
+      "size": 51896
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/policy.py",
+      "sha256": "9f39df22374be51138d97e50aa90848e857b31357ae7804080e98b6c3afa5e96",
+      "size": 44568
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/policy_scope.py",
+      "sha256": "55cb6d201ae546067e51221a6cb3aefe9fa6e6a13d8348b13300f5483efb9cee",
+      "size": 9335
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/public_endpoint.py",
+      "sha256": "9eacd8047f52d27f80a1ffe17fe84ba9771db655a44b71eae2f0b826f01253f0",
+      "size": 10065
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/release_trust.py",
+      "sha256": "39303f79effffbdd793e335813724ed5304ad609238b052d0fae5718d553ae7f",
+      "size": 20995
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/release_trusted_signers.txt",
+      "sha256": "b2c17d0dbeedd324625cbf3793c2c15dd6b67a63a95e99afa781c003a1f0de94",
+      "size": 97
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/requirements.txt",
+      "sha256": "30cd3f3d9df42eaa54852f598f0c21cd11b3877f6dd8546a8080dd6ad93e7abb",
+      "size": 142
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/rest_routes.py",
+      "sha256": "6331302fce1492c714a3d3dff3d226d0ea173cf254490f8c5c7bf8ccf6c4f85f",
+      "size": 38384
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/runtime_settings.py",
+      "sha256": "1d214869ef0a880fe7c6ff58cbd88015091d1f49f50edabe554444d3e2926620",
+      "size": 3189
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/scoped_auth.py",
+      "sha256": "41fe2ad3126be7463cb16d3d59e218a44f97f9d60d59ff41dbcc8d8e8eade22a",
+      "size": 6898
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/scoped_fs.py",
+      "sha256": "f8a1ae11a002c4c9109a7889fe79715a0f31df94f38bdb527b8eb833744759cb",
+      "size": 33855
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/security.py",
+      "sha256": "ed014a17b7bc2707e62d7987b797f0b6ef8b72c37b49605c8b86f33c460e3d88",
+      "size": 18759
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/security_context.py",
+      "sha256": "c1778c23c58729b2847b6acfd21cabafb2baa9f3e54b8bcae33e544c78d94a05",
+      "size": 41599
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/steering.py",
+      "sha256": "b0f3ed7c3661b6e6ae0c70a531bfbac6e041203d8ae289b4cd4933b21c5b25de",
+      "size": 36899
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_agents.py",
+      "sha256": "3b9f94f00f2980f86c51234304612747e4093139c21f001ba513009a927d7639",
+      "size": 121239
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_browser.py",
+      "sha256": "4cb3799fa51282ad29d58a292be06c5d28ff7613d4bd3abfe5f200ef78da5c28",
+      "size": 78816
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_browser_agent.py",
+      "sha256": "08b14e3d68c4687477bb4a1a548462f06c332fa331793e711f56408b9860ac9a",
+      "size": 127957
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_files.py",
+      "sha256": "ac9dde840934044657f3cad1fafc7f8ce6a1d1430112973a1d42ac7f87c10f0e",
+      "size": 29352
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_http.py",
+      "sha256": "cba522de937e7be7b1a6d2d332ed677d2cca3a44cc677268b87ed268af81af16",
+      "size": 7232
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_interactive.py",
+      "sha256": "556a07f2e5955b02510a344f2e4247f1e334164118ed748da8cd11fdd96b1d3d",
+      "size": 14328
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_jobs.py",
+      "sha256": "b715b32288b00da87af2450ecd7398c1f7170da604e9bff2e49a2419d47c51cc",
+      "size": 16982
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_lessons.py",
+      "sha256": "51c3b338d1dd595d80e620cb9c9799d5d74da3bc6d7f0cd4fa7cfb269c4784c8",
+      "size": 23720
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_macos.py",
+      "sha256": "5783599285df1ef5a0ec13dde1583e4b6e5d6d62fa733ff497365c22e90293ab",
+      "size": 7524
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_memory.py",
+      "sha256": "7cf888e793b06b46c95b6b0e7cc22b0fbff39310b07b43a2622d48ec5cdf3a89",
+      "size": 30251
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_search.py",
+      "sha256": "1d20f65defc7ab558f8ec2f7f0fe789f9a50e898d04e3d2db9a1d100b19c96e9",
+      "size": 3408
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_skills.py",
+      "sha256": "433c066d267314ab9d7d314ae2720e2e7480905a34c5fdf81437e2c8a2fd308b",
+      "size": 16845
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_snapshot.py",
+      "sha256": "5e24ee7b68819463c8c9d1bc34a1b20b033908060a87653ac107ebf06e8307af",
+      "size": 13066
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_terminal.py",
+      "sha256": "1681dd21cbb075afa4675272c6860d326b6d7f1df6066117fddb6343048fcc32",
+      "size": 4273
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_ui.py",
+      "sha256": "4f56a7a0f2253fbfa65afc9534a7bcc79b6f397429b4c6447785f872563cab46",
+      "size": 138013
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_update.py",
+      "sha256": "036801716e068c00f2b07d45258c6980bcda4dc80b3a774167102c27b55051ff",
+      "size": 5193
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/tools_voice.py",
+      "sha256": "bcbed82fd300b5d183c063088ab138bc5c497a414b018d422151ff0fedd5c1e8",
+      "size": 16194
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/update_helper.py",
+      "sha256": "b38b23581bc57234e5179955223547c8fc05ffff47482f107411aad9e65ba12e",
+      "size": 37978
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/update_state.py",
+      "sha256": "c7735b7f1a05aa3c49b98a7e667150fbc3b278e9ea27ed808538922a0cc5c861",
+      "size": 2934
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/vendor/html2canvas.min.js",
+      "sha256": "e87e550794322e574a1fda0c1549a3c70dae5a93d9113417a429016838eab8cb",
+      "size": 198689
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/version.py",
+      "sha256": "c65049a07cff24f82436bf562b5c53d3ffdca627370ff6cdf6e9231fe923f51a",
+      "size": 54
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/voice_helper.swift",
+      "sha256": "3fab3134880136095a8247b44046bf75cdae08bd3609119b57a36b5668fe544f",
+      "size": 13159
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/workflow_checkpoints.py",
+      "sha256": "0c15338b683bf39b76e6d3268fe68c607c178be79e2feb307fd4546c0ab4022e",
+      "size": 32806
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/workspace_sandbox.py",
+      "sha256": "b935db774f2cdf780834bb7cf89ba605e0c37a4d0d5d5698a20f5896ae31e70c",
+      "size": 9678
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/BrowserVisualCompanion/manifest.json",
+      "sha256": "42164d53769753d766c551ee93f0493186d2073e1ebd0d0493e4720545232fe3",
+      "size": 472
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/BrowserVisualCompanion/visual.js",
+      "sha256": "b652e9f56104ad0c10a1f637d996bbeca44ab4c1c60b720738153c21f16b416f",
+      "size": 22276
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/ChromeVisualCompanion/.gitignore",
+      "sha256": "bcb85dccc6c95b7bff4a8554cf186ca9f4b24322b498c68d114811b765021d3d",
+      "size": 17
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/ChromeVisualCompanion/background.js",
+      "sha256": "182929d467222a1a6347fa14ae3e74d13d76c046c17b64cbf6c4db6a94d60bd4",
+      "size": 8266
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/ChromeVisualCompanion/bridge_config.js.example",
+      "sha256": "ac18d0e6582856854d935093150f481bc044e80d90e9366aaf59eebee0fa7c50",
+      "size": 113
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/ChromeVisualCompanion/bridge_wake.js",
+      "sha256": "6a678ef58642c64b5804735099501741025e131f752e284032e732756a7e2917",
+      "size": 413
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/ChromeVisualCompanion/manifest.json",
+      "sha256": "f55a1f10ef8cf315ac1b951253eb6b339724bed28709dca648e69840fe7eec6d",
+      "size": 600
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/ChromeVisualCompanion/visual.js",
+      "sha256": "b652e9f56104ad0c10a1f637d996bbeca44ab4c1c60b720738153c21f16b416f",
+      "size": 22276
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/Info.plist",
+      "sha256": "dac487be2717516b8302a9e76340bf0d7d49036ce0a8d0caa683b0abfb051b7b",
+      "size": 703
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/README.md",
+      "sha256": "96a105d1a89aabd3043a384d032ddc52300c550a0e031e3f7af14bad1d60c11f",
+      "size": 8560
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/SafariExtension/Info.plist",
+      "sha256": "78dfe31233e7798e5c66bc89ab9c0a6c2bd2429a523e0a3727f61f40037a8e60",
+      "size": 985
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/SafariExtension/SafariWebExtensionHandler.swift",
+      "sha256": "a835fc1e4ec2406cc5c0eae3226824988f5966d52963dbda84b3b2603f4b7723",
+      "size": 310
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/Sources/AppState.swift",
+      "sha256": "a8d9a7208ce95bedefd8da7c8a5f6084622a5468f56da04d50166fe885a22efa",
+      "size": 71768
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/Sources/AudioDeviceStore.swift",
+      "sha256": "b78cf774fabf103a97fa7db586992bed6960c357ea93e6d147736648b15a2b03",
+      "size": 3292
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/Sources/KeychainStore.swift",
+      "sha256": "6e44386811112e0ca9a6012b96beeb8361bb3d38abb3b99c094ce1fe327df978",
+      "size": 2627
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/Sources/MacMCPMenuApp.swift",
+      "sha256": "6964854e1a7a0fac03767f431f3552b6a10899160e75f546465d693c22d3988b",
+      "size": 1677
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/Sources/MenuBarView.swift",
+      "sha256": "beb993c3f89e8163ce07eaafdeaecc83eafed78de63b44960698fd084d26fe9c",
+      "size": 60015
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/Sources/SettingsStore.swift",
+      "sha256": "9780ec5bf898d231ee6a493b9e274a84f592ffbddd329c1a279cada0c70d6faf",
+      "size": 9690
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/Sources/SettingsView.swift",
+      "sha256": "fc07735d1ea298a0940e58158fc1872186250e78264c7b7308dcf78b51f88ecb",
+      "size": 30801
+    },
+    {
+      "mode": "100644",
+      "path": "menu_app/Sources/SettingsWindowController.swift",
+      "sha256": "d81cf686fef0ccf6df79a40fb059baaf97c9f1a88d78c78f56bf69b3f2c29318",
+      "size": 2202
+    },
+    {
+      "mode": "100755",
+      "path": "menu_app/build_app.sh",
+      "sha256": "38310543776687299d8a2c68d086a908e05828896a8f5ff5492748e0724f579e",
+      "size": 3766
+    },
+    {
+      "mode": "100755",
+      "path": "menu_app/install_app.sh",
+      "sha256": "da188c7f05bf26a57c337a71ddd3a5ba288e4f6b2fca41d996800103d756b3fc",
+      "size": 373
+    },
+    {
+      "mode": "100644",
+      "path": "openapi/custom-gpt-actions.json",
+      "sha256": "3f04172dc52ff12dc13d5da9de20c35f4aaf69bb1273eaf71e2a466b7e8ffc03",
+      "size": 92290
+    },
+    {
+      "mode": "100644",
+      "path": "pyproject.toml",
+      "sha256": "904a2bc01677145a4e9aa54c203016d5ca48047155934bd0d50f129772314326",
+      "size": 841
+    },
+    {
+      "mode": "100644",
+      "path": "release/README.md",
+      "sha256": "921f96be6ca15e74e5f5c77339373cba3f4695e4093b16dae60021fabc345894",
+      "size": 5128
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/installer_release_verify.py",
+      "sha256": "9bdf7691f2f30c501554fcf6d1a29498759d30e4b998a40dd2793a5e04ea48d3",
+      "size": 8858
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/sign_release_manifest.py",
+      "sha256": "2cb3e3bdeb264c30ce816348299d61617dc452f1a7535194cf5990e0998cf48e",
+      "size": 5415
+    },
+    {
+      "mode": "100755",
+      "path": "scripts/verify_release_manifest.py",
+      "sha256": "95288b8baf637d70df3e59eba3e13a6a202d7d7ba5fbb6de93e83907bdc4ec80",
+      "size": 3638
+    },
+    {
+      "mode": "100644",
+      "path": "tests/fixtures/security/malicious_prompt_injection.html",
+      "sha256": "b2951a15ce555b1dc0d3360c620b510b7b120e1f15214f5cffa492af3e1dbb94",
+      "size": 221
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_agent_resilience_dashboard.py",
+      "sha256": "25973982b92b4d12d312d985c204dbeabba9ef7c9c43fb20a92884bd233bd86e",
+      "size": 3405
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_agent_role_learning.py",
+      "sha256": "2edc440e707a830f285748192377f8d4c48ee06ae9b5bcf035f949f6d3bd5d87",
+      "size": 10739
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_agents.py",
+      "sha256": "0ae0c9dd86282033449dccf84966d3a3299e139bfc90ce46db614d9a7622cced",
+      "size": 7768
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_app_adapters.py",
+      "sha256": "4f47181efed8bb07d56499ba2c51e55f8145bf4399fab07e6128061e1a8370e0",
+      "size": 19047
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_artifact_pipeline.py",
+      "sha256": "b73bb335cf7b8504ca1b00076a689c6a703e3b9549f8771c66c4825c7c258521",
+      "size": 16436
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_auth.py",
+      "sha256": "9a9618e4615a0986cc84b0dd54ed5c3f3f635f80c92405ae7688777508eb7322",
+      "size": 4662
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_browser_agent.py",
+      "sha256": "c07235d4f4576f05087ef8c7b6c4a516e9e40e6ce84acb1ec9de7b8079c00954",
+      "size": 11862
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_browser_do_compact.py",
+      "sha256": "4e0888bf85007a166e9ea6247a782b1036cb82e9c4870708fa1690121ed6f2e5",
+      "size": 2095
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_browser_multi_close.py",
+      "sha256": "6e6244a9a010bb9fd241a05e4863715bdb0040ea2f1b06c9d01623bad39073ed",
+      "size": 5179
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_browser_readiness.py",
+      "sha256": "70084babc114791f456eed81e1f4d3527b9104ca7deda744794a0988db4bb374",
+      "size": 9732
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_browser_resilience.py",
+      "sha256": "9031be83b4e5040421cad076893c481729d0ef3f3cb4efa2f70c4dcfa6bf6941",
+      "size": 13864
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_browser_tabs.py",
+      "sha256": "1ef7271c881a7db2fa91a956d502352be5603bb4ef721e1520be5e8918475690",
+      "size": 4156
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_browser_target_hardening.py",
+      "sha256": "23acb84db8952039db5976851e4f6b034c225e0b67215d25b1e1bbc6694c1c7a",
+      "size": 9482
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_browser_visual_companion.py",
+      "sha256": "82d6010eaf013509b56752934f6fb8de27720754dafe01b914689c98ba4e76ff",
+      "size": 17142
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_chatgpt_checkpoint_integration.py",
+      "sha256": "e398f055eda81c58e6c0385e341ec88aac58e4d2fb4cbc6472ace8a4e901c3d8",
+      "size": 4239
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_chatgpt_provider.py",
+      "sha256": "a34dae3e3fb3fa35886aceb16c33a3e5772d72a8dc93f4a78a9769bae999ad4b",
+      "size": 7780
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_chatgpt_turn_budget.py",
+      "sha256": "e3e735a9e1238317b45a26d60a1911b1f45eec6bc480aa78c240a61e709a88c5",
+      "size": 13638
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_chrome_background_transport.py",
+      "sha256": "3f1b3d6e65d57fb24a666435215975798f7afe824a2ad5ef09eeac04c0fbf52f",
+      "size": 14720
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_computer_plan.py",
+      "sha256": "94749c37235c7dd0104f0b11351ef181029d0f6a50f58063a6770d7d2f200788",
+      "size": 9980
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_conformance_lab.py",
+      "sha256": "856ca92c5e96038fb56b554208e46f20d549c78a318ec2577d99095f5bf393ce",
+      "size": 1902
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_context_handoff.py",
+      "sha256": "eb9109edddf6e6bcfe2f608d4d7b431569be2a1d22e9cd21e6f74bddd8443308",
+      "size": 32355
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_diagnostics.py",
+      "sha256": "b0154ad8b473174c69a584a1a1ce47bb49cc58fa5c7a9e4ca6527051c5795ebd",
+      "size": 8707
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_file_transactions.py",
+      "sha256": "564aa6d10ce60b4e1fed979216a03ac68c623a9deda25d7779138c93c8dead81",
+      "size": 15962
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_hardening_203.py",
+      "sha256": "f5750cb9078a5c6af120d94e2878793099b7421ecc64878d9384aedfe3e9b37d",
+      "size": 19928
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_installer_public_endpoint.py",
+      "sha256": "1dac4031a128ec2c2bada483be08418f6e4f4ee5b05d8eaf334f4c8947fba050",
+      "size": 8440
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_installer_release_channel.py",
+      "sha256": "dc704c871fc5f7cbb76ceada7e184bef9fa61385015b8ab51785da85d9688e13",
+      "size": 8211
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_memory.py",
+      "sha256": "0f0885cd3d4a553d71d5076799b413f1e45ee7640363530d99f8101c9cf705e3",
+      "size": 11486
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_menu_chatgpt_resilience.py",
+      "sha256": "71aa5b06e8fb5bfe7c97941ff4437e50b2cbb7f58dbc3a6646d24459bfd57d6c",
+      "size": 3313
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_menu_relaunch_steering_recovery.py",
+      "sha256": "580481390c60d25197ce083627bc9a836a0e8a705efefc41658151586b1e23b3",
+      "size": 6539
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_menu_session_groups.py",
+      "sha256": "536777b8c8cfe89b488950e9563979bff0780c79dac4910e284ff6fe1cc186f3",
+      "size": 5337
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_menu_state_performance.py",
+      "sha256": "272f28d6012dba74a3e50de2e1efe491137f1525874916d4c5cb529ebd6747e3",
+      "size": 6075
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_menu_steering_generation_recovery.py",
+      "sha256": "868a56103b62b4b78f6050b42ecca350af95541c0d427daa81b78a66ecde3d22",
+      "size": 4026
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_menu_steering_idempotency.py",
+      "sha256": "96683f4169829458bd378d5afbf0f7bfe91a049cad99160185c0910c5052f68e",
+      "size": 3489
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_native_action_verification.py",
+      "sha256": "30308e43e2c1a6d5089876ffb5640c72cd907671c810ebd74107c8ba0a7b1641",
+      "size": 10834
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_native_delta_observe.py",
+      "sha256": "e5cc728f089903214da8d1db41944e1ba950a2eae575cafa698ae0e3f9f5b28b",
+      "size": 12788
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_native_focus_safety.py",
+      "sha256": "005617a4cbae6bee9b1a686d61249039c62d52cf9a49ab0e17b4302e9c665590",
+      "size": 12826
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_native_targeting.py",
+      "sha256": "57080e184c47ee6a1bb22a4a5e64f8474703c31f2fec944653d00cd70213d410",
+      "size": 10470
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_observability.py",
+      "sha256": "4c7652e15d0e444806cc97416cc5b7674a172e3edaba529ac19731cb0d5daca0",
+      "size": 30075
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_openapi.py",
+      "sha256": "a828c9427783d3cd700d0ae4eba1009bbf64874b6f10039e06bc2f909c4055d5",
+      "size": 3624
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_product_language.py",
+      "sha256": "f4e5e6db0fdca9ba8b0dc825eebe2cd3f4e7ed57dfb9719ec74e751dbbeac220",
+      "size": 2438
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_provenance_taint.py",
+      "sha256": "57ed317f0b124edab5beebc0cc1cbc7ae130328b523f41089569a6b56b6b7bab",
+      "size": 8207
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_public_endpoint.py",
+      "sha256": "ff1754cf2eceb448a10227eef10b51f84f0ce48ac45e0fe9843dbdf1de8fa7a9",
+      "size": 34661
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_release_trust.py",
+      "sha256": "83f0f19adcce28b5cfd2a5c9fc6c98309e859cbabaed1e636a9e53fb92ce4883",
+      "size": 12542
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_rest_security.py",
+      "sha256": "cc9b2473cf582f3462c1afb106d598bab3c4139f0f5006e8839923d544ae2ffd",
+      "size": 7278
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_role_learning_provenance.py",
+      "sha256": "7f7ee3a8e000ef6cc906dc4a3774bdce16c5ff1635c4d57ca5848f078771acde",
+      "size": 5098
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_role_lessons.py",
+      "sha256": "f20a17e8b967d97372568dcafe7c5b74845435d5d3af2c0dc95e22d0d982068e",
+      "size": 7936
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_runtime_settings.py",
+      "sha256": "46b6e8e3b971534a8f5830d1d8c05260453fc206901fd635858fc171e9452d8d",
+      "size": 3747
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_scoped_file_symlink_safety.py",
+      "sha256": "1c4e04e1928067402d86c32b5f9b433b0f1078b9fd1c38fa9ce2d62f83d3a8c4",
+      "size": 15457
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_secure_bootstrap.py",
+      "sha256": "1d38d4c3a072f2c501433a758525fa9f11943a7921ba49103c89cbd7486a4341",
+      "size": 6396
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_security_boundaries.py",
+      "sha256": "c5626d812c865ed519b660db5b991124b90651e177f3b35b8b8f9eff9e0a37fc",
+      "size": 36087
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_skills.py",
+      "sha256": "88735ad16147c28d845e8d70b1617739643d68788d7e6162a06590b1441333ed",
+      "size": 5188
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_ssrf_revalidation.py",
+      "sha256": "8373027beceb3c1d6db36c064159aee1d1a5168496505e95010b1d1f52a6a83c",
+      "size": 13508
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_steering.py",
+      "sha256": "40dab430dcb38d90dcd852af7196c05845cc7b35c8a69affee6e5cc41913a84d",
+      "size": 27678
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_steering_generation_epoch.py",
+      "sha256": "9e8b1108a8a7f634edc491e65189b5f337803e2273521dab605f198c7b99b915",
+      "size": 5095
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_tools_interactive.py",
+      "sha256": "fd1502f351fb90c871aec416aed45b81829c370478522934cd192a88636219e4",
+      "size": 6017
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_tools_ui_output.py",
+      "sha256": "78cdc018ef8fc5864e37249d512cf0baef1e450eb6136e3e20171072aaefa2c8",
+      "size": 804
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_tools_voice.py",
+      "sha256": "a418de716c59dff9f49714fae0ba9093e909117baf165b26c6288cd369d9dc80",
+      "size": 6742
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_unified_snapshot.py",
+      "sha256": "e8a087722fb8021b00868f59d99ac9701a049bcf8475bf353c92a93db7b47a78",
+      "size": 7332
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_update.py",
+      "sha256": "a0553fb472cae0a6ea15b45b61b71dcc6dc241533a40b255285ee9416ea1e8d3",
+      "size": 30955
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_workflow_checkpoint_resume.py",
+      "sha256": "fdbef0db960e0174d5e491d42bf5a55dac9da2e40d4912c99d42a95e4d3cec66",
+      "size": 23848
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_workspace_shell_confinement.py",
+      "sha256": "e05908529beb19a127e8c111d2f722e57a48d88db636a4eeebc1e9e325850564",
+      "size": 3924
+    }
+  ],
+  "generated_at": "2026-09-18T11:04:43Z",
+  "payload_sha256": "783d19fc4b17a867f3369f362751f753db79e5c730e35d8f68d4dc04906719a9",
+  "product": "mac-mcp",
+  "release_id": "stable-2.1.5-20260918",
+  "schema_version": 1,
+  "signature": {
+    "algorithm": "ssh-ed25519",
+    "identity": "mac-mcp-release",
+    "namespace": "mac-mcp-release"
+  },
+  "version": "2.1.5"
+}
