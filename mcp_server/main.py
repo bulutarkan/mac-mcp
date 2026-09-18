@@ -494,7 +494,7 @@ def create_app():
 
     @mcp.tool(
         name="list_agents",
-        description="List delegated agents with compact status/result previews.",
+        description="List delegated agents with compact status/result previews. Delegated callers see only themselves and descendants in their persisted control-plane lineage.",
     )
     def _list_agents(status_filter: Optional[str] = None, limit: int = 20,
                      team_id: Optional[str] = None) -> Dict[str, Any]:
@@ -503,7 +503,7 @@ def create_app():
 
     @mcp.tool(
         name="get_agent",
-        description="Get one delegated agent status and concise final result. Set include_logs=true only for debugging.",
+        description="Get one delegated agent status and concise final result. Delegated callers may access only themselves or descendants in their persisted lineage; include_logs=true follows the same boundary.",
     )
     def _get_agent(agent_id: str, include_logs: bool = False,
                    tail_lines: int = 40) -> Dict[str, Any]:
@@ -515,8 +515,10 @@ def create_app():
         name="agent_action",
         description=(
             "Control one agent or a whole team. action: cancel, retry, resume, despawn; message is available "
-            "for individual resumable agent sessions. retry is refused after a verified side-effect or uncertain crash "
-            "boundary; resume preserves the provider session and durable receipts. Team cancel cascades to all children."
+            "for individual resumable agent sessions. Delegated callers may control only themselves/descendants or teams "
+            "they own within their persisted lineage; siblings and unrelated lineages fail closed. retry is refused after a "
+            "verified side-effect or uncertain crash boundary; resume preserves the provider session and durable receipts. "
+            "Team cancel cascades to all children."
         ),
     )
     def _agent_action(action: str, agent_id: Optional[str] = None, team_id: Optional[str] = None,

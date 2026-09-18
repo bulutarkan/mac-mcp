@@ -51,6 +51,15 @@ The matrix is evidence, not a claim that software is risk-free. Entries intentio
 - **Control paths:** `mcp_server/file_transactions.py`, `mcp_server/tools_files.py`
 - **Regression tests:** `tests/test_file_transactions.py::FileTransactionTests.test_atomic_batch_fault_in_second_write_restores_all_preimages`, `tests/test_file_transactions.py::FileTransactionTests.test_mixed_write_move_delete_batch_fault_rolls_back_everything`, `tests/test_file_transactions.py::FileTransactionTests.test_atomic_batch_refuses_irreversible_snapshot_before_mutation`
 
+## SEC-AGENT-001 — Delegated agent control-plane lineage isolation
+
+- **Risk class:** Cross-lineage agent metadata, result, log, and lifecycle control access
+- **Current status:** Verified
+- **Introduced / fixed release:** 2.1.5
+- **Control:** Scoped agent identities are bound to persistent owner/root/parent lineage. Delegated agent-control calls permit self and descendants only, deny siblings/ancestors/unrelated teams by default, preserve local root administration, preflight mutating control before side-effect intents, and emit audited control-plane denials.
+- **Control paths:** `mcp_server/tools_agents.py`, `mcp_server/scoped_auth.py`, `mcp_server/observability.py`
+- **Regression tests:** `tests/test_agent_lineage_isolation.py::AgentLineageIsolationTests.test_sibling_and_unrelated_get_or_logs_are_denied`, `tests/test_agent_lineage_isolation.py::AgentLineageIsolationTests.test_sibling_control_actions_are_denied_before_mutation`, `tests/test_agent_lineage_isolation.py::AgentLineageIsolationTests.test_team_owner_and_ancestor_can_access_but_sibling_cannot`, `tests/test_agent_lineage_isolation.py::AgentLineageIsolationTests.test_legacy_parent_metadata_backfills_and_survives_restart_like_reload`, `tests/test_agent_lineage_isolation.py::AgentLineageObservedMCPTests.test_direct_and_tool_invoke_denials_match_and_emit_security_audit`
+
 ## Maintaining the matrix
 
 Security changes should reuse an existing assurance ID when they strengthen the same risk/control boundary, or add a new ID when they introduce a materially different boundary. The relevant CHANGELOG bullet must include the ID in square brackets, and every listed regression method must carry a nearby `# ASSURANCE: <ID>` marker. Do not add a matrix row for a control that has no automated regression evidence.

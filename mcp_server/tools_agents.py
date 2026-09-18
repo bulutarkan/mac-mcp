@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from fastapi import HTTPException, status
 
-from .policy import PROFILES, narrow_child_profile, profile_contains
+from .policy import PolicyContext, PROFILES, current_policy_context, narrow_child_profile, profile_contains
 from .policy_scope import (
     ResourceScope, access_mode_allows, child_scope, normalize_access_mode, scope_contains,
 )
@@ -67,6 +67,9 @@ _PROVIDER_NAMES = {"opencode", "codex", "chatgpt"}
 _ACCESS_MODES = {"read_only", "workspace_write", "full"}
 _RESULT_STYLES = {"concise", "detailed"}
 _WAIT_MODES = {"all", "any", "majority"}
+_LINEAGE_VERSION = 1
+_CONTROL_DENY_ERROR = "agent_control_denied"
+
 _AGENT_CAPABILITY_PROFILES: Dict[str, Dict[str, Any]] = {
     "browser_only": {"access_mode": "read_only", "permission_profile": "browser_only", "tool_families": ("browser",)},
     "read_only": {"access_mode": "read_only", "permission_profile": "read_only", "tool_families": None},
@@ -249,6 +252,263 @@ def _update_team(team_id: str, update: Callable[[Dict[str, Any]], Optional[bool]
         if update(meta) is not False:
             _write_team_unlocked(team_id, meta)
         return meta
+
+
+def _lineage_fields_for_agent(
+    agent_id: str,
+    meta: Optional[Dict[str, Any]] = None,
+    *,
+    seen: Optional[set[str]] = None,
+) -> Dict[str, Any]:
+    current = dict(meta or _read_meta(agent_id))
+    stored_root = str(current.get("lineage_root_agent_id") or "").strip()
+    stored_parent = str(current.get("lineage_parent_agent_id") or "").strip() or None
+    stored_ancestors = current.get("lineage_ancestors")
+    if (
+        int(current.get("lineage_version") or 0) >= _LINEAGE_VERSION
+        and stored_root
+        and isinstance(stored_ancestors, list)
+        and all(isinstance(item, str) and item for item in stored_ancestors)
+    ):
+        return {
+            "lineage_version": _LINEAGE_VERSION,
+            "lineage_root_agent_id": stored_root,
+            "lineage_parent_agent_id": stored_parent,
+            "lineage_ancestors": list(stored_ancestors),
+        }
+
+    parent_id = str(current.get("parent_agent_id") or "").strip() or None
+    visited = set(seen or ())
+    if agent_id in visited:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Corrupt agent lineage cycle: {agent_id}")
+    visited.add(agent_id)
+    if not parent_id:
+        return {
+            "lineage_version": _LINEAGE_VERSION,
+            "lineage_root_agent_id": agent_id,
+            "lineage_parent_agent_id": None,
+            "lineage_ancestors": [],
+        }
+    if parent_id in visited:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Corrupt agent lineage cycle: {agent_id} -> {parent_id}")
+    try:
+        parent_meta = _read_meta(parent_id)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_404_NOT_FOUND:
+            # Legacy orphan: fail closed for delegated control by treating this record
+            # as a new root. New records always persist lineage before a parent can despawn.
+            return {
+                "lineage_version": _LINEAGE_VERSION,
+                "lineage_root_agent_id": agent_id,
+                "lineage_parent_agent_id": parent_id,
+                "lineage_ancestors": [],
+            }
+        raise
+    parent_lineage = _lineage_fields_for_agent(parent_id, parent_meta, seen=visited)
+    return {
+        "lineage_version": _LINEAGE_VERSION,
+        "lineage_root_agent_id": parent_lineage["lineage_root_agent_id"],
+        "lineage_parent_agent_id": parent_id,
+        "lineage_ancestors": [*parent_lineage["lineage_ancestors"], parent_id],
+    }
+
+
+def _persist_agent_lineage_if_missing(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+    if int(meta.get("lineage_version") or 0) >= _LINEAGE_VERSION and meta.get("lineage_root_agent_id"):
+        return meta
+    derived = _lineage_fields_for_agent(agent_id, meta)
+    def update(current: Dict[str, Any]) -> None:
+        if int(current.get("lineage_version") or 0) < _LINEAGE_VERSION or not current.get("lineage_root_agent_id"):
+            current.update(derived)
+            current["updated_at"] = current.get("updated_at") or _now()
+    return _update_meta(agent_id, update)
+
+
+def _team_lineage_fields(team_id: str, team: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    current = dict(team or _read_team(team_id))
+    owner = str(current.get("owner_agent_id") or "").strip() or None
+    root = str(current.get("lineage_root_agent_id") or "").strip() or None
+    ancestors = current.get("lineage_ancestors")
+    if int(current.get("lineage_version") or 0) >= _LINEAGE_VERSION and isinstance(ancestors, list):
+        return {
+            "lineage_version": _LINEAGE_VERSION,
+            "owner_agent_id": owner,
+            "lineage_root_agent_id": root,
+            "lineage_ancestors": list(ancestors),
+        }
+    if owner:
+        try:
+            # Derive first without mutating the owner's metadata. Authorization
+            # must not let an unrelated caller trigger a lazy migration write.
+            owner_meta = _read_meta(owner)
+            owner_lineage = _lineage_fields_for_agent(owner, owner_meta)
+            return {
+                "lineage_version": _LINEAGE_VERSION,
+                "owner_agent_id": owner,
+                "lineage_root_agent_id": owner_lineage["lineage_root_agent_id"],
+                "lineage_ancestors": list(owner_lineage["lineage_ancestors"]),
+            }
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_404_NOT_FOUND:
+                raise
+    # Legacy teams had no stable owner. Keep them root-admin only instead of
+    # guessing ownership from arbitrary children.
+    return {
+        "lineage_version": _LINEAGE_VERSION,
+        "owner_agent_id": None,
+        "lineage_root_agent_id": None,
+        "lineage_ancestors": [],
+    }
+
+
+def _persist_team_lineage_if_missing(team_id: str, team: Dict[str, Any]) -> Dict[str, Any]:
+    if int(team.get("lineage_version") or 0) >= _LINEAGE_VERSION:
+        return team
+    derived = _team_lineage_fields(team_id, team)
+    def update(current: Dict[str, Any]) -> None:
+        if int(current.get("lineage_version") or 0) < _LINEAGE_VERSION:
+            current.update(derived)
+            current["updated_at"] = current.get("updated_at") or _now()
+    return _update_team(team_id, update)
+
+
+def _lineage_denied(
+    *, target_type: str, target_id: str, operation: str, context: Optional[PolicyContext] = None,
+) -> HTTPException:
+    context = context or current_policy_context()
+    return HTTPException(
+        status.HTTP_403_FORBIDDEN,
+        detail={
+            "error": _CONTROL_DENY_ERROR,
+            "reason": "lineage_not_authorized",
+            "actor_agent_id": context.agent_id,
+            "target_type": target_type,
+            "target_id": target_id,
+            "operation": operation,
+        },
+    )
+
+
+def _authorize_agent_control(
+    agent_id: str, operation: str, *, meta: Optional[Dict[str, Any]] = None,
+    context: Optional[PolicyContext] = None,
+) -> Dict[str, Any]:
+    context = context or current_policy_context()
+    raw_target = dict(meta or _read_meta(agent_id))
+    lineage = _lineage_fields_for_agent(agent_id, raw_target)
+    if context.agent_id is None:
+        return _persist_agent_lineage_if_missing(agent_id, raw_target)
+    actor = str(context.agent_id)
+    if actor == agent_id or actor in set(lineage["lineage_ancestors"]):
+        return _persist_agent_lineage_if_missing(agent_id, raw_target)
+    raise _lineage_denied(
+        target_type="agent", target_id=agent_id, operation=operation, context=context
+    )
+
+
+def _authorize_team_control(
+    team_id: str, operation: str, *, team: Optional[Dict[str, Any]] = None,
+    context: Optional[PolicyContext] = None,
+) -> Dict[str, Any]:
+    context = context or current_policy_context()
+    raw_target = dict(team or _read_team(team_id))
+    lineage = _team_lineage_fields(team_id, raw_target)
+    if context.agent_id is None:
+        return _persist_team_lineage_if_missing(team_id, raw_target)
+    actor = str(context.agent_id)
+    owner = lineage.get("owner_agent_id")
+    if owner and (actor == owner or actor in set(lineage.get("lineage_ancestors") or [])):
+        return _persist_team_lineage_if_missing(team_id, raw_target)
+    raise _lineage_denied(
+        target_type="team", target_id=team_id, operation=operation, context=context
+    )
+
+
+def authorize_agent_control_request(
+    tool: str, arguments: Optional[Dict[str, Any]] = None, *, context: Optional[PolicyContext] = None,
+) -> None:
+    """Preflight delegated agent-control requests before side-effect intents are opened."""
+    context = context or current_policy_context()
+    if context.agent_id is None:
+        return
+    args = dict(arguments or {})
+    name = str(tool or "").strip()
+    if name == "get_agent":
+        target = str(args.get("agent_id") or "").strip()
+        if target:
+            _authorize_agent_control(target, "get_agent", context=context)
+        return
+    if name == "list_agents":
+        team_id = str(args.get("team_id") or "").strip()
+        if team_id:
+            _authorize_team_control(team_id, "list_agents", context=context)
+        return
+    if name == "wait_agents":
+        team_id = str(args.get("team_id") or "").strip()
+        if team_id:
+            _authorize_team_control(team_id, "wait_agents", context=context)
+            return
+        for target in args.get("agent_ids") or []:
+            _authorize_agent_control(str(target), "wait_agents", context=context)
+        return
+    if name == "agent_action":
+        operation = f"agent_action:{str(args.get('action') or '').strip().lower()}"
+        agent_id = str(args.get("agent_id") or "").strip()
+        team_id = str(args.get("team_id") or "").strip()
+        if agent_id:
+            _authorize_agent_control(agent_id, operation, context=context)
+        elif team_id:
+            _authorize_team_control(team_id, operation, context=context)
+
+
+def _new_agent_lineage(agent_id: str, parent_agent_id: Optional[str]) -> Dict[str, Any]:
+    if not parent_agent_id:
+        return {
+            "lineage_version": _LINEAGE_VERSION,
+            "lineage_root_agent_id": agent_id,
+            "lineage_parent_agent_id": None,
+            "lineage_ancestors": [],
+        }
+    parent_id = str(parent_agent_id)
+    parent_meta = _persist_agent_lineage_if_missing(parent_id, _read_meta(parent_id))
+    parent_lineage = _lineage_fields_for_agent(parent_id, parent_meta)
+    return {
+        "lineage_version": _LINEAGE_VERSION,
+        "lineage_root_agent_id": parent_lineage["lineage_root_agent_id"],
+        "lineage_parent_agent_id": parent_id,
+        "lineage_ancestors": [*parent_lineage["lineage_ancestors"], parent_id],
+    }
+
+
+def _team_lineage_for_spawn(parent_team_id: Optional[str]) -> Dict[str, Any]:
+    # Retry/replacement teams inherit the original owner's lineage even when an
+    # authorized ancestor triggers the action. Ownership must not drift upward.
+    if parent_team_id:
+        parent = _persist_team_lineage_if_missing(str(parent_team_id), _read_team(str(parent_team_id)))
+        lineage = _team_lineage_fields(str(parent_team_id), parent)
+        return {
+            "lineage_version": _LINEAGE_VERSION,
+            "owner_agent_id": lineage.get("owner_agent_id"),
+            "lineage_root_agent_id": lineage.get("lineage_root_agent_id"),
+            "lineage_ancestors": list(lineage.get("lineage_ancestors") or []),
+        }
+    context = current_policy_context()
+    if context.agent_id is not None:
+        actor = str(context.agent_id)
+        actor_meta = _persist_agent_lineage_if_missing(actor, _read_meta(actor))
+        lineage = _lineage_fields_for_agent(actor, actor_meta)
+        return {
+            "lineage_version": _LINEAGE_VERSION,
+            "owner_agent_id": actor,
+            "lineage_root_agent_id": lineage["lineage_root_agent_id"],
+            "lineage_ancestors": list(lineage["lineage_ancestors"]),
+        }
+    return {
+        "lineage_version": _LINEAGE_VERSION,
+        "owner_agent_id": None,
+        "lineage_root_agent_id": None,
+        "lineage_ancestors": [],
+    }
 
 
 def _usage_total_tokens(usage: Any) -> int:
@@ -683,7 +943,11 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
             team["updated_at"] = _now()
             _write_team_unlocked(team_id, team)
             prompt = _team_task_prompt(team, task, task_map)
-            parent_agent_id = str(task.get("latest_agent_id") or "").strip() or None
+            parent_agent_id = (
+                str(task.get("latest_agent_id") or "").strip()
+                or str(team.get("owner_agent_id") or "").strip()
+                or None
+            )
             try:
                 item = _spawn_internal(
                     settings=None,
@@ -815,6 +1079,8 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         "status_counts": counts,
         "terminal_count": terminal_count,
         "parent_team_id": team.get("parent_team_id"),
+        "owner_agent_id": team.get("owner_agent_id"),
+        "lineage_root_agent_id": team.get("lineage_root_agent_id"),
         "scheduler_version": team.get("scheduler_version"),
         "max_parallel": team.get("max_parallel"),
         "max_revisions": team.get("max_revisions"),
@@ -2007,6 +2273,8 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "team_retry_remaining": meta.get("team_retry_remaining"),
         "session_id": meta.get("session_id"),
         "parent_agent_id": meta.get("parent_agent_id"),
+        "lineage_root_agent_id": meta.get("lineage_root_agent_id"),
+        "lineage_parent_agent_id": meta.get("lineage_parent_agent_id"),
         "attempt": meta.get("attempt", 1),
         "exit_code": meta.get("exit_code"),
         "note": meta.get("note"),
@@ -2111,6 +2379,7 @@ def _spawn_internal(
     effective_idle_timeout = None if idle_timeout_s is None else min(max(5, int(idle_timeout_s)), 3600)
     effective_retries = min(max(0, int(retries)), 3)
     agent_id = "agt_" + uuid.uuid4().hex[:10]
+    agent_lineage = _new_agent_lineage(agent_id, parent_agent_id)
     path = _agent_dir(agent_id)
     path.mkdir(parents=True, exist_ok=False)
     user_prompt = prompt.strip()
@@ -2192,6 +2461,7 @@ def _spawn_internal(
         "session_id": None,
         "resume_session_id": resume_session_id,
         "parent_agent_id": parent_agent_id,
+        **agent_lineage,
         "attempt": attempt,
         "workflow_id": workflow_id_value,
         "workflow_input_hash": workflow_hash,
@@ -2316,10 +2586,12 @@ def spawn_agent(
     effective_scope, permission_profile, effective_capability_profile = _requested_agent_scope(
         workdir, access_mode, scope, parent_scope, parent_profile, capability_profile
     )
+    context = current_policy_context()
     return _spawn_internal(
         settings, provider, prompt, model, reasoning, str(workdir), timeout_s, title,
         result_style, effective_scope.access_mode.value, effective_scope, permission_profile,
-        capability_profile=effective_capability_profile, idle_timeout_s=idle_timeout_s, retries=retries, project=project,
+        capability_profile=effective_capability_profile, parent_agent_id=context.agent_id,
+        idle_timeout_s=idle_timeout_s, retries=retries, project=project,
         role=role, provenance_class=provenance_class,
     )
 
@@ -2521,6 +2793,7 @@ def spawn_agents(
 
     team_id = "team_" + uuid.uuid4().hex[:10]
     created = _now()
+    team_lineage = _team_lineage_for_spawn(parent_team_id)
     team_meta: Dict[str, Any] = {
         "team_id": team_id,
         "title": (title or f"{provider} team ({len(persisted_tasks)} tasks)").strip(),
@@ -2542,6 +2815,7 @@ def spawn_agents(
         "created_at": created,
         "updated_at": created,
         "parent_team_id": parent_team_id,
+        **team_lineage,
         "agent_ids": [],
         "scheduler_version": 1,
         "max_parallel": effective_max_parallel,
@@ -2578,11 +2852,24 @@ def spawn_agents(
 def list_agents(settings: Settings, status_filter: Optional[str] = None, limit: int = 20,
                 team_id: Optional[str] = None) -> Dict[str, Any]:
     AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    if team_id:
+        _authorize_team_control(str(team_id), "list_agents")
+    delegated = current_policy_context().agent_id is not None
     items: List[Dict[str, Any]] = []
     for path in sorted(AGENTS_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
         if not path.is_dir() or not (path / "meta.json").exists():
             continue
-        meta = _normalize(path.name, _read_meta(path.name))
+        raw_meta = _read_meta(path.name)
+        if delegated:
+            try:
+                raw_meta = _authorize_agent_control(path.name, "list_agents", meta=raw_meta)
+            except HTTPException as exc:
+                if exc.status_code == status.HTTP_403_FORBIDDEN:
+                    continue
+                raise
+        else:
+            raw_meta = _persist_agent_lineage_if_missing(path.name, raw_meta)
+        meta = _normalize(path.name, raw_meta)
         if status_filter and meta.get("status") != status_filter:
             continue
         if team_id and meta.get("team_id") != team_id:
@@ -2624,8 +2911,12 @@ def wait_agents(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Provide exactly one of team_id or agent_ids.")
     ids = list(agent_ids or [])
     if team_id:
+        team = _authorize_team_control(str(team_id), "wait_agents")
         team = _team_tick(str(team_id))
         ids = list(team.get("agent_ids") or [])
+    else:
+        for target_agent_id in ids:
+            _authorize_agent_control(str(target_agent_id), "wait_agents")
     if not ids and not team_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No agents to wait for.")
     bounded_timeout = min(max(0, int(timeout_s)), MAX_WAIT_TIMEOUT_S)
@@ -2706,7 +2997,8 @@ def get_agent(
     include_logs: bool = False,
     tail_lines: int = 40,
 ) -> Dict[str, Any]:
-    meta = _normalize(agent_id, _read_meta(agent_id))
+    meta = _authorize_agent_control(agent_id, "get_agent")
+    meta = _normalize(agent_id, meta)
     result: Dict[str, Any] = {"ok": True, **_public_meta(agent_id, meta)}
     result_path = _agent_dir(agent_id) / "result.txt"
     if meta.get("status") in TERMINAL_STATUSES and result_path.exists():
@@ -2774,7 +3066,8 @@ def _agent_action_single(
     action = action.lower().strip()
     if action not in {"cancel", "message", "retry", "resume", "despawn"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be cancel, message, retry, resume, or despawn.")
-    meta = _normalize(agent_id, _read_meta(agent_id))
+    meta = _authorize_agent_control(agent_id, f"agent_action:{action}")
+    meta = _normalize(agent_id, meta)
 
     if action == "cancel":
         if meta.get("status") in TERMINAL_STATUSES:
@@ -2989,9 +3282,9 @@ def agent_action(
     if agent_id:
         return _agent_action_single(settings, agent_id=agent_id, action=action, message=message, signal=signal)
 
-    team = _read_team(str(team_id))
-    ids = list(team.get("agent_ids") or [])
     normalized_action = action.lower().strip()
+    team = _authorize_team_control(str(team_id), f"agent_action:{normalized_action}")
+    ids = list(team.get("agent_ids") or [])
     if normalized_action in {"message", "resume"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{normalized_action} is only supported for an individual agent session.")
     if normalized_action == "cancel":

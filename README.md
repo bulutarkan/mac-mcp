@@ -369,6 +369,8 @@ This stricter traversal is applied only when a delegated resource scope has expl
 
 Mac MCP publishes a regression-backed [Security Assurance Matrix](docs/security-assurance.md) that maps stable risk classes to their controls, exact automated tests, and release history. `scripts/verify_security_assurance.py` validates those links in CI so renamed tests, missing controls, orphan assurance tags, missing CHANGELOG linkage, and secret-like/private-path material in the public matrix fail the gate instead of silently going stale.
 
+Delegated agent control-plane access is lineage-scoped. A scoped agent can inspect and manage itself and descendants it owns, but sibling, ancestor, and unrelated agent/team metadata, results, logs, waits, and lifecycle actions fail closed. The local authenticated/root control plane keeps its existing administrative view. Owner/root/parent lineage is persisted in agent/team metadata and denial events are recorded without opening a mutating side-effect intent.
+
 ## Durable delegated-workflow resume
 
 Delegated agents now get a provider-independent durable workflow checkpoint under `~/.mac-mcp/workflows/`. The checkpoint stores the original task **input hash**, provider/session lineage, resume generation, a sanitized provider milestone cursor, and a bounded chain of verified Mac MCP side-effect receipts. Receipt rows contain tool/family metadata plus hashes of arguments/results; raw prompts, commands, file contents, typed values, credentials, and tool payloads are not copied into the checkpoint store. Workflow and agent-map files are owner-only (`0600`) inside an owner-only directory (`0700`) and carry an integrity hash so corrupt or mismatched state fails closed.

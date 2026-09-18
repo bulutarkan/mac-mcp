@@ -1023,6 +1023,42 @@ class ObservedFastMCP(FastMCP):
                 security_event("POLICY_DENY", "deny", reasons)
                 raise ToolError(f"scope_denied: tool={name}; reasons={reasons}")
 
+            if policy_context.agent_id and name in {"get_agent", "list_agents", "wait_agents", "agent_action"}:
+                from fastapi import HTTPException
+                from .tools_agents import authorize_agent_control_request
+                try:
+                    authorize_agent_control_request(name, arguments, context=policy_context)
+                except HTTPException as exc:
+                    detail = exc.detail if isinstance(exc.detail, dict) else {}
+                    if exc.status_code != 403 or detail.get("error") != "agent_control_denied":
+                        self.telemetry.finish_call(event_id, error=exc)
+                        raise
+                    target_type = str(detail.get("target_type") or "agent")
+                    target_id = str(detail.get("target_id") or "unknown")
+                    operation = str(detail.get("operation") or name)
+                    result = {
+                        "ok": False,
+                        "denied": True,
+                        "error": "agent_control_denied",
+                        "reason": str(detail.get("reason") or "lineage_not_authorized"),
+                        "target_type": target_type,
+                        "target_id": target_id,
+                        "operation": operation,
+                    }
+                    self.telemetry.finish_call(
+                        event_id, result=result, metadata={"policy_decision": "agent_control_denied"}
+                    )
+                    security_event(
+                        "AGENT_CONTROL_DENY", "deny", "lineage_not_authorized",
+                        target_summary=f"{target_type}:{target_id} operation={operation}",
+                    )
+                    if top_level and steering_identity is not None:
+                        self.steering.mark_security_attention(steering_identity, "agent_control_denied")
+                    raise ToolError(
+                        f"agent_control_denied: actor={policy_context.agent_id}; "
+                        f"target={target_type}:{target_id}; operation={operation}"
+                    ) from exc
+
             gate = self.security_context.evaluate(
                 key=security_key,
                 public_session_id=public_session_id,
