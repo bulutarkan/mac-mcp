@@ -59,7 +59,7 @@ class BrowserAgentLayerTests(unittest.TestCase):
         for token in (
             'function __mcpTopBlockingModal', 'function __mcpAssociation', 'function __mcpSemanticVisible',
             'ELEMENT_OUTSIDE_MODAL_SCOPE', 'pointer_events_association_fallback', 'hit_target',
-            'associated_control', 'associated_label',
+            'associated_control', 'associated_label', "state==='open'", "state==='closed'", 'structurallyVisible',
         ):
             self.assertIn(token, bootstrap)
         find_script = _find_candidates_js('İş', 'radio', 'İş', 20, actionable_only=True)

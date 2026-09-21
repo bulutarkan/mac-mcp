@@ -722,18 +722,30 @@ function __mcpAssociationRelated(a,b){
   return false;
 }
 function __mcpSemanticVisible(el){
+  if(!el||el.nodeType!==1)return false;
+  var cur=el,guard=0;while(cur&&guard++<20){
+    try{
+      var cs=__mcpStyle(cur),state=String(cur.getAttribute&&cur.getAttribute('data-state')||'').toLowerCase(),r=String(cur.getAttribute&&cur.getAttribute('role')||'').toLowerCase(),am=String(cur.getAttribute&&cur.getAttribute('aria-modal')||'').toLowerCase();
+      if(cs.display==='none'||cs.visibility==='hidden'||String(cur.getAttribute&&cur.getAttribute('aria-hidden')||'').toLowerCase()==='true')return false;
+      if(state==='closed'&&(r==='dialog'||am==='true'))return false;
+    }catch(e){}
+    cur=__mcpParent(cur);
+  }
   if(__mcpVisible(el))return true;
   var role=String(__mcpRole(el)||'').toLowerCase(),tag=String(el&&el.tagName||'').toLowerCase(),type=String(el&&el.getAttribute&&el.getAttribute('type')||'').toLowerCase();
   if(['radio','checkbox','switch'].indexOf(role)<0&&!(tag==='input'&&['radio','checkbox'].indexOf(type)>=0))return false;
   var a=__mcpAssociation(el);return !a.ambiguous&&!!a.label&&__mcpVisible(a.label);
 }
 function __mcpTopBlockingModal(){
-  var all=__mcpQueryAll('dialog[open],[aria-modal="true"],[role="dialog"]'),best=null,bestZ=-2147483648,bestOrder=-1;
+  var all=__mcpQueryAll('dialog[open],[aria-modal="true"],[role="dialog"],[data-state="open"]'),best=null,bestZ=-2147483648,bestOrder=-1;
   for(var i=0;i<all.length;i++){
-    var el=all[i];if(!__mcpVisible(el))continue;
-    var tag=String(el.tagName||'').toLowerCase(),role=String(el.getAttribute&&el.getAttribute('role')||'').toLowerCase(),aria=String(el.getAttribute&&el.getAttribute('aria-modal')||'').toLowerCase(),st=null;
-    try{st=__mcpStyle(el);}catch(e){}
-    var blocking=(tag==='dialog'&&el.hasAttribute('open'))||aria==='true'||(role==='dialog'&&st&&String(st.position||'').toLowerCase()==='fixed');
+    var el=all[i],tag=String(el.tagName||'').toLowerCase(),role=String(el.getAttribute&&el.getAttribute('role')||'').toLowerCase(),aria=String(el.getAttribute&&el.getAttribute('aria-modal')||'').toLowerCase(),state=String(el.getAttribute&&el.getAttribute('data-state')||'').toLowerCase(),st=null,rect=null;
+    if(state==='closed')continue;
+    try{st=__mcpStyle(el);rect=__mcpTopRect(el);}catch(e){}
+    var semanticOpen=state==='open'||(tag==='dialog'&&el.hasAttribute('open'))||aria==='true';
+    var structurallyVisible=!!(st&&rect&&st.display!=='none'&&st.visibility!=='hidden'&&rect.width>=1&&rect.height>=1&&rect.bottom>0&&rect.right>0&&rect.top<innerHeight&&rect.left<innerWidth);
+    if(!__mcpVisible(el)&&!(semanticOpen&&structurallyVisible))continue;
+    var blocking=semanticOpen||(role==='dialog'&&st&&String(st.position||'').toLowerCase()==='fixed');
     if(!blocking)continue;
     if(best&&__mcpComposedContains(best,el)){best=el;bestOrder=i;try{bestZ=parseInt(st.zIndex,10)||0;}catch(e){bestZ=0;}continue;}
     var z=0;try{z=parseInt(st.zIndex,10);if(!isFinite(z))z=0;}catch(e){}
