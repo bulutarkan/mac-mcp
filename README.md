@@ -381,6 +381,14 @@ Mac MCP can issue strong receipts only for side effects routed through its own t
 
 Client cancellation follows the same safety model. Sync MCP tool bodies receive a shared cooperative cancellation context even when they run in a worker thread. Mac MCP terminates process groups it owns, stops jobs created by a cancelled parallel-command call, interrupts browser/native polling, releases browser tab leases through normal context cleanup, and runs bounded native focus restoration before propagating cancellation. Telemetry records `cancelled` separately from ordinary failures. If a mutating operation is opaque or cannot be proven stopped before its effect, its durable intent is closed as `client_cancelled_outcome_unknown`, telemetry/steering expose `outcome_unknown`, and automatic retry/resume is blocked rather than risking a duplicate side effect.
 
+## Isolated Git worktrees for write agents
+
+Delegated agents with `access_mode="workspace_write"` use `git_isolation="auto"` by default. When `cwd` is inside a Git repository and the write scope can be safely attenuated, Mac MCP creates an ephemeral branch/worktree under an already-authorized workspace root, remaps the child cwd/path scope to that checkout, and records the base commit plus changed-file/diff metadata. `git_isolation="required"` fails closed when that guarantee cannot be enforced; `off` keeps the original checkout. Read-only agents do not need a worktree, while unrestricted `full` access is never presented as worktree-confined. Non-Git workspaces gracefully keep the existing behavior in `auto` mode.
+
+Parallel sibling tasks receive separate worktrees. A team pins one Git base commit, downstream DAG/reviewer tasks fan in completed dependency patches into a fresh isolated checkout, and bounded coder revisions/resumes continue the same worktree rather than losing in-progress edits. Cancel/crash leaves the isolated checkout recoverable. `get_agent`/`wait_agents` expose the worktree path, base, changed files, diff stat and apply state.
+
+Returning changes to the user's source checkout is explicit: `agent_action(action="apply")` is **local/root control-plane only**. It refuses touched paths that are dirty, detects touched-path changes since the agent base, preflights the patch against the current HEAD in a temporary integration worktree, rechecks per-path fingerprints immediately before mutation, and rolls back already-copied preimages if an internal apply step fails. It never runs `git reset --hard`, `git clean`, or an automatic source-tree cherry-pick/merge. Unrelated user changes are left alone. Conflicts return the affected paths and no intentional source-tree mutation. `despawn` refuses unapplied isolated changes until they are either safely applied or explicitly discarded; shared resume/revision worktrees stay alive until their last agent reference is gone.
+
 ## Agent team budgets and adaptive retry
 
 ### Failure-aware team outcome and quorum

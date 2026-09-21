@@ -37,6 +37,10 @@ from .workflow_checkpoints import (
     workflow_for_agent, workflow_input_hash,
 )
 from . import browser_tabs
+from .agent_worktrees import (
+    GIT_ISOLATION_MODES, AgentWorktreeError, apply_worktree, cleanup_worktree,
+    inspect_worktree, prepare_worktree, remapped_roots, resolve_git_base, reuse_worktree, seed_worktree,
+)
 
 AGENTS_DIR = BASE_DIR / "agents"
 TEAMS_DIR = BASE_DIR / "agent_teams"
@@ -948,6 +952,17 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
                 or str(team.get("owner_agent_id") or "").strip()
                 or None
             )
+            seed_agent_ids: List[str] = []
+            if not str(task.get("latest_agent_id") or "").strip():
+                seed_task_ids = list(task.get("depends_on") or [])
+                review_of = str(task.get("review_of") or "").strip()
+                if review_of and review_of not in seed_task_ids:
+                    seed_task_ids.append(review_of)
+                for seed_task_id in seed_task_ids:
+                    seed_task = task_map.get(str(seed_task_id))
+                    seed_agent = str((seed_task or {}).get("latest_agent_id") or "").strip()
+                    if seed_agent and seed_agent not in seed_agent_ids:
+                        seed_agent_ids.append(seed_agent)
             try:
                 item = _spawn_internal(
                     settings=None,
@@ -971,6 +986,12 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
                     project=task.get("project"),
                     role=task.get("role"),
                     provenance_class=str(team.get("provenance_class") or "local"),
+                    git_isolation=str(team.get("git_isolation") or "auto"),
+                    git_base_commit=team.get("git_base_commit"),
+                    reuse_worktree_agent_id=(
+                        str(task.get("latest_agent_id") or "").strip() or None
+                    ),
+                    seed_worktree_agent_ids=seed_agent_ids,
                 )
             except Exception as exc:
                 task["state"] = "failed"
@@ -2262,6 +2283,134 @@ def agent_catalog(
     return {"ok": True, "providers": providers}
 
 
+def _worktree_public(state: Any) -> Dict[str, Any]:
+    if not isinstance(state, dict):
+        return {"enabled": False}
+    public = {
+        "enabled": bool(state.get("enabled")),
+        "mode": state.get("mode"),
+        "status": state.get("status"),
+        "reason": state.get("reason"),
+        "source_cwd": state.get("source_cwd"),
+        "path": state.get("path"),
+        "branch": state.get("branch"),
+        "base_commit": state.get("base_commit"),
+        "source_head_at_spawn": state.get("source_head_at_spawn"),
+        "worktree_head": state.get("worktree_head"),
+        "snapshot_commit": state.get("snapshot_commit"),
+        "changed_files": list(state.get("changed_files") or []),
+        "change_count": int(state.get("change_count") or 0),
+        "has_changes": bool(state.get("has_changes")),
+        "pending_changes": bool(state.get("pending_changes")),
+        "diff_stat": state.get("diff_stat"),
+        "apply_status": state.get("apply_status"),
+        "applied_at": state.get("applied_at"),
+        "applied_to_head": state.get("applied_to_head"),
+        "shared_from_agent_id": state.get("shared_from_agent_id"),
+    }
+    return public
+
+
+def _refresh_agent_worktree(agent_id: str) -> Dict[str, Any]:
+    meta = _read_meta(agent_id)
+    state = meta.get("worktree") if isinstance(meta.get("worktree"), dict) else {}
+    if not state or not state.get("enabled"):
+        return dict(state or {})
+    try:
+        refreshed = inspect_worktree(state)
+        refreshed.pop("inspection_error", None)
+    except AgentWorktreeError as exc:
+        refreshed = dict(state)
+        refreshed["inspection_error"] = f"{exc.code}: {exc}"
+        refreshed["inspected_at"] = _now()
+    _persist_shared_worktree_state(agent_id, refreshed)
+    return refreshed
+
+
+def _worktree_referrers(path: str, *, exclude_agent_id: Optional[str] = None) -> List[str]:
+    target = str(Path(path).expanduser().resolve(strict=False))
+    refs: List[str] = []
+    if not AGENTS_DIR.exists():
+        return refs
+    for entry in AGENTS_DIR.iterdir():
+        if not entry.is_dir() or entry.name == exclude_agent_id or not (entry / "meta.json").exists():
+            continue
+        try:
+            meta = _read_meta(entry.name)
+        except HTTPException:
+            continue
+        state = meta.get("worktree") if isinstance(meta.get("worktree"), dict) else {}
+        raw = str(state.get("path") or "").strip()
+        if raw and str(Path(raw).expanduser().resolve(strict=False)) == target:
+            refs.append(entry.name)
+    return sorted(refs)
+
+
+def _active_worktree_referrers(path: str, *, exclude_agent_id: Optional[str] = None) -> List[str]:
+    active: List[str] = []
+    for ref in _worktree_referrers(path, exclude_agent_id=exclude_agent_id):
+        try:
+            meta = _normalize(ref, _read_meta(ref))
+        except HTTPException:
+            continue
+        if meta.get("status") not in TERMINAL_STATUSES:
+            active.append(ref)
+    return active
+
+
+def _persist_shared_worktree_state(agent_id: str, state: Dict[str, Any]) -> None:
+    path = str(state.get("path") or "").strip()
+    targets = [agent_id]
+    if path:
+        targets.extend(_worktree_referrers(path, exclude_agent_id=agent_id))
+    for target_id in sorted(set(targets)):
+        try:
+            def save(current: Dict[str, Any]) -> Optional[bool]:
+                existing = current.get("worktree") if isinstance(current.get("worktree"), dict) else {}
+                if path and str(existing.get("path") or "") != path:
+                    return False
+                current["worktree"] = dict(state)
+                current["updated_at"] = _now()
+                return True
+            _update_meta(target_id, save)
+        except HTTPException:
+            continue
+
+
+def _worktree_despawn_blocker(agent_id: str, meta: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    current = dict(meta or _read_meta(agent_id))
+    state = current.get("worktree") if isinstance(current.get("worktree"), dict) else {}
+    if not state.get("enabled"):
+        return None
+    refreshed = _refresh_agent_worktree(agent_id)
+    if not refreshed.get("pending_changes"):
+        return None
+    if str(refreshed.get("apply_status") or "") in {"applied", "nothing_to_apply", "discarded", "cleaned"}:
+        return None
+    return {
+        "agent_id": agent_id,
+        "changed_files": list(refreshed.get("changed_files") or []),
+        "change_count": int(refreshed.get("change_count") or 0),
+        "worktree_path": refreshed.get("path"),
+        "reason": "unapplied_worktree_changes",
+    }
+
+
+def _worktree_error_http(exc: AgentWorktreeError, *, status_code: int = status.HTTP_409_CONFLICT) -> HTTPException:
+    detail = {"error": exc.code, "message": str(exc), **dict(exc.details or {})}
+    return HTTPException(status_code, detail)
+
+
+def _source_scope_from_meta(meta: Dict[str, Any]) -> ResourceScope:
+    raw = meta.get("source_scope") if isinstance(meta.get("source_scope"), dict) else meta.get("scope")
+    return ResourceScope.from_dict(raw)
+
+
+def _source_cwd_from_meta(meta: Dict[str, Any]) -> str:
+    state = meta.get("worktree") if isinstance(meta.get("worktree"), dict) else {}
+    return str(state.get("source_cwd") or meta.get("source_cwd") or meta.get("cwd") or "")
+
+
 def _resolve_cwd(cwd: Optional[str]) -> Path:
     workdir = Path(cwd).expanduser().resolve() if cwd else Path.home().resolve()
     if not workdir.exists() or not workdir.is_dir():
@@ -2307,6 +2456,9 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "reasoning": meta.get("reasoning"),
         "project": meta.get("project"),
         "cwd": meta.get("cwd"),
+        "source_cwd": meta.get("source_cwd"),
+        "git_isolation": meta.get("git_isolation", "off"),
+        "worktree": _worktree_public(meta.get("worktree")),
         "access_mode": meta.get("access_mode"),
         "permission_profile": meta.get("permission_profile"),
         "capability_profile": meta.get("capability_profile"),
@@ -2397,7 +2549,25 @@ def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
                     workflow_mark_terminal(agent_id, "failed")
                 except WorkflowCheckpointError:
                     pass
+                try:
+                    _refresh_agent_worktree(agent_id)
+                    meta = _read_meta(agent_id)
+                except Exception:
+                    pass
     return meta
+
+
+def _spawn_worker_process(agent_id: str, worker_log) -> subprocess.Popen:
+    return subprocess.Popen(
+        [sys.executable, "-m", "mcp_server.tools_agents", "--worker", agent_id],
+        cwd=str(BASE_DIR.parent),
+        env=_base_env(),
+        stdin=subprocess.DEVNULL,
+        stdout=worker_log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        text=True,
+    )
 
 
 def _spawn_internal(
@@ -2429,6 +2599,10 @@ def _spawn_internal(
     resume_generation: int = 0,
     resume_token: Optional[str] = None,
     resume_parent_agent_id: Optional[str] = None,
+    git_isolation: str = "auto",
+    git_base_commit: Optional[str] = None,
+    reuse_worktree_agent_id: Optional[str] = None,
+    seed_worktree_agent_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     provider = provider.lower().strip()
     clean_role = str(role or "").strip().lower() or None
@@ -2457,19 +2631,71 @@ def _spawn_internal(
     if access_mode not in _ACCESS_MODES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"access_mode must be one of: {', '.join(sorted(_ACCESS_MODES))}")
     _validate_provider_access_mode(provider, access_mode)
+    git_isolation = str(git_isolation or "auto").strip().lower()
+    if git_isolation not in GIT_ISOLATION_MODES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"git_isolation must be one of: {', '.join(sorted(GIT_ISOLATION_MODES))}")
 
-    workdir = _resolve_cwd(cwd)
+    source_workdir = _resolve_cwd(cwd)
+    source_scope = scope
+    workdir = source_workdir
     effective_timeout = min(max(10, int(timeout_s or DEFAULT_AGENT_TIMEOUT_S)), MAX_AGENT_TIMEOUT_S)
     effective_idle_timeout = None if idle_timeout_s is None else min(max(5, int(idle_timeout_s)), 3600)
     effective_retries = min(max(0, int(retries)), 3)
     agent_id = "agt_" + uuid.uuid4().hex[:10]
     agent_lineage = _new_agent_lineage(agent_id, parent_agent_id)
+    worktree_created = False
+    try:
+        if reuse_worktree_agent_id:
+            reuse_meta = _read_meta(str(reuse_worktree_agent_id))
+            reuse_state = reuse_meta.get("worktree") if isinstance(reuse_meta.get("worktree"), dict) else {}
+            if not reuse_state.get("enabled"):
+                raise AgentWorktreeError("git_worktree_reuse_unavailable", "The parent agent has no isolated worktree to reuse.")
+            worktree_state = reuse_worktree(reuse_state)
+            worktree_state["shared_from_agent_id"] = str(reuse_worktree_agent_id)
+            workdir = Path(str(worktree_state["cwd"])).resolve(strict=False)
+            scope = ResourceScope.from_dict(reuse_meta.get("scope"))
+            source_scope = _source_scope_from_meta(reuse_meta)
+            source_workdir = Path(_source_cwd_from_meta(reuse_meta)).resolve(strict=False)
+        else:
+            worktree_state = prepare_worktree(
+                agent_id=agent_id, cwd=source_workdir, path_roots=source_scope.path_roots,
+                mode=git_isolation, access_mode=access_mode, base_commit=git_base_commit,
+            )
+            if worktree_state.get("enabled"):
+                worktree_created = True
+                workdir = Path(str(worktree_state["cwd"])).resolve(strict=False)
+                scope_data = source_scope.to_dict()
+                scope_data["path_roots"] = remapped_roots(worktree_state)
+                scope = ResourceScope.from_dict(scope_data)
+                seed_states: List[Dict[str, Any]] = []
+                for seed_agent_id in seed_worktree_agent_ids or []:
+                    seed_meta = _read_meta(str(seed_agent_id))
+                    seed_state = seed_meta.get("worktree") if isinstance(seed_meta.get("worktree"), dict) else {}
+                    if seed_state.get("enabled"):
+                        seed_states.append(seed_state)
+                if seed_states:
+                    worktree_state = seed_worktree(worktree_state, seed_states)
+    except AgentWorktreeError as exc:
+        if worktree_created:
+            try:
+                cleanup_worktree(worktree_state, force=True)
+            except Exception:
+                pass
+        raise _worktree_error_http(exc, status_code=status.HTTP_400_BAD_REQUEST if exc.code.startswith("invalid_") else status.HTTP_409_CONFLICT) from exc
     path = _agent_dir(agent_id)
-    path.mkdir(parents=True, exist_ok=False)
+    try:
+        path.mkdir(parents=True, exist_ok=False)
+    except Exception:
+        if worktree_created:
+            try:
+                cleanup_worktree(worktree_state, force=True)
+            except Exception:
+                pass
+        raise
     user_prompt = prompt.strip()
     workflow_hash = str(workflow_input_hash_value or "").strip() or workflow_input_hash(
-        prompt=user_prompt, provider=provider, cwd=str(workdir), access_mode=access_mode,
-        scope=scope.to_dict(), role=clean_role,
+        prompt=user_prompt, provider=provider, cwd=str(source_workdir), access_mode=access_mode,
+        scope=source_scope.to_dict(), role=clean_role,
     )
     workflow_id_value = str(workflow_id or "").strip() or ("wf_" + uuid.uuid4().hex[:16])
     access_instruction = (
@@ -2517,6 +2743,10 @@ def _spawn_internal(
         "reasoning": reasoning,
         "project": project,
         "cwd": str(workdir),
+        "source_cwd": str(source_workdir),
+        "source_scope": source_scope.to_dict(),
+        "git_isolation": git_isolation,
+        "worktree": worktree_state,
         "access_mode": access_mode,
         "permission_profile": permission_profile,
         "capability_profile": capability_profile,
@@ -2598,21 +2828,17 @@ def _spawn_internal(
             )
     except WorkflowCheckpointError as exc:
         shutil.rmtree(path, ignore_errors=True)
+        if worktree_created:
+            try:
+                cleanup_worktree(worktree_state, force=True)
+            except Exception:
+                pass
         status_code = status.HTTP_409_CONFLICT if isinstance(exc, (CheckpointConflictError, CheckpointUnknownError)) else status.HTTP_500_INTERNAL_SERVER_ERROR
         raise HTTPException(status_code, f"{exc.code}: {exc}") from exc
 
     worker_log = (path / "worker.log").open("a", encoding="utf-8")
     try:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "mcp_server.tools_agents", "--worker", agent_id],
-            cwd=str(BASE_DIR.parent),
-            env=_base_env(),
-            stdin=subprocess.DEVNULL,
-            stdout=worker_log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            text=True,
-        )
+        proc = _spawn_worker_process(agent_id, worker_log)
     except OSError as exc:
         worker_log.close()
         spawn_error = str(exc)
@@ -2620,6 +2846,12 @@ def _spawn_internal(
             current.update({"status": "failed", "ended_at": _now(), "updated_at": _now(), "note": spawn_error})
 
         _update_meta(agent_id, mark_spawn_failed)
+        if worktree_created:
+            try:
+                cleaned = cleanup_worktree(worktree_state, force=True)
+                _update_meta(agent_id, lambda current: current.update({"worktree": cleaned, "updated_at": _now()}))
+            except Exception:
+                pass
         try:
             if resume_token and resume_parent_agent_id:
                 rollback_resumed_agent(
@@ -2665,6 +2897,7 @@ def spawn_agent(
     project: Optional[str] = None,
     role: Optional[str] = None,
     provenance_class: str = "local",
+    git_isolation: str = "auto",
 ) -> Dict[str, Any]:
     workdir = _resolve_cwd(cwd)
     effective_scope, permission_profile, effective_capability_profile = _requested_agent_scope(
@@ -2676,7 +2909,7 @@ def spawn_agent(
         result_style, effective_scope.access_mode.value, effective_scope, permission_profile,
         capability_profile=effective_capability_profile, parent_agent_id=context.agent_id,
         idle_timeout_s=idle_timeout_s, retries=retries, project=project,
-        role=role, provenance_class=provenance_class,
+        role=role, provenance_class=provenance_class, git_isolation=git_isolation,
     )
 
 
@@ -2707,6 +2940,7 @@ def spawn_agents(
     max_team_retries: Optional[int] = None,
     max_total_tool_calls: Optional[int] = None,
     max_total_tokens: Optional[int] = None,
+    git_isolation: str = "auto",
 ) -> Dict[str, Any]:
     provider = str(provider or "").strip().lower()
     if provider not in _PROVIDER_NAMES:
@@ -2715,6 +2949,9 @@ def spawn_agents(
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"provider_disabled: {provider} is disabled in Mac MCP Settings > Subagents.")
     if provider != "chatgpt" and project:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "project is only supported by provider=chatgpt.")
+    git_isolation = str(git_isolation or "auto").strip().lower()
+    if git_isolation not in GIT_ISOLATION_MODES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"git_isolation must be one of: {', '.join(sorted(GIT_ISOLATION_MODES))}")
     team_role = str(role or "").strip().lower() or None
     if team_role and team_role not in VALID_ROLES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"role must be one of: {', '.join(sorted(VALID_ROLES))}.")
@@ -2875,6 +3112,10 @@ def spawn_agents(
             "failure_reason": None,
         })
 
+    try:
+        team_git_base = resolve_git_base(workdir, mode=git_isolation, access_mode=access_mode)
+    except AgentWorktreeError as exc:
+        raise _worktree_error_http(exc, status_code=status.HTTP_409_CONFLICT) from exc
     team_id = "team_" + uuid.uuid4().hex[:10]
     created = _now()
     team_lineage = _team_lineage_for_spawn(parent_team_id)
@@ -2888,6 +3129,8 @@ def spawn_agents(
         "reasoning": reasoning,
         "project": (str(project or _chatgpt_default_project() or "").strip() or None) if provider == "chatgpt" else None,
         "cwd": str(workdir),
+        "git_isolation": git_isolation,
+        "git_base_commit": team_git_base,
         "timeout_s": timeout_s,
         "idle_timeout_s": idle_timeout_s,
         "retries": child_retries,
@@ -3239,10 +3482,57 @@ def _agent_action_single(
     signal: str = "TERM",
 ) -> Dict[str, Any]:
     action = action.lower().strip()
-    if action not in {"cancel", "message", "retry", "resume", "despawn"}:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be cancel, message, retry, resume, or despawn.")
+    if action not in {"cancel", "message", "retry", "resume", "despawn", "apply", "discard"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be cancel, message, retry, resume, despawn, apply, or discard.")
     meta = _authorize_agent_control(agent_id, f"agent_action:{action}")
     meta = _normalize(agent_id, meta)
+
+    if action in {"apply", "discard"}:
+        if action == "apply" and current_policy_context().agent_id is not None:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, {
+                "error": "git_apply_root_required",
+                "message": "Applying an isolated worktree to its source checkout requires the local/root control plane.",
+            })
+        if meta.get("status") not in TERMINAL_STATUSES:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"Wait for or cancel the agent before action={action}.")
+        state = _refresh_agent_worktree(agent_id)
+        if not state.get("enabled"):
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "error": "git_isolation_disabled",
+                "message": "This agent has no isolated Git worktree.",
+                "reason": state.get("reason"),
+            })
+        if action == "apply":
+            path = str(state.get("path") or "")
+            active_refs = _active_worktree_referrers(path, exclude_agent_id=agent_id) if path else []
+            if active_refs:
+                raise HTTPException(status.HTTP_409_CONFLICT, {
+                    "error": "git_worktree_in_use",
+                    "message": "A resumed/revision agent is still running in this isolated worktree.",
+                    "active_referrers": active_refs,
+                })
+            try:
+                updated, result = apply_worktree(state)
+            except AgentWorktreeError as exc:
+                raise _worktree_error_http(exc) from exc
+            _persist_shared_worktree_state(agent_id, updated)
+            latest = _read_meta(agent_id)
+            return {"ok": bool(result.get("ok")), "action": "apply", **_public_meta(agent_id, latest), "apply": result}
+        path = str(state.get("path") or "")
+        active_refs = _active_worktree_referrers(path, exclude_agent_id=agent_id) if path else []
+        if active_refs:
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "error": "git_worktree_in_use",
+                "message": "The isolated worktree is still used by a running resumed/revision agent.",
+                "active_referrers": active_refs,
+            })
+        try:
+            cleaned = cleanup_worktree(state, force=True)
+        except AgentWorktreeError as exc:
+            raise _worktree_error_http(exc) from exc
+        _persist_shared_worktree_state(agent_id, cleaned)
+        latest = _read_meta(agent_id)
+        return {"ok": True, "action": "discard", **_public_meta(agent_id, latest)}
 
     if action == "cancel":
         if meta.get("status") in TERMINAL_STATUSES:
@@ -3286,15 +3576,36 @@ def _agent_action_single(
                     worker_proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     pass
+        try:
+            _refresh_agent_worktree(agent_id)
+            meta = _read_meta(agent_id)
+        except Exception:
+            pass
         return {"ok": True, **_public_meta(agent_id, meta)}
 
     if action == "despawn":
         if meta.get("status") not in TERMINAL_STATUSES:
             raise HTTPException(status.HTTP_409_CONFLICT, "Cancel a running agent before despawn.")
+        blocker = _worktree_despawn_blocker(agent_id, meta)
+        if blocker is not None:
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "error": "unapplied_worktree_changes",
+                "message": "Isolated Git changes must be applied or explicitly discarded before despawn.",
+                **blocker,
+                "next_actions": ["agent_action(action=apply)", "agent_action(action=discard)"],
+            })
+        state = _refresh_agent_worktree(agent_id) if isinstance(meta.get("worktree"), dict) and (meta.get("worktree") or {}).get("enabled") else {}
+        path = str(state.get("path") or "")
+        refs = _worktree_referrers(path, exclude_agent_id=agent_id) if path else []
+        if state.get("enabled") and not refs and state.get("status") not in {"discarded", "cleaned", "missing"}:
+            try:
+                cleanup_worktree(state, force=True)
+            except AgentWorktreeError as exc:
+                raise _worktree_error_http(exc) from exc
         get_scoped_credential_store().revoke_agent(agent_id)
         browser_tabs.release_agent_leases(agent_id)
         shutil.rmtree(_agent_dir(agent_id))
-        return {"ok": True, "agent_id": agent_id, "status": "despawned"}
+        return {"ok": True, "agent_id": agent_id, "status": "despawned", "worktree_preserved_for": refs}
 
     original_prompt = (_agent_dir(agent_id) / "prompt.txt").read_text(encoding="utf-8", errors="replace")
     if action == "retry":
@@ -3327,12 +3638,12 @@ def _agent_action_single(
             prompt=original_prompt,
             model=meta.get("model"),
             reasoning=meta.get("reasoning"),
-            cwd=meta.get("cwd"),
+            cwd=_source_cwd_from_meta(meta),
             timeout_s=meta.get("timeout_s"),
             title=f"Retry: {meta.get('title') or agent_id}",
             result_style=meta.get("result_style", "concise"),
             access_mode=meta.get("access_mode", "workspace_write"),
-            scope=ResourceScope.from_dict(meta.get("scope")),
+            scope=_source_scope_from_meta(meta),
             permission_profile=str(meta.get("permission_profile") or "trusted"),
             capability_profile=str(meta.get("capability_profile") or "legacy"),
             parent_agent_id=agent_id,
@@ -3342,6 +3653,8 @@ def _agent_action_single(
             project=meta.get("project"),
             role=meta.get("role"),
             provenance_class=str(meta.get("provenance_class") or "local"),
+            git_isolation=str(meta.get("git_isolation") or "auto"),
+            git_base_commit=(meta.get("worktree") or {}).get("base_commit") if isinstance(meta.get("worktree"), dict) else None,
         )
 
     if action == "resume":
@@ -3404,6 +3717,8 @@ def _agent_action_single(
                 resume_generation=int(checkpoint["resume_generation"]),
                 resume_token=str(checkpoint["resume_token"]),
                 resume_parent_agent_id=agent_id,
+                git_isolation=str(meta.get("git_isolation") or "auto"),
+                reuse_worktree_agent_id=agent_id if (meta.get("worktree") or {}).get("enabled") else None,
             )
         except Exception:
             abort_resume(
@@ -3441,6 +3756,8 @@ def _agent_action_single(
         project=meta.get("project"),
         role=meta.get("role"),
         provenance_class=str(meta.get("provenance_class") or "local"),
+        git_isolation=str(meta.get("git_isolation") or "auto"),
+        reuse_worktree_agent_id=agent_id if (meta.get("worktree") or {}).get("enabled") else None,
     )
 
 
@@ -3460,7 +3777,7 @@ def agent_action(
     normalized_action = action.lower().strip()
     team = _authorize_team_control(str(team_id), f"agent_action:{normalized_action}")
     ids = list(team.get("agent_ids") or [])
-    if normalized_action in {"message", "resume"}:
+    if normalized_action in {"message", "resume", "apply", "discard"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"{normalized_action} is only supported for an individual agent session.")
     if normalized_action == "cancel":
         if int(team.get("scheduler_version") or 0) >= 1:
@@ -3486,6 +3803,20 @@ def agent_action(
         summary = _team_summary(str(team_id), team)
         if summary["terminal_count"] < summary["count"]:
             raise HTTPException(status.HTTP_409_CONFLICT, "Cancel or wait for all team agents before despawn.")
+        blockers = []
+        for child_id in ids:
+            try:
+                blocker = _worktree_despawn_blocker(child_id)
+            except HTTPException:
+                blocker = None
+            if blocker is not None:
+                blockers.append(blocker)
+        if blockers:
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "error": "unapplied_worktree_changes",
+                "message": "Apply or discard isolated child changes before team despawn.",
+                "agents": blockers,
+            })
         results = []
         for child_id in ids:
             try:
@@ -3541,6 +3872,7 @@ def agent_action(
                 max_team_retries=team.get("max_team_retries"),
                 max_total_tool_calls=team.get("max_total_tool_calls"),
                 max_total_tokens=team.get("max_total_tokens"),
+                git_isolation=str(team.get("git_isolation") or "auto"),
             )
         tasks = []
         for index, child_id in enumerate(ids, start=1):
@@ -3576,8 +3908,9 @@ def agent_action(
             title=f"Retry: {team.get('title') or team_id}", parent_team_id=str(team_id),
             scope=team.get("scope"), parent_profile="trusted", project=team.get("project"),
             role=team.get("role"), provenance_class=str(team.get("provenance_class") or "local"),
+            git_isolation=str(team.get("git_isolation") or "auto"),
         )
-    raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be cancel, message, retry, resume, or despawn.")
+    raise HTTPException(status.HTTP_400_BAD_REQUEST, "action must be cancel, message, retry, resume, despawn, apply, or discard.")
 
 
 def _extract_opencode(path: Path) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
@@ -4312,6 +4645,11 @@ def _worker(agent_id: str) -> int:
         workflow_mark_terminal(agent_id, final_status)
     except WorkflowCheckpointError:
         pass
+    try:
+        _refresh_agent_worktree(agent_id)
+        meta = _read_meta(agent_id)
+    except Exception:
+        pass
     if meta.get("status") == "cancelled":
         return 0
     return 0 if final_status == "completed" else 1
@@ -4321,6 +4659,10 @@ def _main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--worker":
         agent_id = sys.argv[2]
         rc = _worker(agent_id)
+        try:
+            _refresh_agent_worktree(agent_id)
+        except Exception:
+            pass
         try:
             meta = _read_meta(agent_id)
             team_id = str(meta.get("team_id") or "").strip()

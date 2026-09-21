@@ -417,7 +417,9 @@ def create_app():
             "ChatGPT accepts project=...; when omitted it uses CHATGPT_SUBAGENT_PROJECT if locally configured, "
             "otherwise it starts a normal new chat. ChatGPT long turns use bounded checkpoint/continue and "
             "rate-limit cooldown/resume protection; reasoning defaults to high unless explicitly overridden. "
-            "Supports idle timeout and bounded retries. Optional role=coder|reviewer|orchestrator injects only relevant, approved "
+            "Supports idle timeout and bounded retries. workspace_write Git tasks default to git_isolation=auto, which uses an "
+            "ephemeral per-agent worktree when it can be scope-confined; git_isolation=required fails closed if isolation cannot be "
+            "enforced, and off preserves the original cwd. Optional role=coder|reviewer|orchestrator injects only relevant, approved "
             "role lessons with bounded context; candidates never auto-activate. "
             "Codex enforces access_mode; OpenCode read_only is refused; ChatGPT access_mode is behavioral."
         ),
@@ -429,7 +431,8 @@ def create_app():
                      idle_timeout_s: Optional[int] = None, retries: int = 0,
                      scope: Optional[Dict[str, Any]] = None,
                      capability_profile: Optional[str] = None,
-                     project: Optional[str] = None, role: Optional[str] = None) -> Dict[str, Any]:
+                     project: Optional[str] = None, role: Optional[str] = None,
+                     git_isolation: str = "auto") -> Dict[str, Any]:
         context = current_policy_context()
         return _log(audit_logger, "spawn_agent",
                     lambda: spawn_agent(settings, provider=provider, prompt=prompt, model=model,
@@ -438,7 +441,7 @@ def create_app():
                                         idle_timeout_s=idle_timeout_s, retries=retries, scope=scope,
                                         parent_scope=context.scope, parent_profile=context.profile,
                                         capability_profile=capability_profile, project=project, role=role,
-                                        provenance_class=current_provenance_class()))
+                                        provenance_class=current_provenance_class(), git_isolation=git_isolation))
 
     @mcp.tool(
         name="spawn_agents",
@@ -447,9 +450,11 @@ def create_app():
             "max_parallel limits concurrent nodes. A reviewer task may set review_of=<task id> and must end with "
             "QUALITY_GATE: PASS or FAIL; FAIL can trigger up to max_revisions bounded revisions. Team-level admission controls include "
             "team_timeout_s, max_team_retries, max_total_tool_calls and max_total_tokens; max_parallel is the concurrency budget. "
-            "Retries are adaptive and only transient/retry-safe failures are replayed. All children inherit provider, model, reasoning "
-            "and access_mode. ChatGPT accepts project=... as the team default and task.project overrides. Optional team role or "
-            "task.role enables bounded role-learning context per child. Returns immediately with parent-visible budget remaining."
+            "Retries are adaptive and only transient/retry-safe failures are replayed. All children inherit provider, model, reasoning, "
+            "access_mode and git_isolation. workspace_write Git children default to separate ephemeral worktrees; task revisions reuse the "
+            "same isolated worktree while sibling tasks remain separated. ChatGPT accepts project=... as the team default and task.project "
+            "overrides. Optional team role or task.role enables bounded role-learning context per child. Returns immediately with "
+            "parent-visible budget remaining."
         ),
     )
     def _spawn_agents(tasks: List[Dict[str, Any]], provider: str, model: Optional[str] = None,
@@ -462,7 +467,8 @@ def create_app():
                       project: Optional[str] = None, role: Optional[str] = None,
                       max_parallel: Optional[int] = None, max_revisions: int = 1,
                       team_timeout_s: Optional[int] = None, max_team_retries: Optional[int] = None,
-                      max_total_tool_calls: Optional[int] = None, max_total_tokens: Optional[int] = None) -> Dict[str, Any]:
+                      max_total_tool_calls: Optional[int] = None, max_total_tokens: Optional[int] = None,
+                      git_isolation: str = "auto") -> Dict[str, Any]:
         context = current_policy_context()
         return _log(audit_logger, "spawn_agents",
                     lambda: spawn_agents(settings, tasks=tasks, provider=provider, model=model,
@@ -474,7 +480,7 @@ def create_app():
                                          provenance_class=current_provenance_class(), max_parallel=max_parallel,
                                          max_revisions=max_revisions, team_timeout_s=team_timeout_s,
                                          max_team_retries=max_team_retries, max_total_tool_calls=max_total_tool_calls,
-                                         max_total_tokens=max_total_tokens))
+                                         max_total_tokens=max_total_tokens, git_isolation=git_isolation))
 
     @mcp.tool(
         name="wait_agents",
@@ -516,11 +522,12 @@ def create_app():
     @mcp.tool(
         name="agent_action",
         description=(
-            "Control one agent or a whole team. action: cancel, retry, resume, despawn; message is available "
-            "for individual resumable agent sessions. Delegated callers may control only themselves/descendants or teams "
-            "they own within their persisted lineage; siblings and unrelated lineages fail closed. retry is refused after a "
-            "verified side-effect or uncertain crash boundary; resume preserves the provider session and durable receipts. "
-            "Team cancel cascades to all children."
+            "Control one agent or a whole team. action: cancel, retry, resume, despawn; individual isolated Git agents also support "
+            "apply (local/root-only, base/touched-file/CAS checked copy into the source working tree) and discard (explicitly remove the isolated worktree). "
+            "message is available for individual resumable agent sessions. Delegated callers may control only themselves/descendants or "
+            "teams they own within their persisted lineage; siblings and unrelated lineages fail closed. retry is refused after a verified "
+            "side-effect or uncertain crash boundary; resume preserves the provider session, worktree and durable receipts. Team cancel "
+            "cascades to all children; team despawn refuses unapplied isolated changes."
         ),
     )
     def _agent_action(action: str, agent_id: Optional[str] = None, team_id: Optional[str] = None,

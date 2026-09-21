@@ -78,7 +78,13 @@ class DependencyGraphSchedulerTests(unittest.TestCase):
             "parent_agent_id": parent_agent_id,
         }
         agents._write_meta(agent_id, meta)
-        self.spawned.append({"agent_id": agent_id, "task_id": team_task_id, "parent_agent_id": parent_agent_id})
+        self.spawned.append({
+            "agent_id": agent_id, "task_id": team_task_id, "parent_agent_id": parent_agent_id,
+            "git_isolation": kwargs.get("git_isolation"),
+            "git_base_commit": kwargs.get("git_base_commit"),
+            "reuse_worktree_agent_id": kwargs.get("reuse_worktree_agent_id"),
+            "seed_worktree_agent_ids": list(kwargs.get("seed_worktree_agent_ids") or []),
+        })
         self.prompts[agent_id] = prompt
         return {"ok": True, "agent_id": agent_id, "team_task_id": team_task_id, "status": "running", "title": title}
 
@@ -121,6 +127,10 @@ class DependencyGraphSchedulerTests(unittest.TestCase):
         self.assertEqual(["a", "b", "c"], [item["task_id"] for item in self.spawned])
         self.assertIn("A result", self.prompts[self.spawned[2]["agent_id"]])
         self.assertIn("B result", self.prompts[self.spawned[2]["agent_id"]])
+        self.assertEqual(
+            [self.spawned[0]["agent_id"], self.spawned[1]["agent_id"]],
+            self.spawned[2]["seed_worktree_agent_ids"],
+        )
 
         self.complete(self.spawned[2]["agent_id"], "C result")
         agents._team_tick(team_id)

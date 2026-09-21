@@ -60,6 +60,15 @@ The matrix is evidence, not a claim that software is risk-free. Entries intentio
 - **Control paths:** `mcp_server/tools_agents.py`, `mcp_server/scoped_auth.py`, `mcp_server/observability.py`
 - **Regression tests:** `tests/test_agent_lineage_isolation.py::AgentLineageIsolationTests.test_sibling_and_unrelated_get_or_logs_are_denied`, `tests/test_agent_lineage_isolation.py::AgentLineageIsolationTests.test_sibling_control_actions_are_denied_before_mutation`, `tests/test_agent_lineage_isolation.py::AgentLineageIsolationTests.test_team_owner_and_ancestor_can_access_but_sibling_cannot`, `tests/test_agent_lineage_isolation.py::AgentLineageIsolationTests.test_legacy_parent_metadata_backfills_and_survives_restart_like_reload`, `tests/test_agent_lineage_isolation.py::AgentLineageObservedMCPTests.test_direct_and_tool_invoke_denials_match_and_emit_security_audit`
 
+## SEC-GIT-001 — Delegated Git worktree isolation and safe apply
+
+- **Risk class:** Concurrent delegated write-agent overwrite and source-checkout scope escape
+- **Current status:** Verified
+- **Introduced / fixed release:** 2.1.5
+- **Control:** `workspace_write` Git agents default to per-agent ephemeral worktrees whose cwd/path scope is remapped inside an already-authorized parent root. Team tasks pin a common base; dependent/reviewer worktrees receive dependency patches without mutating the source checkout. Applying results back to the source tree is local/root-only and uses touched-path dirty/base checks, patch preflight, per-path CAS, bounded preimage rollback, and conflict-first failure rather than reset/clean/cherry-pick.
+- **Control paths:** `mcp_server/agent_worktrees.py`, `mcp_server/tools_agents.py`, `mcp_server/policy_scope.py`
+- **Regression tests:** `tests/test_agent_git_worktrees.py::AgentGitWorktreeCoreTests.test_two_parallel_write_worktrees_are_isolated_and_disjoint_apply_preserves_dirty_main`, `tests/test_agent_git_worktrees.py::AgentGitWorktreeCoreTests.test_overlapping_agent_edits_fail_closed_after_first_apply`, `tests/test_agent_git_worktrees.py::AgentGitWorktreeCoreTests.test_dependency_fan_in_combines_disjoint_worktree_changes`, `tests/test_agent_git_worktrees.py::AgentGitWorktreeSpawnIntegrationTests.test_spawn_internal_remaps_workspace_write_cwd_and_scope`, `tests/test_agent_git_worktrees.py::AgentGitWorktreeLifecycleTests.test_delegated_agent_cannot_apply_isolated_changes_to_source_tree`
+
 ## Maintaining the matrix
 
 Security changes should reuse an existing assurance ID when they strengthen the same risk/control boundary, or add a new ID when they introduce a materially different boundary. The relevant CHANGELOG bullet must include the ID in square brackets, and every listed regression method must carry a nearby `# ASSURANCE: <ID>` marker. Do not add a matrix row for a control that has no automated regression evidence.

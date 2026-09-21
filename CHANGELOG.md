@@ -1,9 +1,10 @@
 ## Unreleased
 
+- Added per-agent Git worktree isolation for delegated `workspace_write` tasks with pinned team bases, dependency/reviewer patch fan-in, persisted changed-file/diff metadata, crash/resume preservation, explicit local/root-only safe apply, touched-path CAS/conflict checks, rollback-on-apply-failure, and fail-closed despawn for unapplied work.
 - Propagated client cancellation through synchronous MCP worker threads and owned subprocess/browser/native work: process groups and parallel jobs are cleaned up, browser leases/native focus cleanup remain bounded, telemetry/steering distinguish cancellation from failure, and uncertain mutating outcomes fail closed as non-retryable `outcome_unknown`.
 - Made delegated-team waits failure-aware: `any`/`majority` require successful results, DAG quorum uses task outcomes instead of historical attempts, `all` separates completion from success, normalized outcomes/failure reasons are additive, and waiter timeout is no longer conflated with failed child work.
 - Added lineage-scoped delegated-agent control-plane isolation: agent/team ownership persists across restart, sibling and unrelated result/log/lifecycle access fails closed, direct and `tool_invoke` paths share the same authorization, and denied attempts are security-audited before mutating intents open.
-- Added a public regression-backed security assurance matrix for `SEC-FS-001`, `SEC-NET-001`, `SEC-AUTHZ-001`, `SEC-UPD-001`, `SEC-TXN-001`, and `SEC-AGENT-001`; CI now rejects stale control/test references, orphan assurance tags, missing release-note linkage, and secret-like/private-path content in the public matrix.
+- Added a public regression-backed security assurance matrix for `SEC-FS-001`, `SEC-NET-001`, `SEC-AUTHZ-001`, `SEC-UPD-001`, `SEC-TXN-001`, `SEC-AGENT-001`, and `SEC-GIT-001`; CI now rejects stale control/test references, orphan assurance tags, missing release-note linkage, and secret-like/private-path content in the public matrix.
 - Added team-level delegated-agent budgets for scheduler deadline, shared retries, concurrency, optional tool calls, and optional token usage, with parent-visible used/remaining values and explicit budget exhaustion reasons.
 - Added adaptive provider retry classification and atomic shared retry admission: transient/rate-limit failures use bounded staggered retries, while auth/config/quota/unknown failures and unsafe side-effect replay boundaries fail fast without retry storms.
 
@@ -18,6 +19,7 @@
 
 ## [2.1.5] - 2026-09-18
 
+- [SEC-GIT-001] Signed 2.1.5 stable revisions isolate delegated Git write agents in per-agent worktrees and require conflict-aware, local/root-only application before changes can reach the user's source checkout.
 - [SEC-AGENT-001] Signed 2.1.5 stable revisions add persistent delegated-agent control-plane lineage isolation so scoped agents can inspect/manage only themselves and descendants while local root administration remains available.
 - Added a cryptographically verified stable release channel using a pinned Ed25519 signer, detached signed manifest, complete tracked-file SHA-256/mode/size inventory, aggregate payload digest, and parent-commit binding to prevent manifest replay.
 - The updater now selects only the newest verified stable-release commit reachable from `origin/main`; ordinary development commits are ignored, while incomplete, tampered, wrong-hash, or invalidly signed release markers fail closed before repository/runtime mutation.
