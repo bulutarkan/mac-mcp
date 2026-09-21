@@ -22,7 +22,7 @@ from .scoped_fs import (
 from .file_transactions import (
     FileTransactionError, TransactionConflict, TransactionExpired, TransactionIrreversible,
     TransactionNotFound, TransactionPrepareFailed, TransactionRestoreFailed,
-    commit_transaction, prepare_transaction, rollback_transaction, transaction_paths, undo_transaction,
+    commit_transaction, path_revision, prepare_transaction, rollback_transaction, transaction_paths, undo_transaction,
 )
 
 MAX_READ_CHARS = 200_000
@@ -353,7 +353,11 @@ def read_file(settings: Settings, path: str, offset: int = 0, length: Optional[i
         sliced = lines[offset: offset + length if length else None]
         content = "".join(sliced)
     bounded, truncated = truncate(content, MAX_READ_CHARS)
-    return {"ok": True, "path": str(target), "content": bounded, "truncated": truncated}
+    try:
+        revision = path_revision(target, scope)
+    except FileTransactionError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.code, "message": str(exc)}) from exc
+    return {"ok": True, "path": str(target), "content": bounded, "truncated": truncated, "revision": revision}
 
 
 def read_multiple_files(settings: Settings, paths: List[str]) -> Dict[str, Any]:

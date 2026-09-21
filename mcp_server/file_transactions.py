@@ -307,6 +307,11 @@ def _fingerprint_for(path: Path, scope: Optional[ResourceScope]) -> str:
     return _fingerprint(path)
 
 
+def path_revision(path: Path, scope: Optional[ResourceScope] = None) -> str:
+    """Return the canonical filesystem revision used by transaction/CAS checks."""
+    return _fingerprint_for(Path(path), scope)
+
+
 def _open_secure_tar(path: Path) -> tuple[tarfile.TarFile, Any]:
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     fileobj = os.fdopen(fd, "wb")

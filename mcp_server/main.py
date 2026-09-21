@@ -452,9 +452,11 @@ def create_app():
             "team_timeout_s, max_team_retries, max_total_tool_calls and max_total_tokens; max_parallel is the concurrency budget. "
             "Retries are adaptive and only transient/retry-safe failures are replayed. All children inherit provider, model, reasoning, "
             "access_mode and git_isolation. workspace_write Git children default to separate ephemeral worktrees; task revisions reuse the "
-            "same isolated worktree while sibling tasks remain separated. ChatGPT accepts project=... as the team default and task.project "
-            "overrides. Optional team role or task.role enables bounded role-learning context per child. Returns immediately with "
-            "parent-visible budget remaining."
+            "same isolated worktree while sibling tasks remain separated. A task may add resources=[{kind,id,mode,expected_revision?}] "
+            "for global cross-team admission of workspace/path/file, browser_tab, native_app/window, process or clipboard resources; "
+            "path/browser claims are scope-checked and file expected_revision fails closed before provider start. ChatGPT accepts project=... "
+            "as the team default and task.project overrides. Optional team role or task.role enables bounded role-learning context per child. "
+            "Returns immediately with parent-visible budget and global admission/queue state."
         ),
     )
     def _spawn_agents(tasks: List[Dict[str, Any]], provider: str, model: Optional[str] = None,

@@ -41,6 +41,11 @@ from .agent_worktrees import (
     GIT_ISOLATION_MODES, AgentWorktreeError, apply_worktree, cleanup_worktree,
     inspect_worktree, prepare_worktree, remapped_roots, resolve_git_base, reuse_worktree, seed_worktree,
 )
+from .agent_admission import (
+    AdmissionError, bind_agent as admission_bind_agent, cancel_queued as admission_cancel_queued,
+    heartbeat as admission_heartbeat, normalize_claims as normalize_admission_claims, release as admission_release,
+    request_admission, snapshot as admission_snapshot,
+)
 
 AGENTS_DIR = BASE_DIR / "agents"
 TEAMS_DIR = BASE_DIR / "agent_teams"
@@ -724,6 +729,188 @@ def _team_reviewer_map(team: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return result
 
 
+def _chatgpt_admission_state() -> Dict[str, Any]:
+    state_path = _chatgpt_provider_state_path()
+    if not state_path.exists():
+        return {}
+    lock_path = AGENTS_DIR / ".chatgpt-provider-state.lock"
+    AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with lock_path.open("a", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH)
+            try:
+                payload = json.loads(state_path.read_text(encoding="utf-8"))
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _chatgpt_admission_cooldown_until(state: Optional[Dict[str, Any]] = None) -> Optional[float]:
+    payload = state if isinstance(state, dict) else _chatgpt_admission_state()
+    until = float(payload.get("cooldown_until") or 0.0)
+    return until if until > _now() else None
+
+
+def _chatgpt_admission_limit_override(state: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    payload = state if isinstance(state, dict) else _chatgpt_admission_state()
+    reduced_until = float(payload.get("reduced_until") or 0.0)
+    return 1 if reduced_until > _now() else None
+
+
+def _git_scope_isolated_for_admission(team: Dict[str, Any], scope: ResourceScope) -> bool:
+    if str(team.get("access_mode") or "") != "workspace_write":
+        return False
+    if str(team.get("git_isolation") or "auto") == "off" or not team.get("git_base_commit"):
+        return False
+    roots = scope.path_roots
+    if not roots:
+        return False
+    cwd = Path(str(team.get("cwd") or "")).expanduser().resolve(strict=False)
+    resolved = [Path(raw).expanduser().resolve(strict=False) for raw in roots]
+    # Conservative approximation of #50 applicability: all roots stay under the team
+    # cwd and at least one authorized root contains cwd (normally the repo root itself).
+    try:
+        all_under = all(root == cwd or root.is_relative_to(cwd) for root in resolved)
+    except AttributeError:  # pragma: no cover - Python <3.9 compatibility guard
+        all_under = all(str(root).startswith(str(cwd) + os.sep) or root == cwd for root in resolved)
+    contains_cwd = False
+    for root in resolved:
+        try:
+            cwd.relative_to(root)
+            contains_cwd = True
+            break
+        except ValueError:
+            continue
+    return all_under and contains_cwd
+
+
+def _task_admission_claims(team: Dict[str, Any], task: Dict[str, Any]) -> List[Dict[str, str]]:
+    explicit = list(task.get("resource_claims") or [])
+    scope = ResourceScope.from_dict(task.get("scope"))
+    access_mode = str(team.get("access_mode") or scope.access_mode.value)
+    claims: List[Dict[str, Any]] = [dict(item) for item in explicit]
+    if scope.path_roots:
+        if access_mode == "read_only":
+            claims.extend({"kind": "workspace", "id": root, "mode": "read"} for root in scope.path_roots)
+        elif access_mode == "workspace_write" and not _git_scope_isolated_for_admission(team, scope):
+            claims.extend({"kind": "workspace", "id": root, "mode": "write"} for root in scope.path_roots)
+    # Existing browser logical leases are exclusive per tab; admission mirrors that
+    # policy before a provider process starts but does not replace action-time leases.
+    if scope.browser_tabs:
+        claims.extend({"kind": "browser_tab", "id": tab, "mode": "write"} for tab in scope.browser_tabs)
+    try:
+        return normalize_admission_claims(claims)
+    except AdmissionError as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            {"error": exc.code, "message": str(exc), **dict(exc.details or {})},
+        ) from exc
+
+
+def _normalize_explicit_resource_claims(
+    raw_resources: Any, *, workdir: Path, scope: ResourceScope,
+) -> List[Dict[str, str]]:
+    if raw_resources in (None, []):
+        return []
+    if not isinstance(raw_resources, list) or any(not isinstance(item, dict) for item in raw_resources):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "task.resources must be a list of resource claim objects.")
+    prepared: List[Dict[str, Any]] = []
+    path_kinds = {"workspace", "path", "file"}
+    for raw in raw_resources:
+        item = dict(raw)
+        kind = str(item.get("kind") or "").strip().lower()
+        identifier = str(item.get("id") or item.get("resource") or "").strip()
+        if kind in path_kinds and identifier:
+            candidate = Path(identifier).expanduser()
+            if not candidate.is_absolute():
+                candidate = workdir / candidate
+            candidate = candidate.resolve(strict=False)
+            roots = scope.path_roots
+            if roots is not None:
+                allowed = False
+                for raw_root in roots:
+                    root = Path(raw_root).expanduser().resolve(strict=False)
+                    try:
+                        candidate.relative_to(root)
+                        allowed = True
+                        break
+                    except ValueError:
+                        continue
+                if not allowed:
+                    raise HTTPException(
+                        status.HTTP_403_FORBIDDEN,
+                        {"error": "resource_claim_scope_denied", "kind": kind, "id": str(candidate)},
+                    )
+            item["id"] = str(candidate)
+        elif kind == "browser_tab" and identifier and scope.browser_tabs is not None:
+            if identifier not in scope.browser_tabs:
+                raise HTTPException(
+                    status.HTTP_403_FORBIDDEN,
+                    {"error": "resource_claim_scope_denied", "kind": kind, "id": identifier},
+                )
+        prepared.append(item)
+    try:
+        return normalize_admission_claims(prepared)
+    except AdmissionError as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            {"error": exc.code, "message": str(exc), **dict(exc.details or {})},
+        ) from exc
+
+
+def _task_admission_request_id(team_id: str, task: Dict[str, Any]) -> str:
+    existing = str(task.get("admission_request_id") or "").strip()
+    if existing:
+        return existing
+    generation = len(task.get("agent_ids") or [])
+    return f"admit:{team_id}:{task.get('id')}:{generation}"
+
+
+def _release_agent_admission(agent_id: str, meta: Optional[Dict[str, Any]] = None) -> None:
+    try:
+        current = dict(meta or _read_meta(agent_id))
+    except HTTPException:
+        current = {}
+    lease_id = str(current.get("admission_lease_id") or "").strip() or None
+    if not lease_id:
+        return
+    try:
+        admission_release(AGENTS_DIR, lease_id=lease_id)
+    except Exception:
+        return
+    try:
+        def clear(current_meta: Dict[str, Any]) -> Optional[bool]:
+            if str(current_meta.get("admission_lease_id") or "") != lease_id:
+                return False
+            current_meta["admission_lease_id"] = None
+            current_meta["admission_released_at"] = _now()
+            current_meta["updated_at"] = _now()
+            return True
+        _update_meta(agent_id, clear)
+    except HTTPException:
+        pass
+
+
+def _release_task_admission(task: Dict[str, Any]) -> None:
+    lease_id = str(task.get("admission_lease_id") or "").strip() or None
+    request_id = str(task.get("admission_request_id") or "").strip() or None
+    try:
+        if lease_id:
+            admission_release(AGENTS_DIR, lease_id=lease_id)
+        elif request_id:
+            admission_release(AGENTS_DIR, request_id=request_id)
+    except Exception:
+        pass
+    task["admission_lease_id"] = None
+    task["admission_request_id"] = None
+    task["queued_since"] = None
+    task["queued_reason"] = None
+    task["queued_details"] = None
+    task["queue_position"] = None
+
+
 def _team_task_effectively_completed(
     task_id: str,
     task_map: Dict[str, Dict[str, Any]],
@@ -841,6 +1028,7 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
                 continue
             agent_id = str(task.get("active_agent_id") or "").strip()
             if not agent_id:
+                _release_task_admission(task)
                 task["state"] = "failed"
                 task["failure_reason"] = "missing_active_agent"
                 changed = True
@@ -848,6 +1036,7 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
             try:
                 agent_meta = _normalize(agent_id, _read_meta(agent_id))
             except HTTPException:
+                _release_task_admission(task)
                 task["state"] = "failed"
                 task["failure_reason"] = "missing_agent"
                 task["active_agent_id"] = None
@@ -856,6 +1045,8 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
             agent_status = str(agent_meta.get("status") or "")
             if agent_status not in TERMINAL_STATUSES:
                 continue
+            _release_agent_admission(agent_id, agent_meta)
+            _release_task_admission(task)
             task["active_agent_id"] = None
             changed = True
             if agent_status != "completed":
@@ -930,8 +1121,10 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
                 team["budget_exhausted_at"] = _now()
                 changed = True
             for task in tasks:
-                if task.get("state") not in {"blocked", "ready"}:
+                if task.get("state") not in {"blocked", "ready", "queued"}:
                     continue
+                if task.get("state") == "queued":
+                    _release_task_admission(task)
                 task["state"] = "skipped"
                 task["failure_reason"] = f"budget_exhausted:{admission_reason}"
                 changed = True
@@ -941,8 +1134,49 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
         for task in tasks:
             if active >= max_parallel:
                 break
-            if task.get("state") != "ready":
+            if task.get("state") not in {"ready", "queued"}:
                 continue
+            request_id = _task_admission_request_id(team_id, task)
+            task["admission_request_id"] = request_id
+            try:
+                resource_claims = _task_admission_claims(team, task)
+                provider_name = str(team["provider"])
+                chatgpt_state = (
+                    _chatgpt_admission_state() if provider_name.lower() == "chatgpt" else {}
+                )
+                admission = request_admission(
+                    AGENTS_DIR,
+                    request_id=request_id,
+                    team_id=team_id,
+                    task_id=str(task["id"]),
+                    provider=provider_name,
+                    resources=resource_claims,
+                    provider_blocked_until=(
+                        _chatgpt_admission_cooldown_until(chatgpt_state) if chatgpt_state else None
+                    ),
+                    provider_limit_override=(
+                        _chatgpt_admission_limit_override(chatgpt_state) if chatgpt_state else None
+                    ),
+                )
+            except AdmissionError as exc:
+                _release_task_admission(task)
+                task["state"] = "failed"
+                task["failure_reason"] = f"admission_failed:{exc.code}"
+                task["queued_details"] = {"error": exc.code, "message": str(exc), **dict(exc.details or {})}
+                changed = True
+                continue
+            if not admission.get("admitted"):
+                task["state"] = "queued"
+                task["queued_since"] = admission.get("queued_since") or task.get("queued_since") or _now()
+                task["queued_reason"] = admission.get("reason")
+                task["queued_details"] = admission.get("details") or {}
+                task["queue_position"] = admission.get("queue_position")
+                changed = True
+                continue
+            task["admission_lease_id"] = admission.get("lease_id")
+            task["queued_reason"] = None
+            task["queued_details"] = None
+            task["queue_position"] = None
             task["state"] = "spawning"
             team["updated_at"] = _now()
             _write_team_unlocked(team_id, team)
@@ -992,8 +1226,11 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
                         str(task.get("latest_agent_id") or "").strip() or None
                     ),
                     seed_worktree_agent_ids=seed_agent_ids,
+                    admission_lease_id=str(task.get("admission_lease_id") or "") or None,
+                    admission_resources=resource_claims,
                 )
             except Exception as exc:
+                _release_task_admission(task)
                 task["state"] = "failed"
                 task["failure_reason"] = f"spawn_failed:{str(exc)[:240]}"
                 task["active_agent_id"] = None
@@ -1013,6 +1250,34 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
             team["updated_at"] = _now()
             _write_team_unlocked(team_id, team)
         return team
+
+
+def _wake_global_admission_queue(*, exclude_team_id: Optional[str] = None, limit: int = 32) -> None:
+    """Best-effort bounded wakeup of queued teams after global capacity is released."""
+    try:
+        snap = admission_snapshot(AGENTS_DIR)
+    except Exception:
+        return
+    team_ids: List[str] = []
+    for request in list(snap.get("queued") or []):
+        team_id = str(request.get("team_id") or "").strip()
+        if not team_id or team_id == str(exclude_team_id or "") or team_id in team_ids:
+            continue
+        team_ids.append(team_id)
+        if len(team_ids) >= max(1, int(limit)):
+            break
+    for queued_team_id in team_ids:
+        try:
+            if not _team_meta_path(queued_team_id).exists():
+                try:
+                    admission_cancel_queued(AGENTS_DIR, team_id=queued_team_id)
+                except Exception:
+                    pass
+                continue
+            _team_tick(queued_team_id)
+        except Exception:
+            # One broken/stale team must not prevent unrelated queued teams from waking.
+            continue
 
 
 def _aggregate_work_outcome(
@@ -1103,6 +1368,12 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
             "active_agent_id": task.get("active_agent_id"),
             "latest_agent_id": task.get("latest_agent_id"),
             "agent_ids": list(task.get("agent_ids") or []),
+            "resource_claims": list(task.get("resource_claims") or []),
+            "queued_since": task.get("queued_since"),
+            "queued_reason": task.get("queued_reason"),
+            "queued_details": task.get("queued_details"),
+            "queue_position": task.get("queue_position"),
+            "admission_lease_id": task.get("admission_lease_id"),
         })
         if state in _GRAPH_TASK_TERMINAL and state != "completed":
             task_failure_reasons.append({
@@ -1155,6 +1426,17 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         team_status = "completed_with_failures"
     else:
         team_status = "running"
+    try:
+        global_admission = admission_snapshot(AGENTS_DIR)
+        global_admission_public = {
+            "global_active": global_admission.get("global_active"),
+            "global_limit": global_admission.get("global_limit"),
+            "provider_active": global_admission.get("provider_active"),
+            "provider_limits": global_admission.get("provider_limits"),
+            "queued_count": global_admission.get("queued_count"),
+        }
+    except Exception:
+        global_admission_public = None
     return {
         "team_id": team_id,
         "status": team_status,
@@ -1193,6 +1475,7 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         "budget_exhausted_reason": team.get("budget_exhausted_reason"),
         "last_retry_reason": team.get("last_retry_reason"),
         "last_retry_block_reason": team.get("last_retry_block_reason"),
+        "global_admission": global_admission_public,
         "task_count": len(tasks),
         "task_status_counts": task_counts,
         "tasks": public_tasks,
@@ -2459,6 +2742,8 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "source_cwd": meta.get("source_cwd"),
         "git_isolation": meta.get("git_isolation", "off"),
         "worktree": _worktree_public(meta.get("worktree")),
+        "admission_lease_id": meta.get("admission_lease_id"),
+        "admission_resources": list(meta.get("admission_resources") or []),
         "access_mode": meta.get("access_mode"),
         "permission_profile": meta.get("permission_profile"),
         "capability_profile": meta.get("capability_profile"),
@@ -2522,6 +2807,12 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+    if meta.get("status") in TERMINAL_STATUSES and meta.get("admission_lease_id"):
+        _release_agent_admission(agent_id, meta)
+        try:
+            meta = _read_meta(agent_id)
+        except HTTPException:
+            pass
     if meta.get("status") in {"starting", "running"}:
         worker_pid = meta.get("worker_pid")
         if worker_pid and not _is_pid_alive(worker_pid):
@@ -2545,6 +2836,7 @@ def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
             meta = _update_meta(agent_id, mark_failed)
             if meta.get("status") == "failed":
                 browser_tabs.release_agent_leases(agent_id)
+                _release_agent_admission(agent_id, meta)
                 try:
                     workflow_mark_terminal(agent_id, "failed")
                 except WorkflowCheckpointError:
@@ -2603,6 +2895,8 @@ def _spawn_internal(
     git_base_commit: Optional[str] = None,
     reuse_worktree_agent_id: Optional[str] = None,
     seed_worktree_agent_ids: Optional[List[str]] = None,
+    admission_lease_id: Optional[str] = None,
+    admission_resources: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     provider = provider.lower().strip()
     clean_role = str(role or "").strip().lower() or None
@@ -2747,6 +3041,8 @@ def _spawn_internal(
         "source_scope": source_scope.to_dict(),
         "git_isolation": git_isolation,
         "worktree": worktree_state,
+        "admission_lease_id": str(admission_lease_id or "").strip() or None,
+        "admission_resources": [dict(item) for item in (admission_resources or [])],
         "access_mode": access_mode,
         "permission_profile": permission_profile,
         "capability_profile": capability_profile,
@@ -2812,7 +3108,38 @@ def _spawn_internal(
         "updated_at": started,
         "ended_at": None,
     }
-    _write_meta(agent_id, meta)
+    try:
+        if admission_lease_id:
+            admission_bind_agent(AGENTS_DIR, str(admission_lease_id), agent_id)
+        _write_meta(agent_id, meta)
+    except AdmissionError as exc:
+        try:
+            admission_release(AGENTS_DIR, lease_id=str(admission_lease_id or ""))
+        except Exception:
+            pass
+        shutil.rmtree(path, ignore_errors=True)
+        if worktree_created:
+            try:
+                cleanup_worktree(worktree_state, force=True)
+            except Exception:
+                pass
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"error": exc.code, "message": str(exc), **dict(exc.details or {})},
+        ) from exc
+    except Exception:
+        if admission_lease_id:
+            try:
+                admission_release(AGENTS_DIR, lease_id=str(admission_lease_id))
+            except Exception:
+                pass
+        shutil.rmtree(path, ignore_errors=True)
+        if worktree_created:
+            try:
+                cleanup_worktree(worktree_state, force=True)
+            except Exception:
+                pass
+        raise
     try:
         if resume_token:
             if not resume_parent_agent_id or not resume_session_id:
@@ -2827,6 +3154,11 @@ def _spawn_internal(
                 agent_id=agent_id, input_hash=workflow_hash, provider=provider, workflow_id=workflow_id_value,
             )
     except WorkflowCheckpointError as exc:
+        if admission_lease_id:
+            try:
+                admission_release(AGENTS_DIR, lease_id=str(admission_lease_id))
+            except Exception:
+                pass
         shutil.rmtree(path, ignore_errors=True)
         if worktree_created:
             try:
@@ -2846,6 +3178,11 @@ def _spawn_internal(
             current.update({"status": "failed", "ended_at": _now(), "updated_at": _now(), "note": spawn_error})
 
         _update_meta(agent_id, mark_spawn_failed)
+        if admission_lease_id:
+            try:
+                admission_release(AGENTS_DIR, lease_id=str(admission_lease_id))
+            except Exception:
+                pass
         if worktree_created:
             try:
                 cleaned = cleanup_worktree(worktree_state, force=True)
@@ -3037,6 +3374,9 @@ def spawn_agents(
         child_scope_raw = task.get("scope")
         if child_scope_raw is not None and not isinstance(child_scope_raw, dict):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].scope must be an object.")
+        resources_raw = task.get("resources") or []
+        if not isinstance(resources_raw, list) or any(not isinstance(item, dict) for item in resources_raw):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].resources must be a list of resource claim objects.")
         child_role = str(task.get("role") or team_role or "").strip().lower() or None
         if review_of and child_role is None:
             child_role = "reviewer"
@@ -3060,6 +3400,7 @@ def spawn_agents(
             "depends_on": depends_on,
             "review_of": review_of,
             "max_revisions": task_max_revisions,
+            "resources": [dict(item) for item in resources_raw],
         })
 
     _validate_team_graph(normalized)
@@ -3097,8 +3438,13 @@ def spawn_agents(
             if not scope_contains(team_scope, requested_child):
                 raise HTTPException(status.HTTP_403_FORBIDDEN, "scope_denied: task scope cannot widen the team scope.")
             effective_scope = child_scope(team_scope, requested_child)
+        resource_claims = _normalize_explicit_resource_claims(
+            task.get("resources"), workdir=workdir, scope=effective_scope,
+        )
         persisted_tasks.append({
             **task,
+            "resources": None,
+            "resource_claims": resource_claims,
             "scope": effective_scope.to_dict(),
             "state": "blocked",
             "agent_ids": [],
@@ -3110,6 +3456,12 @@ def spawn_agents(
             "gate_result": None,
             "gate_feedback": None,
             "failure_reason": None,
+            "admission_request_id": None,
+            "admission_lease_id": None,
+            "queued_since": None,
+            "queued_reason": None,
+            "queued_details": None,
+            "queue_position": None,
         })
 
     try:
@@ -3210,6 +3562,15 @@ def list_agents(settings: Settings, status_filter: Optional[str] = None, limit: 
         if len(items) >= max(1, min(int(limit), 200)):
             break
     result: Dict[str, Any] = {"ok": True, "count": len(items), "agents": items}
+    try:
+        snap = admission_snapshot(AGENTS_DIR)
+        result["global_admission"] = {
+            "global_active": snap.get("global_active"), "global_limit": snap.get("global_limit"),
+            "provider_active": snap.get("provider_active"), "provider_limits": snap.get("provider_limits"),
+            "queued_count": snap.get("queued_count"),
+        }
+    except Exception:
+        result["global_admission"] = None
     if team_id:
         result["team"] = _team_summary(team_id)
     return result
@@ -3536,6 +3897,12 @@ def _agent_action_single(
 
     if action == "cancel":
         if meta.get("status") in TERMINAL_STATUSES:
+            _release_agent_admission(agent_id, meta)
+            try:
+                meta = _read_meta(agent_id)
+                _wake_global_admission_queue(exclude_team_id=str(meta.get("team_id") or "") or None)
+            except Exception:
+                pass
             return {"ok": True, **_public_meta(agent_id, meta), "message": "Agent is already finished."}
         sig_name = signal.upper()
         allowed = {"TERM": signal_module.SIGTERM, "KILL": signal_module.SIGKILL, "INT": signal_module.SIGINT}
@@ -3576,9 +3943,14 @@ def _agent_action_single(
                     worker_proc.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     pass
+        _release_agent_admission(agent_id, meta)
         try:
             _refresh_agent_worktree(agent_id)
             meta = _read_meta(agent_id)
+        except Exception:
+            pass
+        try:
+            _wake_global_admission_queue(exclude_team_id=str(meta.get("team_id") or "") or None)
         except Exception:
             pass
         return {"ok": True, **_public_meta(agent_id, meta)}
@@ -3602,6 +3974,7 @@ def _agent_action_single(
                 cleanup_worktree(state, force=True)
             except AgentWorktreeError as exc:
                 raise _worktree_error_http(exc) from exc
+        _release_agent_admission(agent_id, meta)
         get_scoped_credential_store().revoke_agent(agent_id)
         browser_tabs.release_agent_leases(agent_id)
         shutil.rmtree(_agent_dir(agent_id))
@@ -3790,6 +4163,10 @@ def agent_action(
                         task["failure_reason"] = "team_cancelled"
             team = _update_team(str(team_id), mark_team_cancelled)
             ids = list(team.get("agent_ids") or [])
+            try:
+                admission_cancel_queued(AGENTS_DIR, team_id=str(team_id))
+            except Exception:
+                pass
         results = []
         for child_id in ids:
             try:
@@ -3798,6 +4175,10 @@ def agent_action(
                 results.append({"agent_id": child_id, "ok": False, "error": str(exc.detail)})
         team["updated_at"] = _now()
         _write_team(str(team_id), team)
+        try:
+            _wake_global_admission_queue(exclude_team_id=str(team_id))
+        except Exception:
+            pass
         return {"ok": True, "action": "cancel", "team": _team_summary(str(team_id)), "results": results}
     if normalized_action == "despawn":
         summary = _team_summary(str(team_id), team)
@@ -3823,6 +4204,10 @@ def agent_action(
                 results.append(_agent_action_single(settings, child_id, "despawn"))
             except HTTPException as exc:
                 results.append({"agent_id": child_id, "ok": False, "error": str(exc.detail)})
+        try:
+            admission_release(AGENTS_DIR, team_id=str(team_id))
+        except Exception:
+            pass
         shutil.rmtree(_team_dir(str(team_id)))
         return {"ok": True, "team_id": team_id, "status": "despawned", "results": results}
     if normalized_action == "retry":
@@ -4312,11 +4697,20 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
         err_thread = threading.Thread(target=_capture_provider_stream, args=(agent_id, proc.stderr, stderr_path, False), daemon=True)
         out_thread.start(); err_thread.start()
         attempt_started = time.monotonic()
+        last_admission_heartbeat = 0.0
         stop_reason: Optional[str] = None
         timeout_s = int(meta.get("timeout_s") or DEFAULT_AGENT_TIMEOUT_S)
         idle_timeout_s = meta.get("idle_timeout_s")
         while proc.poll() is None:
             latest = _read_meta(agent_id)
+            heartbeat_now = time.monotonic()
+            lease_id = str(latest.get("admission_lease_id") or "").strip()
+            if lease_id and heartbeat_now - last_admission_heartbeat >= 15.0:
+                try:
+                    admission_heartbeat(AGENTS_DIR, lease_id=lease_id)
+                except Exception:
+                    pass
+                last_admission_heartbeat = heartbeat_now
             if latest.get("status") == "cancelled":
                 stop_reason = "cancelled"
             elif meta.get("provider") == "chatgpt":
@@ -4663,11 +5057,14 @@ def _main() -> int:
             _refresh_agent_worktree(agent_id)
         except Exception:
             pass
+        team_id = ""
         try:
             meta = _read_meta(agent_id)
             team_id = str(meta.get("team_id") or "").strip()
+            _release_agent_admission(agent_id, meta)
             if team_id:
                 _team_tick(team_id)
+            _wake_global_admission_queue(exclude_team_id=team_id or None)
         except Exception as exc:
             try:
                 with (_agent_dir(agent_id) / "worker.log").open("a", encoding="utf-8") as handle:

@@ -69,6 +69,15 @@ The matrix is evidence, not a claim that software is risk-free. Entries intentio
 - **Control paths:** `mcp_server/agent_worktrees.py`, `mcp_server/tools_agents.py`, `mcp_server/policy_scope.py`
 - **Regression tests:** `tests/test_agent_git_worktrees.py::AgentGitWorktreeCoreTests.test_two_parallel_write_worktrees_are_isolated_and_disjoint_apply_preserves_dirty_main`, `tests/test_agent_git_worktrees.py::AgentGitWorktreeCoreTests.test_overlapping_agent_edits_fail_closed_after_first_apply`, `tests/test_agent_git_worktrees.py::AgentGitWorktreeCoreTests.test_dependency_fan_in_combines_disjoint_worktree_changes`, `tests/test_agent_git_worktrees.py::AgentGitWorktreeSpawnIntegrationTests.test_spawn_internal_remaps_workspace_write_cwd_and_scope`, `tests/test_agent_git_worktrees.py::AgentGitWorktreeLifecycleTests.test_delegated_agent_cannot_apply_isolated_changes_to_source_tree`
 
+## SEC-SCHED-001 — Cross-team global admission and shared-resource ownership
+
+- **Risk class:** Cross-team provider overload, conflicting shared-resource mutation, and stale queued-work races
+- **Current status:** Verified
+- **Introduced / fixed release:** 2.1.5
+- **Control:** Team tasks pass through a process-safe persisted global admission queue before provider start. Global/provider capacity, FIFO-aware fairness, scoped workspace/path/file claims, browser-tab parity, native/process/clipboard claims, lease heartbeat/TTL recovery, queue cancellation, and file expected-revision CAS prevent separate teams from concurrently owning conflicting resources while leaving independent resources parallel.
+- **Control paths:** `mcp_server/agent_admission.py`, `mcp_server/tools_agents.py`, `mcp_server/file_transactions.py`, `mcp_server/tools_files.py`
+- **Regression tests:** `tests/test_agent_global_admission.py::GlobalAdmissionCoreTests.test_three_teams_exceed_provider_limit_and_third_is_queued`, `tests/test_agent_global_admission.py::GlobalAdmissionCoreTests.test_fifo_fairness_prevents_younger_conflicting_request_bypass`, `tests/test_agent_global_admission.py::GlobalAdmissionCoreTests.test_bind_heartbeat_and_ttl_prune_release_crashed_agent`, `tests/test_agent_global_scheduler.py::CrossTeamGlobalSchedulerTests.test_overlapping_cross_team_workspace_serializes_but_distinct_workspace_runs`, `tests/test_agent_global_scheduler.py::CrossTeamGlobalSchedulerTests.test_team_cancel_removes_queued_request_without_releasing_other_active_lease`, `tests/test_agent_global_scheduler.py::CrossTeamGlobalSchedulerTests.test_file_expected_revision_conflict_fails_before_spawn`
+
 ## Maintaining the matrix
 
 Security changes should reuse an existing assurance ID when they strengthen the same risk/control boundary, or add a new ID when they introduce a materially different boundary. The relevant CHANGELOG bullet must include the ID in square brackets, and every listed regression method must carry a nearby `# ASSURANCE: <ID>` marker. Do not add a matrix row for a control that has no automated regression evidence.

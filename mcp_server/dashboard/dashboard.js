@@ -15,6 +15,7 @@
     streamRetry: null,
     restoreFocus: null,
     agents: [],
+    globalAdmission: null,
     changeSets: [],
     selectedChangeSet: 0,
     changesRefreshTimer: null,
@@ -130,6 +131,7 @@
     try {
       const data = await fetchJSON("/dashboard/api/agents?limit=16");
       state.agents = data.agents || [];
+      state.globalAdmission = data.global_admission || null;
       renderAgents(state.agents);
       if (state.changeSets.length) renderChanges();
     } catch (error) {
@@ -217,8 +219,11 @@
   }
 
   function renderAgents(agents) {
+    const admission = state.globalAdmission || {};
+    const admissionReady = admission.global_limit !== undefined && admission.global_limit !== null;
+    const scheduler = admissionReady ? `<div class="agent-group-label"><strong>Global scheduler</strong><span>${number(admission.global_active)}/${number(admission.global_limit)} active · ${number(admission.queued_count)} queued</span></div>` : '';
     if (!agents.length) {
-      els.agentList.innerHTML = `<div class="no-agents">No delegated agents yet. Enabled Subagent providers will appear here live.</div>`;
+      els.agentList.innerHTML = scheduler + `<div class="no-agents">No delegated agents yet. Enabled Subagent providers will appear here live.</div>`;
       return;
     }
     const activeStatuses = new Set(["starting", "running"]);
@@ -250,6 +255,7 @@
       </div>`;
     };
     const groups = [];
+    if (scheduler) groups.push(scheduler);
     if (active.length) groups.push(`<div class="agent-group-label"><strong>Active</strong><span>${active.length}</span></div>${active.map(card).join("")}`);
     if (recent.length) groups.push(`<div class="agent-group-label"><strong>Recent</strong><span>latest ${recent.length}</span></div>${recent.map(card).join("")}`);
     els.agentList.innerHTML = groups.join("");

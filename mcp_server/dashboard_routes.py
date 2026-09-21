@@ -231,11 +231,17 @@ def create_dashboard_routes(
         cached = agent_cache.get("data")
         if cached is not None and now - float(agent_cache.get("at") or 0) < 1.0 and int(agent_cache.get("limit") or 0) >= bounded:
             items = list(cached.get("agents", []))[:bounded]
-            return {"ok": True, "count": len(items), "agents": items}
+            return {
+                "ok": True, "count": len(items), "agents": items,
+                "global_admission": cached.get("global_admission"),
+            }
         data = list_agents(settings, limit=max(50, bounded))
         agent_cache.update({"at": now, "limit": max(50, bounded), "data": data})
         items = list(data.get("agents", []))[:bounded]
-        return {"ok": True, "count": len(items), "agents": items}
+        return {
+            "ok": True, "count": len(items), "agents": items,
+            "global_admission": data.get("global_admission"),
+        }
 
     async def index(request: Request) -> Response:
         denied = _local_only(request)
@@ -261,8 +267,10 @@ def create_dashboard_routes(
         hours = _float_query(request, "hours", 24)
         payload = telemetry.summary(hours)
         try:
-            agents = cached_agents(50).get("agents", [])
+            cached_agent_data = cached_agents(50)
+            agents = cached_agent_data.get("agents", [])
         except Exception:
+            cached_agent_data = {"global_admission": None}
             agents = []
         payload.update({
             "server": "Mac MCP",
@@ -270,6 +278,7 @@ def create_dashboard_routes(
             "local_only": True,
             "agent_count": len(agents),
             "active_agents": sum(1 for agent in agents if agent.get("status") in {"starting", "running"}),
+            "global_admission": cached_agent_data.get("global_admission"),
         })
         return JSONResponse(payload)
 
@@ -468,7 +477,10 @@ def create_dashboard_routes(
                     "retry_count", "output_tokens", "result_preview",
                 )
             })
-        return JSONResponse({"ok": True, "count": len(public_agents), "agents": public_agents})
+        return JSONResponse({
+            "ok": True, "count": len(public_agents), "agents": public_agents,
+            "global_admission": data.get("global_admission"),
+        })
 
     async def steering_state(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)

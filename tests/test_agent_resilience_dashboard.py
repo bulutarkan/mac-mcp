@@ -34,7 +34,14 @@ class AgentResilienceDashboardTests(unittest.TestCase):
                 "resumable": True, "throttle_count": 1, "last_throttled_at": 110.0,
                 "last_throttle_reason": "requesting_too_fast", "cooldown_until": 200.0,
             }
-            with patch("mcp_server.dashboard_routes.list_agents", return_value={"ok": True, "count": 1, "agents": [agent]}):
+            admission = {
+                "global_active": 2, "global_limit": 8, "provider_active": {"chatgpt": 1},
+                "provider_limits": {"chatgpt": 8}, "queued_count": 3,
+            }
+            with patch(
+                "mcp_server.dashboard_routes.list_agents",
+                return_value={"ok": True, "count": 1, "agents": [agent], "global_admission": admission},
+            ):
                 response = TestClient(app).get("/dashboard/api/agents", headers=AUTH)
             self.assertEqual(200, response.status_code)
             row = response.json()["agents"][0]
@@ -51,6 +58,10 @@ class AgentResilienceDashboardTests(unittest.TestCase):
             self.assertEqual("mcp_tool_completed", row["checkpoint_cursor"]["kind"])
             self.assertEqual(7, row["checkpoint_cursor"]["seq"])
             self.assertTrue(row["resumable"])
+            global_admission = response.json()["global_admission"]
+            self.assertEqual(2, global_admission["global_active"])
+            self.assertEqual(8, global_admission["global_limit"])
+            self.assertEqual(3, global_admission["queued_count"])
 
     def test_dashboard_js_surfaces_resilience_counts(self):
         source = (Path(__file__).resolve().parents[1] / "mcp_server/dashboard/dashboard.js").read_text(encoding="utf-8")
@@ -59,6 +70,10 @@ class AgentResilienceDashboardTests(unittest.TestCase):
         self.assertIn("agent.throttle_count", source)
         self.assertIn("checkpoints", source)
         self.assertIn("throttles", source)
+        self.assertIn("Global scheduler", source)
+        self.assertIn("admission.global_active", source)
+        self.assertIn("admission.global_limit", source)
+        self.assertIn("admission.queued_count", source)
 
 
 if __name__ == "__main__":
