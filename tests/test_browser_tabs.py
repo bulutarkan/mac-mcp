@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from fastapi import HTTPException
+
 from mcp_server import browser_tabs
 from mcp_server.tools_browser import browser_activate_tab, browser_coordinate_click, browser_press_key
 
@@ -59,28 +61,16 @@ class BrowserTabHandleTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(result["foreground_required"])
 
-    def test_activate_tab_does_not_raise_browser_by_default(self):
-        scripts = []
-        tabs = [
-            {"browser": "Safari", "window_index": 1, "tab_index": 1, "active": True,
-             "native_id": "3001", "title": "First", "url": "https://example.com/first"},
-            {"browser": "Safari", "window_index": 1, "tab_index": 2, "active": False,
-             "native_id": "3002", "title": "Second", "url": "https://example.com/second"},
-        ]
+    def test_activate_tab_requires_explicit_user_foreground_capability(self):
+        with patch("mcp_server.tools_browser._run_osascript") as osascript, \
+             patch("mcp_server.browser_tabs._scan") as scan:
+            with self.assertRaises(HTTPException) as raised:
+                browser_activate_tab(None, browser="Safari", window_index=1, tab_index=2)
+        self.assertEqual(403, raised.exception.status_code)
+        self.assertEqual("FOREGROUND_NOT_AUTHORIZED", raised.exception.detail["reason_code"])
+        osascript.assert_not_called()
+        scan.assert_not_called()
 
-        def fake_script(script, timeout_s=30):
-            scripts.append(script)
-            return ""
-
-        with patch("mcp_server.browser_tabs._scan", return_value=tabs), \
-             patch("mcp_server.tools_browser._run_osascript", side_effect=fake_script):
-            result = browser_activate_tab(None, browser="Safari", window_index=1, tab_index=2)
-        self.assertTrue(result["ok"])
-        self.assertFalse(result["foreground_forced"])
-        self.assertNotIn("activate", scripts[0])
-        self.assertIn("set targetTab to tab 2", scripts[0])
-        self.assertIn("set current tab to targetTab", scripts[0])
-        self.assertIn("MAC_MCP_TAB_IDENTITY_CHANGED", scripts[0])
 
 
 if __name__ == "__main__":

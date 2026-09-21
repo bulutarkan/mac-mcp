@@ -24,7 +24,7 @@ Safari keeps its bundled `BrowserVisualCompanion` WebExtension. Chrome uses the 
 
 For Mac MCP, **background browser automation** means **visible, non-focus-stealing browser automation** inside a normal Safari or Chrome tab. It does not mean headless, hidden, or invisible automation.
 
-The menu bar controller shows active browser work in Sessions and Latest Tool Usage. Its compact browser context is deliberately privacy-minimized to browser name, site hostname, and action; URL paths/query strings and page content are not displayed. A **Show Tab** control is available when a stable live tab reference exists, and only that explicit click is allowed to bring the browser to the foreground.
+The menu bar controller shows active browser work in Sessions and Latest Tool Usage. Its compact browser context is deliberately privacy-minimized to browser name, site hostname, and action; URL paths/query strings and page content are not displayed. A **Show Tab** control is available when a stable live tab reference exists. That explicit local-user click receives a scoped internal foreground capability; model/tool parameters cannot mint the capability or bring the browser/current tab forward on their own.
 
 ## Permissions and approval
 

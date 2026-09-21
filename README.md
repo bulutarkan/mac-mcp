@@ -21,7 +21,7 @@ Mac MCP is a local macOS control server for AI agents. It exposes your Mac throu
 - **Closed-loop Computer Use:** `computer_plan` v2 adds `wait_until`, conditional branches, bounded retry/fallback, fresh browser/native semantic rebind, AXIdentifier-backed native identity, and resource preflight while refusing duplicate mutation after ambiguous/no-effect outcomes.
 - **Cancellation and outcome safety:** client cancellation now propagates through sync workers and owned process/browser/native work, with bounded cleanup and explicit non-retryable `outcome_unknown` when a mutating result cannot be proven.
 - **Better accountability:** the dashboard can show sanitized task/session-scoped **What Changed on My Mac** receipts without exposing raw commands, page content, request bodies, or secrets.
-- **Regression-backed security:** the public Security Assurance Matrix now covers nine control classes, while Computer Use conformance v2 checks 16 deterministic safety/reliability contracts in CI.
+- **Regression-backed security:** the public Security Assurance Matrix now covers ten control classes, while Computer Use conformance v3 checks 18 deterministic safety/reliability contracts in CI, including model self-escalation attempts for browser foreground focus.
 
 The underlying signed 2.1.5 checkpoints were: **r1 verified stable channel; r2 provider process boundary; r3-r4 dependency graph/quality-gate hardening; r5 change receipts; r6 team budgets/adaptive retries; r7 assurance matrix; r8 lineage isolation; r9 failure-aware quorum; r10 cancellation propagation; r11 Git worktree isolation; r12 global admission scheduler; r13 closed-loop Computer Use recovery.**
 
@@ -33,9 +33,10 @@ Mac MCP can inspect and interact with Safari and Chrome tabs in the background w
 - Stable tab handles survive tab-index changes, so long-running tasks keep targeting the intended Safari or Chrome tab even as other tabs open, close, or move.
 - `browser_observe` can return compact DOM context plus viewport, element, or full-page visuals without activating the browser, switching tabs, scrolling the user's page, or leaving screenshot files on disk.
 - High-level browser actions can target a specific background tab directly by handle, which makes parallel research and delegated-agent workflows practical without constant focus stealing.
-- Foreground-only fallbacks such as native key presses and absolute coordinate clicks fail closed unless foreground access is explicitly requested.
+- Foreground-only fallbacks such as native key presses, absolute coordinate clicks, foreground URL opens, and Safari's native file-picker path are **capability-gated**. A model cannot grant itself focus by sending `allow_foreground=true` or `background=false`.
+- `browser_activate_tab` is treated as user-visible foreground behavior even when it would not raise the browser app, because changing Safari's current tab or Chrome's active tab can interrupt a user already working there. Normal automation should target stable `tab_handle` values directly without activating them.
 - The native menu bar controller surfaces live browser work in **Sessions** and **Latest Tool Usage** with a privacy-minimized browser/site/action summary. URL paths, query strings, page titles, selectors, and page content are intentionally omitted from this compact view.
-- **Show Tab** is an explicit user action: normal automation remains non-focus-stealing, while clicking Show Tab brings that specific real Safari/Chrome tab to the front.
+- **Show Tab** is the explicit local-user action: only that trusted UI path receives a short lexical foreground capability and can bring that specific real Safari/Chrome tab to the front.
 
 This is designed for workflows where an AI agent keeps working in one or more background browser tabs while the Mac remains usable normally.
 

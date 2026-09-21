@@ -15,6 +15,7 @@ from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Respon
 from starlette.routing import Route
 
 from .chrome_background_bridge import chrome_background_bridge
+from .foreground_guard import foreground_authorization
 from .observability import TelemetryManager, sanitize_value
 from .policy import PROFILES, RISK_REGISTRY, permission_semantics
 from .security import Settings, dashboard_authorized
@@ -422,13 +423,14 @@ def create_dashboard_routes(
         if not browser or not tab_handle:
             return JSONResponse({"ok": False, "error": "browser_and_tab_handle_required"}, status_code=400)
         try:
-            result = await asyncio.to_thread(
-                browser_activate_tab,
-                settings,
-                browser=browser,
-                tab_handle=tab_handle,
-                allow_foreground=True,
-            )
+            with foreground_authorization("dashboard_show_tab"):
+                result = await asyncio.to_thread(
+                    browser_activate_tab,
+                    settings,
+                    browser=browser,
+                    tab_handle=tab_handle,
+                    allow_foreground=True,
+                )
         except Exception as exc:
             status_code = int(getattr(exc, "status_code", 500) or 500)
             detail = getattr(exc, "detail", None) or str(exc)

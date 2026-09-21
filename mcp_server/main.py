@@ -1059,7 +1059,7 @@ def create_app():
     @mcp.tool(name="browser_open_url",
               description=(
                   "Open a URL in Safari or Google Chrome. New tabs open in the background by default and return "
-                  "a stable tab_handle; set background=false only when foreground activation is explicitly wanted."
+                  "a stable tab_handle. Model/agent automation must keep background=true; foreground activation requires an internal explicit local-user UI grant."
               ))
     def _browser_open_url(browser: str, url: str, new_tab: bool = True,
                           background: bool = True, window_index: int = 1,
@@ -1076,8 +1076,8 @@ def create_app():
                     lambda: browser_list_tabs(settings, browser=browser))
 
     @mcp.tool(name="browser_activate_tab",
-              description=("Select a specific browser tab by stable tab_handle or index without raising the browser by default. "
-                           "Set allow_foreground=true only when bringing the browser app to the front is explicitly wanted."))
+              description=("User-visible tab selection by stable tab_handle or index. Normal MCP/agent calls are fail-closed even if allow_foreground=true, "
+                           "because selecting current/active tab can interrupt the user. Use tab_handle directly with observe/find/act; the local Show Tab UI is the authorized foreground path."))
     def _browser_activate_tab(browser: str, window_index: int = 1, tab_index: int = 1,
                               tab_handle: Optional[str] = None,
                               allow_foreground: bool = False) -> Dict[str, Any]:
@@ -1339,7 +1339,8 @@ def create_app():
         name="browser_upload_artifact",
         description=(
             "Select an explicitly registered artifact into an HTML input[type=file] and verify browser file metadata. "
-            "Requires artifact_id plus the matching path. Safari uses the native Open panel; Chrome uses the private debugger bridge DOM.setFileInputFiles. "
+            "Requires artifact_id plus the matching path. Chrome uses the background debugger bridge DOM.setFileInputFiles. "
+            "Safari's native Open panel requires foreground capability and normal agent/MCP calls fail closed rather than stealing focus. "
             "This selects the file only; it does not submit the surrounding form."
         ),
     )
@@ -1401,8 +1402,8 @@ def create_app():
     @mcp.tool(name="browser_coordinate_click",
               description=(
                   "Clicks an absolute X/Y screen coordinate. "
-                  "This is a foreground fallback and refuses to steal focus unless allow_foreground=true. "
-                  "Prefer browser_act or selector-based clicks."
+                  "This is a foreground fallback. Normal MCP/agent calls cannot authorize it by setting allow_foreground=true; "
+                  "prefer browser_act/browser_find DOM targeting. Foreground capability is reserved for explicit local-user UI actions."
               ))
     def _browser_coordinate_click(browser: str, x: int, y: int,
                                    double_click: bool = False,

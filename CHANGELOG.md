@@ -2,6 +2,7 @@
 
 ## [2.1.6] - 2026-09-21
 
+- [SEC-FOCUS-001] Hardened browser focus isolation so model-visible `allow_foreground`/`background` flags can no longer self-authorize Safari/Chrome activation or active-tab changes; only the explicit local **Show Tab** UI receives a scoped foreground capability, and Safari native upload now fails closed instead of temporarily stealing focus.
 - Rolled the signed 2.1.5 r2-r13 checkpoints into a new public release boundary while preserving the verified stable-update channel; 2.1.6 starts again at signed revision r1.
 - Hardened delegated provider boundaries and lineage-scoped agent control so restricted workers cannot silently widen their filesystem/process/control-plane authority.
 - Added bounded agent-team DAG scheduling, reviewer quality gates, failure-aware quorum semantics, shared team budgets, and adaptive retry classification/admission.

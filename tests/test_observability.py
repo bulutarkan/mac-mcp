@@ -14,6 +14,7 @@ from starlette.testclient import TestClient
 
 from mcp_server.dashboard_routes import _is_loopback, _persist_permission_profile, browser_event_context, create_dashboard_routes
 from mcp_server.observability import TelemetryManager, sanitize_value
+from mcp_server.foreground_guard import foreground_authorized
 from mcp_server.policy import resolve_risk
 from mcp_server.security import dashboard_authorized, ensure_dashboard_token, load_settings
 from mcp_server.security_context import SecurityContextManager
@@ -408,13 +409,15 @@ class BrowserShowTabRouteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
             app = Starlette(routes=create_dashboard_routes(manager, load_settings(), DASHBOARD_TOKEN))
-            with patch("mcp_server.dashboard_routes.browser_activate_tab") as activate:
-                activate.return_value = {
+            def fake_activate(*args, **kwargs):
+                self.assertTrue(foreground_authorized())
+                return {
                     "ok": True,
                     "browser": "Safari",
                     "tab_handle": "tab_live",
                     "foreground_forced": True,
                 }
+            with patch("mcp_server.dashboard_routes.browser_activate_tab", side_effect=fake_activate) as activate:
                 response = TestClient(app).post(
                     "/dashboard/api/browser/show-tab",
                     json={"browser": "Safari", "tab_handle": "tab_live"}, headers=DASHBOARD_AUTH,
@@ -427,6 +430,7 @@ class BrowserShowTabRouteTests(unittest.TestCase):
                     tab_handle="tab_live",
                     allow_foreground=True,
                 )
+                self.assertFalse(foreground_authorized())
 
     def test_show_tab_remains_localhost_only(self) -> None:
         with tempfile.TemporaryDirectory() as td:

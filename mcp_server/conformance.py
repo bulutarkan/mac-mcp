@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from . import browser_tabs
 from .diagnostics import FAIL, PASS, WARN, CheckResult, build_report, result
-from .tools_browser import browser_coordinate_click, browser_open_url, browser_press_key
+from .tools_browser import browser_activate_tab, browser_coordinate_click, browser_open_url, browser_press_key
 from . import computer_plan
 from .tools_browser_agent import (
     _effect_changed,
@@ -18,7 +18,7 @@ from .tools_browser_agent import (
 )
 from .tools_ui import _observation_script
 
-CONFORMANCE_BASELINE_VERSION = 2
+CONFORMANCE_BASELINE_VERSION = 3
 
 
 def _contract(
@@ -136,6 +136,28 @@ def _background_open_default() -> bool:
     return _parameter_default(browser_open_url, "background") is True
 
 
+def _foreground_self_escalation_blocked() -> bool:
+    from fastapi import HTTPException
+    try:
+        browser_activate_tab(None, browser="Safari", window_index=1, tab_index=1, allow_foreground=True)
+    except HTTPException as exc:
+        return (
+            exc.status_code == 403
+            and isinstance(exc.detail, dict)
+            and exc.detail.get("reason_code") == "FOREGROUND_NOT_AUTHORIZED"
+        )
+    return False
+
+
+def _activate_tab_always_user_visible() -> bool:
+    from fastapi import HTTPException
+    try:
+        browser_activate_tab(None, browser="Safari", window_index=1, tab_index=1, allow_foreground=False)
+    except HTTPException as exc:
+        return isinstance(exc.detail, dict) and exc.detail.get("reason_code") == "FOREGROUND_NOT_AUTHORIZED"
+    return False
+
+
 def _batch_action_limit_present() -> bool:
     source = inspect.getsource(browser_act)
     return "_MAX_ACTIONS" in source and "non-empty list" in source
@@ -166,6 +188,8 @@ def _native_semantic_identity_contract_present() -> bool:
 def deterministic_checks() -> list[CheckResult]:
     specs = [
         ("browser.background_open_default", "Browser URL opens default to background/non-focus-stealing mode.", _background_open_default, True),
+        ("browser.foreground_capability", "Model-visible foreground flags cannot self-authorize browser focus changes.", _foreground_self_escalation_blocked, True),
+        ("browser.activate_tab_user_gate", "Selecting the browser current/active tab is treated as explicit user-visible foreground behavior.", _activate_tab_always_user_visible, True),
         ("browser.action_focus_default", "Semantic browser actions default to no foreground focus stealing.", _browser_act_focus_safe_default, True),
         ("browser.keyboard_focus_default", "Native browser key fallback requires explicit foreground permission.", _keyboard_focus_safe_default, True),
         ("browser.coordinate_focus_default", "Native coordinate click fallback requires explicit foreground permission.", _coordinate_focus_safe_default, True),

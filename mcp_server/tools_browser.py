@@ -23,6 +23,7 @@ from .artifact_pipeline import (
 from .context_handoff import (
     HandoffError, mark_handoff_consumed, resolve_browser_upload_handoff,
 )
+from .foreground_guard import require_foreground_authorization
 from .tool_cancellation import (
     ToolCancelledError, cancellation_checkpoint, register_cancellation_cleanup,
     unregister_cancellation_cleanup,
@@ -545,6 +546,8 @@ def browser_open_url(
 
     if activate is not None:
         background = not bool(activate)
+    if not background:
+        require_foreground_authorization("browser_open_url", browser=b)
     activate_line = "" if background else "activate"
     escaped_url = _js_escape(url)
     target_window = int(window_index)
@@ -768,6 +771,7 @@ def browser_activate_tab(
     allow_foreground: bool = False,
 ) -> Dict[str, Any]:
     b = _norm_browser(browser)
+    require_foreground_authorization("browser_activate_tab", browser=b)
     if not tab_handle and (window_index < 1 or tab_index < 1):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "window_index and tab_index must be >= 1")
     _require_stable_handle_for_mutation(b, tab_handle, window_index, "activate_tab")
@@ -1457,8 +1461,10 @@ def browser_upload_artifact(
     preserve_focus: bool = True,
     handoff_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    artifact = resolve_artifact(artifact_id, expected_path=path, verify_hash=True)
     b = _norm_browser(browser)
+    if b == "Safari":
+        require_foreground_authorization("browser_upload_artifact", browser=b)
+    artifact = resolve_artifact(artifact_id, expected_path=path, verify_hash=True)
     timeout_s = max(2, min(int(timeout_s), settings.max_wait_s, 60))
     with _tab_lease(b, tab_handle, window_index, tab_index) as target:
         if handoff_id:
@@ -1771,11 +1777,13 @@ def browser_press_key(
         return {
             "ok": False,
             "foreground_required": True,
+            "reason_code": "FOREGROUND_REQUIRED",
             "reason": (
-                "Native keyboard events require focusing the browser. "
-                "Retry with allow_foreground=true only when focus stealing is acceptable."
+                "Native keyboard events require foreground focus. Normal automation may not change user focus; "
+                "prefer browser_act DOM actions. A model-set allow_foreground flag is not an authorization."
             ),
         }
+    require_foreground_authorization("browser_press_key", browser=b)
     process_name = "Safari" if b == "Safari" else "Google Chrome"
 
     mod_strs = []
@@ -1822,11 +1830,13 @@ def browser_coordinate_click(
         return {
             "ok": False,
             "foreground_required": True,
+            "reason_code": "FOREGROUND_REQUIRED",
             "reason": (
-                "Native coordinate clicks require focusing the browser. "
-                "Prefer browser_act/browser_click_selector, or retry with allow_foreground=true only when focus stealing is acceptable."
+                "Native coordinate clicks require foreground focus. Prefer browser_act/browser_find DOM targeting; "
+                "a model-set allow_foreground flag is not an authorization."
             ),
         }
+    require_foreground_authorization("browser_coordinate_click", browser=b)
     process_name = "Safari" if b == "Safari" else "Google Chrome"
 
     # Explicit opt-in only: native screen coordinates require the browser to be frontmost.

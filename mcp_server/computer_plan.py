@@ -18,7 +18,6 @@ _ALLOWED_TOOLS = frozenset({
     "mac_act",
     "mac_app",
     "browser_list_tabs",
-    "browser_activate_tab",
     "browser_close_tab",
     "browser_observe",
     "browser_find",
@@ -29,7 +28,7 @@ _READ_ONLY_RECOVERY_TOOLS = frozenset({
     "mac_snapshot", "mac_observe", "browser_list_tabs", "browser_observe", "browser_find",
 })
 _MUTATING_TOOLS = frozenset({
-    "open_app", "mac_act", "mac_app", "browser_activate_tab", "browser_close_tab", "browser_act", "browser_do",
+    "open_app", "mac_act", "mac_app", "browser_close_tab", "browser_act", "browser_do",
 })
 _MAX_STEPS = 8
 _MAX_EXPANDED_STEPS = 16
