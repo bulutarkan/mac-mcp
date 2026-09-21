@@ -1,5 +1,7 @@
 ## Unreleased
 
+- [SEC-FOCUS-001] Added an explicit Chrome Background Companion trusted-pointer path for `browser_act` click/double-click via debugger `Input.dispatchMouseEvent`; Safari trusted-input requests fail closed without foreground/coordinate escalation, and synthetic clicks never auto-upgrade or replay after an uncertain/no-effect outcome.
+- [SEC-COMP-001] Tightened browser action verification so unrelated DOM mutation revisions no longer count as click success; bounded verification now accepts target/control/modal/navigation changes or action-correlated fetch/XHR initiation, and activation results expose synthetic/trusted mode plus sanitized same/cross-origin request paths without query/body data.
 - [SEC-FOCUS-001] Closed the remaining Chrome focus-escalation fallback: when debugger/background transport is unavailable, the legacy `javascript:` URL bridge now requires an internal foreground capability instead of silently falling back to a potentially focus-stealing transport.
 - Hardened browser targeting inside blocking dialogs: `observe`/`find` now scope candidates to the topmost modal, recognize semantic `data-state=open` on real dialog candidates even when background-tab animation throttling leaves wrapper opacity at zero, exclude `data-state=closed` stale descendants, avoid treating unrelated `data-state=open` regions as blocking modals, associate styled radio/checkbox controls with their labels, and allow verified pointer-events hit targets only when they belong to the same control/label relationship instead of bypassing real occlusion.
 

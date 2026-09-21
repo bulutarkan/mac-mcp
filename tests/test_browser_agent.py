@@ -234,10 +234,11 @@ class BrowserAgentLayerTests(unittest.TestCase):
         self.assertIn("__mcpQueryOne", script)
         self.assertNotIn("!!document.querySelector", script)
 
-    def test_effect_change_detects_spa_and_control_state_progress(self):
-        base = {"url": "https://x.test", "title": "X", "dom_revision": 4, "connected": True, "aria_expanded": "false", "value": ""}
-        self.assertTrue(_effect_changed(base, {**base, "dom_revision": 5}))
+    def test_effect_change_detects_semantic_not_unrelated_dom_progress(self):
+        base = {"url": "https://x.test", "title": "X", "dom_revision": 4, "connected": True, "aria_expanded": "false", "value": "", "modal_fingerprint": ""}
+        self.assertFalse(_effect_changed(base, {**base, "dom_revision": 5}))
         self.assertTrue(_effect_changed(base, {**base, "aria_expanded": "true"}))
+        self.assertTrue(_effect_changed(base, {**base, "modal_fingerprint": "div|dialog|open|Details|400|500"}))
         self.assertTrue(_effect_changed(base, {**base, "connected": False}))
         self.assertFalse(_effect_changed(base, dict(base)))
 
@@ -254,6 +255,14 @@ class BrowserAgentLayerTests(unittest.TestCase):
         self.assertIn("__mcpStartMutationWatch(s,5000)", observe)
         act = _batch_js([{"type": "click", "element_id": "e_test"}], None)
         self.assertIn("__mcpStartMutationWatch(s,3000)", act)
+        self.assertIn("__mcpStartActionNetworkProbe", act)
+        self.assertIn("network_paths", act)
+        self.assertIn("u.pathname", act)
+        self.assertNotIn("u.search", act)
+        self.assertIn("networkProbeInstalled", act)
+        self.assertIn("networkProbeGeneration", act)
+        self.assertIn("win.fetch===s.networkProbeFetchWrapper", act)
+        self.assertIn("X.prototype.open===s.networkProbeOpenWrapper", act)
 
     def test_full_page_is_a_supported_visual_mode(self):
         self.assertIn('full_page', _VISUAL_MODES)

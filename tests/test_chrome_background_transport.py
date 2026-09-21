@@ -12,7 +12,7 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 from mcp_server import browser_tabs
-from mcp_server.chrome_background_bridge import _resolve_chrome_companion_port, ensure_chrome_companion_config, ensure_chrome_companion_token
+from mcp_server.chrome_background_bridge import ChromeBackgroundBridge, _resolve_chrome_companion_port, ensure_chrome_companion_config, ensure_chrome_companion_token
 from mcp_server.policy import PolicyContext, reset_policy_context, set_policy_context
 from mcp_server.security import load_settings
 from mcp_server.tools_browser import browser_open_url
@@ -56,10 +56,26 @@ class ChromeBackgroundTransportTests(unittest.TestCase):
         self.assertIn("active: false", worker)
         self.assertNotIn("chrome.tabs.update", worker)
         self.assertIn("mac_mcp_bridge_wake", worker)
+        self.assertIn("dispatch_mouse", worker)
+        self.assertIn("Input.dispatchMouseEvent", worker)
+        self.assertIn("mousePressed", worker)
+        self.assertIn("mouseReleased", worker)
         wake = (ROOT / "menu_app/ChromeVisualCompanion/bridge_wake.js").read_text()
         self.assertIn("chrome.runtime.sendMessage", wake)
         self.assertIn("mac_mcp_bridge_wake", wake)
         self.assertIn("bridge_wake.js", manifest["content_scripts"][0]["js"])
+
+    # ASSURANCE: SEC-FOCUS-001
+    def test_dispatch_mouse_rpc_is_explicit_and_bounded(self) -> None:
+        bridge = ChromeBackgroundBridge()
+        with patch.object(bridge, "_request", return_value={"ok": True, "dispatched": True}) as request:
+            result = bridge.request_dispatch_mouse("123", 45.5, 66.25, click_count=2, timeout_s=7.0)
+        self.assertTrue(result["dispatched"])
+        request.assert_called_once_with(
+            "dispatch_mouse",
+            {"chrome_tab_id": 123, "x": 45.5, "y": 66.25, "click_count": 2},
+            timeout_s=7.0,
+        )
 
     def test_bridge_port_prefers_env_then_running_uvicorn_argv(self) -> None:
         with patch.dict(os.environ, {"MAC_MCP_PORT": "18766"}, clear=False), \

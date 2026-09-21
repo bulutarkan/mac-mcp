@@ -244,6 +244,26 @@ class ChromeBackgroundBridge:
         )
         return str(response.get("result") or "")
 
+    def request_dispatch_mouse(
+        self,
+        chrome_tab_id: str | int,
+        x: float,
+        y: float,
+        *,
+        click_count: int = 1,
+        timeout_s: float = 8.0,
+    ) -> Dict[str, Any]:
+        return self._request(
+            "dispatch_mouse",
+            {
+                "chrome_tab_id": int(chrome_tab_id),
+                "x": float(x),
+                "y": float(y),
+                "click_count": 2 if int(click_count) == 2 else 1,
+            },
+            timeout_s=timeout_s,
+        )
+
     def request_set_file_input(
         self, chrome_tab_id: str | int, css_selector: str, file_path: str, *, timeout_s: float = 20.0,
     ) -> Dict[str, Any]:

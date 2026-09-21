@@ -16,6 +16,8 @@ from fastapi import HTTPException, status
 from mcp.server.fastmcp.utilities.types import Image
 
 from .security import Settings
+from . import browser_tabs
+from .chrome_background_bridge import chrome_background_bridge
 from .tool_cancellation import cancellable_sleep, cancellation_checkpoint
 from .tools_browser import (
     _execute_js_for_target,
@@ -855,10 +857,30 @@ function __mcpActivationTarget(el){
 }
 function __mcpScrollIntoView(el){if(!el)return;try{el.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}var win=__mcpOwnerWindow(el),guard=0;while(win&&win!==window&&guard++<10){var frame=null;try{frame=win.frameElement;}catch(e){}if(!frame)break;try{frame.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}win=__mcpOwnerWindow(frame);}}
 function __mcpMouseEvent(el,type){var win=__mcpOwnerWindow(el),r=el.getBoundingClientRect(),x=Math.max(0,Math.round(r.left+r.width/2)),y=Math.max(0,Math.round(r.top+r.height/2)),common={bubbles:true,cancelable:true,composed:true,view:win,clientX:x,clientY:y,button:0,buttons:(type==='pointerdown'||type==='mousedown')?1:0};try{if(type.indexOf('pointer')===0&&typeof win.PointerEvent==='function')return new win.PointerEvent(type,Object.assign({pointerId:1,pointerType:'mouse',isPrimary:true},common));return new win.MouseEvent(type,common);}catch(e){return null;}}
+function __mcpStartActionNetworkProbe(s,trace){
+  if(!s||!trace)return;trace.network_count=0;trace.network_paths=[];var win=window,X=win.XMLHttpRequest,gen=Number(s.networkProbeGeneration||0)+1;s.networkProbeGeneration=gen;s.networkProbeTrace=trace;
+  function record(raw){var current=s.networkProbeTrace;if(!current)return;try{current.network_count+=1;var value=raw&&raw.url?raw.url:raw,u=new URL(String(value||''),location.href),prefix=u.origin===location.origin?'same-origin:':'cross-origin:';if(current.network_paths.length<4)current.network_paths.push(prefix+String(u.pathname||'/').slice(0,180));}catch(e){current.network_count+=1;}}
+  if(!s.networkProbeInstalled){
+    s.networkProbeInstalled=true;s.networkProbeOriginalFetch=win.fetch;s.networkProbeOriginalXhrOpen=X&&X.prototype?X.prototype.open:null;s.networkProbeOriginalXhrSend=X&&X.prototype?X.prototype.send:null;
+    if(typeof s.networkProbeOriginalFetch==='function'){s.networkProbeFetchWrapper=function(){record(arguments[0]);return s.networkProbeOriginalFetch.apply(this,arguments);};try{win.fetch=s.networkProbeFetchWrapper;}catch(e){}}
+    if(X&&X.prototype&&typeof s.networkProbeOriginalXhrOpen==='function'&&typeof s.networkProbeOriginalXhrSend==='function'){
+      s.networkProbeOpenWrapper=function(method,url){try{this.__macMcpActionProbeUrl=url;}catch(e){}return s.networkProbeOriginalXhrOpen.apply(this,arguments);};
+      s.networkProbeSendWrapper=function(){try{record(this.__macMcpActionProbeUrl||'');}catch(e){}return s.networkProbeOriginalXhrSend.apply(this,arguments);};
+      try{X.prototype.open=s.networkProbeOpenWrapper;X.prototype.send=s.networkProbeSendWrapper;}catch(e){}
+    }
+  }
+  setTimeout(function(){if(Number(s.networkProbeGeneration||0)!==gen)return;try{if(s.networkProbeFetchWrapper&&win.fetch===s.networkProbeFetchWrapper)win.fetch=s.networkProbeOriginalFetch;}catch(e){}try{if(X&&X.prototype&&s.networkProbeOpenWrapper&&X.prototype.open===s.networkProbeOpenWrapper)X.prototype.open=s.networkProbeOriginalXhrOpen;if(X&&X.prototype&&s.networkProbeSendWrapper&&X.prototype.send===s.networkProbeSendWrapper)X.prototype.send=s.networkProbeOriginalXhrSend;}catch(e){}s.networkProbeInstalled=false;s.networkProbeTrace=null;s.networkProbeFetchWrapper=null;s.networkProbeOpenWrapper=null;s.networkProbeSendWrapper=null;},250);
+}
 function __mcpActivate(el){
   el=__mcpActivationTarget(el);if(!el)throw new Error('element_not_found');if(el.disabled===true||el.getAttribute('aria-disabled')==='true')throw new Error('element_disabled');__mcpScrollIntoView(el);
-  var events=['pointerover','mouseover','pointermove','mousemove','pointerdown','mousedown'];for(var i=0;i<events.length;i++){var ev=__mcpMouseEvent(el,events[i]);if(ev)try{el.dispatchEvent(ev);}catch(e){}}
-  try{el.focus({preventScroll:true});}catch(e){try{el.focus();}catch(_){}}events=['pointerup','mouseup'];for(var j=0;j<events.length;j++){var up=__mcpMouseEvent(el,events[j]);if(up)try{el.dispatchEvent(up);}catch(e){}}el.click();return el;
+  var s=__mcpState(),win=__mcpOwnerWindow(el),trace={mode:'synthetic_dom',target_click_seen:false,window_click_seen:false,click_is_trusted:null,click_default_prevented:null,dispatch_canceled:[]};__mcpStartActionNetworkProbe(s,trace);
+  var targetRecorder=function(ev){trace.target_click_seen=true;trace.click_is_trusted=!!ev.isTrusted;};
+  var windowRecorder=function(ev){try{var path=typeof ev.composedPath==='function'?ev.composedPath():[];if(ev.target===el||path.indexOf(el)>=0||__mcpComposedContains(el,ev.target)){trace.window_click_seen=true;trace.click_is_trusted=!!ev.isTrusted;trace.click_default_prevented=!!ev.defaultPrevented;}}catch(e){}};
+  try{el.addEventListener('click',targetRecorder,{capture:true,once:true});win.addEventListener('click',windowRecorder,{capture:false,once:true});}catch(e){}
+  var events=['pointerover','mouseover','pointermove','mousemove','pointerdown','mousedown'];for(var i=0;i<events.length;i++){var ev=__mcpMouseEvent(el,events[i]);if(ev)try{if(!el.dispatchEvent(ev))trace.dispatch_canceled.push(events[i]);}catch(e){}}
+  try{el.focus({preventScroll:true});}catch(e){try{el.focus();}catch(_){}}events=['pointerup','mouseup'];for(var j=0;j<events.length;j++){var up=__mcpMouseEvent(el,events[j]);if(up)try{if(!el.dispatchEvent(up))trace.dispatch_canceled.push(events[j]);}catch(e){}}
+  try{el.click();}finally{try{el.removeEventListener('click',targetRecorder,true);win.removeEventListener('click',windowRecorder,false);}catch(e){}}
+  s.lastActivationTrace=trace;return el;
 }
 function __mcpDoubleActivate(el){el=__mcpActivate(el);__mcpActivate(el);var ev=__mcpMouseEvent(el,'dblclick');if(ev)try{el.dispatchEvent(ev);}catch(e){}return el;}
 function __mcpInputEvent(el,type,data,inputType,cancelable){var win=__mcpOwnerWindow(el);try{if(typeof win.InputEvent==='function')return new win.InputEvent(type,{bubbles:true,cancelable:!!cancelable,composed:true,data:data,inputType:inputType});}catch(e){}try{return new win.Event(type,{bubbles:true,cancelable:!!cancelable,composed:true});}catch(e){return null;}}
@@ -905,15 +927,21 @@ function __mcpFlushMutations(s){
   }
   if(changed){s.mutationRevision+=1;s.lastMutationAt=Date.now();}return changed;
 }
+function __mcpModalEffectFingerprint(){
+  var modal=__mcpTopBlockingModal();if(!modal)return '';
+  var rect=null;try{rect=__mcpTopRect(modal);}catch(e){}
+  return [String(modal.tagName||'').toLowerCase(),String(__mcpRole(modal)||''),String(modal.getAttribute&&modal.getAttribute('data-state')||''),__mcpText(modal).slice(0,180),rect?Math.round(rect.width):0,rect?Math.round(rect.height):0].join('|');
+}
 function __mcpEffectState(el){
-  if(!el)return {connected:false};var role=__mcpRole(el),value='',text='';
+  var agent=__mcpState(),activationTrace=agent.lastActivationTrace||null,activationNetworkCount=Number(activationTrace&&activationTrace.network_count||0);
+  if(!el)return {connected:false,modalFingerprint:__mcpModalEffectFingerprint(),activationNetworkCount:activationNetworkCount};var role=__mcpRole(el),value='',text='';
   try{value=('value' in el)?String(el.value==null?'':el.value):'';}catch(e){}
   try{if(!value&&(el.isContentEditable||role==='textbox'||role==='searchbox'))text=String(el.textContent||'');}catch(e){}
-  return {connected:!!el.isConnected,value:value,text:text,checked:typeof el.checked==='boolean'?!!el.checked:null,expanded:el.getAttribute('aria-expanded'),selected:el.getAttribute('aria-selected'),pressed:el.getAttribute('aria-pressed'),ariaChecked:el.getAttribute('aria-checked'),cls:String(el.className||'')};
+  return {connected:!!el.isConnected,value:value,text:text,checked:typeof el.checked==='boolean'?!!el.checked:null,expanded:el.getAttribute('aria-expanded'),selected:el.getAttribute('aria-selected'),pressed:el.getAttribute('aria-pressed'),ariaChecked:el.getAttribute('aria-checked'),cls:String(el.className||''),modalFingerprint:__mcpModalEffectFingerprint(),activationNetworkCount:activationNetworkCount};
 }
 function __mcpEffectChanged(before,after){
   if(!before||!after)return false;if(before.connected&&!after.connected)return true;
-  var keys=['value','text','checked','expanded','selected','pressed','ariaChecked','cls'];for(var i=0;i<keys.length;i++){if(before[keys[i]]!==after[keys[i]])return true;}return false;
+  var keys=['value','text','checked','expanded','selected','pressed','ariaChecked','cls','modalFingerprint','activationNetworkCount'];for(var i=0;i<keys.length;i++){if(before[keys[i]]!==after[keys[i]])return true;}return false;
 }
 function __mcpKeyboardActivate(el){
   if(!el)return '';var role=String(__mcpRole(el)||'').toLowerCase(),key=(role==='combobox'||role==='listbox')?'ArrowDown':((role==='checkbox'||role==='switch'||role==='radio')?' ':'Enter');
@@ -1476,7 +1504,7 @@ function emit(el,type){try{el.dispatchEvent(new (__mcpOwnerWindow(el).Event)(typ
 function pageEffect(beforeRevision,beforeUrl,beforeTitle,beforeState,el){
   __mcpFlushMutations(s);
   var afterState=__mcpEffectState(el);
-  return s.mutationRevision!==beforeRevision || location.href!==beforeUrl || document.title!==beforeTitle || __mcpEffectChanged(beforeState,afterState);
+  return location.href!==beforeUrl || document.title!==beforeTitle || __mcpEffectChanged(beforeState,afterState);
 }
 for(var i=0;i<actions.length;i++){
   var a=actions[i]||{}, type=String(a.type||'').toLowerCase().replace(/-/g,'_');
@@ -1485,6 +1513,7 @@ for(var i=0;i<actions.length;i++){
   var visualLabel=type==='click'||type==='double_click'?'Clicking':(type==='type'||type==='type_text'||type==='paste'?'Typing':(type==='scroll'?'Scrolling':(type==='focus'?'Focusing':(type==='select'?'Selecting':'Working'))));
   var visualDetail=type==='scroll'?(el?'Into view':(Number(a.dy||300)<0?'Up':'Down')):'';
   __mcpVisual(visualLabel,el,(type==='click'||type==='double_click')?'click':'',2200,visualDetail);
+  if(type==='click'||type==='double_click')s.lastActivationTrace=null;
   var beforeRevision=s.mutationRevision,beforeUrl=location.href,beforeTitle=document.title,beforeState=el?__mcpEffectState(el):null;
   try{
     if(type==='click'||type==='double_click'){
@@ -1501,7 +1530,7 @@ for(var i=0;i<actions.length;i++){
         effectObserved=pageEffect(beforeRevision,beforeUrl,beforeTitle,beforeState,activated||el);
         if(effectObserved) verification='state_changed';
       }
-      var clickResult={index:i,type:type,element_id:a.element_id,ok:true,deferred:shouldDefer,activation_target:activated?__mcpId(activated,s):a.element_id,effect_observed:effectObserved,verification:verification,_verify_revision:beforeRevision,_verify_url:beforeUrl,_verify_title:beforeTitle,_verify_state:beforeState};
+      var clickResult={index:i,type:type,element_id:a.element_id,ok:true,deferred:shouldDefer,activation_target:activated?__mcpId(activated,s):a.element_id,effect_observed:effectObserved,verification:verification,activation_trace:s.lastActivationTrace||null,_verify_revision:beforeRevision,_verify_url:beforeUrl,_verify_title:beforeTitle,_verify_state:beforeState};
       if(!effectObserved)clickResult.observe_again=true;
       results.push(clickResult);
     } else if(type==='type'||type==='type_text'||type==='paste'){
@@ -1762,13 +1791,30 @@ def _element_effect_state_js(element_id: str) -> str:
 {_browser_state_bootstrap()}
 function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
 var s=__mcpState(),el=__mcpRecoverElement({eid},s);
-if(!el) return __mcpB64({{ok:true,connected:false,url:location.href,title:document.title,dom_revision:s.mutationRevision}});
+if(!el) return __mcpB64({{ok:true,connected:false,url:location.href,title:document.title,dom_revision:s.mutationRevision,modal_fingerprint:__mcpModalEffectFingerprint(),activation_network_count:Number(s.lastActivationTrace&&s.lastActivationTrace.network_count||0),activation_trace:s.lastActivationTrace||null}});
 var tag=String(el.tagName||'').toLowerCase(),role=__mcpRole(el),value='',text='';
 try{{value=('value' in el)?String(el.value==null?'':el.value):'';}}catch(e){{}}
 try{{if(!value&&(el.isContentEditable||role==='textbox'||role==='searchbox'))text=String(el.textContent||'');}}catch(e){{}}
 var focused=false;try{{focused=!!(el.ownerDocument&&el.ownerDocument.activeElement===el);}}catch(e){{}}
 return __mcpB64({{ok:true,connected:!!el.isConnected,url:location.href,title:document.title,dom_revision:s.mutationRevision,tag:tag,role:role,value:value,text:text,
-checked:typeof el.checked==='boolean'?!!el.checked:null,aria_expanded:el.getAttribute('aria-expanded'),aria_selected:el.getAttribute('aria-selected'),aria_pressed:el.getAttribute('aria-pressed'),aria_checked:el.getAttribute('aria-checked'),class_name:String(el.className||''),focused:focused}});
+checked:typeof el.checked==='boolean'?!!el.checked:null,aria_expanded:el.getAttribute('aria-expanded'),aria_selected:el.getAttribute('aria-selected'),aria_pressed:el.getAttribute('aria-pressed'),aria_checked:el.getAttribute('aria-checked'),class_name:String(el.className||''),focused:focused,modal_fingerprint:__mcpModalEffectFingerprint(),activation_network_count:Number(s.lastActivationTrace&&s.lastActivationTrace.network_count||0),activation_trace:s.lastActivationTrace||null}});
+}})()'''
+
+
+def _trusted_activation_prepare_js(element_id: str) -> str:
+    eid = json.dumps(str(element_id or ""))
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var s=__mcpState(),el=__mcpRecoverElement({eid},s);
+if(!el)return __mcpB64({{ok:false,error:'stale_element'}});
+var win=__mcpOwnerWindow(el),trace={{mode:'trusted_chrome_cdp',target_click_seen:false,window_click_seen:false,click_is_trusted:null,click_default_prevented:null,dispatch_canceled:[]}};
+s.lastActivationTrace=trace;__mcpStartActionNetworkProbe(s,trace);
+var targetRecorder=function(ev){{trace.target_click_seen=true;trace.click_is_trusted=!!ev.isTrusted;}};
+var windowRecorder=function(ev){{try{{var path=typeof ev.composedPath==='function'?ev.composedPath():[];if(ev.target===el||path.indexOf(el)>=0||__mcpComposedContains(el,ev.target)){{trace.window_click_seen=true;trace.click_is_trusted=!!ev.isTrusted;trace.click_default_prevented=!!ev.defaultPrevented;}}}}catch(e){{}}}};
+try{{el.addEventListener('click',targetRecorder,{{capture:true,once:true}});win.addEventListener('click',windowRecorder,{{capture:false,once:true}});setTimeout(function(){{try{{el.removeEventListener('click',targetRecorder,true);win.removeEventListener('click',windowRecorder,false);}}catch(e){{}}}},750);}}catch(e){{}}
+var role=__mcpRole(el),value='',text='';try{{value=('value' in el)?String(el.value==null?'':el.value):'';}}catch(e){{}}try{{if(!value&&(el.isContentEditable||role==='textbox'||role==='searchbox'))text=String(el.textContent||'');}}catch(e){{}}
+return __mcpB64({{ok:true,connected:!!el.isConnected,url:location.href,title:document.title,dom_revision:s.mutationRevision,value:value,text:text,checked:typeof el.checked==='boolean'?!!el.checked:null,aria_expanded:el.getAttribute('aria-expanded'),aria_selected:el.getAttribute('aria-selected'),aria_pressed:el.getAttribute('aria-pressed'),aria_checked:el.getAttribute('aria-checked'),class_name:String(el.className||''),modal_fingerprint:__mcpModalEffectFingerprint(),activation_network_count:0,activation_trace:trace}});
 }})()'''
 
 
@@ -1793,11 +1839,11 @@ def _effect_changed(before: Dict[str, Any], after: Dict[str, Any]) -> bool:
         return True
     if not after.get("connected", True):
         return True
-    if before.get("dom_revision") != after.get("dom_revision"):
-        return True
-    for key in ("value", "text", "checked", "aria_expanded", "aria_selected", "aria_pressed", "aria_checked", "class_name"):
+    for key in ("value", "text", "checked", "aria_expanded", "aria_selected", "aria_pressed", "aria_checked", "class_name", "modal_fingerprint"):
         if before.get(key) != after.get(key):
             return True
+    if int(before.get("activation_network_count") or 0) != int(after.get("activation_network_count") or 0):
+        return True
     return False
 
 
@@ -1812,7 +1858,21 @@ def _verified_dom_action(
 ) -> Dict[str, Any]:
     typ = str(action.get("type") or "").lower().replace("-", "_")
     element_id = str(action.get("element_id") or "")
+    input_mode = str(action.get("input_mode") or "synthetic").strip().lower()
     js_calls = 0
+    if input_mode not in {"synthetic", "trusted"}:
+        return {
+            "ok": False, "type": typ, "element_id": element_id or None,
+            "error": "invalid_input_mode", "reason_code": "INVALID_INPUT_MODE",
+            "message": "input_mode must be synthetic or trusted.", "_js_calls": 0,
+        }
+    if input_mode == "trusted" and typ not in {"click", "double_click"}:
+        return {
+            "ok": False, "type": typ, "element_id": element_id or None,
+            "error": "trusted_input_not_supported_for_action",
+            "reason_code": "TRUSTED_INPUT_NOT_SUPPORTED_FOR_ACTION",
+            "message": "input_mode=trusted is supported only for click and double_click.", "_js_calls": 0,
+        }
 
     readiness = _wait_for_element_readiness(
         settings, browser, action, window_index, tab_index, tab_handle,
@@ -1831,12 +1891,91 @@ def _verified_dom_action(
             "_js_calls": js_calls,
         }
 
-    out = _run_json_js(
-        settings, browser, _batch_js([action], observation_id),
-        window_index, tab_index, tab_handle,
-    )
-    js_calls += 1
-    result = dict((out.get("actions") or [out])[0])
+    if input_mode == "trusted":
+        if browser != "Google Chrome":
+            return {
+                "ok": False, "type": typ, "element_id": element_id or None,
+                "error": "trusted_input_unavailable", "reason_code": "TRUSTED_INPUT_UNAVAILABLE",
+                "message": "Background trusted pointer input is unavailable for Safari. No foreground or coordinate fallback was attempted.",
+                "activation_mode": "trusted_requested", "automatic_retry": False,
+                "foreground_fallback": False, "readiness": readiness, "_js_calls": js_calls,
+            }
+        if not chrome_background_bridge.is_connected():
+            return {
+                "ok": False, "type": typ, "element_id": element_id or None,
+                "error": "trusted_input_unavailable", "reason_code": "TRUSTED_INPUT_UNAVAILABLE",
+                "message": "Chrome Background Companion is not connected, so trusted background pointer input is unavailable.",
+                "activation_mode": "trusted_requested", "automatic_retry": False,
+                "foreground_fallback": False, "retryable": True, "readiness": readiness, "_js_calls": js_calls,
+            }
+        before = _run_json_js(
+            settings, browser, _trusted_activation_prepare_js(element_id),
+            window_index, tab_index, tab_handle,
+        )
+        js_calls += 1
+        try:
+            _, _, row = browser_tabs.resolve_tab(browser, str(tab_handle or ""))
+            native_id = row.get("native_id")
+            if native_id is None:
+                raise KeyError("Chrome tab has no native id")
+        except KeyError:
+            return {
+                "ok": False, "type": typ, "element_id": element_id or None,
+                "error": "stale_tab_handle", "reason_code": "STALE_TAB_HANDLE",
+                "observe_again": True, "readiness": readiness, "_js_calls": js_calls,
+            }
+        rect = readiness.get("rect") if isinstance(readiness.get("rect"), dict) else {}
+        x = float(rect.get("x") or 0) + float(rect.get("w") or 0) / 2.0
+        y = float(rect.get("y") or 0) + float(rect.get("h") or 0) / 2.0
+        try:
+            chrome_background_bridge.request_dispatch_mouse(
+                native_id, x, y, click_count=2 if typ == "double_click" else 1, timeout_s=8.0,
+            )
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            return {
+                "ok": False, "type": typ, "element_id": element_id or None,
+                "error": str(detail.get("error") or "trusted_input_dispatch_failed"),
+                "reason_code": "TRUSTED_INPUT_DISPATCH_FAILED",
+                "message": str(detail.get("message") or "Chrome trusted background pointer dispatch failed."),
+                "activation_mode": "trusted_chrome_cdp", "automatic_retry": False,
+                "foreground_fallback": False, "readiness": readiness, "_js_calls": js_calls,
+            }
+        verify_state = {
+            "connected": before.get("connected", True), "value": before.get("value"),
+            "text": before.get("text"), "checked": before.get("checked"),
+            "expanded": before.get("aria_expanded"), "selected": before.get("aria_selected"),
+            "pressed": before.get("aria_pressed"), "ariaChecked": before.get("aria_checked"),
+            "cls": before.get("class_name"), "modalFingerprint": before.get("modal_fingerprint"),
+            "activationNetworkCount": before.get("activation_network_count", 0),
+        }
+        result = {
+            "ok": True, "type": typ, "element_id": element_id or None,
+            "effect_observed": False, "verification": "trusted_input_dispatched",
+            "activation_mode": "trusted_chrome_cdp", "input_trust": "browser_debugger",
+            "activation_trace": {"mode": "trusted_chrome_cdp", "dispatched": True},
+            "_verify_revision": before.get("dom_revision"), "_verify_url": before.get("url"),
+            "_verify_title": before.get("title"), "_verify_state": verify_state,
+        }
+        out = {"ok": True, "actions": [result]}
+    else:
+        out = _run_json_js(
+            settings, browser, _batch_js([action], observation_id),
+            window_index, tab_index, tab_handle,
+        )
+        js_calls += 1
+        result = dict((out.get("actions") or [out])[0])
+        if typ in {"click", "double_click"}:
+            result.setdefault("activation_mode", "synthetic_dom")
+            trace = result.get("activation_trace") if isinstance(result.get("activation_trace"), dict) else {}
+            if trace.get("click_is_trusted") is True:
+                result.setdefault("input_trust", "trusted")
+            elif trace.get("target_click_seen") or trace.get("window_click_seen"):
+                result.setdefault("input_trust", "untrusted")
+            else:
+                result.setdefault("input_trust", "unknown")
+            result.setdefault("trusted_input_available", bool(browser == "Google Chrome" and chrome_background_bridge.is_connected()))
+            result.setdefault("trusted_input_required", "unknown")
     if "type" not in result:
         result["type"] = typ
     if element_id and "element_id" not in result:
@@ -1867,6 +2006,8 @@ def _verified_dom_action(
             "aria_pressed": before_state.get("pressed"),
             "aria_checked": before_state.get("ariaChecked"),
             "class_name": before_state.get("cls"),
+            "modal_fingerprint": before_state.get("modalFingerprint"),
+            "activation_network_count": before_state.get("activationNetworkCount", 0),
         })
     compact_state = out.get("state") if isinstance(out.get("state"), dict) else None
 
@@ -1889,15 +2030,22 @@ def _verified_dom_action(
                     window_index, tab_index, tab_handle,
                 )
                 js_calls += 1
+                post_trace = post.get("activation_trace") if isinstance(post.get("activation_trace"), dict) else None
+                if post_trace:
+                    result["activation_trace"] = post_trace
+                    if post_trace.get("click_is_trusted") is True:
+                        result["input_trust"] = "trusted"
+                    elif post_trace.get("target_click_seen") or post_trace.get("window_click_seen"):
+                        result["input_trust"] = "untrusted"
+                network_progressed = int(post.get("activation_network_count") or 0) > int(normalized_before_state.get("activation_network_count") or 0)
                 progressed = (
                     _effect_changed(normalized_before_state, post)
-                    or (before_revision is not None and post.get("dom_revision") != before_revision)
                     or (before_url is not None and post.get("url") != before_url)
                     or (before_title is not None and post.get("title") != before_title)
                 )
                 if progressed:
                     result["effect_observed"] = True
-                    result["verification"] = "async_state_changed"
+                    result["verification"] = "async_network_activity" if network_progressed else "async_state_changed"
                     result.pop("observe_again", None)
                     compact_state = post
                     break

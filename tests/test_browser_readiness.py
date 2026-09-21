@@ -120,7 +120,11 @@ class BrowserElementReadinessTests(unittest.TestCase):
                 "_verify_revision": 5,
                 "_verify_url": "https://example.test/app",
                 "_verify_title": "App",
-                "_verify_state": {"connected": True, "value": "", "text": "", "checked": False},
+                "_verify_state": {"connected": True, "value": "", "text": "", "checked": False, "modalFingerprint": ""},
+                "activation_trace": {
+                    "mode": "synthetic_dom", "target_click_seen": True,
+                    "window_click_seen": True, "click_is_trusted": False,
+                },
             }],
             "state": {"url": "https://example.test/app", "title": "App", "dom_revision": 5},
         }
@@ -133,11 +137,12 @@ class BrowserElementReadinessTests(unittest.TestCase):
             "value": "",
             "text": "",
             "checked": False,
+            "modal_fingerprint": "",
         }
         with patch("mcp_server.tools_browser_agent._wait_for_element_readiness", return_value={"ready": True, "stable_for_ms": 500, "_js_calls": 1}), \
              patch("mcp_server.tools_browser_agent._run_json_js", side_effect=[batch_result, unchanged]), \
              patch("mcp_server.tools_browser_agent.time.perf_counter", side_effect=[0.0, 0.01, 0.20]), \
-             patch("mcp_server.tools_browser_agent.time.sleep"):
+             patch("mcp_server.tools_browser_agent.cancellable_sleep"):
             result = _verified_dom_action(
                 MagicMock(), "Safari", {"type": "click", "element_id": "e_1", "verify_timeout_s": 0.1}, None, 1, 1, "tab-a"
             )
@@ -145,8 +150,36 @@ class BrowserElementReadinessTests(unittest.TestCase):
         self.assertEqual("ACTION_NO_EFFECT", result["reason_code"])
         self.assertEqual("no_effect_after_bounded_wait", result["verification"])
         self.assertFalse(result["automatic_retry"])
+        self.assertEqual("synthetic_dom", result["activation_mode"])
+        self.assertEqual("untrusted", result["input_trust"])
 
-    def test_async_spa_state_change_is_accepted_without_second_activation(self) -> None:
+    # ASSURANCE: SEC-COMP-001
+    def test_unrelated_dom_revision_is_not_accepted_as_click_effect(self) -> None:
+        batch_result = {
+            "ok": True,
+            "actions": [{
+                "ok": True, "type": "click", "element_id": "e_1",
+                "effect_observed": False, "verification": "no_immediate_effect",
+                "_verify_revision": 5, "_verify_url": "https://example.test/app", "_verify_title": "App",
+                "_verify_state": {"connected": True, "value": "", "text": "", "checked": False, "modalFingerprint": ""},
+            }],
+            "state": {"url": "https://example.test/app", "title": "App", "dom_revision": 5},
+        }
+        unrelated_mutation = {
+            "ok": True, "connected": True, "url": "https://example.test/app", "title": "App",
+            "dom_revision": 6, "value": "", "text": "", "checked": False, "modal_fingerprint": "",
+        }
+        with patch("mcp_server.tools_browser_agent._wait_for_element_readiness", return_value={"ready": True, "stable_for_ms": 500, "_js_calls": 1}), \
+             patch("mcp_server.tools_browser_agent._run_json_js", side_effect=[batch_result, unrelated_mutation]), \
+             patch("mcp_server.tools_browser_agent.time.perf_counter", side_effect=[0.0, 0.01, 0.20]), \
+             patch("mcp_server.tools_browser_agent.cancellable_sleep"):
+            result = _verified_dom_action(
+                MagicMock(), "Safari", {"type": "click", "element_id": "e_1", "verify_timeout_s": 0.1}, None, 1, 1, "tab-a"
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual("ACTION_NO_EFFECT", result["reason_code"])
+
+    def test_async_modal_state_change_is_accepted_without_second_activation(self) -> None:
         batch_result = {
             "ok": True,
             "actions": [{
@@ -158,7 +191,7 @@ class BrowserElementReadinessTests(unittest.TestCase):
                 "_verify_revision": 5,
                 "_verify_url": "https://example.test/app",
                 "_verify_title": "App",
-                "_verify_state": {"connected": True, "value": "", "text": "", "checked": False},
+                "_verify_state": {"connected": True, "value": "", "text": "", "checked": False, "modalFingerprint": ""},
             }],
             "state": {"url": "https://example.test/app", "title": "App", "dom_revision": 5},
         }
@@ -171,16 +204,99 @@ class BrowserElementReadinessTests(unittest.TestCase):
             "value": "",
             "text": "",
             "checked": False,
+            "modal_fingerprint": "div|dialog|open|Product details|500|600",
+            "activation_trace": {
+                "mode": "synthetic_dom", "target_click_seen": True,
+                "window_click_seen": True, "click_is_trusted": False,
+            },
         }
         with patch("mcp_server.tools_browser_agent._wait_for_element_readiness", return_value={"ready": True, "stable_for_ms": 500, "_js_calls": 1}), \
              patch("mcp_server.tools_browser_agent._run_json_js", side_effect=[batch_result, changed]), \
              patch("mcp_server.tools_browser_agent.time.perf_counter", side_effect=[0.0, 0.01]), \
-             patch("mcp_server.tools_browser_agent.time.sleep"):
+             patch("mcp_server.tools_browser_agent.cancellable_sleep"):
             result = _verified_dom_action(
                 MagicMock(), "Safari", {"type": "click", "element_id": "e_1", "verify_timeout_s": 0.1}, None, 1, 1, "tab-a"
             )
         self.assertTrue(result["ok"])
         self.assertTrue(result["effect_observed"])
+        self.assertEqual("async_state_changed", result["verification"])
+        self.assertEqual("untrusted", result["input_trust"])
+
+    # ASSURANCE: SEC-COMP-001
+    def test_action_correlated_network_activity_is_accepted_as_effect(self) -> None:
+        batch_result = {
+            "ok": True,
+            "actions": [{
+                "ok": True, "type": "click", "element_id": "e_1",
+                "effect_observed": False, "verification": "no_immediate_effect",
+                "_verify_revision": 5, "_verify_url": "https://example.test/app", "_verify_title": "App",
+                "_verify_state": {"connected": True, "value": "", "text": "", "checked": False, "modalFingerprint": "", "activationNetworkCount": 0},
+                "activation_trace": {"mode": "synthetic_dom", "target_click_seen": True, "window_click_seen": True, "click_is_trusted": False, "network_count": 0},
+            }],
+            "state": {"url": "https://example.test/app", "title": "App", "dom_revision": 5},
+        }
+        network_changed = {
+            "ok": True, "connected": True, "url": "https://example.test/app", "title": "App",
+            "dom_revision": 5, "value": "", "text": "", "checked": False, "modal_fingerprint": "",
+            "activation_network_count": 1,
+            "activation_trace": {"mode": "synthetic_dom", "target_click_seen": True, "window_click_seen": True, "click_is_trusted": False, "network_count": 1, "network_paths": ["same-origin:/api/cart"]},
+        }
+        with patch("mcp_server.tools_browser_agent._wait_for_element_readiness", return_value={"ready": True, "stable_for_ms": 500, "_js_calls": 1}), \
+             patch("mcp_server.tools_browser_agent._run_json_js", side_effect=[batch_result, network_changed]), \
+             patch("mcp_server.tools_browser_agent.time.perf_counter", side_effect=[0.0, 0.01]), \
+             patch("mcp_server.tools_browser_agent.cancellable_sleep"):
+            result = _verified_dom_action(
+                MagicMock(), "Safari", {"type": "click", "element_id": "e_1", "verify_timeout_s": 0.1}, None, 1, 1, "tab-a"
+            )
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["effect_observed"])
+        self.assertEqual("async_network_activity", result["verification"])
+        self.assertEqual(1, result["activation_trace"]["network_count"])
+        self.assertEqual(["same-origin:/api/cart"], result["activation_trace"]["network_paths"])
+
+    # ASSURANCE: SEC-FOCUS-001
+    def test_trusted_input_fails_closed_on_safari_without_foreground_fallback(self) -> None:
+        readiness = {"ready": True, "stable_for_ms": 500, "rect": {"x": 10, "y": 20, "w": 100, "h": 40}, "_js_calls": 1}
+        with patch("mcp_server.tools_browser_agent._wait_for_element_readiness", return_value=readiness), \
+             patch("mcp_server.tools_browser_agent._run_json_js") as run:
+            result = _verified_dom_action(
+                MagicMock(), "Safari",
+                {"type": "click", "element_id": "e_1", "input_mode": "trusted"},
+                None, 1, 1, "tab-a",
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual("TRUSTED_INPUT_UNAVAILABLE", result["reason_code"])
+        self.assertFalse(result["foreground_fallback"])
+        self.assertFalse(result["automatic_retry"])
+        run.assert_not_called()
+
+    # ASSURANCE: SEC-FOCUS-001
+    def test_trusted_chrome_click_uses_background_debugger_coordinates_and_verifies_effect(self) -> None:
+        readiness = {"ready": True, "stable_for_ms": 500, "rect": {"x": 10, "y": 20, "w": 100, "h": 40}, "_js_calls": 1}
+        before = {
+            "ok": True, "connected": True, "url": "https://example.test/app", "title": "App",
+            "dom_revision": 5, "value": "", "text": "", "checked": False, "modal_fingerprint": "", "activation_network_count": 0,
+        }
+        changed = {
+            **before, "dom_revision": 6, "aria_checked": "true",
+        }
+        with patch("mcp_server.tools_browser_agent._wait_for_element_readiness", return_value=readiness), \
+             patch("mcp_server.tools_browser_agent.chrome_background_bridge.is_connected", return_value=True), \
+             patch("mcp_server.tools_browser_agent.chrome_background_bridge.request_dispatch_mouse") as dispatch, \
+             patch("mcp_server.tools_browser_agent.browser_tabs.resolve_tab", return_value=(1, 2, {"native_id": "99"})), \
+             patch("mcp_server.tools_browser_agent._run_json_js", side_effect=[before, changed]), \
+             patch("mcp_server.tools_browser_agent.time.perf_counter", side_effect=[0.0, 0.01]), \
+             patch("mcp_server.tools_browser_agent.cancellable_sleep"):
+            result = _verified_dom_action(
+                MagicMock(), "Google Chrome",
+                {"type": "click", "element_id": "e_1", "input_mode": "trusted", "verify_timeout_s": 0.1},
+                None, 1, 2, "tab-a",
+            )
+        dispatch.assert_called_once_with("99", 60.0, 40.0, click_count=1, timeout_s=8.0)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["effect_observed"])
+        self.assertEqual("trusted_chrome_cdp", result["activation_mode"])
+        self.assertEqual("browser_debugger", result["input_trust"])
         self.assertEqual("async_state_changed", result["verification"])
 
     def test_click_path_has_no_automatic_keyboard_second_activation(self) -> None:

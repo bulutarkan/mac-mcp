@@ -18,7 +18,7 @@ from .tools_browser_agent import (
 )
 from .tools_ui import _observation_script
 
-CONFORMANCE_BASELINE_VERSION = 3
+CONFORMANCE_BASELINE_VERSION = 4
 
 
 def _contract(
@@ -108,11 +108,34 @@ def _missing_element_fails_closed() -> bool:
 
 
 def _effect_change_detection() -> bool:
-    base = {"url": "https://example.test/a", "title": "A", "dom_revision": 1, "connected": True, "value": ""}
+    base = {"url": "https://example.test/a", "title": "A", "dom_revision": 1, "connected": True, "value": "", "aria_checked": "false", "modal_fingerprint": "", "activation_network_count": 0}
     same = dict(base)
-    changed = dict(base, dom_revision=2)
+    unrelated_dom = dict(base, dom_revision=2)
+    control_changed = dict(base, aria_checked="true")
+    modal_changed = dict(base, modal_fingerprint="div|dialog|open|Details|400|500")
+    network_changed = dict(base, activation_network_count=1)
     navigated = dict(base, url="https://example.test/b")
-    return (not _effect_changed(base, same)) and _effect_changed(base, changed) and _effect_changed(base, navigated)
+    return (
+        (not _effect_changed(base, same))
+        and (not _effect_changed(base, unrelated_dom))
+        and _effect_changed(base, control_changed)
+        and _effect_changed(base, modal_changed)
+        and _effect_changed(base, network_changed)
+        and _effect_changed(base, navigated)
+    )
+
+
+def _trusted_input_contract_present() -> bool:
+    source = inspect.getsource(__import__("mcp_server.tools_browser_agent", fromlist=["_verified_dom_action"])._verified_dom_action)
+    required = (
+        'input_mode == "trusted"',
+        'browser != "Google Chrome"',
+        '"TRUSTED_INPUT_UNAVAILABLE"',
+        'request_dispatch_mouse',
+        '"foreground_fallback": False',
+        '"automatic_retry": False',
+    )
+    return all(item in source for item in required)
 
 
 def _action_no_effect_contract() -> bool:
@@ -200,7 +223,8 @@ def deterministic_checks() -> list[CheckResult]:
         ("browser.render_readiness", "Render readiness exposes zero-bounds/not-ready reason codes.", _render_reason_codes_present, None),
         ("browser.element_readiness", "Element actionability has explicit readiness/reason-code signals.", _element_readiness_contract_present, None),
         ("browser.missing_element", "Missing element IDs fail before any browser execution call.", _missing_element_fails_closed, None),
-        ("browser.effect_detection", "Post-action verification detects DOM or navigation progress.", _effect_change_detection, None),
+        ("browser.effect_detection", "Post-action verification accepts semantic/control/modal/network/navigation progress but rejects unrelated DOM churn.", _effect_change_detection, None),
+        ("browser.trusted_input_boundary", "Trusted background pointer input is explicit Chrome-only capability and never auto-escalates Safari/foreground behavior.", _trusted_input_contract_present, True),
         ("browser.no_effect", "Clicks with no observed effect are failures and are never auto-replayed.", _action_no_effect_contract, None),
         ("browser.batch_bounds", "Browser action batches have an explicit bounded action limit.", _batch_action_limit_present, None),
         ("computer_plan.closed_loop_recovery", "Composite computer plans expose bounded fail-closed recovery, semantic rebind, wait and resource-preflight contracts.", _closed_loop_plan_contract_present, None),

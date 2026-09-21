@@ -129,6 +129,45 @@ async function handleExecuteJs(message) {
 }
 
 
+async function handleDispatchMouse(message) {
+  const requestId = String(message.request_id || '');
+  const tabId = Number(message.chrome_tab_id);
+  const x = Number(message.x);
+  const y = Number(message.y);
+  const clickCount = Number(message.click_count) === 2 ? 2 : 1;
+  if (!requestId || !Number.isInteger(tabId) || tabId < 0 || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) {
+    send({type: 'result', request_id: requestId, ok: false, error: 'invalid_dispatch_mouse_request'});
+    return;
+  }
+  const target = {tabId};
+  let attached = false;
+  try {
+    await chrome.tabs.get(tabId);
+    await debuggerAttach(target);
+    attached = true;
+    await debuggerCommand(target, 'Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x, y, button: 'none', buttons: 0, pointerType: 'mouse'
+    });
+    for (let index = 1; index <= clickCount; index += 1) {
+      await debuggerCommand(target, 'Input.dispatchMouseEvent', {
+        type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: index, pointerType: 'mouse'
+      });
+      await debuggerCommand(target, 'Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: index, pointerType: 'mouse'
+      });
+    }
+    send({type: 'result', request_id: requestId, ok: true, chrome_tab_id: tabId, dispatched: true, click_count: clickCount});
+  } catch (error) {
+    send({
+      type: 'result', request_id: requestId, ok: false,
+      error: 'chrome_dispatch_mouse_failed', message: String(error && error.message || error || 'unknown')
+    });
+  } finally {
+    if (attached) { try { await debuggerDetach(target); } catch (_) {} }
+  }
+}
+
+
 async function handleSetFileInput(message) {
   const requestId = String(message.request_id || '');
   const tabId = Number(message.chrome_tab_id);
@@ -187,6 +226,7 @@ function connect() {
     try { message = JSON.parse(String(event.data || '')); } catch (_) { return; }
     if (message && message.type === 'open_tab') void handleOpenTab(message);
     else if (message && message.type === 'execute_js') void handleExecuteJs(message);
+    else if (message && message.type === 'dispatch_mouse') void handleDispatchMouse(message);
     else if (message && message.type === 'set_file_input') void handleSetFileInput(message);
   });
   ws.addEventListener('close', () => {

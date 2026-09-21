@@ -1153,8 +1153,10 @@ def create_app():
         name="browser_act",
         description=(
             "Perform up to 20 browser actions in one MCP call. Actions can target stable element_id or semantic "
-            "query/text_match/role. Supports click, type, async custom select, scroll, key and waits; "
-            "return_state: none, compact, or full."
+            "query/text_match/role. Supports click, type, async custom select, scroll, key and waits. Click actions default "
+            "to background-safe synthetic DOM input; input_mode='trusted' is an explicit Chrome Background Companion-only "
+            "pointer path and fails closed on Safari without foreground/coordinate fallback. No-effect mutations are never "
+            "automatically replayed. return_state: none, compact, or full."
         ),
     )
     async def _browser_act(browser: str, actions: List[Dict[str, Any]],
