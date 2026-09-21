@@ -927,12 +927,14 @@ def _chrome_execute_js_via_url_bridge(
     target: browser_tabs.TabTarget,
     timeout_s: int,
 ) -> str:
-    """Fallback for Chrome builds where AppleScript `execute javascript` is broken.
+    """Foreground-capable fallback for Chrome builds where direct JS is unavailable.
 
-    The bridge still depends on Chrome's user-controlled View → Developer →
-    Allow JavaScript from Apple Events setting. If that setting is off, the
-    javascript: URL itself is rejected by Chrome.
+    Setting a target tab's URL to ``javascript:`` is not a background-safe transport:
+    Chrome may surface the target window/tab even without an explicit ``activate``.
+    Normal MCP/agent calls therefore fail closed here unless a trusted internal
+    foreground capability is already present.
     """
+    require_foreground_authorization("chrome_url_js_bridge", browser="Google Chrome")
     token = uuid.uuid4().hex[:12]
     marker = f"__MAC_MCP_BRIDGE_{token}__"
     code = (js or "").strip()

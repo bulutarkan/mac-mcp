@@ -46,6 +46,37 @@ class BrowserAgentLayerTests(unittest.TestCase):
         self.assertGreaterEqual(_score_candidate(element, 'coffee Antalya', 'combobox', None), 0.8)
         self.assertGreaterEqual(_score_candidate(element, '', 'combobox', None), 0.3)
 
+    def test_styled_radio_can_match_visible_associated_label_text(self):
+        radio = {
+            'text': '', 'association_text': 'İş Uluç Mah Konyaaltı Antalya',
+            'aria_label': '', 'placeholder': '', 'name': 'address', 'title': '', 'value': 'work',
+            'role': 'radio', 'tag': 'input', 'actionable': True,
+        }
+        self.assertGreaterEqual(_score_candidate(radio, 'İş', 'radio', 'İş'), 0.9)
+
+    def test_modal_scope_and_label_association_are_shared_browser_primitives(self):
+        bootstrap = _browser_state_bootstrap()
+        for token in (
+            'function __mcpTopBlockingModal', 'function __mcpAssociation', 'function __mcpSemanticVisible',
+            'ELEMENT_OUTSIDE_MODAL_SCOPE', 'pointer_events_association_fallback', 'hit_target',
+            'associated_control', 'associated_label',
+        ):
+            self.assertIn(token, bootstrap)
+        find_script = _find_candidates_js('İş', 'radio', 'İş', 20, actionable_only=True)
+        self.assertIn('modal=__mcpTopBlockingModal()', find_script)
+        self.assertIn("d.association_text||''", find_script)
+        self.assertIn('return __mcpSemanticVisible(el)', find_script)
+        self.assertIn('modal_scope:modal?', find_script)
+        observe = __import__('mcp_server.tools_browser_agent', fromlist=['_observe_js'])._observe_js('interactive', 20)
+        self.assertIn('var modalScope=__mcpModalScope(el)', observe)
+        self.assertIn('modal_scope:', observe)
+
+    def test_pointer_events_fallback_does_not_accept_unrelated_ancestor_hit(self):
+        bootstrap = _browser_state_bootstrap()
+        self.assertIn('pointerBlocked&&!(containsHit||associationRelated)', bootstrap)
+        self.assertIn("base.reason_code='ELEMENT_POINTER_EVENTS_NONE'", bootstrap)
+        self.assertIn('containsHit||containedByHit||associationRelated', bootstrap)
+
     def test_find_candidate_js_searches_input_value(self):
         script = _find_candidates_js('coffee Antalya', 'combobox', None, 20, actionable_only=True)
         self.assertIn("d.value||''", script)

@@ -16,6 +16,8 @@ from mcp_server.foreground_guard import (
 )
 from mcp_server.security import load_settings
 from mcp_server.tools_browser import (
+    _chrome_execute_js_via_url_bridge,
+    _execute_js_for_target,
     browser_activate_tab,
     browser_coordinate_click,
     browser_open_url,
@@ -82,6 +84,54 @@ class ForegroundCapabilityGuardTests(unittest.TestCase):
         self.assertEqual("FOREGROUND_REQUIRED", click["reason_code"])
         self.assertNotIn("retry with allow_foreground=true", key["reason"].lower())
         self.assertNotIn("retry with allow_foreground=true", click["reason"].lower())
+
+    # ASSURANCE: SEC-FOCUS-001
+    def test_chrome_url_js_bridge_fails_closed_before_any_applescript(self) -> None:
+        target = type("Target", (), {
+            "browser": "Google Chrome", "window_index": 1, "tab_index": 2,
+            "tab_handle": "btab_chrome_test", "native_id": "123",
+            "title": "Example", "url": "https://example.test",
+        })()
+        with patch("mcp_server.tools_browser._run_osascript") as osascript:
+            with self.assertRaises(HTTPException) as raised:
+                _chrome_execute_js_via_url_bridge("(function(){return 'OK';})()", target, 5)
+        self.assert_foreground_denied(raised.exception, "chrome_url_js_bridge")
+        osascript.assert_not_called()
+
+    # ASSURANCE: SEC-FOCUS-001
+    def test_chrome_direct_js_denial_cannot_escalate_into_url_bridge(self) -> None:
+        target = type("Target", (), {
+            "browser": "Google Chrome", "window_index": 1, "tab_index": 2,
+            "tab_handle": "btab_chrome_test", "native_id": "123",
+            "title": "Example", "url": "https://example.test",
+        })()
+        direct_denied = HTTPException(500, "Access not allowed. (-1723)")
+        with patch("mcp_server.tools_browser.chrome_background_bridge.is_connected", return_value=False), \
+             patch("mcp_server.tools_browser._CHROME_NATIVE_JS_DENIED", False), \
+             patch("mcp_server.tools_browser._run_osascript", side_effect=direct_denied) as osascript:
+            with self.assertRaises(HTTPException) as raised:
+                _execute_js_for_target(
+                    "Google Chrome", "(function(){return 'OK';})()", target, 5,
+                )
+        self.assert_foreground_denied(raised.exception, "chrome_url_js_bridge")
+        self.assertEqual(1, osascript.call_count)
+
+    # ASSURANCE: SEC-FOCUS-001
+    def test_cached_chrome_native_js_denial_still_cannot_enter_url_bridge(self) -> None:
+        target = type("Target", (), {
+            "browser": "Google Chrome", "window_index": 1, "tab_index": 2,
+            "tab_handle": "btab_chrome_test", "native_id": "123",
+            "title": "Example", "url": "https://example.test",
+        })()
+        with patch("mcp_server.tools_browser.chrome_background_bridge.is_connected", return_value=False), \
+             patch("mcp_server.tools_browser._CHROME_NATIVE_JS_DENIED", True), \
+             patch("mcp_server.tools_browser._run_osascript") as osascript:
+            with self.assertRaises(HTTPException) as raised:
+                _execute_js_for_target(
+                    "Google Chrome", "(function(){return 'OK';})()", target, 5,
+                )
+        self.assert_foreground_denied(raised.exception, "chrome_url_js_bridge")
+        osascript.assert_not_called()
 
     # ASSURANCE: SEC-FOCUS-001
     def test_safari_upload_is_denied_before_artifact_or_tab_side_effect(self) -> None:

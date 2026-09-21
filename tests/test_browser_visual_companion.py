@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
+from mcp_server.foreground_guard import foreground_authorization
 from mcp_server.tools_browser import (
     _safari_visual_claim_js,
     _safari_visual_claim_script,
@@ -105,7 +106,8 @@ class BrowserVisualCompanionTests(unittest.TestCase):
             title = "Example"
 
         direct = HTTPException(500, "Access not allowed. (-1723)")
-        with patch("mcp_server.tools_browser._run_osascript", side_effect=direct), \
+        with foreground_authorization("test_chrome_url_js_bridge"), \
+             patch("mcp_server.tools_browser._run_osascript", side_effect=direct), \
              patch("mcp_server.tools_browser._chrome_execute_js_via_url_bridge", return_value="OK") as bridge:
             out = _execute_js_for_target("Google Chrome", "(function(){return 'OK';})()", Target(), 5)
         self.assertEqual("OK", out)
@@ -122,7 +124,8 @@ class BrowserVisualCompanionTests(unittest.TestCase):
 
         direct = HTTPException(500, "Access not allowed. (-1723)")
         bridge_error = HTTPException(412, "bridge unavailable")
-        with patch("mcp_server.tools_browser._run_osascript", side_effect=direct), \
+        with foreground_authorization("test_chrome_url_js_bridge"), \
+             patch("mcp_server.tools_browser._run_osascript", side_effect=direct), \
              patch("mcp_server.tools_browser._chrome_execute_js_via_url_bridge", side_effect=bridge_error):
             with self.assertRaises(HTTPException) as raised:
                 _execute_js_for_target("Google Chrome", "(function(){return 'x';})()", Target(), 5)
@@ -156,7 +159,8 @@ class BrowserVisualCompanionTests(unittest.TestCase):
             hex = "abcdef1234567890"
 
         marker = "__MAC_MCP_BRIDGE_abcdef123456__"
-        with patch("mcp_server.tools_browser.uuid.uuid4", return_value=FixedUUID()), \
+        with foreground_authorization("test_chrome_url_js_bridge"), \
+             patch("mcp_server.tools_browser.uuid.uuid4", return_value=FixedUUID()), \
              patch("mcp_server.tools_browser.time.sleep"), \
              patch("mcp_server.tools_browser._run_osascript", side_effect=[
                  marker + "TIMEOUT",

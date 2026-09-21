@@ -679,6 +679,72 @@ function __mcpActionable(el){
 function __mcpComposedContains(root,node){
   var cur=node,guard=0;while(cur&&guard++<20){if(cur===root)return true;cur=__mcpParent(cur);}return false;
 }
+function __mcpAssociation(el){
+  var out={control:null,label:null,ambiguous:false};if(!el||el.nodeType!==1)return out;
+  var tag=String(el.tagName||'').toLowerCase(),doc=el.ownerDocument||document;
+  if(tag==='label'){
+    out.label=el;
+    try{out.control=el.control||null;}catch(e){}
+    if(!out.control){
+      var fid='';try{fid=String(el.getAttribute('for')||'');}catch(e){}
+      if(fid)try{out.control=doc.getElementById(fid)||null;}catch(e){}
+    }
+    if(!out.control)try{out.control=el.querySelector('input,select,textarea,button,[role="radio"],[role="checkbox"],[role="switch"]');}catch(e){}
+    return out;
+  }
+  var labels=[];
+  try{labels=Array.from(el.labels||[]).filter(function(x){return x&&x.isConnected;});}catch(e){}
+  if(!labels.length){
+    var id='';try{id=String(el.id||'');}catch(e){}
+    if(id)try{labels=Array.from(doc.querySelectorAll('label[for]')).filter(function(x){return String(x.htmlFor||x.getAttribute('for')||'')===id;});}catch(e){}
+  }
+  var visible=labels.filter(function(x){try{return __mcpVisible(x);}catch(e){return false;}});
+  if(visible.length===1)out.label=visible[0];
+  else if(labels.length===1)out.label=labels[0];
+  else if(visible.length>1||labels.length>1)out.ambiguous=true;
+  if(out.label)out.control=el;
+  return out;
+}
+function __mcpAssociationText(el){
+  var a=__mcpAssociation(el),parts=[];
+  if(a.label)try{parts.push(__mcpText(a.label));}catch(e){}
+  if(a.control&&a.control!==el)try{parts.push(__mcpText(a.control));}catch(e){}
+  return parts.filter(Boolean).join(' ').replace(/\s+/g,' ').trim().slice(0,240);
+}
+function __mcpAssociationRelated(a,b){
+  if(!a||!b)return false;
+  var aa=__mcpAssociation(a),bb=__mcpAssociation(b);
+  if(aa.ambiguous||bb.ambiguous)return false;
+  var ac=aa.control||a,bc=bb.control||b;
+  if(ac===bc)return true;
+  if(aa.label&&(aa.label===b||__mcpComposedContains(aa.label,b)))return true;
+  if(bb.label&&(bb.label===a||__mcpComposedContains(bb.label,a)))return true;
+  return false;
+}
+function __mcpSemanticVisible(el){
+  if(__mcpVisible(el))return true;
+  var role=String(__mcpRole(el)||'').toLowerCase(),tag=String(el&&el.tagName||'').toLowerCase(),type=String(el&&el.getAttribute&&el.getAttribute('type')||'').toLowerCase();
+  if(['radio','checkbox','switch'].indexOf(role)<0&&!(tag==='input'&&['radio','checkbox'].indexOf(type)>=0))return false;
+  var a=__mcpAssociation(el);return !a.ambiguous&&!!a.label&&__mcpVisible(a.label);
+}
+function __mcpTopBlockingModal(){
+  var all=__mcpQueryAll('dialog[open],[aria-modal="true"],[role="dialog"]'),best=null,bestZ=-2147483648,bestOrder=-1;
+  for(var i=0;i<all.length;i++){
+    var el=all[i];if(!__mcpVisible(el))continue;
+    var tag=String(el.tagName||'').toLowerCase(),role=String(el.getAttribute&&el.getAttribute('role')||'').toLowerCase(),aria=String(el.getAttribute&&el.getAttribute('aria-modal')||'').toLowerCase(),st=null;
+    try{st=__mcpStyle(el);}catch(e){}
+    var blocking=(tag==='dialog'&&el.hasAttribute('open'))||aria==='true'||(role==='dialog'&&st&&String(st.position||'').toLowerCase()==='fixed');
+    if(!blocking)continue;
+    if(best&&__mcpComposedContains(best,el)){best=el;bestOrder=i;try{bestZ=parseInt(st.zIndex,10)||0;}catch(e){bestZ=0;}continue;}
+    var z=0;try{z=parseInt(st.zIndex,10);if(!isFinite(z))z=0;}catch(e){}
+    if(!best||z>bestZ||(z===bestZ&&i>bestOrder)){best=el;bestZ=z;bestOrder=i;}
+  }
+  return best;
+}
+function __mcpModalScope(el){
+  var modal=__mcpTopBlockingModal();if(!modal)return {active:false,inside:true,modal:null};
+  return {active:true,inside:el===modal||__mcpComposedContains(modal,el),modal:modal};
+}
 function __mcpElementReadiness(el,kind,minStableMs){
   kind=String(kind||'click').toLowerCase();minStableMs=Math.max(0,Number(minStableMs||0));
   if(!el||el.nodeType!==1||!el.isConnected)return {ready:false,reason_code:'ELEMENT_DETACHED'};
@@ -686,8 +752,14 @@ function __mcpElementReadiness(el,kind,minStableMs){
   if(!target||!target.isConnected)return {ready:false,reason_code:'ELEMENT_DETACHED'};
   var s=__mcpState(),st=null,r=null,topRect=null;
   try{st=__mcpStyle(target);r=target.getBoundingClientRect();topRect=__mcpTopRect(target);}catch(e){return {ready:false,reason_code:'ELEMENT_NOT_READY'};}
+  var modalScope=__mcpModalScope(target),assoc=__mcpAssociation(target);
   var base={ready:false,reason_code:null,element_id:__mcpId(target,s),stable_for_ms:Math.max(0,Date.now()-Number(s.lastMutationAt||Date.now())),dom_revision:s.mutationRevision,
-    rect:{x:Math.round(topRect.left),y:Math.round(topRect.top),w:Math.round(topRect.width),h:Math.round(topRect.height)},pointer_events:String(st.pointerEvents||'')};
+    rect:{x:Math.round(topRect.left),y:Math.round(topRect.top),w:Math.round(topRect.width),h:Math.round(topRect.height)},pointer_events:String(st.pointerEvents||''),
+    modal_scope:modalScope.active?(modalScope.inside?'inside':'outside'):'none'};
+  if(assoc.control&&assoc.control!==target)base.associated_control={element_id:__mcpId(assoc.control,s),tag:String(assoc.control.tagName||'').toLowerCase(),role:__mcpRole(assoc.control)};
+  if(assoc.label&&assoc.label!==target)base.associated_label={element_id:__mcpId(assoc.label,s),text:__mcpText(assoc.label)};
+  if(assoc.ambiguous)base.association_ambiguous=true;
+  if(modalScope.active&&!modalScope.inside){base.reason_code='ELEMENT_OUTSIDE_MODAL_SCOPE';return base;}
   if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0){base.reason_code='ELEMENT_HIDDEN';return base;}
   if(!isFinite(r.width)||!isFinite(r.height)||r.width<=0||r.height<=0){base.reason_code='ELEMENT_ZERO_BOUNDS';return base;}
   if(topRect.bottom<=0||topRect.right<=0||topRect.top>=innerHeight||topRect.left>=innerWidth){base.reason_code='ELEMENT_OFFSCREEN';return base;}
@@ -697,13 +769,17 @@ function __mcpElementReadiness(el,kind,minStableMs){
     var tag=String(target.tagName||'').toLowerCase(),role=String(__mcpRole(target)||'').toLowerCase();
     if(!(tag==='input'||tag==='textarea'||target.isContentEditable||role==='textbox'||role==='searchbox'||tag==='select')){base.reason_code='ELEMENT_NOT_EDITABLE';return base;}
   }else if((kind==='click'||kind==='double_click'||kind==='select')&&!__mcpActionable(target)){base.reason_code='ELEMENT_NOT_ACTIONABLE';return base;}
-  var p=target,depth=0;while(p&&depth++<12){try{if(__mcpStyle(p).pointerEvents==='none'){base.reason_code='ELEMENT_POINTER_EVENTS_NONE';return base;}if(p.getAttribute&&p.getAttribute('aria-busy')==='true'){base.reason_code='ELEMENT_BUSY';return base;}}catch(e){}p=__mcpParent(p);}
+  var p=target,depth=0,pointerBlocked=false;while(p&&depth++<12){try{if(__mcpStyle(p).pointerEvents==='none')pointerBlocked=true;if(p.getAttribute&&p.getAttribute('aria-busy')==='true'){base.reason_code='ELEMENT_BUSY';return base;}}catch(e){}p=__mcpParent(p);}
   if(base.stable_for_ms<minStableMs){base.reason_code='ELEMENT_UNSTABLE';return base;}
   try{
     var doc=target.ownerDocument||document,win=doc.defaultView||window,lr=target.getBoundingClientRect(),cx=lr.left+lr.width/2,cy=lr.top+lr.height/2;
     if(cx<0||cy<0||cx>=win.innerWidth||cy>=win.innerHeight){base.reason_code='ELEMENT_OFFSCREEN';return base;}
     var hit=doc.elementFromPoint(cx,cy);base.hit_tag=hit?String(hit.tagName||'').toLowerCase():null;
-    if(!hit||(!__mcpComposedContains(target,hit)&&!__mcpComposedContains(hit,target))){base.reason_code='ELEMENT_OCCLUDED';return base;}
+    if(hit)base.hit_target={tag:String(hit.tagName||'').toLowerCase(),role:__mcpRole(hit),element_id:__mcpId(hit,s)};
+    var containsHit=!!hit&&__mcpComposedContains(target,hit),containedByHit=!!hit&&__mcpComposedContains(hit,target),associationRelated=!!hit&&__mcpAssociationRelated(target,hit),related=containsHit||containedByHit||associationRelated;
+    if(pointerBlocked&&!(containsHit||associationRelated)){base.reason_code='ELEMENT_POINTER_EVENTS_NONE';return base;}
+    if(!hit||!related){base.reason_code='ELEMENT_OCCLUDED';return base;}
+    if(pointerBlocked&&(containsHit||associationRelated))base.pointer_events_association_fallback=true;
   }catch(e){base.reason_code='ELEMENT_HIT_TEST_FAILED';return base;}
   base.ready=true;base.reason_code=null;return base;
 }
@@ -741,14 +817,27 @@ function __mcpContext(el){
 function __mcpRect(el){var r=__mcpTopRect(el),ox=(window.outerWidth-window.innerWidth),oy=(window.outerHeight-window.innerHeight),viewportX=window.screenX+Math.max(0,Math.round(ox/2)),viewportY=window.screenY+Math.max(0,Math.round(oy));return{viewport:{x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)},document:{x:Math.round(r.left+scrollX),y:Math.round(r.top+scrollY),w:Math.round(r.width),h:Math.round(r.height)},screen:{x:Math.round(viewportX+r.left),y:Math.round(viewportY+r.top),w:Math.round(r.width),h:Math.round(r.height),estimated:true}};}
 function __mcpDescribe(el,s){
   var tag=(el.tagName||'').toLowerCase(),rect=__mcpRect(el),out={element_id:__mcpId(el,s),tag:tag,role:__mcpRole(el),text:__mcpText(el),viewport_rect:rect.viewport,screen_rect:rect.screen,actionable:__mcpActionable(el)};
-  if(out.actionable){var rd=__mcpElementReadiness(el,'observe',0);out.ready=!!rd.ready;if(rd.reason_code)out.readiness_reason=rd.reason_code;}
+  var modalScope=__mcpModalScope(el);out.modal_scope=modalScope.active?(modalScope.inside?'inside':'outside'):'none';
+  var assoc=__mcpAssociation(el),associationText=__mcpAssociationText(el);if(associationText)out.association_text=associationText;
+  if(assoc.control&&assoc.control!==el)out.associated_control={element_id:__mcpId(assoc.control,s),tag:String(assoc.control.tagName||'').toLowerCase(),role:__mcpRole(assoc.control)};
+  if(assoc.label&&assoc.label!==el)out.associated_label={element_id:__mcpId(assoc.label,s),text:__mcpText(assoc.label)};
+  if(assoc.ambiguous)out.association_ambiguous=true;
+  if(out.actionable){var rd=__mcpElementReadiness(el,'observe',0);out.ready=!!rd.ready;if(rd.reason_code)out.readiness_reason=rd.reason_code;if(rd.hit_target)out.hit_target=rd.hit_target;}
   var context=__mcpContext(el);if(context)out.context=context;
   var aria=el.getAttribute('aria-label')||'',ph=el.getAttribute('placeholder')||'',name=el.getAttribute('name')||'',title=el.getAttribute('title')||'';if(aria)out.aria_label=aria.slice(0,120);if(ph)out.placeholder=ph.slice(0,100);if(name)out.name=name.slice(0,100);if(title)out.title=title.slice(0,100);if(tag==='a'&&el.href)out.href=String(el.href).slice(0,220);if(el.disabled===true||el.getAttribute('aria-disabled')==='true')out.enabled=false;
   try{if(el.ownerDocument&&el.ownerDocument.activeElement===el)out.focused=true;}catch(e){}if(['input','textarea','select'].indexOf(tag)>=0)out.value=String(el.value||'').slice(0,160);if(tag==='input'&&el.type)out.input_type=String(el.type);if(typeof el.checked==='boolean'&&el.checked)out.checked=true;if(tag==='select')out.options=Array.from(el.options||[]).slice(0,24).map(function(o){return{text:String(o.text||'').slice(0,90),value:String(o.value||'').slice(0,90),selected:!!o.selected};});return out;
 }
 function __mcpParent(el){if(!el)return null;if(el.parentElement)return el.parentElement;try{var root=el.getRootNode&&el.getRootNode();return root&&root.host?root.host:null;}catch(e){return null;}}
 function __mcpActivationTarget(el){
-  if(!el)return el;if(__mcpActionable(el))return el;
+  if(!el)return el;
+  var assoc=__mcpAssociation(el),tag=String(el.tagName||'').toLowerCase(),type=String(el.getAttribute&&el.getAttribute('type')||'').toLowerCase();
+  if(assoc.ambiguous)return el;
+  if(tag==='input'&&['radio','checkbox'].indexOf(type)>=0&&assoc.label&&__mcpVisible(assoc.label))return assoc.label;
+  if(tag==='label'&&assoc.control){
+    if(__mcpVisible(el))return el;
+    if(__mcpVisible(assoc.control))return assoc.control;
+  }
+  if(__mcpActionable(el))return el;
   var selector='button,a,input,textarea,select,summary,label,[role="button"],[role="link"],[role="combobox"],[role="option"],[role="menuitem"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[tabindex]';
   try{var child=el.querySelector(selector);if(child&&__mcpVisible(child))return child;}catch(e){}var p=__mcpParent(el),n=0;while(p&&n++<4){if(__mcpActionable(p))return p;p=__mcpParent(p);}return el;
 }
@@ -766,7 +855,7 @@ function __mcpRecoverElement(id,s){
   var old=s.elements[id];if(old&&old.isConnected)return old;if(!old)return null;
   var ident={tag:String(old.tagName||'').toLowerCase(),role:__mcpRole(old),text:__mcpText(old),aria:old.getAttribute&&old.getAttribute('aria-label')||'',name:old.getAttribute&&old.getAttribute('name')||'',ph:old.getAttribute&&old.getAttribute('placeholder')||'',title:old.getAttribute&&old.getAttribute('title')||''};
   var all=__mcpQueryAll('*'),ranked=[];
-  for(var i=0;i<all.length;i++){var el=all[i];if(!el.isConnected||!__mcpVisible(el))continue;var score=0,role=__mcpRole(el),tag=String(el.tagName||'').toLowerCase();if(ident.role&&role===ident.role)score+=2;if(ident.tag&&tag===ident.tag)score+=1;
+  for(var i=0;i<all.length;i++){var el=all[i];if(!el.isConnected||!__mcpSemanticVisible(el))continue;var score=0,role=__mcpRole(el),tag=String(el.tagName||'').toLowerCase();if(ident.role&&role===ident.role)score+=2;if(ident.tag&&tag===ident.tag)score+=1;
     var pairs=[['aria','aria-label'],['name','name'],['ph','placeholder'],['title','title']];for(var j=0;j<pairs.length;j++){var want=ident[pairs[j][0]];if(want&&String(el.getAttribute(pairs[j][1])||'')===want)score+=4;}if(ident.text&&__mcpText(el)===ident.text)score+=3;if(score>=5)ranked.push({el:el,score:score});}
   ranked.sort(function(a,b){return b.score-a.score;});if(!ranked.length)return null;if(ranked.length>1&&ranked[0].score===ranked[1].score&&ranked[0].score<8)return null;
   var recovered=ranked[0].el;s.elements[id]=recovered;try{s.ids.set(recovered,id);}catch(e){}return recovered;
@@ -778,9 +867,10 @@ function __mcpRecoverAction(a,s){
   if(!query&&!wantedRole)return null;
   var qTokens=query.split(' ').filter(Boolean),all=__mcpQueryAll('*'),ranked=[];
   for(var i=0;i<all.length;i++){
-    var el=all[i];if(!el.isConnected||!__mcpVisible(el)||!__mcpActionable(el))continue;
+    var el=all[i];if(!el.isConnected||!__mcpSemanticVisible(el)||!__mcpActionable(el))continue;
+    var modalScope=__mcpModalScope(el);if(modalScope.active&&!modalScope.inside)continue;
     var role=__mcpNorm(__mcpRole(el));if(wantedRole&&role!==wantedRole)continue;
-    var d=__mcpDescribe(el,s),fields=[d.text||'',d.aria_label||'',d.placeholder||'',d.name||'',d.title||'',d.value||'',d.context||''],score=wantedRole?2:0;
+    var d=__mcpDescribe(el,s),fields=[d.text||'',d.aria_label||'',d.placeholder||'',d.name||'',d.title||'',d.value||'',d.context||'',d.association_text||''],score=wantedRole?2:0;
     for(var j=0;j<fields.length;j++){
       var f=__mcpNorm(fields[j]);if(!f)continue;
       if(query&&f===query)score=Math.max(score,12);
@@ -861,7 +951,8 @@ var all=__mcpQueryAll('*');
 var elements=[];
 for(var i=0;i<all.length && elements.length<{max_elements};i++){{
   var el=all[i];
-  if(!__mcpVisible(el)) continue;
+  if(!__mcpSemanticVisible(el)) continue;
+  var modalScope=__mcpModalScope(el);if(modalScope.active&&!modalScope.inside)continue;
   var actionable=__mcpActionable(el);
   if(scope==='interactive' && !actionable) continue;
   if(scope==='visible' && !actionable){{
@@ -884,7 +975,7 @@ return __mcpB64({{
   ok:true, observation_id:obs, dom_revision:s.mutationRevision,
   url:location.href,title:document.title,scroll:{{x:scrollX,y:scrollY}},
   viewport:{{w:innerWidth,h:innerHeight}},window_metrics:metrics,
-  scope:scope,element_count:elements.length,elements:elements
+  scope:scope,modal_scope:(function(){{var m=__mcpTopBlockingModal();return m?{{active:true,element_id:__mcpId(m,s),role:__mcpRole(m),text:__mcpText(m).slice(0,120)}}:{{active:false}};}})(),element_count:elements.length,elements:elements
 }});
 }})()'''
 
@@ -965,7 +1056,8 @@ def _format_observation(payload: Dict[str, Any], image_data: Optional[bytes]) ->
                 for key in (
                     "element_id", "tag", "role", "text", "aria_label", "placeholder",
                     "name", "title", "value", "href", "actionable", "ready", "readiness_reason", "enabled", "focused",
-                    "checked", "input_type", "viewport_rect",
+                    "checked", "input_type", "viewport_rect", "modal_scope", "association_text",
+                    "associated_control", "associated_label", "association_ambiguous", "hit_target",
                 )
                 if element.get(key) is not None
             }
@@ -977,6 +1069,7 @@ def _format_observation(payload: Dict[str, Any], image_data: Optional[bytes]) ->
             "url": payload.get("url"),
             "title": payload.get("title"),
             "scope": payload.get("scope"),
+            "modal_scope": payload.get("modal_scope"),
             "element_count": payload.get("element_count"),
             "elements": compact_elements,
             "viewport": payload.get("viewport"),
@@ -1164,6 +1257,7 @@ def _score_candidate(element: Dict[str, Any], query: str, role: Optional[str], t
     primary = [
         element.get("text"), element.get("aria_label"), element.get("placeholder"),
         element.get("name"), element.get("title"), element.get("value"), element.get("context"),
+        element.get("association_text"),
     ]
     combined_primary = " ".join(str(value or "") for value in primary if value)
     if combined_primary:
@@ -1227,8 +1321,7 @@ function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(o
 function norm(v){{return String(v||'').normalize('NFKD').toLowerCase().replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9çğıöşü]+/g,' ').replace(/\\s+/g,' ').trim();}}
 function rendered(el){{
   if(!el||el.nodeType!==1) return false;
-  var st=getComputedStyle(el); if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0) return false;
-  var r=el.getBoundingClientRect(); return r.width>0&&r.height>0;
+  return __mcpSemanticVisible(el);
 }}
 function level(actual,wanted){{
   var a=norm(actual),w=norm(wanted); if(!a||!w)return 0;
@@ -1240,14 +1333,15 @@ function level(actual,wanted){{
 }}
 var s=__mcpState(), q={q_js}, wantedRole={role_js}, wantedText={text_js}, actionableOnly={actionable_js};
 __mcpVisual('Finding',null,'',1600);
-var out=[];
+var out=[],modal=__mcpTopBlockingModal();
 var all=__mcpQueryAll('*');
 for(var i=0;i<all.length&&out.length<{max_candidates};i++){{
   var el=all[i]; if(!rendered(el))continue;
+  if(modal&&el!==modal&&!__mcpComposedContains(modal,el))continue;
   var d=__mcpDescribe(el,s); d.actionable=__mcpActionable(el);
   if(actionableOnly && !d.actionable)continue;
   if(wantedRole&&norm(d.role)!==wantedRole)continue;
-  var fields=[d.text||'',d.aria_label||'',d.placeholder||'',d.name||'',d.title||'',d.value||'',d.context||''];
+  var fields=[d.text||'',d.aria_label||'',d.placeholder||'',d.name||'',d.title||'',d.value||'',d.context||'',d.association_text||''];
   fields.push(fields.filter(Boolean).join(' '));
   if(wantedText){{var tl=0;fields.forEach(function(v){{tl=Math.max(tl,level(v,wantedText));}});if(!tl)continue;}}
   if(q){{
@@ -1258,7 +1352,7 @@ for(var i=0;i<all.length&&out.length<{max_candidates};i++){{
   out.push(d);
 }}
 var obs='bobs_'+s.pageToken+'_'+Date.now().toString(36);s.observations[obs]=s.mutationRevision;
-return __mcpB64({{ok:true,observation_id:obs,dom_revision:s.mutationRevision,url:location.href,title:document.title,elements:out}});
+return __mcpB64({{ok:true,observation_id:obs,dom_revision:s.mutationRevision,url:location.href,title:document.title,modal_scope:modal?{{active:true,element_id:__mcpId(modal,s),role:__mcpRole(modal),text:__mcpText(modal).slice(0,120)}}:{{active:false}},elements:out}});
 }})()'''
 
 
@@ -1329,6 +1423,9 @@ def browser_find(
             "href": element.get("href"), "viewport_rect": element.get("viewport_rect"),
             "screen_rect": element.get("screen_rect"), "actionable": element.get("actionable"),
             "ready": element.get("ready"), "readiness_reason": element.get("readiness_reason"),
+            "modal_scope": element.get("modal_scope"), "association_text": element.get("association_text"),
+            "associated_control": element.get("associated_control"), "associated_label": element.get("associated_label"),
+            "association_ambiguous": element.get("association_ambiguous"), "hit_target": element.get("hit_target"),
         })
     return {
         "ok": True,
@@ -1338,6 +1435,7 @@ def browser_find(
         "title": payload.get("title"),
         "query": query,
         "search_scope": "targeted_scan",
+        "modal_scope": payload.get("modal_scope"),
         "actionable_only": actionable_only,
         "candidate_limit": candidate_limit,
         "payload_limited": payload_limited,
@@ -1733,7 +1831,7 @@ def _verified_dom_action(
         result["element_id"] = element_id
     result["readiness"] = {
         key: readiness.get(key)
-        for key in ("ready", "reason_code", "stable_for_ms", "dom_revision", "rect", "pointer_events", "hit_tag", "duration_ms")
+        for key in ("ready", "reason_code", "stable_for_ms", "dom_revision", "rect", "pointer_events", "hit_tag", "hit_target", "modal_scope", "associated_control", "associated_label", "association_ambiguous", "pointer_events_association_fallback", "duration_ms")
         if readiness.get(key) is not None
     }
 
