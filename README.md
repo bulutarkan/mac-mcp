@@ -321,6 +321,12 @@ The legacy `--ngrok` flag remains supported as an alias for `--public-mode ngrok
 
 `mac-mcp conformance` runs the deterministic Computer Use regression lab. Its default suite is CI-safe and verifies contracts such as background browser behavior, explicit foreground fallbacks, stable tab identity, stale-handle rejection, render/element readiness, bounded action batches, and no-effect click handling. `--live` adds read-only checks against this Mac without clicking or typing in the user's applications.
 
+### Closed-loop Computer Use plans
+
+`computer_plan` defaults to plan schema v2 for bounded multi-step browser/native workflows. In addition to ordinary tool steps and `$ref` result reuse, a plan can use `wait_until`, conditional `branch`, bounded `retry`, and a single safe `fallback`. Recoverable **pre-mutation** stale/readiness failures can trigger a fresh observation and semantic target rebind inside the same model tool call: browser targets use semantic `browser_find`, while native targets prefer `AXIdentifier` and otherwise require a unique role/title/description fingerprint. Ambiguous matches fail closed rather than guessing.
+
+Recovery has independent count/time budgets plus the existing total plan/action-unit limits. Mutating work is never automatically replayed after `ACTION_NO_EFFECT`, verification uncertainty, policy denial, `outcome_unknown`, an exception crossing a mutating tool boundary, or a partially successful action batch. Optional plan `resources` use the same global ownership state as delegated-agent admission, so a conflicting browser tab/native/workspace resource can fail at preflight before any plan step runs. Every nested action still goes back through normal Mac MCP policy, scope, browser/native leases, telemetry and effect verification.
+
 Default local endpoint:
 
 ```text

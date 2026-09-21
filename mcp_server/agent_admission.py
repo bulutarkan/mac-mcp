@@ -246,10 +246,15 @@ def _prune_expired_unlocked(state: Dict[str, Any], now: float) -> list[str]:
 def _active_counts(state: Mapping[str, Any]) -> tuple[int, Dict[str, int]]:
     leases = list((state.get("leases") or {}).values())
     by_provider: Dict[str, int] = {}
+    total = 0
     for lease in leases:
+        weight = int(lease.get("capacity_weight") if lease.get("capacity_weight") is not None else 1)
+        if weight <= 0:
+            continue
         provider = str(lease.get("provider") or "unknown")
-        by_provider[provider] = by_provider.get(provider, 0) + 1
-    return len(leases), by_provider
+        by_provider[provider] = by_provider.get(provider, 0) + weight
+        total += weight
+    return total, by_provider
 
 
 def _resource_blockers(state: Mapping[str, Any], resources: Sequence[Mapping[str, str]]) -> list[Dict[str, Any]]:
@@ -525,6 +530,37 @@ def request_admission(
             "resources": claims,
             "global_limit": global_limit(),
             "provider_limit": _effective_provider_limit(str(provider), provider_limit_override),
+            "expired_leases": expired,
+        }
+
+
+def request_resource_lease(
+    root: Path, *, owner_id: str, resources: Optional[Iterable[Mapping[str, Any]]] = None,
+    ttl_s: int = 90,
+) -> Dict[str, Any]:
+    claims = normalize_claims(resources)
+    current = _now()
+    ttl = max(5, min(int(ttl_s), 600))
+    with _locked(root) as locked_root:
+        state = _read_unlocked(locked_root)
+        expired = _prune_expired_unlocked(state, current)
+        blockers = _resource_blockers(state, claims)
+        if blockers:
+            return {
+                "admitted": False, "reason": "resource_busy", "blockers": blockers,
+                "expired_leases": expired,
+            }
+        lease_id = "lease_" + uuid.uuid4().hex[:20]
+        state.setdefault("leases", {})[lease_id] = {
+            "lease_id": lease_id, "request_id": f"computer-plan:{owner_id}",
+            "team_id": None, "task_id": None, "provider": "computer_plan",
+            "resources": claims, "agent_id": None, "owner_id": str(owner_id),
+            "capacity_weight": 0, "acquired_at": current,
+            "last_heartbeat_at": current, "expires_at": current + ttl,
+        }
+        _write_unlocked(locked_root, state)
+        return {
+            "admitted": True, "lease_id": lease_id, "resources": claims,
             "expired_leases": expired,
         }
 

@@ -78,6 +78,15 @@ The matrix is evidence, not a claim that software is risk-free. Entries intentio
 - **Control paths:** `mcp_server/agent_admission.py`, `mcp_server/tools_agents.py`, `mcp_server/file_transactions.py`, `mcp_server/tools_files.py`
 - **Regression tests:** `tests/test_agent_global_admission.py::GlobalAdmissionCoreTests.test_three_teams_exceed_provider_limit_and_third_is_queued`, `tests/test_agent_global_admission.py::GlobalAdmissionCoreTests.test_fifo_fairness_prevents_younger_conflicting_request_bypass`, `tests/test_agent_global_admission.py::GlobalAdmissionCoreTests.test_bind_heartbeat_and_ttl_prune_release_crashed_agent`, `tests/test_agent_global_scheduler.py::CrossTeamGlobalSchedulerTests.test_overlapping_cross_team_workspace_serializes_but_distinct_workspace_runs`, `tests/test_agent_global_scheduler.py::CrossTeamGlobalSchedulerTests.test_team_cancel_removes_queued_request_without_releasing_other_active_lease`, `tests/test_agent_global_scheduler.py::CrossTeamGlobalSchedulerTests.test_file_expected_revision_conflict_fails_before_spawn`
 
+## SEC-COMP-001 — Closed-loop computer-plan recovery without duplicate UI mutation
+
+- **Risk class:** Stale/ambiguous UI target recovery and duplicate consequential action replay
+- **Current status:** Verified
+- **Introduced / fixed release:** 2.1.5
+- **Control:** `computer_plan` v2 may recover only from bounded, pre-mutation stale/readiness failures. It re-observes and uniquely rebinds browser/native semantic targets, uses AXIdentifier when available, refuses ambiguous identity, enforces recovery/time/action budgets and resource preflight, and never auto-replays mutating work after `ACTION_NO_EFFECT`, policy denial, `outcome_unknown`, prior partial mutation, or an ambiguous nested-tool exception.
+- **Control paths:** `mcp_server/computer_plan.py`, `mcp_server/tools_ui.py`, `mcp_server/native_action_verification.py`, `mcp_server/agent_admission.py`
+- **Regression tests:** `tests/test_computer_plan_recovery.py::ComputerPlanRecoveryTests.test_spa_stale_node_reobserves_semantically_rebinds_and_finishes`, `tests/test_computer_plan_recovery.py::ComputerPlanRecoveryTests.test_ambiguous_native_rebind_fails_closed_without_second_mutation`, `tests/test_computer_plan_recovery.py::ComputerPlanRecoveryTests.test_action_no_effect_and_outcome_unknown_are_never_replayed`, `tests/test_computer_plan_recovery.py::ComputerPlanRecoveryTests.test_recovery_budget_exceeded_stops_before_fresh_observe`, `tests/test_computer_plan_recovery.py::ComputerPlanRecoveryTests.test_resource_busy_preflight_stops_before_any_nested_tool`
+
 ## Maintaining the matrix
 
 Security changes should reuse an existing assurance ID when they strengthen the same risk/control boundary, or add a new ID when they introduce a materially different boundary. The relevant CHANGELOG bullet must include the ID in square brackets, and every listed regression method must carry a nearby `# ASSURANCE: <ID>` marker. Do not add a matrix row for a control that has no automated regression evidence.

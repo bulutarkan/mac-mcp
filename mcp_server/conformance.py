@@ -8,6 +8,7 @@ from unittest.mock import patch
 from . import browser_tabs
 from .diagnostics import FAIL, PASS, WARN, CheckResult, build_report, result
 from .tools_browser import browser_coordinate_click, browser_open_url, browser_press_key
+from . import computer_plan
 from .tools_browser_agent import (
     _effect_changed,
     _element_readiness_js,
@@ -15,8 +16,9 @@ from .tools_browser_agent import (
     _wait_for_element_readiness,
     browser_act,
 )
+from .tools_ui import _observation_script
 
-CONFORMANCE_BASELINE_VERSION = 1
+CONFORMANCE_BASELINE_VERSION = 2
 
 
 def _contract(
@@ -139,6 +141,28 @@ def _batch_action_limit_present() -> bool:
     return "_MAX_ACTIONS" in source and "non-empty list" in source
 
 
+def _closed_loop_plan_contract_present() -> bool:
+    source = inspect.getsource(computer_plan)
+    required = (
+        "RECOVERY_AMBIGUOUS_TARGET",
+        "_safe_recovery_candidate",
+        "ACTION_NO_EFFECT",
+        "outcome_unknown",
+        "max_recoveries",
+        "request_resource_lease",
+        "wait_until",
+    )
+    return all(item in source for item in required)
+
+
+def _native_semantic_identity_contract_present() -> bool:
+    script = _observation_script("System Settings", 1, 1, 2)
+    return (
+        'value of attribute "AXIdentifier" of nodeRef' in script
+        and "identifierText" in script
+    )
+
+
 def deterministic_checks() -> list[CheckResult]:
     specs = [
         ("browser.background_open_default", "Browser URL opens default to background/non-focus-stealing mode.", _background_open_default, True),
@@ -155,6 +179,8 @@ def deterministic_checks() -> list[CheckResult]:
         ("browser.effect_detection", "Post-action verification detects DOM or navigation progress.", _effect_change_detection, None),
         ("browser.no_effect", "Clicks with no observed effect are failures and are never auto-replayed.", _action_no_effect_contract, None),
         ("browser.batch_bounds", "Browser action batches have an explicit bounded action limit.", _batch_action_limit_present, None),
+        ("computer_plan.closed_loop_recovery", "Composite computer plans expose bounded fail-closed recovery, semantic rebind, wait and resource-preflight contracts.", _closed_loop_plan_contract_present, None),
+        ("native.semantic_identity", "Native observations include AXIdentifier-backed semantic identity for stale-target recovery.", _native_semantic_identity_contract_present, None),
     ]
     return [_contract(check_id, summary, probe, focus_safe=focus_safe) for check_id, summary, probe, focus_safe in specs]
 

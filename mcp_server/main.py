@@ -20,6 +20,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from .security import RateLimiter, Settings, authenticate, client_ip, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
 from .observability import ObservedFastMCP, TelemetryManager, current_security_session
 from .policy import current_policy_context, reset_policy_context, set_policy_context
+from .policy_scope import ScopeRequest, evaluate_scope
 from .scoped_auth import resolve_request_identity
 from .dashboard_routes import create_dashboard_routes, rest_telemetry_middleware
 from .chrome_background_bridge import create_chrome_background_bridge_routes
@@ -29,7 +30,7 @@ from .tools_jobs import (
     stop_job, list_jobs, wait_jobs, run_commands_parallel,
 )
 from .tools_agents import (
-    agent_catalog, spawn_agent, spawn_agents, wait_agents,
+    AGENTS_DIR, agent_catalog, spawn_agent, spawn_agents, wait_agents,
     list_agents, get_agent, agent_action,
 )
 from .file_transactions import prune_transactions
@@ -47,7 +48,7 @@ from .tools_ui import observe_ui, act_ui
 from .artifact_pipeline import artifact_pipeline
 from .context_handoff import context_handoff
 from .tools_snapshot import unified_read_snapshot
-from .computer_plan import ComputerPlanError, execute_computer_plan
+from .computer_plan import ComputerPlanError, derive_computer_plan_resources, execute_computer_plan
 from .app_adapters import mac_app
 from .tools_search import search_files, spotlight_search
 from .tools_http import http_request
@@ -67,6 +68,7 @@ from .tools_lessons import lesson_consolidate, lesson_feedback, lesson_record, l
 from .tools_skills import skill_list, skill_search, skill_get, skill_register, skill_update_index
 from .menu_app_bootstrap import bootstrap_menu_app_and_legacy_state
 from .data_guard import format_security_approval_question
+from .agent_admission import AdmissionError, normalize_claims as normalize_admission_claims
 
 
 _BROWSER_DO_OUTPUT_BUDGET_BYTES = 8_192
@@ -965,27 +967,63 @@ def create_app():
             ),
         )
 
+    def _computer_plan_resources(steps: List[Dict[str, Any]], resources: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
+        raw = resources if resources is not None else derive_computer_plan_resources(steps)
+        try:
+            normalized = normalize_admission_claims(raw)
+        except AdmissionError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, {"error": exc.code, "message": str(exc)}) from exc
+        scope = current_policy_context().scope
+        if scope is None:
+            return normalized
+        for claim in normalized:
+            kind = claim.get("kind")
+            identifier = claim.get("id")
+            decision = None
+            if kind in {"workspace", "path", "file"}:
+                decision = evaluate_scope(scope, ScopeRequest(path=identifier))
+            elif kind == "browser_tab":
+                decision = evaluate_scope(scope, ScopeRequest(browser_tab=identifier))
+            if decision is not None and not decision.allowed:
+                raise HTTPException(status.HTTP_403_FORBIDDEN, {
+                    "error": "computer_plan_resource_scope_denied",
+                    "kind": kind, "id": identifier, "reasons": list(decision.reasons),
+                })
+        return normalized
+
     @mcp.tool(
         name="computer_plan",
         title="Run bounded computer-use plan",
         description=(
-            "Execute 1-8 bounded macOS/browser steps in one model tool call. "
-            "Only allowlisted computer-use tools are accepted; every nested step is dispatched back through "
-            "Mac MCP policy, scope, security, telemetry and action verification. Execution stops on the first "
-            "tool failure, failed precondition/postcondition, bad step reference or budget boundary. "
-            "Use {'$ref':'step_id.path'} inside later arguments to reuse earlier results."
+            "Execute a bounded closed-loop macOS/browser plan in one model tool call. plan_version=2 supports "
+            "wait_until, conditional branch, bounded retry/fallback, fresh observe + semantic target rebind and "
+            "resource preflight. Mutating recovery is fail-closed: ACTION_NO_EFFECT, policy deny, outcome_unknown "
+            "or any ambiguous side-effect is never automatically replayed. Every nested step still passes through "
+            "Mac MCP policy, scope, telemetry, leases and action verification. Use {'$ref':'step_id.path'} to reuse outputs."
         ),
         structured_output=False,
     )
     async def _computer_plan(
         steps: List[Dict[str, Any]],
         max_seconds: float = 45.0,
+        plan_version: int = 2,
+        max_recoveries: int = 4,
+        max_recovery_seconds: float = 12.0,
+        max_action_units: int = 24,
+        resources: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         try:
+            normalized_resources = _computer_plan_resources(steps, resources)
             return await execute_computer_plan(
                 mcp.call_tool,
                 steps=steps,
                 max_seconds=max_seconds,
+                plan_version=plan_version,
+                max_recoveries=max_recoveries,
+                max_recovery_seconds=max_recovery_seconds,
+                max_action_units=max_action_units,
+                resources=normalized_resources,
+                admission_root=AGENTS_DIR,
             )
         except ComputerPlanError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc

@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "606a3dd99b233e0c19997d971a9795316a192be9",
+  "base_commit": "5346844a1072209882d3cb54a55f444383fb2d91",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -43,8 +43,8 @@
     {
       "mode": "100644",
       "path": "CHANGELOG.md",
-      "sha256": "54dee5ca41531dda093f1af197c7aa17cdaaa470c04a530ba80456eee10be816",
-      "size": 38092
+      "sha256": "1a9ec4ff47db2d403e432865c96854a17f2ae0e79e0e8109dd128a52446bdfdd",
+      "size": 38615
     },
     {
       "mode": "100644",
@@ -55,8 +55,8 @@
     {
       "mode": "100644",
       "path": "README.md",
-      "sha256": "fbccbdd9455f4869c52ec51eeba8479711cbcfb50ce00be0e9e24d3866b89994",
-      "size": 57723
+      "sha256": "40777b2a95f49d359796e9e4b45feb3ed17d1845d29f394c3fa0d6d54ca5f124",
+      "size": 59005
     },
     {
       "mode": "100644",
@@ -103,8 +103,8 @@
     {
       "mode": "100644",
       "path": "docs/security-assurance.md",
-      "sha256": "b47b47ce71dab14bebca3bffbc53e19be62967410101c4d157af84cc9899af79",
-      "size": 11102
+      "sha256": "4b49243feb5c6fb9e77aade14bdba3b30f3936b19490c83e1e2a4d932b955498",
+      "size": 12631
     },
     {
       "mode": "100755",
@@ -127,8 +127,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/agent_admission.py",
-      "sha256": "d8b7a3dea8085c16e79af72a792ed6964502903c355f1af96f4f6ba498fa9b54",
-      "size": 24864
+      "sha256": "46b59a23b2c16b57a45cb258a808ec162fe12ab6206ff2fd8b19277f995ba8ba",
+      "size": 26346
     },
     {
       "mode": "100644",
@@ -181,14 +181,14 @@
     {
       "mode": "100644",
       "path": "mcp_server/computer_plan.py",
-      "sha256": "f00edc3ad7179f68d5428041e6b1aa29e8b1f606dfbf6eb523bb32fc60ee44a8",
-      "size": 15979
+      "sha256": "a57029d2b5bab3163b8000d4254b8d0f1df0de7e21264a0391ee6776286deaaa",
+      "size": 57425
     },
     {
       "mode": "100644",
       "path": "mcp_server/conformance.py",
-      "sha256": "78af44aec1207db104c7e8ae288bd239a067c869d23396bce87a9733f182e2e2",
-      "size": 9503
+      "sha256": "cc031c387078cd5a6036a855a7e29fb85d8d7470c103d0d43e7c9cd630837013",
+      "size": 10595
     },
     {
       "mode": "100644",
@@ -253,8 +253,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/main.py",
-      "sha256": "f299474be61bd50fcec7b32a37f65277b4bc59d37ab52d7f3ffb1081d25ca7f7",
-      "size": 100694
+      "sha256": "1c7ae5561cc7f3259e5c8094dc7b5139b2b87d5fdde9e1f32a7c95da23430e8f",
+      "size": 102818
     },
     {
       "mode": "100644",
@@ -463,8 +463,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/tools_ui.py",
-      "sha256": "9094728711a58b1b016ac3cb110e67432e1a96def5cbf442ec23c527e4afcf20",
-      "size": 141007
+      "sha256": "62ed034a55a5e78f524f9a04a98a7d64a407f46d302a714856903c88db71024c",
+      "size": 141538
     },
     {
       "mode": "100644",
@@ -864,9 +864,15 @@
     },
     {
       "mode": "100644",
+      "path": "tests/test_computer_plan_recovery.py",
+      "sha256": "97e619da59e7da47a83874f406e76102f45a79a3140cdb1905ac95e616e02c73",
+      "size": 26545
+    },
+    {
+      "mode": "100644",
       "path": "tests/test_conformance_lab.py",
-      "sha256": "856ca92c5e96038fb56b554208e46f20d549c78a318ec2577d99095f5bf393ce",
-      "size": 1902
+      "sha256": "6d5469f6b9a9c32436dcb7245a203c5276d0b6bdec6ff91eab45bd8880c03cb5",
+      "size": 2078
     },
     {
       "mode": "100644",
@@ -1133,10 +1139,10 @@
       "size": 3924
     }
   ],
-  "generated_at": "2026-09-21T07:31:50Z",
-  "payload_sha256": "b4fcdde77bc17ac6d5f608eeeec3bf51362fbbf65f61b81ed40c9aadde61f6ec",
+  "generated_at": "2026-09-21T08:14:16Z",
+  "payload_sha256": "e4b42707e39af0c1a4fe2dba09d8dbe0aad076937aa75ec07b2ff033b9a5040a",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.5-r12",
+  "release_id": "stable-2.1.5-r13",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",

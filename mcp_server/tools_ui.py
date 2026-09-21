@@ -322,6 +322,7 @@ def _parse_observation(raw: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
             "focused": _parse_bool(fields[13]),
             "actions": actions,
             "child_count": _parse_number(fields[15]) or 0,
+            "identifier": fields[16] if len(fields) > 16 else "",
         })
 
     return metadata, nodes
@@ -382,6 +383,7 @@ on nodeRecord(nodeRef, nodeId, parentId, fs, rs)
     set focusedText to "false"
     set actionText to ""
     set childCountText to "0"
+    set identifierText to ""
 
     tell application "System Events"
         try
@@ -423,6 +425,9 @@ on nodeRecord(nodeRef, nodeId, parentId, fs, rs)
         try
             set childCountText to (count of UI elements of nodeRef) as text
         end try
+        try
+            set identifierText to value of attribute "AXIdentifier" of nodeRef as text
+        end try
     end tell
 
     return "__NODE__" & fs & my cleanText(nodeId, fs, rs) & fs & my cleanText(parentId, fs, rs) & fs & ¬
@@ -432,7 +437,7 @@ on nodeRecord(nodeRef, nodeId, parentId, fs, rs)
         my cleanText(yText, fs, rs) & fs & my cleanText(widthText, fs, rs) & fs & ¬
         my cleanText(heightText, fs, rs) & fs & my cleanText(enabledText, fs, rs) & fs & ¬
         my cleanText(focusedText, fs, rs) & fs & my cleanText(actionText, fs, rs) & fs & ¬
-        my cleanText(childCountText, fs, rs)
+        my cleanText(childCountText, fs, rs) & fs & my cleanText(identifierText, fs, rs)
 end nodeRecord
 
 on walkNode(nodeRef, nodeId, parentId, depth, maxDepth, maxChildren, maxNodes, recordList, counter, fs, rs)
@@ -2773,6 +2778,9 @@ def act_ui(
             return {
                 "ok": False,
                 "error": "observation_id is missing or expired; call mac_observe again before acting.",
+                "reason_code": "STALE_OBSERVATION",
+                "observe_again": True,
+                "retryable": True,
             }
 
         requested_app = _normalize_app(app)
@@ -2812,6 +2820,9 @@ def act_ui(
                     return {
                         "ok": False,
                         "error": f"actions[{index}].element_id was not present in observation_id; observe again.",
+                        "reason_code": "STALE_ELEMENT_PATH",
+                        "observe_again": True,
+                        "retryable": True,
                     }
             if action_type in {"click", "double_click"} and not allow_risky and _is_risky_click(node):
                 return {
