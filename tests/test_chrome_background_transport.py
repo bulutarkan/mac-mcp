@@ -66,6 +66,19 @@ class ChromeBackgroundTransportTests(unittest.TestCase):
         self.assertIn("bridge_wake.js", manifest["content_scripts"][0]["js"])
 
     # ASSURANCE: SEC-FOCUS-001
+    def test_trusted_pointer_emulates_focus_without_page_activation(self) -> None:
+        worker = (ROOT / "menu_app/ChromeVisualCompanion/background.js").read_text()
+        self.assertIn("Emulation.setFocusEmulationEnabled", worker)
+        self.assertIn("{enabled: true}", worker)
+        self.assertIn("{enabled: false}", worker)
+        self.assertLess(
+            worker.index("Emulation.setFocusEmulationEnabled', {enabled: true}"),
+            worker.index("Input.dispatchMouseEvent"),
+        )
+        self.assertNotIn("Page.bringToFront", worker)
+        self.assertNotIn("chrome.tabs.update", worker)
+
+    # ASSURANCE: SEC-FOCUS-001
     def test_dispatch_mouse_rpc_is_explicit_and_bounded(self) -> None:
         bridge = ChromeBackgroundBridge()
         with patch.object(bridge, "_request", return_value={"ok": True, "dispatched": True}) as request:

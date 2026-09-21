@@ -145,6 +145,7 @@ async function handleDispatchMouse(message) {
     await chrome.tabs.get(tabId);
     await debuggerAttach(target);
     attached = true;
+    await debuggerCommand(target, 'Emulation.setFocusEmulationEnabled', {enabled: true});
     await debuggerCommand(target, 'Input.dispatchMouseEvent', {
       type: 'mouseMoved', x, y, button: 'none', buttons: 0, pointerType: 'mouse'
     });
@@ -163,7 +164,10 @@ async function handleDispatchMouse(message) {
       error: 'chrome_dispatch_mouse_failed', message: String(error && error.message || error || 'unknown')
     });
   } finally {
-    if (attached) { try { await debuggerDetach(target); } catch (_) {} }
+    if (attached) {
+      try { await debuggerCommand(target, 'Emulation.setFocusEmulationEnabled', {enabled: false}); } catch (_) {}
+      try { await debuggerDetach(target); } catch (_) {}
+    }
   }
 }
 

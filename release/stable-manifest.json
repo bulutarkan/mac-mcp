@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "e1e21a6e1a691fe6ea854122b9aa89c587875c09",
+  "base_commit": "35606d888564d450c2e20dbb114bf8d78d9d91f2",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -43,8 +43,8 @@
     {
       "mode": "100644",
       "path": "CHANGELOG.md",
-      "sha256": "a0a944ad748e992a727a6294b7552941d7cdecb5a525b77ad7b06e7b30be5339",
-      "size": 38029
+      "sha256": "f64d69f7684aab652f423b8107a1c4f52c573d52918c73f1f808ca790e88eeef",
+      "size": 38162
     },
     {
       "mode": "100644",
@@ -103,8 +103,8 @@
     {
       "mode": "100644",
       "path": "docs/security-assurance.md",
-      "sha256": "89ed3d3fb948e124048f6e179ae64810ee0356709d8753244dae6d3e9331a240",
-      "size": 16524
+      "sha256": "16b6546325b1b09ccf78cec7f4ed4e10000d1019119cfbeb1014b63b9c5a2e70",
+      "size": 16804
     },
     {
       "mode": "100755",
@@ -547,8 +547,8 @@
     {
       "mode": "100644",
       "path": "menu_app/ChromeVisualCompanion/background.js",
-      "sha256": "383017e7552bd6f8e0480f81b03d2eed7fbccbc73c56edab365a8cd6255ae40e",
-      "size": 10026
+      "sha256": "1fa23c62eb92ce530c38a0c24a8245e3fa1363a71cf376408b9619e998cbeac7",
+      "size": 10240
     },
     {
       "mode": "100644",
@@ -565,8 +565,8 @@
     {
       "mode": "100644",
       "path": "menu_app/ChromeVisualCompanion/manifest.json",
-      "sha256": "f55a1f10ef8cf315ac1b951253eb6b339724bed28709dca648e69840fe7eec6d",
-      "size": 600
+      "sha256": "ceb3c0cd3f0bdb46b0267872bfbd6579a69ef00227e125107b3d711601e1b7ca",
+      "size": 602
     },
     {
       "mode": "100644",
@@ -865,8 +865,8 @@
     {
       "mode": "100644",
       "path": "tests/test_chrome_background_transport.py",
-      "sha256": "fb489f8547d4e7904f162832822cc37221dae21943bbdcd0d4a5e28e74818c88",
-      "size": 15525
+      "sha256": "6eed0f42e40c4e80557e7464c5e2818ed063010a78393f2dab3fd96bf4d049d6",
+      "size": 16172
     },
     {
       "mode": "100644",
@@ -1151,10 +1151,10 @@
       "size": 3924
     }
   ],
-  "generated_at": "2026-09-21T11:25:10Z",
-  "payload_sha256": "cebeb13318612991df48a3f562fdc000227130987c3cbd4097900af5fb703c74",
+  "generated_at": "2026-09-21T11:59:53Z",
+  "payload_sha256": "7f31a15b5996cc3db3ea62b8c7717df8193d3ffebaec2cdda3279158a0e0a4dd",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.6-r6",
+  "release_id": "stable-2.1.6-r7",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",
