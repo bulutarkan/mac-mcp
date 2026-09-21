@@ -14,11 +14,12 @@ from .tools_browser_agent import (
     _element_readiness_js,
     _render_readiness_js,
     _wait_for_element_readiness,
+    _event_wait_js,
     browser_act,
 )
-from .tools_ui import _observation_script
+from .tools_ui import _observation_script, observe_ui
 
-CONFORMANCE_BASELINE_VERSION = 4
+CONFORMANCE_BASELINE_VERSION = 5
 
 
 def _contract(
@@ -208,6 +209,22 @@ def _native_semantic_identity_contract_present() -> bool:
     )
 
 
+def _event_delta_pipeline_contract_present() -> bool:
+    browser_source = _event_wait_js(
+        {"for": "selector", "selector": "#ready", "timeout_s": 1.0},
+        "https://example.test/",
+        1.0,
+    )
+    native_signature = inspect.signature(observe_ui)
+    return (
+        "MutationObserver" in browser_source
+        and "bounded_fallback" in browser_source
+        and "history.pushState" in browser_source
+        and native_signature.parameters["include_screenshot"].default is False
+        and "previous_observation_id" in native_signature.parameters
+    )
+
+
 def deterministic_checks() -> list[CheckResult]:
     specs = [
         ("browser.background_open_default", "Browser URL opens default to background/non-focus-stealing mode.", _background_open_default, True),
@@ -229,6 +246,7 @@ def deterministic_checks() -> list[CheckResult]:
         ("browser.batch_bounds", "Browser action batches have an explicit bounded action limit.", _batch_action_limit_present, None),
         ("computer_plan.closed_loop_recovery", "Composite computer plans expose bounded fail-closed recovery, semantic rebind, wait and resource-preflight contracts.", _closed_loop_plan_contract_present, None),
         ("native.semantic_identity", "Native observations include AXIdentifier-backed semantic identity for stale-target recovery.", _native_semantic_identity_contract_present, None),
+        ("observe.event_delta_pipeline", "Browser waits prefer event wakeups with bounded fallback and native observe exposes opt-in conditional delta/not-modified reads.", _event_delta_pipeline_contract_present, True),
     ]
     return [_contract(check_id, summary, probe, focus_safe=focus_safe) for check_id, summary, probe, focus_safe in specs]
 

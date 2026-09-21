@@ -27,7 +27,8 @@ class ComputerUseConformanceTests(unittest.TestCase):
         self.assertIn("browser.activate_tab_user_gate", ids)
         self.assertIn("computer_plan.closed_loop_recovery", ids)
         self.assertIn("native.semantic_identity", ids)
-        self.assertEqual(report["baseline_version"], 4)
+        self.assertIn("observe.event_delta_pipeline", ids)
+        self.assertEqual(report["baseline_version"], 5)
 
     def test_regression_flips_report_red(self) -> None:
         with patch("mcp_server.conformance._background_open_default", return_value=False):

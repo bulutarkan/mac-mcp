@@ -805,8 +805,9 @@ def _api_mac_observe_alias(
         window_index=_payload_value(data, "window_index", 1),
         max_depth=_payload_value(data, "max_depth", 5),
         max_children=_payload_value(data, "max_children", 30),
-        include_screenshot=_payload_value(data, "include_screenshot", True),
+        include_screenshot=_payload_value(data, "include_screenshot", False),
         ocr=_payload_value(data, "ocr", False),
+        previous_observation_id=data.get("previous_observation_id"),
     )
 
 

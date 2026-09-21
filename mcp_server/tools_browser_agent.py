@@ -16,6 +16,7 @@ from fastapi import HTTPException, status
 from mcp.server.fastmcp.utilities.types import Image
 
 from .security import Settings
+from .computer_use_perf import record_computer_use_sample
 from . import browser_tabs
 from .chrome_background_bridge import chrome_background_bridge
 from .tool_cancellation import cancellable_sleep, cancellation_checkpoint
@@ -1407,6 +1408,7 @@ def browser_find(
     tab_handle: Optional[str] = None,
     max_results: int = 5,
     actionable_only: bool = False,
+    wait_timeout_s: float = 0.0,
 ) -> Dict[str, Any]:
     """Find a rendered DOM target with exact-first ranking and hard role/text constraints."""
     window_index, tab_index = _resolve_tab_target(browser, tab_handle, window_index, tab_index)
@@ -1414,6 +1416,25 @@ def browser_find(
     if not str(query or "").strip() and not text and not role:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "query, text, or role is required.")
     started = time.perf_counter()
+    wait_meta: Optional[Dict[str, Any]] = None
+    wait_timeout_s = max(0.0, min(float(wait_timeout_s or 0.0), 60.0))
+    if wait_timeout_s > 0:
+        wait_meta = _wait_action(
+            settings,
+            browser,
+            {
+                "for": "semantic",
+                "query": str(query or ""),
+                "text": str(text or ""),
+                "role": str(role or ""),
+                "actionable_only": bool(actionable_only),
+                "timeout_s": wait_timeout_s,
+            },
+            window_index,
+            tab_index,
+            initial_url="",
+            tab_handle=tab_handle,
+        )
     max_results = max(1, min(int(max_results), 10))
     candidate_limit = 60
     payload_limited = False
@@ -1479,6 +1500,15 @@ def browser_find(
         "actionable_only": actionable_only,
         "candidate_limit": candidate_limit,
         "payload_limited": payload_limited,
+        "wait": {
+            "requested": bool(wait_timeout_s > 0),
+            "matched": bool((wait_meta or {}).get("matched")) if wait_meta is not None else None,
+            "strategy": (wait_meta or {}).get("wait_strategy") if wait_meta is not None else None,
+            "remote_js_calls": int((wait_meta or {}).get("_js_calls") or 0) if wait_meta is not None else 0,
+            "event_count": int(((wait_meta or {}).get("telemetry") or {}).get("event_count") or 0) if wait_meta is not None else 0,
+            "fallback_polls": int(((wait_meta or {}).get("telemetry") or {}).get("fallback_polls") or 0) if wait_meta is not None else 0,
+            "benchmark": ((wait_meta or {}).get("telemetry") or {}).get("benchmark") if wait_meta is not None else None,
+        },
         "best_match": matches[0] if matches else None,
         "matches": matches,
         "duration_ms": int((time.perf_counter() - started) * 1000),
@@ -2072,6 +2102,248 @@ def _verified_dom_action(
         result["_compact_state"] = compact_state
     return result
 
+
+def _event_wait_js(
+    action: Dict[str, Any],
+    initial_url: str,
+    timeout_s: float,
+    *,
+    return_mode: str = "promise",
+) -> str:
+    """Install an in-page event-driven waiter.
+
+    Chrome can await the returned Promise in one debugger round-trip. Safari's
+    Apple Events JavaScript bridge cannot await Promises, so return_mode=token
+    installs the same waiter and lets the host read only its compact status.
+    """
+    kind = str(action.get("for") or action.get("condition") or "selector").lower().strip()
+    stable_ms = int(action.get("stable_ms") or (300 if kind == "network_idle" else 500))
+    if kind == "network_idle":
+        stable_ms = max(150, min(stable_ms, 2000))
+    elif kind == "dom_stable":
+        stable_ms = max(100, min(stable_ms, 5000))
+    else:
+        stable_ms = max(0, min(stable_ms, 5000))
+    spec = {
+        "kind": kind,
+        "selector": str(action.get("selector") or ""),
+        "text": str(action.get("text") or "").lower(),
+        "element_id": str(action.get("element_id") or ""),
+        "query": str(action.get("query") or ""),
+        "role": str(action.get("role") or ""),
+        "actionable_only": bool(action.get("actionable_only", False)),
+        "initial_url": str(initial_url or ""),
+        "timeout_ms": max(100, min(int(float(timeout_s) * 1000), 60_000)),
+        "stable_ms": stable_ms,
+        "fallback_ms": 750,
+        "return_mode": "token" if return_mode == "token" else "promise",
+    }
+    template = r'''(function(){
+__BOOTSTRAP__
+function __mcpB64(obj){return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}
+var spec=__SPEC__,s=__mcpState();
+if(!s.eventWaiters)s.eventWaiters=Object.create(null);
+var token='bw_'+s.pageToken+'_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,7);
+var w={token:token,done:false,result:null,event_count:0,fallback_ticks:0,started_at:Date.now(),last_signal_at:Date.now(),network_active:0,cleanup:[]};
+s.eventWaiters[token]=w;
+function compact(){
+  return {ok:true,type:'wait',for:spec.kind,matched:false,pending:true,wait_token:token,
+    url:location.href,title:document.title,dom_revision:s.mutationRevision,
+    event_count:w.event_count,fallback_ticks:w.fallback_ticks};
+}
+function stateResult(matched,settledBy,timedOut){
+  return {ok:true,type:'wait',for:spec.kind,matched:!!matched,timed_out:!!timedOut,pending:false,
+    wait_token:token,wait_strategy:'event_driven',settled_by:settledBy||null,
+    duration_ms:Math.max(0,Date.now()-w.started_at),url:location.href,title:document.title,
+    dom_revision:s.mutationRevision,event_count:w.event_count,fallback_ticks:w.fallback_ticks,
+    network_active:w.network_active};
+}
+function cleanup(){
+  var rows=w.cleanup.splice(0,w.cleanup.length);
+  for(var i=0;i<rows.length;i++){try{rows[i]();}catch(e){}}
+}
+function finish(matched,settledBy,timedOut){
+  if(w.done)return;
+  w.done=true;w.result=stateResult(matched,settledBy,timedOut);cleanup();
+  if(typeof w.resolve==='function'){try{w.resolve(__mcpB64(w.result));}catch(e){}}
+  setTimeout(function(){try{if(s.eventWaiters[token]===w)delete s.eventWaiters[token];}catch(e){}},10000);
+}
+function norm(v){return String(v||'').normalize('NFKD').toLowerCase().replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9çğıöşü]+/g,' ').replace(/\s+/g,' ').trim();}
+function semanticHit(actual,wanted){
+  var a=norm(actual),w=norm(wanted);if(!w)return true;if(!a)return false;
+  if(a===w||a.indexOf(w+' ')===0||a.indexOf(w)>=0)return true;
+  var at=a.split(' '),wt=w.split(' ').filter(Boolean);
+  return wt.length>0&&wt.every(function(t){return at.indexOf(t)>=0;});
+}
+function condition(){
+  try{
+    if(spec.kind==='selector')return !!__mcpQueryOne(spec.selector);
+    if(spec.kind==='text')return !!(document.body&&String(document.body.innerText||'').toLowerCase().indexOf(spec.text)>=0);
+    if(spec.kind==='element_removed'){var e=s.elements[spec.element_id];return !e||!e.isConnected;}
+    if(spec.kind==='url_change')return location.href!==spec.initial_url;
+    if(spec.kind==='semantic'){
+      var modal=__mcpTopBlockingModal(),all=__mcpQueryAll('*'),limit=Math.min(all.length,6000);
+      for(var si=0;si<limit;si++){
+        var el=all[si];if(!__mcpSemanticVisible(el))continue;
+        if(modal&&el!==modal&&!__mcpComposedContains(modal,el))continue;
+        var d=__mcpDescribe(el,s);
+        if(spec.actionable_only&&!d.actionable)continue;
+        if(spec.role&&norm(d.role)!==norm(spec.role))continue;
+        var fields=[d.text,d.aria_label,d.placeholder,d.name,d.title,d.value,d.context,d.association_text].filter(Boolean);
+        var joined=fields.join(' ');
+        if(spec.text&&!semanticHit(joined,spec.text))continue;
+        if(spec.query&&!semanticHit(joined,spec.query))continue;
+        return true;
+      }
+      return false;
+    }
+    if(spec.kind==='dom_stable')return (Date.now()-w.last_signal_at)>=spec.stable_ms;
+    if(spec.kind==='network_idle'){
+      var body='';try{body=String((document.body&&document.body.innerText)||'').trim();}catch(e){}
+      return location.href!=='about:blank'&&document.readyState==='complete'&&body.length>0&&
+        w.network_active===0&&(Date.now()-w.last_signal_at)>=spec.stable_ms;
+    }
+  }catch(e){}
+  return false;
+}
+var settleTimer=null;
+function scheduleStable(){
+  if(spec.kind!=='dom_stable'&&spec.kind!=='network_idle')return;
+  if(settleTimer)clearTimeout(settleTimer);
+  var delay=Math.max(1,spec.stable_ms-(Date.now()-w.last_signal_at));
+  settleTimer=setTimeout(evaluate,delay);
+}
+function evaluate(source){
+  if(w.done)return;
+  if(condition()){finish(true,source||'event',false);return;}
+  scheduleStable();
+}
+function signal(source){
+  if(w.done)return;
+  w.event_count+=1;w.last_signal_at=Date.now();evaluate(source||'event');
+}
+var roots=__mcpRoots();
+for(var ri=0;ri<roots.length;ri++){
+  try{
+    var ob=new MutationObserver(function(records){
+      var meaningful=false;
+      for(var j=0;j<records.length;j++){
+        var rec=records[j];
+        if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')continue;
+        meaningful=true;break;
+      }
+      if(meaningful){s.mutationRevision+=1;s.lastMutationAt=Date.now();signal('mutation');}
+    });
+    ob.observe(roots[ri],{subtree:true,childList:true,attributes:true,characterData:true});
+    (function(observer){w.cleanup.push(function(){observer.disconnect();});})(ob);
+  }catch(e){}
+}
+['load','popstate','hashchange'].forEach(function(name){
+  var fn=function(){signal(name);};try{window.addEventListener(name,fn,true);w.cleanup.push(function(){window.removeEventListener(name,fn,true);});}catch(e){}
+});
+try{
+  var rs=function(){signal('readystatechange');};document.addEventListener('readystatechange',rs,true);
+  w.cleanup.push(function(){document.removeEventListener('readystatechange',rs,true);});
+}catch(e){}
+try{
+  var opush=history.pushState,oreplace=history.replaceState;
+  var pushWrap=function(){var r=opush.apply(this,arguments);signal('history');return r;};
+  var replaceWrap=function(){var r=oreplace.apply(this,arguments);signal('history');return r;};
+  history.pushState=pushWrap;history.replaceState=replaceWrap;
+  w.cleanup.push(function(){try{if(history.pushState===pushWrap)history.pushState=opush;if(history.replaceState===replaceWrap)history.replaceState=oreplace;}catch(e){}});
+}catch(e){}
+if(spec.kind==='network_idle'){
+  try{
+    var ofetch=window.fetch;
+    if(typeof ofetch==='function'){
+      var fetchWrap=function(){
+        w.network_active+=1;w.last_signal_at=Date.now();
+        var out;
+        try{out=ofetch.apply(this,arguments);}catch(err){w.network_active=Math.max(0,w.network_active-1);signal('network_error');throw err;}
+        return Promise.resolve(out).then(function(v){w.network_active=Math.max(0,w.network_active-1);signal('network');return v;},
+          function(err){w.network_active=Math.max(0,w.network_active-1);signal('network');throw err;});
+      };
+      window.fetch=fetchWrap;w.cleanup.push(function(){try{if(window.fetch===fetchWrap)window.fetch=ofetch;}catch(e){}});
+    }
+  }catch(e){}
+  try{
+    var X=window.XMLHttpRequest,osend=X&&X.prototype&&X.prototype.send;
+    if(typeof osend==='function'){
+      var sendWrap=function(){
+        w.network_active+=1;w.last_signal_at=Date.now();
+        var done=false,finishX=function(){if(done)return;done=true;w.network_active=Math.max(0,w.network_active-1);signal('network');};
+        try{this.addEventListener('loadend',finishX,{once:true});}catch(e){}
+        try{return osend.apply(this,arguments);}catch(err){finishX();throw err;}
+      };
+      X.prototype.send=sendWrap;w.cleanup.push(function(){try{if(X.prototype.send===sendWrap)X.prototype.send=osend;}catch(e){}});
+    }
+  }catch(e){}
+}
+var fallback=setInterval(function(){w.fallback_ticks+=1;evaluate('bounded_fallback');},Math.max(250,spec.fallback_ms));
+w.cleanup.push(function(){clearInterval(fallback);});
+var deadline=setTimeout(function(){finish(false,'timeout',true);},spec.timeout_ms);
+w.cleanup.push(function(){clearTimeout(deadline);if(settleTimer)clearTimeout(settleTimer);});
+evaluate('initial');
+if(spec.return_mode==='token')return __mcpB64(compact());
+return new Promise(function(resolve){w.resolve=resolve;if(w.done)resolve(__mcpB64(w.result));});
+})()'''
+    return template.replace("__BOOTSTRAP__", _browser_state_bootstrap()).replace(
+        "__SPEC__", json.dumps(spec, ensure_ascii=False)
+    )
+
+
+def _event_wait_status_js(token: str) -> str:
+    tok = json.dumps(str(token or ""))
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var s=__mcpState(),w=s.eventWaiters&&s.eventWaiters[{tok}];
+if(!w)return __mcpB64({{ok:false,error:'event_waiter_missing',wait_token:{tok}}});
+if(w.done)return __mcpB64(w.result);
+return __mcpB64({{ok:true,type:'wait',pending:true,matched:false,wait_token:{tok},
+  wait_strategy:'event_driven',url:location.href,title:document.title,dom_revision:s.mutationRevision,
+  event_count:Number(w.event_count||0),fallback_ticks:Number(w.fallback_ticks||0),
+  duration_ms:Math.max(0,Date.now()-Number(w.started_at||Date.now()))}});
+}})()'''
+
+
+def _event_wait_result(result: Dict[str, Any], *, js_calls: int, started: float) -> Dict[str, Any]:
+    out = dict(result)
+    out.setdefault("ok", True)
+    out.setdefault("type", "wait")
+    out.setdefault("duration_ms", int((time.perf_counter() - started) * 1000))
+    out["wait_strategy"] = "event_driven"
+    out["_js_calls"] = int(js_calls)
+    out["telemetry"] = {
+        "remote_js_calls": int(js_calls),
+        "event_count": int(out.get("event_count") or 0),
+        "fallback_polls": int(out.get("fallback_ticks") or 0),
+        "duration_ms": int(out.get("duration_ms") or 0),
+    }
+    payload_bytes = len(
+        json.dumps(
+            {key: value for key, value in out.items() if key not in {"telemetry", "_compact_state"}},
+            ensure_ascii=False, separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    out["telemetry"]["payload_bytes"] = payload_bytes
+    out["telemetry"]["benchmark"] = record_computer_use_sample(
+        "browser_wait",
+        duration_ms=int(out.get("duration_ms") or 0),
+        payload_bytes=payload_bytes,
+        remote_js_calls=int(js_calls),
+        ax_traversals=0,
+    )
+    compact = {
+        key: out.get(key)
+        for key in ("url", "title", "dom_revision", "matched", "timed_out")
+        if out.get(key) is not None
+    }
+    if compact:
+        out["_compact_state"] = compact
+    return out
+
+
 def _network_idle_state_js() -> str:
     return f'''(function(){{
 {_browser_state_bootstrap()}
@@ -2305,7 +2577,7 @@ def _extract_action(
     return out
 
 
-def _wait_action(
+def _wait_action_polling(
     settings: Settings,
     browser: str,
     action: Dict[str, Any],
@@ -2387,6 +2659,84 @@ def _wait_action(
             return {"ok": True, "type": "wait", "for": kind, "matched": True, "duration_ms": int((time.perf_counter()-started)*1000), "url": state.get("url"), "_compact_state": state, "_js_calls": js_calls}
         cancellable_sleep(poll_s)
     return {"ok": True, "type": "wait", "for": kind, "matched": False, "timed_out": True, "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls}
+
+
+def _wait_action(
+    settings: Settings,
+    browser: str,
+    action: Dict[str, Any],
+    window_index: int,
+    tab_index: Optional[int],
+    initial_url: str,
+    tab_handle: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Prefer in-page event wakeups; preserve bounded polling as a fallback."""
+    kind = str(action.get("for") or action.get("condition") or "selector").lower().strip()
+    if kind not in {"selector", "text", "semantic", "element_removed", "url_change", "dom_stable", "network_idle"}:
+        return _wait_action_polling(
+            settings, browser, action, window_index, tab_index, initial_url, tab_handle,
+        )
+    timeout_s = max(0.1, min(float(action.get("timeout_s", 10)), 60.0))
+    started = time.perf_counter()
+    try:
+        if _norm_browser(browser) == "Google Chrome":
+            result = _run_json_js(
+                settings, browser, _event_wait_js(action, initial_url, timeout_s),
+                window_index, tab_index, tab_handle,
+            )
+            return _event_wait_result(result, js_calls=1, started=started)
+
+        installed = _run_json_js(
+            settings, browser,
+            _event_wait_js(action, initial_url, timeout_s, return_mode="token"),
+            window_index, tab_index, tab_handle,
+        )
+        token = str(installed.get("wait_token") or "")
+        if not token:
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                "Safari event waiter did not return a wait token.",
+            )
+        js_calls = 1
+        status_poll_s = max(
+            0.25,
+            min(float(action.get("event_status_poll_ms", 500)) / 1000.0, 1.0),
+        )
+        deadline = started + timeout_s + 0.25
+        while time.perf_counter() < deadline:
+            cancellation_checkpoint()
+            if js_calls > 1:
+                cancellable_sleep(
+                    min(status_poll_s, max(0.0, deadline - time.perf_counter()))
+                )
+            result = _run_json_js(
+                settings, browser, _event_wait_status_js(token),
+                window_index, tab_index, tab_handle,
+            )
+            js_calls += 1
+            if not result.get("pending"):
+                return _event_wait_result(result, js_calls=js_calls, started=started)
+        return _event_wait_result(
+            {
+                "ok": True, "type": "wait", "for": kind, "matched": False,
+                "timed_out": True, "settled_by": "host_deadline",
+            },
+            js_calls=js_calls, started=started,
+        )
+    except (HTTPException, ValueError, KeyError) as exc:
+        fallback = _wait_action_polling(
+            settings, browser, action, window_index, tab_index, initial_url, tab_handle,
+        )
+        fallback["wait_strategy"] = "bounded_poll_fallback"
+        fallback["event_wait_fallback_reason"] = type(exc).__name__
+        fallback["telemetry"] = {
+            "remote_js_calls": int(fallback.get("_js_calls") or 0),
+            "event_count": 0,
+            "fallback_polls": int(fallback.get("_js_calls") or 0),
+            "duration_ms": int(fallback.get("duration_ms") or 0),
+            "event_wait_failed": True,
+        }
+        return fallback
 
 
 def browser_act(

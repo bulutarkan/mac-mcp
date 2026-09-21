@@ -829,7 +829,9 @@ def create_app():
             "JPEG image content. Use ocr=true only when Accessibility text is insufficient. "
             "Returns process-bound app_handle and stable window_handle values when the window "
             "can be uniquely identified. Pass observation_id to mac_act; handles are re-resolved "
-            "before each action so window reordering cannot silently retarget an element."
+            "before each action so window reordering cannot silently retarget an element. "
+            "Pass previous_observation_id for conditional observe: unchanged state returns compact "
+            "not_modified without a full AX traversal; small changes return delta and structural changes full refresh."
         ),
         annotations=ToolAnnotations(
             readOnlyHint=True,
@@ -848,6 +850,7 @@ def create_app():
         max_children: int = 30,
         include_screenshot: bool = False,
         ocr: bool = False,
+        previous_observation_id: Optional[str] = None,
     ) -> Any:
         return _log(
             audit_logger,
@@ -862,6 +865,7 @@ def create_app():
                 max_children=max_children,
                 include_screenshot=include_screenshot,
                 ocr=ocr,
+                previous_observation_id=previous_observation_id,
             ),
         )
 
@@ -1133,20 +1137,23 @@ def create_app():
         name="browser_find",
         description=(
             "Find a rendered browser element with exact-first ranking and hard role/text constraints. Queries also match input values; role-only lookup is supported. "
-            "Set actionable_only=false to include labels/cards; use best_match with browser_act."
+            "Set actionable_only=false to include labels/cards; use best_match with browser_act. "
+            "wait_timeout_s>0 uses the event-driven DOM waiter before the final targeted scan."
         ),
     )
     async def _browser_find(browser: str, query: str = "", role: Optional[str] = None,
                             text: Optional[str] = None, window_index: int = 1,
                             tab_index: Optional[int] = None, tab_handle: Optional[str] = None,
                             max_results: int = 5,
-                            actionable_only: bool = False) -> Dict[str, Any]:
+                            actionable_only: bool = False,
+                            wait_timeout_s: float = 0.0) -> Dict[str, Any]:
         return await asyncio.to_thread(
             _log, audit_logger, "browser_find",
             lambda: browser_find(settings, browser=browser, query=query, role=role, text=text,
                                   window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
                                   max_results=max_results,
-                                  actionable_only=actionable_only),
+                                  actionable_only=actionable_only,
+                                  wait_timeout_s=wait_timeout_s),
         )
 
     @mcp.tool(

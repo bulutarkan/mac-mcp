@@ -931,11 +931,23 @@ async def _execute_wait_until(
     attempts = 0
     last_reason = "wait_condition_not_met"
     last_payload: Any = None
+    last_material_payload: Any = None
     while time.monotonic() < deadline:
         budget.check_time(str(step.get("id")))
         arguments = _resolve_refs(step.get("arguments") or {}, outputs)
+        tool_name = str(step["tool"])
+        remaining_s = max(0.1, deadline - time.monotonic())
+        if tool_name == "browser_find" and "wait_timeout_s" not in arguments:
+            arguments["wait_timeout_s"] = min(60.0, remaining_s)
+        if (
+            tool_name == "mac_observe"
+            and "previous_observation_id" not in arguments
+            and isinstance(last_payload, Mapping)
+            and last_payload.get("observation_id")
+        ):
+            arguments["previous_observation_id"] = last_payload.get("observation_id")
         try:
-            payload = await _nested_call(call_tool, str(step["tool"]), arguments, budget)
+            payload = await _nested_call(call_tool, tool_name, arguments, budget)
         except _PlanStop:
             raise
         except Exception as exc:
@@ -947,17 +959,32 @@ async def _execute_wait_until(
             ) from exc
         attempts += 1
         last_payload = payload
+        if isinstance(payload, Mapping) and not payload.get("not_modified"):
+            last_material_payload = payload
+        condition_payload = (
+            last_material_payload
+            if isinstance(payload, Mapping) and payload.get("not_modified") and last_material_payload is not None
+            else payload
+        )
         if not _result_failed(payload):
-            cond_ok, cond_reason = _conditions_ok(step.get("until"), outputs=outputs, current=payload)
+            cond_ok, cond_reason = _conditions_ok(step.get("until"), outputs=outputs, current=condition_payload)
             target = step.get("target")
             target_ok, best_match, target_reason = (True, None, "no_target")
             if isinstance(target, Mapping):
-                target_ok, best_match, target_reason = _semantic_target_match(target, payload)
+                target_ok, best_match, target_reason = _semantic_target_match(target, condition_payload)
             if cond_ok and target_ok:
                 if isinstance(payload, Mapping) and best_match is not None:
                     payload = dict(payload)
                     payload["best_match"] = best_match
-                return payload, {"attempts": attempts, "status": "condition_met"}
+                return payload, {
+                    "attempts": attempts,
+                    "status": "condition_met",
+                    "wait_strategy": (
+                        ((payload.get("wait") or {}).get("strategy"))
+                        if isinstance(payload, Mapping) and isinstance(payload.get("wait"), Mapping)
+                        else ("conditional_observe" if isinstance(payload, Mapping) and payload.get("state_mode") == "not_modified" else None)
+                    ),
+                }
             last_reason = cond_reason or target_reason
         else:
             reason, _ = _payload_reason(payload)

@@ -40,6 +40,7 @@ from .native_targets import (
     window_handle_map as _window_handle_map,
 )
 from .security import Settings, truncate
+from .computer_use_perf import record_computer_use_sample
 from .tool_cancellation import (
     ToolCancelledError, cancellable_sleep, cancellation_checkpoint, cancellation_cleanup_scope,
     register_cancellation_cleanup, unregister_cancellation_cleanup,
@@ -55,6 +56,8 @@ _FIELD_SEPARATOR = chr(31)
 _RECORD_SEPARATOR = chr(30)
 _ELEMENT_ID_RE = re.compile(r"^w[1-9][0-9]*(?:/[1-9][0-9]*)*$")
 _OBSERVATION_TTL_S = 300
+_OBSERVATION_CONDITIONAL_MAX_AGE_S = 0.75
+_OBSERVATION_DELTA_MAX_CHANGED = 12
 _MAX_OBSERVATIONS = 64
 _MAX_ACTIONS = 20
 _MAX_TEXT_CHARS = 100_000
@@ -670,11 +673,250 @@ def _ocr_image(image_data: bytes, timeout_s: float = 20) -> Tuple[Optional[str],
             pass
 
 
+
+def _native_fingerprint_components(
+    metadata: Dict[str, Any],
+    nodes: List[Dict[str, Any]] | Dict[str, Dict[str, Any]],
+    window_index: int,
+) -> Dict[str, Any]:
+    windows = list(metadata.get("windows") or [])
+    selected = next(
+        (row for row in windows if int(row.get("index") or 0) == int(window_index)),
+        None,
+    ) if window_index > 0 else None
+    node_rows = list(nodes.values()) if isinstance(nodes, dict) else list(nodes)
+    root = next(
+        (row for row in node_rows if row.get("element_id") == f"w{int(window_index)}"),
+        None,
+    ) if window_index > 0 else None
+    pos = dict((selected or {}).get("position") or {})
+    return {
+        "pid": int(metadata.get("pid") or 0),
+        "window_count": int(metadata.get("window_count") or 0),
+        "window_index": int(window_index),
+        "title": str((selected or {}).get("title") or ""),
+        "document": str((selected or {}).get("document") or ""),
+        "identifier": str((selected or {}).get("identifier") or ""),
+        "position": {
+            "x": pos.get("x"), "y": pos.get("y"),
+            "width": pos.get("width"), "height": pos.get("height"),
+        },
+        "subrole": str((selected or {}).get("subrole") or ""),
+        "focused": bool((selected or {}).get("focused", False)),
+        "main": bool((selected or {}).get("main", False)),
+        "root_child_count": int((root or {}).get("child_count") or 0),
+    }
+
+
+def _native_fingerprint_digest(components: Dict[str, Any]) -> str:
+    raw = json.dumps(components, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _native_tree_revision(
+    metadata: Dict[str, Any],
+    nodes: List[Dict[str, Any]] | Dict[str, Dict[str, Any]],
+    window_index: int,
+) -> str:
+    node_rows = list(nodes.values()) if isinstance(nodes, dict) else list(nodes)
+    raw = json.dumps(
+        {
+            "target": _native_fingerprint_components(metadata, node_rows, window_index),
+            "nodes": node_rows,
+        },
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _native_fingerprint_script(
+    app: Optional[str],
+    window_index: int,
+    *,
+    app_pid: Optional[int] = None,
+) -> str:
+    if app_pid is not None:
+        selection = f"set p to first application process whose unix id is {int(app_pid)}"
+    else:
+        normalized = _normalize_app(app)
+        selection = (
+            "set p to first application process whose frontmost is true"
+            if normalized is None
+            else f"set p to first application process whose name is {_apple_string(normalized)}"
+        )
+    return f'''use scripting additions
+set fs to character id 31
+tell application "System Events"
+    {selection}
+    set pidText to ""
+    try
+        set pidText to unix id of p as text
+    end try
+    set wc to count of windows of p
+    set wi to {int(window_index)}
+    if wi < 1 or wi > wc then return "__FPERR__" & fs & pidText & fs & (wc as text)
+    set w to window wi of p
+    set titleText to ""
+    set documentText to ""
+    set identifierText to ""
+    set xText to ""
+    set yText to ""
+    set widthText to ""
+    set heightText to ""
+    set subroleText to ""
+    set focusedText to "false"
+    set mainText to "false"
+    set childCountText to "0"
+    try
+        set titleText to title of w as text
+    end try
+    try
+        set documentText to value of attribute "AXDocument" of w as text
+    end try
+    try
+        set identifierText to value of attribute "AXIdentifier" of w as text
+    end try
+    try
+        set wp to position of w
+        set xText to item 1 of wp as text
+        set yText to item 2 of wp as text
+    end try
+    try
+        set ws to size of w
+        set widthText to item 1 of ws as text
+        set heightText to item 2 of ws as text
+    end try
+    try
+        set subroleText to subrole of w as text
+    end try
+    try
+        set focusedText to value of attribute "AXFocused" of w as text
+    end try
+    try
+        set mainText to value of attribute "AXMain" of w as text
+    end try
+    try
+        set childCountText to count of UI elements of w as text
+    end try
+    return "__FP__" & fs & pidText & fs & (wc as text) & fs & (wi as text) & fs & ¬
+        titleText & fs & documentText & fs & identifierText & fs & xText & fs & yText & fs & ¬
+        widthText & fs & heightText & fs & subroleText & fs & focusedText & fs & mainText & fs & childCountText
+end tell'''
+
+
+def _probe_native_observation_fingerprint(
+    app: Optional[str],
+    window_index: int,
+    *,
+    app_pid: Optional[int] = None,
+    deadline: Optional[float] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    ok, raw, error = _run_osascript(
+        _native_fingerprint_script(app, window_index, app_pid=app_pid),
+        timeout_s=_operation_timeout(deadline, 5),
+    )
+    if not ok:
+        return None, error or "native fingerprint probe failed"
+    fields = str(raw or "").split(_FIELD_SEPARATOR)
+    if len(fields) < 15 or fields[0] != "__FP__":
+        return None, "invalid native fingerprint payload"
+    components = {
+        "pid": _parse_number(fields[1]) or 0,
+        "window_count": _parse_number(fields[2]) or 0,
+        "window_index": _parse_number(fields[3]) or int(window_index),
+        "title": fields[4],
+        "document": fields[5],
+        "identifier": fields[6],
+        "position": {
+            "x": _parse_number(fields[7]), "y": _parse_number(fields[8]),
+            "width": _parse_number(fields[9]), "height": _parse_number(fields[10]),
+        },
+        "subrole": fields[11],
+        "focused": _parse_bool(fields[12]),
+        "main": _parse_bool(fields[13]),
+        "root_child_count": _parse_number(fields[14]) or 0,
+    }
+    return _native_fingerprint_digest(components), None
+
+
+def _native_observation_compatible(
+    previous: Dict[str, Any],
+    *,
+    app: Optional[str],
+    app_pid: Optional[int],
+    window_index: int,
+    max_depth: int,
+    max_children: int,
+) -> bool:
+    if int(previous.get("window_index") or 0) != int(window_index):
+        return False
+    if app_pid is not None and int(previous.get("app_pid") or 0) != int(app_pid):
+        return False
+    if app and str(previous.get("active_app") or "").lower() != str(app).lower():
+        return False
+    return (
+        int(previous.get("max_depth") or -1) == int(max_depth)
+        and int(previous.get("max_children") or -1) == int(max_children)
+    )
+
+
+def _native_not_modified_payload(
+    previous_observation_id: str,
+    previous: Dict[str, Any],
+    *,
+    validation: str,
+    ax_traversals: int,
+    duration_ms: int,
+) -> Dict[str, Any]:
+    payload = {
+        "ok": True,
+        "state_mode": "not_modified",
+        "not_modified": True,
+        "observation_id": previous_observation_id,
+        "previous_observation_id": previous_observation_id,
+        "captured_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "active_app": previous.get("active_app"),
+        "app_handle": previous.get("app_handle"),
+        "app_pid": previous.get("app_pid"),
+        "window_handle": previous.get("selected_window_handle"),
+        "window_index": previous.get("window_index"),
+        "node_count": len(previous.get("nodes") or {}),
+        "native_revision": previous.get("tree_revision"),
+        "cache_validation": validation,
+        "telemetry": {
+            "ax_traversals": int(ax_traversals),
+            "payload_mode": "not_modified",
+            "duration_ms": int(duration_ms),
+        },
+        "screenshot": {
+            "requested": False,
+            "included_as_image_content": False,
+            "mime_type": None,
+        },
+    }
+    payload["telemetry"]["payload_bytes"] = len(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+    payload["telemetry"]["benchmark"] = record_computer_use_sample(
+        "native_observe",
+        duration_ms=int(duration_ms),
+        payload_bytes=int(payload["telemetry"]["payload_bytes"]),
+        remote_js_calls=0,
+        ax_traversals=int(ax_traversals),
+    )
+    return payload
+
+
 def _save_observation(
     active_app: str,
     window_index: int,
     nodes: List[Dict[str, Any]],
     metadata: Dict[str, Any],
+    *,
+    max_depth: int = 5,
+    max_children: int = 30,
+    fingerprint: Optional[str] = None,
+    tree_revision: Optional[str] = None,
 ) -> str:
     observation_id = f"obs_{uuid.uuid4().hex}"
     now = time.time()
@@ -689,6 +931,13 @@ def _save_observation(
             "window_handles": window_handles,
             "selected_window_handle": window_handles.get(window_index) if window_index > 0 else None,
             "created_at": now,
+            "full_refresh_at": now,
+            "max_depth": int(max_depth),
+            "max_children": int(max_children),
+            "fingerprint": fingerprint or _native_fingerprint_digest(
+                _native_fingerprint_components(metadata, nodes, window_index)
+            ),
+            "tree_revision": tree_revision or _native_tree_revision(metadata, nodes, window_index),
             "nodes": {node["element_id"]: node for node in nodes},
         }
         expired = [
@@ -1012,7 +1261,15 @@ def _collect_observation(
                 app_handle=metadata.get("app_handle"),
             ), None
 
-    observation_id = _save_observation(active_app, window_index, nodes, metadata)
+    fingerprint = _native_fingerprint_digest(
+        _native_fingerprint_components(metadata, nodes, window_index)
+    )
+    tree_revision = _native_tree_revision(metadata, nodes, window_index)
+    observation_id = _save_observation(
+        active_app, window_index, nodes, metadata,
+        max_depth=max_depth, max_children=max_children,
+        fingerprint=fingerprint, tree_revision=tree_revision,
+    )
 
     image_data: Optional[bytes] = None
     screenshot_error: Optional[str] = None
@@ -1044,6 +1301,12 @@ def _collect_observation(
         "windows": _public_window_rows(metadata),
         "node_count": len(nodes),
         "nodes": nodes,
+        "native_revision": tree_revision,
+        "state_mode": "full",
+        "telemetry": {
+            "ax_traversals": 1,
+            "payload_mode": "full",
+        },
         "screenshot": {
             "requested": include_screenshot,
             "included_as_image_content": bool(image_data and include_screenshot),
@@ -1078,6 +1341,9 @@ def _collect_observation(
                 "error": screenshot_error or "OCR could not capture the screen",
             }
 
+    payload["telemetry"]["payload_bytes"] = len(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
     return payload, image_data if include_screenshot else None
 
 
@@ -1087,10 +1353,11 @@ def observe_ui(
     window_index: int = 1,
     max_depth: int = 5,
     max_children: int = 30,
-    include_screenshot: bool = True,
+    include_screenshot: bool = False,
     ocr: bool = False,
     app_handle: Optional[str] = None,
     window_handle: Optional[str] = None,
+    previous_observation_id: Optional[str] = None,
 ) -> Any:
     """Read a macOS app/window Accessibility tree with stable native target handles."""
     try:
@@ -1111,6 +1378,39 @@ def observe_ui(
                     "STALE_WINDOW_HANDLE", "Could not resolve window_handle to a current window."
                 )
             window_index = int(resolved_window_index)
+
+        previous = _get_observation(str(previous_observation_id)) if previous_observation_id else None
+        compatible_previous = bool(
+            previous
+            and _native_observation_compatible(
+                previous,
+                app=resolved_app,
+                app_pid=resolved_pid,
+                window_index=int(window_index),
+                max_depth=max_depth,
+                max_children=max_children,
+            )
+        )
+        started = time.perf_counter()
+        if compatible_previous and not include_screenshot and not ocr:
+            full_age = time.time() - float(previous.get("full_refresh_at") or previous.get("created_at") or 0)
+            if full_age < _OBSERVATION_CONDITIONAL_MAX_AGE_S:
+                fingerprint, _fingerprint_error = _probe_native_observation_fingerprint(
+                    resolved_app,
+                    int(window_index),
+                    app_pid=resolved_pid,
+                    deadline=deadline,
+                )
+                if fingerprint is not None and fingerprint == previous.get("fingerprint"):
+                    compact = _native_not_modified_payload(
+                        str(previous_observation_id),
+                        previous,
+                        validation="lightweight_fingerprint",
+                        ax_traversals=0,
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                    )
+                    return _format_result(compact)
+
         payload, image_data = _collect_observation(
             settings,
             resolved_app,
@@ -1121,6 +1421,103 @@ def observe_ui(
             bool(ocr),
             deadline=deadline,
             app_pid=resolved_pid,
+        )
+        if not payload.get("ok") or not compatible_previous or include_screenshot or ocr:
+            if previous_observation_id:
+                payload["previous_observation_id"] = previous_observation_id
+            if payload.get("ok"):
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                payload.setdefault("telemetry", {})["duration_ms"] = elapsed_ms
+                payload["telemetry"]["benchmark"] = record_computer_use_sample(
+                    "native_observe",
+                    duration_ms=elapsed_ms,
+                    payload_bytes=int(payload["telemetry"].get("payload_bytes") or 0),
+                    remote_js_calls=0,
+                    ax_traversals=int(payload["telemetry"].get("ax_traversals") or 1),
+                )
+            return _format_result(payload, image_data)
+
+        new_observation_id = str(payload.get("observation_id") or "")
+        current = _get_observation(new_observation_id) if new_observation_id else None
+        if not current:
+            payload["previous_observation_id"] = previous_observation_id
+            return _format_result(payload, image_data)
+
+        previous_nodes = dict(previous.get("nodes") or {})
+        current_nodes = dict(current.get("nodes") or {})
+        diff = _diff_observation_nodes(previous_nodes, current_nodes)
+        if current.get("tree_revision") == previous.get("tree_revision"):
+            compact = _native_not_modified_payload(
+                new_observation_id,
+                current,
+                validation="periodic_full_refresh",
+                ax_traversals=1,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+            compact["previous_observation_id"] = previous_observation_id
+            compact["observation_id"] = new_observation_id
+            return _format_result(compact)
+
+        structural = bool(
+            diff.get("added_count")
+            or diff.get("removed_count")
+            or int(diff.get("changed_count") or 0) > _OBSERVATION_DELTA_MAX_CHANGED
+            or previous.get("selected_window_handle") != current.get("selected_window_handle")
+        )
+        if not structural:
+            delta_payload = {
+                "ok": True,
+                "state_mode": "delta",
+                "not_modified": False,
+                "observation_id": new_observation_id,
+                "previous_observation_id": previous_observation_id,
+                "captured_at": payload.get("captured_at"),
+                "active_app": payload.get("active_app"),
+                "app_handle": payload.get("app_handle"),
+                "app_pid": payload.get("app_pid"),
+                "window_handle": payload.get("window_handle"),
+                "window_index": payload.get("window_index"),
+                "node_count": payload.get("node_count"),
+                "native_revision": current.get("tree_revision"),
+                "delta": diff,
+                "structural_refresh": False,
+                "telemetry": {
+                    "ax_traversals": 1,
+                    "payload_mode": "delta",
+                    "duration_ms": int((time.perf_counter() - started) * 1000),
+                },
+                "screenshot": {
+                    "requested": False,
+                    "included_as_image_content": False,
+                    "mime_type": None,
+                },
+            }
+            delta_payload["telemetry"]["payload_bytes"] = len(
+                json.dumps(delta_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            )
+            delta_payload["telemetry"]["benchmark"] = record_computer_use_sample(
+                "native_observe",
+                duration_ms=int(delta_payload["telemetry"]["duration_ms"]),
+                payload_bytes=int(delta_payload["telemetry"]["payload_bytes"]),
+                remote_js_calls=0,
+                ax_traversals=1,
+            )
+            return _format_result(delta_payload)
+
+        payload["state_mode"] = "full"
+        payload["previous_observation_id"] = previous_observation_id
+        payload["structural_refresh"] = True
+        payload.setdefault("telemetry", {})["payload_mode"] = "full"
+        payload["telemetry"]["duration_ms"] = int((time.perf_counter() - started) * 1000)
+        payload["telemetry"]["payload_bytes"] = len(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        payload["telemetry"]["benchmark"] = record_computer_use_sample(
+            "native_observe",
+            duration_ms=int(payload["telemetry"]["duration_ms"]),
+            payload_bytes=int(payload["telemetry"]["payload_bytes"]),
+            remote_js_calls=0,
+            ax_traversals=1,
         )
         return _format_result(payload, image_data)
     except ValueError as exc:
