@@ -64,6 +64,8 @@ class BrowserAgentLayerTests(unittest.TestCase):
             self.assertIn(token, bootstrap)
         find_script = _find_candidates_js('İş', 'radio', 'İş', 20, actionable_only=True)
         self.assertIn('modal=__mcpTopBlockingModal()', find_script)
+        self.assertIn("__mcpQueryAll('dialog[open],[aria-modal=\"true\"],[role=\"dialog\"]')", bootstrap)
+        self.assertNotIn(',[data-state=\"open\"]', bootstrap)
         self.assertIn("d.association_text||''", find_script)
         self.assertIn('return __mcpSemanticVisible(el)', find_script)
         self.assertIn('modal_scope:modal?', find_script)

@@ -1,7 +1,7 @@
 ## Unreleased
 
 - [SEC-FOCUS-001] Closed the remaining Chrome focus-escalation fallback: when debugger/background transport is unavailable, the legacy `javascript:` URL bridge now requires an internal foreground capability instead of silently falling back to a potentially focus-stealing transport.
-- Hardened browser targeting inside blocking dialogs: `observe`/`find` now scope candidates to the topmost modal, recognize semantic `data-state=open` dialogs even when background-tab animation throttling leaves wrapper opacity at zero, exclude `data-state=closed` stale descendants, associate styled radio/checkbox controls with their labels, and allow verified pointer-events hit targets only when they belong to the same control/label relationship instead of bypassing real occlusion.
+- Hardened browser targeting inside blocking dialogs: `observe`/`find` now scope candidates to the topmost modal, recognize semantic `data-state=open` on real dialog candidates even when background-tab animation throttling leaves wrapper opacity at zero, exclude `data-state=closed` stale descendants, avoid treating unrelated `data-state=open` regions as blocking modals, associate styled radio/checkbox controls with their labels, and allow verified pointer-events hit targets only when they belong to the same control/label relationship instead of bypassing real occlusion.
 
 ## [2.1.6] - 2026-09-21
 

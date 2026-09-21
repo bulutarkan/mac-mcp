@@ -737,7 +737,7 @@ function __mcpSemanticVisible(el){
   var a=__mcpAssociation(el);return !a.ambiguous&&!!a.label&&__mcpVisible(a.label);
 }
 function __mcpTopBlockingModal(){
-  var all=__mcpQueryAll('dialog[open],[aria-modal="true"],[role="dialog"],[data-state="open"]'),best=null,bestZ=-2147483648,bestOrder=-1;
+  var all=__mcpQueryAll('dialog[open],[aria-modal="true"],[role="dialog"]'),best=null,bestZ=-2147483648,bestOrder=-1;
   for(var i=0;i<all.length;i++){
     var el=all[i],tag=String(el.tagName||'').toLowerCase(),role=String(el.getAttribute&&el.getAttribute('role')||'').toLowerCase(),aria=String(el.getAttribute&&el.getAttribute('aria-modal')||'').toLowerCase(),state=String(el.getAttribute&&el.getAttribute('data-state')||'').toLowerCase(),st=null,rect=null;
     if(state==='closed')continue;

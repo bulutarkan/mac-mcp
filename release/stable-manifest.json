@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "fe276f3b508b8c6759eca82c3e62d43caf413dc6",
+  "base_commit": "0d54bc22bd4dca9e19320bcc08363fb729ec4a1a",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -43,8 +43,8 @@
     {
       "mode": "100644",
       "path": "CHANGELOG.md",
-      "sha256": "6e6938ad465326c5dcf883b7f36748ebf0faf6e0850917726d1c86d12d014723",
-      "size": 37239
+      "sha256": "18bf5b640549d63452240de0a83e08620387fa09af71fcebda83108798ac4f49",
+      "size": 37328
     },
     {
       "mode": "100644",
@@ -397,8 +397,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/tools_browser_agent.py",
-      "sha256": "6bdb0d7c245ecd9aec6da2bdc9b81dda5624e8fe3bf51c14ac6a00099d589b96",
-      "size": 136299
+      "sha256": "c68a9706fd577641b7ffa0d293817f2607bac9a5401a76e144265a6af73b7471",
+      "size": 136279
     },
     {
       "mode": "100644",
@@ -787,8 +787,8 @@
     {
       "mode": "100644",
       "path": "tests/test_browser_agent.py",
-      "sha256": "e090d845c16ec70a2f0ccf36f1f29b66d4dcea38871ea6482788434d754e1637",
-      "size": 13794
+      "sha256": "10058799476237d1d840edc41bdbd320d33923d384673be7836aa82358dfeb0b",
+      "size": 13962
     },
     {
       "mode": "100644",
@@ -1151,10 +1151,10 @@
       "size": 3924
     }
   ],
-  "generated_at": "2026-09-21T10:32:42Z",
-  "payload_sha256": "048eecab6b4b495a6069187035bb6e822aa1d3edb0d06c6d1d7762028b35d4da",
+  "generated_at": "2026-09-21T10:38:39Z",
+  "payload_sha256": "3b1a383a7029a7ed49764c90c8bf8a6986d13bf08aa29f27a6fcc5830ed39d37",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.6-r4",
+  "release_id": "stable-2.1.6-r5",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",
