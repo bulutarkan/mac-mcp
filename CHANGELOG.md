@@ -1,23 +1,16 @@
 ## Unreleased
 
-- Upgraded `computer_plan` to a bounded closed-loop executor with `wait_until`, conditional branches, safe retry/fallback, fresh browser/native semantic rebind, AXIdentifier-backed native identity, recovery/action/time budgets, and global resource preflight; uncertain or no-effect mutations are never auto-replayed.
-- Added a persisted global cross-team agent admission scheduler with global/provider capacity, FIFO-aware queueing, scoped resource claims, browser/native/process/clipboard ownership, worker heartbeat/TTL recovery, cancel-safe lease release, automatic queue wakeup, dashboard capacity visibility, and file expected-revision CAS before provider start.
-- Added per-agent Git worktree isolation for delegated `workspace_write` tasks with pinned team bases, dependency/reviewer patch fan-in, persisted changed-file/diff metadata, crash/resume preservation, explicit local/root-only safe apply, touched-path CAS/conflict checks, rollback-on-apply-failure, and fail-closed despawn for unapplied work.
-- Propagated client cancellation through synchronous MCP worker threads and owned subprocess/browser/native work: process groups and parallel jobs are cleaned up, browser leases/native focus cleanup remain bounded, telemetry/steering distinguish cancellation from failure, and uncertain mutating outcomes fail closed as non-retryable `outcome_unknown`.
-- Made delegated-team waits failure-aware: `any`/`majority` require successful results, DAG quorum uses task outcomes instead of historical attempts, `all` separates completion from success, normalized outcomes/failure reasons are additive, and waiter timeout is no longer conflated with failed child work.
-- Added lineage-scoped delegated-agent control-plane isolation: agent/team ownership persists across restart, sibling and unrelated result/log/lifecycle access fails closed, direct and `tool_invoke` paths share the same authorization, and denied attempts are security-audited before mutating intents open.
-- Added a public regression-backed security assurance matrix for `SEC-FS-001`, `SEC-NET-001`, `SEC-AUTHZ-001`, `SEC-UPD-001`, `SEC-TXN-001`, `SEC-AGENT-001`, `SEC-GIT-001`, `SEC-SCHED-001`, and `SEC-COMP-001`; CI now rejects stale control/test references, orphan assurance tags, missing release-note linkage, and secret-like/private-path content in the public matrix.
-- Added team-level delegated-agent budgets for scheduler deadline, shared retries, concurrency, optional tool calls, and optional token usage, with parent-visible used/remaining values and explicit budget exhaustion reasons.
-- Added adaptive provider retry classification and atomic shared retry admission: transient/rate-limit failures use bounded staggered retries, while auth/config/quota/unknown failures and unsafe side-effect replay boundaries fail fast without retry storms.
+## [2.1.6] - 2026-09-21
 
-- Added a local **What Changed on My Mac** dashboard view with task/session-scoped, sanitized action receipts for changed files, apps, browser tabs/actions, commands, system changes, agent actions, and external sends.
-- Tool telemetry now persists a public `session_id` alongside agent/team linkage so change summaries can be drilled down per task without exposing raw command text, browser paths/query strings, request bodies, or other secret-bearing payload content.
-
-- Added bounded delegated-agent DAG scheduling with task `id`/`depends_on`, `max_parallel`, persisted blocked/ready/running states, dependency-failure skipping, and cycle rejection.
-- Added structured reviewer quality gates via `review_of`: reviewers must return exactly one `QUALITY_GATE: PASS|FAIL` marker, failed reviews can trigger bounded coder revisions, and teams cannot report complete until required gates pass.
-
-- Hardened delegated provider process boundaries: restricted OpenCode workers now run inside a macOS Seatbelt filesystem boundary with scoped read/write roots, private provider state, restricted native process tools, and minimal environment inheritance.
-- Codex and ChatGPT Web CLI restricted modes now fail closed when Mac MCP cannot truthfully enforce an OS-level workspace/read-only boundary; explicit `full` access remains available, and provider workers no longer inherit the server environment wholesale.
+- Rolled the signed 2.1.5 r2-r13 checkpoints into a new public release boundary while preserving the verified stable-update channel; 2.1.6 starts again at signed revision r1.
+- Hardened delegated provider boundaries and lineage-scoped agent control so restricted workers cannot silently widen their filesystem/process/control-plane authority.
+- Added bounded agent-team DAG scheduling, reviewer quality gates, failure-aware quorum semantics, shared team budgets, and adaptive retry classification/admission.
+- Added per-agent Git worktree isolation with dependency/reviewer fan-in, conflict-aware explicit safe apply, crash/resume preservation, and fail-closed handling of unapplied work.
+- Added a persisted global cross-team admission scheduler with provider capacity, FIFO-aware queueing, scoped browser/native/process/clipboard ownership, heartbeat/TTL recovery, and pre-start revision checks.
+- Propagated client cancellation through synchronous workers and owned subprocess/browser/native work; uncertain mutating outcomes are recorded as non-retryable `outcome_unknown` rather than guessed or replayed.
+- Added task/session-scoped **What Changed on My Mac** receipts with privacy-minimized telemetry for files, apps, browser actions, commands, system changes, delegated agents, and external sends.
+- Upgraded `computer_plan` to closed-loop v2 with `wait_until`, conditional branches, bounded retry/fallback, fresh semantic stale-target rebind, AXIdentifier-backed native identity, resource preflight, and hard recovery/action/time budgets.
+- Expanded the public regression-backed Security Assurance Matrix to nine control classes and Computer Use conformance to baseline v2 with 16 deterministic contracts.
 
 ## [2.1.5] - 2026-09-18
 

@@ -2,7 +2,7 @@
   <img src="assets/screenshots/mac-mcp.png" alt="Mac MCP" width="760">
 </p>
 
-# Mac MCP 2.1.5
+# Mac MCP 2.1.6
 
 Mac MCP is a local macOS control server for AI agents. It exposes your Mac through a native MCP endpoint and a REST/OpenAPI surface, with shell, files, browser automation, macOS UI control, delegated OpenCode/Codex agents, memory, Agent Skills, voice interaction, self-update tooling, and a local operations dashboard.
 
@@ -10,16 +10,20 @@ Mac MCP is a local macOS control server for AI agents. It exposes your Mac throu
 
 **Secure bootstrap defaults:** missing configuration fails closed. Without explicit settings, MCP authentication is required, shell execution and HTTP/browser host allowlists are disabled, and the global permission profile defaults to `standard` rather than `trusted`. A normal installer run generates the API key and writes the intended settings explicitly. Deliberate `MCP_ALLOW_NO_AUTH=true` is accepted only on loopback with no managed public endpoint; non-loopback or tunneled no-auth startup is refused.
 
-## What's new in 2.1.5
+## What's new in 2.1.6
 
-- Added a **cryptographically verified stable release channel**: pinned Ed25519 trust root, detached signed manifest, complete tracked-file SHA-256/mode/size inventory, fail-closed installer/updater verification, and signed-release-only update selection.
-- Added first-class **public endpoint modes** across CLI and the native app: Local only, managed ngrok, managed Cloudflare Tunnel, or Custom HTTPS.
-- Added secure **Cloudflare Tunnel** lifecycle management with owner-only token storage, `--token-file`, a per-user `launchd` `KeepAlive` job, automatic crash recovery, and Start/Stop control that requires no persistent Terminal session.
-- Expanded `install.sh` with public-endpoint onboarding: choose a provider, optionally install `cloudflared`/ngrok through Homebrew, follow Cloudflare Published application guidance, and save the tunnel token through hidden stdin without placing it in settings, `.env`, or process arguments.
-- Hardened outbound HTTP and browser navigation against **SSRF, DNS rebinding, and public-to-private redirects**, with explicit private-development allowlists rather than wildcard bypasses.
-- Hardened scoped file operations against **symlink/TOCTOU escapes** and added owner-only filesystem transaction journaling with atomic mixed write/move/delete batches and conflict-aware undo.
-- Added durable delegated-workflow checkpoints/resume, stronger steering/idempotency recovery, role-scoped lesson controls, ChatGPT turn budgeting, and bounded web-throttle recovery without replaying verified side effects.
-- Added `mac-mcp doctor`, redacted support bundles, and a deterministic Computer Use conformance lab; the 2.1.5 release is regression-tested with the full Python suite plus installer and native-app build/signing checks.
+2.1.6 is the public roll-up of the signed 2.1.5 stable checkpoints through **r13**. The main changes are:
+
+- **Safer delegated agents:** restricted providers use stronger process boundaries, delegated control-plane access is lineage-scoped, and uncertain side effects fail closed instead of being replayed.
+- **Real team orchestration:** agent teams now support dependency graphs, reviewer quality gates, failure-aware quorum semantics, shared deadlines/retry/tool budgets, and adaptive retry admission.
+- **Isolated coding work:** `workspace_write` agents can work in per-agent Git worktrees with conflict-aware fan-in and explicit safe apply back to the user's checkout.
+- **Global scheduling and resource ownership:** concurrent teams share a persisted admission scheduler with provider capacity, FIFO-aware queueing, browser/native/process/clipboard claims, crash-safe leases, and pre-start revision checks.
+- **Closed-loop Computer Use:** `computer_plan` v2 adds `wait_until`, conditional branches, bounded retry/fallback, fresh browser/native semantic rebind, AXIdentifier-backed native identity, and resource preflight while refusing duplicate mutation after ambiguous/no-effect outcomes.
+- **Cancellation and outcome safety:** client cancellation now propagates through sync workers and owned process/browser/native work, with bounded cleanup and explicit non-retryable `outcome_unknown` when a mutating result cannot be proven.
+- **Better accountability:** the dashboard can show sanitized task/session-scoped **What Changed on My Mac** receipts without exposing raw commands, page content, request bodies, or secrets.
+- **Regression-backed security:** the public Security Assurance Matrix now covers nine control classes, while Computer Use conformance v2 checks 16 deterministic safety/reliability contracts in CI.
+
+The underlying signed 2.1.5 checkpoints were: **r1 verified stable channel; r2 provider process boundary; r3-r4 dependency graph/quality-gate hardening; r5 change receipts; r6 team budgets/adaptive retries; r7 assurance matrix; r8 lineage isolation; r9 failure-aware quorum; r10 cancellation propagation; r11 Git worktree isolation; r12 global admission scheduler; r13 closed-loop Computer Use recovery.**
 
 ## Browser automation that doesn't hijack your Mac
 
