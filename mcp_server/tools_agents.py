@@ -41,6 +41,11 @@ from .agent_worktrees import (
     GIT_ISOLATION_MODES, AgentWorktreeError, apply_worktree, cleanup_worktree,
     inspect_worktree, prepare_worktree, remapped_roots, resolve_git_base, reuse_worktree, seed_worktree,
 )
+from .agent_results import (
+    RESULT_ENVELOPE_MARKER, RESULT_ENVELOPE_VERSION, ResultContractError,
+    bound_result_envelope, legacy_result_envelope, normalize_result_envelope,
+    parse_provider_result, reduce_task_results, result_contract_instruction,
+)
 from .agent_admission import (
     AdmissionError, bind_agent as admission_bind_agent, cancel_queued as admission_cancel_queued,
     heartbeat as admission_heartbeat, normalize_claims as normalize_admission_claims, release as admission_release,
@@ -77,6 +82,7 @@ _ACCESS_MODES = {"read_only", "workspace_write", "full"}
 _RESULT_STYLES = {"concise", "detailed"}
 _WAIT_MODES = {"all", "any", "majority"}
 _LINEAGE_VERSION = 1
+_RESULT_ENVELOPE_FILENAME = "result.envelope.json"
 _CONTROL_DENY_ERROR = "agent_control_denied"
 
 _AGENT_CAPABILITY_PROFILES: Dict[str, Dict[str, Any]] = {
@@ -950,17 +956,146 @@ def _team_dependency_satisfied(
     return _team_task_effectively_completed(dep_id, task_map, reviewer_map)
 
 
+
+def _result_envelope_path(agent_id: str) -> Path:
+    return _agent_dir(str(agent_id)) / _RESULT_ENVELOPE_FILENAME
+
+
+def _write_result_envelope(agent_id: str, envelope: Dict[str, Any]) -> None:
+    path = _result_envelope_path(agent_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".result-envelope.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(envelope, ensure_ascii=False, indent=2, sort_keys=True))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _result_provenance(
+    agent_id: str,
+    meta: Dict[str, Any],
+    *,
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    return {
+        "agent_id": agent_id,
+        "team_id": meta.get("team_id"),
+        "task_id": meta.get("team_task_id"),
+        "provider": meta.get("provider"),
+        "model": meta.get("model"),
+        "role": meta.get("role"),
+        "attempt": int(meta.get("attempt") or 1),
+        "session_id": session_id or meta.get("session_id") or meta.get("resume_session_id"),
+        "provenance_class": meta.get("provenance_class"),
+    }
+
+
+def _legacy_gate_from_text(text: str) -> Optional[Dict[str, str]]:
+    matches = list(_QUALITY_GATE_RE.finditer(text or ""))
+    if len(matches) != 1:
+        return None
+    decision = matches[0].group(1).lower()
+    feedback = ((text or "")[:matches[0].start()] + (text or "")[matches[0].end():]).strip()
+    # Do not leak a structured result block into reviewer feedback.
+    marker_index = feedback.rfind(RESULT_ENVELOPE_MARKER)
+    if marker_index >= 0:
+        feedback = feedback[:marker_index].strip()
+    return {"decision": decision, "feedback": truncate(feedback, TEAM_RESULT_LIMIT)[0]}
+
+
+def _read_result_envelope(
+    agent_id: str,
+    *,
+    meta: Optional[Dict[str, Any]] = None,
+    allow_legacy: bool = True,
+) -> Optional[Dict[str, Any]]:
+    path = _result_envelope_path(agent_id)
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                return raw
+        except (OSError, json.JSONDecodeError):
+            return None
+    if not allow_legacy:
+        return None
+    result_path = _agent_dir(agent_id) / "result.txt"
+    if not result_path.exists():
+        return None
+    try:
+        text = result_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    current = dict(meta or {})
+    return legacy_result_envelope(
+        text,
+        provenance=_result_provenance(agent_id, current),
+        quality_gate=_legacy_gate_from_text(text),
+    )
+
+
+def _public_result_envelope(
+    agent_id: str,
+    meta: Dict[str, Any],
+    *,
+    char_limit: int,
+) -> Optional[Dict[str, Any]]:
+    envelope = _read_result_envelope(agent_id, meta=meta, allow_legacy=True)
+    if envelope is None:
+        return None
+    return bound_result_envelope(envelope, char_limit)
+
+
+def _agent_quality_gate(agent_id: str) -> Tuple[Optional[str], str]:
+    try:
+        meta = _read_meta(agent_id)
+    except HTTPException:
+        meta = {}
+    envelope = _read_result_envelope(agent_id, meta=meta, allow_legacy=True)
+    if envelope and isinstance(envelope.get("quality_gate"), dict):
+        gate = envelope["quality_gate"]
+        decision = str(gate.get("decision") or "").strip().lower()
+        if decision in {"pass", "fail"}:
+            return decision, truncate(str(gate.get("feedback") or "").strip(), TEAM_RESULT_LIMIT)[0]
+    return _quality_gate_result(_team_agent_result(agent_id))
+
+
+def _team_fan_in(team_id: str, team: Dict[str, Any], *, char_limit: int = DETAILED_RESULT_LIMIT) -> Optional[Dict[str, Any]]:
+    rows: List[Tuple[str, Dict[str, Any]]] = []
+    for task in list(team.get("tasks") or []):
+        agent_id = str(task.get("latest_agent_id") or "").strip()
+        if not agent_id:
+            continue
+        try:
+            meta = _read_meta(agent_id)
+        except HTTPException:
+            meta = {}
+        envelope = _read_result_envelope(agent_id, meta=meta, allow_legacy=True)
+        if envelope is not None:
+            rows.append((str(task.get("id") or agent_id), envelope))
+    if not rows:
+        return None
+    return bound_result_envelope(reduce_task_results(rows, team_id=team_id), char_limit)
+
+
 def _team_agent_result(agent_id: Optional[str], limit: int = TEAM_RESULT_LIMIT * 2) -> str:
     if not agent_id:
         return ""
-    path = _agent_dir(str(agent_id)) / "result.txt"
-    if not path.exists():
-        return ""
     try:
-        text = path.read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        return ""
-    return truncate(text, limit)[0]
+        meta = _read_meta(str(agent_id))
+    except HTTPException:
+        meta = {}
+    envelope = _read_result_envelope(str(agent_id), meta=meta, allow_legacy=True)
+    if envelope is not None:
+        return truncate(str(envelope.get("summary") or ""), limit)[0]
+    return ""
 
 
 def _quality_gate_result(text: str) -> Tuple[Optional[str], str]:
@@ -974,37 +1109,79 @@ def _quality_gate_result(text: str) -> Tuple[Optional[str], str]:
 
 def _team_task_prompt(team: Dict[str, Any], task: Dict[str, Any], task_map: Dict[str, Dict[str, Any]]) -> str:
     pieces = [str(task.get("prompt") or "").strip()]
-    dependency_sections: List[str] = []
+    dependency_rows: List[Tuple[str, Dict[str, Any]]] = []
     for dep_id in task.get("depends_on") or []:
         dep = task_map.get(str(dep_id))
         if not dep:
             continue
-        result = _team_agent_result(dep.get("latest_agent_id"))
-        if result:
-            dependency_sections.append(f"### {dep_id}: {dep.get('title') or dep_id}\n{result}")
-    if dependency_sections:
-        pieces.append("Dependency results:\n" + "\n\n".join(dependency_sections))
+        agent_id = str(dep.get("latest_agent_id") or "").strip()
+        if not agent_id:
+            continue
+        try:
+            dep_meta = _read_meta(agent_id)
+        except HTTPException:
+            dep_meta = {}
+        envelope = _read_result_envelope(agent_id, meta=dep_meta, allow_legacy=True)
+        if envelope is not None:
+            dependency_rows.append((str(dep_id), envelope))
+    if dependency_rows:
+        reduced = bound_result_envelope(
+            reduce_task_results(dependency_rows, team_id=str(team.get("team_id") or "") or None),
+            max(DETAILED_RESULT_LIMIT, TEAM_RESULT_LIMIT * 6),
+        )
+        pieces.append(
+            "Dependency result envelopes (deterministic fan-in; use provenance/task IDs and do not infer from raw logs):\n"
+            + json.dumps(reduced, ensure_ascii=False, sort_keys=True)
+        )
 
     review_of = str(task.get("review_of") or "").strip() or None
     if review_of:
         target = task_map[review_of]
-        target_result = _team_agent_result(target.get("latest_agent_id"))
+        target_agent_id = str(target.get("latest_agent_id") or "").strip()
+        target_envelope = None
+        if target_agent_id:
+            try:
+                target_meta = _read_meta(target_agent_id)
+            except HTTPException:
+                target_meta = {}
+            target_envelope = _read_result_envelope(target_agent_id, meta=target_meta, allow_legacy=True)
+        bounded_target = (
+            bound_result_envelope(target_envelope, DETAILED_RESULT_LIMIT)
+            if target_envelope is not None else None
+        )
         pieces.append(
             "Quality gate contract:\n"
-            f"Review the latest result of task '{review_of}' below. Judge whether it satisfies the requested task. "
-            "Your final response MUST contain exactly one standalone marker line: QUALITY_GATE: PASS or QUALITY_GATE: FAIL. "
-            "If FAIL, give concrete revision feedback before the marker. Do not emit both markers.\n\n"
-            f"Latest candidate:\n{target_result or '(no candidate result found)'}"
+            f"Review the latest typed result of task '{review_of}' below. Judge whether it satisfies the requested task. "
+            "Your typed result envelope MUST set quality_gate.decision to pass or fail and quality_gate.feedback when useful. "
+            "For backward parity, your response MUST also contain exactly one standalone marker line: "
+            "QUALITY_GATE: PASS or QUALITY_GATE: FAIL before the final TASK_RESULT_ENVELOPE_V1 block; the two decisions must agree. "
+            "If FAIL, give concrete revision feedback. Do not emit both markers.\n\n"
+            "Latest candidate envelope:\n"
+            + (json.dumps(bounded_target, ensure_ascii=False, sort_keys=True) if bounded_target else "(no candidate result found)")
         )
 
     revision_count = int(task.get("revision_count") or 0)
     revision_feedback = str(task.get("revision_feedback") or "").strip()
     if revision_count > 0 and revision_feedback:
-        previous = _team_agent_result(task.get("latest_agent_id"))
+        previous_agent_id = str(task.get("latest_agent_id") or "").strip()
+        previous_envelope = None
+        if previous_agent_id:
+            try:
+                previous_meta = _read_meta(previous_agent_id)
+            except HTTPException:
+                previous_meta = {}
+            previous_envelope = _read_result_envelope(previous_agent_id, meta=previous_meta, allow_legacy=True)
         pieces.append(
             f"Quality-gate revision {revision_count}:\n"
-            f"Address this reviewer feedback before returning the revised result:\n{revision_feedback}"
-            + (f"\n\nPrevious candidate:\n{previous}" if previous else "")
+            f"Address this reviewer feedback before returning the revised typed result:\n{revision_feedback}"
+            + (
+                "\n\nPrevious candidate envelope:\n"
+                + json.dumps(
+                    bound_result_envelope(previous_envelope, DETAILED_RESULT_LIMIT),
+                    ensure_ascii=False, sort_keys=True,
+                )
+                if previous_envelope else ""
+            )
         )
     return "\n\n".join(piece for piece in pieces if piece)
 
@@ -1060,7 +1237,7 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
                 task["failure_reason"] = None
                 continue
 
-            decision, feedback = _quality_gate_result(_team_agent_result(agent_id))
+            decision, feedback = _agent_quality_gate(agent_id)
             task["gate_attempts"] = int(task.get("gate_attempts") or 0) + 1
             task["gate_result"] = decision or "invalid"
             task["gate_feedback"] = feedback
@@ -1348,11 +1525,23 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
     public_tasks: List[Dict[str, Any]] = []
     task_counts: Dict[str, int] = {}
     task_failure_reasons: List[Dict[str, Any]] = []
+    typed_partial_tasks: List[str] = []
     tasks = list(team.get("tasks") or [])
     for task in tasks:
         state = str(task.get("state") or "blocked")
         task_counts[state] = task_counts.get(state, 0) + 1
         failure_reason = task.get("failure_reason")
+        latest_agent_id = str(task.get("latest_agent_id") or "").strip()
+        task_envelope = None
+        if latest_agent_id:
+            try:
+                latest_meta = _read_meta(latest_agent_id)
+            except HTTPException:
+                latest_meta = {}
+            task_envelope = _read_result_envelope(latest_agent_id, meta=latest_meta, allow_legacy=True)
+        task_result_outcome = task_envelope.get("outcome") if isinstance(task_envelope, dict) else None
+        if state == "completed" and task_result_outcome == "partial_failure":
+            typed_partial_tasks.append(str(task.get("id") or ""))
         public_tasks.append({
             "id": task.get("id"),
             "title": task.get("title"),
@@ -1374,6 +1563,12 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
             "queued_details": task.get("queued_details"),
             "queue_position": task.get("queue_position"),
             "admission_lease_id": task.get("admission_lease_id"),
+            "result_outcome": task_result_outcome,
+            "result_contract_status": task_envelope.get("contract_status") if isinstance(task_envelope, dict) else None,
+            "result_confidence": task_envelope.get("confidence") if isinstance(task_envelope, dict) else None,
+            "result_warning_count": len(task_envelope.get("warnings") or []) if isinstance(task_envelope, dict) else 0,
+            "result_error_count": len(task_envelope.get("errors") or []) if isinstance(task_envelope, dict) else 0,
+            "artifact_count": len(task_envelope.get("artifacts") or []) if isinstance(task_envelope, dict) else 0,
         })
         if state in _GRAPH_TASK_TERMINAL and state != "completed":
             task_failure_reasons.append({
@@ -1404,6 +1599,18 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
             cancelled_failure_count=int(counts.get("cancelled", 0)),
         )
         failure_reasons = legacy_failure_reasons
+
+    failure_reasons = list(failure_reasons)
+    if typed_partial_tasks:
+        failure_reasons.extend({
+            "task_id": task_id,
+            "state": "completed",
+            "reason": "typed_result_partial_failure",
+        } for task_id in typed_partial_tasks)
+        if outcome_state.get("outcome") == "completed":
+            outcome_state["success"] = False
+            outcome_state["outcome"] = "partial_failure"
+            outcome_state["partial_failure"] = True
 
     if scheduler_v1:
         if team.get("cancelled"):
@@ -1437,6 +1644,7 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         }
     except Exception:
         global_admission_public = None
+    result_fan_in = _team_fan_in(team_id, team)
     return {
         "team_id": team_id,
         "status": team_status,
@@ -1448,6 +1656,8 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         "pending_count": outcome_state["pending_count"],
         "work_count": outcome_state["work_count"],
         "failure_reasons": failure_reasons,
+        "typed_partial_count": len(typed_partial_tasks),
+        "result_fan_in": result_fan_in,
         "title": team.get("title"),
         "provider": team.get("provider"),
         "model": team.get("model"),
@@ -2703,16 +2913,18 @@ def _resolve_cwd(cwd: Optional[str]) -> Path:
 
 def _handoff_instruction(result_style: str) -> str:
     if result_style == "detailed":
-        return (
+        prose = (
             "When the work is finished, give the parent AI a clean handoff. Do not narrate routine tool/file steps. "
             "Include verified findings/results, important evidence, blockers or caveats, and the next useful action. "
             "Keep it focused; do not dump raw logs unless they are necessary."
         )
-    return (
-        "When the work is finished, give the parent AI a concise handoff only. Do not narrate routine tool/file steps "
-        "or your thinking process. Include only verified findings/results, material numbers or changes, important caveats, "
-        "and the next useful action. Aim for roughly 250 words or less unless the task itself requires more."
-    )
+    else:
+        prose = (
+            "When the work is finished, give the parent AI a concise handoff only. Do not narrate routine tool/file steps "
+            "or your thinking process. Include only verified findings/results, material numbers or changes, important caveats, "
+            "and the next useful action. Aim for roughly 250 words or less unless the task itself requires more."
+        )
+    return prose + "\n\n" + result_contract_instruction(detailed=result_style == "detailed")
 
 
 def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -2801,6 +3013,12 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "note": meta.get("note"),
         "usage": usage,
         "output_tokens": usage.get("output") if usage else None,
+        "result_contract_version": meta.get("result_contract_version"),
+        "result_contract_status": meta.get("result_contract_status"),
+        "result_contract_error": meta.get("result_contract_error"),
+        "result_truncated": bool(meta.get("result_truncated")),
+        "result_chars": meta.get("result_chars"),
+        "result_envelope_chars": meta.get("result_envelope_chars"),
     }
     public.update(workflow_public_state(agent_id))
     return public
@@ -3054,6 +3272,9 @@ def _spawn_internal(
         "scoped_mcp": provider in {"opencode", "codex"},
         "mcp_endpoint": os.getenv("MAC_MCP_AGENT_ENDPOINT", "http://127.0.0.1:8765/mcp"),
         "result_style": result_style,
+        "result_contract_version": RESULT_ENVELOPE_VERSION,
+        "result_contract_status": "pending",
+        "result_contract_error": None,
         "timeout_s": effective_timeout,
         "idle_timeout_s": effective_idle_timeout,
         "retries": effective_retries,
@@ -3554,10 +3775,11 @@ def list_agents(settings: Settings, status_filter: Optional[str] = None, limit: 
         if team_id and meta.get("team_id") != team_id:
             continue
         public = _public_meta(path.name, meta)
-        result_path = path / "result.txt"
-        if meta.get("status") == "completed" and result_path.exists():
-            result = result_path.read_text(encoding="utf-8", errors="replace").strip()
-            public["result_preview"] = result[:300]
+        if meta.get("status") == "completed":
+            envelope = _read_result_envelope(path.name, meta=meta, allow_legacy=True)
+            if envelope is not None:
+                public["result_preview"] = str(envelope.get("summary") or "")[:300]
+                public["result_outcome"] = envelope.get("outcome")
         items.append(public)
         if len(items) >= max(1, min(int(limit), 200)):
             break
@@ -3641,6 +3863,7 @@ def _wait_snapshot(states: List[Dict[str, Any]], team_summary: Optional[Dict[str
             "work_count": int(team_summary.get("work_count") or (successful + failed + pending)),
             "terminal_count": successful + failed,
             "failure_reasons": list(team_summary.get("failure_reasons") or []),
+            "typed_partial_count": int(team_summary.get("typed_partial_count") or 0),
         }
     return _agent_wait_snapshot(states)
 
@@ -3736,15 +3959,34 @@ def wait_agents(
                 else None
             ),
         }
-        if include_results and "result" in item:
-            row["result"] = truncate(str(item.get("result") or ""), TEAM_RESULT_LIMIT)[0]
+        if include_results and item.get("status") in TERMINAL_STATUSES:
+            try:
+                item_meta = _read_meta(str(item.get("agent_id") or ""))
+            except HTTPException:
+                item_meta = {}
+            full_envelope = _read_result_envelope(
+                str(item.get("agent_id") or ""), meta=item_meta, allow_legacy=True,
+            )
+            if full_envelope is not None:
+                bounded_envelope = bound_result_envelope(full_envelope, TEAM_RESULT_LIMIT)
+                row["result"] = str(bounded_envelope.get("summary") or "")
+                row["result_envelope"] = bounded_envelope
+                row["result_truncation"] = dict(bounded_envelope.get("truncation") or {})
+                row["result_contract"] = {
+                    "schema_version": bounded_envelope.get("schema_version"),
+                    "status": bounded_envelope.get("contract_status"),
+                    "valid": bounded_envelope.get("contract_status") != "invalid",
+                }
         compact.append(row)
     successful_count = int(wait_state.get("successful_count") or 0)
     failure_count = int(wait_state.get("failure_count") or 0)
     pending_count = int(wait_state.get("pending_count") or 0)
     quorum_terminal_count = int(wait_state.get("terminal_count") or 0)
     required_successes = _wait_success_threshold(quorum_total, mode)
-    wait_success = bool(condition_met and (mode != "all" or successful_count >= quorum_total))
+    wait_success = bool(
+        condition_met
+        and (mode != "all" or (successful_count >= quorum_total and bool(wait_state.get("success"))))
+    )
     response: Dict[str, Any] = {
         "ok": True,
         "team_id": team_id,
@@ -3762,6 +4004,7 @@ def wait_agents(
         "failure_count": failure_count,
         "pending_count": pending_count,
         "failure_reasons": list(wait_state.get("failure_reasons") or []),
+        "typed_partial_count": int(wait_state.get("typed_partial_count") or 0),
         "count": len(ids),
         "terminal_count": sum(1 for item in states if item.get("status") in TERMINAL_STATUSES),
         "agents": compact,
@@ -3779,11 +4022,18 @@ def get_agent(
     meta = _authorize_agent_control(agent_id, "get_agent")
     meta = _normalize(agent_id, meta)
     result: Dict[str, Any] = {"ok": True, **_public_meta(agent_id, meta)}
-    result_path = _agent_dir(agent_id) / "result.txt"
-    if meta.get("status") in TERMINAL_STATUSES and result_path.exists():
-        text = result_path.read_text(encoding="utf-8", errors="replace").strip()
+    if meta.get("status") in TERMINAL_STATUSES:
         limit = DETAILED_RESULT_LIMIT if meta.get("result_style") == "detailed" else DEFAULT_RESULT_LIMIT
-        result["result"] = truncate(text, limit)[0]
+        envelope = _public_result_envelope(agent_id, meta, char_limit=limit)
+        if envelope is not None:
+            result["result"] = str(envelope.get("summary") or "")
+            result["result_envelope"] = envelope
+            result["result_truncation"] = dict(envelope.get("truncation") or {})
+            result["result_contract"] = {
+                "schema_version": envelope.get("schema_version"),
+                "status": envelope.get("contract_status"),
+                "valid": envelope.get("contract_status") not in {"invalid"},
+            }
     if include_logs:
         result["logs"] = {
             "stdout": _tail_text(_agent_dir(agent_id) / "stdout.log", tail_lines),
@@ -4992,6 +5242,52 @@ def _worker(agent_id: str) -> int:
         error_tail = _tail_text(stderr_path, max_lines=30, max_chars=3000)
         result = error_tail or "Agent finished without a final handoff. Check logs with get_agent(include_logs=true)."
 
+    legacy_gate = _legacy_gate_from_text(result)
+    contract_error: Optional[Dict[str, str]] = None
+    try:
+        envelope, contract_meta = parse_provider_result(
+            result,
+            provenance=_result_provenance(agent_id, meta, session_id=session_id),
+            legacy_quality_gate=legacy_gate,
+        )
+        if contract_meta.get("marker_present"):
+            typed_gate = envelope.get("quality_gate") if isinstance(envelope.get("quality_gate"), dict) else None
+            if legacy_gate and typed_gate is None:
+                raise ResultContractError(
+                    "missing_typed_quality_gate",
+                    "QUALITY_GATE marker was emitted but result envelope omitted quality_gate.",
+                )
+            if legacy_gate and typed_gate and str(typed_gate.get("decision")) != str(legacy_gate.get("decision")):
+                raise ResultContractError(
+                    "quality_gate_mismatch",
+                    "Typed quality_gate decision disagrees with QUALITY_GATE marker.",
+                )
+    except ResultContractError as exc:
+        contract_error = {"code": exc.code, "message": str(exc)}
+        envelope = normalize_result_envelope(
+            {
+                "schema_version": RESULT_ENVELOPE_VERSION,
+                "outcome": "failure",
+                "summary": f"Invalid result contract: {exc.code}",
+                "claims": [],
+                "evidence": [],
+                "artifacts": [],
+                "warnings": [],
+                "confidence": 0.0,
+                "errors": [{"code": exc.code, "message": str(exc)}],
+                "provenance": {},
+            },
+            provenance=_result_provenance(agent_id, meta, session_id=session_id),
+            contract_status="invalid",
+        )
+        contract_meta = {
+            "valid": False,
+            "contract_status": "invalid",
+            "marker_present": RESULT_ENVELOPE_MARKER in result,
+            "error": contract_error,
+        }
+
+    original_result_chars = len(result)
     limit = DETAILED_RESULT_LIMIT if meta.get("result_style") == "detailed" else DEFAULT_RESULT_LIMIT
     result, was_truncated = truncate(result, limit)
     result_path.write_text(result, encoding="utf-8")
@@ -5001,6 +5297,21 @@ def _worker(agent_id: str) -> int:
         final_status = "stalled"
     else:
         final_status = "completed" if exit_code == 0 else "failed"
+    if final_status == "completed" and contract_error is not None:
+        final_status = "failed"
+        final_reason = "invalid_result_contract"
+    elif final_status == "completed" and envelope.get("outcome") == "failure":
+        final_status = "failed"
+        final_reason = "result_reported_failure"
+    if final_status != "completed" and envelope.get("outcome") == "success":
+        envelope["outcome"] = "failure"
+        envelope.setdefault("errors", []).append({
+            "code": str(final_reason or final_status or "provider_failed"),
+            "message": f"Agent provider ended as {final_status}.",
+        })
+    _write_result_envelope(agent_id, envelope)
+    envelope_chars = len(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")))
+
     def record_completion(current: Dict[str, Any]) -> Optional[bool]:
         if current.get("status") == "cancelled":
             return False
@@ -5009,7 +5320,17 @@ def _worker(agent_id: str) -> int:
             "status": final_status, "phase": "completed" if final_status == "completed" else final_status,
             "exit_code": exit_code, "ended_at": now, "updated_at": now,
             "session_id": session_id or current.get("resume_session_id"), "usage": usage,
-            "result_truncated": was_truncated, "result_chars": len(result), "provider_pid": None,
+            "result_truncated": was_truncated, "result_chars": len(result),
+            "result_original_chars": original_result_chars,
+            "result_envelope_chars": envelope_chars,
+            "result_contract_version": RESULT_ENVELOPE_VERSION,
+            "result_contract_status": str(envelope.get("contract_status") or contract_meta.get("contract_status") or "unknown"),
+            "result_contract_error": contract_error,
+            "result_outcome": envelope.get("outcome"),
+            "result_confidence": envelope.get("confidence"),
+            "result_warning_count": len(envelope.get("warnings") or []),
+            "result_error_count": len(envelope.get("errors") or []),
+            "provider_pid": None,
             "lesson_candidate_ids": lesson_candidate_ids, "lesson_candidate_error": lesson_candidate_error,
         })
         if final_status != "completed":
@@ -5021,6 +5342,10 @@ def _worker(agent_id: str) -> int:
                 current["note"] = "Automatic replay stopped because provider-native activity made the side-effect outcome unknown."
             elif str(final_reason or "").startswith("team_"):
                 current["note"] = f"Automatic retry stopped by team budget: {str(final_reason)[5:]}."
+            elif final_reason == "invalid_result_contract":
+                current["note"] = f"Provider emitted an invalid typed result contract ({(contract_error or {}).get('code') or 'unknown'})."
+            elif final_reason == "result_reported_failure":
+                current["note"] = "Typed result envelope reported outcome=failure."
             elif final_reason in {
                 "auth_error", "permission_error", "quota_exhausted", "invalid_model", "invalid_request",
                 "provider_error_nonretryable",

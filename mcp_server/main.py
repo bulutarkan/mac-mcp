@@ -458,6 +458,9 @@ def create_app():
             "for global cross-team admission of workspace/path/file, browser_tab, native_app/window, process or clipboard resources; "
             "path/browser claims are scope-checked and file expected_revision fails closed before provider start. ChatGPT accepts project=... "
             "as the team default and task.project overrides. Optional team role or task.role enables bounded role-learning context per child. "
+            "Each child produces a versioned typed result envelope; valid structured output is preserved, plain legacy text is "
+            "adapted with explicit legacy_fallback status, and malformed marked envelopes fail closed. Dependency fan-in is deterministic, "
+            "provenance-aware, deduplicates evidence/artifacts, flags keyed claim contradictions, and never injects raw provider logs. "
             "Returns immediately with parent-visible budget and global admission/queue state."
         ),
     )
@@ -492,7 +495,8 @@ def create_app():
             "Bounded wait for a team or explicit agent_ids. mode: all, any, majority. "
             "any/majority quorum counts only successful completed work; all preserves completion semantics while "
             "success/outcome separately report failures. timed_out refers only to the waiter deadline. "
-            "Returns concise results for agents that finished, avoiding repeated polling."
+            "Returns concise typed result envelopes for agents that finished, including explicit truncation/omission metadata when "
+            "bounded output is reduced; raw provider logs are excluded unless separately requested through get_agent(include_logs=true)."
         ),
     )
     async def _wait_agents(team_id: Optional[str] = None, agent_ids: Optional[List[str]] = None,
@@ -515,7 +519,7 @@ def create_app():
 
     @mcp.tool(
         name="get_agent",
-        description="Get one delegated agent status and concise final result. Delegated callers may access only themselves or descendants in their persisted lineage; include_logs=true follows the same boundary.",
+        description="Get one delegated agent status and typed final result envelope. The compatibility result field is the structured summary, not raw provider output; bounded envelopes expose truncation.omitted explicitly. Delegated callers may access only themselves or descendants in their persisted lineage; include_logs=true follows the same boundary.",
     )
     def _get_agent(agent_id: str, include_logs: bool = False,
                    tail_lines: int = 40) -> Dict[str, Any]:
