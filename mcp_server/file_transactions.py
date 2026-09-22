@@ -491,8 +491,32 @@ def _prune_locked(*, exclude: Optional[str] = None) -> None:
             continue
         entries.append((directory, manifest, _dir_bytes(directory)))
 
+    protected_children: set[str] = set()
+    for directory, manifest, _ in entries:
+        if (
+            manifest.get("kind") == "compound"
+            and str(manifest.get("state") or "") == "committed"
+            and float(manifest.get("expires_at") or 0.0) > now
+        ):
+            protected_children.update(str(value) for value in manifest.get("child_transaction_ids") or [])
+    if exclude and (root / exclude).is_dir():
+        try:
+            excluded_manifest = _read_manifest(exclude)
+        except FileTransactionError:
+            excluded_manifest = {}
+        if (
+            excluded_manifest.get("kind") == "compound"
+            and str(excluded_manifest.get("state") or "") == "committed"
+            and float(excluded_manifest.get("expires_at") or 0.0) > now
+        ):
+            protected_children.update(
+                str(value) for value in excluded_manifest.get("child_transaction_ids") or []
+            )
+
     def removable(item: tuple[Path, Dict[str, Any], int]) -> bool:
-        _, manifest, _ = item
+        directory, manifest, _ = item
+        if directory.name in protected_children:
+            return False
         state = str(manifest.get("state") or "")
         created = float(manifest.get("created_at") or 0.0)
         return state in {"committed", "undone", "rolled_back", "rollback_failed", "aborted"} or now - created > ACTIVE_GRACE_S
@@ -617,10 +641,308 @@ def prepare_transaction(
         return dict(manifest)
 
 
+
+def begin_capture_transaction(
+    operation: str,
+    *,
+    actor: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Open a durable filesystem capture before an external mutator runs."""
+    transaction_id = "ftx_" + uuid.uuid4().hex
+    root = _ensure_root()
+    txn_dir = root / transaction_id
+    with _journal_lock():
+        _prune_locked()
+        txn_dir.mkdir(mode=0o700)
+        created = _now()
+        manifest: Dict[str, Any] = {
+            "schema_version": SCHEMA_VERSION,
+            "transaction_id": transaction_id,
+            "operation": str(operation)[:80],
+            "kind": "capture",
+            "state": "capturing",
+            "undoable": True,
+            "reversibility": "full",
+            "irreversible_reason": None,
+            "unsupported": [],
+            "created_at": created,
+            "expires_at": created + _retention_s(),
+            "committed_at": None,
+            "undone_at": None,
+            "rolled_back_at": None,
+            "creator": {
+                "actor": str(actor or "")[:120] or None,
+                "agent_id": str(agent_id or "")[:120] or None,
+            },
+            "metadata": dict(metadata or {}),
+            "snapshots": [],
+        }
+        _write_manifest(manifest)
+        return dict(manifest)
+
+
+def capture_transaction_snapshot(
+    transaction_id: str,
+    target: Path,
+    *,
+    before_kind: str,
+    before_source: Optional[Path] = None,
+    before_fingerprint: Optional[str] = None,
+    before_mode: Optional[int] = None,
+    scope: Optional[ResourceScope] = None,
+) -> Dict[str, Any]:
+    """Attach one preimage to an open capture transaction."""
+    with _journal_lock():
+        manifest = _read_manifest(transaction_id)
+        if manifest.get("state") != "capturing":
+            raise TransactionConflict("capture transaction is not open")
+        target_path = _transaction_path(Path(target), scope)
+        existing = {str(item.get("path") or "") for item in manifest.get("snapshots") or []}
+        if str(target_path) in existing:
+            return dict(manifest)
+
+        index = len(manifest.get("snapshots") or [])
+        if before_kind == "absent":
+            digest = hashlib.sha256(); digest.update(b"absent\0")
+            snapshot = {
+                "path": str(target_path),
+                "before_kind": "absent",
+                "before_fingerprint": before_fingerprint or digest.hexdigest(),
+                "estimated_bytes": 0,
+                "backup": None,
+                "backup_format": "none",
+                "before_mode": None,
+                "post_fingerprint": None,
+            }
+        else:
+            if before_source is None:
+                raise TransactionPrepareFailed("capture preimage source is required")
+            source = Path(before_source)
+            if not source.exists() and not source.is_symlink():
+                raise TransactionPrepareFailed("capture preimage source is missing")
+            snapshot = _snapshot(source, _txn_dir(transaction_id), index, scope=None)
+            snapshot["path"] = str(target_path)
+            snapshot["before_kind"] = str(before_kind)
+            if before_fingerprint:
+                snapshot["before_fingerprint"] = str(before_fingerprint)
+            if before_mode is not None:
+                snapshot["before_mode"] = int(before_mode)
+        manifest.setdefault("snapshots", []).append(snapshot)
+        _write_manifest(manifest)
+        return dict(manifest)
+
+
+def finalize_capture_transaction(
+    transaction_id: str,
+    *,
+    scope: Optional[ResourceScope] = None,
+    reversibility: str = "full",
+    unsupported: Optional[Sequence[Mapping[str, Any] | str]] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    with _journal_lock():
+        manifest = _read_manifest(transaction_id)
+        if manifest.get("state") != "capturing":
+            raise TransactionConflict("capture transaction is not open")
+        normalized_reversibility = str(reversibility or "full").strip().lower()
+        if normalized_reversibility not in {"full", "partial", "none"}:
+            raise TransactionPrepareFailed("invalid reversibility state")
+        unsupported_rows: list[Any] = []
+        for item in unsupported or ():
+            unsupported_rows.append(dict(item) if isinstance(item, Mapping) else str(item))
+        manifest["reversibility"] = normalized_reversibility
+        manifest["unsupported"] = unsupported_rows
+        if metadata:
+            merged = dict(manifest.get("metadata") or {})
+            merged.update(dict(metadata))
+            manifest["metadata"] = merged
+
+        if normalized_reversibility == "none":
+            manifest["undoable"] = False
+            manifest["irreversible_reason"] = (
+                str((metadata or {}).get("irreversible_reason") or "")[:160]
+                or "capture_incomplete"
+            )
+        if manifest.get("undoable"):
+            for item in manifest.get("snapshots") or []:
+                item["post_fingerprint"] = _fingerprint_for(Path(str(item.get("path") or "")), scope)
+        manifest["state"] = "committed"
+        manifest["committed_at"] = _now()
+        _write_manifest(manifest)
+        _prune_locked(exclude=transaction_id)
+        return transaction_receipt(manifest)
+
+
+def abort_capture_transaction(
+    transaction_id: str,
+    *,
+    reason: str,
+    outcome_unknown: bool = False,
+) -> Dict[str, Any]:
+    with _journal_lock():
+        manifest = _read_manifest(transaction_id)
+        if manifest.get("state") not in {"capturing", "prepared"}:
+            return transaction_receipt(manifest)
+        manifest["state"] = "aborted"
+        manifest["undoable"] = False
+        manifest["reversibility"] = "none"
+        manifest["irreversible_reason"] = str(reason or "capture_aborted")[:160]
+        manifest["outcome_unknown"] = bool(outcome_unknown)
+        _write_manifest(manifest)
+        return transaction_receipt(manifest)
+
+
+def _flatten_compound_children(transaction_ids: Sequence[str]) -> list[str]:
+    flattened: list[str] = []
+    seen: set[str] = set()
+    for raw in transaction_ids:
+        txid = _validate_transaction_id(str(raw))
+        manifest = _read_manifest(txid)
+        children = list(manifest.get("child_transaction_ids") or []) if manifest.get("kind") == "compound" else [txid]
+        for child in children:
+            child_id = _validate_transaction_id(str(child))
+            if child_id not in seen:
+                seen.add(child_id)
+                flattened.append(child_id)
+    return flattened
+
+
+def compose_transactions(
+    operation: str,
+    transaction_ids: Sequence[str],
+    *,
+    actor: Optional[str] = None,
+    agent_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    with _journal_lock():
+        children = _flatten_compound_children(transaction_ids)
+        if not children:
+            raise TransactionPrepareFailed("compound transaction has no children")
+        manifests = [_read_manifest(child) for child in children]
+        for child, manifest in zip(children, manifests):
+            if manifest.get("state") != "committed":
+                raise TransactionConflict(f"child transaction is not committed: {child}")
+            if not manifest.get("undoable"):
+                raise TransactionIrreversible(f"child transaction is not undoable: {child}")
+
+        transaction_id = "ftx_" + uuid.uuid4().hex
+        txn_dir = _ensure_root() / transaction_id
+        txn_dir.mkdir(mode=0o700)
+        created = _now()
+        reversibility = "partial" if any(str(m.get("reversibility") or "full") == "partial" for m in manifests) else "full"
+        expires = min(float(m.get("expires_at") or (created + _retention_s())) for m in manifests)
+        manifest = {
+            "schema_version": SCHEMA_VERSION,
+            "transaction_id": transaction_id,
+            "operation": str(operation)[:80],
+            "kind": "compound",
+            "state": "committed",
+            "undoable": True,
+            "reversibility": reversibility,
+            "irreversible_reason": None,
+            "unsupported": [
+                item
+                for child_manifest in manifests
+                for item in list(child_manifest.get("unsupported") or [])
+            ],
+            "created_at": created,
+            "expires_at": min(expires, created + _retention_s()),
+            "committed_at": created,
+            "undone_at": None,
+            "rolled_back_at": None,
+            "creator": {
+                "actor": str(actor or "")[:120] or None,
+                "agent_id": str(agent_id or "")[:120] or None,
+            },
+            "child_transaction_ids": children,
+            "snapshots": [],
+        }
+        _write_manifest(manifest)
+        _prune_locked(exclude=transaction_id)
+        return transaction_receipt(manifest)
+
+
+def _manifest_transaction_paths(manifest: Mapping[str, Any]) -> list[str]:
+    if manifest.get("kind") == "compound":
+        paths: list[str] = []
+        seen: set[str] = set()
+        for child in manifest.get("child_transaction_ids") or []:
+            child_manifest = _read_manifest(str(child))
+            for path in _manifest_transaction_paths(child_manifest):
+                if path not in seen:
+                    seen.add(path)
+                    paths.append(path)
+        return paths
+    return [
+        str(item.get("path") or "")
+        for item in manifest.get("snapshots") or []
+        if item.get("path")
+    ]
+
+
+def _preflight_compound_locked(manifest: Mapping[str, Any], *, scope: Optional[ResourceScope]) -> None:
+    children = [_read_manifest(str(txid)) for txid in manifest.get("child_transaction_ids") or []]
+    if not children:
+        raise TransactionConflict("compound transaction has no children")
+    for child in children:
+        if child.get("kind") == "compound" or child.get("state") != "committed" or not child.get("undoable"):
+            raise TransactionConflict("compound child is not in a reversible committed state")
+
+    occurrences: Dict[str, list[Mapping[str, Any]]] = {}
+    for child in children:
+        for snapshot in child.get("snapshots") or []:
+            path = str(snapshot.get("path") or "")
+            if path:
+                occurrences.setdefault(path, []).append(snapshot)
+
+    for path, chain in occurrences.items():
+        latest = chain[-1]
+        expected_current = str(latest.get("post_fingerprint") or "")
+        current = _fingerprint_for(Path(path), scope)
+        if not expected_current or current != expected_current:
+            raise TransactionConflict(
+                "filesystem changed after this compound transaction; refusing to overwrite newer changes"
+            )
+        for earlier, later in zip(chain, chain[1:]):
+            earlier_post = str(earlier.get("post_fingerprint") or "")
+            later_before = str(later.get("before_fingerprint") or "")
+            if not earlier_post or not later_before or earlier_post != later_before:
+                raise TransactionConflict("compound transaction history is not contiguous")
+
+
+def _undo_compound_locked(
+    manifest: Dict[str, Any], *, force: bool, scope: Optional[ResourceScope]
+) -> Dict[str, Any]:
+    if manifest.get("state") != "committed":
+        raise TransactionConflict("only a committed compound transaction can be undone")
+    if float(manifest.get("expires_at") or 0.0) <= _now():
+        raise TransactionExpired("transaction undo window has expired")
+    if not manifest.get("undoable"):
+        raise TransactionIrreversible(str(manifest.get("irreversible_reason") or "transaction is irreversible"))
+    if not force:
+        _preflight_compound_locked(manifest, scope=scope)
+    try:
+        for txid in reversed(list(manifest.get("child_transaction_ids") or [])):
+            child = _read_manifest(str(txid))
+            if child.get("state") != "committed":
+                raise TransactionConflict("compound child is no longer committed")
+            _rollback_locked(child, terminal_state="undone", scope=scope)
+    except Exception as exc:
+        manifest["state"] = "rollback_failed"
+        manifest["rollback_error"] = exc.__class__.__name__
+        _write_manifest(manifest)
+        raise
+    manifest["state"] = "undone"
+    manifest["undone_at"] = _now()
+    _write_manifest(manifest)
+    return transaction_receipt(manifest)
+
 def transaction_paths(transaction_id: str) -> tuple[str, ...]:
     with _journal_lock():
         manifest = _read_manifest(transaction_id)
-        return tuple(str(item.get("path") or "") for item in manifest.get("snapshots") or [] if item.get("path"))
+        return tuple(_manifest_transaction_paths(manifest))
 
 
 def commit_transaction(transaction_id: str, *, scope: Optional[ResourceScope] = None) -> Dict[str, Any]:
@@ -679,6 +1001,24 @@ def undo_transaction(
     with _journal_lock():
         manifest = _read_manifest(transaction_id)
         state = str(manifest.get("state") or "")
+        if manifest.get("kind") == "compound":
+            return _undo_compound_locked(manifest, force=force, scope=scope)
+        if state == "capturing":
+            if not force:
+                raise TransactionConflict(
+                    "transaction stopped during filesystem capture; outcome is unknown and the capture must be recovered before undo"
+                )
+            if not manifest.get("snapshots"):
+                raise TransactionIrreversible(
+                    "capture is incomplete and has no attached preimages; force cannot safely claim a full undo"
+                )
+            manifest["state"] = "prepared"
+            manifest["reversibility"] = "partial"
+            manifest.setdefault("unsupported", []).append({
+                "reason": "capture_interrupted_before_finalize",
+            })
+            _write_manifest(manifest)
+            return _rollback_locked(manifest, terminal_state="undone", scope=scope)
         if state == "prepared":
             if not force:
                 raise TransactionConflict(
@@ -711,12 +1051,23 @@ def get_transaction(transaction_id: str) -> Dict[str, Any]:
 
 
 def transaction_receipt(manifest: Mapping[str, Any]) -> Dict[str, Any]:
+    if manifest.get("kind") == "compound":
+        try:
+            path_count = len(_manifest_transaction_paths(manifest))
+        except FileTransactionError:
+            path_count = 0
+    else:
+        path_count = len(manifest.get("snapshots") or [])
     return {
         "transaction_id": manifest.get("transaction_id"),
         "transaction_state": manifest.get("state"),
         "operation": manifest.get("operation"),
+        "transaction_kind": manifest.get("kind") or "filesystem",
         "undoable": bool(manifest.get("undoable")),
+        "reversibility": manifest.get("reversibility") or ("full" if manifest.get("undoable") else "none"),
         "undo_expires_at": manifest.get("expires_at") if manifest.get("undoable") else None,
         "irreversible_reason": manifest.get("irreversible_reason"),
-        "path_count": len(manifest.get("snapshots") or []),
+        "unsupported": list(manifest.get("unsupported") or []),
+        "path_count": path_count,
+        "child_transaction_ids": list(manifest.get("child_transaction_ids") or []),
     }

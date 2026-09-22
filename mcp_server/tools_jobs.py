@@ -14,6 +14,8 @@ from fastapi import HTTPException, status
 
 from .security import BASE_DIR, Settings, require_shell_enabled, truncate
 from .workspace_sandbox import shell_execution_plan
+from .file_transactions import abort_capture_transaction
+from .shell_transactions import begin_shell_capture, finalize_shell_capture, shell_capture_http_error
 from .tool_cancellation import ToolCancelledError, cancellable_sleep, cancellation_checkpoint
 
 JOBS_DIR = BASE_DIR / "jobs"
@@ -168,6 +170,33 @@ def _append_stream(job_id: str, stream, filename: str) -> None:
     stream.close()
 
 
+
+def _finalize_job_capture(meta: Dict[str, Any]) -> None:
+    capture_txid = str(meta.get("capture_transaction_id") or "").strip()
+    if not capture_txid or meta.get("transaction"):
+        return
+    try:
+        transaction = finalize_shell_capture(
+            capture_txid,
+            join_transaction_ids=list(meta.get("join_transaction_ids") or []),
+        )
+    except BaseException as exc:
+        meta["filesystem_outcome"] = "unknown"
+        meta["reversibility_error"] = {
+            "error": "shell_capture_finalize_failed",
+            "message": str(exc)[:500],
+            "transaction_id": capture_txid,
+        }
+        return
+    meta["transaction"] = transaction
+    meta["transaction_id"] = transaction.get("transaction_id")
+    meta["undoable"] = bool(transaction.get("undoable"))
+    meta["reversibility"] = transaction.get("reversibility")
+    meta["filesystem_outcome"] = "captured"
+    meta["changed_count"] = transaction.get("changed_count")
+    meta["changed_paths"] = transaction.get("changed_paths")
+
+
 def _watch_process(job_id: str, timeout_s: Optional[int], no_output_timeout_s: Optional[int]) -> None:
     proc = _PROCS.get(job_id)
     if proc is None:
@@ -199,7 +228,13 @@ def _watch_process(job_id: str, timeout_s: Optional[int], no_output_timeout_s: O
 
     exit_code = proc.wait()
     with _LOCK:
-        meta = _read_meta(job_id)
+        try:
+            meta = _read_meta(job_id)
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_404_NOT_FOUND:
+                _PROCS.pop(job_id, None)
+                return
+            raise
         if meta.get("status") == "killed":
             final_status = "killed"
         elif termination_reason == "stalled" or meta.get("stop_reason") == "stalled" or meta.get("status") == "stalled":
@@ -215,6 +250,7 @@ def _watch_process(job_id: str, timeout_s: Optional[int], no_output_timeout_s: O
             "updated_at": _now(),
             "duration_ms": int((_now() - float(meta.get("started_at", _now()))) * 1000),
         })
+        _finalize_job_capture(meta)
         _write_meta(job_id, meta)
         _PROCS.pop(job_id, None)
 
@@ -234,6 +270,7 @@ def _normalize_status(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
             meta["ended_at"] = _now()
             meta["updated_at"] = _now()
             meta["duration_ms"] = int((_now() - float(meta.get("started_at", _now()))) * 1000)
+            _finalize_job_capture(meta)
             _write_meta(job_id, meta)
             _PROCS.pop(job_id, None)
         elif proc is None and not _is_pid_alive(meta.get("pid")):
@@ -250,6 +287,7 @@ def _normalize_status(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
             meta["duration_ms"] = int((_now() - float(meta.get("started_at", _now()))) * 1000)
             if status_value not in {"killed", "stalled", "timeout"}:
                 meta["note"] = "Process ended while bridge was not tracking it; exit code is unavailable."
+            _finalize_job_capture(meta)
             _write_meta(job_id, meta)
     return meta
 
@@ -268,6 +306,11 @@ def start_background_job(
     env: Optional[Dict[str, str]] = None,
     timeout_s: Optional[int] = None,
     no_output_timeout_s: Optional[int] = None,
+    *,
+    reversible: bool = False,
+    reversible_root: Optional[str] = None,
+    join_transaction_ids: Optional[List[str]] = None,
+    require_full_reversibility: bool = False,
 ) -> Dict[str, Any]:
     require_shell_enabled(settings)
     if not command or not command.strip():
@@ -284,9 +327,22 @@ def start_background_job(
     (job_path / "stdout.log").touch()
     (job_path / "stderr.log").touch()
 
+    if join_transaction_ids and not reversible:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "join_transaction_ids requires reversible=true.")
     plan = shell_execution_plan(settings.workdir, requested_cwd=cwd, extra_env=env)
     workdir = plan.cwd
     argv = plan.argv(command)
+    capture: Optional[Dict[str, Any]] = None
+    capture_txid: Optional[str] = None
+    if reversible:
+        capture_root = Path(reversible_root).expanduser() if reversible_root else Path(workdir)
+        try:
+            capture = begin_shell_capture(capture_root, require_full=bool(require_full_reversibility))
+            capture_txid = str(capture["transaction_id"])
+        except BaseException as exc:
+            if isinstance(exc, HTTPException):
+                raise
+            raise shell_capture_http_error(exc) from exc
     started_at = _now()
     meta = {
         "job_id": job_id,
@@ -302,6 +358,16 @@ def start_background_job(
         "timeout_s": timeout_s,
         "no_output_timeout_s": no_output_timeout_s,
         "sandboxed": plan.sandboxed,
+        "reversible_capture": bool(reversible),
+        "capture_transaction_id": capture_txid,
+        "join_transaction_ids": list(join_transaction_ids or []),
+        "require_full_reversibility": bool(require_full_reversibility),
+        "transaction": None,
+        "transaction_id": None,
+        "undoable": None,
+        "reversibility": None,
+        "filesystem_outcome": "capturing" if capture_txid else None,
+        "reversibility_error": None,
     }
     _write_meta(job_id, meta)
 
@@ -318,6 +384,11 @@ def start_background_job(
             start_new_session=True,
         )
     except OSError as exc:
+        if capture_txid:
+            try:
+                abort_capture_transaction(capture_txid, reason="process_start_failed", outcome_unknown=False)
+            except Exception:
+                pass
         meta.update({"status": "failed", "ended_at": _now(), "updated_at": _now(), "error": str(exc)})
         _write_meta(job_id, meta)
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Could not start job: {exc}") from exc
@@ -331,10 +402,15 @@ def start_background_job(
     threading.Thread(target=_append_stream, args=(job_id, proc.stderr, "stderr.log"), daemon=True).start()
     threading.Thread(target=_watch_process, args=(job_id, timeout_s, no_output_timeout_s), daemon=True).start()
 
-    return {
+    result = {
         "ok": True, "job_id": job_id, "pid": proc.pid, "status": "running",
         "command": command, "cwd": str(workdir), "sandboxed": plan.sandboxed,
+        "reversible_capture": bool(reversible),
     }
+    if capture_txid:
+        result["capture_transaction_id"] = capture_txid
+        result["capture_mode"] = capture.get("mode") if capture else None
+    return result
 
 
 def get_job_status(settings: Settings, job_id: str) -> Dict[str, Any]:

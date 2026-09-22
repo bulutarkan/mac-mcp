@@ -312,11 +312,38 @@ def create_app():
             return await call_next(request)
 
     # ── Terminal tools ──────────────────────────────────────────────────────
-    @mcp.tool(name="run_command",
-              description="Run any shell command in zsh on the local Mac. Full access.")
-    def _run_command(command: str, timeout_s: Optional[int] = None) -> Dict[str, Any]:
-        return _log(audit_logger, "run_command",
-                    lambda: run_command(settings, command=command, timeout_s=timeout_s))
+    @mcp.tool(
+        name="run_command",
+        description=(
+            "Run any shell command in zsh on the local Mac. Full access by default. "
+            "Set reversible=true to capture bounded filesystem side effects under reversible_root (defaults to the command workspace). "
+            "Git workspaces use commit-backed clean-file preimages plus snapshots for dirty/untracked files; non-Git workspaces use bounded snapshots. "
+            "join_transaction_ids can combine earlier committed file-tool transactions with this shell run into one compound undo receipt. "
+            "require_full_reversibility=true fails before command execution when known policy exclusions or capture limits prevent full scoped coverage. "
+            "Generated/ignored/symlink-escape or otherwise unsupported paths are reported explicitly and never silently claimed reversible."
+        ),
+    )
+    def _run_command(
+        command: str,
+        timeout_s: Optional[int] = None,
+        reversible: bool = False,
+        reversible_root: Optional[str] = None,
+        join_transaction_ids: Optional[List[str]] = None,
+        require_full_reversibility: bool = False,
+    ) -> Dict[str, Any]:
+        return _log(
+            audit_logger,
+            "run_command",
+            lambda: run_command(
+                settings,
+                command=command,
+                timeout_s=timeout_s,
+                reversible=reversible,
+                reversible_root=reversible_root,
+                join_transaction_ids=join_transaction_ids,
+                require_full_reversibility=require_full_reversibility,
+            ),
+        )
 
     @mcp.tool(name="process_list",
               description="List running processes. Optional filter by name substring.")
@@ -335,19 +362,42 @@ def create_app():
     def _get_system_info() -> Dict[str, Any]:
         return _log(audit_logger, "get_system_info", lambda: get_system_info(settings))
 
-    @mcp.tool(name="start_background_job",
-              description=(
-                  "Start a shell command and return immediately with job_id. "
-                  "Default timeout is 60 seconds; set timeout_s explicitly (up to 600) for longer npm installs, "
-                  "builds, downloads, dev servers, docker, or tests."
-              ))
-    def _start_background_job(command: str, cwd: Optional[str] = None,
-                              env: Optional[Dict[str, str]] = None,
-                              timeout_s: Optional[int] = None,
-                              no_output_timeout_s: Optional[int] = None) -> Dict[str, Any]:
-        return _log(audit_logger, "start_background_job",
-                    lambda: start_background_job(settings, command=command, cwd=cwd, env=env,
-                                                 timeout_s=timeout_s, no_output_timeout_s=no_output_timeout_s))
+    @mcp.tool(
+        name="start_background_job",
+        description=(
+            "Start a shell command and return immediately with job_id. "
+            "Default timeout is 60 seconds; set timeout_s explicitly (up to 600) for longer npm installs, builds, downloads, dev servers, docker, or tests. "
+            "Set reversible=true for durable bounded filesystem capture; the watcher finalizes the transaction on exit and get_job_status can recover/finalize a capture after bridge restart when the PID has ended. "
+            "reversible_root, join_transaction_ids and require_full_reversibility use the same semantics as run_command."
+        ),
+    )
+    def _start_background_job(
+        command: str,
+        cwd: Optional[str] = None,
+        env: Optional[Dict[str, str]] = None,
+        timeout_s: Optional[int] = None,
+        no_output_timeout_s: Optional[int] = None,
+        reversible: bool = False,
+        reversible_root: Optional[str] = None,
+        join_transaction_ids: Optional[List[str]] = None,
+        require_full_reversibility: bool = False,
+    ) -> Dict[str, Any]:
+        return _log(
+            audit_logger,
+            "start_background_job",
+            lambda: start_background_job(
+                settings,
+                command=command,
+                cwd=cwd,
+                env=env,
+                timeout_s=timeout_s,
+                no_output_timeout_s=no_output_timeout_s,
+                reversible=reversible,
+                reversible_root=reversible_root,
+                join_transaction_ids=join_transaction_ids,
+                require_full_reversibility=require_full_reversibility,
+            ),
+        )
 
     @mcp.tool(name="get_job_status",
               description="Get status for a background job by job_id.")
@@ -607,8 +657,9 @@ def create_app():
     @mcp.tool(
         name="file_transaction_undo",
         description=(
-            "Undo a recent reversible write/edit/move/delete filesystem transaction by transaction_id. "
-            "By default refuses to overwrite filesystem changes made after the original transaction; force=true overrides that conflict check."
+            "Undo a recent reversible filesystem transaction by transaction_id, including direct file-tool, reversible shell/job, and compound receipts. "
+            "By default refuses to overwrite filesystem changes made after the original transaction; force=true overrides that conflict check. "
+            "Incomplete capture journals never claim a full undo."
         ),
     )
     def _file_transaction_undo(transaction_id: str, force: bool = False) -> Dict[str, Any]:
