@@ -41,6 +41,7 @@ from .policy import (
     profile_denied_result,
     resolve_risk,
     scope_denied_result,
+    tool_availability,
 )
 
 
@@ -885,6 +886,11 @@ class ObservedFastMCP(FastMCP):
 
     async def list_tools(self):
         tools = await super().list_tools()
+        profile = self._policy_context_provider().profile
+        tools = [
+            tool for tool in tools
+            if tool_availability(profile, tool.name).get("available") is True
+        ]
         if os.getenv("MAC_MCP_TOOL_PROFILE", "core").strip().lower() != "core":
             return tools
         extra = {

@@ -202,6 +202,88 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     )
 
 
+_TERMINAL_BUNDLE_IDS = frozenset({
+    "com.apple.terminal",
+    "com.googlecode.iterm2",
+    "com.mitchellh.ghostty",
+    "dev.warp.warp",
+    "dev.warp.warp-stable",
+    "org.alacritty",
+    "net.kovidgoyal.kitty",
+    "co.zeit.hyper",
+    "com.github.wez.wezterm",
+})
+_TERMINAL_APP_NAMES = frozenset({
+    "terminal", "iterm", "iterm2", "ghostty", "warp", "alacritty", "kitty", "hyper", "wezterm",
+})
+_TERMINAL_RAW_ACTIONS = frozenset({
+    "type", "type_text", "paste", "key", "keyboard", "shortcut",
+})
+
+
+def _mac_act_targets_terminal(arguments: Mapping[str, Any]) -> bool:
+    """Conservatively detect process-bound terminal targets for UI input risk.
+
+    Caller-supplied labels can only increase risk. Stable app/window handles are
+    resolved through the native target registry so a misleading window title or
+    app label cannot downgrade a terminal action to ordinary UI input.
+    """
+    app_names = {str(arguments.get("app") or "").strip().lower()}
+    bundle_ids = {str(arguments.get("target_bundle_id") or "").strip().lower()}
+    try:
+        from .native_targets import lookup_app, lookup_window
+
+        for key, lookup in (("window_handle", lookup_window), ("app_handle", lookup_app)):
+            handle = str(arguments.get(key) or "").strip()
+            if not handle:
+                continue
+            record = lookup(handle)
+            if not record:
+                continue
+            app_names.add(str(record.get("app_name") or "").strip().lower())
+            bundle_ids.add(str(record.get("bundle_id") or "").strip().lower())
+    except Exception:
+        # Invalid/expired handles fail closed later in mac_act. Risk resolution
+        # must never make the call more permissive because registry lookup failed.
+        pass
+
+    normalized_names = {name.removesuffix(".app") for name in app_names if name}
+    return bool(
+        _TERMINAL_BUNDLE_IDS.intersection(bundle_ids)
+        or _TERMINAL_APP_NAMES.intersection(normalized_names)
+    )
+
+
+def _mac_act_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    base = _caps(
+        Capability.UI_ACTION,
+        Capability.NATIVE_ACCESSIBILITY,
+        Capability.EXTERNAL_SIDE_EFFECT,
+    )
+    actions = arguments.get("actions")
+    action_types = {
+        str(action.get("type") or "").strip().lower().replace("-", "_")
+        for action in actions
+        if isinstance(action, Mapping)
+    } if isinstance(actions, (list, tuple)) else set()
+    if _mac_act_targets_terminal(arguments) and action_types.intersection(_TERMINAL_RAW_ACTIONS):
+        return RiskOverride(
+            capabilities=_caps(
+                Capability.READ,
+                Capability.LOCAL_WRITE,
+                Capability.PROCESS_CONTROL,
+                Capability.UI_ACTION,
+                Capability.NATIVE_ACCESSIBILITY,
+                Capability.EXTERNAL_SIDE_EFFECT,
+                Capability.NETWORK_ACCESS,
+                Capability.RAW_EXECUTION,
+            ),
+            destructive=True,
+            sensitive=True,
+        )
+    return RiskOverride(capabilities=base, destructive=True, sensitive=True)
+
+
 def _computer_plan_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     # The wrapper performs no host/browser action directly. Each allowlisted nested
     # step is dispatched through ObservedFastMCP.call_tool again, where profile,
@@ -387,7 +469,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     ),
     "mac_snapshot": _r("mac_snapshot", "macos", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY, Capability.BROWSER_CONTROL), sensitive=True),
     "mac_observe": _r("mac_observe", "accessibility", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY), sensitive=True),
-    "mac_act": _r("mac_act", "accessibility", _caps(Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True),
+    "mac_act": _r("mac_act", "accessibility", _caps(Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True, resolver=_mac_act_risk),
     "mac_app": _r("mac_app", "accessibility", _caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY), sensitive=True, resolver=_mac_app_risk),
     "computer_plan": _r("computer_plan", "meta", _caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True, resolver=_computer_plan_risk),
     # Local search and HTTP
@@ -565,6 +647,26 @@ def evaluate_profile(profile_name: str, risk: RiskAssessment) -> PolicyDecision:
         if not access_mode_allows(profile.access_mode_ceiling, risk.requested_access_mode):
             return PolicyDecision(False, profile.name, "profile_denied", "access_mode_exceeds_profile")
     return PolicyDecision(True, profile.name, "profile_allowed", "allowed")
+
+
+def tool_availability(profile_name: str, tool: str) -> dict[str, Any]:
+    """Describe whether a tool is statically available under a permission profile.
+
+    Tools with argument-sensitive risk resolvers stay discoverable and are marked
+    conditional; their effective risk is enforced again for every call.
+    """
+    entry = RISK_REGISTRY.get(tool)
+    if entry is None:
+        return {"available": False, "conditional": False, "reason": "unknown_tool"}
+    if entry.resolver is not None:
+        return {"available": True, "conditional": True, "reason": "argument_dependent"}
+    decision = evaluate_profile(profile_name, declared_risk(tool))
+    return {
+        "available": bool(decision.allowed),
+        "conditional": False,
+        "reason": decision.reason,
+        "denied_capabilities": list(decision.denied_capabilities),
+    }
 
 
 def permission_profile_name() -> str:

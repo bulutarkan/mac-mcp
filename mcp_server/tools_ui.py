@@ -3046,6 +3046,23 @@ def _perform_action(
     )
 
 
+def _native_action_effect_kind(action_type: str) -> str:
+    normalized = str(action_type or "").strip().lower().replace("-", "_")
+    if normalized in {"type", "type_text", "paste", "handoff_mail_text"}:
+        return "text_input"
+    if normalized in {"key", "keyboard", "shortcut"}:
+        return "keyboard_input"
+    if normalized in {"click", "double_click", "action", "accessibility_action", "menu"}:
+        return "activation"
+    if normalized == "scroll":
+        return "scroll"
+    if normalized == "drag":
+        return "drag"
+    if normalized in {"file_dialog", "handoff_mail_attachment"}:
+        return "file_transfer"
+    return "ui_mutation"
+
+
 def _element_window_index(element_id: Optional[str]) -> Optional[int]:
     if not element_id:
         return None
@@ -3116,6 +3133,7 @@ def _resolve_action_native_target(
             "window_index": target_window_index,
             "app_handle": (metadata or {}).get("app_handle") or effective_app_handle,
             "window_handle": effective_window_handle,
+            "bundle_id": (metadata or {}).get("bundle_id") or "",
         }, None
 
     if effective_app_handle:
@@ -3130,18 +3148,17 @@ def _resolve_action_native_target(
             "window_index": original_window_index,
             "app_handle": (metadata or {}).get("app_handle") or effective_app_handle,
             "window_handle": None,
+            "bundle_id": (metadata or {}).get("bundle_id") or "",
         }, None
 
-    target_app, resolve_error = _resolve_app(requested_app or stored_app, deadline)
-    if not target_app:
-        return None, {"ok": False, "error": resolve_error or "Could not resolve target application"}
-    return {
-        "app": target_app,
-        "pid": None,
-        "window_index": original_window_index,
-        "app_handle": None,
-        "window_handle": None,
-    }, None
+    return None, _native_target_error(
+        "NATIVE_TARGET_REQUIRED",
+        "Mutating mac_act actions require a stable process-bound target from mac_observe. "
+        "Pass observation_id with its app/window identity, or an explicit app_handle/window_handle; "
+        "implicit frontmost-app targeting is not allowed.",
+        retryable=True,
+        observe_again=True,
+    )
 
 
 def act_ui(
@@ -3153,6 +3170,7 @@ def act_ui(
     allow_risky: bool = False,
     app_handle: Optional[str] = None,
     window_handle: Optional[str] = None,
+    target_bundle_id: Optional[str] = None,
     preserve_focus: bool = True,
     state_mode: Optional[str] = None,
     include_screenshot: bool = False,
@@ -3242,6 +3260,19 @@ def act_ui(
                 target_error["failed_action_index"] = index
                 return target_error
             assert target is not None
+            actual_bundle_id = str(target.get("bundle_id") or "").strip()
+            expected_bundle_id = str(target_bundle_id or "").strip()
+            if expected_bundle_id and actual_bundle_id and expected_bundle_id.lower() != actual_bundle_id.lower():
+                mismatch = _native_target_error(
+                    "TARGET_BUNDLE_MISMATCH",
+                    "target_bundle_id does not match the process bound to app_handle/window_handle.",
+                    target_bundle_id=expected_bundle_id,
+                    resolved_bundle_id=actual_bundle_id,
+                    retryable=False,
+                )
+                mismatch["actions"] = results
+                mismatch["failed_action_index"] = index
+                return mismatch
             last_target = target
 
             if target.get("window_handle") and (
@@ -3527,6 +3558,9 @@ def act_ui(
                 "ok": ok,
                 "message": message,
                 "duration_ms": int((time.perf_counter() - started) * 1000),
+                "target_app": target.get("app"),
+                "target_bundle_id": target.get("bundle_id") or "",
+                "effect_kind": _native_action_effect_kind(action_type),
                 "app_handle": target.get("app_handle"),
                 "window_handle": target.get("window_handle"),
                 "resolved_window_index": target.get("window_index"),

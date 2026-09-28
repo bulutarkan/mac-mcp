@@ -1657,7 +1657,7 @@
         "operationId": "mac_act",
         "x-openai-isConsequential": true,
         "summary": "Act on the macOS UI",
-        "description": "Use observation_id and native app/window handles for re-resolved targeting. Post-action state defaults to compact delta mode; choose none/delta/full explicitly when needed. Background-safe AX actions preserve the current user focus by default; global-input actions temporarily focus the target and restore the prior app/window.",
+        "description": "Mutating native UI actions require a process-bound target from mac_observe; implicit frontmost-app targeting is rejected. Pass observation_id and the returned app/window handles, plus target_bundle_id when available. The actions array states the requested effect. Post-action state defaults to compact delta mode; choose none/delta/full explicitly when needed.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1690,6 +1690,10 @@
                   "window_handle": {
                     "type": "string",
                     "description": "Stable native window handle returned by mac_observe."
+                  },
+                  "target_bundle_id": {
+                    "type": "string",
+                    "description": "Expected macOS bundle identifier returned by mac_observe. When supplied, Mac MCP verifies it matches the process bound to app_handle/window_handle before any action."
                   },
                   "state_mode": {
                     "type": "string",

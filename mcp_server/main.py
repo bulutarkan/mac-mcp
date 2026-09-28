@@ -207,7 +207,9 @@ def create_app():
         instructions=(
             "You are connected to the user's local Mac through Mac MCP. "
             "Default home directory is the current user's home. "
-            "Use run_command for shell work and the dedicated macOS/browser/UI tools when they fit better. "
+            "Routing order: dedicated semantic tool first, then shell/file API, then browser DOM, with native UI only as a fallback. "
+            "Use open_app to launch apps, run_command for shell work, and file tools for filesystem work. "
+            "If a dedicated capability is unavailable or policy-denied, do not reproduce the same side effect through Terminal, AppleScript, or generic UI; policy denial is not a fallback reason. "
             "For browser visual grounding, prefer one browser_observe call with visual='viewport' or visual='full_page'; "
             "it can target a background tab and returns compact DOM plus MCP image content without focusing the browser. "
             "Prefer the smallest number of tool calls that safely completes and verifies the task."
@@ -928,8 +930,9 @@ def create_app():
         name="mac_act",
         title="Act on macOS UI",
         description=(
-            "Perform one or more bounded macOS UI actions using element_id values from "
-            "mac_observe. Post-action state_mode defaults to 'delta', returning only changed UI state; "
+            "Mutating native UI actions require a stable process-bound target from mac_observe; implicit frontmost-app targeting is rejected. "
+            "Pass observation_id plus app/app_handle/window_handle, and target_bundle_id from mac_observe when available, so target and effect are explicit. "
+            "Perform one or more bounded macOS UI actions using element_id values from mac_observe. Post-action state_mode defaults to 'delta', returning only changed UI state; "
             "use 'none' for no post-state or 'full' for a complete Accessibility refresh. Supported action types: "
             "click/double_click, scroll, type, paste, key/shortcut, drag, and "
             "accessibility_action/menu. Use observation_id to prevent stale element paths. "
@@ -953,6 +956,7 @@ def create_app():
         app: Optional[str] = None,
         app_handle: Optional[str] = None,
         window_handle: Optional[str] = None,
+        target_bundle_id: Optional[str] = None,
         state_mode: Optional[str] = None,
         include_screenshot: bool = False,
         return_state: Optional[bool] = None,
@@ -969,6 +973,7 @@ def create_app():
                 app=app,
                 app_handle=app_handle,
                 window_handle=window_handle,
+                target_bundle_id=target_bundle_id,
                 state_mode=state_mode,
                 include_screenshot=include_screenshot,
                 return_state=return_state,

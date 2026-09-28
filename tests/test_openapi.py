@@ -44,6 +44,9 @@ class OpenAPICoverageTests(unittest.TestCase):
         self.assertNotIn("/api/macos", schema["paths"])
         self.assertNotIn("/api/browser", schema["paths"])
         self.assertNotIn("/api/search", schema["paths"])
+        mac_act_schema = schema["paths"]["/api/mac_act"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+        self.assertIn("target_bundle_id", mac_act_schema["properties"])
+        self.assertIn("process-bound target", schema["paths"]["/api/mac_act"]["post"]["description"])
 
     def test_fastapi_router_publishes_the_same_operation_ids(self):
         app = FastAPI()

@@ -23,7 +23,8 @@ from .public_endpoint import (
     public_health_url,
     resolve_public_endpoint,
 )
-from .security import dashboard_token_path
+from .policy import evaluate_profile, permission_profile_name, resolve_risk
+from .security import dashboard_token_path, load_settings
 from .version import __version__
 
 SCHEMA_VERSION = 1
@@ -202,6 +203,38 @@ def _check_settings() -> CheckResult:
         "settings.json", "config", PASS, "SETTINGS_VALID",
         "Runtime settings JSON is valid.", started=started,
         details={"path": _safe_path(path), "mode": _mode(path), "top_level_keys": sorted(str(k) for k in payload)[:24]},
+    )
+
+
+def _check_permission_coherence() -> CheckResult:
+    started = time.perf_counter()
+    settings = load_settings()
+    profile = permission_profile_name()
+    _, shell_risk = resolve_risk("run_command", {"command": "pwd"})
+    decision = evaluate_profile(profile, shell_risk)
+    if settings.allow_shell and not decision.allowed:
+        return result(
+            "permissions.shell_profile", "config", WARN, "SHELL_FLAG_PROFILE_DENY",
+            "Shell is enabled by MCP_ALLOW_SHELL, but the active permission profile denies raw execution.",
+            started=started,
+            remediation="Use the trusted permission profile only when shell execution is intentionally required, or disable MCP_ALLOW_SHELL.",
+            details={
+                "profile": profile,
+                "allow_shell": True,
+                "effective_available": False,
+                "denied_capabilities": list(decision.denied_capabilities),
+            },
+        )
+    if not settings.allow_shell:
+        return result(
+            "permissions.shell_profile", "config", PASS, "SHELL_FEATURE_DISABLED",
+            "Shell execution is disabled by MCP_ALLOW_SHELL.", started=started,
+            details={"profile": profile, "allow_shell": False, "effective_available": False},
+        )
+    return result(
+        "permissions.shell_profile", "config", PASS, "SHELL_EFFECTIVELY_AVAILABLE",
+        "Shell execution is enabled and allowed by the active permission profile.", started=started,
+        details={"profile": profile, "allow_shell": True, "effective_available": True},
     )
 
 
@@ -759,6 +792,7 @@ def doctor_checks() -> list[CheckResult]:
         _check_runtime,
         _check_state_dir,
         _check_settings,
+        _check_permission_coherence,
         _check_disk,
         lambda: _binary_result("dependency.osascript", "osascript", required=True, purpose="macOS automation"),
         lambda: _binary_result("dependency.cliclick", "cliclick", required=False, purpose="coordinate/input fallback"),
