@@ -276,7 +276,7 @@ class ContextHandoffMailTests(unittest.TestCase):
                 self.settings,
                 [{"type": "handoff_mail_text", "element_id": "w1/1", "handoff_id": handoff["handoff_id"]}],
                 observation_id=obs_id, app_handle=meta["app_handle"], window_handle=win["window_handle"],
-                state_mode="none", preserve_focus=True,
+                state_mode="none", preserve_focus=False,
             )
         self.assertTrue(result["ok"])
         self.assertEqual("Roadmap32 Unique Draft", apply_mail.call_args.args[0])
@@ -304,7 +304,7 @@ class ContextHandoffMailTests(unittest.TestCase):
                 result = tools_ui.act_ui(
                     self.settings, [{"type": "handoff_mail_attachment", "handoff_id": handoff["handoff_id"]}],
                     app="Mail", app_handle=meta["app_handle"], window_handle=win["window_handle"],
-                    state_mode="none", preserve_focus=True,
+                    state_mode="none", preserve_focus=False,
                 )
             self.assertTrue(result["ok"])
             self.assertEqual("Roadmap32 Attachment Draft", attach.call_args.args[0])

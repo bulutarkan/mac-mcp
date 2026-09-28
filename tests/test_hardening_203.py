@@ -166,15 +166,38 @@ class CompactToolSurfaceTests(unittest.TestCase):
                 def hidden_tool(filter: str | None = None) -> dict:
                     return {"ok": True}
 
-                with patch.dict(os.environ, {}, clear=False):
+                with patch.dict(
+                    os.environ,
+                    {"MAC_MCP_PERMISSION_PROFILE": "standard"},
+                    clear=False,
+                ):
                     os.environ.pop("MAC_MCP_TOOL_PROFILE", None)
                     names = {tool.name for tool in await mcp.list_tools()}
-                self.assertIn("run_command", names)
+                self.assertNotIn("run_command", names)
                 self.assertIn("browser_find", names)
                 self.assertIn("browser_act", names)
                 self.assertNotIn("process_list", names)
 
-                with patch.dict(os.environ, {"MAC_MCP_TOOL_PROFILE": "full"}, clear=False):
+                with patch.dict(
+                    os.environ,
+                    {
+                        "MAC_MCP_TOOL_PROFILE": "full",
+                        "MAC_MCP_PERMISSION_PROFILE": "standard",
+                    },
+                    clear=False,
+                ):
+                    names = {tool.name for tool in await mcp.list_tools()}
+                self.assertNotIn("run_command", names)
+                self.assertIn("process_list", names)
+
+                with patch.dict(
+                    os.environ,
+                    {
+                        "MAC_MCP_TOOL_PROFILE": "full",
+                        "MAC_MCP_PERMISSION_PROFILE": "trusted",
+                    },
+                    clear=False,
+                ):
                     names = {tool.name for tool in await mcp.list_tools()}
                 self.assertIn("run_command", names)
                 self.assertIn("process_list", names)
