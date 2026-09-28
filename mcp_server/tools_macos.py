@@ -5,7 +5,7 @@ import os
 import signal
 import subprocess
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .security import Settings, truncate
 from .tool_cancellation import (
@@ -31,11 +31,19 @@ def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) 
             pass
 
 
-def _run_apple(script: str, timeout: int = 30) -> Dict[str, Any]:
+def _run_apple(
+    script: str,
+    timeout: int = 30,
+    args: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     timeout = max(1, min(int(timeout), 120))
     cancellation_checkpoint()
+    command = ["osascript", "-e", script]
+    if args is not None:
+        # Keep semantic data out of AppleScript source and out of osascript option parsing.
+        command.extend(["--", *[str(value) for value in args]])
     proc = subprocess.Popen(
-        ["osascript", "-e", script],
+        command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -69,10 +77,26 @@ def run_applescript(settings: Settings, script: str, timeout_s: int = 30) -> Dic
     return _run_apple(script, timeout_s)
 
 
+_NOTIFICATION_SCRIPT = r'''
+on run argv
+    set notificationTitle to item 1 of argv
+    set notificationMessage to item 2 of argv
+    set notificationSound to item 3 of argv
+    display notification notificationMessage with title notificationTitle sound name notificationSound
+end run
+'''
+
+
 def send_notification(settings: Settings, title: str, message: str, sound: str = "Pop") -> Dict[str, Any]:
-    """Send a macOS notification."""
-    script = f'display notification "{message}" with title "{title}" sound name "{sound}"'
-    return _run_apple(script)
+    """Send a macOS notification using argv-bound data, never source interpolation."""
+    return _run_apple(
+        _NOTIFICATION_SCRIPT,
+        args=[
+            "" if title is None else str(title),
+            "" if message is None else str(message),
+            "" if sound is None else str(sound),
+        ],
+    )
 
 
 def clipboard_get(settings: Settings) -> Dict[str, Any]:
@@ -154,14 +178,31 @@ def screenshot(settings: Settings, path: str = str(Path.home() / "Desktop" / "sc
         return {"ok": False, "error": str(e)}
 
 
+_REMINDER_SCRIPT = r'''
+on run argv
+    set reminderTitle to item 1 of argv
+    set reminderNotes to item 2 of argv
+    tell application "Reminders"
+        set r to make new reminder at end of default list
+        set name of r to reminderTitle
+        set body of r to reminderNotes
+    end tell
+end run
+'''
+
+
 def set_reminder(settings: Settings, title: str, notes: str = "",
                  due_date: Optional[str] = None) -> Dict[str, Any]:
     """Add a reminder to macOS Reminders app.
     due_date formats accepted: 'MM/DD/YYYY HH:MM AM/PM' or 'YYYY-MM-DD HH:MM'
     """
+    reminder_args = [
+        "" if title is None else str(title),
+        "" if notes is None else str(notes),
+    ]
     if due_date:
-        # Parse the date in Python, then pass explicit components to AppleScript
-        # to avoid locale-dependent AppleScript date parsing bugs.
+        # Parse in Python and embed only trusted integer components. User text still
+        # travels exclusively through AppleScript argv.
         from datetime import datetime
         parsed = None
         for fmt in ("%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d %I:%M %p"):
@@ -173,38 +214,28 @@ def set_reminder(settings: Settings, title: str, notes: str = "",
         if parsed is None:
             return {"ok": False, "error": f"Could not parse due_date: '{due_date}'. Use MM/DD/YYYY HH:MM AM/PM"}
 
-        # Build date using explicit AppleScript date components — locale-safe
-        month = parsed.month
-        day = parsed.day
-        year = parsed.year
-        hour = parsed.hour
-        minute = parsed.minute
-        second = parsed.second
+        script = f'''
+on run argv
+    set reminderTitle to item 1 of argv
+    set reminderNotes to item 2 of argv
+    tell application "Reminders"
+        set r to make new reminder at end of default list
+        set name of r to reminderTitle
+        set body of r to reminderNotes
+        set d to current date
+        set year of d to {parsed.year}
+        set month of d to {parsed.month}
+        set day of d to {parsed.day}
+        set hours of d to {parsed.hour}
+        set minutes of d to {parsed.minute}
+        set seconds of d to {parsed.second}
+        set remind me date of r to d
+    end tell
+end run
+'''
+        return _run_apple(script, args=reminder_args)
 
-        script = f"""
-tell application "Reminders"
-    set r to make new reminder at end of default list
-    set name of r to "{title}"
-    set body of r to "{notes}"
-    set d to current date
-    set year of d to {year}
-    set month of d to {month}
-    set day of d to {day}
-    set hours of d to {hour}
-    set minutes of d to {minute}
-    set seconds of d to {second}
-    set remind me date of r to d
-end tell
-"""
-    else:
-        script = f"""
-tell application "Reminders"
-    set r to make new reminder at end of default list
-    set name of r to "{title}"
-    set body of r to "{notes}"
-end tell
-"""
-    return _run_apple(script)
+    return _run_apple(_REMINDER_SCRIPT, args=reminder_args)
 
 
 def get_running_apps(settings: Settings) -> Dict[str, Any]:

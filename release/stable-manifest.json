@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "3f04d997c8da3d4db08525611ac6a7d9ad3609c5",
+  "base_commit": "5cda1ae84dc45e22f82487daadcf3ca1180ce426",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -475,8 +475,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/tools_macos.py",
-      "sha256": "869fe5e078efc358600c289b48fa9117708ca7d7dec34c5fb988a99b3804795a",
-      "size": 8032
+      "sha256": "72c6a6c603cbafafe6c4ad484e4f3ec4cf93f56b60f6415b4a547ae9d9b6f7fa",
+      "size": 9015
     },
     {
       "mode": "100644",
@@ -831,6 +831,12 @@
       "path": "tests/test_app_adapters.py",
       "sha256": "4f47181efed8bb07d56499ba2c51e55f8145bf4399fab07e6128061e1a8370e0",
       "size": 19047
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_applescript_argument_binding.py",
+      "sha256": "be23980ae59573de0850cf62a2fd87401552deee36bba886b0e04ee9912ef4c5",
+      "size": 4167
     },
     {
       "mode": "100644",
@@ -1259,10 +1265,10 @@
       "size": 3924
     }
   ],
-  "generated_at": "2026-09-28T12:55:05Z",
-  "payload_sha256": "86ddb6e5c8bd51df2b5b032be2c39ebdd9e999f3c752203928679fb9a84fc0b5",
+  "generated_at": "2026-09-28T15:59:10Z",
+  "payload_sha256": "1ee682cb9ef435e141e5159b43c57d38eafd5c8ede1cf8a67476d45b80de5ee0",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.6-r18",
+  "release_id": "stable-2.1.6-r19",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",
