@@ -67,6 +67,7 @@ from .tools_memory import memory_add, memory_search, memory_get, memory_update, 
 from .tools_lessons import lesson_consolidate, lesson_feedback, lesson_record, lesson_search
 from .tools_skills import skill_list, skill_search, skill_get, skill_register, skill_update_index
 from .menu_app_bootstrap import bootstrap_menu_app_and_legacy_state
+from .post_update_health import get_or_start_post_update_health_gate, pending_update_context
 from .data_guard import format_security_approval_question
 from .agent_admission import AdmissionError, normalize_claims as normalize_admission_claims
 
@@ -1932,10 +1933,33 @@ def create_app():
     mcp.session_manager.session_idle_timeout = 1800.0
     app.add_middleware(SecurityMiddleware)
 
-    async def health(_: Request) -> Response:
+    async def health(request: Request) -> Response:
         # Keep unauthenticated health probes deliberately non-sensitive; the
-        # public tunnel may expose this endpoint too.
-        return JSONResponse({"ok": True, "server": "mac-mcp"})
+        # public tunnel may expose this endpoint too. Nested public-endpoint
+        # checks use probe=basic to avoid recursively invoking the deep gate.
+        if request.query_params.get("probe") == "basic":
+            return JSONResponse({"ok": True, "server": "mac-mcp"})
+
+        update_context = pending_update_context()
+        if update_context is None:
+            return JSONResponse({"ok": True, "server": "mac-mcp"})
+
+        report = await get_or_start_post_update_health_gate(settings, update_context)
+        if report is None:
+            return JSONResponse(
+                {"ok": False, "server": "mac-mcp", "update_gate": "running"},
+                status_code=503,
+            )
+        healthy = bool(report.get("ok"))
+        return JSONResponse(
+            {
+                "ok": healthy,
+                "server": "mac-mcp",
+                "update_gate": "passed" if healthy else "failed",
+                "target": str(report.get("target_commit") or "")[:12],
+            },
+            status_code=200 if healthy else 503,
+        )
 
     app.router.routes.append(Route("/health", health, methods=["GET"]))
     app.router.routes.extend(create_chrome_background_bridge_routes())

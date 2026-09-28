@@ -625,6 +625,54 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertEqual(2, restart.call_count)
         self.assertEqual("restored", state["runtime_rollback"]["status"])
 
+    def test_post_update_gate_success_is_required_and_recorded(self):
+        _, repo, runtime, _old, target = self.make_fixture()
+        gate_report = {
+            "ok": True,
+            "status": "passed",
+            "target_commit": target,
+            "duration_ms": 321,
+            "critical_failures": [],
+            "warnings": ["companion.chrome_files"],
+        }
+        with patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health"), \
+                patch("mcp_server.update_helper._health_ok", return_value=True), \
+                patch("mcp_server.update_helper._target_supports_health_gate", return_value=True), \
+                patch("mcp_server.update_helper._read_health_gate_report", return_value=gate_report):
+            result = apply_update(repo, runtime, skip_deps=True)
+
+        self.assertTrue(result["updated"])
+        self.assertEqual(target, (self.update_dir / "deployed-commit").read_text(encoding="utf-8").strip())
+        self.assertEqual("passed", result["health_gate"]["status"])
+        self.assertEqual(321, result["health_gate"]["duration_ms"])
+        self.assertEqual(["companion.chrome_files"], result["health_gate"]["warnings"])
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual("completed", state["status"])
+        self.assertEqual("passed", state["health_gate"]["status"])
+
+    def test_post_update_gate_failure_rolls_back_and_reports_critical_check(self):
+        _, repo, runtime, old, target = self.make_fixture()
+        gate_report = {
+            "ok": False,
+            "status": "failed",
+            "target_commit": target,
+            "critical_failures": ["public.health"],
+            "warnings": [],
+        }
+        with patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health") as restart, \
+                patch("mcp_server.update_helper._health_ok", return_value=False), \
+                patch("mcp_server.update_helper._read_health_gate_report", return_value=gate_report):
+            with self.assertRaisesRegex(UpdateError, "Post-update health gate failed: public.health"):
+                apply_update(repo, runtime, skip_deps=True)
+
+        self.assertEqual(old, run("git", "rev-parse", "HEAD", cwd=repo))
+        self.assertEqual("VALUE = 'old'\n", (runtime / "mcp_server/main.py").read_text(encoding="utf-8"))
+        self.assertEqual(old, (self.update_dir / "deployed-commit").read_text(encoding="utf-8").strip())
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual("restored", state["repo_rollback"]["status"])
+        self.assertEqual("restored", state["runtime_rollback"]["status"])
+        self.assertEqual(2, restart.call_count)
+
     def test_health_failure_rolls_back_single_checkout_and_keeps_it_clean(self):
         root, repo, _runtime, old, _target = self.make_fixture()
         single = root / "single-health-failure"

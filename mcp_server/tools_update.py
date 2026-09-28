@@ -102,6 +102,10 @@ def mac_mcp_update(check_only: bool = True, branch: str = "main") -> Dict[str, A
         "update_id": update_id,
         "from_commit": info.deployed_commit,
         "to_commit": info.target_commit,
+        "repo": str(repo),
+        "runtime": str(runtime),
+        "release_id": info.release_id,
+        "release_version": info.release_version,
         "log_path": str(log_path),
         "status_path": str(status_path),
     }

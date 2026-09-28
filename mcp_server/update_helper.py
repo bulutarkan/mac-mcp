@@ -18,14 +18,14 @@ from typing import Iterable, Optional
 
 if __package__:
     from . import release_trust
-    from .update_state import backups_root, read_deployed_commit, write_deployed_commit, write_update_state
+    from .update_state import backups_root, read_deployed_commit, update_root, write_deployed_commit, write_update_state
 else:
     # The detached updater is launched as a staged standalone script. Keep the
     # staged sibling ahead of the repo and site-packages on sys.path so the
     # helper cannot accidentally load an unrelated update_state/release_trust module.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import release_trust
-    from update_state import backups_root, read_deployed_commit, write_deployed_commit, write_update_state
+    from update_state import backups_root, read_deployed_commit, update_root, write_deployed_commit, write_update_state
 
 DEFAULT_BRANCH = "main"
 DEFAULT_REMOTE = "origin"
@@ -593,6 +593,37 @@ def _health_ok(url: str, attempts: int = 30, delay: float = 0.4) -> bool:
     return False
 
 
+def _health_gate_report_path() -> Path:
+    return update_root() / "health-gate.json"
+
+
+def _read_health_gate_report() -> dict | None:
+    try:
+        payload = json.loads(_health_gate_report_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _target_supports_health_gate(repo: Path, target_commit: str) -> bool:
+    proc = _run(
+        ["git", "-C", str(repo), "cat-file", "-e", f"{target_commit}:mcp_server/post_update_health.py"],
+        check=False,
+        timeout=15,
+    )
+    return proc.returncode == 0
+
+
+def _gate_failure_summary(report: dict | None) -> str | None:
+    if not isinstance(report, dict):
+        return None
+    failures = report.get("critical_failures")
+    if not isinstance(failures, list) or not failures:
+        return None
+    safe = [str(item)[:120] for item in failures[:8]]
+    return ", ".join(safe)
+
+
 def _menu_app_candidates() -> list[Path]:
     explicit = os.getenv("MAC_MCP_APP_PATH", "").strip()
     candidates: list[Path] = []
@@ -958,14 +989,56 @@ def apply_update(
         else:
             print("[mac-mcp update] Dependencies unchanged.", flush=True)
 
+        health_gate_report: dict | None = None
+        target_has_health_gate = _target_supports_health_gate(repo_path, info.target_commit)
         if skip_restart:
             print("[mac-mcp update] Service restart skipped (test mode).", flush=True)
         else:
+            if target_has_health_gate:
+                _write_update_state(runtime_path, {
+                    "status": "health_gate",
+                    "from_commit": info.deployed_commit,
+                    "to_commit": info.target_commit,
+                    "repo": str(repo_path),
+                    "runtime": str(runtime_path),
+                    "release_id": verified_release.release_id,
+                    "release_version": verified_release.version,
+                })
             print("[mac-mcp update] Restarting Mac MCP...", flush=True)
             health_url = _restart_service(runtime_path, launchd_label)
             if not _health_ok(health_url):
+                health_gate_report = _read_health_gate_report()
+                gate_summary = None
+                if (
+                    isinstance(health_gate_report, dict)
+                    and str(health_gate_report.get("target_commit") or "").lower() == info.target_commit.lower()
+                ):
+                    gate_summary = _gate_failure_summary(health_gate_report)
+                if gate_summary:
+                    raise UpdateError(f"Post-update health gate failed: {gate_summary}")
                 raise UpdateError(f"Health check failed after restart: {health_url}")
             print(f"[mac-mcp update] Health check passed: {health_url}", flush=True)
+
+            if target_has_health_gate:
+                health_gate_report = _read_health_gate_report()
+                if not isinstance(health_gate_report, dict):
+                    raise UpdateError("Post-update health gate report was not produced by the target runtime.")
+                report_target = str(health_gate_report.get("target_commit") or "").lower()
+                if report_target != info.target_commit.lower():
+                    raise UpdateError(
+                        "Post-update health gate report does not match the target release "
+                        f"({_short(report_target)} != {_short(info.target_commit)})."
+                    )
+                if health_gate_report.get("ok") is not True:
+                    gate_summary = _gate_failure_summary(health_gate_report) or "unknown critical check"
+                    raise UpdateError(f"Post-update health gate failed: {gate_summary}")
+                warnings = health_gate_report.get("warnings")
+                warning_count = len(warnings) if isinstance(warnings, list) else 0
+                print(
+                    f"[mac-mcp update] Post-update health gate passed "
+                    f"({warning_count} warning(s)).",
+                    flush=True,
+                )
 
         _write_state_commit(runtime_path, info.target_commit)
         result = {
@@ -978,6 +1051,15 @@ def apply_update(
             "release_version": verified_release.version,
             "release_payload_sha256": verified_release.payload_sha256,
             "release_signer_fingerprint": verified_release.signer_fingerprint,
+            "health_gate": (
+                {
+                    "status": health_gate_report.get("status"),
+                    "duration_ms": health_gate_report.get("duration_ms"),
+                    "warnings": health_gate_report.get("warnings", []),
+                }
+                if isinstance(health_gate_report, dict)
+                else None
+            ),
         }
         _write_update_state(runtime_path, {"status": "completed", **result})
         print(f"[mac-mcp update] Update complete: {_short(info.deployed_commit)} -> {_short(info.target_commit)}", flush=True)
@@ -985,6 +1067,12 @@ def apply_update(
     except Exception as exc:
         message = str(exc)
         print(f"[mac-mcp update] ERROR: {message}", flush=True)
+        _write_update_state(runtime_path, {
+            "status": "rolling_back",
+            "error": message,
+            "from_commit": info.deployed_commit,
+            "to_commit": info.target_commit,
+        })
         if merge_completed and post_merge_head is None:
             post_merge_head = info.target_commit
             repo_head_moved = info.target_commit != pre_update_head
