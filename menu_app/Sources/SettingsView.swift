@@ -262,6 +262,18 @@ struct SettingsView: View {
                             .padding(.top, 5)
                         }
 
+                        if semantics.profileWasNormalized == true,
+                           let configured = semantics.normalizedFromProfile ?? semantics.configuredProfile {
+                            Label(
+                                "Configured \(profileDisplayName(configured)) is not a global server preset. "
+                                + "Mac MCP is safely using \(profileDisplayName(semantics.activeProfile)).",
+                                systemImage: "exclamationmark.shield"
+                            )
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+
                         GroupBox("Profiles") {
                             VStack(spacing: 4) {
                                 ForEach(semantics.profiles) { item in

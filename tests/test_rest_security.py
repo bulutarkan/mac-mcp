@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 
 import mcp_server.rest_routes as rest_routes
 from mcp_server.observability import TelemetryManager
+from mcp_server.policy import PolicyContext
+from mcp_server.policy_scope import ResourceScope
 from mcp_server.security import load_settings
 from mcp_server.security_context import SecurityContextManager
 
@@ -57,7 +59,13 @@ class RestSecurityBoundaryTests(unittest.TestCase):
             self.assertEqual(200, html.status_code, html.text)
 
     def test_rest_web_to_host_crossing_requires_source_bound_approval_for_developer_profile(self) -> None:
-        with patch.dict("os.environ", {"MAC_MCP_PERMISSION_PROFILE": "developer"}, clear=False):
+        context = PolicyContext(
+            profile="developer",
+            actor="agent:rest-security-test",
+            agent_id="agt_rest_security",
+            scope=ResourceScope(path_roots=("/tmp",), access_mode="workspace_write"),
+        )
+        with patch.object(rest_routes, "resolve_request_identity", return_value=("cred_rest_security", context)):
             self._establish_untrusted_page()
             with patch.object(rest_routes, "run_command") as run:
                 run.return_value = {"ok": True, "stdout": "unexpected"}

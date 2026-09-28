@@ -17,7 +17,7 @@ from starlette.routing import Route
 from .chrome_background_bridge import chrome_background_bridge
 from .foreground_guard import foreground_authorization
 from .observability import TelemetryManager, sanitize_value
-from .policy import PROFILES, RISK_REGISTRY, permission_semantics
+from .policy import GLOBAL_PROFILE_NAMES, RISK_REGISTRY, is_global_permission_profile, permission_semantics
 from .security import Settings, dashboard_authorized
 from .security_context import SecurityContextManager
 from .steering import (
@@ -190,6 +190,9 @@ def _int_query(request: Request, key: str, default: int) -> int:
 
 
 def _persist_permission_profile(profile: str, env_file: Path = PERMISSION_ENV_FILE) -> None:
+    profile = str(profile or "").strip().lower()
+    if not is_global_permission_profile(profile):
+        raise ValueError(f"permission profile is not a global server preset: {profile or '<empty>'}")
     key = "MAC_MCP_PERMISSION_PROFILE"
     env_file.parent.mkdir(parents=True, exist_ok=True)
     existing = env_file.read_text(encoding="utf-8") if env_file.exists() else ""
@@ -310,11 +313,14 @@ def create_dashboard_routes(
         if not isinstance(body, dict):
             body = {}
         profile = str(body.get("profile") or "").strip().lower()
-        if profile not in PROFILES:
+        if profile not in GLOBAL_PROFILE_NAMES:
             return JSONResponse({
                 "ok": False,
                 "error": "invalid_permission_profile",
-                "allowed_profiles": list(PROFILES),
+                "allowed_profiles": list(GLOBAL_PROFILE_NAMES),
+                "profile_scope": (
+                    "delegated_only" if profile in {"developer", "browser_only"} else "unknown"
+                ),
             }, status_code=400)
         try:
             _persist_permission_profile(profile)

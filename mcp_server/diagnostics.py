@@ -25,7 +25,13 @@ from .public_endpoint import (
     public_health_url,
     resolve_public_endpoint,
 )
-from .policy import evaluate_profile, permission_profile_name, resolve_risk
+from .policy import (
+    configured_permission_profile_name,
+    evaluate_profile,
+    permission_profile_name,
+    permission_profile_scope,
+    resolve_risk,
+)
 from .security import dashboard_token_path, load_settings
 from .version import __version__
 from .update_state import read_deployed_commit
@@ -270,6 +276,44 @@ def _check_settings() -> CheckResult:
         "settings.json", "config", PASS, "SETTINGS_VALID",
         "Runtime settings JSON is valid.", started=started,
         details={"path": _safe_path(path), "mode": _mode(path), "top_level_keys": sorted(str(k) for k in payload)[:24]},
+    )
+
+
+def _check_permission_profile_scope() -> CheckResult:
+    started = time.perf_counter()
+    configured = configured_permission_profile_name()
+    active = permission_profile_name()
+    scope = permission_profile_scope(configured)
+    details = {
+        "configured_profile": configured,
+        "active_profile": active,
+        "configured_profile_scope": scope,
+        "normalized": configured != active,
+        "profile_source": "env" if os.getenv("MAC_MCP_PERMISSION_PROFILE") is not None else "default",
+    }
+    if configured != active:
+        reason = (
+            "GLOBAL_PROFILE_DELEGATED_ONLY"
+            if scope == "delegated_only"
+            else "GLOBAL_PROFILE_INVALID"
+        )
+        return result(
+            "permissions.profile_scope", "config", WARN, reason,
+            (
+                f"Configured permission profile '{configured}' is not a global server preset; "
+                f"Mac MCP is using '{active}' instead."
+            ),
+            started=started,
+            remediation=(
+                "Choose trusted, standard, or read_only as the global permission profile. "
+                "Use developer/browser_only only through scoped delegated-agent credentials."
+            ),
+            details=details,
+        )
+    return result(
+        "permissions.profile_scope", "config", PASS, "GLOBAL_PROFILE_VALID",
+        f"Global permission profile '{active}' is valid.", started=started,
+        details=details,
     )
 
 
@@ -875,6 +919,7 @@ def doctor_checks() -> list[CheckResult]:
         _check_cli_installation,
         _check_state_dir,
         _check_settings,
+        _check_permission_profile_scope,
         _check_permission_coherence,
         _check_disk,
         lambda: _binary_result("dependency.osascript", "osascript", required=True, purpose="macOS automation"),

@@ -569,6 +569,19 @@ struct MenuBarView: View {
                                 .font(.caption2.weight(.medium)).foregroundStyle(.orange)
                                 .fixedSize(horizontal: false, vertical: true)
 
+                            if semantics.profileWasNormalized == true,
+                               let configured = semantics.normalizedFromProfile ?? semantics.configuredProfile {
+                                Divider()
+                                Label(
+                                    "Configured \(profileDisplayName(configured)) is delegated-only or invalid. "
+                                    + "Using \(profileDisplayName(semantics.activeProfile)).",
+                                    systemImage: "exclamationmark.shield"
+                                )
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                            }
+
                             Divider()
                             Text("Preset overview").font(.caption.weight(.semibold))
                             ForEach(semantics.profiles) { item in

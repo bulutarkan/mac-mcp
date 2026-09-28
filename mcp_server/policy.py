@@ -595,7 +595,8 @@ PROFILES: dict[str, PermissionProfile] = {
     ),
 }
 
-_GLOBAL_PROFILE_NAMES = ("trusted", "standard", "read_only")
+GLOBAL_PROFILE_NAMES = ("trusted", "standard", "read_only")
+DELEGATED_PROFILE_NAMES = tuple(name for name in PROFILES if name not in GLOBAL_PROFILE_NAMES)
 
 
 def declared_risk(tool: str) -> RiskAssessment:
@@ -669,8 +670,26 @@ def tool_availability(profile_name: str, tool: str) -> dict[str, Any]:
     }
 
 
-def permission_profile_name() -> str:
+def configured_permission_profile_name() -> str:
     return (os.getenv("MAC_MCP_PERMISSION_PROFILE", "standard").strip().lower() or "standard")
+
+
+def permission_profile_scope(profile_name: str) -> str:
+    name = str(profile_name or "").strip().lower()
+    if name in GLOBAL_PROFILE_NAMES:
+        return "global"
+    if name in DELEGATED_PROFILE_NAMES:
+        return "delegated_only"
+    return "unknown"
+
+
+def is_global_permission_profile(profile_name: str) -> bool:
+    return str(profile_name or "").strip().lower() in GLOBAL_PROFILE_NAMES
+
+
+def permission_profile_name() -> str:
+    configured = configured_permission_profile_name()
+    return configured if configured in GLOBAL_PROFILE_NAMES else "standard"
 
 
 def permission_semantics(profile_name: Optional[str] = None) -> dict[str, Any]:
@@ -681,10 +700,15 @@ def permission_semantics(profile_name: Optional[str] = None) -> dict[str, Any]:
     a future client/server/external guard can be represented without changing the
     capability contract.
     """
-    active_name = str(profile_name or permission_profile_name()).strip().lower() or "trusted"
+    configured_name = (
+        str(profile_name).strip().lower() if profile_name is not None
+        else configured_permission_profile_name()
+    ) or "standard"
+    configured_scope = permission_profile_scope(configured_name)
+    active_name = configured_name if configured_name in GLOBAL_PROFILE_NAMES else "standard"
     all_capabilities = frozenset(Capability)
     profiles: list[dict[str, Any]] = []
-    for name in _GLOBAL_PROFILE_NAMES:
+    for name in GLOBAL_PROFILE_NAMES:
         profile = PROFILES[name]
         allowed = all_capabilities if profile.allowed_capabilities is None else profile.allowed_capabilities
         denied = all_capabilities.difference(allowed)
@@ -703,7 +727,14 @@ def permission_semantics(profile_name: Optional[str] = None) -> dict[str, Any]:
         })
     return {
         "active_profile": active_name,
+        "configured_profile": configured_name,
+        "configured_profile_scope": configured_scope,
+        "profile_was_normalized": configured_name != active_name,
+        "normalized_from_profile": configured_name if configured_name != active_name else None,
         "known_profile": active_name in PROFILES,
+        "configured_profile_known": configured_name in PROFILES,
+        "global_profile_names": list(GLOBAL_PROFILE_NAMES),
+        "delegated_profile_names": list(DELEGATED_PROFILE_NAMES),
         "capability_enforcement": "Mac MCP server policy",
         "approval_contract": "separate_from_capability_enforcement",
         "ask_confirmation_is_automatic_gate": False,

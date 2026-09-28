@@ -95,6 +95,12 @@ struct PermissionProfileInfo: Decodable, Identifiable, Equatable {
 
 struct SecuritySemanticsEnvelope: Decodable, Equatable {
     let activeProfile: String
+    let configuredProfile: String?
+    let configuredProfileScope: String?
+    let profileWasNormalized: Bool?
+    let normalizedFromProfile: String?
+    let globalProfileNames: [String]?
+    let delegatedProfileNames: [String]?
     let knownProfile: Bool
     let capabilityEnforcement: String
     let approvalContract: String
@@ -105,6 +111,12 @@ struct SecuritySemanticsEnvelope: Decodable, Equatable {
     enum CodingKeys: String, CodingKey {
         case profiles
         case activeProfile = "active_profile"
+        case configuredProfile = "configured_profile"
+        case configuredProfileScope = "configured_profile_scope"
+        case profileWasNormalized = "profile_was_normalized"
+        case normalizedFromProfile = "normalized_from_profile"
+        case globalProfileNames = "global_profile_names"
+        case delegatedProfileNames = "delegated_profile_names"
         case knownProfile = "known_profile"
         case capabilityEnforcement = "capability_enforcement"
         case approvalContract = "approval_contract"

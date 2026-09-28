@@ -90,11 +90,16 @@ class RiskAndScopeTests(unittest.TestCase):
         self.assertTrue(semantics["known_profile"])
         self.assertTrue(next(item for item in semantics["profiles"] if item["name"] == "read_only")["active"])
 
-    def test_unknown_profile_is_reported_without_inventing_approval(self) -> None:
+    def test_unknown_global_profile_normalizes_without_inventing_approval(self) -> None:
         semantics = permission_semantics("approval_heavy")
-        self.assertEqual("approval_heavy", semantics["active_profile"])
-        self.assertFalse(semantics["known_profile"])
-        self.assertFalse(any(item["active"] for item in semantics["profiles"]))
+        self.assertEqual("approval_heavy", semantics["configured_profile"])
+        self.assertEqual("unknown", semantics["configured_profile_scope"])
+        self.assertEqual("standard", semantics["active_profile"])
+        self.assertTrue(semantics["profile_was_normalized"])
+        self.assertEqual("approval_heavy", semantics["normalized_from_profile"])
+        self.assertTrue(semantics["known_profile"])
+        self.assertFalse(semantics["configured_profile_known"])
+        self.assertTrue(next(item for item in semantics["profiles"] if item["name"] == "standard")["active"])
 
     def test_scope_enforces_path_browser_and_job(self) -> None:
         scope = ResourceScope(
