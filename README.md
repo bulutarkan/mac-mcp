@@ -6,6 +6,24 @@
 
 Mac MCP is a local macOS control server for AI agents. It exposes your Mac through a native MCP endpoint and a REST/OpenAPI surface, with shell, files, browser automation, macOS UI control, delegated OpenCode/Codex agents, memory, Agent Skills, voice interaction, self-update tooling, and a local operations dashboard.
 
+## Talk to ChatGPT. Let it work on your Mac.
+
+Mac MCP is model-agnostic and works with MCP-compatible AI clients. But ChatGPT is an especially natural way to use it.
+
+ChatGPT Live can use plugins during voice conversations. With Mac MCP connected, the same ChatGPT conversation you already use can become a control surface for your actual Mac. You can talk naturally while Mac MCP handles the execution: browsing in Safari or Chrome, working with files, opening apps, running commands, and coordinating agents.
+
+Instead of moving every task into a separate coding-agent session, you can keep the interaction in ChatGPT and simply talk. From your phone, you can ask ChatGPT to work on a reachable Mac somewhere else. From your desktop, you can keep talking while Mac MCP works in the background without taking over the computer.
+
+For example:
+
+- "Check my Reddit replies, answer the important ones, and close the browser when you are done."
+- "Go through the repo, run the tests, and tell me what is broken."
+- "Find three hotels for next weekend, compare the reviews, and save the shortlist on my Mac."
+
+**ChatGPT is the conversation. Mac MCP is the execution layer.**
+
+This is a powerful combination, not a Mac MCP-only voice feature. ChatGPT provides the natural voice interface and reasoning experience; Mac MCP gives it a local execution layer on macOS. Existing ChatGPT plugin permissions, approvals, and usage limits still apply, and Mac MCP keeps its normal permission, background-control, outcome-safety, and undo boundaries.
+
 > **Security:** Mac MCP can execute commands, read/write files, and control desktop apps. Keep MCP authentication enabled whenever the service is reachable outside localhost and expose it only to clients you trust. The operations dashboard is loopback-only **and** requires a separate per-user dashboard Bearer token; localhost is machine-local transport, not a same-user sandbox.
 
 **Secure bootstrap defaults:** missing configuration fails closed. Without explicit settings, MCP authentication is required, shell execution and HTTP/browser host allowlists are disabled, and the global permission profile defaults to `standard` rather than `trusted`. A normal installer run generates the API key and writes the intended settings explicitly. Deliberate `MCP_ALLOW_NO_AUTH=true` is accepted only on loopback with no managed public endpoint; non-loopback or tunneled no-auth startup is refused.
@@ -340,9 +358,17 @@ http://127.0.0.1:8000/mcp
 
 A custom port can be supplied through `MAC_MCP_PORT` or CLI flags.
 
-## Voice interaction
+## Voice
 
-`ask_user_voice` speaks a short prompt, records the local answer, transcribes it with Groq Whisper, and returns the transcript to the calling agent.
+### ChatGPT Voice as the interface
+
+When Mac MCP is connected as a ChatGPT plugin, supported ChatGPT Voice experiences can use it during a live conversation. That lets you speak to ChatGPT naturally while Mac MCP carries out supported work on the Mac.
+
+Mac MCP does not replace or modify ChatGPT Voice. It provides the execution layer behind the conversation.
+
+### Local voice interaction
+
+`ask_user_voice` is a separate Mac MCP capability. It lets the agent speak a short prompt through the Mac, record the local answer, transcribe it with Groq Whisper, and continue the task with the returned transcript.
 
 The menu app manages:
 
