@@ -110,6 +110,37 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertEqual(row.status, "fail")
             self.assertEqual(row.reason_code, "SETTINGS_INVALID_JSON")
 
+    def test_ngrok_dependency_uses_same_env_resolver_as_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            binary = Path(td) / "ngrok"
+            binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            os.chmod(binary, 0o755)
+            with patch.dict(os.environ, {"NGROK_BIN": str(binary)}, clear=False):
+                row = diagnostics._check_ngrok_dependency().to_dict()
+        self.assertEqual("pass", row["status"])
+        self.assertEqual("NGROK_AVAILABLE", row["reason_code"])
+        self.assertEqual("env:NGROK_BIN", row["details"]["source"])
+        self.assertTrue(row["details"]["path"].endswith("/ngrok"))
+
+    def test_cloudflared_dependency_uses_same_env_resolver_as_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            binary = Path(td) / "cloudflared"
+            binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            os.chmod(binary, 0o755)
+            with patch.dict(os.environ, {"CLOUDFLARED_BIN": str(binary)}, clear=False):
+                row = diagnostics._check_cloudflared_dependency().to_dict()
+        self.assertEqual("pass", row["status"])
+        self.assertEqual("env:CLOUDFLARED_BIN", row["details"]["source"])
+
+    def test_permission_coherence_reports_profile_provenance(self) -> None:
+        with patch.dict(os.environ, {
+            "MAC_MCP_PERMISSION_PROFILE": "trusted",
+            "MCP_ALLOW_SHELL": "true",
+        }, clear=False):
+            row = diagnostics._check_permission_coherence().to_dict()
+        self.assertEqual("trusted", row["details"]["profile"])
+        self.assertEqual("env", row["details"]["profile_source"])
+
     def test_doctor_cli_json_is_machine_readable(self) -> None:
         fake = diagnostics.build_report([
             diagnostics.result("fixture", "test", "pass", "FIXTURE_OK", "Fixture passed.")

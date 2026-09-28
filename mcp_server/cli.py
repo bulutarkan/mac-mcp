@@ -23,6 +23,11 @@ from .public_endpoint import (
     write_cloudflare_token,
 )
 from .runtime_settings import server_setting
+from .runtime_resolver import (
+    ngrok_http_endpoint_flag,
+    resolve_cloudflared_binary,
+    resolve_ngrok_binary,
+)
 from .update_helper import UpdateError, apply_update, check_update, format_check
 
 APP_MODULE = "mcp_server.main:app"
@@ -242,31 +247,11 @@ def _public_endpoint_config(args: argparse.Namespace):
 
 
 def _resolve_ngrok_binary(configured: str | None = None) -> str | None:
-    candidates = [
-        configured,
-        os.getenv("NGROK_BIN"),
-        shutil.which("ngrok"),
-        "/opt/homebrew/bin/ngrok",
-        "/usr/local/bin/ngrok",
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
-            return str(Path(candidate))
-    return None
+    return resolve_ngrok_binary(configured).path
 
 
 def _resolve_cloudflared_binary(configured: str | None = None) -> str | None:
-    candidates = [
-        configured,
-        os.getenv("CLOUDFLARED_BIN"),
-        shutil.which("cloudflared"),
-        "/opt/homebrew/bin/cloudflared",
-        "/usr/local/bin/cloudflared",
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
-            return str(Path(candidate))
-    return None
+    return resolve_cloudflared_binary(configured).path
 
 
 def _launchctl_binary() -> str:
@@ -516,7 +501,11 @@ def _start_ngrok(args: argparse.Namespace) -> int:
 
     public_url = f"https://{domain}"
     target = str(args.port)
-    cmd = [ngrok_path, "http", f"--domain={domain}", target]
+    endpoint_flag = ngrok_http_endpoint_flag(ngrok_path)
+    if endpoint_flag == "--url":
+        cmd = [ngrok_path, "http", "--url", public_url, target]
+    else:
+        cmd = [ngrok_path, "http", f"--domain={domain}", target]
     log = NGROK_LOG_FILE.open("a", encoding="utf-8")
     proc = subprocess.Popen(
         cmd,

@@ -12,7 +12,7 @@ from typing import Any, Dict
 
 from fastapi import HTTPException, status
 
-from .update_helper import UpdateError, check_update, resolve_paths
+from .update_helper import UpdateError, check_update, resolve_paths, secure_bootstrap_update_blocker
 from .update_state import update_state_path
 
 
@@ -58,6 +58,16 @@ def mac_mcp_update(check_only: bool = True, branch: str = "main") -> Dict[str, A
             "blocked": True,
             "reason": "repository_dirty",
             "message": "Update blocked because the repository has local changes. Commit or stash them first.",
+        })
+        return payload
+    bootstrap_blocker = secure_bootstrap_update_blocker(runtime) if info.update_available else None
+    if bootstrap_blocker is not None:
+        payload.update({
+            "ok": False,
+            "blocked": True,
+            "reason": "secure_bootstrap_migration_required",
+            "migration": bootstrap_blocker,
+            "message": str(bootstrap_blocker.get("summary") or "Secure bootstrap migration is required before updating."),
         })
         return payload
     if check_only:

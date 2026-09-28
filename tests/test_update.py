@@ -23,6 +23,135 @@ def run(*args: str, cwd: Path | None = None) -> str:
     return subprocess.check_output(list(args), cwd=str(cwd) if cwd else None, text=True).strip()
 
 
+class SecureBootstrapMigrationTests(unittest.TestCase):
+    def _runtime(self, env_text: str) -> tuple[Path, Path]:
+        root = Path(tempfile.mkdtemp(prefix="mac-mcp-secure-migration-test-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        runtime = root / "runtime"
+        (runtime / "mcp_server").mkdir(parents=True)
+        (runtime / "mcp_server/.env").write_text(env_text, encoding="utf-8")
+        settings = root / "settings.json"
+        return runtime, settings
+
+    def test_legacy_no_auth_ngrok_is_blocked_without_exposing_secret(self):
+        runtime, settings = self._runtime(
+            "MCP_ALLOW_NO_AUTH=true\nMCP_API_KEY=\nNGROK_DOMAIN=legacy.example.com\n"
+        )
+        with patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(settings)}, clear=True):
+            blocker = update_helper_module.secure_bootstrap_update_blocker(runtime)
+        self.assertIsNotNone(blocker)
+        assert blocker is not None
+        self.assertEqual("LEGACY_NO_AUTH_PUBLIC_ENDPOINT", blocker["code"])
+        self.assertEqual("ngrok", blocker["public_exposure"])
+        self.assertFalse(blocker["api_key_configured"])
+        rendered = json.dumps(blocker)
+        self.assertNotIn("token_urlsafe", rendered)
+        self.assertIn("MCP_ALLOW_NO_AUTH=false", blocker["remediation"])
+        self.assertIn("Authorization: Bearer <MCP_API_KEY>", blocker["remediation"])
+
+    def test_legacy_no_auth_public_mode_from_settings_is_blocked(self):
+        runtime, settings = self._runtime("MCP_ALLOW_NO_AUTH=true\nMCP_API_KEY=\n")
+        settings.write_text(json.dumps({"server": {"public_endpoint_mode": "cloudflare"}}), encoding="utf-8")
+        with patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(settings)}, clear=True):
+            blocker = update_helper_module.secure_bootstrap_update_blocker(runtime)
+        self.assertIsNotNone(blocker)
+        assert blocker is not None
+        self.assertEqual("cloudflare", blocker["public_exposure"])
+        self.assertTrue(str(blocker["exposure_source"]).startswith("settings:"))
+
+    def test_explicit_local_only_no_auth_remains_compatible(self):
+        runtime, settings = self._runtime("MCP_ALLOW_NO_AUTH=true\nMCP_API_KEY=\nNGROK_DOMAIN=\n")
+        settings.write_text(json.dumps({"server": {"public_endpoint_mode": "none"}}), encoding="utf-8")
+        with patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(settings)}, clear=True):
+            blocker = update_helper_module.secure_bootstrap_update_blocker(runtime)
+        self.assertIsNone(blocker)
+
+    def test_missing_key_with_auth_required_is_blocked_before_update(self):
+        runtime, settings = self._runtime("MCP_ALLOW_NO_AUTH=false\nMCP_API_KEY=\n")
+        with patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(settings)}, clear=True):
+            blocker = update_helper_module.secure_bootstrap_update_blocker(runtime)
+        self.assertIsNotNone(blocker)
+        assert blocker is not None
+        self.assertEqual("MISSING_AUTH_CREDENTIAL", blocker["code"])
+
+    def test_authenticated_public_endpoint_is_compatible(self):
+        runtime, settings = self._runtime(
+            "MCP_ALLOW_NO_AUTH=false\nMCP_API_KEY=this-is-a-long-test-key-not-a-secret\nNGROK_DOMAIN=legacy.example.com\n"
+        )
+        with patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(settings)}, clear=True):
+            blocker = update_helper_module.secure_bootstrap_update_blocker(runtime)
+        self.assertIsNone(blocker)
+
+    def test_apply_update_blocks_before_runtime_merge_and_preserves_config(self):
+        runtime, settings = self._runtime(
+            "MCP_ALLOW_NO_AUTH=true\nMCP_API_KEY=\nNGROK_DOMAIN=legacy.example.com\n"
+        )
+        repo = runtime.parent / "repo"
+        repo.mkdir()
+        original_env = (runtime / "mcp_server/.env").read_bytes()
+        update_dir = runtime.parent / "update-state"
+        info = SimpleNamespace(
+            repo=str(repo), runtime=str(runtime), branch="main", remote="origin",
+            deployed_commit="a" * 40, repo_commit="a" * 40, target_commit="b" * 40,
+            behind_by=1, update_available=True, dirty=False, release_verified=True,
+            release_id="test-stable", release_version="1.0.0",
+            release_payload_sha256="c" * 64, release_signer_fingerprint="SHA256:test",
+            release_file_count=4, release_artifact_count=0,
+            branch_tip_commit="b" * 40, unverified_ahead=0,
+        )
+        verified = SimpleNamespace(
+            release_id="test-stable", version="1.0.0", payload_sha256="c" * 64,
+            signer_fingerprint="SHA256:test",
+        )
+        with patch.dict(os.environ, {
+            "MAC_MCP_SETTINGS_PATH": str(settings),
+            "MAC_MCP_UPDATE_DIR": str(update_dir),
+        }, clear=True), \
+                patch("mcp_server.update_helper.check_update", return_value=info), \
+                patch("mcp_server.update_helper.release_trust.verify_release_commit", return_value=verified), \
+                patch("mcp_server.update_helper._prepare_runtime_merge") as prepare_merge:
+            with self.assertRaisesRegex(UpdateError, "Update blocked before runtime swap"):
+                apply_update(repo=repo, runtime=runtime, skip_restart=True)
+        prepare_merge.assert_not_called()
+        self.assertEqual(original_env, (runtime / "mcp_server/.env").read_bytes())
+        state = json.loads((update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual("blocked", state["status"])
+        self.assertEqual("secure_bootstrap_migration_required", state["reason"])
+        self.assertEqual("LEGACY_NO_AUTH_PUBLIC_ENDPOINT", state["migration"]["code"])
+
+    def test_tool_update_returns_blocker_before_detached_process(self):
+        root = Path(tempfile.mkdtemp(prefix="mac-mcp-update-blocker-test-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        repo = root / "repo"
+        runtime = root / "runtime"
+        repo.mkdir()
+        runtime.mkdir()
+        info = SimpleNamespace(
+            repo=str(repo), runtime=str(runtime), branch="main", remote="origin",
+            deployed_commit="a" * 40, target_commit="b" * 40, behind_by=1,
+            update_available=True, dirty=False, release_verified=True,
+            release_id="test-stable", release_version="1.0.0",
+            release_payload_sha256="c" * 64, release_signer_fingerprint="SHA256:test",
+            release_file_count=4, release_artifact_count=0,
+            branch_tip_commit="b" * 40, unverified_ahead=0,
+        )
+        blocker = {
+            "reason": "secure_bootstrap_migration_required",
+            "code": "LEGACY_NO_AUTH_PUBLIC_ENDPOINT",
+            "summary": "Update blocked before runtime swap.",
+            "remediation": "Configure authentication first.",
+        }
+        with patch("mcp_server.tools_update.resolve_paths", return_value=(repo, runtime)), \
+                patch("mcp_server.tools_update.check_update", return_value=info), \
+                patch("mcp_server.tools_update.secure_bootstrap_update_blocker", return_value=blocker), \
+                patch("mcp_server.tools_update.subprocess.Popen") as popen:
+            result = mac_mcp_update(check_only=False)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["blocked"])
+        self.assertEqual("secure_bootstrap_migration_required", result["reason"])
+        popen.assert_not_called()
+
+
 class UpdateHelperTests(unittest.TestCase):
     def setUp(self):
         self.update_dir = Path(tempfile.mkdtemp(prefix="mac-mcp-update-state-test-"))

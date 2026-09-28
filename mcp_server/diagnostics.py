@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from .runtime_settings import load_runtime_settings, settings_path
+from .runtime_resolver import resolve_cloudflared_binary, resolve_ngrok_binary
 from .public_endpoint import (
     PublicEndpointError,
     inspect_cloudflare_credential,
@@ -210,6 +211,7 @@ def _check_permission_coherence() -> CheckResult:
     started = time.perf_counter()
     settings = load_settings()
     profile = permission_profile_name()
+    profile_source = "env" if os.getenv("MAC_MCP_PERMISSION_PROFILE") is not None else "default"
     _, shell_risk = resolve_risk("run_command", {"command": "pwd"})
     decision = evaluate_profile(profile, shell_risk)
     if settings.allow_shell and not decision.allowed:
@@ -220,6 +222,7 @@ def _check_permission_coherence() -> CheckResult:
             remediation="Use the trusted permission profile only when shell execution is intentionally required, or disable MCP_ALLOW_SHELL.",
             details={
                 "profile": profile,
+                "profile_source": profile_source,
                 "allow_shell": True,
                 "effective_available": False,
                 "denied_capabilities": list(decision.denied_capabilities),
@@ -229,12 +232,12 @@ def _check_permission_coherence() -> CheckResult:
         return result(
             "permissions.shell_profile", "config", PASS, "SHELL_FEATURE_DISABLED",
             "Shell execution is disabled by MCP_ALLOW_SHELL.", started=started,
-            details={"profile": profile, "allow_shell": False, "effective_available": False},
+            details={"profile": profile, "profile_source": profile_source, "allow_shell": False, "effective_available": False},
         )
     return result(
         "permissions.shell_profile", "config", PASS, "SHELL_EFFECTIVELY_AVAILABLE",
         "Shell execution is enabled and allowed by the active permission profile.", started=started,
-        details={"profile": profile, "allow_shell": True, "effective_available": True},
+        details={"profile": profile, "profile_source": profile_source, "allow_shell": True, "effective_available": True},
     )
 
 
@@ -637,24 +640,37 @@ def _check_runtime_companion_state() -> CheckResult:
     )
 
 
+def _check_ngrok_dependency() -> CheckResult:
+    started = time.perf_counter()
+    resolved = resolve_ngrok_binary()
+    if resolved.path:
+        return result(
+            "dependency.ngrok", "dependencies", PASS, "NGROK_AVAILABLE",
+            "ngrok is available (ngrok public tunnel).", started=started,
+            details={"path": _safe_path(resolved.path), "source": resolved.source},
+        )
+    return result(
+        "dependency.ngrok", "dependencies", WARN, "NGROK_MISSING",
+        "ngrok is not installed (ngrok public tunnel).", started=started,
+        remediation="Install ngrok only if you plan to use ngrok public endpoint mode.",
+        details={"source": resolved.source},
+    )
+
+
 def _check_cloudflared_dependency() -> CheckResult:
     started = time.perf_counter()
-    candidates = [
-        shutil.which("cloudflared"),
-        "/opt/homebrew/bin/cloudflared",
-        "/usr/local/bin/cloudflared",
-    ]
-    found = next((item for item in candidates if item and Path(item).is_file() and os.access(item, os.X_OK)), None)
-    if found:
+    resolved = resolve_cloudflared_binary()
+    if resolved.path:
         return result(
             "dependency.cloudflared", "dependencies", PASS, "CLOUDFLARED_AVAILABLE",
             "cloudflared is available (Cloudflare Tunnel public endpoint).", started=started,
-            details={"path": _safe_path(found)},
+            details={"path": _safe_path(resolved.path), "source": resolved.source},
         )
     return result(
         "dependency.cloudflared", "dependencies", WARN, "CLOUDFLARED_MISSING",
         "cloudflared is not installed (Cloudflare Tunnel public endpoint).", started=started,
         remediation="Install cloudflared only if you plan to use Cloudflare Tunnel mode.",
+        details={"source": resolved.source},
     )
 
 
@@ -796,7 +812,7 @@ def doctor_checks() -> list[CheckResult]:
         _check_disk,
         lambda: _binary_result("dependency.osascript", "osascript", required=True, purpose="macOS automation"),
         lambda: _binary_result("dependency.cliclick", "cliclick", required=False, purpose="coordinate/input fallback"),
-        lambda: _binary_result("dependency.ngrok", "ngrok", required=False, purpose="ngrok public tunnel"),
+        _check_ngrok_dependency,
         _check_cloudflared_dependency,
         _check_accessibility,
         lambda: _check_managed_process("server"),

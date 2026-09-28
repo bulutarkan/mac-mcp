@@ -14,7 +14,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from mcp_server import cli, diagnostics
+from mcp_server import cli, diagnostics, runtime_resolver
 _ORIGINAL_CLI_PATHS = {
     "STATE_DIR": cli.STATE_DIR,
     "PID_FILE": cli.PID_FILE,
@@ -212,6 +212,38 @@ class PublicEndpointCLITests(unittest.TestCase):
         self.assertEqual(0, code)
         start_ngrok.assert_not_called()
         self.assertIn("custom public endpoint configured: https://mac.example.com/mcp", out.getvalue())
+
+    def test_ngrok_feature_detection_prefers_modern_url_flag(self) -> None:
+        runtime_resolver.ngrok_http_endpoint_flag.cache_clear()
+        proc = subprocess.CompletedProcess(["ngrok", "http", "--help"], 0, stdout="  --url string\n", stderr="")
+        with patch("mcp_server.runtime_resolver.subprocess.run", return_value=proc):
+            self.assertEqual("--url", runtime_resolver.ngrok_http_endpoint_flag("/tmp/ngrok-modern"))
+        runtime_resolver.ngrok_http_endpoint_flag.cache_clear()
+
+    def test_ngrok_feature_detection_falls_back_to_legacy_domain_flag(self) -> None:
+        runtime_resolver.ngrok_http_endpoint_flag.cache_clear()
+        proc = subprocess.CompletedProcess(["ngrok", "http", "--help"], 0, stdout="  --domain string\n", stderr="")
+        with patch("mcp_server.runtime_resolver.subprocess.run", return_value=proc):
+            self.assertEqual("--domain", runtime_resolver.ngrok_http_endpoint_flag("/tmp/ngrok-legacy"))
+        runtime_resolver.ngrok_http_endpoint_flag.cache_clear()
+
+    def test_start_ngrok_uses_url_flag_when_supported(self) -> None:
+        class FakeProc:
+            pid = 4242
+            def poll(self):
+                return None
+
+        args = self.args(ngrok_domain="example.ngrok-free.dev")
+        with patch.object(cli, "_remove_stale_pid"), \
+             patch.object(cli, "_read_pid", return_value=None), \
+             patch.object(cli, "_resolve_ngrok_binary", return_value="/tmp/ngrok"), \
+             patch.object(cli, "ngrok_http_endpoint_flag", return_value="--url"), \
+             patch.object(cli.subprocess, "Popen", return_value=FakeProc()) as popen, \
+             patch.object(cli.time, "sleep"):
+            code = cli._start_ngrok(args)
+        self.assertEqual(0, code)
+        cmd = popen.call_args.args[0]
+        self.assertEqual(["/tmp/ngrok", "http", "--url", "https://example.ngrok-free.dev", "8765"], cmd)
 
     def test_legacy_ngrok_flag_still_starts_ngrok(self) -> None:
         with patch.object(cli, "_start_server", return_value=0), \

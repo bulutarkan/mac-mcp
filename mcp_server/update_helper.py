@@ -391,6 +391,116 @@ def _env_values(runtime: Path) -> dict[str, str]:
     return values
 
 
+def _settings_payload() -> tuple[Path, dict]:
+    configured = os.getenv("MAC_MCP_SETTINGS_PATH", "").strip()
+    path = Path(configured).expanduser() if configured else Path.home() / ".mac-mcp" / "settings.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    return path, payload if isinstance(payload, dict) else {}
+
+
+def _effective_env_value(env: dict[str, str], name: str) -> str | None:
+    # The running server loads runtime .env into its process environment, so an
+    # explicit inherited value is the best representation of what a managed
+    # restart will see. Fall back to the runtime file for standalone updater use.
+    inherited = os.getenv(name)
+    if inherited is not None:
+        return inherited.strip()
+    value = env.get(name)
+    return value.strip() if value is not None else None
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _legacy_public_exposure(runtime: Path, env: dict[str, str]) -> tuple[str | None, str]:
+    mode = (_effective_env_value(env, "MAC_MCP_PUBLIC_ENDPOINT_MODE") or "").strip().lower()
+    aliases = {"off": "none", "local": "none", "local_only": "none", "tunnel": "cloudflare"}
+    mode = aliases.get(mode, mode)
+    if mode in {"ngrok", "cloudflare", "custom"}:
+        return mode, "environment"
+
+    settings_path, payload = _settings_payload()
+    server = payload.get("server", {}) if isinstance(payload, dict) else {}
+    if isinstance(server, dict):
+        configured = str(server.get("public_endpoint_mode") or "").strip().lower()
+        configured = aliases.get(configured, configured)
+        if configured in {"ngrok", "cloudflare", "custom"}:
+            return configured, f"settings:{settings_path}"
+        if not configured and bool(server.get("ngrok_on_start")):
+            return "ngrok", f"settings_legacy:{settings_path}"
+
+    domain = (_effective_env_value(env, "NGROK_DOMAIN") or "").strip()
+    if domain:
+        return "ngrok", "legacy_ngrok_domain"
+
+    host = (_effective_env_value(env, "MAC_MCP_HOST") or "127.0.0.1").strip().lower().strip("[]")
+    if host not in {"127.0.0.1", "::1", "localhost"}:
+        return "non_loopback", "host"
+    return None, "local"
+
+
+def secure_bootstrap_update_blocker(runtime: Path) -> dict[str, object] | None:
+    """Return a secret-safe blocker when the target secure bootstrap would not start.
+
+    This intentionally never generates or prints a connector credential. An
+    unauthenticated public connector cannot learn a new key automatically, so
+    silently enabling auth during update would produce a healthy server while
+    breaking the existing connector. Block before the repo/runtime swap instead.
+    """
+    env = _env_values(runtime)
+    allow_raw = _effective_env_value(env, "MCP_ALLOW_NO_AUTH")
+    api_key = _effective_env_value(env, "MCP_API_KEY") or ""
+    allow_no_auth = _truthy(allow_raw)
+    exposure, exposure_source = _legacy_public_exposure(runtime, env)
+
+    code: str | None = None
+    if allow_no_auth and exposure is not None:
+        code = "LEGACY_NO_AUTH_PUBLIC_ENDPOINT"
+    elif not allow_no_auth and not api_key:
+        code = "MISSING_AUTH_CREDENTIAL"
+
+    if code is None:
+        return None
+
+    env_path = runtime / "mcp_server" / ".env"
+    if code == "LEGACY_NO_AUTH_PUBLIC_ENDPOINT":
+        summary = (
+            "Update blocked before runtime swap: this installation still allows unauthenticated "
+            f"access while using {exposure or 'a public/non-loopback endpoint'}."
+        )
+    else:
+        summary = (
+            "Update blocked before runtime swap: the target secure bootstrap requires an MCP API key "
+            "when unauthenticated access is not explicitly enabled for local-only use."
+        )
+    remediation = (
+        f"Before updating, edit {env_path}: set a strong MCP_API_KEY and MCP_ALLOW_NO_AUTH=false. "
+        "Update the MCP client/connector to send Authorization: Bearer <MCP_API_KEY>, or use "
+        "?ApiKey=<MCP_API_KEY> only for a client that cannot send headers. Verify the current "
+        "connector with authentication, then rerun mac-mcp update. The updater will never print "
+        "or copy the credential into logs or update state."
+    )
+    return {
+        "reason": "secure_bootstrap_migration_required",
+        "code": code,
+        "summary": summary,
+        "remediation": remediation,
+        "public_exposure": exposure,
+        "exposure_source": exposure_source,
+        "env_file": str(env_path),
+        "api_key_configured": bool(api_key),
+        "allow_no_auth": allow_no_auth,
+    }
+
+
+def _format_secure_bootstrap_blocker(blocker: dict[str, object]) -> str:
+    return f"{blocker.get('summary')} {blocker.get('remediation')}"
+
+
 def _detect_port(runtime: Path) -> int:
     env = _env_values(runtime)
     try:
@@ -665,6 +775,17 @@ def apply_update(
         flush=True,
     )
 
+    bootstrap_blocker = secure_bootstrap_update_blocker(runtime_path)
+    if bootstrap_blocker is not None:
+        _write_update_state(runtime_path, {
+            "status": "blocked",
+            "reason": "secure_bootstrap_migration_required",
+            "migration": bootstrap_blocker,
+            "from_commit": info.deployed_commit,
+            "to_commit": info.target_commit,
+        })
+        raise UpdateError(_format_secure_bootstrap_blocker(bootstrap_blocker))
+
     temp_root = Path(tempfile.mkdtemp(prefix="mac-mcp-update-"))
     stage: Optional[Path] = None
     backup: Optional[Path] = None
@@ -899,6 +1020,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.check:
             info = check_update(args.repo, args.runtime, args.branch, args.remote, fetch=True)
             print(format_check(info))
+            if info.update_available:
+                runtime_path = Path(info.runtime)
+                blocker = secure_bootstrap_update_blocker(runtime_path)
+                if blocker is not None:
+                    print(f"Migration required: {_format_secure_bootstrap_blocker(blocker)}")
+                    return 2
             return 2 if info.dirty else 0
         apply_update(
             repo=args.repo, runtime=args.runtime, branch=args.branch, remote=args.remote,
