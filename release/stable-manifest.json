@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "f05165f79151a7f23b670b30f7ca4eb2d6c6e3ce",
+  "base_commit": "9e30f4162c959e724fcd7df9769e5f86dc2189d7",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -649,8 +649,8 @@
     {
       "mode": "100644",
       "path": "menu_app/Sources/MenuBarView.swift",
-      "sha256": "beb993c3f89e8163ce07eaafdeaecc83eafed78de63b44960698fd084d26fe9c",
-      "size": 60015
+      "sha256": "61fa28de36c6afd8a82d6a68fb32e9b25fb43e368b70d02bf0b61a4f29af926b",
+      "size": 60063
     },
     {
       "mode": "100644",
@@ -661,8 +661,8 @@
     {
       "mode": "100644",
       "path": "menu_app/Sources/SettingsView.swift",
-      "sha256": "fc07735d1ea298a0940e58158fc1872186250e78264c7b7308dcf78b51f88ecb",
-      "size": 30801
+      "sha256": "a62536697e67338e145c48846451430e146064badccc43b70d24a8039974c808",
+      "size": 30825
     },
     {
       "mode": "100644",
@@ -671,10 +671,16 @@
       "size": 2202
     },
     {
+      "mode": "100644",
+      "path": "menu_app/Sources/SwiftUICompat.swift",
+      "sha256": "b6a36f02f22bcf571f8628135d0a8ab97db61f95d7a08c5c71e50247207b5a44",
+      "size": 467
+    },
+    {
       "mode": "100755",
       "path": "menu_app/build_app.sh",
-      "sha256": "38310543776687299d8a2c68d086a908e05828896a8f5ff5492748e0724f579e",
-      "size": 3766
+      "sha256": "880c026585ec6c5c3f49e9a9aab79f173b0002a2f696cc3b84f64d9c59951bd3",
+      "size": 3814
     },
     {
       "mode": "100755",
@@ -925,8 +931,8 @@
     {
       "mode": "100644",
       "path": "tests/test_context_handoff.py",
-      "sha256": "eb9109edddf6e6bcfe2f608d4d7b431569be2a1d22e9cd21e6f74bddd8443308",
-      "size": 32355
+      "sha256": "d9a3bc660ec60fdec312fd121970754ad0051093805f245596b53fdf81e1420a",
+      "size": 32357
     },
     {
       "mode": "100644",
@@ -949,8 +955,8 @@
     {
       "mode": "100644",
       "path": "tests/test_hardening_203.py",
-      "sha256": "fbee31303cc622459320c8234cb9964a3933926912e3ded59f7cc3b6fa716f3c",
-      "size": 20008
+      "sha256": "a87039de4d9404d270c0184ea50624463d0af39df4567f46491ac3e39c89593c",
+      "size": 20789
     },
     {
       "mode": "100644",
@@ -1158,6 +1164,12 @@
     },
     {
       "mode": "100644",
+      "path": "tests/test_swiftui_clt_compat.py",
+      "sha256": "41957efe3fd8ba910860571100f9dc303649e244fc20dce0c11225b8b9cfcec4",
+      "size": 1559
+    },
+    {
+      "mode": "100644",
       "path": "tests/test_tool_cancellation.py",
       "sha256": "dfc862cc82b7513cfe8ed0bd90e46684d8cfe857561a706282cf2cac05e6e509",
       "size": 17710
@@ -1205,10 +1217,10 @@
       "size": 3924
     }
   ],
-  "generated_at": "2026-09-28T08:08:11Z",
-  "payload_sha256": "9e2b77e210e8902f402e1571c44f43326549d609b4108b8e5869c58f20dd0c1a",
+  "generated_at": "2026-09-28T09:48:29Z",
+  "payload_sha256": "bb6660ce786ee4cdf421222ee5afe29f1f50238148d6cff7147109d3d5b1ad9f",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.6-r12",
+  "release_id": "stable-2.1.6-r13",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",

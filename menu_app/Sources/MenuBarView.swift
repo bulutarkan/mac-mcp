@@ -5,14 +5,14 @@ struct MenuBarView: View {
     @ObservedObject var state: AppState
     @ObservedObject var settings: SettingsStore
     @StateObject private var audio = AudioDeviceStore()
-    @State private var groqKey = ""
-    @State private var settingsMessage = ""
-    @State private var showVoice = false
-    @State private var showAdvanced = false
-    @State private var showSessions = false
-    @State private var showSecurity = false
-    @State private var sessionMinutesText = ""
-    @State private var lastActiveAgentID: String? = nil
+    @MacMCPState private var groqKey = ""
+    @MacMCPState private var settingsMessage = ""
+    @MacMCPState private var showVoice = false
+    @MacMCPState private var showAdvanced = false
+    @MacMCPState private var showSessions = false
+    @MacMCPState private var showSecurity = false
+    @MacMCPState private var sessionMinutesText = ""
+    @MacMCPState private var lastActiveAgentID: String? = nil
 
     var body: some View {
         ScrollView {

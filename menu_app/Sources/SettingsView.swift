@@ -35,10 +35,10 @@ struct SettingsView: View {
     @ObservedObject var state: AppState
     @ObservedObject var settings: SettingsStore
     @StateObject private var audio = AudioDeviceStore()
-    @State private var selection: SettingsSection = .subagents
-    @State private var notice = ""
-    @State private var groqKey = ""
-    @State private var cloudflareToken = ""
+    @MacMCPState private var selection: SettingsSection = .subagents
+    @MacMCPState private var notice = ""
+    @MacMCPState private var groqKey = ""
+    @MacMCPState private var cloudflareToken = ""
 
     var body: some View {
         HStack(spacing: 0) {
