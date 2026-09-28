@@ -116,7 +116,7 @@ class BrowserTargetHardeningTests(unittest.TestCase):
             "native_id": "9202", "title": "New", "url": "https://example.test/new",
             "tab_handle": "btab_safari_new",
         }
-        with patch("mcp_server.browser_tabs._scan", return_value=rows),              patch("mcp_server.tools_browser.validate_url"),              patch("mcp_server.tools_browser.browser_tabs.find_created", return_value=created),              patch("mcp_server.tools_browser.browser_tabs.claim_created_tab", return_value={"generation": 2}),              patch("mcp_server.tools_browser._claim_tab_visual", return_value=False),              patch("mcp_server.tools_browser._run_osascript", return_value="2") as osa:
+        with patch("mcp_server.browser_tabs._scan", return_value=rows),              patch("mcp_server.tools_browser.validate_url"),              patch("mcp_server.tools_browser._resolve_safari_created_tab", return_value=created),              patch("mcp_server.tools_browser.browser_tabs.claim_created_tab", return_value={"generation": 2}),              patch("mcp_server.tools_browser._claim_tab_visual", return_value=False),              patch("mcp_server.tools_browser._run_osascript", return_value="2|9202") as osa:
             owned_handle = browser_tabs.list_tabs("Safari")[1]["tab_handle"]
             with browser_tabs.logical_owner_scope("session:owner", profile="trusted"):
                 with browser_tabs.tab_lease("Safari", tab_handle=owned_handle, allow_rebind=True):

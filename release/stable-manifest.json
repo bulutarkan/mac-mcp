@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "a0477f61c62f5f937000f7ddad146ffe6305ea22",
+  "base_commit": "3f04d997c8da3d4db08525611ac6a7d9ad3609c5",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -433,8 +433,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/tools_browser.py",
-      "sha256": "309307feca05f82d4fd2b8881d61f08e8a6272b91a00e7d266842efc23d21560",
-      "size": 83527
+      "sha256": "20ccdf1038170e221b9277f0894a785d9f6fd3495f35c4653a48e792c2a85d01",
+      "size": 90176
     },
     {
       "mode": "100644",
@@ -895,8 +895,8 @@
     {
       "mode": "100644",
       "path": "tests/test_browser_target_hardening.py",
-      "sha256": "23acb84db8952039db5976851e4f6b034c225e0b67215d25b1e1bbc6694c1c7a",
-      "size": 9482
+      "sha256": "395dfaa0abc2b62886f8faff17836923172282c707cc8ff4fb68406844731727",
+      "size": 9489
     },
     {
       "mode": "100644",
@@ -1140,6 +1140,12 @@
     },
     {
       "mode": "100644",
+      "path": "tests/test_safari_new_tab_identity.py",
+      "sha256": "c9003601bf8d1989f0105d063633df12aaed3b468e2385851a6c9f73e34b72d0",
+      "size": 11172
+    },
+    {
+      "mode": "100644",
       "path": "tests/test_scoped_file_symlink_safety.py",
       "sha256": "76173cc6ccf3f587b3ace5705311566e188b196f512b6f51425bc40795fc0b87",
       "size": 15541
@@ -1253,10 +1259,10 @@
       "size": 3924
     }
   ],
-  "generated_at": "2026-09-28T12:29:57Z",
-  "payload_sha256": "4f5d6583d081a4203f4dd31d226111b55f438ff3b9bc1875d469ceabbbc06d88",
+  "generated_at": "2026-09-28T12:55:05Z",
+  "payload_sha256": "86ddb6e5c8bd51df2b5b032be2c39ebdd9e999f3c752203928679fb9a84fc0b5",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.6-r17",
+  "release_id": "stable-2.1.6-r18",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",
