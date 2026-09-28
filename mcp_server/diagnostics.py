@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from .runtime_settings import load_runtime_settings, settings_path
+from .cli_bootstrap import default_cli_path, launcher_kind, runtime_entrypoint
 from .runtime_resolver import resolve_cloudflared_binary, resolve_ngrok_binary
 from .public_endpoint import (
     PublicEndpointError,
@@ -27,6 +28,7 @@ from .public_endpoint import (
 from .policy import evaluate_profile, permission_profile_name, resolve_risk
 from .security import dashboard_token_path, load_settings
 from .version import __version__
+from .update_state import read_deployed_commit
 
 SCHEMA_VERSION = 1
 PASS = "pass"
@@ -135,6 +137,70 @@ def _check_runtime() -> CheckResult:
         started=started,
         remediation=None if compatible else "Install Python 3.10 or newer.",
         details={"python": platform.python_version(), "mac_mcp_version": __version__, "architecture": platform.machine()},
+    )
+
+
+def _check_cli_installation() -> CheckResult:
+    started = time.perf_counter()
+    launcher = default_cli_path()
+    entrypoint = runtime_entrypoint(runtime_root())
+    kind = launcher_kind(launcher)
+    broken_symlink = launcher.is_symlink() and not launcher.exists()
+    launcher_executable = launcher.exists() and os.access(launcher, os.X_OK)
+    entrypoint_executable = entrypoint.is_file() and os.access(entrypoint, os.X_OK)
+    found = shutil.which("mac-mcp")
+    on_path = False
+    if found:
+        try:
+            on_path = Path(found).resolve() == launcher.resolve()
+        except OSError:
+            on_path = Path(found).expanduser() == launcher.expanduser()
+
+    details = {
+        "version": __version__,
+        "launcher": _safe_path(launcher),
+        "launcher_kind": kind,
+        "launcher_executable": launcher_executable,
+        "runtime_entrypoint": _safe_path(entrypoint),
+        "runtime_entrypoint_executable": entrypoint_executable,
+        "found_on_path": _safe_path(found) if found else None,
+        "on_path": on_path,
+        "absolute_invocation": str(launcher.expanduser()),
+        "deployed_commit": (read_deployed_commit(runtime_root()) or "")[:12] or None,
+    }
+
+    if broken_symlink:
+        return result(
+            "cli.installation", "cli", FAIL, "CLI_BROKEN_SYMLINK",
+            "Mac MCP CLI launcher is a broken symlink.", started=started,
+            remediation=f"Reinstall the launcher or run {launcher.expanduser()} after repairing the runtime.",
+            details=details,
+        )
+    if not launcher_executable:
+        return result(
+            "cli.installation", "cli", FAIL, "CLI_LAUNCHER_MISSING",
+            "Mac MCP CLI launcher is missing or not executable.", started=started,
+            remediation=f"Re-run the installer or recreate the launcher at {launcher.expanduser()}.",
+            details=details,
+        )
+    if not entrypoint_executable:
+        return result(
+            "cli.installation", "cli", FAIL, "CLI_RUNTIME_ENTRYPOINT_MISSING",
+            "The installed CLI launcher cannot reach the runtime entrypoint.", started=started,
+            remediation="Repair the runtime virtual environment or reinstall Mac MCP.",
+            details=details,
+        )
+    if not on_path:
+        return result(
+            "cli.installation", "cli", WARN, "CLI_NOT_ON_PATH",
+            "Mac MCP CLI is healthy but is not visible on the current noninteractive PATH.", started=started,
+            remediation=f"Use {launcher.expanduser()} or add {launcher.parent.expanduser()} to PATH for this shell.",
+            details=details,
+        )
+    return result(
+        "cli.installation", "cli", PASS, "CLI_AVAILABLE",
+        "Mac MCP CLI launcher and runtime entrypoint are healthy.", started=started,
+        details=details,
     )
 
 
@@ -806,6 +872,7 @@ def _check_cloudflare_for_selected_mode() -> CheckResult:
 def doctor_checks() -> list[CheckResult]:
     checks: list[Callable[[], CheckResult]] = [
         _check_runtime,
+        _check_cli_installation,
         _check_state_dir,
         _check_settings,
         _check_permission_coherence,

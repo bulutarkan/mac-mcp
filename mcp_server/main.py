@@ -67,6 +67,7 @@ from .tools_memory import memory_add, memory_search, memory_get, memory_update, 
 from .tools_lessons import lesson_consolidate, lesson_feedback, lesson_record, lesson_search
 from .tools_skills import skill_list, skill_search, skill_get, skill_register, skill_update_index
 from .menu_app_bootstrap import bootstrap_menu_app_and_legacy_state
+from .cli_bootstrap import ensure_cli_launcher
 from .post_update_health import get_or_start_post_update_health_gate, pending_update_context
 from .data_guard import format_security_approval_question
 from .agent_admission import AdmissionError, normalize_claims as normalize_admission_claims
@@ -181,6 +182,7 @@ def _log(audit_logger, tool: str, fn):
 
 def create_app():
     bootstrap_menu_app_and_legacy_state()
+    ensure_cli_launcher(strict=False)
     prune_transactions()
     settings = load_settings()
     validate_bootstrap_security(settings)

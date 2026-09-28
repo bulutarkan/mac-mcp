@@ -29,6 +29,7 @@ from .runtime_resolver import (
     resolve_ngrok_binary,
 )
 from .update_helper import UpdateError, apply_update, check_update, format_check
+from .version import __version__
 
 APP_MODULE = "mcp_server.main:app"
 DEFAULT_HOST = "127.0.0.1"
@@ -749,6 +750,7 @@ def update(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     _load_env()
     parser = argparse.ArgumentParser(description="Manage the Mac MCP local server.")
+    parser.add_argument("--version", action="version", version=f"mac-mcp {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_start_flags(p: argparse.ArgumentParser) -> None:

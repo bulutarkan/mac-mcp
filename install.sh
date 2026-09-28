@@ -110,7 +110,7 @@ cleanup() {
     /bin/rm -rf "$INSTALL_TMP" || true
   fi
   if [[ "$status" -ne 0 ]]; then
-    if [[ "$CREATED_CLI" -eq 1 && -L "$CLI_PATH" ]]; then
+    if [[ "$CREATED_CLI" -eq 1 && ( -e "$CLI_PATH" || -L "$CLI_PATH" ) ]]; then
       /bin/rm -f "$CLI_PATH" || true
     fi
     if [[ "$CREATED_RUNTIME" -eq 1 && -d "$RUNTIME_DIR" ]]; then
@@ -903,13 +903,13 @@ install_update_state_and_cli() {
   local path_line='export PATH="$HOME/.local/bin:$PATH"'
 
   /bin/mkdir -p "$BIN_DIR"
-  if [[ -e "$CLI_PATH" || -L "$CLI_PATH" ]]; then
-    /bin/rm -f "$CLI_PATH"
+  if [[ -d "$CLI_PATH" && ! -L "$CLI_PATH" ]]; then
+    fail "CLI path is a directory and cannot be replaced: $CLI_PATH"
   fi
-  /bin/ln -s "$RUNTIME_DIR/.venv/bin/mac-mcp" "$CLI_PATH"
+  MAC_MCP_CLI_PATH="$CLI_PATH" MAC_MCP_RUNTIME_DIR="$RUNTIME_DIR" PYTHONPATH="$RUNTIME_DIR"     "$RUNTIME_DIR/.venv/bin/python" -c 'from pathlib import Path; from mcp_server.cli_bootstrap import ensure_cli_launcher; import os; p=ensure_cli_launcher(Path(os.environ["MAC_MCP_RUNTIME_DIR"]), Path(os.environ["MAC_MCP_CLI_PATH"]), strict=True); assert p'     || fail "Could not install the Mac MCP CLI launcher."
   CREATED_CLI=1
-  [[ -x "$CLI_PATH" ]] || fail "CLI symlink was created but is not executable: $CLI_PATH"
-  MAC_MCP_SKIP_MENU_APP_INSTALL=1 MAC_MCP_SKIP_MENU_APP=1 "$CLI_PATH" --help >/dev/null 2>&1 || fail "CLI verification failed."
+  [[ -x "$CLI_PATH" && ! -L "$CLI_PATH" ]] || fail "CLI launcher was created but is not an executable regular file: $CLI_PATH"
+  MAC_MCP_SKIP_MENU_APP_INSTALL=1 MAC_MCP_SKIP_MENU_APP=1 "$CLI_PATH" --version >/dev/null 2>&1 || fail "CLI verification failed."
 
   if [[ "$BIN_DIR" == "$HOME/.local/bin" ]]; then
     if ! /usr/bin/grep -Fq "$path_line" "$profile" 2>/dev/null; then
@@ -931,6 +931,7 @@ install_update_state_and_cli() {
   ok "Recorded installed commit for the built-in updater."
 
   ok "CLI installed: $CLI_PATH"
+  info "Noninteractive shells can always use the absolute CLI path: $CLI_PATH"
 }
 
 menu_app_process_pids() {

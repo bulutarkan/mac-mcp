@@ -17,6 +17,10 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
+from .fastmcp_compat import ensure_fastmcp_settings_model_complete
+
+ensure_fastmcp_settings_model_complete()
+
 from .steering import SteeringManager, attach_steering, preemption_error, steering_identity_from_context
 from . import browser_tabs
 from .security_context import SecurityContextManager
