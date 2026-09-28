@@ -2613,6 +2613,14 @@
                     "description": "Window index.",
                     "minimum": 1,
                     "default": 1
+                  },
+                  "tab_handle": {
+                    "type": "string",
+                    "description": "Stable tab handle from browser_list_tabs/browser_observe. Required for native key delivery."
+                  },
+                  "lease_generation": {
+                    "type": "integer",
+                    "description": "Optional logical tab lease generation from the observed target."
                   }
                 },
                 "required": [

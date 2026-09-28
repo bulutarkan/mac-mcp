@@ -116,6 +116,7 @@ BROWSERS = {
 }
 
 _TAB_IDENTITY_CHANGED = "MAC_MCP_TAB_IDENTITY_CHANGED"
+_TAB_TARGET_NOT_ACTIVE = "MAC_MCP_TAB_TARGET_NOT_ACTIVE"
 _CHROME_NATIVE_JS_DENIED = False
 _CHROME_BRIDGE_INLINE_LIMIT = 2400
 _CHROME_BACKGROUND_OPEN_LOCK = threading.Lock()
@@ -288,6 +289,17 @@ def _run_osascript(script: str, timeout_s: int = 30) -> str:
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 "Target tab identity changed before the operation; resolve or observe the tab again.",
+            )
+        if _TAB_TARGET_NOT_ACTIVE in msg:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {
+                    "ok": False,
+                    "error": "tab_target_not_active",
+                    "reason_code": "TAB_TARGET_NOT_ACTIVE",
+                    "retryable": True,
+                    "message": "The pinned browser tab stopped being the active tab before the native key event. No key was sent.",
+                },
             )
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, msg)
     return (stdout or "").strip()
@@ -1770,10 +1782,11 @@ def browser_press_key(
     key: str,
     modifiers: Optional[List[str]] = None,
     window_index: int = 1,
+    tab_handle: Optional[str] = None,
+    lease_generation: Optional[int] = None,
     allow_foreground: bool = False,
 ) -> Dict[str, Any]:
-    """Send a keyboard key. Examples: 'return', 'escape', 'a', 'tab'.
-    modifiers is an optional list such as ['cmd'] or ['shift']."""
+    """Send a native keyboard key only to an explicitly pinned active browser tab."""
     b = _norm_browser(browser)
     if not allow_foreground:
         return {
@@ -1786,36 +1799,103 @@ def browser_press_key(
             ),
         }
     require_foreground_authorization("browser_press_key", browser=b)
-    process_name = "Safari" if b == "Safari" else "Google Chrome"
 
-    mod_strs = []
-    for m in (modifiers or []):
-        mapped = _MODIFIER_MAP.get(m.lower())
-        if mapped:
-            mod_strs.append(mapped)
+    handle = str(tab_handle or "").strip()
+    if not handle:
+        return {
+            "ok": False,
+            "reason_code": "TAB_TARGET_REQUIRED",
+            "error": "tab_target_required",
+            "reason": "Native keyboard events require a stable tab_handle from browser_list_tabs or browser_observe.",
+            "foreground_required": True,
+        }
 
-    using_clause = f" using {{{', '.join(mod_strs)}}}" if mod_strs else ""
-    key_lower = key.lower()
+    with _tab_lease(b, handle, window_index, None) as target:
+        if lease_generation is not None and int(lease_generation) != int(target.lease_generation):
+            return {
+                "ok": False,
+                "reason_code": "STALE_TAB_LEASE",
+                "error": "stale_tab_lease",
+                "retryable": True,
+                "tab_handle": target.tab_handle,
+                "expected_lease_generation": int(lease_generation),
+                "actual_lease_generation": int(target.lease_generation),
+                "reason": "The browser tab lease generation changed; observe the target tab again before sending a native key.",
+            }
+        if target.window_index != 1 or not target.active:
+            return {
+                "ok": False,
+                "reason_code": "TAB_TARGET_NOT_ACTIVE",
+                "error": "tab_target_not_active",
+                "retryable": True,
+                "tab_handle": target.tab_handle,
+                "lease_generation": target.lease_generation,
+                "target_window_index": target.window_index,
+                "target_tab_index": target.tab_index,
+                "reason": "The pinned browser tab is not the active tab in the front browser window; no native key was sent.",
+            }
 
-    if key_lower in _KEY_CODES:
-        code = _KEY_CODES[key_lower]
-        action = f"key code {code}{using_clause}"
-    else:
-        # Tek karakter → keystroke
-        char = _js_escape(key[:1])
-        action = f'keystroke "{char}"{using_clause}'
+        process_name = "Safari" if b == "Safari" else "Google Chrome"
+        mod_strs = []
+        for m in (modifiers or []):
+            mapped = _MODIFIER_MAP.get(m.lower())
+            if mapped:
+                mod_strs.append(mapped)
 
-    script = f'''
+        using_clause = f" using {{{', '.join(mod_strs)}}}" if mod_strs else ""
+        key_lower = key.lower()
+        if key_lower in _KEY_CODES:
+            code = _KEY_CODES[key_lower]
+            action = f"key code {code}{using_clause}"
+        else:
+            char = _js_escape(key[:1])
+            action = f'keystroke "{char}"{using_clause}'
+
+        identity_guard = _tab_identity_guard(target)
+        if b == "Safari":
+            active_guard = f'if (current tab) is not targetTab then error "{_TAB_TARGET_NOT_ACTIVE}"'
+        else:
+            active_guard = f'if active tab index is not {target.tab_index} then error "{_TAB_TARGET_NOT_ACTIVE}"'
+
+        script = f'''
+tell application "{b}"
+    tell window {target.window_index}
+        {identity_guard}
+        {active_guard}
+    end tell
+end tell
 tell application "System Events"
     tell process "{process_name}"
         set frontmost to true
+    end tell
+end tell
+tell application "{b}"
+    tell window 1
+        {identity_guard}
+        {active_guard}
+    end tell
+end tell
+tell application "System Events"
+    tell process "{process_name}"
         {action}
     end tell
 end tell
 '''
-    _run_osascript(script)
-    return {"ok": True, "key": key, "modifiers": modifiers or []}
-
+        try:
+            _run_osascript(script)
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_409_CONFLICT and isinstance(exc.detail, dict) and exc.detail.get("reason_code") == "TAB_TARGET_NOT_ACTIVE":
+                return dict(exc.detail)
+            raise
+        return {
+            "ok": True,
+            "key": key,
+            "modifiers": modifiers or [],
+            "tab_handle": target.tab_handle,
+            "lease_generation": target.lease_generation,
+            "window_index": target.window_index,
+            "tab_index": target.tab_index,
+        }
 
 def browser_coordinate_click(
     settings: Settings,

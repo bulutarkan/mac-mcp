@@ -303,6 +303,7 @@ class BrowserRequest(BaseModel):
     window_index: Optional[int] = 1
     tab_index: Optional[int] = None
     tab_handle: Optional[str] = None
+    lease_generation: Optional[int] = None
     js: Optional[str] = None
     css_selector: Optional[str] = None
     text: Optional[str] = None
@@ -618,8 +619,11 @@ def api_browser(req: BrowserRequest, request: Request, settings: Settings = Depe
                                 selector=req.selector, window_index=req.window_index or 1,
                                 tab_index=req.tab_index)
     elif t == "browser_press_key":
-        result = browser_press_key(settings, browser=req.browser, key=req.key,
-                                   modifiers=req.modifiers, window_index=req.window_index or 1)
+        result = browser_press_key(
+            settings, browser=req.browser, key=req.key, modifiers=req.modifiers,
+            window_index=req.window_index or 1, tab_handle=req.tab_handle,
+            lease_generation=req.lease_generation,
+        )
     elif t == "browser_coordinate_click":
         result = browser_coordinate_click(settings, browser=req.browser, x=req.x, y=req.y,
                                           double_click=req.double_click or False,

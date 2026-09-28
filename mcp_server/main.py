@@ -1457,18 +1457,20 @@ def create_app():
 
     @mcp.tool(name="browser_press_key",
               description=(
-                  "Sends a keyboard key to the browser. "
+                  "Sends a native keyboard key only to an explicitly pinned active browser tab. "
+                  "Pass tab_handle from browser_list_tabs/browser_observe; lease_generation may be supplied from the observed target. "
+                  "If that tab is no longer active in the front browser window, the call fails closed without sending a key. "
                   "Key examples: 'return', 'escape', 'tab', 'space', 'delete', 'up', 'down', 'left', 'right', "
-                  "'f5', 'a', 'A'. "
-                  "modifiers listesi: ['cmd'], ['shift'], ['cmd','shift'] gibi. "
-                  "Example: key='a', modifiers=['cmd'] sends Cmd+A."
+                  "'f5', 'a', 'A'. modifiers examples: ['cmd'], ['shift'], ['cmd','shift']."
               ))
     def _browser_press_key(browser: str, key: str, modifiers: Optional[List[str]] = None,
-                            window_index: int = 1,
+                            window_index: int = 1, tab_handle: Optional[str] = None,
+                            lease_generation: Optional[int] = None,
                             allow_foreground: bool = False) -> Dict[str, Any]:
         return _log(audit_logger, "browser_press_key",
                     lambda: browser_press_key(settings, browser=browser, key=key,
                                               modifiers=modifiers, window_index=window_index,
+                                              tab_handle=tab_handle, lease_generation=lease_generation,
                                               allow_foreground=allow_foreground))
 
     @mcp.tool(name="browser_coordinate_click",

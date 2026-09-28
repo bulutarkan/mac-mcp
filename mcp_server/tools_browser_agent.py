@@ -2771,6 +2771,7 @@ def browser_act(
             window_index=target.window_index,
             tab_index=target.tab_index,
             tab_handle=target.tab_handle,
+            lease_generation=int(getattr(target, "lease_generation", 0) or 0),
             return_state=normalized_return_state,
             allow_foreground=allow_foreground,
         )
@@ -2784,6 +2785,7 @@ def _browser_act_locked(
     window_index: int = 1,
     tab_index: Optional[int] = None,
     tab_handle: Optional[str] = None,
+    lease_generation: Optional[int] = None,
     return_state: str = "compact",
     allow_foreground: bool = False,
 ) -> Dict[str, Any]:
@@ -2960,6 +2962,7 @@ def _browser_act_locked(
                 key_result = browser_press_key(
                     settings, browser=browser, key=str(action.get("key") or ""),
                     modifiers=action.get("modifiers") or [], window_index=window_index,
+                    tab_handle=tab_handle, lease_generation=lease_generation,
                     allow_foreground=allow_foreground,
                 )
                 results.append({
@@ -2967,7 +2970,10 @@ def _browser_act_locked(
                     "ok": bool(key_result.get("ok")),
                     "key": action.get("key"),
                     "foreground_required": bool(key_result.get("foreground_required")),
+                    "reason_code": key_result.get("reason_code"),
                     "reason": key_result.get("reason"),
+                    "tab_handle": key_result.get("tab_handle") or tab_handle,
+                    "lease_generation": key_result.get("lease_generation"),
                 })
                 if not key_result.get("ok"):
                     break

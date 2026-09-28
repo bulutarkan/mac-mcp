@@ -39,6 +39,7 @@ class TabTarget:
     native_id: str
     title: str
     url: str
+    active: bool = False
     lease_generation: int = 0
     logical_owner: Optional[str] = None
     lease_rebound: bool = False
@@ -487,6 +488,7 @@ def _target_from_row(row: Dict[str, Any], lease: Optional[Dict[str, Any]] = None
         native_id=str(row.get("native_id") or ""),
         title=str(row.get("title") or ""),
         url=str(row.get("url") or ""),
+        active=bool(row.get("active")),
         lease_generation=int(lease.get("generation") or 0),
         logical_owner=lease.get("owner"),
         lease_rebound=bool(lease.get("rebound")),
