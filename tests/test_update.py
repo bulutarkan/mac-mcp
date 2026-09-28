@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import mcp_server.menu_app_bootstrap as menu_bootstrap_module
 import mcp_server.release_trust as release_trust
 import mcp_server.tools_update as tools_update_module
 import mcp_server.update_helper as update_helper_module
@@ -151,6 +152,111 @@ class SecureBootstrapMigrationTests(unittest.TestCase):
         self.assertEqual("secure_bootstrap_migration_required", result["reason"])
         popen.assert_not_called()
 
+
+class MenuAppParityTests(unittest.TestCase):
+    def test_updater_reinstalls_missing_menu_app_and_restarts_it(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-menu-parity-") as td:
+            root = Path(td)
+            runtime = root / "runtime"
+            installer = runtime / "menu_app" / "install_app.sh"
+            installer.parent.mkdir(parents=True)
+            installer.write_text("#!/bin/sh\n", encoding="utf-8")
+            target = root / "Applications" / "Mac MCP.app"
+            calls: list[list[str]] = []
+
+            def fake_run(cmd, cwd=None, check=True, timeout=120):
+                calls.append(list(cmd))
+                if str(installer) in cmd:
+                    executable = target / "Contents" / "MacOS" / "MacMCPMenu"
+                    executable.parent.mkdir(parents=True, exist_ok=True)
+                    executable.write_text("menu", encoding="utf-8")
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with patch.dict(os.environ, {"MAC_MCP_APP_PATH": str(target)}, clear=False):
+                os.environ.pop("MAC_MCP_SKIP_MENU_APP_INSTALL", None)
+                with patch.object(update_helper_module, "_run", side_effect=fake_run), \
+                        patch.object(update_helper_module, "_stop_menu_app") as stop, \
+                        patch.object(update_helper_module, "_start_menu_app") as start:
+                    refreshed = update_helper_module._refresh_installed_menu_app(runtime)
+
+            self.assertTrue(refreshed)
+            stop.assert_called_once_with(target)
+            start.assert_called_once_with(target)
+            self.assertIn(["/usr/bin/env", "MAC_MCP_MENU_APP_LIFECYCLE_EXTERNAL=1", str(installer), str(target)], calls)
+            self.assertIn(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(target)], calls)
+
+    def test_updater_defaults_to_user_app_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-menu-home-") as td:
+            with patch.dict(os.environ, {"HOME": td}, clear=False):
+                os.environ.pop("MAC_MCP_APP_PATH", None)
+                target = update_helper_module._menu_app_target()
+            self.assertEqual(Path(td) / "Applications" / "Mac MCP.app", target)
+
+    def test_updater_menu_refresh_honors_explicit_test_skip(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-menu-skip-") as td:
+            runtime = Path(td) / "runtime"
+            installer = runtime / "menu_app" / "install_app.sh"
+            installer.parent.mkdir(parents=True)
+            installer.write_text("#!/bin/sh\n", encoding="utf-8")
+            with patch.dict(os.environ, {"MAC_MCP_SKIP_MENU_APP_INSTALL": "1"}, clear=False), \
+                    patch.object(update_helper_module, "_run") as run_cmd:
+                refreshed = update_helper_module._refresh_installed_menu_app(runtime)
+            self.assertFalse(refreshed)
+            run_cmd.assert_not_called()
+
+    def test_menu_process_matching_is_exact_to_installed_bundle(self) -> None:
+        app = Path("/Users/test/Applications/Mac MCP.app")
+        wanted = str(app / "Contents" / "MacOS" / "MacMCPMenu")
+        stdout = "\n".join([
+            f"123 {wanted}",
+            f"124 {wanted} --unexpected-arg",
+            "125 /tmp/Other.app/Contents/MacOS/MacMCPMenu",
+        ])
+        completed = subprocess.CompletedProcess(["ps"], 0, stdout, "")
+        with patch.object(update_helper_module, "_run", return_value=completed):
+            pids = update_helper_module._menu_app_process_pids(app)
+        self.assertEqual([123], pids)
+
+    def test_target_install_script_self_manages_legacy_updater_transition(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "menu_app" / "install_app.sh").read_text(encoding="utf-8")
+        self.assertIn("MAC_MCP_MENU_APP_LIFECYCLE_EXTERNAL", source)
+        self.assertIn("Previous Mac MCP.app", source)
+        self.assertIn("stop_menu", source)
+        self.assertIn("start_menu", source)
+        self.assertIn('/usr/bin/open -g -n "$DEST"', source)
+        self.assertIn("restore_previous", source)
+
+    def test_startup_bootstrap_delegates_launch_to_install_script(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-menu-bootstrap-") as td:
+            root = Path(td)
+            source = root / "menu_app"
+            source.mkdir()
+            installer = source / "install_app.sh"
+            installer.write_text("#!/bin/sh\n", encoding="utf-8")
+            target = root / "Applications" / "Mac MCP.app"
+            completed = subprocess.CompletedProcess([str(installer)], 0, "", "")
+            with patch.object(menu_bootstrap_module, "_installed_app", side_effect=[None, target]), \
+                    patch.object(menu_bootstrap_module, "_menu_source_candidates", return_value=[source]), \
+                    patch.object(menu_bootstrap_module.subprocess, "run", return_value=completed) as run_cmd, \
+                    patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("MAC_MCP_SKIP_MENU_APP_INSTALL", None)
+                installed = menu_bootstrap_module.ensure_menu_app_installed(root)
+            self.assertTrue(installed)
+            run_cmd.assert_called_once()
+            self.assertEqual([str(installer)], run_cmd.call_args.args[0])
+
+    def test_installer_contract_restarts_menu_app_and_restores_running_backup(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "install.sh").read_text(encoding="utf-8")
+        self.assertIn("APP_WAS_RUNNING=0", source)
+        self.assertIn("stop_menu_app", source)
+        self.assertIn('MAC_MCP_MENU_APP_LIFECYCLE_EXTERNAL=1 "$RUNTIME_DIR/menu_app/install_app.sh"', source)
+        self.assertIn('/usr/bin/open -g -n "$APP_PATH"', source)
+        install_body = source.split("install_menu_app() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertLess(install_body.index("stop_menu_app"), install_body.index('"$RUNTIME_DIR/menu_app/install_app.sh" "$APP_PATH"'))
+        self.assertGreater(install_body.index("launch_menu_app"), install_body.index("code-signature verified"))
+        cleanup_body = source.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup", 1)[0]
+        self.assertIn('if [[ "$APP_WAS_RUNNING" -eq 1 ]]', cleanup_body)
+        self.assertIn('/usr/bin/open -g -n "$APP_PATH"', cleanup_body)
 
 class UpdateHelperTests(unittest.TestCase):
     def setUp(self):

@@ -593,12 +593,92 @@ def _health_ok(url: str, attempts: int = 30, delay: float = 0.4) -> bool:
     return False
 
 
+def _menu_app_candidates() -> list[Path]:
+    explicit = os.getenv("MAC_MCP_APP_PATH", "").strip()
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+    candidates.extend([
+        Path.home() / "Applications" / "Mac MCP.app",
+        Path("/Applications/Mac MCP.app"),
+    ])
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def _menu_app_target() -> Path:
+    # Public installs are per-user and install_app.sh defaults here. Keep the
+    # updater on the same canonical target unless an explicit override is set.
+    return _menu_app_candidates()[0]
+
+
+def _menu_app_process_pids(app_path: Path) -> list[int]:
+    executable = str((app_path / "Contents" / "MacOS" / "MacMCPMenu").resolve())
+    proc = _run(["/bin/ps", "-axo", "pid=,command="], check=False, timeout=10)
+    pids: list[int] = []
+    for line in proc.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        fields = stripped.split(None, 1)
+        if len(fields) != 2 or fields[1] != executable:
+            continue
+        try:
+            pids.append(int(fields[0]))
+        except ValueError:
+            continue
+    return pids
+
+
+def _stop_menu_app(app_path: Path) -> None:
+    pids = _menu_app_process_pids(app_path)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    for _ in range(20):
+        remaining = set(_menu_app_process_pids(app_path))
+        if not any(pid in remaining for pid in pids):
+            return
+        time.sleep(0.1)
+    remaining = set(_menu_app_process_pids(app_path))
+    for pid in pids:
+        if pid not in remaining:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def _start_menu_app(app_path: Path) -> None:
+    _run(["/usr/bin/open", "-g", "-n", str(app_path)], timeout=20)
+    for _ in range(50):
+        if _menu_app_process_pids(app_path):
+            return
+        time.sleep(0.2)
+    raise UpdateError(f"Mac MCP menu bar app did not start: {app_path}")
+
+
 def _refresh_installed_menu_app(runtime: Path) -> bool:
-    installer = runtime / "menu_app" / "install_app.sh"
-    installed = [Path.home() / "Applications" / "Mac MCP.app", Path("/Applications/Mac MCP.app")]
-    if not installer.exists() or not any(path.exists() for path in installed):
+    if os.getenv("MAC_MCP_SKIP_MENU_APP_INSTALL", "").strip().lower() in {"1", "true", "yes", "on"}:
         return False
-    _run([str(installer)], timeout=180)
+    installer = runtime / "menu_app" / "install_app.sh"
+    if not installer.exists():
+        return False
+    target = _menu_app_target()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _stop_menu_app(target)
+    _run(["/usr/bin/env", "MAC_MCP_MENU_APP_LIFECYCLE_EXTERNAL=1", str(installer), str(target)], timeout=180)
+    _run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(target)], timeout=30)
+    _start_menu_app(target)
     return True
 
 

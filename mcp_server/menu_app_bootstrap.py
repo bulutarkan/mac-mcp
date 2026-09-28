@@ -57,14 +57,9 @@ def ensure_menu_app_installed(runtime: Path | None = None) -> bool:
         )
         if completed.returncode != 0 or _installed_app() is None:
             return False
-        subprocess.run(
-            ["/usr/bin/open", "-g", str(_installed_app())],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-            check=False,
-        )
+        # install_app.sh owns process replacement/launch when invoked directly.
+        # Keeping bootstrap single-purpose lets an older updater transition into
+        # a release whose menu lifecycle contract is newer than the updater itself.
         return True
     except (OSError, subprocess.SubprocessError):
         return False

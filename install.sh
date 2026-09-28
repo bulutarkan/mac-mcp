@@ -54,6 +54,7 @@ CREATED_CHATGPT_SOURCE=0
 CREATED_CHATGPT_LINK=0
 BACKED_UP_APP=0
 APP_BACKUP_PATH=""
+APP_WAS_RUNNING=0
 
 if { exec 3<>/dev/tty; } 2>/dev/null; then
   TTY_AVAILABLE=1
@@ -121,6 +122,9 @@ cleanup() {
       /bin/rm -rf "$APP_PATH" || true
       /bin/mkdir -p "$(/usr/bin/dirname "$APP_PATH")" || true
       /bin/cp -R "$APP_BACKUP_PATH" "$APP_PATH" || true
+      if [[ "$APP_WAS_RUNNING" -eq 1 ]]; then
+        /usr/bin/open -g -n "$APP_PATH" >/dev/null 2>&1 || true
+      fi
     fi
     if [[ "$CREATED_SOURCE" -eq 1 && -d "$SOURCE_DIR" ]]; then
       /bin/rm -rf "$SOURCE_DIR" || true
@@ -929,6 +933,61 @@ install_update_state_and_cli() {
   ok "CLI installed: $CLI_PATH"
 }
 
+menu_app_process_pids() {
+  local executable="$APP_PATH/Contents/MacOS/MacMCPMenu"
+  local executable_dir=""
+  if [[ -e "$executable" ]]; then
+    executable_dir="$(cd "$(/usr/bin/dirname "$executable")" && /bin/pwd -P)"
+    executable="$executable_dir/$(/usr/bin/basename "$executable")"
+  fi
+  /bin/ps -axo pid=,command= | /usr/bin/awk -v target="$executable" '
+    {
+      pid=$1
+      $1=""
+      sub(/^[[:space:]]+/, "", $0)
+      if ($0 == target) print pid
+    }
+  '
+}
+
+stop_menu_app() {
+  local pids=""
+  local pid=""
+  local attempt=0
+  pids="$(menu_app_process_pids)"
+  [[ -z "$pids" ]] && return 0
+  APP_WAS_RUNNING=1
+  for pid in $pids; do
+    /bin/kill -TERM "$pid" 2>/dev/null || true
+  done
+  while (( attempt < 20 )); do
+    [[ -z "$(menu_app_process_pids)" ]] && return 0
+    /bin/sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  for pid in $(menu_app_process_pids); do
+    /bin/kill -KILL "$pid" 2>/dev/null || true
+  done
+}
+
+launch_menu_app() {
+  local attempt=0
+  if [[ "${MAC_MCP_SKIP_MENU_APP_INSTALL:-0}" == "1" || "${MAC_MCP_SKIP_MENU_APP:-0}" == "1" ]]; then
+    return 0
+  fi
+  [[ -d "$APP_PATH" ]] || fail "Mac MCP.app is missing after installation: $APP_PATH"
+  /usr/bin/open -g -n "$APP_PATH" || fail "Could not launch Mac MCP.app."
+  while (( attempt < 50 )); do
+    if [[ -n "$(menu_app_process_pids)" ]]; then
+      ok "Mac MCP menu bar app is running."
+      return 0
+    fi
+    /bin/sleep 0.2
+    attempt=$((attempt + 1))
+  done
+  fail "Mac MCP.app was installed but its menu process did not start."
+}
+
 install_menu_app() {
   section "Menu bar app"
   info "Building the native SwiftUI menu bar controller included with Mac MCP."
@@ -946,7 +1005,8 @@ install_menu_app() {
   fi
 
   [[ -x "$RUNTIME_DIR/menu_app/install_app.sh" ]] || fail "menu_app/install_app.sh is missing or not executable."
-  "$RUNTIME_DIR/menu_app/install_app.sh" "$APP_PATH" \
+  stop_menu_app
+  MAC_MCP_MENU_APP_LIFECYCLE_EXTERNAL=1 "$RUNTIME_DIR/menu_app/install_app.sh" "$APP_PATH" \
     || fail "The native menu bar app failed to build or install."
   /usr/bin/codesign --verify --deep --strict "$APP_PATH" \
     || fail "The installed menu bar app failed code-signature verification."
@@ -959,6 +1019,7 @@ install_menu_app() {
     CREATED_APP=1
   fi
   ok "Menu bar app and bundled Safari Visual Companion installed and code-signature verified."
+  launch_menu_app
 }
 
 persist_public_endpoint_config() {
