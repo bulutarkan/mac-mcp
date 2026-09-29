@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "036a307e798c0f695c3bf9169d297aba37f35b5a",
+  "base_commit": "6677b48dc84c612531eacf72eb2aad315c472479",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -181,8 +181,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/cli.py",
-      "sha256": "2958d14e30d2c3697ba60dcc800572af78f0437b09d5eddfcd1e9ebaebfd9e1e",
-      "size": 47233
+      "sha256": "0f0aef5f2d527f31ef1a9670eab15d5bf5e1a2b5c47b50edfb9ee0210c229cb7",
+      "size": 47620
     },
     {
       "mode": "100644",
@@ -247,8 +247,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/diagnostics.py",
-      "sha256": "352a4cb9d5a8192ea4aea2c549591be20f47ac1b8b1aafb503dd5dd434e9a975",
-      "size": 49846
+      "sha256": "56e2a4b086f8928a2a119b7686e6ca6a0097da1e3774e6984e010000c05be2da",
+      "size": 50665
     },
     {
       "mode": "100644",
@@ -289,8 +289,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/managed_process.py",
-      "sha256": "dba110ccb13a8e8e248b43770d2fdb93b6ceb3dbe9bf8d3b627b027e5ab1db55",
-      "size": 12328
+      "sha256": "f958f17e756e70b6540c8a363ea36add63b94b24ca35e2d45b4e36d9aa113b4a",
+      "size": 12790
     },
     {
       "mode": "100644",
@@ -1027,8 +1027,8 @@
     {
       "mode": "100644",
       "path": "tests/test_managed_process_identity.py",
-      "sha256": "a4a328bd0907b23e793d1c1493e836c98dbab66a80a5e7bb0994a92f9d97d3c5",
-      "size": 12118
+      "sha256": "a887b92b043dcf2177f7260905efa0f6966d97f41b82dc7fc6d1d940aabf0e81",
+      "size": 13463
     },
     {
       "mode": "100644",
@@ -1295,10 +1295,10 @@
       "size": 3924
     }
   ],
-  "generated_at": "2026-09-29T09:44:22Z",
-  "payload_sha256": "95ecb3577dc9571f4917527fdbe603043379f5d1b886e564cde58baa3cbb0c47",
+  "generated_at": "2026-09-29T10:05:44Z",
+  "payload_sha256": "287927e9492feb3d6cb23670b63fe68daad2804719b7072b34aef04956c1134d",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.6-r24",
+  "release_id": "stable-2.1.6-r25",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",

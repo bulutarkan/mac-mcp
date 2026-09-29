@@ -20,6 +20,7 @@ from .runtime_settings import load_runtime_settings, load_runtime_settings_state
 from .managed_process import (
     listener_pids,
     matches_role,
+    port_is_listening,
     process_snapshot,
     validate_process_record,
 )
@@ -652,6 +653,20 @@ def _check_managed_process(name: str) -> CheckResult:
                 owned.append(listener_pid)
             else:
                 foreign.append(listener_pid)
+        if not owned and not foreign and port_is_listening(port):
+            return result(
+                "process.server", "process", FAIL, "SERVER_PORT_FOREIGN_LISTENER",
+                "Configured Mac MCP port is occupied, but listener ownership could not be resolved.",
+                started=started,
+                remediation="Stop or move the unknown listener; Mac MCP will not adopt or signal it.",
+                details={
+                    "port": port,
+                    "foreign_listener_pids": [],
+                    "verified_listener_pids": [],
+                    "listener_pid_resolution": "unavailable",
+                    **({"stale_pid_files": stale} if stale else {}),
+                },
+            )
         if foreign:
             return result(
                 "process.server", "process", FAIL, "SERVER_PORT_FOREIGN_LISTENER",
@@ -662,6 +677,7 @@ def _check_managed_process(name: str) -> CheckResult:
                     "port": port,
                     "foreign_listener_pids": foreign,
                     "verified_listener_pids": owned,
+                    "listener_pid_resolution": "resolved",
                     **({"stale_pid_files": stale} if stale else {}),
                 },
             )

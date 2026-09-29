@@ -28,6 +28,7 @@ from .managed_process import (
     matches_role,
     migrate_legacy_record,
     pid_alive,
+    port_is_listening,
     process_snapshot,
     read_pid,
     read_process_record,
@@ -243,6 +244,12 @@ def _server_listener_state(port: int) -> tuple[list[int], list[int]]:
             owned.append(pid)
         else:
             foreign.append(pid)
+
+    # If PID discovery is unavailable/empty but the TCP port is occupied, we
+    # still fail closed. A positive socket probe proves only occupancy, never
+    # ownership; 0 is an internal sentinel for "foreign listener, PID unknown".
+    if not owned and not foreign and port_is_listening(int(port)):
+        foreign.append(0)
     return owned, foreign
 
 
@@ -340,7 +347,7 @@ def _start_server(args: argparse.Namespace) -> int:
 
     owned, foreign = _server_listener_state(port)
     if foreign:
-        rendered = ", ".join(str(pid) for pid in foreign)
+        rendered = ", ".join(str(pid) for pid in foreign if pid > 0) or "unknown"
         print(
             f"Port {port} is already listening under unmanaged process pid(s) {rendered}; "
             "refusing to adopt or start mac-mcp."
@@ -1036,7 +1043,7 @@ def status(args: argparse.Namespace) -> int:
     else:
         if server_source == "foreign_listener":
             conflicts = _server_listener_conflicts(port)
-            rendered = ", ".join(str(pid) for pid in conflicts) or "unknown"
+            rendered = ", ".join(str(pid) for pid in conflicts if pid > 0) or "unknown"
             print(
                 f"mac-mcp is not running; configured port {port} is occupied by "
                 f"unmanaged listener pid(s) {rendered}."

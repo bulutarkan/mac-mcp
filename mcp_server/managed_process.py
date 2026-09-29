@@ -5,6 +5,7 @@ import json
 import os
 import shlex
 import shutil
+import socket
 import stat
 import subprocess
 import tempfile
@@ -119,6 +120,19 @@ def process_snapshot(pid: int) -> ProcessSnapshot | None:
         command=command.strip(),
         cwd=cwd,
     )
+
+
+def port_is_listening(port: int, host: str = "127.0.0.1") -> bool:
+    """Best-effort occupancy probe used when PID discovery is unavailable.
+
+    This never proves ownership; a positive result must be treated as foreign/
+    unverified unless a separate process fingerprint proves otherwise.
+    """
+    try:
+        with socket.create_connection((host, int(port)), timeout=0.2):
+            return True
+    except OSError:
+        return False
 
 
 def listener_pids(port: int) -> list[int]:

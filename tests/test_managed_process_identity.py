@@ -170,7 +170,10 @@ class SafeLifecycleTests(unittest.TestCase):
             log_file = state / "mac-mcp.log"
             owned, foreign_pids = cli._server_listener_state(port)
             self.assertEqual([], owned)
-            self.assertIn(foreign.pid, foreign_pids)
+            self.assertTrue(
+                foreign_pids,
+                "occupied port must remain foreign even when PID discovery is unavailable",
+            )
 
             with patch.object(cli, "STATE_DIR", state),                  patch.object(cli, "PID_FILE", pid_file),                  patch.object(cli, "LOG_FILE", log_file),                  patch.object(cli, "_launch_menu_app"):
                 code = cli._start_server(args)
@@ -179,6 +182,25 @@ class SafeLifecycleTests(unittest.TestCase):
             self.assertIsNone(foreign.poll(), "foreign listener must remain untouched")
             self.assertFalse(pid_file.exists())
             self.assertFalse(log_file.exists(), "mac-mcp must not attempt a competing spawn")
+
+    def test_listener_state_fails_closed_when_pid_discovery_is_empty(self) -> None:
+        with patch.object(cli, "listener_pids", return_value=[]), \
+             patch.object(cli, "port_is_listening", return_value=True):
+            owned, foreign = cli._server_listener_state(8765)
+        self.assertEqual([], owned)
+        self.assertEqual([0], foreign)
+
+    def test_doctor_fails_closed_when_port_is_occupied_but_pid_unknown(self) -> None:
+        with patch("mcp_server.diagnostics.listener_pids", return_value=[]), \
+             patch("mcp_server.diagnostics.port_is_listening", return_value=True), \
+             patch("mcp_server.diagnostics._launchctl_pid", return_value=None), \
+             patch("mcp_server.diagnostics._local_host_port", return_value=("127.0.0.1", 8765)), \
+             patch("mcp_server.diagnostics.state_dir", return_value=Path("/nonexistent/mac-mcp-test-state")):
+            row = diagnostics._check_managed_process("server")
+        self.assertEqual("fail", row.status)
+        self.assertEqual("SERVER_PORT_FOREIGN_LISTENER", row.reason_code)
+        self.assertEqual("unavailable", row.details["listener_pid_resolution"])
+        self.assertEqual([], row.details["foreign_listener_pids"])
 
     def test_start_refuses_second_server_when_verified_record_uses_old_port(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mac-mcp-old-port-") as td:
