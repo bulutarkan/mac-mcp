@@ -35,17 +35,36 @@ class RuntimeSettingsTests(unittest.TestCase):
                 path.write_text(json.dumps({"steering": {"session_ttl_minutes": 120}}))
                 self.assertEqual(120, runtime_settings.steering_setting("session_ttl_minutes", 10))
 
-    def test_provider_settings_are_live_and_default_safely(self):
+    def test_provider_settings_fail_closed_until_explicitly_enabled(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "settings.json"
             with patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(path)}):
-                self.assertTrue(runtime_settings.provider_enabled("opencode"))
-                self.assertTrue(runtime_settings.provider_enabled("codex"))
+                missing = runtime_settings.load_runtime_settings_state()
+                self.assertEqual("missing", missing.status)
+                self.assertFalse(runtime_settings.provider_enabled("opencode"))
+                self.assertFalse(runtime_settings.provider_enabled("codex"))
                 self.assertFalse(runtime_settings.provider_enabled("chatgpt"))
+
+                path.write_text("not-json")
+                invalid = runtime_settings.load_runtime_settings_state()
+                self.assertEqual("invalid_json", invalid.status)
+                self.assertFalse(runtime_settings.provider_enabled("opencode"))
+                self.assertFalse(runtime_settings.provider_enabled("codex"))
+
+                path.write_text("[]")
+                non_object = runtime_settings.load_runtime_settings_state()
+                self.assertEqual("root_not_object", non_object.status)
+                self.assertFalse(runtime_settings.provider_enabled("opencode"))
+
+                path.write_text(json.dumps({"server": {"port": 8765}}))
+                self.assertFalse(runtime_settings.provider_enabled("opencode"))
+                self.assertFalse(runtime_settings.provider_enabled("codex"))
+
                 path.write_text(json.dumps({
                     "subagents": {
                         "providers": {
                             "opencode": {"enabled": False},
+                            "codex": {"enabled": True},
                             "chatgpt": {
                                 "enabled": True,
                                 "binary_path": "/tmp/chatgpt-web",
@@ -55,9 +74,34 @@ class RuntimeSettingsTests(unittest.TestCase):
                     }
                 }))
                 self.assertFalse(runtime_settings.provider_enabled("opencode"))
+                self.assertTrue(runtime_settings.provider_enabled("codex"))
                 self.assertTrue(runtime_settings.provider_enabled("chatgpt"))
                 self.assertEqual("/tmp/chatgpt-web", runtime_settings.provider_setting("chatgpt", "binary_path"))
                 self.assertEqual("Subagents", runtime_settings.provider_setting("chatgpt", "default_project"))
+
+    def test_provider_settings_fail_closed_when_settings_cannot_be_read(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "settings.json"
+            path.write_text("{}")
+            with patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(path)}), \
+                 patch.object(Path, "read_text", side_effect=PermissionError("denied")):
+                state = runtime_settings.load_runtime_settings_state()
+                self.assertEqual("unreadable", state.status)
+                self.assertEqual("PermissionError", state.error_type)
+                self.assertFalse(runtime_settings.provider_enabled("opencode"))
+
+    def test_provider_enabled_requires_boolean_enabled_field(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "settings.json"
+            path.write_text(json.dumps({
+                "subagents": {"providers": {
+                    "opencode": {"enabled": "yes"},
+                    "codex": {},
+                }}
+            }))
+            with patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(path)}):
+                self.assertFalse(runtime_settings.provider_enabled("opencode"))
+                self.assertFalse(runtime_settings.provider_enabled("codex"))
 
     def test_keychain_lookup_uses_service_and_account_without_logging_secret(self):
         fake = type("Result", (), {"stdout": "secret-value\n"})()

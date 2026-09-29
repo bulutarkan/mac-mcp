@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -14,13 +15,52 @@ def settings_path() -> Path:
     return Path.home() / ".mac-mcp" / "settings.json"
 
 
-def load_runtime_settings() -> dict[str, Any]:
-    path = settings_path()
+@dataclass(frozen=True)
+class RuntimeSettingsLoad:
+    path: Path
+    status: str
+    data: dict[str, Any]
+    error_type: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+
+def load_runtime_settings_state(path: Path | None = None) -> RuntimeSettingsLoad:
+    path = path or settings_path()
+    if not path.exists():
+        return RuntimeSettingsLoad(path=path, status="missing", data={})
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return RuntimeSettingsLoad(
+            path=path,
+            status="unreadable",
+            data={},
+            error_type=type(exc).__name__,
+        )
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return RuntimeSettingsLoad(
+            path=path,
+            status="invalid_json",
+            data={},
+            error_type=type(exc).__name__,
+        )
+    if not isinstance(payload, dict):
+        return RuntimeSettingsLoad(
+            path=path,
+            status="root_not_object",
+            data={},
+        )
+    return RuntimeSettingsLoad(path=path, status="ok", data=payload)
+
+
+def load_runtime_settings() -> dict[str, Any]:
+    state = load_runtime_settings_state()
+    return state.data if state.ok else {}
 
 
 def tool_enabled(name: str, default: bool = True) -> bool:
@@ -74,10 +114,20 @@ def provider_setting(provider: str, name: str, default: Any = None) -> Any:
 
 def provider_enabled(provider: str, default: bool | None = None) -> bool:
     key = str(provider or "").strip().lower()
-    if default is None:
-        default = key in {"opencode", "codex"}
-    value = provider_setting(key, "enabled", default)
-    return value if isinstance(value, bool) else bool(default)
+    state = load_runtime_settings_state()
+    if not state.ok:
+        return False
+    subagents = state.data.get("subagents")
+    if not isinstance(subagents, dict):
+        return False
+    providers = subagents.get("providers")
+    if not isinstance(providers, dict):
+        return False
+    item = providers.get(key)
+    if not isinstance(item, dict):
+        return False
+    value = item.get("enabled")
+    return value if isinstance(value, bool) else False
 
 def keychain_password() -> str | None:
     service = os.getenv("MAC_MCP_VOICE_GROQ_KEYCHAIN_SERVICE", "com.bulutarkan.mac-mcp").strip()

@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from .runtime_settings import load_runtime_settings, settings_path
+from .runtime_settings import load_runtime_settings, load_runtime_settings_state, settings_path
 from .cli_bootstrap import default_cli_path, launcher_kind, runtime_entrypoint
 from .runtime_resolver import resolve_cloudflared_binary, resolve_ngrok_binary
 from .public_endpoint import (
@@ -243,39 +243,62 @@ def _check_state_dir() -> CheckResult:
 def _check_settings() -> CheckResult:
     started = time.perf_counter()
     path = settings_path()
-    if not path.exists():
+    state = load_runtime_settings_state(path)
+    common = {
+        "path": _safe_path(path),
+        "provider_fail_closed": state.status != "ok",
+        "load_status": state.status,
+    }
+
+    if state.status == "missing":
         return result(
             "settings.json", "config", INFO, "SETTINGS_NOT_CREATED",
-            "Runtime settings file has not been created; built-in defaults are in use.",
-            started=started, details={"path": _safe_path(path)},
+            "Runtime settings file has not been created; delegated providers are fail-closed until settings are created.",
+            started=started,
+            remediation="Run the installer or save Settings once to create an owner-controlled settings.json.",
+            details=common,
         )
     if path.is_symlink():
         return result(
             "settings.json", "config", WARN, "SETTINGS_SYMLINK",
             "Runtime settings file is a symbolic link.", started=started,
             remediation="Prefer a regular owner-controlled settings file.",
-            details={"path": _safe_path(path)},
+            details={**common, "mode": _mode(path)},
         )
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    if state.status == "unreadable":
+        return result(
+            "settings.json", "config", FAIL, "SETTINGS_UNREADABLE",
+            "Runtime settings file cannot be read; delegated providers are disabled until it is repaired.",
+            started=started,
+            remediation="Fix ownership/permissions for ~/.mac-mcp/settings.json and rerun doctor.",
+            details={**common, "error_type": state.error_type},
+        )
+    if state.status == "invalid_json":
         return result(
             "settings.json", "config", FAIL, "SETTINGS_INVALID_JSON",
-            "Runtime settings file cannot be parsed.", started=started,
-            remediation="Fix ~/.mac-mcp/settings.json JSON syntax.",
-            details={"path": _safe_path(path), "error_type": type(exc).__name__},
+            "Runtime settings JSON is invalid; delegated providers are disabled until it is repaired.",
+            started=started,
+            remediation="Fix ~/.mac-mcp/settings.json JSON syntax and rerun doctor.",
+            details={**common, "error_type": state.error_type},
         )
-    if not isinstance(payload, dict):
+    if state.status == "root_not_object":
         return result(
             "settings.json", "config", FAIL, "SETTINGS_ROOT_NOT_OBJECT",
-            "Runtime settings root must be a JSON object.", started=started,
-            remediation="Replace the settings root with a JSON object.",
-            details={"path": _safe_path(path)},
+            "Runtime settings root must be a JSON object; delegated providers are disabled until it is repaired.",
+            started=started,
+            remediation="Replace the settings root with a JSON object and rerun doctor.",
+            details=common,
         )
+
+    payload = state.data
     return result(
         "settings.json", "config", PASS, "SETTINGS_VALID",
         "Runtime settings JSON is valid.", started=started,
-        details={"path": _safe_path(path), "mode": _mode(path), "top_level_keys": sorted(str(k) for k in payload)[:24]},
+        details={
+            **common,
+            "mode": _mode(path),
+            "top_level_keys": sorted(str(k) for k in payload)[:24],
+        },
     )
 
 

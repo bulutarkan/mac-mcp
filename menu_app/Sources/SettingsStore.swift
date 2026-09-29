@@ -44,8 +44,8 @@ struct MenuSettings: Codable {
             server: Server(port: 8000, cli_path: "", ngrok_on_start: false, public_endpoint_mode: "none", public_url: "", cloudflare_tunnel: ""),
             steering: Steering(session_ttl_minutes: 10),
             subagents: Subagents(providers: [
-                "opencode": Provider(enabled: true, binary_path: nil, default_project: nil),
-                "codex": Provider(enabled: true, binary_path: nil, default_project: nil),
+                "opencode": Provider(enabled: false, binary_path: nil, default_project: nil),
+                "codex": Provider(enabled: false, binary_path: nil, default_project: nil),
                 "chatgpt": Provider(enabled: false, binary_path: nil, default_project: nil),
             ])
         )
@@ -68,14 +68,16 @@ final class SettingsStore: ObservableObject {
     @Published var publicURL = ""
     @Published var cloudflareTunnel = ""
     @Published var steeringSessionMinutes = 10
-    @Published var opencodeEnabled = true
-    @Published var codexEnabled = true
+    @Published var opencodeEnabled = false
+    @Published var codexEnabled = false
     @Published var chatgptEnabled = false
     @Published var opencodeBinaryPath = ""
     @Published var codexBinaryPath = ""
     @Published var chatgptBinaryPath = ""
     @Published var chatgptDefaultProject = ""
     @Published var hasGroqKey = false
+    @Published private(set) var settingsLoadIssue = ""
+    @Published private(set) var providerSettingsLocked = false
 
     let path: URL
 
@@ -93,10 +95,32 @@ final class SettingsStore: ObservableObject {
     func load() {
         let defaults = MenuSettings.defaults()
         var current = defaults
-        if let data = try? Data(contentsOf: path),
-           let decoded = try? JSONDecoder().decode(MenuSettings.self, from: data) {
-            current = decoded
+        var providerConfigValid = false
+        settingsLoadIssue = ""
+        providerSettingsLocked = false
+
+        if FileManager.default.fileExists(atPath: path.path) {
+            do {
+                let data = try Data(contentsOf: path)
+                guard let rawObject = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                let defaultData = try JSONEncoder().encode(defaults)
+                guard let defaultObject = try JSONSerialization.jsonObject(with: defaultData) as? [String: Any] else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                let mergedObject = Self.deepMerge(defaultObject, rawObject)
+                let mergedData = try JSONSerialization.data(withJSONObject: mergedObject)
+                current = try JSONDecoder().decode(MenuSettings.self, from: mergedData)
+                providerConfigValid = true
+            } catch {
+                settingsLoadIssue = "settings.json could not be read or decoded. Delegated providers are disabled until you repair the file."
+                providerSettingsLocked = true
+            }
+        } else {
+            settingsLoadIssue = "settings.json is missing. Delegated providers are disabled until settings are saved."
         }
+
         voiceEnabled = current.experimental_tools["ask_user_voice"]?.enabled ?? true
         language = current.voice.language
         inputDevice = current.voice.input_device
@@ -116,10 +140,10 @@ final class SettingsStore: ObservableObject {
         cloudflareTunnel = current.server.cloudflare_tunnel ?? ""
         ngrokOnStart = publicEndpointMode == "ngrok"
         steeringSessionMinutes = max(1, current.steering?.session_ttl_minutes ?? 10)
-        let providers = current.subagents?.providers ?? MenuSettings.defaults().subagents?.providers ?? [:]
-        opencodeEnabled = providers["opencode"]?.enabled ?? true
-        codexEnabled = providers["codex"]?.enabled ?? true
-        chatgptEnabled = providers["chatgpt"]?.enabled ?? false
+        let providers = current.subagents?.providers ?? [:]
+        opencodeEnabled = providerConfigValid ? (providers["opencode"]?.enabled ?? false) : false
+        codexEnabled = providerConfigValid ? (providers["codex"]?.enabled ?? false) : false
+        chatgptEnabled = providerConfigValid ? (providers["chatgpt"]?.enabled ?? false) : false
         opencodeBinaryPath = providers["opencode"]?.binary_path ?? ""
         codexBinaryPath = providers["codex"]?.binary_path ?? ""
         chatgptBinaryPath = providers["chatgpt"]?.binary_path ?? ""
@@ -128,6 +152,13 @@ final class SettingsStore: ObservableObject {
     }
 
     func save() throws {
+        if providerSettingsLocked && FileManager.default.fileExists(atPath: path.path) {
+            throw NSError(
+                domain: "MacMCPSettings",
+                code: 75,
+                userInfo: [NSLocalizedDescriptionKey: settingsLoadIssue]
+            )
+        }
         let payload = MenuSettings(
             experimental_tools: ["ask_user_voice": .init(enabled: voiceEnabled)],
             voice: .init(language: language, input_device: inputDevice, output_device: outputDevice, tts_rate: ttsRate, timeout_s: timeoutSeconds, voice: voiceName),
@@ -160,6 +191,8 @@ final class SettingsStore: ObservableObject {
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: path, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+        settingsLoadIssue = ""
+        providerSettingsLocked = false
     }
 
     private static func deepMerge(_ base: [String: Any], _ overlay: [String: Any]) -> [String: Any] {

@@ -2682,14 +2682,15 @@ def provider_overview() -> Dict[str, Any]:
     labels = {"opencode": "OpenCode", "codex": "Codex", "chatgpt": "ChatGPT Web CLI"}
     rows: List[Dict[str, Any]] = []
     for provider in ("opencode", "codex", "chatgpt"):
+        enabled = provider_enabled(provider)
         binary = _find_binary(provider)
         rows.append({
             "id": provider,
             "name": labels[provider],
-            "enabled": provider_enabled(provider),
+            "enabled": enabled,
             "detected": bool(binary),
             "binary_path": binary,
-            "version": _version(binary),
+            "version": _version(binary) if enabled else None,
         })
     return {"ok": True, "providers": rows}
 

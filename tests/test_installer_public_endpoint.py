@@ -166,6 +166,61 @@ class InstallerPublicEndpointTests(unittest.TestCase):
         self.assertNotIn('MAC_MCP_CLOUDFLARE_TOKEN=', source)
         self.assertNotIn('CLOUDFLARE_TUNNEL_TOKEN=', source)
 
+    def test_subagent_settings_bootstrap_writes_explicit_provider_state(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-installer-provider-bootstrap-") as td:
+            state = Path(td) / "state"
+            state.mkdir()
+            proc = self.run_bash(
+                f'STATE_DIR="{state}"; PYTHON_BIN=/usr/bin/python3; '
+                'CHATGPT_PROVIDER_ENABLED=0; CHATGPT_CLI_BINARY=""; RUNTIME_SETTINGS_BROKEN=0; '
+                'configure_subagent_provider_settings >/dev/null; printf "%s" "$RUNTIME_SETTINGS_BROKEN"'
+            )
+            self.assertEqual(0, proc.returncode, proc.stderr)
+            self.assertEqual("0", proc.stdout)
+            settings = state / "settings.json"
+            data = json.loads(settings.read_text(encoding="utf-8"))
+            providers = data["subagents"]["providers"]
+            self.assertTrue(providers["opencode"]["enabled"])
+            self.assertTrue(providers["codex"]["enabled"])
+            self.assertFalse(providers["chatgpt"]["enabled"])
+            self.assertEqual(0o600, stat.S_IMODE(settings.stat().st_mode))
+
+    def test_installer_preserves_corrupt_settings_and_skips_later_public_write(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-installer-provider-corrupt-") as td:
+            state = Path(td) / "state"
+            state.mkdir()
+            settings = state / "settings.json"
+            original = "{broken-settings\n"
+            settings.write_text(original, encoding="utf-8")
+            proc = self.run_bash(
+                f'STATE_DIR="{state}"; PYTHON_BIN=/usr/bin/python3; '
+                'CHATGPT_PROVIDER_ENABLED=0; CHATGPT_CLI_BINARY=""; RUNTIME_SETTINGS_BROKEN=0; '
+                'configure_subagent_provider_settings >/dev/null 2>&1; '
+                'PUBLIC_ENDPOINT_MODE=none; configure_public_endpoint >/dev/null 2>&1; '
+                'printf "%s" "$RUNTIME_SETTINGS_BROKEN"'
+            )
+            self.assertEqual(0, proc.returncode, proc.stderr)
+            self.assertEqual("1", proc.stdout)
+            self.assertEqual(original, settings.read_text(encoding="utf-8"))
+
+    def test_public_endpoint_writer_refuses_to_overwrite_corrupt_settings(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-installer-public-corrupt-") as td:
+            root = Path(td)
+            state = root / "state"
+            runtime = root / "runtime"
+            state.mkdir()
+            (runtime / "mcp_server").mkdir(parents=True)
+            settings = state / "settings.json"
+            original = "{broken-settings\n"
+            settings.write_text(original, encoding="utf-8")
+            (runtime / "mcp_server/.env").write_text("NGROK_DOMAIN=\n", encoding="utf-8")
+            proc = self.run_bash(
+                f'STATE_DIR="{state}"; RUNTIME_DIR="{runtime}"; PYTHON_BIN=/usr/bin/python3; '
+                'persist_public_endpoint_config none "" ""'
+            )
+            self.assertNotEqual(0, proc.returncode)
+            self.assertEqual(original, settings.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

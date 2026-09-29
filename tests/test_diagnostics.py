@@ -110,6 +110,40 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertEqual(row.status, "fail")
             self.assertEqual(row.reason_code, "SETTINGS_INVALID_JSON")
 
+    def test_missing_settings_reports_provider_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "settings.json"
+            with patch("mcp_server.diagnostics.settings_path", return_value=path):
+                row = diagnostics._check_settings().to_dict()
+        self.assertEqual("info", row["status"])
+        self.assertEqual("SETTINGS_NOT_CREATED", row["reason_code"])
+        self.assertTrue(row["details"]["provider_fail_closed"])
+        self.assertEqual("missing", row["details"]["load_status"])
+        self.assertIn("delegated providers are fail-closed", row["summary"])
+
+    def test_invalid_settings_reports_provider_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "settings.json"
+            path.write_text("{broken", encoding="utf-8")
+            with patch("mcp_server.diagnostics.settings_path", return_value=path):
+                row = diagnostics._check_settings().to_dict()
+        self.assertEqual("fail", row["status"])
+        self.assertEqual("SETTINGS_INVALID_JSON", row["reason_code"])
+        self.assertTrue(row["details"]["provider_fail_closed"])
+        self.assertEqual("invalid_json", row["details"]["load_status"])
+
+    def test_unreadable_settings_has_distinct_reason_code(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "settings.json"
+            path.write_text("{}", encoding="utf-8")
+            with patch("mcp_server.diagnostics.settings_path", return_value=path), \
+                 patch.object(Path, "read_text", side_effect=PermissionError("denied")):
+                row = diagnostics._check_settings().to_dict()
+        self.assertEqual("fail", row["status"])
+        self.assertEqual("SETTINGS_UNREADABLE", row["reason_code"])
+        self.assertTrue(row["details"]["provider_fail_closed"])
+        self.assertEqual("PermissionError", row["details"]["error_type"])
+
     def test_ngrok_dependency_uses_same_env_resolver_as_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             binary = Path(td) / "ngrok"

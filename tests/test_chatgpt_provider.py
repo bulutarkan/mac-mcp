@@ -134,11 +134,14 @@ class ChatGPTProviderTests(unittest.TestCase):
                     "chatgpt": {"enabled": False, "binary_path": str(binary)}
                 }}
             }))
-            with patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(settings)}):
+            with patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(settings)}), \
+                 patch.object(agents, "_version") as version:
                 self.assertEqual(str(binary), _find_binary("chatgpt"))
                 row = next(item for item in provider_overview()["providers"] if item["id"] == "chatgpt")
                 self.assertFalse(row["enabled"])
                 self.assertTrue(row["detected"])
+                self.assertIsNone(row["version"])
+                version.assert_not_called()
 
     def test_chatgpt_events_normalize_progress_and_tools(self):
         now = time.time()

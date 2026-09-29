@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "be3b3182559da1557103ee4148bd29f365a54910",
+  "base_commit": "273bb74e30f7501173abf51f75f3fbdbcf24ebb5",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -55,8 +55,8 @@
     {
       "mode": "100644",
       "path": "README.md",
-      "sha256": "e92499c1eded405be916aee5edd0e97437b793bc6ac11eb773a32411a0a1d2b8",
-      "size": 59995
+      "sha256": "ffcca7c0382d657b6540806d5a9f75c81ac567c872d7c1482d7a4fa81eae012b",
+      "size": 61976
     },
     {
       "mode": "100644",
@@ -109,8 +109,8 @@
     {
       "mode": "100755",
       "path": "install.sh",
-      "sha256": "bf5febf08c8384a8af9f4065a744e2f00994dcbf354923df00c84ee38724c8e1",
-      "size": 49056
+      "sha256": "8fd13da10f93ef8ff0ae6bf552f393e1e11f57b9a112e9d24c623c3c5d6fb309",
+      "size": 50174
     },
     {
       "mode": "100644",
@@ -247,8 +247,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/diagnostics.py",
-      "sha256": "f112abd9ae7b3e894cbcb087ddf954bbb6e427cb3df0182a82e00b0c444e063e",
-      "size": 43696
+      "sha256": "8a5d3ad4ceb9585f4070860563e480560ffeaf8acdca3fce4796a42ab10dfd7b",
+      "size": 44609
     },
     {
       "mode": "100644",
@@ -379,8 +379,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/runtime_settings.py",
-      "sha256": "1d214869ef0a880fe7c6ff58cbd88015091d1f49f50edabe554444d3e2926620",
-      "size": 3189
+      "sha256": "f25adea222e4bb7180ac5ff87b034d24b13448c0734f6acf7b752584bc7af6a1",
+      "size": 4540
     },
     {
       "mode": "100644",
@@ -427,8 +427,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/tools_agents.py",
-      "sha256": "cb3b8f038ad919f67f0695e0ffb982fdbd9d6bdbb1ae83b7738115edcd3a5552",
-      "size": 246054
+      "sha256": "ecfb6a41d9d70923eb0c93744716fafb2825fce51cd466b31cbdec9e2f9f4634",
+      "size": 246101
     },
     {
       "mode": "100644",
@@ -673,14 +673,14 @@
     {
       "mode": "100644",
       "path": "menu_app/Sources/SettingsStore.swift",
-      "sha256": "9780ec5bf898d231ee6a493b9e274a84f592ffbddd329c1a279cada0c70d6faf",
-      "size": 9690
+      "sha256": "00e18f613c11261709c2ca547294932de3123a7e60c4e2d1692e198e00affd17",
+      "size": 11401
     },
     {
       "mode": "100644",
       "path": "menu_app/Sources/SettingsView.swift",
-      "sha256": "011e36e06a2940e59d2338fcb3016269a83ccf969d9802e91e1e4cbcdd99eb15",
-      "size": 31571
+      "sha256": "2a6afe2f8193faf2f2a857ac0e9a9322cc70751867d2c20fe7569ed38405a859",
+      "size": 32236
     },
     {
       "mode": "100644",
@@ -805,8 +805,8 @@
     {
       "mode": "100644",
       "path": "tests/test_agent_role_learning.py",
-      "sha256": "33cc8eb397bde62620a447f736bc607d038c0f2af28d5d2cb8a5f251bdfdca0e",
-      "size": 10727
+      "sha256": "17db804e6484217fd8df2b5150a0f81220411bb877c8719c1ea01eb73adb39d3",
+      "size": 10803
     },
     {
       "mode": "100644",
@@ -823,8 +823,8 @@
     {
       "mode": "100644",
       "path": "tests/test_agents.py",
-      "sha256": "4aee4a162f2a45cb84de21a62228e26959c83618142c3aabc672917165beb27f",
-      "size": 8170
+      "sha256": "09f8ee7344ae3802958dc515e341f64a6a3e893ab196c9e28f9aaae1cd8afc7a",
+      "size": 8246
     },
     {
       "mode": "100644",
@@ -925,8 +925,8 @@
     {
       "mode": "100644",
       "path": "tests/test_chatgpt_provider.py",
-      "sha256": "a34dae3e3fb3fa35886aceb16c33a3e5772d72a8dc93f4a78a9769bae999ad4b",
-      "size": 7780
+      "sha256": "d439f2e4d7b03923ae224e3a821f5ce9f809d404f96aad738a70a200de8f4162",
+      "size": 7938
     },
     {
       "mode": "100644",
@@ -973,8 +973,8 @@
     {
       "mode": "100644",
       "path": "tests/test_diagnostics.py",
-      "sha256": "09db83ff6792ffb33cd5ef50934f9ee2976829c238f19a0811b6538924e34c69",
-      "size": 10389
+      "sha256": "d187c658979dfb03782f6002a6f86069efeb3a2a274861c42b5d8f5fc97e55f1",
+      "size": 12369
     },
     {
       "mode": "100644",
@@ -1003,8 +1003,8 @@
     {
       "mode": "100644",
       "path": "tests/test_installer_public_endpoint.py",
-      "sha256": "1dac4031a128ec2c2bada483be08418f6e4f4ee5b05d8eaf334f4c8947fba050",
-      "size": 8440
+      "sha256": "6f9be3c83a27249bd4fd6a938c31bac02a8eb2b42e04417ce9a063a8ab970dd8",
+      "size": 11512
     },
     {
       "mode": "100644",
@@ -1110,6 +1110,12 @@
     },
     {
       "mode": "100644",
+      "path": "tests/test_provider_fail_closed.py",
+      "sha256": "b7cf5d4f7c3c9f2c771f806d3abbb4088448dcb584219e53819469c2e4e14294",
+      "size": 4238
+    },
+    {
+      "mode": "100644",
       "path": "tests/test_provider_process_boundary.py",
       "sha256": "decf256c6b3987bbddb6a05e08b9465033e585d20ffdde9bca274b6efc8f704e",
       "size": 10054
@@ -1147,8 +1153,8 @@
     {
       "mode": "100644",
       "path": "tests/test_runtime_settings.py",
-      "sha256": "46b6e8e3b971534a8f5830d1d8c05260453fc206901fd635858fc171e9452d8d",
-      "size": 3747
+      "sha256": "41538248a0e2ff24d223aa3097fa8e8b5d1a0985f07026875128945a592dc14d",
+      "size": 6129
     },
     {
       "mode": "100644",
@@ -1271,10 +1277,10 @@
       "size": 3924
     }
   ],
-  "generated_at": "2026-09-28T16:42:13Z",
-  "payload_sha256": "4c92e173e843ffabac3cb5cb1785f15fda1e2a5ced30e618f87b21f7e0b4552f",
+  "generated_at": "2026-09-29T08:28:47Z",
+  "payload_sha256": "e3f2495272dea76185fcdc8308d97ec2c11af397ab9883f7795c5fcdafc225f9",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.6-r20",
+  "release_id": "stable-2.1.6-r21",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",

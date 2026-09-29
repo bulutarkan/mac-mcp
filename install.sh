@@ -34,6 +34,7 @@ NODE_BIN=""
 NPM_BIN=""
 CHATGPT_CLI_BINARY=""
 CHATGPT_PROVIDER_ENABLED=0
+RUNTIME_SETTINGS_BROKEN=0
 PUBLIC_ENDPOINT_MODE="none"
 PUBLIC_ENDPOINT_URL=""
 PUBLIC_ENDPOINT_CONFIGURED=0
@@ -658,7 +659,7 @@ handle_optional_chatgpt_cli() {
 configure_subagent_provider_settings() {
   local settings_file="$STATE_DIR/settings.json"
   /bin/mkdir -p "$STATE_DIR"
-  "$PYTHON_BIN" - "$settings_file" "$CHATGPT_PROVIDER_ENABLED" "$CHATGPT_CLI_BINARY" <<'PYSETTINGS'
+  if ! "$PYTHON_BIN" - "$settings_file" "$CHATGPT_PROVIDER_ENABLED" "$CHATGPT_CLI_BINARY" <<'PYSETTINGS'
 import json
 import os
 import sys
@@ -667,11 +668,19 @@ from pathlib import Path
 path = Path(sys.argv[1])
 enabled = sys.argv[2] == "1"
 binary = sys.argv[3].strip()
-try:
-    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-except (OSError, json.JSONDecodeError):
-    data = {}
-if not isinstance(data, dict):
+if path.exists():
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"existing settings.json cannot be loaded ({type(exc).__name__}); refusing to overwrite it",
+            file=sys.stderr,
+        )
+        raise SystemExit(75)
+    if not isinstance(data, dict):
+        print("existing settings.json root is not an object; refusing to overwrite it", file=sys.stderr)
+        raise SystemExit(75)
+else:
     data = {}
 server = data.setdefault("server", {})
 if not isinstance(server, dict):
@@ -702,6 +711,11 @@ tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + 
 os.chmod(tmp, 0o600)
 os.replace(tmp, path)
 PYSETTINGS
+  then
+    RUNTIME_SETTINGS_BROKEN=1
+    warn "Existing settings.json is unreadable or invalid. It was not modified; delegated providers remain fail-closed until you repair it."
+    return 0
+  fi
   /bin/chmod 600 "$settings_file"
   if [[ "$CHATGPT_PROVIDER_ENABLED" -eq 1 ]]; then
     ok "ChatGPT Web CLI provider enabled in local Subagent settings."
@@ -1062,11 +1076,19 @@ if mode == "ngrok":
         raise SystemExit("ngrok domain must contain only a hostname such as example.ngrok-free.app")
     ngrok_domain = normalized_domain
 
-try:
-    data = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {}
-except (OSError, json.JSONDecodeError):
-    data = {}
-if not isinstance(data, dict):
+if settings_path.exists():
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(
+            f"existing settings.json cannot be loaded ({type(exc).__name__}); refusing to overwrite it",
+            file=sys.stderr,
+        )
+        raise SystemExit(75)
+    if not isinstance(data, dict):
+        print("existing settings.json root is not an object; refusing to overwrite it", file=sys.stderr)
+        raise SystemExit(75)
+else:
     data = {}
 server = data.setdefault("server", {})
 if not isinstance(server, dict):
@@ -1106,6 +1128,10 @@ configure_public_endpoint() {
   PUBLIC_ENDPOINT_CONFIGURED=0
 
   section "Configure public endpoint"
+  if [[ "$RUNTIME_SETTINGS_BROKEN" -eq 1 ]]; then
+    warn "Skipping public endpoint settings because existing settings.json is unreadable or invalid. Repair it first; local provider settings remain fail-closed."
+    return 0
+  fi
   case "$PUBLIC_ENDPOINT_MODE" in
     none)
       persist_public_endpoint_config "none" "" ""

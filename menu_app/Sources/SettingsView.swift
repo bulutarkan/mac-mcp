@@ -121,6 +121,13 @@ struct SettingsView: View {
                     refresh: true
                 )
 
+                if !settings.settingsLoadIssue.isEmpty {
+                    Label(settings.settingsLoadIssue, systemImage: "exclamationmark.shield")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(settings.providerSettingsLocked ? Color.orange : Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 providerRow(id: "opencode", title: "OpenCode", subtitle: "External OpenCode CLI provider")
                 providerRow(id: "codex", title: "Codex", subtitle: "External Codex CLI provider")
                 providerRow(
@@ -570,7 +577,12 @@ struct SettingsView: View {
                 Toggle("", isOn: providerBinding(id))
                     .labelsHidden()
                     .toggleStyle(.switch)
-                    .help(settings.providerEnabled(id) ? "Disable \(title)" : "Enable \(title)")
+                    .disabled(settings.providerSettingsLocked)
+                    .help(
+                        settings.providerSettingsLocked
+                            ? "Repair settings.json before changing delegated providers."
+                            : (settings.providerEnabled(id) ? "Disable \(title)" : "Enable \(title)")
+                    )
             }
 
             if detected {

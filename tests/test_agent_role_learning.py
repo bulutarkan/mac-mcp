@@ -53,6 +53,7 @@ class AgentRoleLearningTests(unittest.TestCase):
         fake_proc = SimpleNamespace(pid=43210)
         fake_thread = SimpleNamespace(start=lambda: None)
         with patch.object(agents, "AGENTS_DIR", self.agents_root), \
+             patch.object(agents, "provider_enabled", return_value=True), \
              patch.object(agents, "_find_binary", return_value="/tmp/codex"), \
              patch.object(agents, "_base_env", return_value={}), \
              patch.object(agents.subprocess, "Popen", return_value=fake_proc), \

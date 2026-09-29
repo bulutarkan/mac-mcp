@@ -106,7 +106,8 @@ class AgentOrchestrationTests(unittest.TestCase):
     def test_team_children_cannot_override_shared_model(self):
         # Input validation must win over provider discovery so CI/hosts without the
         # provider installed still return the stable 400 contract for malformed teams.
-        with patch.object(agents, "_find_binary", return_value=None):
+        with patch.object(agents, "provider_enabled", return_value=True), \
+             patch.object(agents, "_find_binary", return_value=None):
             with self.assertRaises(HTTPException) as ctx:
                 agents.spawn_agents(
                     load_settings(), tasks=[{"prompt":"x", "model":"different"}],
