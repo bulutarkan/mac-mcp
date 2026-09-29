@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "1b69bb9a85d474d15479980943606fb1a6f1a3d7",
+  "base_commit": "59e434817f16acb2038d9d020ca1bb23f32842cd",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -109,8 +109,8 @@
     {
       "mode": "100755",
       "path": "install.sh",
-      "sha256": "29a76a9aa77bba2e59907ed0bd67af02699afda22ffa2e7e099fdcc9ae6fd5ec",
-      "size": 54223
+      "sha256": "764c25a1547b343f924af03b7380bfb79bb838528485c4d500ee9821e92e81a0",
+      "size": 54881
     },
     {
       "mode": "100644",
@@ -1003,8 +1003,8 @@
     {
       "mode": "100644",
       "path": "tests/test_installer_completion.py",
-      "sha256": "a4a6e68a50c6b2e9c4bf59c7d2b3cd987cb94cea95d92c23eb037ae57d46523d",
-      "size": 8012
+      "sha256": "3da33d712e5ef9765f32d96f42f45458f6c29e9e9e80afe2444bac456db2eb02",
+      "size": 9434
     },
     {
       "mode": "100644",
@@ -1283,10 +1283,10 @@
       "size": 3924
     }
   ],
-  "generated_at": "2026-09-29T08:43:34Z",
-  "payload_sha256": "6ac20972f8ba75daa746571d34d9d0b233c498150f87660b00172c256189d5a8",
+  "generated_at": "2026-09-29T08:58:16Z",
+  "payload_sha256": "e58048b12f0250e23b087deae1fe344637659bdbaa44f747667f8970e7195b69",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.6-r22",
+  "release_id": "stable-2.1.6-r23",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",

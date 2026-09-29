@@ -70,7 +70,10 @@ class InstallerCompletionTests(unittest.TestCase):
             self.assertIn("API key: stored locally (present, not printed)", output)
             self.assertIn("Authorization: Bearer <API_KEY>", output)
             self.assertNotIn(secret, output)
-            self.assertNotIn("?ApiKey=", output)
+            self.assertIn(
+                "ChatGPT / header-limited client URL: http://127.0.0.1:8000/mcp?ApiKey=<API_KEY>",
+                output,
+            )
             self.assertNotIn("API key: " + secret, output)
             self.assertEqual(before, env_file.read_bytes())
             self.assertEqual(mode_before, stat.S_IMODE(env_file.stat().st_mode))
@@ -137,7 +140,35 @@ class InstallerCompletionTests(unittest.TestCase):
                 output,
             )
             self.assertNotIn(secret, output)
-            self.assertNotIn("?ApiKey=", output)
+            self.assertNotIn("ChatGPT / header-limited client URL:", output)
+
+    def test_completion_prefers_public_connector_url_for_chatgpt_query_auth(self) -> None:
+        secret = "public-connector-secret"
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-installer-public-chatgpt-") as td:
+            state, runtime = self.fixture(
+                Path(td),
+                port=8765,
+                env_text=f"MCP_API_KEY={secret}\nMCP_ALLOW_NO_AUTH=false\n",
+            )
+            settings = state / "settings.json"
+            settings.write_text(
+                json.dumps({
+                    "server": {
+                        "port": 8765,
+                        "public_endpoint_mode": "cloudflare",
+                        "public_url": "https://mac.example.com/mcp",
+                    }
+                }) + "\n",
+                encoding="utf-8",
+            )
+            proc = self.run_bash(self.completion_body(state, runtime))
+            self.assertEqual(0, proc.returncode, proc.stderr)
+            output = proc.stdout + proc.stderr
+            self.assertIn(
+                "ChatGPT / header-limited client URL: https://mac.example.com/mcp?ApiKey=<API_KEY>",
+                output,
+            )
+            self.assertNotIn(secret, output)
 
     def test_configure_runtime_never_echoes_generated_api_key(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mac-mcp-installer-generated-secret-") as td:
@@ -167,9 +198,10 @@ class InstallerCompletionTests(unittest.TestCase):
     def test_installer_source_has_no_completion_secret_or_query_key_output(self) -> None:
         source = INSTALLER.read_text(encoding="utf-8")
         self.assertNotIn("printf '  API key: %s", source)
-        self.assertNotIn("?ApiKey=<API_KEY>", source)
+        self.assertIn("?ApiKey=<API_KEY>", source)
         self.assertNotIn('API_KEY="$api_key"', source)
         self.assertIn("API key: stored locally (present, not printed)", source)
+        self.assertIn("ChatGPT / header-limited client URL:", source)
 
 
 if __name__ == "__main__":

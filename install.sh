@@ -1276,6 +1276,7 @@ env_path = Path(sys.argv[2])
 wanted = {
     "MAC_MCP_HOST",
     "MAC_MCP_PORT",
+    "MAC_MCP_PUBLIC_URL",
     "MCP_ALLOW_NO_AUTH",
     "MCP_API_KEY",
 }
@@ -1313,17 +1314,18 @@ def effective(name: str, default: str = "") -> str:
 
 host = effective("MAC_MCP_HOST", "127.0.0.1").strip() or "127.0.0.1"
 raw_port = effective("MAC_MCP_PORT", "").strip()
+try:
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    settings = {}
+server = settings.get("server") if isinstance(settings, dict) else {}
+if not isinstance(server, dict):
+    server = {}
+
 if not raw_port:
-    try:
-        settings = json.loads(settings_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        settings = {}
-    if isinstance(settings, dict):
-        server = settings.get("server")
-        if isinstance(server, dict):
-            value = server.get("port")
-            if isinstance(value, (int, str)):
-                raw_port = str(value).strip()
+    value = server.get("port")
+    if isinstance(value, (int, str)):
+        raw_port = str(value).strip()
 try:
     port = int(raw_port or "8000")
 except ValueError:
@@ -1335,11 +1337,22 @@ bind_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
 endpoint = f"http://{url_host}:{port}/mcp"
 bind = f"{bind_host}:{port}"
 
+public_endpoint = effective("MAC_MCP_PUBLIC_URL", "").strip()
+if not public_endpoint:
+    value = server.get("public_url")
+    if isinstance(value, str):
+        public_endpoint = value.strip()
+if public_endpoint:
+    public_endpoint = public_endpoint.rstrip("/")
+    if not public_endpoint.endswith("/mcp"):
+        public_endpoint = public_endpoint + "/mcp"
+connector_endpoint = public_endpoint or endpoint
+
 allow_no_auth = effective("MCP_ALLOW_NO_AUTH", "false").strip().lower() in {"1", "true", "yes", "on"}
 api_key_present = bool(effective("MCP_API_KEY", "").strip())
 auth_mode = "no_auth" if allow_no_auth else ("bearer" if api_key_present else "missing")
 
-print("|".join((endpoint, bind, auth_mode, "present" if api_key_present else "missing")))
+print("|".join((endpoint, bind, auth_mode, "present" if api_key_present else "missing", connector_endpoint)))
 PYCOMPLETION
 }
 
@@ -1350,9 +1363,10 @@ print_completion() {
   local server_bind="unavailable"
   local auth_mode="unknown"
   local api_key_state="unknown"
+  local connector_endpoint="unavailable"
 
   if summary="$(completion_runtime_summary 2>/dev/null)"; then
-    IFS='|' read -r local_endpoint server_bind auth_mode api_key_state <<< "$summary"
+    IFS='|' read -r local_endpoint server_bind auth_mode api_key_state connector_endpoint <<< "$summary"
   else
     warn "Could not resolve the effective local endpoint/auth state for the completion summary."
   fi
@@ -1372,8 +1386,9 @@ print_completion() {
       printf '  MCP authentication: Bearer token required\n'
       printf '  API key: stored locally (present, not printed)\n'
       printf '  Client auth header: Authorization: Bearer <API_KEY>\n'
+      printf '  ChatGPT / header-limited client URL: %s?ApiKey=<API_KEY>\n' "$connector_endpoint"
       printf '  Credential file: %s/mcp_server/.env (owner-only)\n' "$RUNTIME_DIR"
-      printf '  Credential-bearing URLs are intentionally not printed.\n'
+      printf '  Use the query-key URL only for clients that cannot send Authorization headers; upstream proxies/tunnels may observe query strings.\n'
       ;;
     no_auth)
       printf '  MCP authentication: disabled by explicit no-auth configuration\n'
