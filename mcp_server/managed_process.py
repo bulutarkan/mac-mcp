@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -123,16 +124,20 @@ def process_snapshot(pid: int) -> ProcessSnapshot | None:
 
 
 def port_is_listening(port: int, host: str = "127.0.0.1") -> bool:
-    """Best-effort occupancy probe used when PID discovery is unavailable.
+    """Return True when the local TCP bind is unavailable because the port is in use.
 
-    This never proves ownership; a positive result must be treated as foreign/
-    unverified unless a separate process fingerprint proves otherwise.
+    This is intentionally an ownership-free fallback for environments where
+    lsof cannot reveal the listener PID. A positive result means only
+    "occupied", so callers must treat it as foreign/unverified.
     """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        with socket.create_connection((host, int(port)), timeout=0.2):
-            return True
-    except OSError:
+        probe.bind((host, int(port)))
         return False
+    except OSError as exc:
+        return exc.errno in {errno.EADDRINUSE, errno.EACCES}
+    finally:
+        probe.close()
 
 
 def listener_pids(port: int) -> list[int]:

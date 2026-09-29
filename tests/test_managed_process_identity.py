@@ -168,15 +168,20 @@ class SafeLifecycleTests(unittest.TestCase):
             args = argparse.Namespace(host="127.0.0.1", port=port, reload=False)
             pid_file = state / "mac-mcp.pid"
             log_file = state / "mac-mcp.log"
-            owned, foreign_pids = cli._server_listener_state(port)
-            self.assertEqual([], owned)
-            self.assertTrue(
-                foreign_pids,
-                "occupied port must remain foreign even when PID discovery is unavailable",
-            )
+            with patch.object(cli, "listener_pids", return_value=[]):
+                owned, foreign_pids = cli._server_listener_state(port)
+                self.assertEqual([], owned)
+                self.assertEqual(
+                    [0],
+                    foreign_pids,
+                    "occupied port must remain foreign when PID discovery is unavailable",
+                )
 
-            with patch.object(cli, "STATE_DIR", state),                  patch.object(cli, "PID_FILE", pid_file),                  patch.object(cli, "LOG_FILE", log_file),                  patch.object(cli, "_launch_menu_app"):
-                code = cli._start_server(args)
+                with patch.object(cli, "STATE_DIR", state), \
+                     patch.object(cli, "PID_FILE", pid_file), \
+                     patch.object(cli, "LOG_FILE", log_file), \
+                     patch.object(cli, "_launch_menu_app"):
+                    code = cli._start_server(args)
 
             self.assertEqual(1, code)
             self.assertIsNone(foreign.poll(), "foreign listener must remain untouched")
