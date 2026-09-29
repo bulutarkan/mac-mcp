@@ -3,16 +3,17 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
-from .mobile_auth import DEFAULT_SESSION_TTL_S, MobileAuthStore
+from .mobile_auth import DEFAULT_SESSION_TTL_S, SESSION_PREFIX, MobileAuthStore
 from .observability import TelemetryManager
 from .public_endpoint import PublicEndpointError, resolve_public_endpoint
 from .security import Settings, dashboard_authorized
@@ -120,7 +121,17 @@ def create_mobile_routes(
     store = auth_store or MobileAuthStore()
 
     def mobile_session(request: Request) -> Optional[Dict[str, Any]]:
-        return store.resolve_session(request.cookies.get(MOBILE_COOKIE))
+        cookie_token = request.cookies.get(MOBILE_COOKIE)
+        session = store.resolve_session(cookie_token)
+        if session is not None:
+            return session
+
+        authorization = (request.headers.get("authorization") or "").strip()
+        if authorization.lower().startswith("bearer "):
+            bearer = authorization[7:].strip()
+            if bearer.startswith(SESSION_PREFIX):
+                return store.resolve_session(bearer)
+        return None
 
     def require_mobile(request: Request) -> tuple[Optional[Dict[str, Any]], Optional[Response]]:
         session = mobile_session(request)
@@ -132,7 +143,20 @@ def create_mobile_routes(
         return session, None
 
     async def index(request: Request) -> Response:
-        return FileResponse(MOBILE_DIR / "index.html", media_type="text/html; charset=utf-8")
+        return FileResponse(
+            MOBILE_DIR / "index.html",
+            media_type="text/html; charset=utf-8",
+            headers={
+                "Cache-Control": "no-store",
+                "Referrer-Policy": "no-referrer",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": (
+                    "default-src 'self'; script-src 'self'; style-src 'self'; "
+                    "connect-src 'self'; img-src 'self' data:; object-src 'none'; "
+                    "base-uri 'none'; frame-ancestors 'none'"
+                ),
+            },
+        )
 
     async def asset(request: Request) -> Response:
         name = str(request.path_params.get("name") or "")
@@ -178,7 +202,33 @@ def create_mobile_routes(
             )
 
         if form_navigation:
-            response: Response = RedirectResponse("/mobile", status_code=303)
+            nonce = secrets.token_urlsafe(18)
+            token_json = json.dumps(result["token"])
+            bootstrap_html = (
+                "<!doctype html><html><head><meta charset='utf-8'>"
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>Mac MCP</title></head><body>"
+                f"<script nonce='{nonce}'>"
+                "try{localStorage.setItem('mac_mcp_mobile_session',"
+                + token_json
+                + ");}catch(e){}"
+                "location.replace('/mobile');"
+                "</script></body></html>"
+            )
+            response = HTMLResponse(
+                bootstrap_html,
+                status_code=200,
+                headers={
+                    "Cache-Control": "no-store",
+                    "Referrer-Policy": "no-referrer",
+                    "X-Content-Type-Options": "nosniff",
+                    "Content-Security-Policy": (
+                        "default-src 'none'; "
+                        f"script-src 'nonce-{nonce}'; "
+                        "base-uri 'none'; frame-ancestors 'none'"
+                    ),
+                },
+            )
         else:
             response = JSONResponse({
                 "ok": True,

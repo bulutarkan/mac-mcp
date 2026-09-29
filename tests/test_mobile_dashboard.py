@@ -87,7 +87,7 @@ class MobileDashboardTests(unittest.TestCase):
             self.assertEqual("invalid_or_expired_pairing", second.json()["error"])
 
 
-    def test_top_level_form_pairing_persists_cookie_across_redirect_and_refresh(self):
+    def test_top_level_pairing_bootstraps_persistent_read_only_bearer(self):
         with tempfile.TemporaryDirectory() as td:
             app, _telemetry, _store = self.make_app(Path(td))
             manager = TestClient(app, base_url="https://testserver")
@@ -99,17 +99,18 @@ class MobileDashboardTests(unittest.TestCase):
                 data={"code": code, "device_name": "iPhone"},
                 follow_redirects=False,
             )
-            self.assertEqual(303, response.status_code)
-            self.assertEqual("/mobile", response.headers["location"])
-            cookie = response.headers.get("set-cookie", "")
-            self.assertIn("HttpOnly", cookie)
-            self.assertIn("Secure", cookie)
-            self.assertIn("SameSite=lax", cookie)
-            self.assertIn("Path=/mobile", cookie)
+            self.assertEqual(200, response.status_code)
+            self.assertIn("localStorage.setItem('mac_mcp_mobile_session'", response.text)
+            self.assertNotIn("location:", "\n".join(f"{k}: {v}" for k, v in response.headers.items()).lower())
+            self.assertEqual("no-store", response.headers["cache-control"])
+            self.assertIn("script-src 'nonce-", response.headers["content-security-policy"])
 
-            # The same browser session must stay authenticated after the
-            # top-level redirect and on a later refresh/API request.
-            self.assertEqual(200, phone.get("/mobile").status_code)
+            import re
+            match = re.search(r"localStorage\.setItem\('mac_mcp_mobile_session',(\"mcpmob_[^\"]+\")\)", response.text)
+            self.assertIsNotNone(match)
+            token = __import__("json").loads(match.group(1))
+            headers = {"authorization": "Bearer " + token}
+
             with patch(
                 "mcp_server.mobile_routes.list_agents",
                 return_value={"ok": True, "agents": [], "count": 0},
@@ -117,8 +118,8 @@ class MobileDashboardTests(unittest.TestCase):
                 "mcp_server.mobile_routes.provider_overview",
                 return_value={"providers": []},
             ):
-                first = phone.get("/mobile/api/status")
-                second = phone.get("/mobile/api/status")
+                first = phone.get("/mobile/api/status", headers=headers)
+                second = phone.get("/mobile/api/status", headers=headers)
             self.assertEqual(200, first.status_code)
             self.assertEqual(200, second.status_code)
 

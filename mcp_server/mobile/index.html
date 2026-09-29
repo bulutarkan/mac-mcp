@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#17383b">
+  <meta name="theme-color" content="#0a0a0b">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Mac MCP">
@@ -12,103 +12,59 @@
   <link rel="stylesheet" href="/mobile/assets/mobile.css">
 </head>
 <body>
-  <main class="app-shell">
-    <header class="brandbar">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32" role="img">
-            <defs>
-              <linearGradient id="mcp-g" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0" stop-color="#faf7ef"/>
-                <stop offset=".48" stop-color="#d9d9d4"/>
-                <stop offset="1" stop-color="#80796d"/>
-              </linearGradient>
-            </defs>
-            <rect x="1" y="1" width="30" height="30" rx="9" fill="#111719" stroke="rgba(255,255,255,.3)"/>
-            <path d="M7 23V9.2c0-.8.9-1.2 1.5-.7l7.5 6.2 7.5-6.2c.6-.5 1.5-.1 1.5.7V23h-4.2v-6.4L16 20.5l-4.8-3.9V23H7Z" fill="url(#mcp-g)"/>
-          </svg>
-        </div>
-        <div class="brand-copy">
+  <main class="shell">
+    <header class="topbar">
+      <div class="identity">
+        <div class="mark">M</div>
+        <div>
           <h1>Mac MCP</h1>
-          <div class="server-state">
-            <span class="live-dot"></span>
-            <span id="serverStateText">Checking server</span>
-            <span class="middot">·</span>
+          <div class="subline">
+            <span id="onlineDot" class="dot online"></span>
+            <span id="serverText">Checking</span>
+            <span class="sep">·</span>
             <span id="version">—</span>
           </div>
         </div>
       </div>
-      <div id="connector" class="connector-pill">
-        <span class="connector-icon">◎</span>
-        <span id="connectorText">Remote</span>
-      </div>
+      <div id="connector" class="chip">Remote</div>
     </header>
 
-    <section id="pairing" class="pair-card hidden">
-      <div class="pair-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24">
-          <path d="M8.5 10V7.5a3.5 3.5 0 0 1 7 0V10m-8 0h9a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 16.5 20h-9A1.5 1.5 0 0 1 6 18.5v-7A1.5 1.5 0 0 1 7.5 10Z"/>
-        </svg>
-      </div>
+    <section id="pairing" class="pairing hidden">
+      <div class="lock-ring">⌁</div>
       <h2>Pair this iPhone</h2>
       <p>Open <strong>Mac MCP → Settings → Mobile Access</strong> on your Mac and scan a fresh QR code.</p>
-      <p id="pairError" class="pair-error hidden">That pairing code expired or was already used. Generate a new QR on your Mac.</p>
-      <div class="privacy-note">Read-only access · Device-specific session · Revocable from your Mac</div>
+      <p id="pairError" class="error hidden">That pairing code expired or was already used.</p>
+      <div class="trust">Read-only · Device-specific · Revocable</div>
     </section>
 
     <div id="dashboard" class="hidden">
-      <section class="server-panel">
-        <div class="panel-label">
-          <span class="panel-icon server-icon" aria-hidden="true">▤</span>
-          <span>Server</span>
+      <section class="hero">
+        <div class="hero-copy">
+          <span class="eyebrow">Active Agents</span>
+          <strong id="activeAgents">0</strong>
+          <span id="agentHint" class="hint">Nothing running right now</span>
         </div>
-        <div class="stats">
-          <div class="stat">
-            <strong id="calls1h">—</strong>
-            <span>Calls / 1h</span>
-          </div>
-          <div class="divider"></div>
-          <div class="stat">
-            <strong id="successRate">—</strong>
-            <span>Success</span>
-          </div>
-          <div class="divider"></div>
-          <div class="stat">
-            <strong id="activeAgents">—</strong>
-            <span>Active Agents</span>
-          </div>
+        <div class="hero-meta">
+          <div><span>Calls / 1h</span><strong id="calls1h">0</strong></div>
+          <div><span>Success</span><strong id="successRate">—</strong></div>
         </div>
       </section>
 
-      <section class="content-section">
-        <div class="section-header">
-          <div class="section-title">
-            <span class="section-icon" aria-hidden="true">◉</span>
-            <span>Delegated Agents</span>
-          </div>
-          <span id="agentMeta" class="section-meta"></span>
+      <section class="section">
+        <div class="section-head">
+          <h2>Agents</h2>
+          <span id="agentMeta"></span>
         </div>
-        <div id="agents" class="surface-list"></div>
+        <div id="agents" class="stack"></div>
       </section>
 
-      <section class="content-section">
-        <div class="section-header">
-          <div class="section-title">
-            <span class="section-icon activity-icon" aria-hidden="true">⌁</span>
-            <span>Latest Tool Usage</span>
-          </div>
-          <span class="section-meta">1h</span>
+      <section class="section">
+        <div class="section-head">
+          <h2>Recent Activity</h2>
+          <span>Last hour</span>
         </div>
-        <div id="activity" class="surface-list"></div>
+        <div id="activity" class="stack"></div>
       </section>
-
-      <details class="session-panel">
-        <summary>
-          <span class="summary-left"><span class="section-icon">▱</span> Sessions</span>
-          <span class="summary-right"><span id="sessionCount">0</span><span class="chevron">›</span></span>
-        </summary>
-        <div id="sessions" class="session-list"></div>
-      </details>
     </div>
   </main>
   <script src="/mobile/assets/mobile.js" defer></script>
