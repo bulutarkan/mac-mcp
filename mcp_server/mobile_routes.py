@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import json
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -79,17 +80,27 @@ def _safe_agent(item: Dict[str, Any]) -> Dict[str, Any]:
     return {key: item.get(key) for key in keys}
 
 
-def _mobile_agent_rows(items: list[Dict[str, Any]], limit: int = 8) -> list[Dict[str, Any]]:
+def _mobile_agent_rows(items: list[Dict[str, Any]], limit: int = 6) -> list[Dict[str, Any]]:
     active = [item for item in items if item.get("status") in {"starting", "running"}]
-    recent = [item for item in items if item.get("status") not in {"starting", "running"}]
-    # Keep every active agent visible up to a sensible mobile cap, then fill
-    # remaining slots with the newest completed/failed agents.
-    cap = max(limit, min(len(active), 12))
+    now = time.time()
+    recent: list[Dict[str, Any]] = []
+    for item in items:
+        if item.get("status") in {"starting", "running"}:
+            continue
+        raw_ts = item.get("ended_at") or item.get("started_at")
+        try:
+            ts = float(raw_ts)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= now - ts <= 24 * 60 * 60:
+            recent.append(item)
+
+    # Active work is the primary mobile surface. Only same-day history fills
+    # any remaining slots so old test/stale agents never dominate the screen.
+    cap = max(limit, min(len(active), 10))
     visible = active[:cap]
     if len(visible) < cap:
         visible.extend(recent[: cap - len(visible)])
-    elif len(active) < limit:
-        visible.extend(recent[: limit - len(visible)])
     return [_safe_agent(item) for item in visible]
 
 
@@ -310,7 +321,7 @@ def create_mobile_routes(
         try:
             data = await asyncio.to_thread(list_agents, settings, limit=100)
             all_rows = list(data.get("agents", []))
-            rows = _mobile_agent_rows(all_rows, limit=8)
+            rows = _mobile_agent_rows(all_rows, limit=6)
             active_count = sum(
                 1 for row in all_rows if row.get("status") in {"starting", "running"}
             )

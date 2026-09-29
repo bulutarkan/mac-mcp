@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -157,6 +158,7 @@ class MobileDashboardTests(unittest.TestCase):
                     "status": "completed",
                     "provider": "codex",
                     "model": "GPT-5.6",
+                    "ended_at": time.time() - 60,
                 }
                 for idx in range(20)
             )
@@ -168,7 +170,7 @@ class MobileDashboardTests(unittest.TestCase):
             self.assertEqual(200, response.status_code)
             body = response.json()
             self.assertEqual(2, body["active_count"])
-            self.assertEqual(8, body["count"])
+            self.assertEqual(6, body["count"])
             self.assertEqual(["Active One", "Active Two"], [row["title"] for row in body["agents"][:2]])
             self.assertNotIn("result_preview", response.text)
 
