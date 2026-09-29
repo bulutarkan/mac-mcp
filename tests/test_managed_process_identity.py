@@ -168,7 +168,8 @@ class SafeLifecycleTests(unittest.TestCase):
             args = argparse.Namespace(host="127.0.0.1", port=port, reload=False)
             pid_file = state / "mac-mcp.pid"
             log_file = state / "mac-mcp.log"
-            with patch.object(cli, "listener_pids", return_value=[]):
+            with patch.object(cli, "listener_pids", return_value=[]), \
+                 patch.object(cli, "port_is_listening", return_value=True):
                 owned, foreign_pids = cli._server_listener_state(port)
                 self.assertEqual([], owned)
                 self.assertEqual(
