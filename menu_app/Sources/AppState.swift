@@ -912,7 +912,6 @@ final class AppState: ObservableObject {
 
             async let eventsFetch: EventsEnvelope = fetch(base.appendingPathComponent("dashboard/api/events"), query: ["hours": "1", "limit": "20"])
             async let agentsFetch: AgentsEnvelope = fetch(base.appendingPathComponent("dashboard/api/agents"), query: ["limit": "20"])
-            async let providersFetch: ProvidersEnvelope = fetch(base.appendingPathComponent("dashboard/api/providers"), query: [:])
             async let steeringFetch: SteeringEnvelope = fetch(base.appendingPathComponent("dashboard/api/steering"), query: [:])
             async let securityFetch: SecuritySemanticsEnvelope = fetch(base.appendingPathComponent("dashboard/api/security/semantics"), query: [:])
 
@@ -939,12 +938,6 @@ final class AppState: ObservableObject {
                 secondaryIssue = secondaryIssue ?? "Agents: \(Self.issueText(for: error))"
             }
             setIfChanged(\.activeAgents, resolvedActiveAgents)
-            do {
-                let providersEnvelope = try await providersFetch
-                setIfChanged(\.providerStatuses, providersEnvelope.providers)
-            } catch {
-                secondaryIssue = secondaryIssue ?? "Providers: \(Self.issueText(for: error))"
-            }
             do {
                 let steeringEnvelope = try await steeringFetch
                 applySteeringSnapshot(steeringEnvelope)
@@ -981,7 +974,8 @@ final class AppState: ObservableObject {
         do {
             let envelope: ProvidersEnvelope = try await fetch(
                 base.appendingPathComponent("dashboard/api/providers"),
-                query: [:]
+                query: [:],
+                timeout: 8.0
             )
             setIfChanged(\.providerStatuses, envelope.providers)
         } catch {
@@ -1665,12 +1659,16 @@ final class AppState: ObservableObject {
         }
     }
 
-    private func fetch<T: Decodable>(_ url: URL, query: [String: String]) async throws -> T {
+    private func fetch<T: Decodable>(
+        _ url: URL,
+        query: [String: String],
+        timeout: TimeInterval = 1.8
+    ) async throws -> T {
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
         components.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) }
         var request = URLRequest(url: components.url!)
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.timeoutInterval = 1.8
+        request.timeoutInterval = timeout
         authorizeDashboardRequest(&request)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
