@@ -216,12 +216,14 @@ struct MobileDevicesEnvelope: Decodable {
 struct MobilePairingEnvelope: Decodable {
     let ok: Bool
     let pairURL: String
+    let manualCode: String
     let mobileURL: String
     let expiresAt: Double
 
     enum CodingKeys: String, CodingKey {
         case ok
         case pairURL = "pair_url"
+        case manualCode = "manual_code"
         case mobileURL = "mobile_url"
         case expiresAt = "expires_at"
     }
@@ -676,6 +678,7 @@ final class AppState: ObservableObject {
     @Published var providerStatuses: [ProviderInfo] = []
     @Published var mobileDevices: [MobileDeviceInfo] = []
     @Published var mobilePairingURL: String?
+    @Published var mobilePairingCode: String?
     @Published var mobilePairingExpiresAt: Double?
     @Published var mobilePairingLoading = false
     @Published var steeringSessions: [SteeringSession] = []
@@ -1008,10 +1011,12 @@ final class AppState: ObservableObject {
                 body: [:]
             )
             setIfChanged(\.mobilePairingURL, envelope.pairURL)
+            setIfChanged(\.mobilePairingCode, envelope.manualCode)
             setIfChanged(\.mobilePairingExpiresAt, envelope.expiresAt)
             await refreshMobileDevices()
         } catch {
             setIfChanged(\.mobilePairingURL, nil)
+            setIfChanged(\.mobilePairingCode, nil)
             setIfChanged(\.mobilePairingExpiresAt, nil)
             showNotice(ActionNotice(
                 kind: .error,

@@ -101,6 +101,20 @@ h1{margin:0;font-size:17px;line-height:1.15;letter-spacing:-.025em;font-weight:7
 .pairing h2{margin:0;font-size:17px;letter-spacing:-.025em}
 .pairing p{max-width:320px;margin:10px auto 0;color:var(--muted);font-size:10.5px;line-height:1.55}
 .pairing strong{color:#dadadd;font-weight:650}
+.pair-form{margin:20px auto 0;max-width:310px;text-align:left}
+.pair-form label{display:block;margin:0 0 7px;color:var(--muted);font-size:9px;font-weight:650}
+.pair-input-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+.pair-input-row input{
+  width:100%;height:44px;border-radius:12px;border:1px solid #2a2a2f;background:#0d0d0f;
+  color:var(--text);padding:0 12px;outline:none;font:650 16px/1 ui-monospace,SFMono-Regular,Menlo,monospace;
+  letter-spacing:.12em;text-transform:uppercase;
+}
+.pair-input-row input:focus{border-color:#43434a;box-shadow:0 0 0 3px rgba(255,255,255,.035)}
+.pair-input-row button{
+  height:44px;padding:0 15px;border:1px solid #2d2d31;border-radius:12px;background:#f0f0f2;
+  color:#111114;font-size:10.5px;font-weight:750;cursor:pointer;
+}
+.pair-input-row button:disabled{opacity:.55;cursor:default}
 .error{color:#ff8c90!important}
 .trust{display:inline-block;margin-top:17px;padding:6px 9px;border-radius:8px;background:#161618;color:#66666d;font-size:8px}
 .hidden{display:none!important}

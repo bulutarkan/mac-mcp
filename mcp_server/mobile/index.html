@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-title" content="Mac MCP">
   <title>Mac MCP</title>
   <link rel="manifest" href="/mobile/assets/manifest.json">
-  <link rel="stylesheet" href="/mobile/assets/mobile.css?v=mobile-v3">
+  <link rel="stylesheet" href="/mobile/assets/mobile.css?v=mobile-v4">
 </head>
 <body>
   <main class="shell">
@@ -31,9 +31,28 @@
 
     <section id="pairing" class="pairing hidden">
       <div class="lock-ring">⌁</div>
-      <h2>Pair this iPhone</h2>
-      <p>Open <strong>Mac MCP → Settings → Mobile Access</strong> on your Mac and scan a fresh QR code.</p>
-      <p id="pairError" class="error hidden">That pairing code expired or was already used.</p>
+      <h2>Pair this device</h2>
+      <p>Open <strong>Mac MCP → Settings → Mobile Access</strong> on your Mac and enter the one-time code.</p>
+
+      <form id="manualPairForm" class="pair-form" autocomplete="off">
+        <label for="manualPairCode">Pairing code</label>
+        <div class="pair-input-row">
+          <input
+            id="manualPairCode"
+            name="manualPairCode"
+            type="text"
+            inputmode="text"
+            autocapitalize="characters"
+            autocomplete="one-time-code"
+            maxlength="9"
+            placeholder="ABCD-EFGH"
+            aria-label="Pairing code"
+          >
+          <button id="manualPairButton" type="submit">Pair</button>
+        </div>
+      </form>
+
+      <p id="pairError" class="error hidden">That pairing code is invalid, expired, or already used.</p>
       <div class="trust">Read-only · Device-specific · Revocable</div>
     </section>
 
@@ -67,6 +86,6 @@
       </section>
     </div>
   </main>
-  <script src="/mobile/assets/mobile.js?v=mobile-v3" defer></script>
+  <script src="/mobile/assets/mobile.js?v=mobile-v4" defer></script>
 </body>
 </html>

@@ -15,6 +15,9 @@ PAIR_PREFIX = "mcpair_"
 SESSION_PREFIX = "mcpmob_"
 DEFAULT_PAIR_TTL_S = 120
 DEFAULT_SESSION_TTL_S = 60 * 60 * 24 * 30
+MANUAL_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+MANUAL_CODE_LENGTH = 8
+MAX_MANUAL_ATTEMPTS = 5
 
 
 def mobile_auth_db_path() -> Path:
@@ -50,6 +53,16 @@ class MobileAuthStore:
             )
             """
         )
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(mobile_pairings)").fetchall()
+        }
+        if "manual_code_hash" not in columns:
+            conn.execute("ALTER TABLE mobile_pairings ADD COLUMN manual_code_hash TEXT")
+        if "failed_attempts" not in columns:
+            conn.execute(
+                "ALTER TABLE mobile_pairings ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0"
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS mobile_sessions (
@@ -85,22 +98,48 @@ class MobileAuthStore:
             return "iPhone or iPad"
         return text[:80]
 
+    @staticmethod
+    def _normalize_manual_code(value: object) -> str:
+        return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
+
+    @staticmethod
+    def _format_manual_code(value: str) -> str:
+        return value[:4] + "-" + value[4:]
+
     def issue_pairing(self, ttl_s: int = DEFAULT_PAIR_TTL_S) -> Dict[str, Any]:
         ttl = max(15, min(int(ttl_s), DEFAULT_PAIR_TTL_S))
         now = time.time()
         code = PAIR_PREFIX + secrets.token_urlsafe(32)
+        manual_raw = "".join(
+            secrets.choice(MANUAL_CODE_ALPHABET) for _ in range(MANUAL_CODE_LENGTH)
+        )
         expires_at = now + ttl
         with self._lock, self._connection() as conn:
             with conn:
+                # Pairing is an explicit short-lived window. Issuing a new one
+                # invalidates any previous unused window so manual-code attempt
+                # accounting stays unambiguous.
+                conn.execute("DELETE FROM mobile_pairings")
                 conn.execute(
-                    "DELETE FROM mobile_pairings WHERE expires_at <= ? OR consumed_at IS NOT NULL",
-                    (now,),
+                    """
+                    INSERT INTO mobile_pairings(
+                        code_hash, manual_code_hash, failed_attempts,
+                        created_at, expires_at, consumed_at
+                    ) VALUES (?, ?, 0, ?, ?, NULL)
+                    """,
+                    (
+                        self._hash(code),
+                        self._hash(manual_raw),
+                        now,
+                        expires_at,
+                    ),
                 )
-                conn.execute(
-                    "INSERT INTO mobile_pairings(code_hash, created_at, expires_at, consumed_at) VALUES (?, ?, ?, NULL)",
-                    (self._hash(code), now, expires_at),
-                )
-        return {"code": code, "created_at": now, "expires_at": expires_at}
+        return {
+            "code": code,
+            "manual_code": self._format_manual_code(manual_raw),
+            "created_at": now,
+            "expires_at": expires_at,
+        }
 
     def consume_pairing(
         self,
@@ -109,31 +148,98 @@ class MobileAuthStore:
         device_name: object = None,
         session_ttl_s: int = DEFAULT_SESSION_TTL_S,
     ) -> Optional[Dict[str, Any]]:
-        if not isinstance(code, str) or not code.startswith(PAIR_PREFIX):
+        if not isinstance(code, str):
             return None
+
+        is_qr_code = code.startswith(PAIR_PREFIX)
+        manual_code = self._normalize_manual_code(code)
+        if not is_qr_code and len(manual_code) != MANUAL_CODE_LENGTH:
+            return None
+
         now = time.time()
         token = SESSION_PREFIX + secrets.token_urlsafe(48)
         device_id = "mob_" + uuid.uuid4().hex[:16]
         ttl = max(300, int(session_ttl_s))
         expires_at = now + ttl
-        code_hash = self._hash(code)
+        lookup_hash = self._hash(code if is_qr_code else manual_code)
+
         with self._lock, self._connection() as conn:
             try:
                 conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT expires_at, consumed_at FROM mobile_pairings WHERE code_hash=?",
-                    (code_hash,),
-                ).fetchone()
-                if row is None or row["consumed_at"] is not None or float(row["expires_at"]) <= now:
+                if is_qr_code:
+                    row = conn.execute(
+                        """
+                        SELECT code_hash, expires_at, consumed_at, failed_attempts
+                        FROM mobile_pairings
+                        WHERE code_hash=?
+                        """,
+                        (lookup_hash,),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        """
+                        SELECT code_hash, expires_at, consumed_at, failed_attempts
+                        FROM mobile_pairings
+                        WHERE manual_code_hash=?
+                        """,
+                        (lookup_hash,),
+                    ).fetchone()
+
+                    if row is None:
+                        active = conn.execute(
+                            """
+                            SELECT code_hash, failed_attempts
+                            FROM mobile_pairings
+                            WHERE consumed_at IS NULL AND expires_at > ?
+                            ORDER BY created_at DESC
+                            LIMIT 1
+                            """,
+                            (now,),
+                        ).fetchone()
+                        if active is not None:
+                            attempts = int(active["failed_attempts"] or 0) + 1
+                            if attempts >= MAX_MANUAL_ATTEMPTS:
+                                conn.execute(
+                                    """
+                                    UPDATE mobile_pairings
+                                    SET failed_attempts=?, consumed_at=?
+                                    WHERE code_hash=? AND consumed_at IS NULL
+                                    """,
+                                    (attempts, now, active["code_hash"]),
+                                )
+                            else:
+                                conn.execute(
+                                    """
+                                    UPDATE mobile_pairings
+                                    SET failed_attempts=?
+                                    WHERE code_hash=? AND consumed_at IS NULL
+                                    """,
+                                    (attempts, active["code_hash"]),
+                                )
+                        conn.commit()
+                        return None
+
+                if (
+                    row is None
+                    or row["consumed_at"] is not None
+                    or float(row["expires_at"]) <= now
+                    or int(row["failed_attempts"] or 0) >= MAX_MANUAL_ATTEMPTS
+                ):
                     conn.rollback()
                     return None
+
                 updated = conn.execute(
-                    "UPDATE mobile_pairings SET consumed_at=? WHERE code_hash=? AND consumed_at IS NULL",
-                    (now, code_hash),
+                    """
+                    UPDATE mobile_pairings
+                    SET consumed_at=?
+                    WHERE code_hash=? AND consumed_at IS NULL
+                    """,
+                    (now, row["code_hash"]),
                 )
                 if updated.rowcount != 1:
                     conn.rollback()
                     return None
+
                 name = self._clean_device_name(device_name)
                 conn.execute(
                     """
@@ -147,6 +253,7 @@ class MobileAuthStore:
             except Exception:
                 conn.rollback()
                 raise
+
         return {
             "token": token,
             "device_id": device_id,

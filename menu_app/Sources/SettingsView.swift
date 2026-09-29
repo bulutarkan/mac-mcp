@@ -474,10 +474,22 @@ struct SettingsView: View {
                                         .padding(10)
                                         .background(Color.white, in: RoundedRectangle(cornerRadius: 14))
 
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        Text("Scan with your iPhone Camera")
+                                    VStack(alignment: .leading, spacing: 9) {
+                                        Text("Scan with Camera")
                                             .font(.subheadline.weight(.semibold))
-                                        Text("The one-time pairing secret is carried in the QR URL fragment, so it is not sent to the tunnel or written to HTTP access logs.")
+                                        Text("Or pair from the Home Screen app with this one-time code:")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+
+                                        if let code = state.mobilePairingCode {
+                                            Text(code)
+                                                .font(.system(size: 22, weight: .semibold, design: .monospaced))
+                                                .tracking(2)
+                                                .textSelection(.enabled)
+                                                .padding(.vertical, 5)
+                                        }
+
+                                        Text("The QR secret stays in the URL fragment; the manual code is short-lived and single-use.")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                             .fixedSize(horizontal: false, vertical: true)
@@ -486,7 +498,7 @@ struct SettingsView: View {
                                                 .font(.caption2)
                                                 .foregroundStyle(.secondary)
                                         }
-                                        Text("After pairing, the phone receives its own read-only device session. Your MCP API key and local dashboard token are never sent to the phone.")
+                                        Text("After pairing, the device receives its own read-only session. Your MCP API key and local dashboard token are never sent to the phone.")
                                             .font(.caption2)
                                             .foregroundStyle(.secondary)
                                             .fixedSize(horizontal: false, vertical: true)

@@ -63,6 +63,54 @@
     if (code) history.replaceState(null, "", location.pathname);
     return code;
   }
+  function installSession(sessionToken) {
+    if (!sessionToken || !String(sessionToken).startsWith("mcpmob_")) {
+      throw new Error("invalid_session_token");
+    }
+    try { localStorage.setItem(STORAGE_KEY, sessionToken); } catch (_) {}
+    location.replace("/mobile#session=" + encodeURIComponent(sessionToken));
+  }
+  function normalizeManualCode(value) {
+    const raw = String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+    return raw.length > 4 ? raw.slice(0, 4) + "-" + raw.slice(4) : raw;
+  }
+  async function submitManualPairing(code) {
+    const button = $("manualPairButton");
+    const error = $("pairError");
+    button.disabled = true;
+    error.classList.add("hidden");
+    try {
+      const response = await fetch("/mobile/pair", {
+        method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          code: normalizeManualCode(code),
+          device_name: deviceName()
+        })
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (response.status === 429) {
+          error.textContent = "Too many attempts. Generate a new code on your Mac and try again shortly.";
+        } else {
+          error.textContent = "That pairing code is invalid, expired, or already used.";
+        }
+        error.classList.remove("hidden");
+        return;
+      }
+      installSession(body.session_token);
+    } catch (_) {
+      error.textContent = "Couldn’t pair this device. Check the connection and try again.";
+      error.classList.remove("hidden");
+    } finally {
+      button.disabled = false;
+    }
+  }
   function submitPairing(code) {
     const form = document.createElement("form");
     form.method = "POST"; form.action = "/mobile/pair"; form.style.display = "none";
@@ -177,6 +225,27 @@
     await refresh();
     if (!state.timer && !$("dashboard").classList.contains("hidden")) state.timer = setInterval(refresh, 4000);
   }
+  const manualPairInput = $("manualPairCode");
+  const manualPairForm = $("manualPairForm");
+  if (manualPairInput) {
+    manualPairInput.addEventListener("input", () => {
+      const formatted = normalizeManualCode(manualPairInput.value);
+      if (manualPairInput.value !== formatted) manualPairInput.value = formatted;
+    });
+  }
+  if (manualPairForm) {
+    manualPairForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const code = normalizeManualCode(manualPairInput ? manualPairInput.value : "");
+      if (code.replace("-", "").length !== 8) {
+        $("pairError").textContent = "Enter the 8-character code shown in Mac MCP Settings.";
+        $("pairError").classList.remove("hidden");
+        return;
+      }
+      submitManualPairing(code);
+    });
+  }
+
   window.addEventListener("hashchange", () => {
     const code = pairingCode();
     if (code) submitPairing(code);

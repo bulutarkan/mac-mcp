@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -48,6 +49,7 @@ class MobileDashboardTests(unittest.TestCase):
         body = response.json()
         self.assertEqual("https://mobile.example.test/mobile", body["mobile_url"])
         self.assertTrue(body["pair_url"].startswith("https://mobile.example.test/mobile?pair=1#pair="))
+        self.assertRegex(body["manual_code"], r"^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4}$")
         return body
 
     def test_remote_unauthenticated_shell_is_safe_and_api_is_denied(self):
@@ -56,7 +58,7 @@ class MobileDashboardTests(unittest.TestCase):
             client = TestClient(app, base_url="https://testserver")
             shell = client.get("/mobile", headers={"x-forwarded-for": "203.0.113.8"})
             self.assertEqual(200, shell.status_code)
-            self.assertIn("Pair this iPhone", shell.text)
+            self.assertIn("Pair this device", shell.text)
             self.assertNotIn("result_preview", shell.text)
             api = client.get("/mobile/api/agents", headers={"x-forwarded-for": "203.0.113.8"})
             self.assertEqual(401, api.status_code)
@@ -88,6 +90,162 @@ class MobileDashboardTests(unittest.TestCase):
             self.assertEqual("invalid_or_expired_pairing", second.json()["error"])
 
 
+
+
+    def test_legacy_mobile_auth_database_migrates_manual_pairing_columns(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "mobile_auth.sqlite3"
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                CREATE TABLE mobile_pairings (
+                    code_hash TEXT PRIMARY KEY,
+                    created_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    consumed_at REAL
+                )
+                """
+            )
+            conn.commit()
+            conn.close()
+
+            store = MobileAuthStore(db_path)
+            issued = store.issue_pairing()
+            self.assertRegex(issued["manual_code"], r"^[A-Z0-9]{4}-[A-Z0-9]{4}$")
+
+            conn = sqlite3.connect(db_path)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(mobile_pairings)")}
+            row = conn.execute(
+                "SELECT manual_code_hash, failed_attempts FROM mobile_pairings"
+            ).fetchone()
+            conn.close()
+
+            self.assertIn("manual_code_hash", columns)
+            self.assertIn("failed_attempts", columns)
+            self.assertIsNotNone(row[0])
+            self.assertNotIn(issued["manual_code"].replace("-", ""), row[0])
+            self.assertEqual(0, row[1])
+            self.assertIsNotNone(
+                store.consume_pairing(issued["manual_code"], device_name="Home Screen")
+            )
+
+    def test_manual_pairing_code_creates_persistent_session_and_is_single_use(self):
+        with tempfile.TemporaryDirectory() as td:
+            app, _telemetry, _store = self.make_app(Path(td))
+            manager = TestClient(app, base_url="https://testserver")
+            pairing = self.create_pairing(manager)
+            manual_code = pairing["manual_code"]
+
+            home = TestClient(app, base_url="https://testserver")
+            response = home.post(
+                "/mobile/pair",
+                json={"code": manual_code.lower(), "device_name": "Home Screen"},
+            )
+            self.assertEqual(200, response.status_code)
+            body = response.json()
+            token = body.get("session_token")
+            self.assertIsInstance(token, str)
+            self.assertTrue(token.startswith("mcpmob_"))
+            self.assertEqual("no-store", response.headers["cache-control"])
+
+            headers = {"authorization": "Bearer " + token}
+            with patch(
+                "mcp_server.mobile_routes.list_agents",
+                return_value={"ok": True, "agents": [], "count": 0},
+            ):
+                self.assertEqual(200, home.get("/mobile/api/status", headers=headers).status_code)
+
+            reused = TestClient(app, base_url="https://testserver").post(
+                "/mobile/pair",
+                json={"code": manual_code, "device_name": "Other Home Screen"},
+            )
+            self.assertEqual(401, reused.status_code)
+
+            devices = manager.get("/dashboard/api/mobile/devices", headers=DASHBOARD_AUTH)
+            self.assertEqual(200, devices.status_code)
+            device_id = next(
+                row["device_id"]
+                for row in devices.json()["devices"]
+                if row["device_name"] == "Home Screen"
+            )
+            revoked = manager.post(
+                "/dashboard/api/mobile/revoke",
+                headers=DASHBOARD_AUTH,
+                json={"device_id": device_id},
+            )
+            self.assertTrue(revoked.json()["revoked"])
+            self.assertEqual(401, home.get("/mobile/api/status", headers=headers).status_code)
+
+    def test_manual_pairing_expiry_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            app, _telemetry, store = self.make_app(Path(td))
+            issued = store.issue_pairing(ttl_s=15)
+            client = TestClient(app, base_url="https://testserver")
+            with patch("mcp_server.mobile_auth.time.time", return_value=issued["expires_at"] + 1):
+                response = client.post(
+                    "/mobile/pair",
+                    json={"code": issued["manual_code"], "device_name": "Home Screen"},
+                )
+            self.assertEqual(401, response.status_code)
+
+    def test_manual_pairing_five_wrong_attempts_lock_pairing_window(self):
+        with tempfile.TemporaryDirectory() as td:
+            app, _telemetry, _store = self.make_app(Path(td))
+            manager = TestClient(app, base_url="https://testserver")
+            pairing = self.create_pairing(manager)
+            client = TestClient(app, base_url="https://testserver")
+
+            for index in range(5):
+                wrong = f"ZZZZ-ZZ{index:02d}"[-9:]
+                response = client.post(
+                    "/mobile/pair",
+                    json={"code": wrong, "device_name": "Home Screen"},
+                )
+                self.assertEqual(401, response.status_code)
+
+            correct = client.post(
+                "/mobile/pair",
+                json={"code": pairing["manual_code"], "device_name": "Home Screen"},
+            )
+            self.assertEqual(401, correct.status_code)
+
+    def test_manual_pairing_ip_rate_limit_returns_429(self):
+        with tempfile.TemporaryDirectory() as td:
+            app, _telemetry, _store = self.make_app(Path(td))
+            manager = TestClient(app, base_url="https://testserver")
+            self.create_pairing(manager)
+            client = TestClient(app, base_url="https://testserver")
+
+            status_codes = []
+            for index in range(9):
+                response = client.post(
+                    "/mobile/pair",
+                    json={"code": f"BAD{index}", "device_name": "Home Screen"},
+                    headers={"x-forwarded-for": "203.0.113.55"},
+                )
+                status_codes.append(response.status_code)
+            self.assertEqual(429, status_codes[-1])
+            self.assertEqual("60", response.headers.get("retry-after"))
+
+    def test_new_pairing_invalidates_previous_manual_code(self):
+        with tempfile.TemporaryDirectory() as td:
+            app, _telemetry, _store = self.make_app(Path(td))
+            manager = TestClient(app, base_url="https://testserver")
+            first = self.create_pairing(manager)
+            second = self.create_pairing(manager)
+
+            old = TestClient(app, base_url="https://testserver").post(
+                "/mobile/pair",
+                json={"code": first["manual_code"], "device_name": "Old"},
+            )
+            self.assertEqual(401, old.status_code)
+
+            fresh = TestClient(app, base_url="https://testserver").post(
+                "/mobile/pair",
+                json={"code": second["manual_code"], "device_name": "Fresh"},
+            )
+            self.assertEqual(200, fresh.status_code)
+
     def test_top_level_pairing_bootstraps_persistent_read_only_bearer(self):
         with tempfile.TemporaryDirectory() as td:
             app, _telemetry, _store = self.make_app(Path(td))
@@ -116,9 +274,6 @@ class MobileDashboardTests(unittest.TestCase):
             with patch(
                 "mcp_server.mobile_routes.list_agents",
                 return_value={"ok": True, "agents": [], "count": 0},
-            ), patch(
-                "mcp_server.mobile_routes.provider_overview",
-                return_value={"providers": []},
             ):
                 first = phone.get("/mobile/api/status", headers=headers)
                 second = phone.get("/mobile/api/status", headers=headers)
@@ -210,21 +365,9 @@ class MobileDashboardTests(unittest.TestCase):
                 "result_preview": "must-not-leak",
                 "working_directory": "/private/path",
             }
-            fake_provider = {
-                "providers": [{
-                    "id": "codex",
-                    "enabled": True,
-                    "detected": True,
-                    "version": "1.2.3",
-                    "binary_path": "/private/bin",
-                }]
-            }
             with patch(
                 "mcp_server.mobile_routes.list_agents",
                 return_value={"ok": True, "agents": [fake_agent], "count": 1},
-            ), patch(
-                "mcp_server.mobile_routes.provider_overview",
-                return_value=fake_provider,
             ):
                 status = phone.get("/mobile/api/status")
                 agents = phone.get("/mobile/api/agents")

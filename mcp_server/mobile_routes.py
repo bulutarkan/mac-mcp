@@ -14,12 +14,12 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
-from .mobile_auth import DEFAULT_SESSION_TTL_S, SESSION_PREFIX, MobileAuthStore
+from .mobile_auth import DEFAULT_SESSION_TTL_S, PAIR_PREFIX, SESSION_PREFIX, MobileAuthStore
 from .observability import TelemetryManager
 from .public_endpoint import PublicEndpointError, resolve_public_endpoint
 from .security import Settings, dashboard_authorized
 from .steering import SteeringManager
-from .tools_agents import list_agents, provider_overview
+from .tools_agents import list_agents
 from .version import __version__
 
 MOBILE_DIR = Path(__file__).resolve().parent / "mobile"
@@ -130,6 +130,21 @@ def create_mobile_routes(
     auth_store: Optional[MobileAuthStore] = None,
 ) -> list[Route]:
     store = auth_store or MobileAuthStore()
+    manual_attempts_by_client: dict[str, list[float]] = {}
+
+    def manual_pairing_rate_limited(request: Request) -> bool:
+        now = time.time()
+        address = _client_address(request)
+        recent = [
+            ts for ts in manual_attempts_by_client.get(address, [])
+            if now - ts < 60
+        ]
+        if len(recent) >= 8:
+            manual_attempts_by_client[address] = recent
+            return True
+        recent.append(now)
+        manual_attempts_by_client[address] = recent
+        return False
 
     def mobile_session(request: Request) -> Optional[Dict[str, Any]]:
         cookie_token = request.cookies.get(MOBILE_COOKIE)
@@ -206,8 +221,17 @@ def create_mobile_routes(
             if not isinstance(payload, dict):
                 payload = {}
 
+        submitted_code = str(payload.get("code") or "")
+        is_manual_code = bool(submitted_code) and not submitted_code.startswith(PAIR_PREFIX)
+        if is_manual_code and manual_pairing_rate_limited(request):
+            return JSONResponse(
+                {"ok": False, "error": "pairing_rate_limited"},
+                status_code=429,
+                headers={"Retry-After": "60"},
+            )
+
         result = store.consume_pairing(
-            str(payload.get("code") or ""),
+            submitted_code,
             device_name=payload.get("device_name"),
             session_ttl_s=DEFAULT_SESSION_TTL_S,
         )
@@ -250,15 +274,22 @@ def create_mobile_routes(
                 },
             )
         else:
-            response = JSONResponse({
-                "ok": True,
-                "device": {
-                    "device_id": result["device_id"],
-                    "device_name": result["device_name"],
-                    "created_at": result["created_at"],
-                    "expires_at": result["expires_at"],
+            response = JSONResponse(
+                {
+                    "ok": True,
+                    "session_token": result["token"],
+                    "device": {
+                        "device_id": result["device_id"],
+                        "device_name": result["device_name"],
+                        "created_at": result["created_at"],
+                        "expires_at": result["expires_at"],
+                    },
                 },
-            })
+                headers={
+                    "Cache-Control": "no-store",
+                    "Referrer-Policy": "no-referrer",
+                },
+            )
 
         response.set_cookie(
             MOBILE_COOKIE,
@@ -286,19 +317,6 @@ def create_mobile_routes(
         except Exception:
             summary = {"total_calls": 0, "success_rate": 100.0}
         try:
-            overview = await asyncio.to_thread(provider_overview)
-            providers = [
-                {
-                    key: row.get(key)
-                    for key in ("id", "name", "enabled", "detected", "version")
-                    if key in row
-                }
-                for row in overview.get("providers", [])
-                if row.get("enabled")
-            ]
-        except Exception:
-            providers = []
-        try:
             endpoint = resolve_public_endpoint()
             connector = endpoint.mode
         except Exception:
@@ -313,7 +331,6 @@ def create_mobile_routes(
             "active_agents": sum(
                 1 for row in agents if row.get("status") in {"starting", "running"}
             ),
-            "providers": providers,
         })
 
     async def agents_view(request: Request) -> Response:
@@ -375,6 +392,7 @@ def create_mobile_routes(
         return JSONResponse({
             "ok": True,
             "pair_url": pair_url,
+            "manual_code": issued["manual_code"],
             "mobile_url": base,
             "expires_at": issued["expires_at"],
         })
