@@ -18,13 +18,27 @@ from typing import Iterable, Optional
 
 if __package__:
     from . import release_trust
+    from .managed_process import (
+        matches_role,
+        migrate_legacy_record,
+        process_snapshot,
+        validate_process_record,
+        write_process_record,
+    )
     from .update_state import backups_root, read_deployed_commit, update_root, write_deployed_commit, write_update_state
 else:
     # The detached updater is launched as a staged standalone script. Keep the
-    # staged sibling ahead of the repo and site-packages on sys.path so the
-    # helper cannot accidentally load an unrelated update_state/release_trust module.
+    # staged siblings ahead of the repo and site-packages on sys.path so the
+    # helper cannot accidentally load unrelated modules.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import release_trust
+    from managed_process import (
+        matches_role,
+        migrate_legacy_record,
+        process_snapshot,
+        validate_process_record,
+        write_process_record,
+    )
     from update_state import backups_root, read_deployed_commit, update_root, write_deployed_commit, write_update_state
 
 DEFAULT_BRANCH = "main"
@@ -544,18 +558,73 @@ def _restart_cli(runtime: Path, host: str, port: int) -> None:
     log_file = state_dir / "mac-mcp.log"
     if not pid_file.exists():
         raise UpdateError("Could not determine how Mac MCP is managed. Restart the service manually.")
-    try:
-        old_pid = int(pid_file.read_text().strip())
-        os.kill(old_pid, signal.SIGTERM)
-    except (ValueError, ProcessLookupError):
-        pass
-    deadline = time.time() + 8
-    while time.time() < deadline:
+
+    validation = validate_process_record(
+        pid_file,
+        "server",
+        port=int(port),
+        project_root=runtime,
+    )
+    if validation.legacy_match:
+        validation = migrate_legacy_record(
+            pid_file,
+            "server",
+            port=int(port),
+            project_root=runtime,
+            metadata={"port": int(port), "migrated_from": "legacy_pid", "ownership_source": "updater"},
+        )
+
+    old_pid = validation.pid
+    if validation.status in {"dead", "missing", "invalid_record"}:
+        pid_file.unlink(missing_ok=True)
+        old_pid = None
+    elif not validation.valid or old_pid is None:
+        raise UpdateError(
+            "Refusing to restart Mac MCP because the recorded PID identity could not be verified "
+            f"({validation.reason})."
+        )
+
+    if old_pid is not None:
         try:
-            os.kill(old_pid, 0)
-        except (ProcessLookupError, UnboundLocalError):
+            os.kill(old_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pid_file.unlink(missing_ok=True)
+            old_pid = None
+        except PermissionError as exc:
+            raise UpdateError("Permission denied while stopping the verified Mac MCP process.") from exc
+
+    deadline = time.time() + 8
+    while old_pid is not None and time.time() < deadline:
+        current = validate_process_record(
+            pid_file,
+            "server",
+            port=int(port),
+            project_root=runtime,
+        )
+        if current.status in {"dead", "missing"}:
+            pid_file.unlink(missing_ok=True)
+            old_pid = None
             break
+        if current.status in {"identity_mismatch", "role_mismatch"}:
+            # Original process is gone and PID was reused. Never signal the replacement.
+            pid_file.unlink(missing_ok=True)
+            old_pid = None
+            break
+        if current.status == "unverifiable":
+            raise UpdateError("Mac MCP process identity became unverifiable while stopping it.")
         time.sleep(0.2)
+
+    if old_pid is not None:
+        current = validate_process_record(
+            pid_file,
+            "server",
+            port=int(port),
+            project_root=runtime,
+        )
+        if current.valid:
+            raise UpdateError("Verified Mac MCP process did not stop within 8 seconds; refusing unsafe restart.")
+        pid_file.unlink(missing_ok=True)
+
     python = runtime / ".venv" / "bin" / "python"
     if not python.exists():
         raise UpdateError(f"Runtime Python was not found: {python}")
@@ -566,7 +635,44 @@ def _restart_cli(runtime: Path, host: str, port: int) -> None:
         cwd=str(runtime), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
         start_new_session=True,
     )
-    pid_file.write_text(str(proc.pid) + "\n")
+
+    snapshot = None
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            break
+        candidate = process_snapshot(proc.pid)
+        if candidate and matches_role(
+            candidate,
+            "server",
+            port=int(port),
+            project_root=runtime,
+        ):
+            snapshot = candidate
+            break
+        time.sleep(0.1)
+
+    if snapshot is None:
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        raise UpdateError("Restarted Mac MCP process identity could not be verified.")
+
+    try:
+        write_process_record(
+            pid_file,
+            "server",
+            proc.pid,
+            metadata={"port": int(port), "ownership_source": "updater"},
+            snapshot=snapshot,
+        )
+    except (OSError, RuntimeError) as exc:
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        raise UpdateError("Could not persist verified Mac MCP process identity after restart.") from exc
 
 
 def _restart_service(runtime: Path, label: str) -> str:
@@ -738,6 +844,7 @@ def _cleanup_staging_dir(requested_dir: str | None) -> None:
         or not _STAGING_DIR_RE.fullmatch(helper_dir.name)
         or not helper_dir.is_dir()
         or not (helper_dir / "update_state.py").is_file()
+        or not (helper_dir / "managed_process.py").is_file()
     ):
         return
 

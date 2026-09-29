@@ -89,12 +89,14 @@ def mac_mcp_update(check_only: bool = True, branch: str = "main") -> Dict[str, A
     helper_src = Path(__file__).with_name("update_helper.py")
     state_src = helper_src.with_name("update_state.py")
     release_trust_src = helper_src.with_name("release_trust.py")
+    managed_process_src = helper_src.with_name("managed_process.py")
     trusted_signers_src = helper_src.with_name("release_trusted_signers.txt")
     helper_tmp_dir = Path(tempfile.mkdtemp(prefix=f"mac-mcp-update-{update_id}-"))
     helper_tmp = helper_tmp_dir / "update_helper.py"
     shutil.copy2(helper_src, helper_tmp)
     shutil.copy2(state_src, helper_tmp_dir / "update_state.py")
     shutil.copy2(release_trust_src, helper_tmp_dir / "release_trust.py")
+    shutil.copy2(managed_process_src, helper_tmp_dir / "managed_process.py")
     shutil.copy2(trusted_signers_src, helper_tmp_dir / "release_trusted_signers.txt")
 
     started_state = {

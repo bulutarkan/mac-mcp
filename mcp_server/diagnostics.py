@@ -17,6 +17,12 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from .runtime_settings import load_runtime_settings, load_runtime_settings_state, settings_path
+from .managed_process import (
+    listener_pids,
+    matches_role,
+    process_snapshot,
+    validate_process_record,
+)
 from .cli_bootstrap import default_cli_path, launcher_kind, runtime_entrypoint
 from .runtime_resolver import resolve_cloudflared_binary, resolve_ngrok_binary
 from .public_endpoint import (
@@ -530,6 +536,10 @@ def _check_managed_process(name: str) -> CheckResult:
     if name not in {"server", "ngrok", "cloudflared"}:
         raise ValueError("unsupported managed process")
 
+    _, port = _local_host_port()
+    project_root = Path(__file__).resolve().parent.parent
+    role = name
+
     if name == "server":
         label = "mac-mcp-uvicorn"
         candidates = [state_dir() / "mac-mcp.pid", Path("/tmp/mac-mcp-uvicorn.pid")]
@@ -542,33 +552,143 @@ def _check_managed_process(name: str) -> CheckResult:
 
     stale: list[str] = []
     for path in candidates:
-        pid = _read_pid_file(path)
-        if pid is None:
+        if not path.exists():
             continue
-        if _pid_alive(pid):
+        validation = validate_process_record(
+            path,
+            role,
+            port=port,
+            project_root=project_root if role == "server" else None,
+        )
+        details = {
+            "pid": validation.pid,
+            "managed_by": "pid_file",
+            "pid_file": _safe_path(path),
+            "identity_status": validation.status,
+            "identity_reason": validation.reason,
+            "record_format": validation.record_format,
+            "port": port,
+        }
+        if validation.valid:
+            if validation.snapshot is not None:
+                details.update({
+                    "process_start_time": validation.snapshot.start_time,
+                    "process_executable": validation.snapshot.executable,
+                    "process_cwd": validation.snapshot.cwd,
+                })
             return result(
-                f"process.{name}", "process", PASS, f"{name.upper()}_RUNNING",
-                f"{name} process is running.", started=started,
-                details={"pid": pid, "managed_by": "pid_file", "pid_file": _safe_path(path)},
+                f"process.{name}", "process", PASS, f"{name.upper()}_RUNNING_VERIFIED",
+                f"{name} process is running with a verified fingerprint.", started=started,
+                details=details,
             )
-        stale.append(_safe_path(path))
+        if validation.legacy_match:
+            return result(
+                f"process.{name}", "process", WARN, f"{name.upper()}_PID_LEGACY_UNFINGERPRINTED",
+                f"{name} process matches the expected role, but its PID record has no fingerprint.",
+                started=started,
+                remediation="Run mac-mcp status or restart Mac MCP once to migrate the legacy PID record.",
+                details=details,
+            )
+        if validation.status in {"dead", "invalid_record"}:
+            stale.append(_safe_path(path))
+            continue
+        if validation.status in {"identity_mismatch", "role_mismatch", "unverifiable"}:
+            return result(
+                f"process.{name}", "process", FAIL, f"{name.upper()}_PID_IDENTITY_UNVERIFIED",
+                f"Recorded {name} PID does not prove ownership of the live process.",
+                started=started,
+                remediation="Do not kill the PID manually. Run mac-mcp status and inspect the process before repairing stale PID state.",
+                details=details,
+            )
 
     pid = _launchctl_pid(label)
     if pid is not None:
+        snapshot = process_snapshot(pid)
+        if snapshot and matches_role(
+            snapshot,
+            role,
+            port=port,
+            project_root=project_root if role == "server" else None,
+        ):
+            return result(
+                f"process.{name}", "process", PASS, f"{name.upper()}_LAUNCHD_VERIFIED",
+                f"{name} process is running under the expected launchctl label with verified identity.",
+                started=started,
+                details={
+                    "pid": pid,
+                    "managed_by": "launchctl",
+                    "label": label,
+                    "identity_status": "verified",
+                    "process_start_time": snapshot.start_time,
+                    "process_executable": snapshot.executable,
+                    "process_cwd": snapshot.cwd,
+                    **({"stale_pid_files": stale} if stale else {}),
+                },
+            )
         return result(
-            f"process.{name}", "process", PASS, f"{name.upper()}_RUNNING",
-            f"{name} process is running under launchctl.", started=started,
-            details={"pid": pid, "managed_by": "launchctl", "label": label, **({"stale_pid_files": stale} if stale else {})},
+            f"process.{name}", "process", FAIL, f"{name.upper()}_LAUNCHD_IDENTITY_UNVERIFIED",
+            f"{name} launchctl label is loaded, but its live process identity is not the expected role.",
+            started=started,
+            remediation="Inspect the launchd job before booting it out; Mac MCP will not treat it as owned.",
+            details={
+                "pid": pid,
+                "managed_by": "launchctl",
+                "label": label,
+                "identity_status": "role_mismatch" if snapshot else "metadata_unavailable",
+            },
         )
 
     if name == "server":
-        _, port = _local_host_port()
-        pid = _listener_pid(port)
-        if pid is not None:
+        owned: list[int] = []
+        foreign: list[int] = []
+        for listener_pid in listener_pids(port):
+            snapshot = process_snapshot(listener_pid)
+            if snapshot and matches_role(
+                snapshot,
+                "server",
+                port=port,
+                project_root=project_root,
+            ):
+                owned.append(listener_pid)
+            else:
+                foreign.append(listener_pid)
+        if foreign:
             return result(
-                "process.server", "process", PASS, "SERVER_RUNNING",
-                "server process is listening on the configured port.", started=started,
-                details={"pid": pid, "managed_by": "listener", "port": port, **({"stale_pid_files": stale} if stale else {})},
+                "process.server", "process", FAIL, "SERVER_PORT_FOREIGN_LISTENER",
+                "Configured Mac MCP port is occupied by an unmanaged listener.",
+                started=started,
+                remediation="Stop or move the foreign listener; Mac MCP will not adopt or signal it.",
+                details={
+                    "port": port,
+                    "foreign_listener_pids": foreign,
+                    "verified_listener_pids": owned,
+                    **({"stale_pid_files": stale} if stale else {}),
+                },
+            )
+        if len(owned) == 1:
+            snapshot = process_snapshot(owned[0])
+            return result(
+                "process.server", "process", PASS, "SERVER_LISTENER_VERIFIED",
+                "A Mac MCP server listener was verified by argv, port, and working directory.",
+                started=started,
+                details={
+                    "pid": owned[0],
+                    "managed_by": "verified_listener",
+                    "port": port,
+                    "identity_status": "verified",
+                    "process_start_time": snapshot.start_time if snapshot else None,
+                    "process_executable": snapshot.executable if snapshot else None,
+                    "process_cwd": snapshot.cwd if snapshot else None,
+                    **({"stale_pid_files": stale} if stale else {}),
+                },
+            )
+        if len(owned) > 1:
+            return result(
+                "process.server", "process", FAIL, "SERVER_LISTENER_AMBIGUOUS",
+                "Multiple Mac MCP-like listeners were detected for the configured port.",
+                started=started,
+                remediation="Resolve the duplicate listeners before starting or stopping Mac MCP.",
+                details={"port": port, "verified_listener_pids": owned},
             )
 
     if stale:
@@ -580,7 +700,7 @@ def _check_managed_process(name: str) -> CheckResult:
         )
     return result(
         f"process.{name}", "process", INFO, f"{name.upper()}_PROCESS_NOT_DETECTED",
-        f"No managed {name} process was detected.", started=started,
+        f"No verified managed {name} process was detected.", started=started,
     )
 
 def _local_host_port() -> tuple[str, int]:

@@ -65,8 +65,7 @@ class AuthTests(unittest.TestCase):
             token_file = Path(td) / "dashboard-token"
             token_file.write_text(secret + "\n", encoding="utf-8")
             output = io.StringIO()
-            with patch("mcp_server.cli._read_pid", return_value=123), \
-                 patch("mcp_server.cli._pid_alive", return_value=True), \
+            with patch("mcp_server.cli._resolve_server_identity", return_value=(123, "pid_record")), \
                  patch("mcp_server.cli.dashboard_token_path", return_value=token_file), \
                  patch("mcp_server.cli.webbrowser.open", return_value=True) as opened, \
                  patch.dict("os.environ", {"MAC_MCP_HOST": "127.0.0.1", "MAC_MCP_PORT": "8123"}, clear=False), \
@@ -81,8 +80,7 @@ class AuthTests(unittest.TestCase):
     def test_dashboard_cli_fails_closed_when_local_credential_is_missing(self):
         with tempfile.TemporaryDirectory() as td:
             missing = Path(td) / "missing-token"
-            with patch("mcp_server.cli._read_pid", return_value=123), \
-                 patch("mcp_server.cli._pid_alive", return_value=True), \
+            with patch("mcp_server.cli._resolve_server_identity", return_value=(123, "pid_record")), \
                  patch("mcp_server.cli.dashboard_token_path", return_value=missing), \
                  patch("mcp_server.cli.webbrowser.open") as opened:
                 code = dashboard(SimpleNamespace())

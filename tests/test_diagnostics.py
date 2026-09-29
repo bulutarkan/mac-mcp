@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from mcp_server import diagnostics
 from mcp_server import cli
+from mcp_server.managed_process import ProcessSnapshot, ProcessValidation
 
 
 class DiagnosticsTests(unittest.TestCase):
@@ -73,32 +74,68 @@ class DiagnosticsTests(unittest.TestCase):
              patch("mcp_server.diagnostics.load_runtime_settings", return_value={"server": {"port": 8765}}):
             self.assertEqual(diagnostics._local_host_port(), ("127.0.0.1", 8765))
 
-    def test_managed_server_accepts_legacy_pid_file(self) -> None:
-        with patch("mcp_server.diagnostics._read_pid_file", side_effect=[43210, None]), \
-             patch("mcp_server.diagnostics._pid_alive", return_value=True):
-            row = diagnostics._check_managed_process("server")
-        self.assertEqual(row.status, "pass")
-        self.assertEqual(row.reason_code, "SERVER_RUNNING")
+    def test_managed_server_reports_legacy_pid_as_unfingerprinted(self) -> None:
+        snap = ProcessSnapshot(
+            43210,
+            "Tue Sep 29 12:00:00 2026",
+            "/usr/bin/python3",
+            "/usr/bin/python3 -m uvicorn mcp_server.main:app --host 127.0.0.1 --port 8765",
+            str(Path(diagnostics.__file__).resolve().parent.parent),
+        )
+        validation = ProcessValidation(
+            "legacy_match", 43210, "server", "legacy", "legacy_role_match", snap,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            state = Path(td)
+            (state / "mac-mcp.pid").write_text("43210\n", encoding="utf-8")
+            with patch("mcp_server.diagnostics.state_dir", return_value=state), \
+                 patch("mcp_server.diagnostics.validate_process_record", return_value=validation):
+                row = diagnostics._check_managed_process("server")
+        self.assertEqual(row.status, "warn")
+        self.assertEqual(row.reason_code, "SERVER_PID_LEGACY_UNFINGERPRINTED")
         self.assertEqual(row.details["managed_by"], "pid_file")
         self.assertEqual(row.details["pid"], 43210)
 
-    def test_managed_server_accepts_launchctl_without_pid_file(self) -> None:
-        with patch("mcp_server.diagnostics._read_pid_file", return_value=None), \
-             patch("mcp_server.diagnostics._launchctl_pid", return_value=54321):
+    def test_managed_server_accepts_verified_launchctl_without_pid_file(self) -> None:
+        root = Path(diagnostics.__file__).resolve().parent.parent
+        snap = ProcessSnapshot(
+            54321,
+            "Tue Sep 29 12:00:00 2026",
+            "/usr/bin/python3",
+            "/usr/bin/python3 -m uvicorn mcp_server.main:app --host 127.0.0.1 --port 8765",
+            str(root),
+        )
+        with tempfile.TemporaryDirectory() as td, \
+             patch("mcp_server.diagnostics.state_dir", return_value=Path(td)), \
+             patch("mcp_server.diagnostics._launchctl_pid", return_value=54321), \
+             patch("mcp_server.diagnostics.process_snapshot", return_value=snap), \
+             patch("mcp_server.diagnostics.matches_role", return_value=True):
             row = diagnostics._check_managed_process("server")
         self.assertEqual(row.status, "pass")
-        self.assertEqual(row.reason_code, "SERVER_RUNNING")
+        self.assertEqual(row.reason_code, "SERVER_LAUNCHD_VERIFIED")
         self.assertEqual(row.details["managed_by"], "launchctl")
         self.assertEqual(row.details["label"], "mac-mcp-uvicorn")
 
-    def test_managed_server_listener_is_last_safe_fallback(self) -> None:
-        with patch("mcp_server.diagnostics._read_pid_file", return_value=None), \
+    def test_managed_server_listener_is_verified_before_fallback(self) -> None:
+        root = Path(diagnostics.__file__).resolve().parent.parent
+        snap = ProcessSnapshot(
+            65432,
+            "Tue Sep 29 12:00:00 2026",
+            "/usr/bin/python3",
+            "/usr/bin/python3 -m uvicorn mcp_server.main:app --host 127.0.0.1 --port 8765",
+            str(root),
+        )
+        with tempfile.TemporaryDirectory() as td, \
+             patch("mcp_server.diagnostics.state_dir", return_value=Path(td)), \
              patch("mcp_server.diagnostics._launchctl_pid", return_value=None), \
              patch("mcp_server.diagnostics._local_host_port", return_value=("127.0.0.1", 8765)), \
-             patch("mcp_server.diagnostics._listener_pid", return_value=65432):
+             patch("mcp_server.diagnostics.listener_pids", return_value=[65432]), \
+             patch("mcp_server.diagnostics.process_snapshot", return_value=snap), \
+             patch("mcp_server.diagnostics.matches_role", return_value=True):
             row = diagnostics._check_managed_process("server")
         self.assertEqual(row.status, "pass")
-        self.assertEqual(row.details["managed_by"], "listener")
+        self.assertEqual(row.reason_code, "SERVER_LISTENER_VERIFIED")
+        self.assertEqual(row.details["managed_by"], "verified_listener")
         self.assertEqual(row.details["port"], 8765)
 
     def test_invalid_settings_has_stable_reason_code(self) -> None:

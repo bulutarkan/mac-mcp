@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mcp_server import cli, diagnostics, runtime_resolver
+from mcp_server.managed_process import ProcessSnapshot, ProcessValidation
 _ORIGINAL_CLI_PATHS = {
     "STATE_DIR": cli.STATE_DIR,
     "PID_FILE": cli.PID_FILE,
@@ -234,11 +235,21 @@ class PublicEndpointCLITests(unittest.TestCase):
                 return None
 
         args = self.args(ngrok_domain="example.ngrok-free.dev")
-        with patch.object(cli, "_remove_stale_pid"), \
-             patch.object(cli, "_read_pid", return_value=None), \
+        snap = ProcessSnapshot(
+            4242,
+            "Tue Sep 29 12:00:00 2026",
+            "/tmp/ngrok",
+            "/tmp/ngrok http --url https://example.ngrok-free.dev 8765",
+            None,
+        )
+        missing = ProcessValidation("missing", None, "ngrok", None, "record_missing")
+        with patch.object(cli, "_validate_managed_pid", return_value=missing), \
              patch.object(cli, "_resolve_ngrok_binary", return_value="/tmp/ngrok"), \
              patch.object(cli, "ngrok_http_endpoint_flag", return_value="--url"), \
              patch.object(cli.subprocess, "Popen", return_value=FakeProc()) as popen, \
+             patch.object(cli, "process_snapshot", return_value=snap), \
+             patch.object(cli, "matches_role", return_value=True), \
+             patch.object(cli, "write_process_record"), \
              patch.object(cli.time, "sleep"):
             code = cli._start_ngrok(args)
         self.assertEqual(0, code)
@@ -253,10 +264,9 @@ class PublicEndpointCLITests(unittest.TestCase):
         start_ngrok.assert_called_once()
 
     def test_custom_mode_stops_managed_ngrok_if_running(self) -> None:
+        cli.NGROK_PID_FILE.write_text("4242\n", encoding="utf-8")
+        self.addCleanup(cli.NGROK_PID_FILE.unlink, missing_ok=True)
         with patch.object(cli, "_start_server", return_value=0), \
-             patch.object(cli, "_remove_stale_pid"), \
-             patch.object(cli, "_read_pid", side_effect=lambda path: 4242 if path == cli.NGROK_PID_FILE else None), \
-             patch.object(cli, "_pid_alive", return_value=True), \
              patch.object(cli, "_stop_pid", return_value=True) as stop_pid:
             code = cli.start(self.args())
         self.assertEqual(0, code)
@@ -264,7 +274,9 @@ class PublicEndpointCLITests(unittest.TestCase):
 
     def test_start_adopts_existing_mac_mcp_listener_when_pid_file_is_missing(self) -> None:
         args = self.args()
-        with patch.object(cli, "_read_pid", return_value=None), \
+        missing = ProcessValidation("missing", None, "server", None, "record_missing")
+        with patch.object(cli, "_validate_managed_pid", return_value=missing), \
+             patch.object(cli, "_server_listener_state", return_value=([4321], [])), \
              patch.object(cli, "_adopt_server_listener", return_value=4321) as adopt, \
              patch.object(cli, "_launch_menu_app"), \
              patch.object(cli.subprocess, "Popen") as popen:
@@ -274,9 +286,10 @@ class PublicEndpointCLITests(unittest.TestCase):
         popen.assert_not_called()
 
     def test_status_adopts_existing_mac_mcp_listener_when_pid_file_is_missing(self) -> None:
-        with patch.object(cli, "_read_pid", return_value=None), \
-             patch.object(cli, "_adopt_server_listener", return_value=4321), \
-             patch.object(cli, "_pid_alive", return_value=True), \
+        missing = ProcessValidation("missing", None, "ngrok", None, "record_missing")
+        with patch.object(cli, "_resolve_server_identity", return_value=(4321, "adopted_listener")), \
+             patch.object(cli, "_validate_managed_pid", return_value=missing), \
+             patch.object(cli, "_launchctl_pid", return_value=None), \
              patch.object(cli, "resolve_public_endpoint", return_value=type("Public", (), {"mode": "none", "endpoint_url": None})()), \
              redirect_stdout(StringIO()):
             code = cli.status(argparse.Namespace())
@@ -284,19 +297,19 @@ class PublicEndpointCLITests(unittest.TestCase):
 
     def test_stop_adopts_existing_mac_mcp_listener_before_stopping(self) -> None:
         args = argparse.Namespace(timeout=5, force=True)
-        with patch.object(cli, "_read_pid", return_value=None), \
-             patch.object(cli, "_adopt_server_listener", return_value=4321) as adopt, \
+        with patch.object(cli, "_resolve_server_identity", return_value=(4321, "adopted_listener")), \
              patch.object(cli, "_stop_pid", return_value=True) as stop_pid, \
              patch.object(cli, "_stop_cloudflare", return_value=True):
             code = cli.stop(args)
         self.assertEqual(0, code)
-        adopt.assert_called_once_with(8765)
         self.assertTrue(any(call.args[0] == cli.PID_FILE for call in stop_pid.call_args_list))
 
     def test_status_prints_selected_custom_mcp_url(self) -> None:
         out = StringIO()
-        with patch.object(cli, "_read_pid", return_value=None), \
-             patch.object(cli, "_adopt_server_listener", return_value=None), \
+        missing = ProcessValidation("missing", None, "ngrok", None, "record_missing")
+        with patch.object(cli, "_resolve_server_identity", return_value=(None, "not_running")), \
+             patch.object(cli, "_validate_managed_pid", return_value=missing), \
+             patch.object(cli, "_launchctl_pid", return_value=None), \
              redirect_stdout(out):
             code = cli.status(argparse.Namespace())
         self.assertEqual(1, code)
@@ -499,19 +512,38 @@ class CloudflarePublicEndpointTests(unittest.TestCase):
         })()
         args = argparse.Namespace(port=8765, cloudflared_bin=None)
         pid_file = Path(self.tmp.name) / "cloudflared.pid"
+        snap = ProcessSnapshot(
+            7777,
+            "Tue Sep 29 12:00:00 2026",
+            "/opt/homebrew/bin/cloudflared",
+            "/opt/homebrew/bin/cloudflared tunnel --no-autoupdate --loglevel fatal run --url http://127.0.0.1:8765 mac-mcp-home",
+            "/",
+        )
         with patch.object(cli, "CLOUDFLARE_PID_FILE", pid_file), \
              patch.object(cli, "_launchctl_pid", return_value=7777), \
+             patch.object(cli, "_cloudflare_launchd_identity", return_value=(7777, "verified")), \
+             patch.object(cli, "process_snapshot", return_value=snap), \
              patch.object(cli, "_resolve_cloudflared_binary") as resolve_binary:
             code = cli._start_cloudflare(args, public)
         self.assertEqual(0, code)
-        self.assertEqual("7777", pid_file.read_text(encoding="utf-8"))
+        payload = json.loads(pid_file.read_text(encoding="utf-8"))
+        self.assertEqual(7777, payload["pid"])
+        self.assertEqual("cloudflared", payload["role"])
         resolve_binary.assert_not_called()
 
     def test_stop_cloudflare_boots_out_and_disables_launchd_job(self) -> None:
         pid_file = Path(self.tmp.name) / "cloudflared.pid"
-        pid_file.write_text("8888", encoding="utf-8")
+        snap = ProcessSnapshot(
+            8888,
+            "Tue Sep 29 12:00:00 2026",
+            "/opt/homebrew/bin/cloudflared",
+            "/opt/homebrew/bin/cloudflared tunnel run --url http://127.0.0.1:8765",
+            "/",
+        )
         with patch.object(cli, "CLOUDFLARE_PID_FILE", pid_file), \
              patch.object(cli, "_launchctl_pid", return_value=8888), \
+             patch.object(cli, "_cloudflare_launchd_identity", return_value=(8888, "verified")), \
+             patch.object(cli, "process_snapshot", return_value=snap), \
              patch.object(cli, "_bootout_cloudflare_launchd", return_value=True) as bootout, \
              patch.object(cli, "_set_cloudflare_launchd_enabled", return_value=True) as enabled, \
              patch.object(cli, "_pid_alive", return_value=False):
@@ -672,28 +704,22 @@ class PublicEndpointProviderSwitchTests(unittest.TestCase):
         )
 
     def test_ngrok_mode_stops_managed_cloudflared(self) -> None:
-        def read_pid(path):
-            return 2222 if path == cli.CLOUDFLARE_PID_FILE else None
+        cli.CLOUDFLARE_PID_FILE.write_text("2222\n", encoding="utf-8")
+        self.addCleanup(cli.CLOUDFLARE_PID_FILE.unlink, missing_ok=True)
         with patch.object(cli, "_start_server", return_value=0), \
              patch.object(cli, "_start_ngrok", return_value=0) as start_ngrok, \
-             patch.object(cli, "_remove_stale_pid"), \
-             patch.object(cli, "_read_pid", side_effect=read_pid), \
-             patch.object(cli, "_pid_alive", return_value=True), \
-             patch.object(cli, "_stop_pid", return_value=True) as stop_pid:
+             patch.object(cli, "_stop_cloudflare", return_value=True) as stop_cloudflare:
             code = cli.start(self.args("ngrok"))
         self.assertEqual(0, code)
         start_ngrok.assert_called_once()
-        stop_pid.assert_called_once_with(cli.CLOUDFLARE_PID_FILE, "cloudflared", 3.0, True)
+        stop_cloudflare.assert_called_once_with(3.0, True)
 
     def test_cloudflare_mode_stops_managed_ngrok(self) -> None:
         token = write_cloudflare_token("switch-secret")
-        def read_pid(path):
-            return 3333 if path == cli.NGROK_PID_FILE else None
+        cli.NGROK_PID_FILE.write_text("3333\n", encoding="utf-8")
+        self.addCleanup(cli.NGROK_PID_FILE.unlink, missing_ok=True)
         with patch.object(cli, "_start_server", return_value=0), \
              patch.object(cli, "_start_cloudflare", return_value=0) as start_cloudflare, \
-             patch.object(cli, "_remove_stale_pid"), \
-             patch.object(cli, "_read_pid", side_effect=read_pid), \
-             patch.object(cli, "_pid_alive", return_value=True), \
              patch.object(cli, "_stop_pid", return_value=True) as stop_pid:
             code = cli.start(self.args("cloudflare", "https://mac.example.com/mcp"))
         self.assertEqual(0, code)
@@ -702,37 +728,34 @@ class PublicEndpointProviderSwitchTests(unittest.TestCase):
         stop_pid.assert_called_once_with(cli.NGROK_PID_FILE, "ngrok", 3.0, True)
 
     def test_local_mode_stops_both_managed_providers(self) -> None:
-        def read_pid(path):
-            if path == cli.NGROK_PID_FILE: return 4444
-            if path == cli.CLOUDFLARE_PID_FILE: return 5555
-            return None
+        cli.NGROK_PID_FILE.write_text("4444\n", encoding="utf-8")
+        cli.CLOUDFLARE_PID_FILE.write_text("5555\n", encoding="utf-8")
+        self.addCleanup(cli.NGROK_PID_FILE.unlink, missing_ok=True)
+        self.addCleanup(cli.CLOUDFLARE_PID_FILE.unlink, missing_ok=True)
         with patch.object(cli, "_start_server", return_value=0), \
-             patch.object(cli, "_remove_stale_pid"), \
-             patch.object(cli, "_read_pid", side_effect=read_pid), \
-             patch.object(cli, "_pid_alive", return_value=True), \
-             patch.object(cli, "_stop_pid", return_value=True) as stop_pid:
+             patch.object(cli, "_stop_pid", return_value=True) as stop_pid, \
+             patch.object(cli, "_stop_cloudflare", return_value=True) as stop_cloudflare:
             code = cli.start(self.args("none"))
         self.assertEqual(0, code)
-        stopped = {(call.args[0], call.args[1]) for call in stop_pid.call_args_list}
-        self.assertEqual({(cli.NGROK_PID_FILE, "ngrok"), (cli.CLOUDFLARE_PID_FILE, "cloudflared")}, stopped)
+        stop_pid.assert_called_once_with(cli.NGROK_PID_FILE, "ngrok", 3.0, True)
+        stop_cloudflare.assert_called_once_with(3.0, True)
 
     def test_custom_mode_stops_both_managed_providers_and_starts_no_tunnel(self) -> None:
-        def read_pid(path):
-            if path == cli.NGROK_PID_FILE: return 6666
-            if path == cli.CLOUDFLARE_PID_FILE: return 7777
-            return None
+        cli.NGROK_PID_FILE.write_text("6666\n", encoding="utf-8")
+        cli.CLOUDFLARE_PID_FILE.write_text("7777\n", encoding="utf-8")
+        self.addCleanup(cli.NGROK_PID_FILE.unlink, missing_ok=True)
+        self.addCleanup(cli.CLOUDFLARE_PID_FILE.unlink, missing_ok=True)
         with patch.object(cli, "_start_server", return_value=0), \
              patch.object(cli, "_start_ngrok") as start_ngrok, \
              patch.object(cli, "_start_cloudflare") as start_cloudflare, \
-             patch.object(cli, "_remove_stale_pid"), \
-             patch.object(cli, "_read_pid", side_effect=read_pid), \
-             patch.object(cli, "_pid_alive", return_value=True), \
-             patch.object(cli, "_stop_pid", return_value=True) as stop_pid:
+             patch.object(cli, "_stop_pid", return_value=True) as stop_pid, \
+             patch.object(cli, "_stop_cloudflare", return_value=True) as stop_cloudflare:
             code = cli.start(self.args("custom", "https://external.example.com/mcp"))
         self.assertEqual(0, code)
         start_ngrok.assert_not_called()
         start_cloudflare.assert_not_called()
-        self.assertEqual(2, stop_pid.call_count)
+        stop_pid.assert_called_once_with(cli.NGROK_PID_FILE, "ngrok", 3.0, True)
+        stop_cloudflare.assert_called_once_with(3.0, True)
 
 
 class InstallerPublicEndpointMigrationTests(unittest.TestCase):

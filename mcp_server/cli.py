@@ -23,6 +23,17 @@ from .public_endpoint import (
     write_cloudflare_token,
 )
 from .runtime_settings import server_setting
+from .managed_process import (
+    listener_pids,
+    matches_role,
+    migrate_legacy_record,
+    pid_alive,
+    process_snapshot,
+    read_pid,
+    read_process_record,
+    validate_process_record,
+    write_process_record,
+)
 from .runtime_resolver import (
     ngrok_http_endpoint_flag,
     resolve_cloudflared_binary,
@@ -76,49 +87,139 @@ def _launch_menu_app() -> None:
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
+    return pid_alive(pid)
 
 
 def _read_pid(path: Path) -> int | None:
-    try:
-        return int(path.read_text().strip())
-    except Exception:
-        return None
+    return read_pid(path)
 
 
 def _remove_stale_pid(path: Path) -> None:
+    """Compatibility helper: only remove definitely dead/invalid PID state."""
     pid = _read_pid(path)
     if pid is None or not _pid_alive(pid):
         path.unlink(missing_ok=True)
 
 
-def _stop_pid(path: Path, name: str, timeout: float, force: bool) -> bool:
-    pid = _read_pid(path)
-    if not pid or not _pid_alive(pid):
+def _role_for_name(name: str) -> str:
+    return {
+        "mac-mcp": "server",
+        "server": "server",
+        "ngrok": "ngrok",
+        "cloudflared": "cloudflared",
+        "cloudflare": "cloudflared",
+    }.get(str(name or "").strip().lower(), str(name or "").strip().lower())
+
+
+def _validate_managed_pid(
+    path: Path,
+    name: str,
+    *,
+    port: int | None = None,
+    binary: str | Path | None = None,
+    migrate_legacy: bool = True,
+):
+    role = _role_for_name(name)
+    if port is None:
+        record = read_process_record(path)
+        recorded_port = (record.metadata or {}).get("port") if record is not None else None
+        try:
+            effective_port = int(recorded_port)
+        except (TypeError, ValueError):
+            effective_port = _default_port()
+    else:
+        effective_port = int(port)
+    kwargs = {
+        "port": effective_port,
+        "project_root": PROJECT_ROOT if role == "server" else None,
+        "binary": binary,
+    }
+    validation = validate_process_record(path, role, **kwargs)
+    if migrate_legacy and validation.legacy_match:
+        validation = migrate_legacy_record(
+            path,
+            role,
+            metadata={"port": effective_port, "migrated_from": "legacy_pid"},
+            **kwargs,
+        )
+    return validation
+
+
+def _stop_pid(
+    path: Path,
+    name: str,
+    timeout: float,
+    force: bool,
+    *,
+    port: int | None = None,
+    binary: str | Path | None = None,
+) -> bool:
+    validation = _validate_managed_pid(path, name, port=port, binary=binary)
+    if validation.status in {"missing", "dead", "invalid_record"}:
         path.unlink(missing_ok=True)
         print(f"{name} is not running.")
         return True
 
-    os.kill(pid, signal.SIGTERM)
+    if not validation.valid or validation.pid is None:
+        if validation.safe_to_remove_record:
+            path.unlink(missing_ok=True)
+        print(
+            f"Refusing to signal {name}: recorded PID ownership could not be verified "
+            f"({validation.reason})."
+        )
+        return False
+
+    pid = validation.pid
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        path.unlink(missing_ok=True)
+        print(f"{name} stopped.")
+        return True
+    except PermissionError:
+        print(f"Refusing to signal {name}: permission denied for verified pid {pid}.")
+        return False
+
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if not _pid_alive(pid):
+        current = _validate_managed_pid(
+            path, name, port=port, binary=binary, migrate_legacy=False,
+        )
+        if current.status in {"missing", "dead"}:
             path.unlink(missing_ok=True)
             print(f"{name} stopped.")
             return True
+        if current.status in {"identity_mismatch", "role_mismatch"}:
+            # The original process exited and the PID was reused. Never signal the replacement.
+            path.unlink(missing_ok=True)
+            print(f"{name} stopped; PID {pid} was reused by another process.")
+            return True
+        if current.status == "unverifiable":
+            print(f"Refusing further signals to {name}: process identity became unverifiable.")
+            return False
         time.sleep(0.2)
 
     if force:
-        os.kill(pid, signal.SIGKILL)
-        path.unlink(missing_ok=True)
-        print(f"{name} force-stopped.")
-        return True
+        current = _validate_managed_pid(
+            path, name, port=port, binary=binary, migrate_legacy=False,
+        )
+        if current.valid and current.pid == pid:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                print(f"Refusing to force-stop {name}: permission denied for verified pid {pid}.")
+                return False
+            path.unlink(missing_ok=True)
+            print(f"{name} force-stopped.")
+            return True
+        if current.status in {"missing", "dead", "identity_mismatch", "role_mismatch"}:
+            path.unlink(missing_ok=True)
+            print(f"{name} stopped without signaling a reused PID.")
+            return True
+        print(f"Refusing to force-stop {name}: process identity is not verifiable.")
+        return False
 
     print(f"{name} did not stop within {timeout}s. Run: mac-mcp stop --force")
     return False
@@ -128,64 +229,140 @@ def _local_url(host: str, port: int) -> str:
     return f"http://{host}:{port}"
 
 
+def _server_listener_state(port: int) -> tuple[list[int], list[int]]:
+    owned: list[int] = []
+    foreign: list[int] = []
+    for pid in listener_pids(int(port)):
+        snapshot = process_snapshot(pid)
+        if snapshot and matches_role(
+            snapshot,
+            "server",
+            port=int(port),
+            project_root=PROJECT_ROOT,
+        ):
+            owned.append(pid)
+        else:
+            foreign.append(pid)
+    return owned, foreign
+
+
 def _server_listener_pid(port: int) -> int | None:
-    lsof = shutil.which("lsof") or "/usr/sbin/lsof"
-    if not Path(lsof).exists():
+    owned, foreign = _server_listener_state(port)
+    if foreign or len(owned) != 1:
         return None
-    try:
-        probe = subprocess.run(
-            [lsof, f"-tiTCP:{int(port)}", "-sTCP:LISTEN"],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3, check=False,
-        )
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return None
-    if probe.returncode not in {0, 1}:
-        return None
-    for raw in (probe.stdout or "").splitlines():
-        try:
-            pid = int(raw.strip())
-        except ValueError:
-            continue
-        if pid <= 0 or not _pid_alive(pid):
-            continue
-        try:
-            proc = subprocess.run(
-                ["/bin/ps", "-p", str(pid), "-o", "command="],
-                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=3, check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            continue
-        command = (proc.stdout or "").strip()
-        if proc.returncode == 0 and APP_MODULE in command and "uvicorn" in command and f"--port {int(port)}" in command:
-            return pid
-    return None
+    return owned[0]
+
+
+def _server_listener_conflicts(port: int) -> list[int]:
+    _owned, foreign = _server_listener_state(port)
+    return foreign
 
 
 def _adopt_server_listener(port: int) -> int | None:
-    pid = _server_listener_pid(port)
-    if pid:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        PID_FILE.write_text(str(pid), encoding="utf-8")
+    owned, foreign = _server_listener_state(port)
+    if foreign or len(owned) != 1:
+        return None
+    pid = owned[0]
+    snapshot = process_snapshot(pid)
+    if snapshot is None:
+        return None
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        write_process_record(
+            PID_FILE,
+            "server",
+            pid,
+            metadata={"port": int(port), "ownership_source": "verified_listener"},
+            snapshot=snapshot,
+        )
+    except (OSError, RuntimeError):
+        return None
     return pid
+
+
+def _resolve_server_identity(
+    port: int,
+    *,
+    adopt_listener: bool = True,
+) -> tuple[int | None, str]:
+    # A fingerprinted managed server remains owned even if the configured port
+    # changed after it was started. Validate against the record's captured port.
+    validation = _validate_managed_pid(PID_FILE, "mac-mcp")
+    if validation.valid and validation.pid is not None:
+        return validation.pid, "pid_record"
+    if validation.status == "unverifiable":
+        return None, "pid_unverifiable"
+    if validation.safe_to_remove_record:
+        PID_FILE.unlink(missing_ok=True)
+
+    owned, foreign = _server_listener_state(int(port))
+    if foreign:
+        return None, "foreign_listener"
+    if len(owned) > 1:
+        return None, "ambiguous_listener"
+    if len(owned) == 1:
+        if not adopt_listener:
+            return owned[0], "verified_listener"
+        adopted = _adopt_server_listener(int(port))
+        return (adopted, "adopted_listener") if adopted else (None, "adoption_failed")
+    return None, "not_running"
 
 
 def _start_server(args: argparse.Namespace) -> int:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _remove_stale_pid(PID_FILE)
-    pid = _read_pid(PID_FILE)
-    if pid and _pid_alive(pid):
-        print(f"mac-mcp is already running (pid {pid}).")
+    port = int(args.port)
+
+    validation = _validate_managed_pid(PID_FILE, "mac-mcp")
+    if validation.valid and validation.pid is not None:
+        record = read_process_record(PID_FILE)
+        recorded_port = (record.metadata or {}).get("port") if record is not None else None
+        try:
+            owned_port = int(recorded_port)
+        except (TypeError, ValueError):
+            owned_port = port
+        if owned_port != port:
+            print(
+                f"mac-mcp is already running as a verified managed process on port {owned_port} "
+                f"(pid {validation.pid}); refusing to start a second server on port {port}. "
+                "Stop or restart Mac MCP first."
+            )
+            return 1
+        print(f"mac-mcp is already running (pid {validation.pid}; identity verified).")
         _launch_menu_app()
         return 0
-    pid = _adopt_server_listener(int(args.port))
-    if pid:
-        print(f"mac-mcp is already running (pid {pid}; adopted existing listener).")
+    if validation.status == "unverifiable":
+        print(
+            f"Cannot verify recorded mac-mcp pid {validation.pid}; refusing to start or overwrite ownership state."
+        )
+        return 1
+    if validation.safe_to_remove_record:
+        PID_FILE.unlink(missing_ok=True)
+
+    owned, foreign = _server_listener_state(port)
+    if foreign:
+        rendered = ", ".join(str(pid) for pid in foreign)
+        print(
+            f"Port {port} is already listening under unmanaged process pid(s) {rendered}; "
+            "refusing to adopt or start mac-mcp."
+        )
+        return 1
+    if len(owned) > 1:
+        print(
+            f"Port {port} has multiple mac-mcp-like listeners; refusing ambiguous ownership."
+        )
+        return 1
+    if owned:
+        pid = _adopt_server_listener(port)
+        if not pid:
+            print("Verified mac-mcp listener could not be recorded safely; refusing adoption.")
+            return 1
+        print(f"mac-mcp is already running (pid {pid}; verified listener adopted).")
         _launch_menu_app()
         return 0
 
     env = os.environ.copy()
     env.setdefault("MAC_MCP_HOST", args.host)
-    env.setdefault("MAC_MCP_PORT", str(args.port))
+    env.setdefault("MAC_MCP_PORT", str(port))
     cmd = [
         sys.executable,
         "-m",
@@ -194,7 +371,7 @@ def _start_server(args: argparse.Namespace) -> int:
         "--host",
         args.host,
         "--port",
-        str(args.port),
+        str(port),
     ]
     if args.reload:
         cmd.append("--reload")
@@ -209,14 +386,39 @@ def _start_server(args: argparse.Namespace) -> int:
         cwd=str(PROJECT_ROOT),
         start_new_session=True,
     )
-    PID_FILE.write_text(str(proc.pid))
     time.sleep(0.5)
     if proc.poll() is not None:
         print(f"mac-mcp failed to start. See log: {LOG_FILE}")
         PID_FILE.unlink(missing_ok=True)
         return proc.returncode or 1
 
-    print(f"mac-mcp started on {_local_url(args.host, args.port)} (pid {proc.pid}).")
+    snapshot = process_snapshot(proc.pid)
+    if snapshot is None or not matches_role(
+        snapshot, "server", port=port, project_root=PROJECT_ROOT,
+    ):
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        print("mac-mcp started a process whose identity could not be verified; it was not adopted.")
+        return 1
+    try:
+        write_process_record(
+            PID_FILE,
+            "server",
+            proc.pid,
+            metadata={"port": port, "ownership_source": "spawn"},
+            snapshot=snapshot,
+        )
+    except (OSError, RuntimeError):
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        print("mac-mcp could not persist verified process identity; started process was terminated.")
+        return 1
+
+    print(f"mac-mcp started on {_local_url(args.host, port)} (pid {proc.pid}).")
     print("dashboard: run 'mac-mcp dashboard' for an authenticated local launch")
     print(f"mac-mcp log: {LOG_FILE}")
     _launch_menu_app()
@@ -306,6 +508,28 @@ def _launchctl_pid(label: str | None = None) -> int | None:
     return pid if running and pid and _pid_alive(pid) else None
 
 
+def _cloudflare_launchd_identity(
+    *,
+    port: int | None = None,
+    binary: str | Path | None = None,
+) -> tuple[int | None, str]:
+    pid = _launchctl_pid()
+    if not pid:
+        return None, "not_running"
+    snapshot = process_snapshot(pid)
+    if snapshot is None:
+        return None, "metadata_unavailable"
+    expected_port = int(port) if port is not None else None
+    if not matches_role(
+        snapshot,
+        "cloudflared",
+        port=expected_port,
+        binary=binary,
+    ):
+        return None, "role_mismatch"
+    return pid, "verified"
+
+
 def _cloudflare_launchd_loaded() -> bool:
     try:
         return _launchctl_run("print", _launchctl_target(), timeout=3.0).returncode == 0
@@ -366,35 +590,95 @@ def _bootstrap_cloudflare_launchd(plist_path: Path) -> tuple[bool, str]:
     return proc.returncode == 0, detail
 
 
-def _wait_for_cloudflare_launchd(timeout: float = 8.0) -> int | None:
+def _wait_for_cloudflare_launchd(
+    timeout: float = 8.0,
+    *,
+    port: int | None = None,
+    binary: str | Path | None = None,
+) -> int | None:
     deadline = time.time() + timeout
+    effective_port = int(port if port is not None else _default_port())
     while time.time() < deadline:
-        pid = _launchctl_pid()
+        pid, identity = _cloudflare_launchd_identity(port=effective_port, binary=binary)
         if pid:
-            CLOUDFLARE_PID_FILE.write_text(str(pid), encoding="utf-8")
+            snapshot = process_snapshot(pid)
+            if snapshot is None:
+                return None
+            try:
+                write_process_record(
+                    CLOUDFLARE_PID_FILE,
+                    "cloudflared",
+                    pid,
+                    metadata={
+                        "port": effective_port,
+                        "launchd_label": CLOUDFLARE_LAUNCHD_LABEL,
+                        "ownership_source": "launchd",
+                    },
+                    snapshot=snapshot,
+                )
+            except (OSError, RuntimeError):
+                return None
             return pid
+        if identity == "role_mismatch":
+            return None
         time.sleep(0.2)
     return None
 
 
 def _stop_cloudflare(timeout: float, force: bool) -> bool:
-    recorded_pid = _read_pid(CLOUDFLARE_PID_FILE)
+    port = _default_port()
     launchd_pid = _launchctl_pid()
+    if launchd_pid:
+        verified_pid, identity = _cloudflare_launchd_identity()
+        if not verified_pid:
+            print(
+                f"Refusing to stop cloudflared launchd job: process identity could not be verified "
+                f"({identity})."
+            )
+            return False
+        snapshot = process_snapshot(verified_pid)
+        if snapshot is None:
+            print("Refusing to stop cloudflared launchd job: process metadata is unavailable.")
+            return False
+        try:
+            write_process_record(
+                CLOUDFLARE_PID_FILE,
+                "cloudflared",
+                verified_pid,
+                metadata={
+                    "port": port,
+                    "launchd_label": CLOUDFLARE_LAUNCHD_LABEL,
+                    "ownership_source": "launchd",
+                },
+                snapshot=snapshot,
+            )
+        except (OSError, RuntimeError):
+            print("Refusing to stop cloudflared: verified launchd identity could not be recorded.")
+            return False
+
     launchd_ok = _bootout_cloudflare_launchd()
     disabled_ok = _set_cloudflare_launchd_enabled(False)
-    if launchd_pid and recorded_pid == launchd_pid:
-        recorded_pid = None
+
     manual_ok = True
-    if recorded_pid and _pid_alive(recorded_pid):
-        manual_ok = _stop_pid(CLOUDFLARE_PID_FILE, "cloudflared", timeout, force)
-    else:
-        CLOUDFLARE_PID_FILE.unlink(missing_ok=True)
+    recorded_pid = _read_pid(CLOUDFLARE_PID_FILE)
+    if recorded_pid and (not launchd_pid or recorded_pid != launchd_pid):
+        manual_ok = _stop_pid(
+            CLOUDFLARE_PID_FILE,
+            "cloudflared",
+            timeout,
+            force,
+        )
+
     if launchd_ok:
         deadline = time.time() + timeout
         while launchd_pid and _pid_alive(launchd_pid) and time.time() < deadline:
             time.sleep(0.2)
+        # A reused PID must not be signaled; launchctl already targeted only our label.
         if launchd_pid and _pid_alive(launchd_pid):
-            launchd_ok = False
+            current = process_snapshot(launchd_pid)
+            if current and matches_role(current, "cloudflared"):
+                launchd_ok = False
+
     if launchd_ok and disabled_ok and manual_ok:
         CLOUDFLARE_PID_FILE.unlink(missing_ok=True)
         print("cloudflared stopped.")
@@ -405,10 +689,37 @@ def _stop_cloudflare(timeout: float, force: bool) -> bool:
 
 def _start_cloudflare(args: argparse.Namespace, public) -> int:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    port = int(args.port)
+
     launchd_pid = _launchctl_pid()
     if launchd_pid:
-        CLOUDFLARE_PID_FILE.write_text(str(launchd_pid), encoding="utf-8")
-        print(f"cloudflared is already running under launchd for mac-mcp (pid {launchd_pid}).")
+        verified_pid, identity = _cloudflare_launchd_identity(port=port)
+        if not verified_pid:
+            print(
+                f"Refusing to reuse cloudflared launchd job: process identity could not be verified "
+                f"({identity})."
+            )
+            return 1
+        snapshot = process_snapshot(verified_pid)
+        if snapshot is None:
+            print("Refusing to reuse cloudflared launchd job: process metadata is unavailable.")
+            return 1
+        try:
+            write_process_record(
+                CLOUDFLARE_PID_FILE,
+                "cloudflared",
+                verified_pid,
+                metadata={
+                    "port": port,
+                    "launchd_label": CLOUDFLARE_LAUNCHD_LABEL,
+                    "ownership_source": "launchd",
+                },
+                snapshot=snapshot,
+            )
+        except (OSError, RuntimeError):
+            print("Verified cloudflared launchd process could not be recorded safely.")
+            return 1
+        print(f"cloudflared is already running under launchd for mac-mcp (pid {verified_pid}; identity verified).")
         return 0
 
     cloudflared = _resolve_cloudflared_binary(getattr(args, "cloudflared_bin", None))
@@ -416,7 +727,7 @@ def _start_cloudflare(args: argparse.Namespace, public) -> int:
         print("cloudflared was not found. Install it with Homebrew or set CLOUDFLARED_BIN.")
         return 2
 
-    target = f"http://127.0.0.1:{int(args.port)}"
+    target = f"http://127.0.0.1:{port}"
     cmd = [cloudflared, "tunnel", "--no-autoupdate", "--loglevel", "fatal", "run", "--url", target]
     token_file = public.cloudflare_token_file
     if token_file:
@@ -435,12 +746,39 @@ def _start_cloudflare(args: argparse.Namespace, public) -> int:
         print("Cloudflare Tunnel mode is missing a tunnel name/UUID or token file.")
         return 2
 
-    previous_pid = _read_pid(CLOUDFLARE_PID_FILE)
-    previous_pid = previous_pid if previous_pid and _pid_alive(previous_pid) else None
+    # A stale manual PID record is never signaled here. _stop_pid validates it first.
+    if CLOUDFLARE_PID_FILE.exists() and not _cloudflare_launchd_loaded():
+        validation = _validate_managed_pid(
+            CLOUDFLARE_PID_FILE,
+            "cloudflared",
+            port=port,
+            binary=cloudflared,
+        )
+        if validation.valid:
+            if not _stop_pid(
+                CLOUDFLARE_PID_FILE,
+                "cloudflared",
+                3.0,
+                True,
+                port=port,
+                binary=cloudflared,
+            ):
+                return 1
+        elif validation.status == "unverifiable":
+            print("Refusing to replace cloudflared: existing PID ownership is unverifiable.")
+            return 1
+        elif validation.safe_to_remove_record:
+            CLOUDFLARE_PID_FILE.unlink(missing_ok=True)
+
     plist_path = _write_cloudflare_launchd_plist(cmd)
-    if _cloudflare_launchd_loaded() and not _bootout_cloudflare_launchd():
-        print("Could not replace the existing cloudflared launchd job.")
-        return 1
+    if _cloudflare_launchd_loaded():
+        existing_pid, identity = _cloudflare_launchd_identity(port=port, binary=cloudflared)
+        if _launchctl_pid() and not existing_pid:
+            print(f"Refusing to replace cloudflared launchd job with unverified identity ({identity}).")
+            return 1
+        if not _bootout_cloudflare_launchd():
+            print("Could not replace the existing cloudflared launchd job.")
+            return 1
     if not _set_cloudflare_launchd_enabled(True):
         print("Could not enable the cloudflared launchd job.")
         return 1
@@ -448,44 +786,38 @@ def _start_cloudflare(args: argparse.Namespace, public) -> int:
     if not ok:
         print(f"cloudflared failed to register with launchd{': ' + detail if detail else '.'}")
         return 1
-    pid = _wait_for_cloudflare_launchd()
+    pid = _wait_for_cloudflare_launchd(port=port, binary=cloudflared)
     if not pid:
-        _bootout_cloudflare_launchd()
+        # Only boot out a job we can still identify by the configured label.
+        verified_pid, _identity = _cloudflare_launchd_identity(port=port, binary=cloudflared)
+        if verified_pid:
+            _bootout_cloudflare_launchd()
         print(f"cloudflared failed to become healthy under launchd. See log: {CLOUDFLARE_LOG_FILE}")
         return 1
 
-    if previous_pid and previous_pid != pid and _pid_alive(previous_pid):
-        try:
-            os.kill(previous_pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-    CLOUDFLARE_PID_FILE.write_text(str(pid), encoding="utf-8")
     print(f"Cloudflare Tunnel started under launchd: {public.endpoint_url} -> {target} (pid {pid}).")
     print(f"cloudflared log: {CLOUDFLARE_LOG_FILE}")
     return 0
 
 
 def _stop_unselected_public_processes(selected_mode: str) -> None:
-    for mode, path, label in (
-        ("ngrok", NGROK_PID_FILE, "ngrok"),
-        ("cloudflare", CLOUDFLARE_PID_FILE, "cloudflared"),
+    if selected_mode != "ngrok" and NGROK_PID_FILE.exists():
+        _stop_pid(
+            NGROK_PID_FILE,
+            "ngrok",
+            3.0,
+            True,
+        )
+
+    if selected_mode != "cloudflare" and (
+        _cloudflare_launchd_loaded() or CLOUDFLARE_PID_FILE.exists()
     ):
-        _remove_stale_pid(path)
-        pid = _read_pid(path)
-        if mode != selected_mode:
-            if mode == "cloudflare" and (_cloudflare_launchd_loaded() or (pid and _pid_alive(pid))):
-                _stop_cloudflare(3.0, True)
-            elif pid and _pid_alive(pid):
-                _stop_pid(path, label, 3.0, True)
+        _stop_cloudflare(3.0, True)
 
 
 def _start_ngrok(args: argparse.Namespace) -> int:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _remove_stale_pid(NGROK_PID_FILE)
-    pid = _read_pid(NGROK_PID_FILE)
-    if pid and _pid_alive(pid):
-        print(f"ngrok is already running for mac-mcp (pid {pid}).")
-        return 0
+    port = int(args.port)
 
     domain = (args.ngrok_domain or os.getenv("NGROK_DOMAIN", "")).strip()
     if domain.startswith("https://") or domain.startswith("http://"):
@@ -500,8 +832,23 @@ def _start_ngrok(args: argparse.Namespace) -> int:
         print("ngrok was not found. Install it with Homebrew or set NGROK_BIN in mcp_server/.env")
         return 2
 
+    validation = _validate_managed_pid(
+        NGROK_PID_FILE,
+        "ngrok",
+        port=port,
+        binary=ngrok_path,
+    )
+    if validation.valid and validation.pid is not None:
+        print(f"ngrok is already running for mac-mcp (pid {validation.pid}; identity verified).")
+        return 0
+    if validation.status == "unverifiable":
+        print("Refusing to start ngrok: existing PID ownership is unverifiable.")
+        return 1
+    if validation.safe_to_remove_record:
+        NGROK_PID_FILE.unlink(missing_ok=True)
+
     public_url = f"https://{domain}"
-    target = str(args.port)
+    target = str(port)
     endpoint_flag = ngrok_http_endpoint_flag(ngrok_path)
     if endpoint_flag == "--url":
         cmd = [ngrok_path, "http", "--url", public_url, target]
@@ -515,14 +862,42 @@ def _start_ngrok(args: argparse.Namespace) -> int:
         stdin=subprocess.DEVNULL,
         start_new_session=True,
     )
-    NGROK_PID_FILE.write_text(str(proc.pid))
     time.sleep(0.8)
     if proc.poll() is not None:
         print(f"ngrok failed to start. See log: {NGROK_LOG_FILE}")
         NGROK_PID_FILE.unlink(missing_ok=True)
         return proc.returncode or 1
 
-    print(f"ngrok tunnel started: {public_url} -> {_local_url(args.host, args.port)} (pid {proc.pid}).")
+    snapshot = process_snapshot(proc.pid)
+    if snapshot is None or not matches_role(
+        snapshot,
+        "ngrok",
+        port=port,
+        binary=ngrok_path,
+    ):
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        print("ngrok started a process whose identity could not be verified; it was not adopted.")
+        return 1
+    try:
+        write_process_record(
+            NGROK_PID_FILE,
+            "ngrok",
+            proc.pid,
+            metadata={"port": port, "ownership_source": "spawn"},
+            snapshot=snapshot,
+        )
+    except (OSError, RuntimeError):
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        print("ngrok process identity could not be persisted; started process was terminated.")
+        return 1
+
+    print(f"ngrok tunnel started: {public_url} -> {_local_url(args.host, port)} (pid {proc.pid}).")
     print(f"ngrok log: {NGROK_LOG_FILE}")
     return 0
 
@@ -558,33 +933,118 @@ def start(args: argparse.Namespace) -> int:
 
 def stop(args: argparse.Namespace) -> int:
     _load_env()
-    if not (_read_pid(PID_FILE) and _pid_alive(_read_pid(PID_FILE) or 0)):
-        _adopt_server_listener(_default_port())
-    server_ok = _stop_pid(PID_FILE, "mac-mcp", args.timeout, args.force)
-    ngrok_ok = _stop_pid(NGROK_PID_FILE, "ngrok", args.timeout, args.force)
+    port = _default_port()
+    server_pid, server_source = _resolve_server_identity(port)
+    if server_pid:
+        server_ok = _stop_pid(
+            PID_FILE,
+            "mac-mcp",
+            args.timeout,
+            args.force,
+        )
+    elif server_source in {
+        "pid_unverifiable",
+        "foreign_listener",
+        "ambiguous_listener",
+        "adoption_failed",
+    }:
+        print(
+            f"Refusing to stop mac-mcp: server ownership is not verifiable "
+            f"({server_source})."
+        )
+        server_ok = False
+    else:
+        PID_FILE.unlink(missing_ok=True)
+        print("mac-mcp is not running.")
+        server_ok = True
+
+    ngrok_ok = _stop_pid(
+        NGROK_PID_FILE,
+        "ngrok",
+        args.timeout,
+        args.force,
+    )
     cloudflare_ok = _stop_cloudflare(args.timeout, args.force)
     return 0 if server_ok and ngrok_ok and cloudflare_ok else 1
 
 
 def status(args: argparse.Namespace) -> int:
     _load_env()
-    server_pid = _read_pid(PID_FILE)
-    if not (server_pid and _pid_alive(server_pid)):
-        server_pid = _adopt_server_listener(_default_port())
-    ngrok_pid = _read_pid(NGROK_PID_FILE)
-    cloudflare_pid = _launchctl_pid() or _read_pid(CLOUDFLARE_PID_FILE)
-    server_running = bool(server_pid and _pid_alive(server_pid))
-    ngrok_running = bool(ngrok_pid and _pid_alive(ngrok_pid))
-    cloudflare_running = bool(cloudflare_pid and _pid_alive(cloudflare_pid))
-    if cloudflare_running and cloudflare_pid:
-        CLOUDFLARE_PID_FILE.write_text(str(cloudflare_pid), encoding="utf-8")
+    port = _default_port()
+
+    server_pid, server_source = _resolve_server_identity(port)
+    server_running = server_pid is not None
+
+    ngrok_validation = _validate_managed_pid(
+        NGROK_PID_FILE,
+        "ngrok",
+        port=port,
+    )
+    ngrok_pid = ngrok_validation.pid if ngrok_validation.valid else None
+    ngrok_running = ngrok_pid is not None
+    if ngrok_validation.safe_to_remove_record:
+        NGROK_PID_FILE.unlink(missing_ok=True)
+
+    cloudflare_pid: int | None = None
+    cloudflare_source = "not_running"
+    launchd_raw_pid = _launchctl_pid()
+    if launchd_raw_pid:
+        verified_pid, identity = _cloudflare_launchd_identity(port=port)
+        if verified_pid:
+            cloudflare_pid = verified_pid
+            cloudflare_source = "launchd_verified"
+            snapshot = process_snapshot(verified_pid)
+            if snapshot is not None:
+                try:
+                    write_process_record(
+                        CLOUDFLARE_PID_FILE,
+                        "cloudflared",
+                        verified_pid,
+                        metadata={
+                            "port": port,
+                            "launchd_label": CLOUDFLARE_LAUNCHD_LABEL,
+                            "ownership_source": "launchd",
+                        },
+                        snapshot=snapshot,
+                    )
+                except (OSError, RuntimeError):
+                    cloudflare_pid = None
+                    cloudflare_source = "record_failed"
+        else:
+            cloudflare_source = f"launchd_{identity}"
+    elif CLOUDFLARE_PID_FILE.exists():
+        cf_validation = _validate_managed_pid(
+            CLOUDFLARE_PID_FILE,
+            "cloudflared",
+            port=port,
+        )
+        if cf_validation.valid:
+            cloudflare_pid = cf_validation.pid
+            cloudflare_source = "pid_record"
+        elif cf_validation.safe_to_remove_record:
+            CLOUDFLARE_PID_FILE.unlink(missing_ok=True)
+            cloudflare_source = cf_validation.status
+        else:
+            cloudflare_source = cf_validation.status
+    cloudflare_running = cloudflare_pid is not None
 
     if server_running:
-        print(f"mac-mcp is running (pid {server_pid}).")
+        print(
+            f"mac-mcp is running (pid {server_pid}; identity verified via {server_source})."
+        )
         print(f"mac-mcp log: {LOG_FILE}")
     else:
-        PID_FILE.unlink(missing_ok=True)
-        print("mac-mcp is not running.")
+        if server_source == "foreign_listener":
+            conflicts = _server_listener_conflicts(port)
+            rendered = ", ".join(str(pid) for pid in conflicts) or "unknown"
+            print(
+                f"mac-mcp is not running; configured port {port} is occupied by "
+                f"unmanaged listener pid(s) {rendered}."
+            )
+        elif server_source not in {"not_running"}:
+            print(f"mac-mcp ownership is not verified ({server_source}).")
+        else:
+            print("mac-mcp is not running.")
 
     try:
         public = resolve_public_endpoint()
@@ -599,33 +1059,41 @@ def status(args: argparse.Namespace) -> int:
         elif public.mode == "cloudflare":
             print("public endpoint mode: cloudflare")
             if cloudflare_running:
-                print(f"cloudflared is running (pid {cloudflare_pid}).")
+                print(
+                    f"cloudflared is running (pid {cloudflare_pid}; identity verified via {cloudflare_source})."
+                )
                 print(f"cloudflared log: {CLOUDFLARE_LOG_FILE}")
                 print(f"MCP URL: {public.endpoint_url}")
             else:
-                CLOUDFLARE_PID_FILE.unlink(missing_ok=True)
-                print("Cloudflare Tunnel is configured but not running for mac-mcp.")
+                print(
+                    "Cloudflare Tunnel is configured but no verified mac-mcp cloudflared process is running "
+                    f"({cloudflare_source})."
+                )
         elif public.mode == "ngrok":
             print("public endpoint mode: ngrok")
             if ngrok_running:
-                print(f"ngrok is running (pid {ngrok_pid}).")
+                print(f"ngrok is running (pid {ngrok_pid}; identity verified).")
                 print(f"ngrok log: {NGROK_LOG_FILE}")
                 print(f"MCP URL: {public.endpoint_url}")
             else:
-                NGROK_PID_FILE.unlink(missing_ok=True)
-                print("ngrok is configured but not running for mac-mcp.")
+                print(
+                    "ngrok is configured but no verified mac-mcp ngrok process is running "
+                    f"({ngrok_validation.status})."
+                )
         else:
             print("public endpoint mode: local only")
 
     if ngrok_running and (public is None or public.mode != "ngrok"):
-        print(f"ngrok managed process is still running (pid {ngrok_pid}) but is not the selected public endpoint mode.")
-    elif not ngrok_running:
-        NGROK_PID_FILE.unlink(missing_ok=True)
+        print(
+            f"ngrok managed process is still running (pid {ngrok_pid}) but is not "
+            "the selected public endpoint mode."
+        )
 
     if cloudflare_running and (public is None or public.mode != "cloudflare"):
-        print(f"cloudflared managed process is still running (pid {cloudflare_pid}) but is not the selected public endpoint mode.")
-    elif not cloudflare_running:
-        CLOUDFLARE_PID_FILE.unlink(missing_ok=True)
+        print(
+            f"cloudflared managed process is still running (pid {cloudflare_pid}) but is not "
+            "the selected public endpoint mode."
+        )
 
     return 0 if server_running else 1
 
@@ -633,7 +1101,10 @@ def status(args: argparse.Namespace) -> int:
 def restart(args: argparse.Namespace) -> int:
     _load_env()
     stop_args = argparse.Namespace(timeout=args.timeout, force=True)
-    stop(stop_args)
+    stop_code = stop(stop_args)
+    if stop_code != 0:
+        print("Restart aborted because managed process shutdown was not verified.")
+        return stop_code
     return start(args)
 
 
@@ -666,18 +1137,17 @@ def credential(args: argparse.Namespace) -> int:
 
 def dashboard(args: argparse.Namespace) -> int:
     _load_env()
-    server_pid = _read_pid(PID_FILE)
-    if not server_pid or not _pid_alive(server_pid):
-        PID_FILE.unlink(missing_ok=True)
-        print("mac-mcp is not running. Start it first with: mac-mcp start")
+    port = _default_port()
+    server_pid, server_source = _resolve_server_identity(port)
+    if not server_pid:
+        print(
+            f"mac-mcp is not running with verified ownership ({server_source}). "
+            "Start it first with: mac-mcp start"
+        )
         return 1
     host = os.getenv("MAC_MCP_HOST", DEFAULT_HOST).strip() or DEFAULT_HOST
     if host in {"0.0.0.0", "::"}:
         host = "127.0.0.1"
-    try:
-        port = int(os.getenv("MAC_MCP_PORT", DEFAULT_PORT))
-    except ValueError:
-        port = int(DEFAULT_PORT)
     url = f"{_local_url(host, port)}/dashboard"
     token_file = dashboard_token_path()
     try:

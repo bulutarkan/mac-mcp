@@ -385,15 +385,18 @@ class UpdateHelperTests(unittest.TestCase):
         helper = Path(cmd[1])
         staged_state = helper.with_name("update_state.py")
         staged_release_trust = helper.with_name("release_trust.py")
+        staged_managed_process = helper.with_name("managed_process.py")
         staged_trusted_signers = helper.with_name("release_trusted_signers.txt")
         self.addCleanup(shutil.rmtree, helper.parent, True)
         self.assertEqual(cmd[0], sys.executable)
         self.assertTrue(helper.is_file())
         self.assertTrue(staged_state.is_file())
         self.assertTrue(staged_release_trust.is_file())
+        self.assertTrue(staged_managed_process.is_file())
         self.assertTrue(staged_trusted_signers.is_file())
         self.assertEqual(helper.parent, staged_state.parent)
         self.assertEqual(helper.parent, staged_release_trust.parent)
+        self.assertEqual(helper.parent, staged_managed_process.parent)
         self.assertEqual(helper.parent, staged_trusted_signers.parent)
         self.assertNotIn(repo, helper.parents)
         self.assertNotIn(runtime, helper.parents)
@@ -484,6 +487,7 @@ class UpdateHelperTests(unittest.TestCase):
         shutil.copy2(Path(update_helper_module.__file__), helper)
         shutil.copy2(Path(update_helper_module.__file__).with_name("update_state.py"), staging / "update_state.py")
         shutil.copy2(Path(update_helper_module.__file__).with_name("release_trust.py"), staging / "release_trust.py")
+        shutil.copy2(Path(update_helper_module.__file__).with_name("managed_process.py"), staging / "managed_process.py")
         shutil.copy2(
             Path(update_helper_module.__file__).with_name("release_trusted_signers.txt"),
             staging / "release_trusted_signers.txt",

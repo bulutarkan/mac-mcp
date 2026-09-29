@@ -1,0 +1,255 @@
+from __future__ import annotations
+
+import argparse
+import os
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from mcp_server import cli, diagnostics, update_helper
+from mcp_server.managed_process import (
+    ProcessSnapshot,
+    ProcessValidation,
+    matches_role,
+    record_mode,
+    validate_process_record,
+    write_process_record,
+)
+
+
+def server_snapshot(pid: int, root: Path, *, start: str = "Tue Sep 29 12:00:00 2026") -> ProcessSnapshot:
+    return ProcessSnapshot(
+        pid=pid,
+        start_time=start,
+        executable="/usr/bin/python3",
+        command=(
+            "/usr/bin/python3 -m uvicorn mcp_server.main:app "
+            "--host 127.0.0.1 --port 8765"
+        ),
+        cwd=str(root),
+    )
+
+
+class ManagedProcessRecordTests(unittest.TestCase):
+    def test_record_is_owner_only_and_validates_same_process(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-process-record-") as td:
+            root = Path(td)
+            path = root / "mac-mcp.pid"
+            snap = server_snapshot(4242, root)
+            write_process_record(
+                path,
+                "server",
+                4242,
+                metadata={"port": 8765},
+                snapshot=snap,
+            )
+            self.assertEqual(0o600, record_mode(path))
+            with patch("mcp_server.managed_process.pid_alive", return_value=True),                  patch("mcp_server.managed_process.process_snapshot", return_value=snap):
+                validation = validate_process_record(
+                    path,
+                    "server",
+                    port=8765,
+                    project_root=root,
+                )
+            self.assertTrue(validation.valid)
+            self.assertEqual("json", validation.record_format)
+
+    def test_pid_reuse_is_detected_by_start_time_and_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-process-reuse-") as td:
+            root = Path(td)
+            path = root / "mac-mcp.pid"
+            original = server_snapshot(4242, root, start="Tue Sep 29 12:00:00 2026")
+            replacement = server_snapshot(4242, root, start="Tue Sep 29 12:01:00 2026")
+            write_process_record(path, "server", 4242, metadata={"port": 8765}, snapshot=original)
+            with patch("mcp_server.managed_process.pid_alive", return_value=True),                  patch("mcp_server.managed_process.process_snapshot", return_value=replacement):
+                validation = validate_process_record(
+                    path, "server", port=8765, project_root=root,
+                )
+            self.assertEqual("identity_mismatch", validation.status)
+            self.assertEqual("process_fingerprint_mismatch", validation.reason)
+
+    def test_legacy_pid_pointing_to_foreign_process_is_not_owned(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-process-legacy-") as td:
+            root = Path(td)
+            path = root / "mac-mcp.pid"
+            path.write_text("4242\n", encoding="utf-8")
+            foreign = ProcessSnapshot(
+                pid=4242,
+                start_time="Tue Sep 29 12:00:00 2026",
+                executable="/usr/bin/python3",
+                command="/usr/bin/python3 -m http.server 8765",
+                cwd=str(root),
+            )
+            with patch("mcp_server.managed_process.pid_alive", return_value=True),                  patch("mcp_server.managed_process.process_snapshot", return_value=foreign):
+                validation = validate_process_record(
+                    path, "server", port=8765, project_root=root,
+                )
+            self.assertEqual("role_mismatch", validation.status)
+
+    def test_server_role_requires_expected_cwd_and_port(self) -> None:
+        root = Path("/tmp/mac-mcp-runtime")
+        good = server_snapshot(111, root)
+        self.assertTrue(matches_role(good, "server", port=8765, project_root=root))
+        self.assertFalse(matches_role(good, "server", port=8877, project_root=root))
+        self.assertFalse(matches_role(good, "server", port=8765, project_root="/tmp/other"))
+
+
+class SafeLifecycleTests(unittest.TestCase):
+    def test_stop_refuses_mismatched_live_pid_without_signal(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-stop-mismatch-") as td:
+            path = Path(td) / "mac-mcp.pid"
+            path.write_text("{}\n", encoding="utf-8")
+            mismatch = ProcessValidation(
+                "identity_mismatch", 7777, "server", "json",
+                "process_fingerprint_mismatch",
+            )
+            with patch.object(cli, "_validate_managed_pid", return_value=mismatch),                  patch.object(cli.os, "kill") as kill:
+                ok = cli._stop_pid(path, "mac-mcp", 0.1, True)
+            self.assertFalse(ok)
+            kill.assert_not_called()
+            self.assertFalse(path.exists())
+
+    def test_force_stop_never_kills_reused_pid_after_term(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-stop-reuse-") as td:
+            root = Path(td)
+            path = root / "mac-mcp.pid"
+            snap = server_snapshot(8888, root)
+            valid = ProcessValidation(
+                "valid", 8888, "server", "json", "record_matches_process", snap,
+            )
+            reused = ProcessValidation(
+                "identity_mismatch", 8888, "server", "json",
+                "process_fingerprint_mismatch",
+            )
+            with patch.object(cli, "_validate_managed_pid", side_effect=[valid, reused]),                  patch.object(cli.os, "kill") as kill:
+                ok = cli._stop_pid(path, "mac-mcp", 1.0, True)
+            self.assertTrue(ok)
+            kill.assert_called_once_with(8888, signal.SIGTERM)
+
+    def test_start_refuses_real_foreign_listener_and_leaves_it_alive(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-foreign-listener-") as td:
+            state = Path(td)
+            sock = socket.socket()
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+            sock.close()
+
+            foreign = subprocess.Popen(
+                [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1"],
+                cwd=td,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            def cleanup_foreign() -> None:
+                if foreign.poll() is None:
+                    foreign.terminate()
+                    try:
+                        foreign.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        foreign.kill()
+                        foreign.wait(timeout=2)
+            self.addCleanup(cleanup_foreign)
+            deadline = time.time() + 3
+            while time.time() < deadline:
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                        break
+                except OSError:
+                    time.sleep(0.05)
+
+            args = argparse.Namespace(host="127.0.0.1", port=port, reload=False)
+            pid_file = state / "mac-mcp.pid"
+            log_file = state / "mac-mcp.log"
+            owned, foreign_pids = cli._server_listener_state(port)
+            self.assertEqual([], owned)
+            self.assertIn(foreign.pid, foreign_pids)
+
+            with patch.object(cli, "STATE_DIR", state),                  patch.object(cli, "PID_FILE", pid_file),                  patch.object(cli, "LOG_FILE", log_file),                  patch.object(cli, "_launch_menu_app"):
+                code = cli._start_server(args)
+
+            self.assertEqual(1, code)
+            self.assertIsNone(foreign.poll(), "foreign listener must remain untouched")
+            self.assertFalse(pid_file.exists())
+            self.assertFalse(log_file.exists(), "mac-mcp must not attempt a competing spawn")
+
+    def test_start_refuses_second_server_when_verified_record_uses_old_port(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-old-port-") as td:
+            state = Path(td)
+            path = state / "mac-mcp.pid"
+            snap = server_snapshot(4242, Path("/tmp/runtime"))
+            write_process_record(
+                path,
+                "server",
+                4242,
+                metadata={"port": 8000, "ownership_source": "spawn"},
+                snapshot=snap,
+            )
+            valid = ProcessValidation(
+                "valid", 4242, "server", "json", "record_matches_process", snap,
+            )
+            args = argparse.Namespace(host="127.0.0.1", port=8765, reload=False)
+            with patch.object(cli, "STATE_DIR", state), \
+                 patch.object(cli, "PID_FILE", path), \
+                 patch.object(cli, "_validate_managed_pid", return_value=valid), \
+                 patch.object(cli.subprocess, "Popen") as popen:
+                code = cli._start_server(args)
+            self.assertEqual(1, code)
+            popen.assert_not_called()
+
+    def test_restart_aborts_when_safe_stop_fails(self) -> None:
+        args = argparse.Namespace(timeout=1.0)
+        with patch.object(cli, "_load_env"), \
+             patch.object(cli, "stop", return_value=1) as stop, \
+             patch.object(cli, "start") as start:
+            code = cli.restart(args)
+        self.assertEqual(1, code)
+        stop.assert_called_once()
+        start.assert_not_called()
+
+    def test_cloudflare_launchd_role_mismatch_is_not_booted_out(self) -> None:
+        with patch.object(cli, "_launchctl_pid", return_value=7777),              patch.object(cli, "_cloudflare_launchd_identity", return_value=(None, "role_mismatch")),              patch.object(cli, "_bootout_cloudflare_launchd") as bootout:
+            ok = cli._stop_cloudflare(0.1, True)
+        self.assertFalse(ok)
+        bootout.assert_not_called()
+
+    def test_updater_refuses_mismatched_pid_without_signal(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-update-pid-") as td:
+            root = Path(td)
+            state = root / ".mac-mcp"
+            state.mkdir()
+            (state / "mac-mcp.pid").write_text("{}\n", encoding="utf-8")
+            runtime = root / "runtime"
+            runtime.mkdir()
+            mismatch = ProcessValidation(
+                "identity_mismatch", 9090, "server", "json",
+                "process_fingerprint_mismatch",
+            )
+            with patch.object(update_helper.Path, "home", return_value=root),                  patch.object(update_helper, "validate_process_record", return_value=mismatch),                  patch.object(update_helper.os, "kill") as kill:
+                with self.assertRaises(update_helper.UpdateError):
+                    update_helper._restart_cli(runtime, "127.0.0.1", 8765)
+            kill.assert_not_called()
+
+    def test_doctor_reports_foreign_listener_as_failure(self) -> None:
+        with patch("mcp_server.diagnostics.validate_process_record") as validate,              patch("mcp_server.diagnostics._launchctl_pid", return_value=None),              patch("mcp_server.diagnostics.listener_pids", return_value=[5151]),              patch("mcp_server.diagnostics.process_snapshot", return_value=ProcessSnapshot(
+                 5151,
+                 "Tue Sep 29 12:00:00 2026",
+                 "/usr/bin/python3",
+                 "/usr/bin/python3 -m http.server 8765",
+                 "/tmp",
+             )),              patch("mcp_server.diagnostics._local_host_port", return_value=("127.0.0.1", 8765)),              patch("mcp_server.diagnostics.state_dir", return_value=Path("/nonexistent/mac-mcp-test-state")):
+            row = diagnostics._check_managed_process("server")
+        validate.assert_not_called()
+        self.assertEqual("fail", row.status)
+        self.assertEqual("SERVER_PORT_FOREIGN_LISTENER", row.reason_code)
+
+
+if __name__ == "__main__":
+    unittest.main()
