@@ -55,7 +55,7 @@ class MobileDashboardTests(unittest.TestCase):
             client = TestClient(app, base_url="https://testserver")
             shell = client.get("/mobile", headers={"x-forwarded-for": "203.0.113.8"})
             self.assertEqual(200, shell.status_code)
-            self.assertIn("Pair this device", shell.text)
+            self.assertIn("Pair this iPhone", shell.text)
             self.assertNotIn("result_preview", shell.text)
             api = client.get("/mobile/api/agents", headers={"x-forwarded-for": "203.0.113.8"})
             self.assertEqual(401, api.status_code)
@@ -75,14 +75,101 @@ class MobileDashboardTests(unittest.TestCase):
             self.assertIn("mac_mcp_mobile=", cookie)
             self.assertIn("HttpOnly", cookie)
             self.assertIn("Secure", cookie)
-            self.assertIn("SameSite=strict", cookie)
+            self.assertIn("SameSite=lax", cookie)
             self.assertIn("Path=/mobile", cookie)
+            self.assertIn("Max-Age=", cookie)
+            self.assertIn("expires=", cookie.lower())
 
             second = TestClient(app, base_url="https://testserver").post(
                 "/mobile/pair", json={"code": code, "device_name": "Other"}
             )
             self.assertEqual(401, second.status_code)
             self.assertEqual("invalid_or_expired_pairing", second.json()["error"])
+
+
+    def test_top_level_form_pairing_persists_cookie_across_redirect_and_refresh(self):
+        with tempfile.TemporaryDirectory() as td:
+            app, _telemetry, _store = self.make_app(Path(td))
+            manager = TestClient(app, base_url="https://testserver")
+            code = self.pair_code(self.create_pairing(manager)["pair_url"])
+
+            phone = TestClient(app, base_url="https://testserver")
+            response = phone.post(
+                "/mobile/pair",
+                data={"code": code, "device_name": "iPhone"},
+                follow_redirects=False,
+            )
+            self.assertEqual(303, response.status_code)
+            self.assertEqual("/mobile", response.headers["location"])
+            cookie = response.headers.get("set-cookie", "")
+            self.assertIn("HttpOnly", cookie)
+            self.assertIn("Secure", cookie)
+            self.assertIn("SameSite=lax", cookie)
+            self.assertIn("Path=/mobile", cookie)
+
+            # The same browser session must stay authenticated after the
+            # top-level redirect and on a later refresh/API request.
+            self.assertEqual(200, phone.get("/mobile").status_code)
+            with patch(
+                "mcp_server.mobile_routes.list_agents",
+                return_value={"ok": True, "agents": [], "count": 0},
+            ), patch(
+                "mcp_server.mobile_routes.provider_overview",
+                return_value={"providers": []},
+            ):
+                first = phone.get("/mobile/api/status")
+                second = phone.get("/mobile/api/status")
+            self.assertEqual(200, first.status_code)
+            self.assertEqual(200, second.status_code)
+
+    def test_mobile_agent_list_is_bounded_and_prioritizes_active_agents(self):
+        with tempfile.TemporaryDirectory() as td:
+            app, _telemetry, _store = self.make_app(Path(td))
+            manager = TestClient(app, base_url="https://testserver")
+            code = self.pair_code(self.create_pairing(manager)["pair_url"])
+            phone = TestClient(app, base_url="https://testserver")
+            self.assertEqual(
+                200,
+                phone.post("/mobile/pair", json={"code": code, "device_name": "iPhone"}).status_code,
+            )
+
+            fake_agents = [
+                {
+                    "agent_id": "active_1",
+                    "title": "Active One",
+                    "status": "running",
+                    "provider": "codex",
+                    "model": "GPT-5.6",
+                },
+                {
+                    "agent_id": "active_2",
+                    "title": "Active Two",
+                    "status": "starting",
+                    "provider": "opencode",
+                    "model": "Muse",
+                },
+            ]
+            fake_agents.extend(
+                {
+                    "agent_id": f"done_{idx}",
+                    "title": f"Done {idx}",
+                    "status": "completed",
+                    "provider": "codex",
+                    "model": "GPT-5.6",
+                }
+                for idx in range(20)
+            )
+            with patch(
+                "mcp_server.mobile_routes.list_agents",
+                return_value={"ok": True, "agents": fake_agents, "count": len(fake_agents)},
+            ):
+                response = phone.get("/mobile/api/agents")
+            self.assertEqual(200, response.status_code)
+            body = response.json()
+            self.assertEqual(2, body["active_count"])
+            self.assertEqual(8, body["count"])
+            self.assertEqual(["Active One", "Active Two"], [row["title"] for row in body["agents"][:2]])
+            self.assertNotIn("result_preview", response.text)
 
     def test_expired_pairing_is_rejected(self):
         with tempfile.TemporaryDirectory() as td:
@@ -136,6 +223,9 @@ class MobileDashboardTests(unittest.TestCase):
 
             self.assertEqual(200, status.status_code)
             self.assertEqual(1, status.json()["active_agents"])
+            self.assertEqual(1, status.json()["calls_1h"])
+            self.assertEqual(100.0, status.json()["success_rate"])
+            self.assertNotIn("agent_count", status.json())
             self.assertNotIn("binary_path", status.text)
             self.assertEqual(200, agents.status_code)
             self.assertIn("Mobile test", agents.text)

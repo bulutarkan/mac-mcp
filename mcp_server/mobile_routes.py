@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from .mobile_auth import DEFAULT_SESSION_TTL_S, MobileAuthStore
@@ -71,10 +72,24 @@ def _public_mobile_url() -> Optional[str]:
 def _safe_agent(item: Dict[str, Any]) -> Dict[str, Any]:
     keys = (
         "agent_id", "team_task_id", "status", "phase", "title", "role",
-        "provider", "model", "started_at", "ended_at", "duration_ms",
+        "provider", "model", "reasoning", "started_at", "ended_at", "duration_ms",
         "idle_seconds", "last_tool", "tool_call_count",
     )
     return {key: item.get(key) for key in keys}
+
+
+def _mobile_agent_rows(items: list[Dict[str, Any]], limit: int = 8) -> list[Dict[str, Any]]:
+    active = [item for item in items if item.get("status") in {"starting", "running"}]
+    recent = [item for item in items if item.get("status") not in {"starting", "running"}]
+    # Keep every active agent visible up to a sensible mobile cap, then fill
+    # remaining slots with the newest completed/failed agents.
+    cap = max(limit, min(len(active), 12))
+    visible = active[:cap]
+    if len(visible) < cap:
+        visible.extend(recent[: cap - len(visible)])
+    elif len(active) < limit:
+        visible.extend(recent[: limit - len(visible)])
+    return [_safe_agent(item) for item in visible]
 
 
 def _safe_session(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -89,7 +104,7 @@ def _safe_session(item: Dict[str, Any]) -> Dict[str, Any]:
 
 def _safe_event(item: Dict[str, Any]) -> Dict[str, Any]:
     keys = (
-        "event_id", "source", "tool", "status", "started_at", "finished_at",
+        "event_id", "timestamp", "source", "tool", "status", "started_at", "finished_at",
         "duration_ms", "browser_context",
     )
     return {key: item.get(key) for key in keys if key in item}
@@ -132,39 +147,58 @@ def create_mobile_routes(
         return FileResponse(MOBILE_DIR / name, media_type=media_type)
 
     async def pair(request: Request) -> Response:
-        try:
-            payload = await request.json()
-        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-            payload = {}
-        if not isinstance(payload, dict):
-            payload = {}
+        content_type = (request.headers.get("content-type") or "").lower()
+        form_navigation = "application/x-www-form-urlencoded" in content_type
+        if form_navigation:
+            raw = (await request.body()).decode("utf-8", errors="replace")
+            parsed = parse_qs(raw, keep_blank_values=False)
+            payload = {
+                "code": (parsed.get("code") or [""])[0],
+                "device_name": (parsed.get("device_name") or [""])[0],
+            }
+        else:
+            try:
+                payload = await request.json()
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+
         result = store.consume_pairing(
             str(payload.get("code") or ""),
             device_name=payload.get("device_name"),
             session_ttl_s=DEFAULT_SESSION_TTL_S,
         )
         if result is None:
+            if form_navigation:
+                return RedirectResponse("/mobile?pair_error=expired", status_code=303)
             return JSONResponse(
                 {"ok": False, "error": "invalid_or_expired_pairing"},
                 status_code=401,
             )
-        response = JSONResponse({
-            "ok": True,
-            "device": {
-                "device_id": result["device_id"],
-                "device_name": result["device_name"],
-                "created_at": result["created_at"],
-                "expires_at": result["expires_at"],
-            },
-        })
+
+        if form_navigation:
+            response: Response = RedirectResponse("/mobile", status_code=303)
+        else:
+            response = JSONResponse({
+                "ok": True,
+                "device": {
+                    "device_id": result["device_id"],
+                    "device_name": result["device_name"],
+                    "created_at": result["created_at"],
+                    "expires_at": result["expires_at"],
+                },
+            })
+
         response.set_cookie(
             MOBILE_COOKIE,
             result["token"],
             max_age=DEFAULT_SESSION_TTL_S,
+            expires=datetime.now(timezone.utc) + timedelta(seconds=DEFAULT_SESSION_TTL_S),
             path="/mobile",
             secure=True,
             httponly=True,
-            samesite="strict",
+            samesite="lax",
         )
         return response
 
@@ -173,30 +207,42 @@ def create_mobile_routes(
         if denied is not None:
             return denied
         try:
-            agent_data = await asyncio.to_thread(list_agents, settings, limit=50)
+            agent_data = await asyncio.to_thread(list_agents, settings, limit=100)
             agents = list(agent_data.get("agents", []))
         except Exception:
             agents = []
+        try:
+            summary = telemetry.summary(1)
+        except Exception:
+            summary = {"total_calls": 0, "success_rate": 100.0}
         try:
             overview = await asyncio.to_thread(provider_overview)
             providers = [
                 {
                     key: row.get(key)
-                    for key in ("id", "enabled", "detected", "version")
+                    for key in ("id", "name", "enabled", "detected", "version")
                     if key in row
                 }
                 for row in overview.get("providers", [])
+                if row.get("enabled")
             ]
         except Exception:
             providers = []
+        try:
+            endpoint = resolve_public_endpoint()
+            connector = endpoint.mode
+        except Exception:
+            connector = "none"
         return JSONResponse({
             "ok": True,
             "server": "Mac MCP",
             "version": __version__,
+            "connector": connector,
+            "calls_1h": int(summary.get("total_calls") or 0),
+            "success_rate": float(summary.get("success_rate") or 0.0),
             "active_agents": sum(
                 1 for row in agents if row.get("status") in {"starting", "running"}
             ),
-            "agent_count": len(agents),
             "providers": providers,
         })
 
@@ -205,18 +251,27 @@ def create_mobile_routes(
         if denied is not None:
             return denied
         try:
-            data = await asyncio.to_thread(list_agents, settings, limit=50)
-            rows = [_safe_agent(row) for row in list(data.get("agents", []))[:50]]
+            data = await asyncio.to_thread(list_agents, settings, limit=100)
+            all_rows = list(data.get("agents", []))
+            rows = _mobile_agent_rows(all_rows, limit=8)
+            active_count = sum(
+                1 for row in all_rows if row.get("status") in {"starting", "running"}
+            )
         except Exception:
-            rows = []
-        return JSONResponse({"ok": True, "count": len(rows), "agents": rows})
+            rows, active_count = [], 0
+        return JSONResponse({
+            "ok": True,
+            "count": len(rows),
+            "active_count": active_count,
+            "agents": rows,
+        })
 
     async def sessions_view(request: Request) -> Response:
         _session, denied = require_mobile(request)
         if denied is not None:
             return denied
         rows = [] if steering is None else [
-            _safe_session(row) for row in steering.sessions()[:50]
+            _safe_session(row) for row in steering.sessions()[:8]
         ]
         return JSONResponse({"ok": True, "count": len(rows), "sessions": rows})
 
@@ -225,14 +280,14 @@ def create_mobile_routes(
         if denied is not None:
             return denied
         try:
-            events = telemetry.query_events(hours=1, limit=30)
+            events = telemetry.query_events(hours=1, limit=12)
             active = telemetry.active_calls()
         except Exception:
             events, active = [], []
         return JSONResponse({
             "ok": True,
-            "events": [_safe_event(row) for row in events[:30]],
-            "active": [_safe_event(row) for row in active[:20]],
+            "events": [_safe_event(row) for row in events[:8]],
+            "active": [_safe_event(row) for row in active[:6]],
         })
 
     async def create_pairing(request: Request) -> Response:

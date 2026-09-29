@@ -59,6 +59,13 @@ struct SettingsView: View {
             await state.refreshProviders()
             await state.refreshMobileDevices()
         }
+        .task(id: selection) {
+            guard selection == .mobile else { return }
+            while !Task.isCancelled {
+                await state.refreshMobileDevices()
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
     }
 
     private var sidebar: some View {
