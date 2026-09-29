@@ -4,11 +4,34 @@
   const STORAGE_KEY = "mac_mcp_mobile_session";
   const state = { timer: null };
 
+  function fragmentToken() {
+    try {
+      const hash = location.hash.startsWith("#") ? location.hash.slice(1) : "";
+      const value = new URLSearchParams(hash).get("session") || "";
+      return value.startsWith("mcpmob_") ? value : "";
+    } catch (_) {
+      return "";
+    }
+  }
   function token() {
+    const fromFragment = fragmentToken();
+    if (fromFragment) {
+      try { localStorage.setItem(STORAGE_KEY, fromFragment); } catch (_) {}
+      return fromFragment;
+    }
     try { return localStorage.getItem(STORAGE_KEY) || ""; } catch (_) { return ""; }
   }
   function clearToken() {
     try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
+    try {
+      const hash = location.hash.startsWith("#") ? location.hash.slice(1) : "";
+      const params = new URLSearchParams(hash);
+      if (params.has("session")) {
+        params.delete("session");
+        const suffix = params.toString();
+        history.replaceState(null, "", location.pathname + location.search + (suffix ? "#" + suffix : ""));
+      }
+    } catch (_) {}
   }
   function esc(v) {
     return String(v == null ? "" : v).replace(/[&<>"']/g, c => ({

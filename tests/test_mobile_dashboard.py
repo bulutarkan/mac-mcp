@@ -102,6 +102,7 @@ class MobileDashboardTests(unittest.TestCase):
             )
             self.assertEqual(200, response.status_code)
             self.assertIn("localStorage.setItem('mac_mcp_mobile_session'", response.text)
+            self.assertIn("location.replace('/mobile#session='", response.text)
             self.assertNotIn("location:", "\n".join(f"{k}: {v}" for k, v in response.headers.items()).lower())
             self.assertEqual("no-store", response.headers["cache-control"])
             self.assertIn("script-src 'nonce-", response.headers["content-security-policy"])
@@ -123,6 +124,10 @@ class MobileDashboardTests(unittest.TestCase):
                 second = phone.get("/mobile/api/status", headers=headers)
             self.assertEqual(200, first.status_code)
             self.assertEqual(200, second.status_code)
+
+            js = (Path(__file__).parents[1] / "mcp_server" / "mobile" / "mobile.js").read_text()
+            self.assertIn('get("session")', js)
+            self.assertIn('startsWith("mcpmob_")', js)
 
     def test_mobile_agent_list_is_bounded_and_prioritizes_active_agents(self):
         with tempfile.TemporaryDirectory() as td:

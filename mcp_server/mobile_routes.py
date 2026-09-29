@@ -230,7 +230,9 @@ def create_mobile_routes(
                 "try{localStorage.setItem('mac_mcp_mobile_session',"
                 + token_json
                 + ");}catch(e){}"
-                "location.replace('/mobile');"
+                "location.replace('/mobile#session='+encodeURIComponent("
+                + token_json
+                + "));"
                 "</script></body></html>"
             )
             response = HTMLResponse(
