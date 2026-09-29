@@ -46,7 +46,7 @@ class MobileDashboardTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         body = response.json()
         self.assertEqual("https://mobile.example.test/mobile", body["mobile_url"])
-        self.assertTrue(body["pair_url"].startswith("https://mobile.example.test/mobile#pair="))
+        self.assertTrue(body["pair_url"].startswith("https://mobile.example.test/mobile?pair=1#pair="))
         return body
 
     def test_remote_unauthenticated_shell_is_safe_and_api_is_denied(self):

@@ -154,5 +154,10 @@
     await refresh();
     if (!state.timer && !$("dashboard").classList.contains("hidden")) state.timer = setInterval(refresh, 4000);
   }
+  window.addEventListener("hashchange", () => {
+    const code = pairingCode();
+    if (code) submitPairing(code);
+  });
+
   boot();
 })();

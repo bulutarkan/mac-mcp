@@ -168,7 +168,14 @@ def create_mobile_routes(
         media_type = allowed.get(name)
         if media_type is None:
             return Response(status_code=404)
-        return FileResponse(MOBILE_DIR / name, media_type=media_type)
+        return FileResponse(
+            MOBILE_DIR / name,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     async def pair(request: Request) -> Response:
         content_type = (request.headers.get("content-type") or "").lower()
@@ -351,7 +358,7 @@ def create_mobile_routes(
                 status_code=409,
             )
         issued = store.issue_pairing()
-        pair_url = base + "#pair=" + issued["code"]
+        pair_url = base + "?pair=1#pair=" + issued["code"]
         return JSONResponse({
             "ok": True,
             "pair_url": pair_url,
