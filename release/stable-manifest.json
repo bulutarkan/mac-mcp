@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "d81a2d4d30c4486eb8caa2b93d4ff423bfc30292",
+  "base_commit": "ad3af7f7debee2ad0415702ae7169d234d9b1dc6",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -1063,8 +1063,8 @@
     {
       "mode": "100644",
       "path": "tests/test_managed_process_identity.py",
-      "sha256": "9fbe00b4194eb93bbe1edc42ae4ac60f152771c0ff8bdf2d72b6c0295b6514de",
-      "size": 14830
+      "sha256": "8575e1b141ee1ca8014951bc9bd37f5db0fd2ab05339e7791f48e32717f9dec4",
+      "size": 14908
     },
     {
       "mode": "100644",
@@ -1337,10 +1337,10 @@
       "size": 3924
     }
   ],
-  "generated_at": "2026-09-29T13:25:32Z",
-  "payload_sha256": "7b04fec6f14b0a9d18220625f9434d0468a6bb02d969f15a6b5c2e1bfce58c36",
+  "generated_at": "2026-09-29T13:33:49Z",
+  "payload_sha256": "48ced69a6c128c00cdb26d19ad9c9591a82cf05a215bfd85400b9394500d0d01",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.6-r27",
+  "release_id": "stable-2.1.6-r28",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",
