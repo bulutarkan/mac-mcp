@@ -880,7 +880,6 @@ path.write_text("\n".join(out) + "\n", encoding="utf-8")
 PY
 
   /bin/chmod 600 "$env_file"
-  API_KEY="$api_key"
   ok "Generated a strong MCP API key and stored it in mcp_server/.env (mode 600)."
   info "Secure bootstrap profile: standard. Enable Trusted/Full Access explicitly in Settings when needed."
 }
@@ -1261,20 +1260,140 @@ optionally_start_server() {
   fi
 }
 
+completion_runtime_summary() {
+  local settings_file="$STATE_DIR/settings.json"
+  local env_file="$RUNTIME_DIR/mcp_server/.env"
+
+  "$PYTHON_BIN" - "$settings_file" "$env_file" <<'PYCOMPLETION'
+import json
+import os
+import sys
+from pathlib import Path
+
+settings_path = Path(sys.argv[1])
+env_path = Path(sys.argv[2])
+
+wanted = {
+    "MAC_MCP_HOST",
+    "MAC_MCP_PORT",
+    "MCP_ALLOW_NO_AUTH",
+    "MCP_API_KEY",
+}
+
+
+def read_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        if name not in wanted:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[:1] == value[-1:] and value[:1] in {"'", '"'}:
+            value = value[1:-1]
+        values[name] = value
+    return values
+
+
+file_env = read_env(env_path)
+
+
+def effective(name: str, default: str = "") -> str:
+    if name in os.environ:
+        return str(os.environ.get(name) or "")
+    return file_env.get(name, default)
+
+
+host = effective("MAC_MCP_HOST", "127.0.0.1").strip() or "127.0.0.1"
+raw_port = effective("MAC_MCP_PORT", "").strip()
+if not raw_port:
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        settings = {}
+    if isinstance(settings, dict):
+        server = settings.get("server")
+        if isinstance(server, dict):
+            value = server.get("port")
+            if isinstance(value, (int, str)):
+                raw_port = str(value).strip()
+try:
+    port = int(raw_port or "8000")
+except ValueError:
+    port = 8000
+
+client_host = "127.0.0.1" if host == "0.0.0.0" else ("::1" if host == "::" else host)
+url_host = f"[{client_host}]" if ":" in client_host and not client_host.startswith("[") else client_host
+bind_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+endpoint = f"http://{url_host}:{port}/mcp"
+bind = f"{bind_host}:{port}"
+
+allow_no_auth = effective("MCP_ALLOW_NO_AUTH", "false").strip().lower() in {"1", "true", "yes", "on"}
+api_key_present = bool(effective("MCP_API_KEY", "").strip())
+auth_mode = "no_auth" if allow_no_auth else ("bearer" if api_key_present else "missing")
+
+print("|".join((endpoint, bind, auth_mode, "present" if api_key_present else "missing")))
+PYCOMPLETION
+}
+
+
 print_completion() {
+  local summary=""
+  local local_endpoint="unavailable"
+  local server_bind="unavailable"
+  local auth_mode="unknown"
+  local api_key_state="unknown"
+
+  if summary="$(completion_runtime_summary 2>/dev/null)"; then
+    IFS='|' read -r local_endpoint server_bind auth_mode api_key_state <<< "$summary"
+  else
+    warn "Could not resolve the effective local endpoint/auth state for the completion summary."
+  fi
+
   section "Installation complete"
   printf '  Source:             %s\n' "$SOURCE_DIR"
   printf '  Runtime:            %s\n' "$RUNTIME_DIR"
   printf '  CLI:                %s\n' "$CLI_PATH"
   printf '  Verified release:   %s (v%s)\n' "$VERIFIED_RELEASE_ID" "$VERIFIED_RELEASE_VERSION"
-  printf '  Local MCP endpoint: http://127.0.0.1:8000/mcp\n'
+  printf '  Local MCP endpoint: %s\n' "$local_endpoint"
+  printf '  Server bind:        %s\n' "$server_bind"
   printf '  Dashboard:          mac-mcp dashboard (authenticated local launch)\n'
 
   printf '\n%sAuthentication%s\n' "$C_BOLD" "$C_RESET"
-  printf '  API key: %s\n' "$API_KEY"
-  printf '  Preferred client auth: Authorization: Bearer <API_KEY>\n'
-  printf '  Header-limited clients: http://127.0.0.1:8000/mcp?ApiKey=<API_KEY>\n'
-  printf '  The key is stored locally in: %s/mcp_server/.env\n' "$RUNTIME_DIR"
+  case "$auth_mode" in
+    bearer)
+      printf '  MCP authentication: Bearer token required\n'
+      printf '  API key: stored locally (present, not printed)\n'
+      printf '  Client auth header: Authorization: Bearer <API_KEY>\n'
+      printf '  Credential file: %s/mcp_server/.env (owner-only)\n' "$RUNTIME_DIR"
+      printf '  Credential-bearing URLs are intentionally not printed.\n'
+      ;;
+    no_auth)
+      printf '  MCP authentication: disabled by explicit no-auth configuration\n'
+      if [[ "$api_key_state" == "present" ]]; then
+        printf '  API key: present in local storage but not used in no-auth mode (not printed)\n'
+      else
+        printf '  API key: not required in the current no-auth mode\n'
+      fi
+      printf '  Credential file: %s/mcp_server/.env (owner-only)\n' "$RUNTIME_DIR"
+      ;;
+    missing)
+      printf '  MCP authentication: required, but no API key was detected\n'
+      printf '  Credential file: %s/mcp_server/.env (owner-only)\n' "$RUNTIME_DIR"
+      warn "Secure bootstrap will refuse to start until MCP_API_KEY is configured or explicit loopback-only no-auth mode is enabled."
+      ;;
+    *)
+      printf '  MCP authentication: state could not be determined safely\n'
+      printf '  Credential file: %s/mcp_server/.env (owner-only)\n' "$RUNTIME_DIR"
+      ;;
+  esac
 
   printf '\n'
   info "Public endpoint selection is part of this installer and can be changed later in Mac MCP Settings."
