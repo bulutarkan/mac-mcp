@@ -8,7 +8,7 @@
 <key>CFBundleName</key><string>Mac MCP Safari Visual Companion</string>
 <key>CFBundlePackageType</key><string>XPC!</string>
 <key>CFBundleShortVersionString</key><string>2.1.6</string>
-<key>CFBundleVersion</key><string>216</string>
+<key>CFBundleVersion</key><string>217</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSExtension</key><dict>
   <key>NSExtensionPointIdentifier</key><string>com.apple.Safari.web-extension</string>
