@@ -1,10 +1,13 @@
 import AppKit
+import CoreImage
+import CoreImage.CIFilterBuiltins
 import SwiftUI
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case subagents
     case browser
     case permissions
+    case mobile
     case voice
     case advanced
 
@@ -15,6 +18,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .subagents: return "Subagents"
         case .browser: return "Browser Activity"
         case .permissions: return "Permissions & Approvals"
+        case .mobile: return "Mobile Access"
         case .voice: return "Voice"
         case .advanced: return "Advanced"
         }
@@ -25,6 +29,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .subagents: return "cpu"
         case .browser: return "sparkles.rectangle.stack"
         case .permissions: return "checkmark.shield"
+        case .mobile: return "iphone.and.arrow.forward"
         case .voice: return "waveform.and.mic"
         case .advanced: return "gearshape.2"
         }
@@ -52,6 +57,7 @@ struct SettingsView: View {
             audio.refresh()
             state.refreshCloudflareCredentialState()
             await state.refreshProviders()
+            await state.refreshMobileDevices()
         }
     }
 
@@ -107,6 +113,7 @@ struct SettingsView: View {
         case .subagents: subagentsPane
         case .browser: browserPane
         case .permissions: permissionsPane
+        case .mobile: mobilePane
         case .voice: voicePane
         case .advanced: advancedPane
         }
@@ -412,6 +419,128 @@ struct SettingsView: View {
         }
     }
 
+    private var mobilePane: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                paneHeader(
+                    "Mobile Access",
+                    subtitle: "Pair an iPhone or iPad with this Mac MCP instance for a secure read-only dashboard."
+                )
+
+                GroupBox("Pair a device") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if settings.publicEndpointMode == "none" {
+                            Label(
+                                "Configure ngrok, Cloudflare, or Custom HTTPS in Advanced before pairing a phone.",
+                                systemImage: "exclamationmark.triangle"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        } else {
+                            HStack {
+                                Button {
+                                    Task { await state.createMobilePairing() }
+                                } label: {
+                                    if state.mobilePairingLoading {
+                                        ProgressView().controlSize(.small)
+                                    } else {
+                                        Label("Pair New Device", systemImage: "qrcode")
+                                    }
+                                }
+                                .disabled(state.mobilePairingLoading)
+                                Spacer()
+                                Button {
+                                    Task { await state.refreshMobileDevices() }
+                                } label: {
+                                    Image(systemName: "arrow.clockwise")
+                                }
+                                .help("Refresh connected devices")
+                            }
+
+                            if let pairingURL = state.mobilePairingURL,
+                               let image = qrImage(for: pairingURL) {
+                                HStack(alignment: .top, spacing: 18) {
+                                    Image(nsImage: image)
+                                        .interpolation(.none)
+                                        .resizable()
+                                        .frame(width: 176, height: 176)
+                                        .padding(10)
+                                        .background(Color.white, in: RoundedRectangle(cornerRadius: 14))
+
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text("Scan with your iPhone Camera")
+                                            .font(.subheadline.weight(.semibold))
+                                        Text("The one-time pairing secret is carried in the QR URL fragment, so it is not sent to the tunnel or written to HTTP access logs.")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                        if let expiresAt = state.mobilePairingExpiresAt {
+                                            Text("Expires " + Date(timeIntervalSince1970: expiresAt).formatted(date: .omitted, time: .shortened))
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        Text("After pairing, the phone receives its own read-only device session. Your MCP API key and local dashboard token are never sent to the phone.")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(.top, 5)
+                }
+
+                GroupBox("Connected Devices") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if state.mobileDevices.isEmpty {
+                            Text("No paired mobile devices.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.vertical, 6)
+                        } else {
+                            ForEach(state.mobileDevices) { device in
+                                HStack(spacing: 10) {
+                                    Image(systemName: "iphone")
+                                        .foregroundStyle(.secondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(device.deviceName)
+                                            .font(.subheadline.weight(.medium))
+                                        Text("Last seen " + Date(timeIntervalSince1970: device.lastSeenAt).formatted(date: .abbreviated, time: .shortened))
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Text("Read-only")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(.quaternary, in: Capsule())
+                                    Button("Revoke") {
+                                        Task { await state.revokeMobileDevice(device.deviceID) }
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                                if device.id != state.mobileDevices.last?.id {
+                                    Divider()
+                                }
+                            }
+                        }
+                    }
+                    .padding(.top, 5)
+                }
+
+                Text("The public /mobile page can be reached through the selected connector, but agent, session, and activity APIs require a paired device session.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 0)
+            }
+            .padding(20)
+        }
+    }
+
     private var advancedPane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -674,6 +803,18 @@ struct SettingsView: View {
         if values == ["*"] { return "All" }
         if values.isEmpty { return "None" }
         return values.map(capabilityDisplayName).joined(separator: ", ")
+    }
+
+    private func qrImage(for value: String) -> NSImage? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(value.utf8)
+        filter.correctionLevel = "M"
+        guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)) else {
+            return nil
+        }
+        let context = CIContext(options: [.useSoftwareRenderer: false])
+        guard let cgImage = context.createCGImage(output, from: output.extent) else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: output.extent.width, height: output.extent.height))
     }
 
     private func providerDisplayName(_ id: String) -> String {

@@ -29,7 +29,7 @@ if [[ -n "${MAC_MCP_APP_DISPLAY_NAME:-}" ]]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ${MAC_MCP_APP_DISPLAY_NAME}" "${CONTENTS}/Info.plist" >/dev/null
 fi
 xcrun swiftc -O -parse-as-library -target "${ARCH}-apple-macos13.0" \
-  -framework SwiftUI -framework AppKit -framework Foundation -framework Security -framework CoreAudio -framework SafariServices \
+  -framework SwiftUI -framework AppKit -framework Foundation -framework Security -framework CoreAudio -framework SafariServices -framework CoreImage \
   "${SCRIPT_DIR}/Sources/SwiftUICompat.swift" \
   "${SCRIPT_DIR}/Sources/MacMCPMenuApp.swift" \
   "${SCRIPT_DIR}/Sources/AppState.swift" \

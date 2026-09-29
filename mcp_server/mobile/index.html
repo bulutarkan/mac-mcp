@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0b0c0f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Mac MCP">
+  <title>Mac MCP Mobile</title>
+  <link rel="manifest" href="/mobile/assets/manifest.json">
+  <link rel="stylesheet" href="/mobile/assets/mobile.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <p class="eyebrow">Mac MCP</p>
+        <h1>Mobile</h1>
+      </div>
+      <span id="connection" class="pill">Checking</span>
+    </header>
+
+    <section id="pairing" class="panel hidden">
+      <div class="lock">⌁</div>
+      <h2>Pair this device</h2>
+      <p>Open Mac MCP Settings on your Mac and scan the Mobile Access QR code with this iPhone or iPad.</p>
+      <p id="pairError" class="error hidden"></p>
+    </section>
+
+    <div id="dashboard" class="hidden">
+      <section class="hero-grid">
+        <article class="metric">
+          <span>Active Agents</span>
+          <strong id="activeAgents">—</strong>
+        </article>
+        <article class="metric">
+          <span>Total Agents</span>
+          <strong id="agentCount">—</strong>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="section-title"><h2>Agents</h2><span id="version"></span></div>
+        <div id="agents" class="list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-title"><h2>Sessions</h2><span id="sessionCount"></span></div>
+        <div id="sessions" class="list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-title"><h2>Recent Activity</h2><span>Last hour</span></div>
+        <div id="activity" class="list"></div>
+      </section>
+    </div>
+  </main>
+  <script src="/mobile/assets/mobile.js" defer></script>
+</body>
+</html>

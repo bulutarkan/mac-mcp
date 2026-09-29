@@ -191,6 +191,47 @@ struct ProviderInfo: Decodable, Identifiable, Equatable {
 
 struct ProvidersEnvelope: Decodable { let providers: [ProviderInfo] }
 
+struct MobileDeviceInfo: Decodable, Identifiable, Equatable {
+    let deviceID: String
+    let deviceName: String
+    let createdAt: Double
+    let expiresAt: Double
+    let lastSeenAt: Double
+    var id: String { deviceID }
+
+    enum CodingKeys: String, CodingKey {
+        case deviceID = "device_id"
+        case deviceName = "device_name"
+        case createdAt = "created_at"
+        case expiresAt = "expires_at"
+        case lastSeenAt = "last_seen_at"
+    }
+}
+
+struct MobileDevicesEnvelope: Decodable {
+    let ok: Bool
+    let devices: [MobileDeviceInfo]
+}
+
+struct MobilePairingEnvelope: Decodable {
+    let ok: Bool
+    let pairURL: String
+    let mobileURL: String
+    let expiresAt: Double
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case pairURL = "pair_url"
+        case mobileURL = "mobile_url"
+        case expiresAt = "expires_at"
+    }
+}
+
+struct MobileRevokeEnvelope: Decodable {
+    let ok: Bool
+    let revoked: Bool
+}
+
 enum SteeringActivityState: String, Decodable, Equatable {
     case working
     case idle
@@ -633,6 +674,10 @@ final class AppState: ObservableObject {
     @Published var permissionProfileChanging = false
     @Published var agents: [AgentInfo] = []
     @Published var providerStatuses: [ProviderInfo] = []
+    @Published var mobileDevices: [MobileDeviceInfo] = []
+    @Published var mobilePairingURL: String?
+    @Published var mobilePairingExpiresAt: Double?
+    @Published var mobilePairingLoading = false
     @Published var steeringSessions: [SteeringSession] = []
     @Published var steeringRecent: [SteeringRecent] = []
     @Published private(set) var steeringGenerationID: String?
@@ -942,6 +987,58 @@ final class AppState: ObservableObject {
         } catch {
             // Provider detection is supplemental Settings data. Keep the last
             // known values and let the normal dashboard poll own connection UI.
+        }
+    }
+
+    func refreshMobileDevices() async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        do {
+            let envelope: MobileDevicesEnvelope = try await fetch(
+                base.appendingPathComponent("dashboard/api/mobile/devices"),
+                query: [:]
+            )
+            setIfChanged(\.mobileDevices, envelope.devices)
+        } catch {
+            // Mobile Access is optional. Keep the last known device list if the
+            // server is older or temporarily unavailable.
+        }
+    }
+
+    func createMobilePairing() async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        setIfChanged(\.mobilePairingLoading, true)
+        defer { setIfChanged(\.mobilePairingLoading, false) }
+        do {
+            let envelope: MobilePairingEnvelope = try await post(
+                base.appendingPathComponent("dashboard/api/mobile/pairings"),
+                body: [:]
+            )
+            setIfChanged(\.mobilePairingURL, envelope.pairURL)
+            setIfChanged(\.mobilePairingExpiresAt, envelope.expiresAt)
+            await refreshMobileDevices()
+        } catch {
+            setIfChanged(\.mobilePairingURL, nil)
+            setIfChanged(\.mobilePairingExpiresAt, nil)
+            showNotice(ActionNotice(
+                kind: .error,
+                message: "Couldn’t create a mobile pairing code. Configure a public HTTPS endpoint and make sure Mac MCP is running."
+            ))
+        }
+    }
+
+    func revokeMobileDevice(_ deviceID: String) async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        do {
+            let envelope: MobileRevokeEnvelope = try await post(
+                base.appendingPathComponent("dashboard/api/mobile/revoke"),
+                body: ["device_id": deviceID]
+            )
+            if envelope.revoked {
+                setIfChanged(\.mobileDevices, mobileDevices.filter { $0.deviceID != deviceID })
+                showNotice(ActionNotice(kind: .success, message: "Mobile device revoked."))
+            }
+        } catch {
+            showNotice(ActionNotice(kind: .error, message: "Couldn’t revoke the mobile device."))
         }
     }
 
