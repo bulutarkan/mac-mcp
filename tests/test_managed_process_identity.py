@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from mcp_server import cli, diagnostics, update_helper
+from mcp_server import cli, diagnostics, managed_process, update_helper
 from mcp_server.managed_process import (
     ProcessSnapshot,
     ProcessValidation,
@@ -187,6 +187,36 @@ class SafeLifecycleTests(unittest.TestCase):
             self.assertIsNone(foreign.poll(), "foreign listener must remain untouched")
             self.assertFalse(pid_file.exists())
             self.assertFalse(log_file.exists(), "mac-mcp must not attempt a competing spawn")
+
+
+    def test_port_listener_probe_detects_active_listener(self) -> None:
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("127.0.0.1", 0))
+        port = server.getsockname()[1]
+        server.listen(1)
+        try:
+            self.assertTrue(managed_process.port_is_listening(port))
+        finally:
+            server.close()
+
+    def test_port_listener_probe_ignores_time_wait_after_listener_closes(self) -> None:
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("127.0.0.1", 0))
+        port = server.getsockname()[1]
+        server.listen(1)
+
+        client = socket.create_connection(("127.0.0.1", port), timeout=1)
+        conn, _ = server.accept()
+        client.close()
+        conn.close()
+        server.close()
+
+        # The teardown can leave TIME_WAIT sockets on this local port. That
+        # must not be interpreted as a live LISTEN socket.
+        self.assertEqual([], managed_process.listener_pids(port))
+        self.assertFalse(managed_process.port_is_listening(port))
 
     def test_listener_state_fails_closed_when_pid_discovery_is_empty(self) -> None:
         with patch.object(cli, "listener_pids", return_value=[]), \

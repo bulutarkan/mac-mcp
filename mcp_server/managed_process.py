@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import errno
 import hashlib
 import json
 import os
@@ -124,18 +123,19 @@ def process_snapshot(pid: int) -> ProcessSnapshot | None:
 
 
 def port_is_listening(port: int, host: str = "127.0.0.1") -> bool:
-    """Return True when the local TCP bind is unavailable because the port is in use.
+    """Return True only when a TCP listener accepts a local connection.
 
-    This is intentionally an ownership-free fallback for environments where
-    lsof cannot reveal the listener PID. A positive result means only
-    "occupied", so callers must treat it as foreign/unverified.
+    This is an ownership-free fallback for environments where lsof cannot
+    reveal a listener PID. Do not infer listener state from bind(EADDRINUSE):
+    on macOS a recently closed server can leave TIME_WAIT sockets that make a
+    plain bind fail even though no LISTEN socket exists.
     """
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.settimeout(0.2)
     try:
-        probe.bind((host, int(port)))
+        return probe.connect_ex((host, int(port))) == 0
+    except OSError:
         return False
-    except OSError as exc:
-        return exc.errno in {errno.EADDRINUSE, errno.EACCES}
     finally:
         probe.close()
 
