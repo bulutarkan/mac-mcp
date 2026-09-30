@@ -12,6 +12,7 @@ import sys
 import time
 import webbrowser
 from pathlib import Path
+from typing import Optional
 from urllib.parse import quote
 from urllib.request import urlopen
 
