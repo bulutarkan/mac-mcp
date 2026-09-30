@@ -64,10 +64,22 @@ RESTART_REQUESTER_ENV = "MAC_MCP_RESTART_REQUESTER_PID"
 RESTART_HANDOFF_LABEL = "com.macmcp.restart-handoff"
 RESTART_REQUESTER_WAIT_S = 5.0
 RESTART_RESPONSE_GRACE_S = 3.0
+DEFAULT_STARTUP_HEALTH_TIMEOUT_S = 10.0
 
 
 def _load_env() -> None:
     load_dotenv(ENV_FILE)
+
+
+def _startup_health_timeout_s() -> float:
+    raw = os.getenv("MAC_MCP_STARTUP_HEALTH_TIMEOUT_S", "").strip()
+    if not raw:
+        return DEFAULT_STARTUP_HEALTH_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_STARTUP_HEALTH_TIMEOUT_S
+    return max(1.0, min(value, 60.0))
 
 
 def _menu_app_candidates() -> list[Path]:
@@ -342,7 +354,14 @@ def _start_server(args: argparse.Namespace) -> int:
                 "Stop or restart Mac MCP first."
             )
             return 1
-        print(f"mac-mcp is already running (pid {validation.pid}; identity verified).")
+        if not _restart_health_ok(
+            args,
+            timeout_s=_startup_health_timeout_s(),
+            expected_pid=validation.pid,
+        ):
+            print(f"mac-mcp process {validation.pid} is owned but not ready. See log: {LOG_FILE}")
+            return 1
+        print(f"mac-mcp is already running (pid {validation.pid}; identity verified and healthy).")
         _launch_menu_app()
         return 0
     if validation.status == "unverifiable":
@@ -371,7 +390,14 @@ def _start_server(args: argparse.Namespace) -> int:
         if not pid:
             print("Verified mac-mcp listener could not be recorded safely; refusing adoption.")
             return 1
-        print(f"mac-mcp is already running (pid {pid}; verified listener adopted).")
+        if not _restart_health_ok(
+            args,
+            timeout_s=_startup_health_timeout_s(),
+            expected_pid=pid,
+        ):
+            print(f"mac-mcp listener {pid} was adopted but is not ready. See log: {LOG_FILE}")
+            return 1
+        print(f"mac-mcp is already running (pid {pid}; verified listener adopted and healthy).")
         _launch_menu_app()
         return 0
 
@@ -437,7 +463,24 @@ def _start_server(args: argparse.Namespace) -> int:
         print("mac-mcp could not persist verified process identity; started process was terminated.")
         return 1
 
-    print(f"mac-mcp started on {_local_url(args.host, port)} (pid {proc.pid}).")
+    if not _restart_health_ok(
+        args,
+        timeout_s=_startup_health_timeout_s(),
+        expected_pid=proc.pid,
+    ):
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        PID_FILE.unlink(missing_ok=True)
+        print(f"mac-mcp process started but did not become ready. See log: {LOG_FILE}")
+        return 1
+
+    print(f"mac-mcp started on {_local_url(args.host, port)} (pid {proc.pid}; health verified).")
     print("dashboard: run 'mac-mcp dashboard' for an authenticated local launch")
     print(f"mac-mcp log: {LOG_FILE}")
     _launch_menu_app()
@@ -1293,7 +1336,12 @@ def _spawn_detached_restart(args: argparse.Namespace) -> int:
     return 0
 
 
-def _restart_health_ok(args: argparse.Namespace, timeout_s: float = 10.0) -> bool:
+def _restart_health_ok(
+    args: argparse.Namespace,
+    timeout_s: float = 10.0,
+    *,
+    expected_pid: Optional[int] = None,
+) -> bool:
     host = str(getattr(args, "host", "") or "127.0.0.1").strip()
     if host in {"0.0.0.0", "::", ""}:
         host = "127.0.0.1"
@@ -1301,6 +1349,8 @@ def _restart_health_ok(args: argparse.Namespace, timeout_s: float = 10.0) -> boo
     url = f"http://{host}:{port}/health?probe=basic"
     deadline = time.time() + max(1.0, float(timeout_s))
     while time.time() < deadline:
+        if expected_pid is not None and not _pid_alive(int(expected_pid)):
+            return False
         try:
             with urlopen(url, timeout=1.0) as response:
                 if response.status == 200:

@@ -322,7 +322,7 @@ class SafeLifecycleTests(unittest.TestCase):
                 os.environ,
                 {cli.RESTART_HANDOFF_ENV: "1", cli.RESTART_REQUESTER_ENV: "4242"},
                 clear=False,
-            ),                  patch.object(cli, "STATE_DIR", state),                  patch.object(cli, "PID_FILE", state / "mac-mcp.pid"),                  patch.object(cli, "LOG_FILE", state / "mac-mcp.log"),                  patch.object(cli, "_validate_managed_pid", return_value=missing),                  patch.object(cli, "_server_listener_state", return_value=([], [])),                  patch.object(cli.subprocess, "Popen") as popen,                  patch.object(cli, "process_snapshot", return_value=snap),                  patch.object(cli, "matches_role", return_value=True),                  patch.object(cli, "write_process_record"),                  patch.object(cli, "_launch_menu_app"),                  patch.object(cli.time, "sleep"):
+            ),                  patch.object(cli, "STATE_DIR", state),                  patch.object(cli, "PID_FILE", state / "mac-mcp.pid"),                  patch.object(cli, "LOG_FILE", state / "mac-mcp.log"),                  patch.object(cli, "_validate_managed_pid", return_value=missing),                  patch.object(cli, "_server_listener_state", return_value=([], [])),                  patch.object(cli.subprocess, "Popen") as popen,                  patch.object(cli, "process_snapshot", return_value=snap),                  patch.object(cli, "matches_role", return_value=True),                  patch.object(cli, "write_process_record"),                  patch.object(cli, "_restart_health_ok", return_value=True),                  patch.object(cli, "_launch_menu_app"),                  patch.object(cli.time, "sleep"):
                 popen.return_value.pid = 4321
                 popen.return_value.poll.return_value = None
                 code = cli._start_server(args)
@@ -331,6 +331,55 @@ class SafeLifecycleTests(unittest.TestCase):
         spawn_env = popen.call_args.kwargs["env"]
         self.assertNotIn(cli.RESTART_HANDOFF_ENV, spawn_env)
         self.assertNotIn(cli.RESTART_REQUESTER_ENV, spawn_env)
+
+    def test_start_server_health_failure_terminates_spawned_process(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-start-health-") as td:
+            state = Path(td)
+            args = argparse.Namespace(host="127.0.0.1", port=8765, reload=False)
+            missing = ProcessValidation(
+                "missing", None, "server", None, "pid_file_missing",
+            )
+            snap = server_snapshot(4321, cli.PROJECT_ROOT)
+            with patch.object(cli, "STATE_DIR", state), \
+                 patch.object(cli, "PID_FILE", state / "mac-mcp.pid"), \
+                 patch.object(cli, "LOG_FILE", state / "mac-mcp.log"), \
+                 patch.object(cli, "_validate_managed_pid", return_value=missing), \
+                 patch.object(cli, "_server_listener_state", return_value=([], [])), \
+                 patch.object(cli.subprocess, "Popen") as popen, \
+                 patch.object(cli, "process_snapshot", return_value=snap), \
+                 patch.object(cli, "matches_role", return_value=True), \
+                 patch.object(cli, "write_process_record"), \
+                 patch.object(cli, "_restart_health_ok", return_value=False) as health, \
+                 patch.object(cli, "_launch_menu_app") as launch, \
+                 patch.object(cli.time, "sleep"):
+                popen.return_value.pid = 4321
+                popen.return_value.poll.return_value = None
+                popen.return_value.wait.return_value = 0
+                code = cli._start_server(args)
+
+        self.assertEqual(1, code)
+        health.assert_called_once_with(
+            args,
+            timeout_s=cli.DEFAULT_STARTUP_HEALTH_TIMEOUT_S,
+            expected_pid=4321,
+        )
+        popen.return_value.terminate.assert_called_once()
+        launch.assert_not_called()
+
+    def test_start_health_probe_fails_fast_when_expected_process_exits(self) -> None:
+        args = argparse.Namespace(host="127.0.0.1", port=8765)
+        with patch.object(cli, "_pid_alive", return_value=False), \
+             patch.object(cli, "urlopen") as urlopen:
+            self.assertFalse(cli._restart_health_ok(args, timeout_s=10, expected_pid=4321))
+        urlopen.assert_not_called()
+
+    def test_startup_health_timeout_is_bounded_and_configurable(self) -> None:
+        with patch.dict(os.environ, {"MAC_MCP_STARTUP_HEALTH_TIMEOUT_S": "2.5"}, clear=False):
+            self.assertEqual(2.5, cli._startup_health_timeout_s())
+        with patch.dict(os.environ, {"MAC_MCP_STARTUP_HEALTH_TIMEOUT_S": "120"}, clear=False):
+            self.assertEqual(60.0, cli._startup_health_timeout_s())
+        with patch.dict(os.environ, {"MAC_MCP_STARTUP_HEALTH_TIMEOUT_S": "invalid"}, clear=False):
+            self.assertEqual(cli.DEFAULT_STARTUP_HEALTH_TIMEOUT_S, cli._startup_health_timeout_s())
 
     def test_restart_handoff_child_requires_health_before_success(self) -> None:
         args = argparse.Namespace(timeout=1.0, host="127.0.0.1", port=8765)

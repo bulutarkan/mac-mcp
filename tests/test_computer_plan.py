@@ -187,6 +187,102 @@ class ComputerPlanExecutorTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_dynamic_ref_resource_conflict_blocks_before_mutation(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                holder = request_resource_lease(
+                    root,
+                    owner_id="holder",
+                    resources=[{"kind": "browser_tab", "id": "tab-dynamic", "mode": "write"}],
+                    ttl_s=30,
+                )
+                calls: list[str] = []
+
+                async def caller(tool: str, arguments: dict):
+                    calls.append(tool)
+                    if tool == "browser_list_tabs":
+                        return {"ok": True, "tab_handle": "tab-dynamic"}
+                    return {"ok": True, "actions": [{"ok": True}]}
+
+                steps = [
+                    {"id": "discover", "tool": "browser_list_tabs", "arguments": {"browser": "Safari"}},
+                    {
+                        "id": "act",
+                        "tool": "browser_act",
+                        "arguments": {
+                            "browser": "Safari",
+                            "tab_handle": {"$ref": "discover.tab_handle"},
+                            "actions": [{"type": "click", "element_id": "e1"}],
+                        },
+                    },
+                ]
+                try:
+                    result = await execute_computer_plan(
+                        caller,
+                        steps=steps,
+                        plan_version=2,
+                        resources=derive_computer_plan_resources(steps),
+                        admission_root=root,
+                    )
+                finally:
+                    admission_release(root, lease_id=str(holder.get("lease_id") or ""))
+
+                self.assertFalse(result["ok"])
+                self.assertEqual("RESOURCE_BUSY", result["reason_code"])
+                self.assertEqual("act", result["step_id"])
+                self.assertTrue(result["dynamic_resource_claim"])
+                self.assertEqual(["browser_list_tabs"], calls)
+
+        asyncio.run(run())
+
+    def test_dynamic_ref_resource_claim_extends_and_releases(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                calls: list[tuple[str, dict]] = []
+
+                async def caller(tool: str, arguments: dict):
+                    calls.append((tool, arguments))
+                    if tool == "browser_list_tabs":
+                        return {"ok": True, "tab_handle": "tab-dynamic"}
+                    return {"ok": True, "actions": [{"ok": True}]}
+
+                steps = [
+                    {"id": "discover", "tool": "browser_list_tabs", "arguments": {"browser": "Safari"}},
+                    {
+                        "id": "act",
+                        "tool": "browser_act",
+                        "arguments": {
+                            "browser": "Safari",
+                            "tab_handle": {"$ref": "discover.tab_handle"},
+                            "actions": [{"type": "click", "element_id": "e1"}],
+                        },
+                    },
+                ]
+                result = await execute_computer_plan(
+                    caller,
+                    steps=steps,
+                    plan_version=2,
+                    resources=derive_computer_plan_resources(steps),
+                    admission_root=root,
+                )
+                self.assertTrue(result["ok"])
+                self.assertEqual("tab-dynamic", calls[-1][1]["tab_handle"])
+                self.assertGreaterEqual(result["resource_preflight"]["dynamic_extensions"], 1)
+                self.assertEqual(1, result["resource_preflight"]["resource_count"])
+
+                after = request_resource_lease(
+                    root,
+                    owner_id="after",
+                    resources=[{"kind": "browser_tab", "id": "tab-dynamic", "mode": "write"}],
+                    ttl_s=30,
+                )
+                self.assertTrue(after["admitted"])
+                admission_release(root, lease_id=str(after.get("lease_id") or ""))
+
+        asyncio.run(run())
+
     def test_future_reference_is_rejected_before_any_side_effect(self) -> None:
         async def run() -> None:
             calls: list[str] = []

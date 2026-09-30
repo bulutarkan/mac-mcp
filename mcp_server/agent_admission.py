@@ -257,9 +257,16 @@ def _active_counts(state: Mapping[str, Any]) -> tuple[int, Dict[str, int]]:
     return total, by_provider
 
 
-def _resource_blockers(state: Mapping[str, Any], resources: Sequence[Mapping[str, str]]) -> list[Dict[str, Any]]:
+def _resource_blockers(
+    state: Mapping[str, Any],
+    resources: Sequence[Mapping[str, str]],
+    *,
+    exclude_lease_id: Optional[str] = None,
+) -> list[Dict[str, Any]]:
     blockers: list[Dict[str, Any]] = []
     for lease_id, lease in (state.get("leases") or {}).items():
+        if exclude_lease_id and str(lease_id) == str(exclude_lease_id):
+            continue
         conflicts = resources_conflict(resources, lease.get("resources") or [])
         if not conflicts:
             continue
@@ -561,6 +568,49 @@ def request_resource_lease(
         _write_unlocked(locked_root, state)
         return {
             "admitted": True, "lease_id": lease_id, "resources": claims,
+            "expired_leases": expired,
+        }
+
+
+def extend_resource_lease(
+    root: Path,
+    *,
+    lease_id: str,
+    resources: Optional[Iterable[Mapping[str, Any]]] = None,
+    ttl_s: int = 90,
+) -> Dict[str, Any]:
+    lid = str(lease_id or "").strip()
+    if not lid:
+        raise AdmissionError("admission_lease_missing", "resource lease id is required")
+    claims = normalize_claims(resources)
+    _validate_expected_revisions(claims)
+    current = _now()
+    ttl = max(5, min(int(ttl_s), 600))
+    with _locked(root) as locked_root:
+        state = _read_unlocked(locked_root)
+        expired = _prune_expired_unlocked(state, current)
+        lease = (state.get("leases") or {}).get(lid)
+        if lease is None:
+            raise AdmissionError("admission_lease_missing", "Resource lease expired before extension.")
+        existing = normalize_claims(lease.get("resources") or [])
+        merged = normalize_claims([*existing, *claims])
+        blockers = _resource_blockers(state, merged, exclude_lease_id=lid)
+        if blockers:
+            return {
+                "admitted": False,
+                "reason": "resource_busy",
+                "lease_id": lid,
+                "blockers": blockers,
+                "expired_leases": expired,
+            }
+        lease["resources"] = merged
+        lease["last_heartbeat_at"] = current
+        lease["expires_at"] = current + ttl
+        _write_unlocked(locked_root, state)
+        return {
+            "admitted": True,
+            "lease_id": lid,
+            "resources": merged,
             "expired_leases": expired,
         }
 

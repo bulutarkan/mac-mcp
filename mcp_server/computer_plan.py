@@ -9,7 +9,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, MutableMapping, Optional, Sequence
 
-from .agent_admission import AdmissionError, release as admission_release, request_resource_lease
+from .agent_admission import (
+    AdmissionError,
+    extend_resource_lease,
+    release as admission_release,
+    request_resource_lease,
+)
 
 _ALLOWED_TOOLS = frozenset({
     "open_app",
@@ -81,6 +86,7 @@ _TERMINAL_UNCERTAIN_CODES = frozenset({
 })
 
 NestedCaller = Callable[[str, dict[str, Any]], Awaitable[Any]]
+ResourceClaimEnsurer = Callable[[str, str, Mapping[str, Any]], None]
 
 
 class ComputerPlanError(ValueError):
@@ -536,6 +542,24 @@ def _all_ids(steps: Sequence[Mapping[str, Any]]) -> set[str]:
         if isinstance(fallback, Mapping):
             result.add(str(fallback.get("id") or ""))
     return result
+
+
+def _has_dynamic_mutating_resource_refs(steps: Sequence[Mapping[str, Any]]) -> bool:
+    for step in steps:
+        kind = str(step.get("kind") or "tool")
+        if kind == "branch":
+            if _has_dynamic_mutating_resource_refs(step.get("then") or []):
+                return True
+            if _has_dynamic_mutating_resource_refs(step.get("else") or []):
+                return True
+            continue
+        tool = str(step.get("tool") or "")
+        if tool in _MUTATING_TOOLS and _walk_refs(step.get("arguments") or {}):
+            return True
+        fallback = step.get("fallback")
+        if isinstance(fallback, Mapping) and _has_dynamic_mutating_resource_refs([fallback]):
+            return True
+    return False
 
 
 def _validate_steps(steps: Any, *, version: int = 1) -> list[dict[str, Any]]:
@@ -1008,6 +1032,7 @@ async def _execute_tool_step(
     outputs: MutableMapping[str, Any],
     budget: _Budget,
     version: int,
+    resource_claim_ensurer: Optional[ResourceClaimEnsurer] = None,
 ) -> tuple[Any, dict[str, Any]]:
     step_id = str(step["id"])
     tool = str(step["tool"])
@@ -1024,6 +1049,8 @@ async def _execute_tool_step(
 
     for attempt in range(1, max_attempts + 1):
         budget.check_time(step_id)
+        if resource_claim_ensurer is not None and tool in _MUTATING_TOOLS:
+            resource_claim_ensurer(step_id, tool, current_args)
         started = time.monotonic()
         try:
             payload = await _nested_call(call_tool, tool, current_args, budget)
@@ -1092,7 +1119,12 @@ async def _execute_tool_step(
         fallback_started = budget.begin_recovery(step_id)
         try:
             fb_payload, fb_meta = await _execute_tool_step(
-                call_tool, step=fallback, outputs=outputs, budget=budget, version=version,
+                call_tool,
+                step=fallback,
+                outputs=outputs,
+                budget=budget,
+                version=version,
+                resource_claim_ensurer=resource_claim_ensurer,
             )
         finally:
             budget.finish_recovery(fallback_started, step_id)
@@ -1114,6 +1146,7 @@ async def _execute_steps(
     records: list[dict[str, Any]],
     budget: _Budget,
     version: int,
+    resource_claim_ensurer: Optional[ResourceClaimEnsurer] = None,
 ) -> None:
     for step in steps:
         step_id = str(step["id"])
@@ -1137,7 +1170,13 @@ async def _execute_steps(
             selected_steps = step.get(selected) or []
             if selected_steps:
                 await _execute_steps(
-                    call_tool, steps=selected_steps, outputs=outputs, records=records, budget=budget, version=version,
+                    call_tool,
+                    steps=selected_steps,
+                    outputs=outputs,
+                    records=records,
+                    budget=budget,
+                    version=version,
+                    resource_claim_ensurer=resource_claim_ensurer,
                 )
             continue
 
@@ -1163,7 +1202,12 @@ async def _execute_steps(
 
         try:
             payload, meta = await _execute_tool_step(
-                call_tool, step=step, outputs=outputs, budget=budget, version=version,
+                call_tool,
+                step=step,
+                outputs=outputs,
+                budget=budget,
+                version=version,
+                resource_claim_ensurer=resource_claim_ensurer,
             )
         except _PlanStop as stop:
             records.append({
@@ -1276,9 +1320,15 @@ async def execute_computer_plan(
     records: list[dict[str, Any]] = []
     failure: Optional[dict[str, Any]] = None
     resource_lease_id: Optional[str] = None
-    resource_preflight: dict[str, Any] = {"requested": bool(resources), "admitted": True}
+    dynamic_resource_refs = _has_dynamic_mutating_resource_refs(normalized)
+    resource_requested = bool(resources) or bool(dynamic_resource_refs and admission_root is not None)
+    resource_preflight: dict[str, Any] = {
+        "requested": resource_requested,
+        "admitted": True,
+        "dynamic": bool(dynamic_resource_refs),
+    }
 
-    if resources:
+    if resource_requested:
         if admission_root is None:
             raise ComputerPlanError("resource preflight requires an admission_root")
         try:
@@ -1316,11 +1366,59 @@ async def execute_computer_plan(
                 },
             }
         resource_lease_id = str(lease.get("lease_id") or "") or None
-        resource_preflight = {"requested": True, "admitted": True, "resource_count": len(lease.get("resources") or [])}
+        resource_preflight = {
+            "requested": True,
+            "admitted": True,
+            "dynamic": bool(dynamic_resource_refs),
+            "resource_count": len(lease.get("resources") or []),
+            "dynamic_extensions": 0,
+        }
+
+    def ensure_resolved_resources(step_id: str, tool: str, arguments: Mapping[str, Any]) -> None:
+        if not resource_lease_id or admission_root is None:
+            return
+        claims = derive_computer_plan_resources([
+            {"id": step_id, "tool": tool, "arguments": dict(arguments)}
+        ])
+        if not claims:
+            return
+        try:
+            extended = extend_resource_lease(
+                Path(admission_root),
+                lease_id=resource_lease_id,
+                resources=claims,
+                ttl_s=max(30, int(max_seconds_value) + 15),
+            )
+        except AdmissionError as exc:
+            raise _PlanStop(
+                "RESOURCE_LEASE_LOST",
+                str(exc),
+                step_id,
+                details={"retryable": True, "admission_error": exc.code},
+            ) from exc
+        if not extended.get("admitted"):
+            raise _PlanStop(
+                "RESOURCE_BUSY",
+                "computer_plan resolved target conflicts with another active owner",
+                step_id,
+                details={
+                    "retryable": True,
+                    "blockers": extended.get("blockers") or [],
+                    "dynamic_resource_claim": True,
+                },
+            )
+        resource_preflight["resource_count"] = len(extended.get("resources") or [])
+        resource_preflight["dynamic_extensions"] = int(resource_preflight.get("dynamic_extensions") or 0) + 1
 
     try:
         await _execute_steps(
-            call_tool, steps=normalized, outputs=outputs, records=records, budget=budget, version=version,
+            call_tool,
+            steps=normalized,
+            outputs=outputs,
+            records=records,
+            budget=budget,
+            version=version,
+            resource_claim_ensurer=ensure_resolved_resources if resource_lease_id else None,
         )
     except _PlanStop as stop:
         failure = {

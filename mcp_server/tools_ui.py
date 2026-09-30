@@ -59,6 +59,9 @@ _ELEMENT_ID_RE = re.compile(r"^w[1-9][0-9]*(?:/[1-9][0-9]*)*$")
 _OBSERVATION_TTL_S = 300
 _OBSERVATION_CONDITIONAL_MAX_AGE_S = 0.75
 _OBSERVATION_DELTA_MAX_CHANGED = 12
+_NATIVE_FINGERPRINT_STATE_DEPTH = 2
+_NATIVE_FINGERPRINT_STATE_MAX_CHILDREN = 24
+_NATIVE_FINGERPRINT_STATE_MAX_NODES = 80
 _MAX_OBSERVATIONS = 64
 _MAX_ACTIONS = 20
 _MAX_TEXT_CHARS = 100_000
@@ -675,10 +678,48 @@ def _ocr_image(image_data: bytes, timeout_s: float = 20) -> Tuple[Optional[str],
 
 
 
+def _native_child_state_signature(
+    nodes: List[Dict[str, Any]] | Dict[str, Dict[str, Any]],
+    window_index: int,
+    *,
+    max_depth: int = _NATIVE_FINGERPRINT_STATE_DEPTH,
+    max_nodes: int = _NATIVE_FINGERPRINT_STATE_MAX_NODES,
+) -> str:
+    node_rows = list(nodes.values()) if isinstance(nodes, dict) else list(nodes)
+    root_id = f"w{int(window_index)}" if int(window_index) > 0 else ""
+    compact: List[Dict[str, Any]] = []
+    for row in sorted(node_rows, key=lambda item: str(item.get("element_id") or "")):
+        element_id = str(row.get("element_id") or "")
+        if root_id and element_id != root_id and not element_id.startswith(root_id + "/"):
+            continue
+        depth = element_id.count("/")
+        if depth > max(0, int(max_depth)):
+            continue
+        compact.append({
+            "id": element_id,
+            "role": str(row.get("role") or ""),
+            "subrole": str(row.get("subrole") or ""),
+            "title": str(row.get("title") or ""),
+            "description": str(row.get("description") or ""),
+            "value": str(row.get("value") or ""),
+            "enabled": bool(row.get("enabled", False)),
+            "focused": bool(row.get("focused", False)),
+            "identifier": str(row.get("identifier") or ""),
+            "child_count": int(row.get("child_count") or 0),
+        })
+        if len(compact) >= max(1, int(max_nodes)):
+            break
+    raw = json.dumps(compact, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def _native_fingerprint_components(
     metadata: Dict[str, Any],
     nodes: List[Dict[str, Any]] | Dict[str, Dict[str, Any]],
     window_index: int,
+    *,
+    state_depth: int = _NATIVE_FINGERPRINT_STATE_DEPTH,
+    state_max_nodes: int = _NATIVE_FINGERPRINT_STATE_MAX_NODES,
 ) -> Dict[str, Any]:
     windows = list(metadata.get("windows") or [])
     selected = next(
@@ -706,6 +747,12 @@ def _native_fingerprint_components(
         "focused": bool((selected or {}).get("focused", False)),
         "main": bool((selected or {}).get("main", False)),
         "root_child_count": int((root or {}).get("child_count") or 0),
+        "child_state": _native_child_state_signature(
+            node_rows,
+            window_index,
+            max_depth=state_depth,
+            max_nodes=state_max_nodes,
+        ),
     }
 
 
@@ -810,33 +857,35 @@ def _probe_native_observation_fingerprint(
     window_index: int,
     *,
     app_pid: Optional[int] = None,
+    max_depth: int = 5,
+    max_children: int = 30,
     deadline: Optional[float] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
+    probe_depth = max(0, min(int(max_depth), _NATIVE_FINGERPRINT_STATE_DEPTH))
+    probe_children = max(1, min(int(max_children), _NATIVE_FINGERPRINT_STATE_MAX_CHILDREN))
     ok, raw, error = _run_osascript(
-        _native_fingerprint_script(app, window_index, app_pid=app_pid),
+        _observation_script(
+            app,
+            window_index,
+            probe_depth,
+            probe_children,
+            max_nodes=_NATIVE_FINGERPRINT_STATE_MAX_NODES,
+            app_pid=app_pid,
+        ),
         timeout_s=_operation_timeout(deadline, 5),
     )
     if not ok:
         return None, error or "native fingerprint probe failed"
-    fields = str(raw or "").split(_FIELD_SEPARATOR)
-    if len(fields) < 15 or fields[0] != "__FP__":
+    metadata, nodes = _parse_observation(str(raw or ""))
+    if not metadata.get("windows"):
         return None, "invalid native fingerprint payload"
-    components = {
-        "pid": _parse_number(fields[1]) or 0,
-        "window_count": _parse_number(fields[2]) or 0,
-        "window_index": _parse_number(fields[3]) or int(window_index),
-        "title": fields[4],
-        "document": fields[5],
-        "identifier": fields[6],
-        "position": {
-            "x": _parse_number(fields[7]), "y": _parse_number(fields[8]),
-            "width": _parse_number(fields[9]), "height": _parse_number(fields[10]),
-        },
-        "subrole": fields[11],
-        "focused": _parse_bool(fields[12]),
-        "main": _parse_bool(fields[13]),
-        "root_child_count": _parse_number(fields[14]) or 0,
-    }
+    components = _native_fingerprint_components(
+        metadata,
+        nodes,
+        window_index,
+        state_depth=probe_depth,
+        state_max_nodes=_NATIVE_FINGERPRINT_STATE_MAX_NODES,
+    )
     return _native_fingerprint_digest(components), None
 
 
@@ -1263,7 +1312,13 @@ def _collect_observation(
             ), None
 
     fingerprint = _native_fingerprint_digest(
-        _native_fingerprint_components(metadata, nodes, window_index)
+        _native_fingerprint_components(
+            metadata,
+            nodes,
+            window_index,
+            state_depth=min(max_depth, _NATIVE_FINGERPRINT_STATE_DEPTH),
+            state_max_nodes=_NATIVE_FINGERPRINT_STATE_MAX_NODES,
+        )
     )
     tree_revision = _native_tree_revision(metadata, nodes, window_index)
     observation_id = _save_observation(
@@ -1400,13 +1455,15 @@ def observe_ui(
                     resolved_app,
                     int(window_index),
                     app_pid=resolved_pid,
+                    max_depth=max_depth,
+                    max_children=max_children,
                     deadline=deadline,
                 )
                 if fingerprint is not None and fingerprint == previous.get("fingerprint"):
                     compact = _native_not_modified_payload(
                         str(previous_observation_id),
                         previous,
-                        validation="lightweight_fingerprint",
+                        validation="bounded_child_state_fingerprint",
                         ax_traversals=0,
                         duration_ms=int((time.perf_counter() - started) * 1000),
                     )

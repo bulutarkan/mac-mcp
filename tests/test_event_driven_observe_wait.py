@@ -226,6 +226,28 @@ class NativeConditionalObserveTests(unittest.TestCase):
         )
         return obs, tools_ui._get_observation(obs)
 
+    def test_child_state_changes_invalidate_native_fingerprint(self) -> None:
+        _obs, previous = self._previous()
+        metadata = {
+            "pid": 123,
+            "window_count": 1,
+            "windows": [{
+                "index": 1, "title": "Demo", "document": "", "identifier": "win",
+                "position": {"x": 10, "y": 20, "width": 500, "height": 400},
+                "subrole": "AXStandardWindow", "focused": True, "main": True,
+            }],
+        }
+        original_nodes = [dict(item) for item in previous["nodes"].values()]
+        changed_nodes = [dict(item) for item in original_nodes]
+        changed_nodes[1] = dict(changed_nodes[1], value="changed", enabled=False, focused=True)
+        original = tools_ui._native_fingerprint_digest(
+            tools_ui._native_fingerprint_components(metadata, original_nodes, 1)
+        )
+        changed = tools_ui._native_fingerprint_digest(
+            tools_ui._native_fingerprint_components(metadata, changed_nodes, 1)
+        )
+        self.assertNotEqual(original, changed)
+
     def test_unchanged_conditional_observe_skips_full_ax_traversal(self) -> None:
         obs, previous = self._previous()
         with patch(
@@ -250,7 +272,7 @@ class NativeConditionalObserveTests(unittest.TestCase):
         self.assertTrue(payload["not_modified"])
         self.assertEqual("not_modified", payload["state_mode"])
         self.assertEqual(0, payload["telemetry"]["ax_traversals"])
-        self.assertEqual("lightweight_fingerprint", payload["cache_validation"])
+        self.assertEqual("bounded_child_state_fingerprint", payload["cache_validation"])
         collect.assert_not_called()
 
     def test_changed_nonstructural_observe_returns_delta(self) -> None:

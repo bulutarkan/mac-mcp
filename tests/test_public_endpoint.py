@@ -278,6 +278,7 @@ class PublicEndpointCLITests(unittest.TestCase):
         with patch.object(cli, "_validate_managed_pid", return_value=missing), \
              patch.object(cli, "_server_listener_state", return_value=([4321], [])), \
              patch.object(cli, "_adopt_server_listener", return_value=4321) as adopt, \
+             patch.object(cli, "_restart_health_ok", return_value=True), \
              patch.object(cli, "_launch_menu_app"), \
              patch.object(cli.subprocess, "Popen") as popen:
             code = cli._start_server(args)
