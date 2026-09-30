@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import plistlib
+import re
 import signal
 import shutil
 import subprocess
@@ -11,6 +13,7 @@ import time
 import webbrowser
 from pathlib import Path
 from urllib.parse import quote
+from urllib.request import urlopen
 
 from dotenv import load_dotenv
 
@@ -57,6 +60,10 @@ NGROK_LOG_FILE = STATE_DIR / "ngrok.log"
 CLOUDFLARE_LOG_FILE = STATE_DIR / "cloudflared.log"
 CLOUDFLARE_LAUNCHD_LABEL = os.getenv("MAC_MCP_CLOUDFLARE_LAUNCHD_LABEL", "mac-mcp-cloudflared")
 RESTART_HANDOFF_ENV = "MAC_MCP_RESTART_HANDOFF_CHILD"
+RESTART_REQUESTER_ENV = "MAC_MCP_RESTART_REQUESTER_PID"
+RESTART_HANDOFF_LABEL = "com.macmcp.restart-handoff"
+RESTART_REQUESTER_WAIT_S = 5.0
+RESTART_RESPONSE_GRACE_S = 3.0
 
 
 def _load_env() -> None:
@@ -1106,43 +1113,26 @@ def status(args: argparse.Namespace) -> int:
     return 0 if server_running else 1
 
 
-def _parent_pid(pid: int) -> int | None:
+def _restart_status_path() -> Path:
+    return STATE_DIR / "restart-status.json"
+
+
+def _write_restart_status(state: str, **details: object) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "state": str(state),
+        "updated_at": time.time(),
+        **{str(key): value for key, value in details.items()},
+    }
+    path = _restart_status_path()
+    tmp = path.with_name(f".{path.name}.tmp")
     try:
-        proc = subprocess.run(
-            ["/bin/ps", "-p", str(int(pid)), "-o", "ppid="],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return None
-    if proc.returncode != 0:
-        return None
-    try:
-        parent = int((proc.stdout or "").strip())
-    except ValueError:
-        return None
-    return parent if parent > 0 else None
-
-
-def _is_descendant_process(pid: int, ancestor_pid: int, *, max_depth: int = 16) -> bool:
-    current = int(pid)
-    ancestor = int(ancestor_pid)
-    for _ in range(max(1, int(max_depth))):
-        if current == ancestor:
-            return True
-        parent = _parent_pid(current)
-        if parent is None or parent <= 1 or parent == current:
-            return False
-        current = parent
-    return current == ancestor
-
-
-def _restart_invoked_from_managed_server() -> bool:
-    server_pid, _source = _resolve_server_identity(_default_port(), adopt_listener=False)
-    return bool(server_pid and _is_descendant_process(os.getpid(), server_pid))
+        tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _restart_handoff_command(args: argparse.Namespace) -> list[str]:
@@ -1171,50 +1161,257 @@ def _restart_handoff_command(args: argparse.Namespace) -> list[str]:
     return command
 
 
+def _restart_handoff_job() -> tuple[bool, int | None]:
+    target = _launchctl_target(RESTART_HANDOFF_LABEL)
+    try:
+        proc = _launchctl_run("print", target, capture=True, timeout=3.0)
+    except (OSError, subprocess.SubprocessError):
+        return False, None
+    if proc.returncode != 0:
+        return False, None
+    match = re.search(r"(?m)^\s*pid\s*=\s*(\d+)\s*$", proc.stdout or "")
+    if not match:
+        return True, None
+    try:
+        pid = int(match.group(1))
+    except ValueError:
+        return True, None
+    return True, pid if pid > 0 else None
+
+
+def _restart_handoff_plist_path() -> Path:
+    return STATE_DIR / "restart-handoff.plist"
+
+
+def _remove_stale_restart_handoff() -> bool:
+    loaded, pid = _restart_handoff_job()
+    if not loaded:
+        _restart_handoff_plist_path().unlink(missing_ok=True)
+        return True
+    if pid and _pid_alive(pid):
+        return False
+    try:
+        proc = _launchctl_run(
+            "bootout",
+            _launchctl_target(RESTART_HANDOFF_LABEL),
+            capture=True,
+            timeout=3.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if proc.returncode != 0:
+        return False
+    _restart_handoff_plist_path().unlink(missing_ok=True)
+    return True
+
+
+def _write_restart_handoff_plist(args: argparse.Namespace) -> Path:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_FILE.touch(mode=0o600, exist_ok=True)
+    os.chmod(LOG_FILE, 0o600)
+    path = _restart_handoff_plist_path()
+    env_command = [
+        "/usr/bin/env",
+        f"{RESTART_HANDOFF_ENV}=1",
+        f"MAC_MCP_STATE_DIR={STATE_DIR}",
+        f"PYTHONPATH={PROJECT_ROOT}",
+        f"{RESTART_REQUESTER_ENV}={os.getpid()}",
+        *_restart_handoff_command(args),
+    ]
+    payload = {
+        "Label": RESTART_HANDOFF_LABEL,
+        "ProgramArguments": env_command,
+        "RunAtLoad": True,
+        "KeepAlive": False,
+        "ProcessType": "Background",
+        "StandardOutPath": str(LOG_FILE),
+        "StandardErrorPath": str(LOG_FILE),
+        "Umask": 0o077,
+    }
+    tmp = path.with_name(f".{path.name}.tmp")
+    try:
+        with tmp.open("wb") as handle:
+            plistlib.dump(payload, handle, fmt=plistlib.FMT_XML, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return path
+
+
 def _spawn_detached_restart(args: argparse.Namespace) -> int:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    env[RESTART_HANDOFF_ENV] = "1"
-    log = LOG_FILE.open("a", encoding="utf-8")
-    try:
-        proc = subprocess.Popen(
-            _restart_handoff_command(args),
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            env=env,
-            cwd=str(PROJECT_ROOT),
-            start_new_session=True,
-        )
-    except OSError as exc:
-        print(f"Could not hand off mac-mcp restart: {exc}")
+    loaded, pid = _restart_handoff_job()
+    if loaded and pid and _pid_alive(pid):
+        print(f"mac-mcp restart is already in progress under launchd (helper pid {pid}).")
+        return 0
+    if loaded and not _remove_stale_restart_handoff():
+        print("Could not clear the previous mac-mcp restart handoff job.")
         return 1
-    finally:
-        log.close()
+
+    _write_restart_status(
+        "requested",
+        requested_by_pid=os.getpid(),
+        server_pid=_resolve_server_identity(_default_port(), adopt_listener=False)[0],
+    )
+    plist_path = _write_restart_handoff_plist(args)
+    try:
+        proc = _launchctl_run(
+            "bootstrap",
+            f"gui/{os.getuid()}",
+            str(plist_path),
+            capture=True,
+            timeout=5.0,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        _write_restart_status("failed", stage="bootstrap", error=str(exc))
+        print(f"Could not hand off mac-mcp restart to launchd: {exc}")
+        return 1
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "launchctl bootstrap failed").strip()
+        _write_restart_status("failed", stage="bootstrap", error=detail)
+        print(f"Could not hand off mac-mcp restart to launchd: {detail}")
+        return 1
+
     time.sleep(0.1)
-    if proc.poll() is not None:
-        print(f"Detached mac-mcp restart helper exited early. See log: {LOG_FILE}")
-        return proc.returncode or 1
-    print(f"mac-mcp restart handed off safely (helper pid {proc.pid}).")
+    loaded, helper_pid = _restart_handoff_job()
+    if not loaded:
+        _write_restart_status("failed", stage="bootstrap", error="launchd handoff job disappeared before execution")
+        print(f"mac-mcp restart handoff did not remain registered. See log: {LOG_FILE}")
+        return 1
+    print(
+        "mac-mcp restart handed off to one-shot launchd worker"
+        + (f" (helper pid {helper_pid})." if helper_pid else ".")
+    )
     return 0
+
+
+def _restart_health_ok(args: argparse.Namespace, timeout_s: float = 10.0) -> bool:
+    host = str(getattr(args, "host", "") or "127.0.0.1").strip()
+    if host in {"0.0.0.0", "::", ""}:
+        host = "127.0.0.1"
+    port = int(getattr(args, "port", _default_port()))
+    url = f"http://{host}:{port}/health?probe=basic"
+    deadline = time.time() + max(1.0, float(timeout_s))
+    while time.time() < deadline:
+        try:
+            with urlopen(url, timeout=1.0) as response:
+                if response.status == 200:
+                    payload = json.loads(response.read().decode("utf-8", errors="replace"))
+                    if isinstance(payload, dict) and payload.get("ok") is True:
+                        return True
+        except Exception:
+            pass
+        time.sleep(0.2)
+    return False
+
+
+def _wait_for_restart_requester_exit() -> bool:
+    raw = os.getenv(RESTART_REQUESTER_ENV, "").strip()
+    try:
+        requester_pid = int(raw)
+    except ValueError:
+        requester_pid = 0
+    if requester_pid <= 0:
+        time.sleep(RESTART_RESPONSE_GRACE_S)
+        return True
+
+    deadline = time.monotonic() + RESTART_REQUESTER_WAIT_S
+    while _pid_alive(requester_pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if _pid_alive(requester_pid):
+        _write_restart_status(
+            "failed",
+            stage="requester_wait",
+            requester_pid=requester_pid,
+            helper_pid=os.getpid(),
+        )
+        return False
+
+    time.sleep(RESTART_RESPONSE_GRACE_S)
+    return True
+
+
+def _install_restart_signal_receipts() -> None:
+    def handler(signum, _frame) -> None:
+        try:
+            _write_restart_status(
+                "failed",
+                stage="signal",
+                signal=int(signum),
+                helper_pid=os.getpid(),
+            )
+        finally:
+            os._exit(128 + int(signum))
+
+    for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        try:
+            signal.signal(signum, handler)
+        except (OSError, ValueError):
+            pass
 
 
 def restart(args: argparse.Namespace) -> int:
     _load_env()
-    detached_child = os.getenv(RESTART_HANDOFF_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
-    if not detached_child and _restart_invoked_from_managed_server():
+    handoff_child = os.getenv(RESTART_HANDOFF_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+    if not handoff_child:
+        # Always delegate restart to launchd. A restart tears down the server that
+        # may currently be carrying this command; launchd ownership prevents MCP
+        # cancellation cleanup or shell process-group cleanup from killing the worker.
         return _spawn_detached_restart(args)
-    if detached_child:
-        # Let the parent tool call return before this helper tears down the server
-        # that carried the request. The helper is in its own process session, so
-        # cancellation cleanup from run_command cannot terminate it.
-        time.sleep(0.75)
+
+    _install_restart_signal_receipts()
+    _write_restart_status(
+        "running",
+        stage="waiting_for_requester",
+        helper_pid=os.getpid(),
+        requester_pid=int(os.getenv(RESTART_REQUESTER_ENV, "0") or 0),
+    )
+    if not _wait_for_restart_requester_exit():
+        return 1
+
+    target_port = int(getattr(args, "port", _default_port()))
+    target_server_pid, target_source = _resolve_server_identity(target_port, adopt_listener=False)
+    _write_restart_status(
+        "running",
+        stage="stopping",
+        helper_pid=os.getpid(),
+        helper_ppid=os.getppid(),
+        helper_pgid=os.getpgid(0),
+        helper_sid=os.getsid(0),
+        target_server_pid=target_server_pid,
+        target_source=target_source,
+    )
     stop_args = argparse.Namespace(timeout=args.timeout, force=True)
     stop_code = stop(stop_args)
     if stop_code != 0:
+        _write_restart_status("failed", stage="stop", exit_code=stop_code, helper_pid=os.getpid())
         print("Restart aborted because managed process shutdown was not verified.")
         return stop_code
-    return start(args)
+
+    _write_restart_status("running", stage="starting", helper_pid=os.getpid())
+    start_code = start(args)
+    if start_code != 0:
+        _write_restart_status("failed", stage="start", exit_code=start_code, helper_pid=os.getpid())
+        return start_code
+
+    _write_restart_status("running", stage="verifying", helper_pid=os.getpid())
+    if not _restart_health_ok(args):
+        _write_restart_status("failed", stage="health", exit_code=1, helper_pid=os.getpid())
+        print("mac-mcp restart health verification failed.")
+        return 1
+
+    server_pid, source = _resolve_server_identity(int(args.port), adopt_listener=False)
+    _write_restart_status(
+        "succeeded",
+        server_pid=server_pid,
+        ownership_source=source,
+        health=True,
+    )
+    return 0
 
 
 def credential(args: argparse.Namespace) -> int:

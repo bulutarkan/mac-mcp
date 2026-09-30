@@ -262,23 +262,10 @@ class SafeLifecycleTests(unittest.TestCase):
             self.assertEqual(1, code)
             popen.assert_not_called()
 
-    def test_restart_aborts_when_safe_stop_fails(self) -> None:
+    def test_restart_parent_always_handoffs_to_launchd(self) -> None:
         args = argparse.Namespace(timeout=1.0)
         with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: ""}, clear=False), \
              patch.object(cli, "_load_env"), \
-             patch.object(cli, "_restart_invoked_from_managed_server", return_value=False), \
-             patch.object(cli, "stop", return_value=1) as stop, \
-             patch.object(cli, "start") as start:
-            code = cli.restart(args)
-        self.assertEqual(1, code)
-        stop.assert_called_once()
-        start.assert_not_called()
-
-    def test_restart_handoffs_when_called_from_managed_server(self) -> None:
-        args = argparse.Namespace(timeout=1.0)
-        with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: ""}, clear=False), \
-             patch.object(cli, "_load_env"), \
-             patch.object(cli, "_restart_invoked_from_managed_server", return_value=True), \
              patch.object(cli, "_spawn_detached_restart", return_value=0) as handoff, \
              patch.object(cli, "stop") as stop, \
              patch.object(cli, "start") as start:
@@ -288,22 +275,34 @@ class SafeLifecycleTests(unittest.TestCase):
         stop.assert_not_called()
         start.assert_not_called()
 
-    def test_detached_restart_child_runs_normal_restart(self) -> None:
+    def test_restart_handoff_child_aborts_when_safe_stop_fails(self) -> None:
         args = argparse.Namespace(timeout=1.0)
         with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: "1"}, clear=False), \
              patch.object(cli, "_load_env"), \
-             patch.object(cli, "_restart_invoked_from_managed_server") as nested_check, \
-             patch.object(cli.time, "sleep") as sleep, \
-             patch.object(cli, "stop", return_value=0) as stop, \
-             patch.object(cli, "start", return_value=0) as start:
+             patch.object(cli, "_write_restart_status") as status_write, \
+             patch.object(cli.time, "sleep"), \
+             patch.object(cli, "stop", return_value=1) as stop, \
+             patch.object(cli, "start") as start:
             code = cli.restart(args)
-        self.assertEqual(0, code)
-        nested_check.assert_not_called()
-        sleep.assert_called_once_with(0.75)
+        self.assertEqual(1, code)
         stop.assert_called_once()
-        start.assert_called_once_with(args)
+        start.assert_not_called()
+        status_write.assert_any_call("failed", stage="stop", exit_code=1, helper_pid=os.getpid())
 
-    def test_detached_restart_helper_uses_new_session_and_marker(self) -> None:
+    def test_restart_handoff_child_requires_health_before_success(self) -> None:
+        args = argparse.Namespace(timeout=1.0, host="127.0.0.1", port=8765)
+        with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: "1"}, clear=False), \
+             patch.object(cli, "_load_env"), \
+             patch.object(cli, "_write_restart_status") as status_write, \
+             patch.object(cli.time, "sleep"), \
+             patch.object(cli, "stop", return_value=0), \
+             patch.object(cli, "start", return_value=0), \
+             patch.object(cli, "_restart_health_ok", return_value=False):
+            code = cli.restart(args)
+        self.assertEqual(1, code)
+        status_write.assert_any_call("failed", stage="health", exit_code=1, helper_pid=os.getpid())
+
+    def test_launchd_handoff_bootstraps_one_shot_job(self) -> None:
         args = argparse.Namespace(
             host="127.0.0.1", port=8765, timeout=5.0, reload=False,
             public_mode=None, public_url=None, cloudflare_tunnel=None,
@@ -312,20 +311,75 @@ class SafeLifecycleTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory(prefix="mac-mcp-restart-handoff-") as td:
             root = Path(td)
+            completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
             with patch.object(cli, "STATE_DIR", root), \
                  patch.object(cli, "LOG_FILE", root / "mac-mcp.log"), \
                  patch.object(cli, "PROJECT_ROOT", root), \
-                 patch.object(cli.subprocess, "Popen") as popen, \
+                 patch.object(cli, "_restart_handoff_job", side_effect=[(False, None), (True, 7777)]), \
+                 patch.object(cli, "_resolve_server_identity", return_value=(4242, "pid_record")), \
+                 patch.object(cli, "_launchctl_run", return_value=completed) as launchctl, \
                  patch.object(cli.time, "sleep"):
-                popen.return_value.pid = 7777
-                popen.return_value.poll.return_value = None
                 code = cli._spawn_detached_restart(args)
+                status_payload = (root / "restart-status.json").read_text(encoding="utf-8")
+                with (root / "restart-handoff.plist").open("rb") as handle:
+                    payload = __import__("plistlib").load(handle)
         self.assertEqual(0, code)
-        call_args, call_kwargs = popen.call_args
-        self.assertEqual(sys.executable, call_args[0][0])
-        self.assertIn("restart", call_args[0])
-        self.assertTrue(call_kwargs["start_new_session"])
-        self.assertEqual("1", call_kwargs["env"][cli.RESTART_HANDOFF_ENV])
+        launchctl.assert_called_once_with(
+            "bootstrap", f"gui/{os.getuid()}", str(root / "restart-handoff.plist"),
+            capture=True, timeout=5.0,
+        )
+        self.assertTrue(payload["RunAtLoad"])
+        self.assertFalse(payload["KeepAlive"])
+        self.assertIn("/usr/bin/env", payload["ProgramArguments"])
+        self.assertIn(f"{cli.RESTART_HANDOFF_ENV}=1", payload["ProgramArguments"])
+        self.assertIn(f"MAC_MCP_STATE_DIR={root}", payload["ProgramArguments"])
+        self.assertIn(f"PYTHONPATH={root}", payload["ProgramArguments"])
+        self.assertTrue(any(item.startswith(f"{cli.RESTART_REQUESTER_ENV}=") for item in payload["ProgramArguments"]))
+        self.assertIn('"state": "requested"', status_payload)
+
+    def test_restart_worker_waits_for_requester_exit_then_grace(self) -> None:
+        with patch.dict(os.environ, {cli.RESTART_REQUESTER_ENV: "4242"}, clear=False), \
+             patch.object(cli, "_pid_alive", side_effect=[True, False, False]), \
+             patch.object(cli.time, "sleep") as sleep:
+            self.assertTrue(cli._wait_for_restart_requester_exit())
+        sleep.assert_any_call(0.05)
+        sleep.assert_any_call(cli.RESTART_RESPONSE_GRACE_S)
+
+    def test_restart_handoff_job_parses_live_launchd_pid(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="gui/501/com.macmcp.restart-handoff = {\n\tstate = running\n\tpid = 7777\n}\n",
+            stderr="",
+        )
+        with patch.object(cli, "_launchctl_run", return_value=completed):
+            loaded, pid = cli._restart_handoff_job()
+        self.assertTrue(loaded)
+        self.assertEqual(7777, pid)
+
+    def test_active_launchd_handoff_is_idempotent(self) -> None:
+        args = argparse.Namespace(timeout=1.0)
+        with patch.object(cli, "_restart_handoff_job", return_value=(True, 7777)), \
+             patch.object(cli, "_pid_alive", return_value=True), \
+             patch.object(cli.subprocess, "run") as run:
+            code = cli._spawn_detached_restart(args)
+        self.assertEqual(0, code)
+        run.assert_not_called()
+
+    def test_stale_launchd_handoff_is_removed_before_submit(self) -> None:
+        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-restart-stale-") as td:
+            root = Path(td)
+            plist = root / "restart-handoff.plist"
+            plist.write_text("stale", encoding="utf-8")
+            with patch.object(cli, "STATE_DIR", root), \
+                 patch.object(cli, "_restart_handoff_job", return_value=(True, None)), \
+                 patch.object(cli, "_launchctl_run", return_value=completed) as launchctl:
+                self.assertTrue(cli._remove_stale_restart_handoff())
+                self.assertFalse(plist.exists())
+        launchctl.assert_called_once_with(
+            "bootout", cli._launchctl_target(cli.RESTART_HANDOFF_LABEL),
+            capture=True, timeout=3.0,
+        )
 
     def test_cloudflare_launchd_role_mismatch_is_not_booted_out(self) -> None:
         with patch.object(cli, "_launchctl_pid", return_value=7777),              patch.object(cli, "_cloudflare_launchd_identity", return_value=(None, "role_mismatch")),              patch.object(cli, "_bootout_cloudflare_launchd") as bootout:
