@@ -264,13 +264,68 @@ class SafeLifecycleTests(unittest.TestCase):
 
     def test_restart_aborts_when_safe_stop_fails(self) -> None:
         args = argparse.Namespace(timeout=1.0)
-        with patch.object(cli, "_load_env"), \
+        with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: ""}, clear=False), \
+             patch.object(cli, "_load_env"), \
+             patch.object(cli, "_restart_invoked_from_managed_server", return_value=False), \
              patch.object(cli, "stop", return_value=1) as stop, \
              patch.object(cli, "start") as start:
             code = cli.restart(args)
         self.assertEqual(1, code)
         stop.assert_called_once()
         start.assert_not_called()
+
+    def test_restart_handoffs_when_called_from_managed_server(self) -> None:
+        args = argparse.Namespace(timeout=1.0)
+        with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: ""}, clear=False), \
+             patch.object(cli, "_load_env"), \
+             patch.object(cli, "_restart_invoked_from_managed_server", return_value=True), \
+             patch.object(cli, "_spawn_detached_restart", return_value=0) as handoff, \
+             patch.object(cli, "stop") as stop, \
+             patch.object(cli, "start") as start:
+            code = cli.restart(args)
+        self.assertEqual(0, code)
+        handoff.assert_called_once_with(args)
+        stop.assert_not_called()
+        start.assert_not_called()
+
+    def test_detached_restart_child_runs_normal_restart(self) -> None:
+        args = argparse.Namespace(timeout=1.0)
+        with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: "1"}, clear=False), \
+             patch.object(cli, "_load_env"), \
+             patch.object(cli, "_restart_invoked_from_managed_server") as nested_check, \
+             patch.object(cli.time, "sleep") as sleep, \
+             patch.object(cli, "stop", return_value=0) as stop, \
+             patch.object(cli, "start", return_value=0) as start:
+            code = cli.restart(args)
+        self.assertEqual(0, code)
+        nested_check.assert_not_called()
+        sleep.assert_called_once_with(0.75)
+        stop.assert_called_once()
+        start.assert_called_once_with(args)
+
+    def test_detached_restart_helper_uses_new_session_and_marker(self) -> None:
+        args = argparse.Namespace(
+            host="127.0.0.1", port=8765, timeout=5.0, reload=False,
+            public_mode=None, public_url=None, cloudflare_tunnel=None,
+            cloudflare_token_file=None, cloudflared_bin=None, ngrok=False,
+            ngrok_domain=None, ngrok_bin=None,
+        )
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-restart-handoff-") as td:
+            root = Path(td)
+            with patch.object(cli, "STATE_DIR", root), \
+                 patch.object(cli, "LOG_FILE", root / "mac-mcp.log"), \
+                 patch.object(cli, "PROJECT_ROOT", root), \
+                 patch.object(cli.subprocess, "Popen") as popen, \
+                 patch.object(cli.time, "sleep"):
+                popen.return_value.pid = 7777
+                popen.return_value.poll.return_value = None
+                code = cli._spawn_detached_restart(args)
+        self.assertEqual(0, code)
+        call_args, call_kwargs = popen.call_args
+        self.assertEqual(sys.executable, call_args[0][0])
+        self.assertIn("restart", call_args[0])
+        self.assertTrue(call_kwargs["start_new_session"])
+        self.assertEqual("1", call_kwargs["env"][cli.RESTART_HANDOFF_ENV])
 
     def test_cloudflare_launchd_role_mismatch_is_not_booted_out(self) -> None:
         with patch.object(cli, "_launchctl_pid", return_value=7777),              patch.object(cli, "_cloudflare_launchd_identity", return_value=(None, "role_mismatch")),              patch.object(cli, "_bootout_cloudflare_launchd") as bootout:

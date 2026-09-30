@@ -56,6 +56,7 @@ LOG_FILE = STATE_DIR / "mac-mcp.log"
 NGROK_LOG_FILE = STATE_DIR / "ngrok.log"
 CLOUDFLARE_LOG_FILE = STATE_DIR / "cloudflared.log"
 CLOUDFLARE_LAUNCHD_LABEL = os.getenv("MAC_MCP_CLOUDFLARE_LAUNCHD_LABEL", "mac-mcp-cloudflared")
+RESTART_HANDOFF_ENV = "MAC_MCP_RESTART_HANDOFF_CHILD"
 
 
 def _load_env() -> None:
@@ -1105,8 +1106,109 @@ def status(args: argparse.Namespace) -> int:
     return 0 if server_running else 1
 
 
+def _parent_pid(pid: int) -> int | None:
+    try:
+        proc = subprocess.run(
+            ["/bin/ps", "-p", str(int(pid)), "-o", "ppid="],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        parent = int((proc.stdout or "").strip())
+    except ValueError:
+        return None
+    return parent if parent > 0 else None
+
+
+def _is_descendant_process(pid: int, ancestor_pid: int, *, max_depth: int = 16) -> bool:
+    current = int(pid)
+    ancestor = int(ancestor_pid)
+    for _ in range(max(1, int(max_depth))):
+        if current == ancestor:
+            return True
+        parent = _parent_pid(current)
+        if parent is None or parent <= 1 or parent == current:
+            return False
+        current = parent
+    return current == ancestor
+
+
+def _restart_invoked_from_managed_server() -> bool:
+    server_pid, _source = _resolve_server_identity(_default_port(), adopt_listener=False)
+    return bool(server_pid and _is_descendant_process(os.getpid(), server_pid))
+
+
+def _restart_handoff_command(args: argparse.Namespace) -> list[str]:
+    command = [
+        sys.executable, "-m", "mcp_server.cli", "restart",
+        "--host", str(args.host),
+        "--port", str(int(args.port)),
+        "--timeout", str(float(args.timeout)),
+    ]
+    if getattr(args, "reload", False):
+        command.append("--reload")
+    for flag, attr in (
+        ("--public-mode", "public_mode"),
+        ("--public-url", "public_url"),
+        ("--cloudflare-tunnel", "cloudflare_tunnel"),
+        ("--cloudflare-token-file", "cloudflare_token_file"),
+        ("--cloudflared-bin", "cloudflared_bin"),
+        ("--ngrok-domain", "ngrok_domain"),
+        ("--ngrok-bin", "ngrok_bin"),
+    ):
+        value = getattr(args, attr, None)
+        if value:
+            command.extend([flag, str(value)])
+    if getattr(args, "ngrok", False):
+        command.append("--ngrok")
+    return command
+
+
+def _spawn_detached_restart(args: argparse.Namespace) -> int:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env[RESTART_HANDOFF_ENV] = "1"
+    log = LOG_FILE.open("a", encoding="utf-8")
+    try:
+        proc = subprocess.Popen(
+            _restart_handoff_command(args),
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env=env,
+            cwd=str(PROJECT_ROOT),
+            start_new_session=True,
+        )
+    except OSError as exc:
+        print(f"Could not hand off mac-mcp restart: {exc}")
+        return 1
+    finally:
+        log.close()
+    time.sleep(0.1)
+    if proc.poll() is not None:
+        print(f"Detached mac-mcp restart helper exited early. See log: {LOG_FILE}")
+        return proc.returncode or 1
+    print(f"mac-mcp restart handed off safely (helper pid {proc.pid}).")
+    return 0
+
+
 def restart(args: argparse.Namespace) -> int:
     _load_env()
+    detached_child = os.getenv(RESTART_HANDOFF_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+    if not detached_child and _restart_invoked_from_managed_server():
+        return _spawn_detached_restart(args)
+    if detached_child:
+        # Let the parent tool call return before this helper tears down the server
+        # that carried the request. The helper is in its own process session, so
+        # cancellation cleanup from run_command cannot terminate it.
+        time.sleep(0.75)
     stop_args = argparse.Namespace(timeout=args.timeout, force=True)
     stop_code = stop(stop_args)
     if stop_code != 0:
