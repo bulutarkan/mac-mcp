@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -594,6 +595,46 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertEqual("recovered", state["status"])
         self.assertTrue(state["recovered_after_crash"])
         self.assertEqual("passed", state["recovery"]["health"]["status"])
+
+    def test_sigkill_after_runtime_sync_is_recovered_from_durable_journal(self):
+        _, repo, runtime, old, target = self.make_fixture()
+        project_root = Path(update_helper_module.__file__).resolve().parents[1]
+        script = (
+            "import os, signal\n"
+            "import mcp_server.update_helper as u\n"
+            "def crash(stage):\n"
+            "    if stage == 'runtime_synced':\n"
+            "        os.kill(os.getpid(), signal.SIGKILL)\n"
+            "u._test_update_checkpoint_hook = crash\n"
+            f"u.apply_update({str(repo)!r}, {str(runtime)!r}, skip_restart=True, skip_deps=True)\n"
+        )
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(project_root)
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=str(project_root),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(-signal.SIGKILL, proc.returncode)
+        self.assertEqual(target, run("git", "rev-parse", "HEAD", cwd=repo))
+        self.assertIn("VALUE = 'new'", (runtime / "mcp_server/main.py").read_text(encoding="utf-8"))
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual("runtime_synced", state["status"])
+
+        with patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health"), \
+                patch("mcp_server.update_helper._health_ok", return_value=True):
+            recovered = update_helper_module.recover_incomplete_update(repo, runtime)
+
+        self.assertIsNotNone(recovered)
+        self.assertEqual(old, run("git", "rev-parse", "HEAD", cwd=repo))
+        self.assertEqual("VALUE = 'old'\n", (runtime / "mcp_server/main.py").read_text(encoding="utf-8"))
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual("recovered", state["status"])
+        self.assertTrue(state["recovered_after_crash"])
 
     def test_crash_during_restart_recovers_and_restarts_previous_runtime(self):
         _, repo, runtime, old, target = self.make_fixture()

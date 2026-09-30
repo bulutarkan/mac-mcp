@@ -47,8 +47,42 @@ def read_deployed_commit(runtime: Path) -> str | None:
     return None
 
 
+def _atomic_text_write(path: Path, text: str) -> None:
+    root = path.parent
+    root.mkdir(parents=True, exist_ok=True)
+    fd = -1
+    tmp: Path | None = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(root), text=True)
+        tmp = Path(tmp_name)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+        try:
+            directory_fd = os.open(root, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+
+
 def write_deployed_commit(commit: str) -> None:
-    deployed_commit_path().write_text(commit + "\n", encoding="utf-8")
+    _atomic_text_write(deployed_commit_path(), commit + "\n")
 
 
 def read_update_state() -> dict[str, Any] | None:
@@ -63,41 +97,10 @@ def read_update_state() -> dict[str, Any] | None:
 
 
 def write_update_state(payload: dict[str, Any]) -> None:
-    path = update_state_path()
-    root = path.parent
-    root.mkdir(parents=True, exist_ok=True)
-    fd = -1
-    tmp: Path | None = None
     try:
-        fd, tmp_name = tempfile.mkstemp(prefix=".state.", suffix=".tmp", dir=str(root), text=True)
-        tmp = Path(tmp_name)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            fd = -1
-            json.dump(payload, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, path)
-        os.chmod(path, 0o600)
-        try:
-            directory_fd = os.open(root, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except OSError:
-            pass
+        _atomic_text_write(update_state_path(), json.dumps(payload, indent=2, sort_keys=True) + "\n")
     except Exception:
         pass
-    finally:
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        if tmp is not None:
-            tmp.unlink(missing_ok=True)
 
 
 def migrate_completed_legacy_update(runtime: Path) -> bool:
