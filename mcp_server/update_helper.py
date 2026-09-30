@@ -75,6 +75,15 @@ class UpdateInfo:
     unverified_ahead: int = 0
 
 
+@dataclass
+class DependencyEnvironmentTransaction:
+    runtime: Path
+    staging_root: Path
+    staged_env: Path
+    previous_backup: Path
+    marker_token: str
+
+
 def _run(cmd: list[str], cwd: Path | None = None, check: bool = True, timeout: int = 120) -> subprocess.CompletedProcess[str]:
     proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None, text=True, capture_output=True, timeout=timeout)
     if check and proc.returncode != 0:
@@ -824,6 +833,140 @@ def _deps_changed(repo: Path, deployed: str, target: str) -> bool:
     return bool(changed.strip())
 
 
+def _remove_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink(missing_ok=True)
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def _clone_dependency_environment(source: Path, destination: Path) -> None:
+    if not source.exists():
+        raise UpdateError(f"Runtime virtual environment was not found: {source}")
+    source = source.resolve()
+    if not source.is_dir():
+        raise UpdateError(f"Runtime virtual environment is not a directory: {source}")
+    clone = _run(["/bin/cp", "-cR", str(source), str(destination)], check=False, timeout=180)
+    if clone.returncode == 0:
+        return
+    _remove_path(destination)
+    try:
+        shutil.copytree(source, destination, symlinks=True)
+    except Exception as exc:
+        detail = (clone.stderr or clone.stdout or "APFS clone failed").strip()
+        raise UpdateError(f"Could not stage the dependency environment ({detail}): {exc}") from exc
+
+
+def _prepare_dependency_environment(runtime: Path, requirements: Path, target_commit: str) -> Path:
+    canonical = runtime / ".venv"
+    if not (canonical / "bin" / "python").exists():
+        raise UpdateError(f"Runtime Python was not found: {canonical / 'bin' / 'python'}")
+    if not requirements.is_file():
+        raise UpdateError(f"Dependency requirements were not found: {requirements}")
+
+    staging_root = Path(tempfile.mkdtemp(prefix=f".{runtime.name}.venv-update-", dir=str(runtime.parent)))
+    staged = staging_root / "candidate"
+    try:
+        _clone_dependency_environment(canonical, staged)
+        staged_python = staged / "bin" / "python"
+        if not staged_python.exists():
+            raise UpdateError("Staged virtual environment is incomplete.")
+        _run([str(staged_python), "-m", "pip", "install", "-r", str(requirements)], timeout=300)
+        return staged
+    except Exception:
+        shutil.rmtree(staging_root, ignore_errors=True)
+        raise
+
+
+def _activate_dependency_environment(runtime: Path, staged: Path) -> DependencyEnvironmentTransaction:
+    canonical = runtime / ".venv"
+    if not staged.is_dir() or not (staged / "bin" / "python").exists():
+        raise UpdateError("Staged dependency environment is incomplete.")
+    staging_root = staged.parent
+    previous_backup = staging_root / "previous"
+    marker_token = f"{os.getpid()}-{time.time_ns()}"
+    marker = staged / ".mac-mcp-update-env"
+    marker.write_text(marker_token + "\n", encoding="utf-8")
+
+    previous_moved = False
+    try:
+        os.replace(canonical, previous_backup)
+        previous_moved = True
+        os.replace(staged, canonical)
+    except Exception:
+        if previous_moved:
+            if canonical.exists() or canonical.is_symlink():
+                _remove_path(canonical)
+            if previous_backup.exists() or previous_backup.is_symlink():
+                os.replace(previous_backup, canonical)
+        shutil.rmtree(staging_root, ignore_errors=True)
+        raise
+
+    active_marker = canonical / ".mac-mcp-update-env"
+    if not active_marker.is_file() or active_marker.read_text(encoding="utf-8").strip() != marker_token:
+        if canonical.exists() or canonical.is_symlink():
+            _remove_path(canonical)
+        if previous_backup.exists() or previous_backup.is_symlink():
+            os.replace(previous_backup, canonical)
+        shutil.rmtree(staging_root, ignore_errors=True)
+        raise UpdateError("Dependency environment activation verification failed.")
+
+    return DependencyEnvironmentTransaction(
+        runtime=runtime,
+        staging_root=staging_root,
+        staged_env=canonical,
+        previous_backup=previous_backup,
+        marker_token=marker_token,
+    )
+
+
+def _dependency_env_matches(transaction: DependencyEnvironmentTransaction) -> bool:
+    marker = transaction.runtime / ".venv" / ".mac-mcp-update-env"
+    try:
+        return marker.is_file() and marker.read_text(encoding="utf-8").strip() == transaction.marker_token
+    except OSError:
+        return False
+
+
+def _rollback_dependency_environment(transaction: DependencyEnvironmentTransaction) -> dict[str, str]:
+    canonical = transaction.runtime / ".venv"
+    if not _dependency_env_matches(transaction):
+        return {
+            "status": "failed",
+            "reason": "Active virtual environment changed after updater activation; refusing to overwrite it.",
+        }
+    try:
+        failed_env = transaction.staging_root / "failed-candidate"
+        os.replace(canonical, failed_env)
+        os.replace(transaction.previous_backup, canonical)
+        _remove_path(failed_env)
+        shutil.rmtree(transaction.staging_root, ignore_errors=True)
+        if not (canonical / "bin" / "python").exists():
+            raise UpdateError("Restored runtime virtual environment is incomplete.")
+        return {"status": "restored", "reason": "Previous runtime virtual environment was restored."}
+    except Exception as exc:
+        return {"status": "failed", "reason": str(exc)}
+
+
+def _commit_dependency_environment(transaction: DependencyEnvironmentTransaction) -> dict[str, str]:
+    canonical = transaction.runtime / ".venv"
+    if not _dependency_env_matches(transaction):
+        raise UpdateError("Active dependency environment changed before update commit.")
+    (canonical / ".mac-mcp-update-env").unlink(missing_ok=True)
+    cleanup_warning = None
+    try:
+        _remove_path(transaction.previous_backup)
+        shutil.rmtree(transaction.staging_root, ignore_errors=True)
+    except Exception as exc:
+        cleanup_warning = str(exc)
+    if cleanup_warning:
+        return {
+            "status": "activated_cleanup_warning",
+            "reason": f"New dependency environment is active, but previous environment cleanup failed: {cleanup_warning}",
+        }
+    return {"status": "activated", "reason": "Staged dependency environment passed validation and is now active."}
+
+
 def _cleanup_staging_dir(requested_dir: str | None) -> None:
     """Remove only the explicitly authorized, detached updater staging directory."""
     if not requested_dir:
@@ -1016,6 +1159,12 @@ def apply_update(
     runtime_sync_attempted = False
     dependency_install_attempted = False
     dependencies_updated = False
+    dependency_env_transaction: DependencyEnvironmentTransaction | None = None
+    dependency_commit: dict[str, str] | None = None
+    dependency_rollback: dict[str, str] = {
+        "status": "skipped",
+        "reason": "Dependency environment was not activated.",
+    }
     repo_rollback: dict[str, str] = {
         "status": "skipped",
         "reason": "Repository fast-forward was not attempted.",
@@ -1083,14 +1232,13 @@ def apply_update(
             print("[mac-mcp update] Refreshed installed Mac MCP menu bar app.", flush=True)
 
         if deps_changed and not skip_deps:
-            python = runtime_path / ".venv" / "bin" / "python"
             requirements = runtime_path / "mcp_server" / "requirements.txt"
-            if not python.exists():
-                raise UpdateError(f"Runtime Python was not found: {python}")
-            print("[mac-mcp update] Installing updated dependencies...", flush=True)
+            print("[mac-mcp update] Preparing transactional dependency environment...", flush=True)
             dependency_install_attempted = True
-            _run([str(python), "-m", "pip", "install", "-r", str(requirements)], timeout=300)
+            staged_env = _prepare_dependency_environment(runtime_path, requirements, info.target_commit)
+            dependency_env_transaction = _activate_dependency_environment(runtime_path, staged_env)
             dependencies_updated = True
+            print("[mac-mcp update] Transactional dependency environment activated.", flush=True)
         elif deps_changed:
             print("[mac-mcp update] Dependency installation skipped (test mode).", flush=True)
         else:
@@ -1148,6 +1296,15 @@ def apply_update(
                 )
 
         _write_state_commit(runtime_path, info.target_commit)
+
+        if dependency_env_transaction is not None:
+            dependency_commit = _commit_dependency_environment(dependency_env_transaction)
+            print(
+                f"[mac-mcp update] Dependency environment {dependency_commit['status']}: "
+                f"{dependency_commit['reason']}",
+                flush=True,
+            )
+
         result = {
             "ok": True, "updated": True,
             "from_commit": info.deployed_commit, "to_commit": info.target_commit,
@@ -1158,6 +1315,7 @@ def apply_update(
             "release_version": verified_release.version,
             "release_payload_sha256": verified_release.payload_sha256,
             "release_signer_fingerprint": verified_release.signer_fingerprint,
+            "dependency_environment": dependency_commit,
             "health_gate": (
                 {
                     "status": health_gate_report.get("status"),
@@ -1180,6 +1338,13 @@ def apply_update(
             "from_commit": info.deployed_commit,
             "to_commit": info.target_commit,
         })
+        if dependency_env_transaction is not None:
+            dependency_rollback = _rollback_dependency_environment(dependency_env_transaction)
+            print(
+                f"[mac-mcp update] Dependency rollback {dependency_rollback['status']}: "
+                f"{dependency_rollback['reason']}",
+                flush=True,
+            )
         if merge_completed and post_merge_head is None:
             post_merge_head = info.target_commit
             repo_head_moved = info.target_commit != pre_update_head
@@ -1227,14 +1392,25 @@ def apply_update(
                     except Exception as menu_exc:
                         print(f"[mac-mcp update] WARNING: menu app rollback refresh failed: {menu_exc}", flush=True)
                     if not skip_restart:
-                        try:
-                            rollback_health = _restart_service(runtime_path, launchd_label)
-                            if _health_ok(rollback_health):
-                                print("[mac-mcp update] Rollback health check passed.", flush=True)
-                            else:
-                                print("[mac-mcp update] WARNING: rollback health check failed.", flush=True)
-                        except Exception as restart_exc:
-                            print(f"[mac-mcp update] WARNING: rollback restart failed: {restart_exc}", flush=True)
+                        dependency_restore_safe = (
+                            dependency_env_transaction is None
+                            or dependency_rollback.get("status") == "restored"
+                        )
+                        if dependency_restore_safe:
+                            try:
+                                rollback_health = _restart_service(runtime_path, launchd_label)
+                                if _health_ok(rollback_health):
+                                    print("[mac-mcp update] Rollback health check passed.", flush=True)
+                                else:
+                                    print("[mac-mcp update] WARNING: rollback health check failed.", flush=True)
+                            except Exception as restart_exc:
+                                print(f"[mac-mcp update] WARNING: rollback restart failed: {restart_exc}", flush=True)
+                        else:
+                            print(
+                                "[mac-mcp update] WARNING: rollback restart skipped because the previous "
+                                "dependency environment was not restored safely.",
+                                flush=True,
+                            )
                     runtime_rollback = {
                         "status": "restored",
                         "reason": "Previous runtime files and deployed marker were restored.",
@@ -1250,13 +1426,11 @@ def apply_update(
             "error": message,
             "repo_rollback": repo_rollback,
             "runtime_rollback": runtime_rollback,
+            "dependency_rollback": dependency_rollback,
             "repo_head_moved": repo_head_moved,
         }
         if dependency_install_attempted:
-            failed_state["dependency_note"] = (
-                "Dependency rollback was not attempted; the runtime environment may contain residual "
-                "dependency changes."
-            )
+            failed_state["dependency_install_attempted"] = True
         if dependencies_updated:
             failed_state["dependencies_updated"] = True
         if pre_update_head is not None:

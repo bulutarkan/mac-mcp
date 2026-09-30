@@ -516,7 +516,7 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertIn("mac-mcp update failed", failed.stderr)
         self.assertFalse(staging.exists())
 
-    def make_fixture(self, conflict: bool = False, delete_old: bool = False):
+    def make_fixture(self, conflict: bool = False, delete_old: bool = False, deps_change: bool = False):
         root = Path(tempfile.mkdtemp(prefix="mac-mcp-update-test-"))
         self.addCleanup(shutil.rmtree, root, True)
         source = root / "source"
@@ -540,6 +540,8 @@ class UpdateHelperTests(unittest.TestCase):
         run("git", "clone", "-q", "--bare", str(source), str(remote))
         (source / "mcp_server/main.py").write_text("VALUE = 'new'\nNEW_FEATURE = True\n", encoding="utf-8")
         (source / "mcp_server/new_tool.py").write_text("ENABLED = True\n", encoding="utf-8")
+        if deps_change:
+            (source / "mcp_server/requirements.txt").write_text("# dependency change\n", encoding="utf-8")
         if delete_old:
             (source / "mcp_server/security.py").unlink()
         run("git", "add", ".", cwd=source)
@@ -628,6 +630,80 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertEqual(target, state["repo_post_merge_commit"])
         self.assertEqual(2, restart.call_count)
         self.assertEqual("restored", state["runtime_rollback"]["status"])
+
+    def test_dependency_activation_failure_preserves_existing_environment(self):
+        root = Path(tempfile.mkdtemp(prefix="mac-mcp-dependency-activate-failure-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        runtime = root / "runtime"
+        canonical = runtime / ".venv"
+        (canonical / "bin").mkdir(parents=True)
+        (canonical / "bin/python").write_text("python\n", encoding="utf-8")
+        (canonical / "state.txt").write_text("old-env\n", encoding="utf-8")
+        staging_root = root / ".runtime.venv-update-test"
+        staged = staging_root / "candidate"
+        (staged / "bin").mkdir(parents=True)
+        (staged / "bin/python").write_text("python\n", encoding="utf-8")
+        (staged / "state.txt").write_text("new-env\n", encoding="utf-8")
+
+        with patch.object(update_helper_module.os, "replace", side_effect=OSError("rename blocked")):
+            with self.assertRaisesRegex(OSError, "rename blocked"):
+                update_helper_module._activate_dependency_environment(runtime, staged)
+
+        self.assertEqual("old-env\n", (canonical / "state.txt").read_text(encoding="utf-8"))
+        self.assertFalse(staging_root.exists())
+
+    def test_dependency_health_failure_restores_previous_environment(self):
+        _, repo, runtime, old, _target = self.make_fixture(deps_change=True)
+        venv = runtime / ".venv"
+        (venv / "bin").mkdir(parents=True)
+        (venv / "bin/python").write_text("python\n", encoding="utf-8")
+        (venv / "state.txt").write_text("old-env\n", encoding="utf-8")
+
+        def fake_prepare(runtime_path: Path, _requirements: Path, _target_commit: str) -> Path:
+            staging_root = Path(tempfile.mkdtemp(prefix=f".{runtime_path.name}.venv-update-", dir=str(runtime_path.parent)))
+            staged = staging_root / "candidate"
+            shutil.copytree(runtime_path / ".venv", staged)
+            (staged / "state.txt").write_text("new-env\n", encoding="utf-8")
+            return staged
+
+        with patch("mcp_server.update_helper._prepare_dependency_environment", side_effect=fake_prepare), \
+                patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health"), \
+                patch("mcp_server.update_helper._health_ok", return_value=False):
+            with self.assertRaisesRegex(UpdateError, "Health check failed after restart"):
+                apply_update(repo, runtime)
+
+        self.assertEqual(old, run("git", "rev-parse", "HEAD", cwd=repo))
+        self.assertEqual("old-env\n", (runtime / ".venv/state.txt").read_text(encoding="utf-8"))
+        self.assertFalse((runtime / ".venv/.mac-mcp-update-env").exists())
+        self.assertEqual([], list(runtime.parent.glob(f".{runtime.name}.venv-update-*")))
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual("restored", state["dependency_rollback"]["status"])
+        self.assertTrue(state["dependency_install_attempted"])
+
+    def test_dependency_health_success_commits_staged_environment(self):
+        _, repo, runtime, _old, target = self.make_fixture(deps_change=True)
+        venv = runtime / ".venv"
+        (venv / "bin").mkdir(parents=True)
+        (venv / "bin/python").write_text("python\n", encoding="utf-8")
+        (venv / "state.txt").write_text("old-env\n", encoding="utf-8")
+
+        def fake_prepare(runtime_path: Path, _requirements: Path, _target_commit: str) -> Path:
+            staging_root = Path(tempfile.mkdtemp(prefix=f".{runtime_path.name}.venv-update-", dir=str(runtime_path.parent)))
+            staged = staging_root / "candidate"
+            shutil.copytree(runtime_path / ".venv", staged)
+            (staged / "state.txt").write_text("new-env\n", encoding="utf-8")
+            return staged
+
+        with patch("mcp_server.update_helper._prepare_dependency_environment", side_effect=fake_prepare), \
+                patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health"), \
+                patch("mcp_server.update_helper._health_ok", return_value=True):
+            result = apply_update(repo, runtime)
+
+        self.assertEqual(target, run("git", "rev-parse", "HEAD", cwd=repo))
+        self.assertEqual("new-env\n", (runtime / ".venv/state.txt").read_text(encoding="utf-8"))
+        self.assertFalse((runtime / ".venv/.mac-mcp-update-env").exists())
+        self.assertEqual([], list(runtime.parent.glob(f".{runtime.name}.venv-update-*")))
+        self.assertEqual("activated", result["dependency_environment"]["status"])
 
     def test_post_update_gate_success_is_required_and_recorded(self):
         _, repo, runtime, _old, target = self.make_fixture()
