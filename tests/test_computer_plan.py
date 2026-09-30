@@ -6,7 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from mcp_server.computer_plan import ComputerPlanError, execute_computer_plan
+from mcp_server.agent_admission import release as admission_release, request_resource_lease
+from mcp_server.computer_plan import ComputerPlanError, derive_computer_plan_resources, execute_computer_plan
 from mcp_server.observability import ObservedFastMCP, TelemetryManager
 from mcp_server.policy import PolicyContext, resolve_risk
 
@@ -121,6 +122,70 @@ class ComputerPlanExecutorTests(unittest.TestCase):
                     "arguments": {"actions": [{"type": "wait"} for _ in range(25)]},
                 }
             ]))
+
+    def test_clipboard_backed_native_actions_preclaim_global_clipboard(self) -> None:
+        paste_claims = derive_computer_plan_resources([
+            {"id": "paste", "tool": "mac_act", "arguments": {
+                "app": "TextEdit",
+                "actions": [{"type": "paste", "element_id": "w1/1", "text": "hello"}],
+            }},
+        ])
+        type_claims = derive_computer_plan_resources([
+            {"id": "type", "tool": "mac_act", "arguments": {
+                "app": "TextEdit",
+                "actions": [{"type": "type", "element_id": "w1/1", "text": "hello"}],
+            }},
+        ])
+        key_claims = derive_computer_plan_resources([
+            {"id": "key", "tool": "mac_act", "arguments": {
+                "app": "TextEdit",
+                "actions": [{"type": "key", "key": "return"}],
+            }},
+        ])
+        clipboard = {"kind": "clipboard", "id": "system", "mode": "write"}
+        self.assertIn(clipboard, paste_claims)
+        self.assertIn(clipboard, type_claims)
+        self.assertNotIn(clipboard, key_claims)
+
+    def test_clipboard_resource_preflight_blocks_conflicting_plan_before_action(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                holder = request_resource_lease(
+                    root,
+                    owner_id="holder",
+                    resources=[{"kind": "clipboard", "id": "system", "mode": "write"}],
+                    ttl_s=30,
+                )
+                calls: list[str] = []
+
+                async def caller(tool: str, arguments: dict):
+                    calls.append(tool)
+                    return {"ok": True}
+
+                steps = [{
+                    "id": "paste",
+                    "tool": "mac_act",
+                    "arguments": {
+                        "app": "TextEdit",
+                        "actions": [{"type": "paste", "element_id": "w1/1", "text": "hello"}],
+                    },
+                }]
+                try:
+                    result = await execute_computer_plan(
+                        caller,
+                        steps=steps,
+                        resources=derive_computer_plan_resources(steps),
+                        admission_root=root,
+                    )
+                finally:
+                    admission_release(root, lease_id=str(holder.get("lease_id") or ""))
+
+                self.assertFalse(result["ok"])
+                self.assertEqual("RESOURCE_BUSY", result["reason_code"])
+                self.assertEqual([], calls)
+
+        asyncio.run(run())
 
     def test_future_reference_is_rejected_before_any_side_effect(self) -> None:
         async def run() -> None:

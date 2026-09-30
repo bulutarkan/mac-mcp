@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from .security import Settings, truncate
+from .clipboard_guard import ClipboardBusyError, clipboard_guard
 from .tool_cancellation import (
     ToolCancelledError, cancellation_checkpoint, register_cancellation_cleanup,
     unregister_cancellation_cleanup,
@@ -100,20 +101,26 @@ def send_notification(settings: Settings, title: str, message: str, sound: str =
 
 
 def clipboard_get(settings: Settings) -> Dict[str, Any]:
-    """Read the current clipboard contents."""
+    """Read the current clipboard contents without overlapping temporary paste transactions."""
     try:
-        proc = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5)
+        with clipboard_guard():
+            proc = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5)
         content, _ = truncate(proc.stdout, 50_000)
         return {"ok": True, "content": content, "length": len(proc.stdout)}
+    except ClipboardBusyError:
+        return {"ok": False, "error": "clipboard_busy", "retryable": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
 def clipboard_set(settings: Settings, content: str) -> Dict[str, Any]:
-    """Write text to the clipboard."""
+    """Write text to the clipboard as a direct mutation, never as temporary paste state."""
     try:
-        proc = subprocess.run(["pbcopy"], input=content, capture_output=True, text=True, timeout=5)
+        with clipboard_guard():
+            proc = subprocess.run(["pbcopy"], input=content, capture_output=True, text=True, timeout=5)
         return {"ok": proc.returncode == 0, "chars_copied": len(content)}
+    except ClipboardBusyError:
+        return {"ok": False, "error": "clipboard_busy", "retryable": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

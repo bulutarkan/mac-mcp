@@ -1092,7 +1092,9 @@ def create_app():
         )
 
     def _computer_plan_resources(steps: List[Dict[str, Any]], resources: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
-        raw = resources if resources is not None else derive_computer_plan_resources(steps)
+        # Model-supplied resources may add constraints, but cannot remove static
+        # safety claims derived from the actual plan steps (for example clipboard).
+        raw = [*derive_computer_plan_resources(steps), *(resources or [])]
         try:
             normalized = normalize_admission_claims(raw)
         except AdmissionError as exc:

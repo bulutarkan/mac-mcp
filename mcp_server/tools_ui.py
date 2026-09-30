@@ -41,6 +41,7 @@ from .native_targets import (
 )
 from .security import Settings, truncate
 from .computer_use_perf import record_computer_use_sample
+from .clipboard_guard import ClipboardBusyError, clipboard_guard
 from .tool_cancellation import (
     ToolCancelledError, cancellable_sleep, cancellation_checkpoint, cancellation_cleanup_scope,
     register_cancellation_cleanup, unregister_cancellation_cleanup,
@@ -2683,22 +2684,33 @@ def _paste_text(
     focused, focus_error = _focus_element(app, element_id, deadline, app_pid, activate_target)
     if not focused:
         return False, focus_error or "Could not focus target element"
-    previous, previous_error = _get_clipboard(deadline)
-    if previous is None:
-        return False, previous_error or "Could not save the current clipboard"
-    copied, copy_error = _set_clipboard(text, deadline)
-    if not copied:
-        return False, copy_error
+
     try:
-        ok, _, error = _run_osascript(
-            _process_script(app, 'keystroke "v" using {command down}', activate=activate_target, app_pid=app_pid),
-            timeout_s=_operation_timeout(deadline, 30),
-        )
-        return ok, error or "paste completed"
-    finally:
-        # Restoring the user's clipboard is cleanup and must not be blocked by the
-        # action budget that was consumed by the paste itself.
-        _set_clipboard(previous)
+        with clipboard_guard(deadline=deadline):
+            previous, previous_error = _get_clipboard(deadline)
+            if previous is None:
+                return False, previous_error or "Could not save the current clipboard"
+
+            try:
+                copied, copy_error = _set_clipboard(text, deadline)
+                if not copied:
+                    return False, copy_error
+                ok, _, error = _run_osascript(
+                    _process_script(app, 'keystroke "v" using {command down}', activate=activate_target, app_pid=app_pid),
+                    timeout_s=_operation_timeout(deadline, 30),
+                )
+                return ok, error or "paste completed"
+            finally:
+                # Cleanup is cancellation-safe and intentionally outside the action
+                # deadline. Restore only while we still own the temporary payload;
+                # if the user or another process changed the clipboard meanwhile,
+                # preserve that newer value instead of overwriting it.
+                with cancellation_cleanup_scope():
+                    current, current_error = _get_clipboard()
+                    if current_error is None and current == text:
+                        _set_clipboard(previous)
+    except ClipboardBusyError:
+        return False, "system clipboard is busy; retry the paste"
 
 
 def _type_text(

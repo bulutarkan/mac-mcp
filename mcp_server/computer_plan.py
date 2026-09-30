@@ -30,6 +30,7 @@ _READ_ONLY_RECOVERY_TOOLS = frozenset({
 _MUTATING_TOOLS = frozenset({
     "open_app", "mac_act", "mac_app", "browser_close_tab", "browser_act", "browser_do",
 })
+_CLIPBOARD_BACKED_NATIVE_ACTIONS = frozenset({"type", "type_text", "paste"})
 _MAX_STEPS = 8
 _MAX_EXPANDED_STEPS = 16
 _MAX_ACTION_UNITS = 24
@@ -1217,6 +1218,16 @@ def derive_computer_plan_resources(steps: Sequence[Mapping[str, Any]]) -> list[d
                     add("native_app", app_handle, native_mode)
                 elif isinstance(app, str):
                     add("native_app", app, native_mode)
+            if tool == "mac_act":
+                actions = args.get("actions")
+                if isinstance(actions, list):
+                    for action in actions:
+                        if not isinstance(action, Mapping):
+                            continue
+                        action_type = str(action.get("type") or "").strip().lower().replace("-", "_")
+                        if action_type in _CLIPBOARD_BACKED_NATIVE_ACTIONS:
+                            add("clipboard", "system", "write")
+                            break
             fallback = raw.get("fallback")
             if isinstance(fallback, Mapping):
                 walk([fallback])
