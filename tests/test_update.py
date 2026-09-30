@@ -613,7 +613,7 @@ class UpdateHelperTests(unittest.TestCase):
     def test_health_failure_rolls_back_split_repo_runtime_and_marker(self):
         _, repo, runtime, old, target = self.make_fixture()
         with patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health") as restart, \
-                patch("mcp_server.update_helper._health_ok", return_value=False):
+                patch("mcp_server.update_helper._health_ok", side_effect=[False, True]):
             with self.assertRaisesRegex(UpdateError, "Health check failed after restart"):
                 apply_update(repo, runtime, skip_deps=True)
 
@@ -630,6 +630,7 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertEqual(target, state["repo_post_merge_commit"])
         self.assertEqual(2, restart.call_count)
         self.assertEqual("restored", state["runtime_rollback"]["status"])
+        self.assertEqual("passed", state["rollback_health"]["status"])
 
     def test_dependency_activation_failure_preserves_existing_environment(self):
         root = Path(tempfile.mkdtemp(prefix="mac-mcp-dependency-activate-failure-"))
@@ -750,7 +751,8 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertEqual(old, (self.update_dir / "deployed-commit").read_text(encoding="utf-8").strip())
         state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
         self.assertEqual("restored", state["repo_rollback"]["status"])
-        self.assertEqual("restored", state["runtime_rollback"]["status"])
+        self.assertEqual("restore_unverified", state["runtime_rollback"]["status"])
+        self.assertEqual("failed", state["rollback_health"]["status"])
         self.assertEqual(2, restart.call_count)
 
     def test_health_failure_rolls_back_single_checkout_and_keeps_it_clean(self):
@@ -768,7 +770,8 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertEqual("", run("git", "status", "--porcelain", cwd=single))
         state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
         self.assertEqual("restored", state["repo_rollback"]["status"])
-        self.assertEqual("restored", state["runtime_rollback"]["status"])
+        self.assertEqual("restore_unverified", state["runtime_rollback"]["status"])
+        self.assertEqual("failed", state["rollback_health"]["status"])
 
     # ASSURANCE: SEC-UPD-001
     def test_health_failure_restores_pre_update_repo_head_not_deployed_marker(self):
@@ -807,7 +810,8 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertFalse((runtime / "mcp_server/new_tool.py").exists())
         state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
         self.assertEqual("restored", state["repo_rollback"]["status"])
-        self.assertEqual("restored", state["runtime_rollback"]["status"])
+        self.assertEqual("restore_unverified", state["runtime_rollback"]["status"])
+        self.assertEqual("failed", state["rollback_health"]["status"])
 
     def test_health_failure_does_not_reset_when_repo_head_was_already_target(self):
         root, repo, runtime, old, target = self.make_fixture()

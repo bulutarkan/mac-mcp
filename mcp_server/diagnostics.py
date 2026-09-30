@@ -41,7 +41,7 @@ from .policy import (
 )
 from .security import dashboard_token_path, load_settings
 from .version import __version__
-from .update_state import read_deployed_commit
+from .update_state import read_deployed_commit, update_state_path
 
 SCHEMA_VERSION = 1
 PASS = "pass"
@@ -244,6 +244,59 @@ def _check_state_dir() -> CheckResult:
         started=started,
         remediation=None if safe else "Use owner-only permissions (0700) for ~/.mac-mcp.",
         details={"path": _safe_path(path), "mode": oct(mode), "owned_by_current_user": owner},
+    )
+
+
+def _check_update_recovery_state() -> CheckResult:
+    started = time.perf_counter()
+    path = update_state_path()
+    if not path.exists():
+        return result(
+            "update.recovery", "update", INFO, "UPDATE_STATE_ABSENT",
+            "No persisted updater state is present yet.", started=started,
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return result(
+            "update.recovery", "update", WARN, "UPDATE_STATE_UNREADABLE",
+            "Updater state could not be read reliably.", started=started,
+            remediation="Inspect ~/.mac-mcp/update/state.json before running another update.",
+            details={"error_type": type(exc).__name__},
+        )
+    if not isinstance(payload, dict):
+        return result(
+            "update.recovery", "update", WARN, "UPDATE_STATE_INVALID",
+            "Updater state has an invalid shape.", started=started,
+            remediation="Inspect ~/.mac-mcp/update/state.json before running another update.",
+        )
+    runtime_rollback = payload.get("runtime_rollback") if isinstance(payload.get("runtime_rollback"), dict) else {}
+    rollback_health = payload.get("rollback_health") if isinstance(payload.get("rollback_health"), dict) else {}
+    rollback_status = str(runtime_rollback.get("status") or "")
+    health_status = str(rollback_health.get("status") or "")
+    details = {
+        "update_status": payload.get("status"),
+        "runtime_rollback_status": rollback_status or None,
+        "rollback_health_status": health_status or None,
+    }
+    if rollback_status in {"restore_unverified", "failed"} or health_status == "failed":
+        return result(
+            "update.recovery", "update", FAIL, "UPDATE_ROLLBACK_DEGRADED",
+            "The last updater rollback did not restore a verified healthy service.", started=started,
+            remediation="Run `mac-mcp status` and `mac-mcp doctor`; if health is not OK, repair or restart the runtime before updating again.",
+            details=details,
+        )
+    if str(payload.get("status") or "") == "failed":
+        return result(
+            "update.recovery", "update", WARN, "UPDATE_LAST_RUN_FAILED",
+            "The last updater run failed, but no degraded rollback state is recorded.", started=started,
+            remediation="Review updater state and logs before retrying the update.",
+            details=details,
+        )
+    return result(
+        "update.recovery", "update", PASS, "UPDATE_STATE_HEALTHY",
+        "Updater state does not report a degraded rollback.", started=started,
+        details=details,
     )
 
 
@@ -1077,6 +1130,7 @@ def doctor_checks() -> list[CheckResult]:
         _check_runtime,
         _check_cli_installation,
         _check_state_dir,
+        _check_update_recovery_state,
         _check_settings,
         _check_permission_profile_scope,
         _check_permission_coherence,

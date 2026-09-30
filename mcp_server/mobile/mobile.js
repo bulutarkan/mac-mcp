@@ -1,28 +1,11 @@
 (() => {
   "use strict";
   const $ = (id) => document.getElementById(id);
-  const STORAGE_KEY = "mac_mcp_mobile_session";
+  const LEGACY_STORAGE_KEY = "mac_mcp_mobile_session";
   const state = { timer: null };
 
-  function fragmentToken() {
-    try {
-      const hash = location.hash.startsWith("#") ? location.hash.slice(1) : "";
-      const value = new URLSearchParams(hash).get("session") || "";
-      return value.startsWith("mcpmob_") ? value : "";
-    } catch (_) {
-      return "";
-    }
-  }
-  function token() {
-    const fromFragment = fragmentToken();
-    if (fromFragment) {
-      try { localStorage.setItem(STORAGE_KEY, fromFragment); } catch (_) {}
-      return fromFragment;
-    }
-    try { return localStorage.getItem(STORAGE_KEY) || ""; } catch (_) { return ""; }
-  }
-  function clearToken() {
-    try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
+  function clearLegacySessionExposure() {
+    try { localStorage.removeItem(LEGACY_STORAGE_KEY); } catch (_) {}
     try {
       const hash = location.hash.startsWith("#") ? location.hash.slice(1) : "";
       const params = new URLSearchParams(hash);
@@ -46,8 +29,6 @@
   }
   async function api(url) {
     const headers = { "Accept": "application/json" };
-    const t = token();
-    if (t) headers.Authorization = "Bearer " + t;
     const r = await fetch(url, { cache: "no-store", credentials: "same-origin", headers });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) {
@@ -62,13 +43,6 @@
     const code = new URLSearchParams(hash).get("pair");
     if (code) history.replaceState(null, "", location.pathname);
     return code;
-  }
-  function installSession(sessionToken) {
-    if (!sessionToken || !String(sessionToken).startsWith("mcpmob_")) {
-      throw new Error("invalid_session_token");
-    }
-    try { localStorage.setItem(STORAGE_KEY, sessionToken); } catch (_) {}
-    location.replace("/mobile#session=" + encodeURIComponent(sessionToken));
   }
   function normalizeManualCode(value) {
     const raw = String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
@@ -103,7 +77,8 @@
         error.classList.remove("hidden");
         return;
       }
-      installSession(body.session_token);
+      clearLegacySessionExposure();
+      location.replace("/mobile");
     } catch (_) {
       error.textContent = "Couldn’t pair this device. Check the connection and try again.";
       error.classList.remove("hidden");
@@ -205,7 +180,7 @@
       $("activity").innerHTML = rows.map(activityRow).join("") || '<div class="empty">No tool activity in the last hour.</div>';
     } catch (e) {
       if (e.status === 401) {
-        clearToken();
+        clearLegacySessionExposure();
         locked(false);
         if (state.timer) clearInterval(state.timer);
         state.timer = null;
@@ -216,6 +191,7 @@
     }
   }
   async function boot() {
+    clearLegacySessionExposure();
     const code = pairingCode();
     if (code) { submitPairing(code); return; }
     const u = new URL(location.href);

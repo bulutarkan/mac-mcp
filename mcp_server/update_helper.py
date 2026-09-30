@@ -1173,6 +1173,10 @@ def apply_update(
         "status": "skipped",
         "reason": "Runtime synchronization was not attempted.",
     }
+    rollback_health: dict[str, str] = {
+        "status": "skipped",
+        "reason": "Rollback runtime was not restored or restarted.",
+    }
     deps_changed = _deps_changed(repo_path, info.deployed_commit, info.target_commit)
     try:
         current_branch = _git(repo_path, "branch", "--show-current")
@@ -1391,31 +1395,64 @@ def apply_update(
                         _refresh_installed_menu_app(runtime_path)
                     except Exception as menu_exc:
                         print(f"[mac-mcp update] WARNING: menu app rollback refresh failed: {menu_exc}", flush=True)
-                    if not skip_restart:
-                        dependency_restore_safe = (
-                            dependency_env_transaction is None
-                            or dependency_rollback.get("status") == "restored"
+                    dependency_restore_safe = (
+                        dependency_env_transaction is None
+                        or dependency_rollback.get("status") == "restored"
+                    )
+                    if skip_restart:
+                        rollback_health = {
+                            "status": "skipped",
+                            "reason": "Rollback restart was explicitly skipped; runtime health is unverified.",
+                        }
+                    elif dependency_restore_safe:
+                        try:
+                            rollback_health_url = _restart_service(runtime_path, launchd_label)
+                            if _health_ok(rollback_health_url):
+                                rollback_health = {
+                                    "status": "passed",
+                                    "reason": "Rollback service restart and health check passed.",
+                                }
+                                print("[mac-mcp update] Rollback health check passed.", flush=True)
+                            else:
+                                rollback_health = {
+                                    "status": "failed",
+                                    "reason": "Rollback service restarted but failed its health check.",
+                                }
+                                print("[mac-mcp update] WARNING: rollback health check failed.", flush=True)
+                        except Exception as restart_exc:
+                            rollback_health = {
+                                "status": "failed",
+                                "reason": f"Rollback restart failed: {restart_exc}",
+                            }
+                            print(f"[mac-mcp update] WARNING: rollback restart failed: {restart_exc}", flush=True)
+                    else:
+                        rollback_health = {
+                            "status": "skipped",
+                            "reason": (
+                                "Rollback restart was skipped because the previous dependency environment "
+                                "was not restored safely."
+                            ),
+                        }
+                        print(
+                            "[mac-mcp update] WARNING: rollback restart skipped because the previous "
+                            "dependency environment was not restored safely.",
+                            flush=True,
                         )
-                        if dependency_restore_safe:
-                            try:
-                                rollback_health = _restart_service(runtime_path, launchd_label)
-                                if _health_ok(rollback_health):
-                                    print("[mac-mcp update] Rollback health check passed.", flush=True)
-                                else:
-                                    print("[mac-mcp update] WARNING: rollback health check failed.", flush=True)
-                            except Exception as restart_exc:
-                                print(f"[mac-mcp update] WARNING: rollback restart failed: {restart_exc}", flush=True)
-                        else:
-                            print(
-                                "[mac-mcp update] WARNING: rollback restart skipped because the previous "
-                                "dependency environment was not restored safely.",
-                                flush=True,
-                            )
-                    runtime_rollback = {
-                        "status": "restored",
-                        "reason": "Previous runtime files and deployed marker were restored.",
-                    }
-                    print("[mac-mcp update] Runtime rollback completed.", flush=True)
+                    if rollback_health.get("status") == "passed":
+                        runtime_rollback = {
+                            "status": "restored",
+                            "reason": "Previous runtime files, deployed marker, and healthy service were restored.",
+                        }
+                        print("[mac-mcp update] Runtime rollback completed and verified healthy.", flush=True)
+                    else:
+                        runtime_rollback = {
+                            "status": "restore_unverified",
+                            "reason": (
+                                "Previous runtime files and deployed marker were restored, but service health "
+                                "was not verified."
+                            ),
+                        }
+                        print("[mac-mcp update] WARNING: runtime files restored but rollback health is unverified.", flush=True)
                 except Exception as rollback_exc:
                     runtime_rollback = {"status": "failed", "reason": str(rollback_exc)}
                     print(f"[mac-mcp update] WARNING: runtime rollback failed: {rollback_exc}", flush=True)
@@ -1426,6 +1463,7 @@ def apply_update(
             "error": message,
             "repo_rollback": repo_rollback,
             "runtime_rollback": runtime_rollback,
+            "rollback_health": rollback_health,
             "dependency_rollback": dependency_rollback,
             "repo_head_moved": repo_head_moved,
         }

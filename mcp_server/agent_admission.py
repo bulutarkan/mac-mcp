@@ -74,6 +74,10 @@ def _lock_path(root: Path) -> Path:
     return root / ".global-admission.lock"
 
 
+def _backup_path(root: Path) -> Path:
+    return root / ".global-admission.last-good.json"
+
+
 def _ensure_root(root: Path) -> Path:
     path = Path(root).expanduser().resolve(strict=False)
     path.mkdir(parents=True, exist_ok=True)
@@ -106,29 +110,80 @@ def _empty_state() -> Dict[str, Any]:
     }
 
 
-def _read_unlocked(root: Path) -> Dict[str, Any]:
-    path = _state_path(root)
-    if not path.exists():
-        return _empty_state()
+def _read_state_file(path: Path) -> Dict[str, Any]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return _empty_state()
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise AdmissionError(
+            "admission_state_unreadable",
+            f"Could not read agent admission state: {path.name}",
+            details={"path": str(path), "error": type(exc).__name__},
+        ) from exc
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise AdmissionError(
+            "admission_state_corrupt",
+            f"Agent admission state is not valid JSON: {path.name}",
+            details={"path": str(path)},
+        ) from exc
     if not isinstance(payload, dict) or int(payload.get("schema_version") or 0) != SCHEMA_VERSION:
-        return _empty_state()
-    if not isinstance(payload.get("queue"), dict):
-        payload["queue"] = {}
-    if not isinstance(payload.get("leases"), dict):
-        payload["leases"] = {}
-    payload["next_sequence"] = max(1, int(payload.get("next_sequence") or 1))
+        raise AdmissionError(
+            "admission_state_corrupt",
+            f"Agent admission state schema is invalid: {path.name}",
+            details={"path": str(path)},
+        )
+    if not isinstance(payload.get("queue"), dict) or not isinstance(payload.get("leases"), dict):
+        raise AdmissionError(
+            "admission_state_corrupt",
+            f"Agent admission state collections are invalid: {path.name}",
+            details={"path": str(path)},
+        )
+    try:
+        payload["next_sequence"] = max(1, int(payload.get("next_sequence") or 1))
+    except (TypeError, ValueError) as exc:
+        raise AdmissionError(
+            "admission_state_corrupt",
+            f"Agent admission sequence is invalid: {path.name}",
+            details={"path": str(path)},
+        ) from exc
     return payload
 
 
-def _write_unlocked(root: Path, state: Mapping[str, Any]) -> None:
-    path = _state_path(root)
-    payload = dict(state)
-    payload["schema_version"] = SCHEMA_VERSION
-    payload["updated_at"] = _now()
+def _read_unlocked(root: Path) -> Dict[str, Any]:
+    primary = _state_path(root)
+    backup = _backup_path(root)
+    if not primary.exists() and not backup.exists():
+        return _empty_state()
+
+    primary_error: Optional[AdmissionError] = None
+    if primary.exists():
+        try:
+            return _read_state_file(primary)
+        except AdmissionError as exc:
+            primary_error = exc
+
+    if backup.exists():
+        try:
+            recovered = _read_state_file(backup)
+            recovered["recovered_from_last_good"] = True
+            return recovered
+        except AdmissionError as backup_error:
+            raise AdmissionError(
+                "admission_state_unavailable",
+                "Agent admission state and its last-known-good backup are unreadable or corrupt; refusing new admission.",
+                details={
+                    "primary_error": primary_error.code if primary_error else "missing",
+                    "backup_error": backup_error.code,
+                },
+            ) from backup_error
+
+    if primary_error is not None:
+        raise primary_error
+    return _empty_state()
+
+
+def _atomic_write_state_file(root: Path, path: Path, payload: Mapping[str, Any]) -> None:
     fd, tmp_name = tempfile.mkstemp(prefix=".global-admission.", suffix=".tmp", dir=root, text=True)
     tmp = Path(tmp_name)
     try:
@@ -142,6 +197,22 @@ def _write_unlocked(root: Path, state: Mapping[str, Any]) -> None:
         os.chmod(path, 0o600)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _write_unlocked(root: Path, state: Mapping[str, Any]) -> None:
+    payload = dict(state)
+    payload.pop("recovered_from_last_good", None)
+    payload["schema_version"] = SCHEMA_VERSION
+    payload["updated_at"] = _now()
+    primary = _state_path(root)
+    backup = _backup_path(root)
+    _atomic_write_state_file(root, primary, payload)
+    try:
+        _atomic_write_state_file(root, backup, payload)
+    except OSError:
+        # The primary state is already durable. A backup refresh failure must not
+        # turn a successful admission mutation into an ambiguous caller failure.
+        pass
 
 
 def _canonical_path(value: str) -> str:

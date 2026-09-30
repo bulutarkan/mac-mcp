@@ -143,17 +143,15 @@ class MobileDashboardTests(unittest.TestCase):
             )
             self.assertEqual(200, response.status_code)
             body = response.json()
-            token = body.get("session_token")
-            self.assertIsInstance(token, str)
-            self.assertTrue(token.startswith("mcpmob_"))
+            self.assertNotIn("session_token", body)
             self.assertEqual("no-store", response.headers["cache-control"])
+            self.assertIn("mac_mcp_mobile=", response.headers.get("set-cookie", ""))
 
-            headers = {"authorization": "Bearer " + token}
             with patch(
                 "mcp_server.mobile_routes.list_agents",
                 return_value={"ok": True, "agents": [], "count": 0},
             ):
-                self.assertEqual(200, home.get("/mobile/api/status", headers=headers).status_code)
+                self.assertEqual(200, home.get("/mobile/api/status").status_code)
 
             reused = TestClient(app, base_url="https://testserver").post(
                 "/mobile/pair",
@@ -174,7 +172,24 @@ class MobileDashboardTests(unittest.TestCase):
                 json={"device_id": device_id},
             )
             self.assertTrue(revoked.json()["revoked"])
-            self.assertEqual(401, home.get("/mobile/api/status", headers=headers).status_code)
+            self.assertEqual(401, home.get("/mobile/api/status").status_code)
+
+    def test_legacy_mobile_bearer_remains_accepted_during_cookie_migration(self):
+        with tempfile.TemporaryDirectory() as td:
+            app, _telemetry, store = self.make_app(Path(td))
+            issued = store.issue_pairing()
+            session = store.consume_pairing(issued["code"], device_name="Legacy iPhone")
+            self.assertIsNotNone(session)
+            client = TestClient(app, base_url="https://testserver")
+            with patch(
+                "mcp_server.mobile_routes.list_agents",
+                return_value={"ok": True, "agents": [], "count": 0},
+            ):
+                response = client.get(
+                    "/mobile/api/status",
+                    headers={"authorization": "Bearer " + session["token"]},
+                )
+            self.assertEqual(200, response.status_code)
 
     def test_manual_pairing_expiry_is_rejected(self):
         with tempfile.TemporaryDirectory() as td:
@@ -246,7 +261,7 @@ class MobileDashboardTests(unittest.TestCase):
             )
             self.assertEqual(200, fresh.status_code)
 
-    def test_top_level_pairing_bootstraps_persistent_read_only_bearer(self):
+    def test_top_level_pairing_redirects_with_cookie_without_exposing_bearer(self):
         with tempfile.TemporaryDirectory() as td:
             app, _telemetry, _store = self.make_app(Path(td))
             manager = TestClient(app, base_url="https://testserver")
@@ -258,31 +273,25 @@ class MobileDashboardTests(unittest.TestCase):
                 data={"code": code, "device_name": "iPhone"},
                 follow_redirects=False,
             )
-            self.assertEqual(200, response.status_code)
-            self.assertIn("localStorage.setItem('mac_mcp_mobile_session'", response.text)
-            self.assertIn("location.replace('/mobile#session='", response.text)
-            self.assertNotIn("location:", "\n".join(f"{k}: {v}" for k, v in response.headers.items()).lower())
+            self.assertEqual(303, response.status_code)
+            self.assertEqual("/mobile", response.headers["location"])
             self.assertEqual("no-store", response.headers["cache-control"])
-            self.assertIn("script-src 'nonce-", response.headers["content-security-policy"])
-
-            import re
-            match = re.search(r"localStorage\.setItem\('mac_mcp_mobile_session',(\"mcpmob_[^\"]+\")\)", response.text)
-            self.assertIsNotNone(match)
-            token = __import__("json").loads(match.group(1))
-            headers = {"authorization": "Bearer " + token}
+            self.assertNotIn("mcpmob_", response.text)
+            self.assertIn("mac_mcp_mobile=", response.headers.get("set-cookie", ""))
 
             with patch(
                 "mcp_server.mobile_routes.list_agents",
                 return_value={"ok": True, "agents": [], "count": 0},
             ):
-                first = phone.get("/mobile/api/status", headers=headers)
-                second = phone.get("/mobile/api/status", headers=headers)
+                first = phone.get("/mobile/api/status")
+                second = phone.get("/mobile/api/status")
             self.assertEqual(200, first.status_code)
             self.assertEqual(200, second.status_code)
 
             js = (Path(__file__).parents[1] / "mcp_server" / "mobile" / "mobile.js").read_text()
-            self.assertIn('get("session")', js)
-            self.assertIn('startsWith("mcpmob_")', js)
+            self.assertNotIn('get("session")', js)
+            self.assertNotIn('headers.Authorization', js)
+            self.assertIn('localStorage.removeItem(LEGACY_STORAGE_KEY)', js)
 
     def test_mobile_agent_list_is_bounded_and_prioritizes_active_agents(self):
         with tempfile.TemporaryDirectory() as td:

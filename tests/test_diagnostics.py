@@ -212,6 +212,33 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual("trusted", row["details"]["profile"])
         self.assertEqual("env", row["details"]["profile_source"])
 
+    def test_update_recovery_degraded_state_fails_doctor_check(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            path.write_text(json.dumps({
+                "status": "failed",
+                "runtime_rollback": {"status": "restore_unverified"},
+                "rollback_health": {"status": "failed"},
+            }), encoding="utf-8")
+            with patch("mcp_server.diagnostics.update_state_path", return_value=path):
+                row = diagnostics._check_update_recovery_state().to_dict()
+        self.assertEqual("fail", row["status"])
+        self.assertEqual("UPDATE_ROLLBACK_DEGRADED", row["reason_code"])
+        self.assertEqual("restore_unverified", row["details"]["runtime_rollback_status"])
+
+    def test_update_recovery_verified_rollback_is_not_degraded(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            path.write_text(json.dumps({
+                "status": "failed",
+                "runtime_rollback": {"status": "restored"},
+                "rollback_health": {"status": "passed"},
+            }), encoding="utf-8")
+            with patch("mcp_server.diagnostics.update_state_path", return_value=path):
+                row = diagnostics._check_update_recovery_state().to_dict()
+        self.assertEqual("warn", row["status"])
+        self.assertEqual("UPDATE_LAST_RUN_FAILED", row["reason_code"])
+
     def test_doctor_cli_json_is_machine_readable(self) -> None:
         fake = diagnostics.build_report([
             diagnostics.result("fixture", "test", "pass", "FIXTURE_OK", "Fixture passed.")

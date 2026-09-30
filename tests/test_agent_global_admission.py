@@ -184,6 +184,40 @@ class GlobalAdmissionCoreTests(unittest.TestCase):
         self.assertFalse(two["admitted"])
         self.assertEqual("resource_busy", two["reason"])
 
+    def test_corrupt_primary_recovers_last_known_good_without_losing_active_lease(self) -> None:
+        first = self.admit("one", resources=[{"kind":"browser_tab","id":"tab_123","mode":"write"}])
+        self.assertTrue(first["admitted"])
+        state_path = self.root / ".global-admission.json"
+        backup_path = self.root / ".global-admission.last-good.json"
+        self.assertTrue(backup_path.exists())
+        state_path.write_text("{broken", encoding="utf-8")
+
+        second = self.admit("two", provider="codex", resources=[
+            {"kind":"browser_tab","id":"tab_123","mode":"write"},
+        ])
+        self.assertFalse(second["admitted"])
+        self.assertEqual("resource_busy", second["reason"])
+
+    def test_corrupt_primary_and_backup_fail_closed(self) -> None:
+        first = self.admit("one")
+        self.assertTrue(first["admitted"])
+        (self.root / ".global-admission.json").write_text("{broken", encoding="utf-8")
+        (self.root / ".global-admission.last-good.json").write_text("{also-broken", encoding="utf-8")
+
+        with self.assertRaises(admission.AdmissionError) as ctx:
+            self.admit("two", provider="codex")
+        self.assertEqual("admission_state_unavailable", ctx.exception.code)
+
+    def test_missing_primary_recovers_backup_instead_of_assuming_empty(self) -> None:
+        first = self.admit("one", resources=[{"kind":"clipboard","id":"system","mode":"write"}])
+        self.assertTrue(first["admitted"])
+        (self.root / ".global-admission.json").unlink()
+        second = self.admit("two", provider="codex", resources=[
+            {"kind":"clipboard","id":"system","mode":"write"},
+        ])
+        self.assertFalse(second["admitted"])
+        self.assertEqual("resource_busy", second["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

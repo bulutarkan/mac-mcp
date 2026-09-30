@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
-import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,7 +10,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from starlette.requests import Request
-from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from .mobile_auth import DEFAULT_SESSION_TTL_S, PAIR_PREFIX, SESSION_PREFIX, MobileAuthStore
@@ -244,40 +243,18 @@ def create_mobile_routes(
             )
 
         if form_navigation:
-            nonce = secrets.token_urlsafe(18)
-            token_json = json.dumps(result["token"])
-            bootstrap_html = (
-                "<!doctype html><html><head><meta charset='utf-8'>"
-                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-                "<title>Mac MCP</title></head><body>"
-                f"<script nonce='{nonce}'>"
-                "try{localStorage.setItem('mac_mcp_mobile_session',"
-                + token_json
-                + ");}catch(e){}"
-                "location.replace('/mobile#session='+encodeURIComponent("
-                + token_json
-                + "));"
-                "</script></body></html>"
-            )
-            response = HTMLResponse(
-                bootstrap_html,
-                status_code=200,
+            response = RedirectResponse(
+                "/mobile",
+                status_code=303,
                 headers={
                     "Cache-Control": "no-store",
                     "Referrer-Policy": "no-referrer",
-                    "X-Content-Type-Options": "nosniff",
-                    "Content-Security-Policy": (
-                        "default-src 'none'; "
-                        f"script-src 'nonce-{nonce}'; "
-                        "base-uri 'none'; frame-ancestors 'none'"
-                    ),
                 },
             )
         else:
             response = JSONResponse(
                 {
                     "ok": True,
-                    "session_token": result["token"],
                     "device": {
                         "device_id": result["device_id"],
                         "device_name": result["device_name"],
