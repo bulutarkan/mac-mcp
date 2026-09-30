@@ -482,9 +482,9 @@ Loopback means **machine-local**, not **user-private**. The dashboard token prev
 
 ## Tool coverage
 
-Mac MCP 2.1 advertises a compact **21-tool core surface by default**, backed by **84 registered MCP capabilities**. The 63 less-common tools remain available through `tool_discover` and `tool_invoke`, including every tool from the previous 81-tool surface.
+Mac MCP 2.1 advertises a compact core surface by default, backed by a larger centrally registered MCP capability catalog. The exact visible catalog is permission-profile and delegated-scope aware: `list_tools` and `tool_discover` use the same availability policy, while `tool_invoke` preserves the nested tool's success/failure status.
 
-Set `MAC_MCP_TOOL_PROFILE=full` to advertise all registered tools directly to the client. You can also add selected tools to the compact surface with `MAC_MCP_CORE_EXTRA_TOOLS=name1,name2`.
+Set `MAC_MCP_TOOL_PROFILE=full` to advertise every tool allowed by the active permission profile directly to the client. You can also add selected tools to the compact surface with `MAC_MCP_CORE_EXTRA_TOOLS=name1,name2`. Exact catalog counts are intentionally runtime-derived rather than hard-coded here so documentation cannot drift as tools are added or removed.
 
 The capability set covers:
 

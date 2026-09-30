@@ -38,6 +38,7 @@ from .policy import (
     PolicyContext,
     annotations_for_tool,
     current_policy_context,
+    declared_risk,
     evaluate_profile,
     evaluate_tool_scope,
     filter_scoped_result,
@@ -888,20 +889,51 @@ class ObservedFastMCP(FastMCP):
         self._policy_context_provider = policy_context_provider
         super().__init__(*args, **kwargs)
 
-    async def list_tools(self):
+    def effective_tool_availability(self, tool_name: str) -> dict[str, Any]:
+        """Return profile/scope-aware availability without leaking scope contents."""
+        context = self._policy_context_provider()
+        availability = dict(tool_availability(context.profile, tool_name))
+        availability["profile"] = context.profile
+        if availability.get("available") is not True:
+            return availability
+        try:
+            scope_decision = evaluate_tool_scope(
+                context.scope,
+                tool_name,
+                {},
+                effective_risk=declared_risk(tool_name),
+            )
+        except KeyError:
+            return {
+                "available": False,
+                "conditional": False,
+                "reason": "unknown_tool",
+                "profile": context.profile,
+            }
+        if not scope_decision.allowed:
+            return {
+                "available": False,
+                "conditional": bool(availability.get("conditional")),
+                "reason": "scope_denied",
+                "profile": context.profile,
+            }
+        if context.scope is not None:
+            availability["scope_limited"] = True
+        return availability
+
+    async def list_available_tools(self, *, compact: bool = True):
         tools = await super().list_tools()
-        profile = self._policy_context_provider().profile
         tools = [
             tool for tool in tools
-            if tool_availability(profile, tool.name).get("available") is True
+            if self.effective_tool_availability(tool.name).get("available") is True
         ]
-        if os.getenv("MAC_MCP_TOOL_PROFILE", "core").strip().lower() != "core":
+        if not compact or os.getenv("MAC_MCP_TOOL_PROFILE", "core").strip().lower() != "core":
             return tools
         extra = {
             item.strip() for item in os.getenv("MAC_MCP_CORE_EXTRA_TOOLS", "").split(",") if item.strip()
         }
         allowed = _CORE_TOOL_NAMES | extra
-        compact = []
+        compact_tools = []
         for tool in tools:
             if tool.name not in allowed:
                 continue
@@ -909,8 +941,11 @@ class ObservedFastMCP(FastMCP):
             if len(description) > 220:
                 description = description[:217].rsplit(" ", 1)[0] + "..."
                 tool = tool.model_copy(update={"description": description})
-            compact.append(tool)
-        return compact
+            compact_tools.append(tool)
+        return compact_tools
+
+    async def list_tools(self):
+        return await self.list_available_tools(compact=True)
 
     def tool(
         self,

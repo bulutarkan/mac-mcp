@@ -19,7 +19,7 @@ from starlette.routing import Route, Mount
 from mcp.server.transport_security import TransportSecuritySettings
 from .security import RateLimiter, Settings, authenticate, client_ip, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
 from .observability import ObservedFastMCP, TelemetryManager, current_security_session
-from .policy import current_policy_context, reset_policy_context, set_policy_context
+from .policy import PROFILES, current_policy_context, declared_risk, reset_policy_context, set_policy_context
 from .policy_scope import ScopeRequest, evaluate_scope
 from .scoped_auth import resolve_request_identity
 from .dashboard_routes import create_dashboard_routes, rest_telemetry_middleware
@@ -179,6 +179,62 @@ def _log(audit_logger, tool: str, fn):
     finally:
         ms = int((time.perf_counter() - start) * 1000)
         audit_logger.info(json.dumps({"tool": tool, "outcome": outcome, "duration_ms": ms}))
+
+
+def _unwrap_tool_invoke_result(result: Any) -> Any:
+    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], dict):
+        return result[1].get("result", result[1])
+    if isinstance(result, dict):
+        return result.get("result", result)
+    if isinstance(result, (list, tuple)):
+        converted = []
+        for item in result:
+            if hasattr(item, "model_dump"):
+                converted.append(item.model_dump(mode="json"))
+            elif isinstance(item, dict):
+                converted.append(item)
+            else:
+                converted.append(str(item))
+        if len(converted) == 1 and isinstance(converted[0], dict) and converted[0].get("type") == "text":
+            text_value = converted[0].get("text")
+            if isinstance(text_value, str):
+                try:
+                    return json.loads(text_value)
+                except json.JSONDecodeError:
+                    return converted
+        return converted
+    if hasattr(result, "model_dump"):
+        return result.model_dump(mode="json")
+    return result
+
+
+def _tool_payload_ok(payload: Any) -> bool:
+    if isinstance(payload, dict) and isinstance(payload.get("ok"), bool):
+        return bool(payload["ok"])
+    return True
+
+
+def _tool_input_schema(info: Any) -> Dict[str, Any]:
+    schema = getattr(info, "inputSchema", None) or getattr(info, "parameters", None) or {}
+    return schema if isinstance(schema, dict) else {}
+
+
+async def _invoke_registered_tool(mcp: ObservedFastMCP, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    target = str(tool_name or "").strip()
+    if not target or target in {"tool_discover", "tool_invoke"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "A non-fallback target tool_name is required.")
+    if mcp._tool_manager.get_tool(target) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown tool: {target}")
+    result = await mcp.call_tool(target, arguments or {})
+    payload = _unwrap_tool_invoke_result(result)
+    tool_ok = _tool_payload_ok(payload)
+    return {
+        "ok": tool_ok,
+        "invocation_ok": True,
+        "tool_ok": tool_ok,
+        "tool": target,
+        "result": payload,
+    }
 
 
 def create_app():
@@ -1854,20 +1910,23 @@ def create_app():
 
     @mcp.tool(
         name="tool_discover",
-        description="Find less-common Mac MCP capabilities hidden from the compact default tool list. Returns a small schema summary.",
+        description="Find less-common Mac MCP capabilities allowed by the active permission profile and delegated scope. Returns a small schema summary.",
     )
-    def _tool_discover(query: str = "", limit: int = 8, include_schema: bool = False) -> Dict[str, Any]:
+    async def _tool_discover(query: str = "", limit: int = 8, include_schema: bool = False) -> Dict[str, Any]:
         q = str(query or "").strip().lower()
         limit = max(1, min(int(limit), 100))
         matches = []
-        for info in mcp._tool_manager.list_tools():
+        for info in await mcp.list_available_tools(compact=False):
             if info.name in {"tool_discover", "tool_invoke"}:
                 continue
             hay = f"{info.name} {info.description or ''}".lower()
             if q and all(token not in hay for token in q.split()):
                 continue
-            params = info.parameters or {}
+            params = _tool_input_schema(info)
             properties = params.get("properties") or {}
+            availability = mcp.effective_tool_availability(info.name)
+            risk = declared_risk(info.name)
+            profile = PROFILES.get(str(availability.get("profile") or ""))
             item = {
                 "name": info.name,
                 "description": (info.description or "")[:180],
@@ -1875,6 +1934,23 @@ def create_app():
                 "parameters": {
                     name: {"type": spec.get("type"), "default": spec.get("default")}
                     for name, spec in properties.items()
+                },
+                "policy": {
+                    "profile": availability.get("profile"),
+                    "availability": availability.get("reason"),
+                    "conditional": bool(availability.get("conditional")),
+                    "scope_limited": bool(availability.get("scope_limited")),
+                    "risk": {
+                        "family": risk.family,
+                        "capabilities": sorted(capability.value for capability in risk.capabilities),
+                        "destructive": risk.destructive,
+                        "sensitive": risk.sensitive,
+                        "resolution": "argument_dependent" if availability.get("conditional") else "static",
+                    },
+                    "approval": (
+                        profile.approval.to_dict() if profile is not None
+                        else {"source": "none", "automatic_confirmation": False}
+                    ),
                 },
             }
             if include_schema:
@@ -1889,46 +1965,7 @@ def create_app():
         description="Invoke a less-common registered Mac MCP tool by name after tool_discover, preserving normal policy and telemetry checks.",
     )
     async def _tool_invoke(tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        target = str(tool_name or "").strip()
-        if not target or target in {"tool_discover", "tool_invoke"}:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "A non-fallback target tool_name is required.")
-        if mcp._tool_manager.get_tool(target) is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown tool: {target}")
-        result = await mcp.call_tool(target, arguments or {})
-        payload: Any
-        if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], dict):
-            payload = result[1].get("result", result[1])
-        elif isinstance(result, dict):
-            payload = result.get("result", result)
-        elif isinstance(result, (list, tuple)):
-            converted = []
-            for item in result:
-                if hasattr(item, "model_dump"):
-                    converted.append(item.model_dump(mode="json"))
-                elif isinstance(item, dict):
-                    converted.append(item)
-                else:
-                    converted.append(str(item))
-            # FastMCP tools registered with structured_output=False commonly return
-            # a single TextContent whose text is the tool's JSON payload. Preserve
-            # legacy result shape through tool_invoke instead of exposing an MCP
-            # content-block wrapper to the calling model.
-            if len(converted) == 1 and isinstance(converted[0], dict) and converted[0].get("type") == "text":
-                text_value = converted[0].get("text")
-                if isinstance(text_value, str):
-                    try:
-                        payload = json.loads(text_value)
-                    except json.JSONDecodeError:
-                        payload = converted
-                else:
-                    payload = converted
-            else:
-                payload = converted
-        elif hasattr(result, "model_dump"):
-            payload = result.model_dump(mode="json")
-        else:
-            payload = result
-        return {"ok": True, "tool": target, "result": payload}
+        return await _invoke_registered_tool(mcp, tool_name, arguments)
 
     # ── App setup ────────────────────────────────────────────────────────────
     app = mcp.streamable_http_app()
