@@ -376,6 +376,10 @@ def _start_server(args: argparse.Namespace) -> int:
         return 0
 
     env = os.environ.copy()
+    # Restart handoff/requester identity belongs only to the one-shot lifecycle
+    # worker. Never leak it into the long-lived uvicorn process.
+    env.pop(RESTART_HANDOFF_ENV, None)
+    env.pop(RESTART_REQUESTER_ENV, None)
     env.setdefault("MAC_MCP_HOST", args.host)
     env.setdefault("MAC_MCP_PORT", str(port))
     cmd = [
@@ -1363,6 +1367,9 @@ def restart(args: argparse.Namespace) -> int:
         # cancellation cleanup or shell process-group cleanup from killing the worker.
         return _spawn_detached_restart(args)
 
+    # This marker identifies only the one-shot launchd worker. Clear it before
+    # any descendants can inherit it and mistake themselves for the worker.
+    os.environ.pop(RESTART_HANDOFF_ENV, None)
     _install_restart_signal_receipts()
     _write_restart_status(
         "running",
@@ -1372,6 +1379,9 @@ def restart(args: argparse.Namespace) -> int:
     )
     if not _wait_for_restart_requester_exit():
         return 1
+    # The requester PID is also one-shot coordination state. Once the requester
+    # has exited, descendants must not inherit stale restart coordination.
+    os.environ.pop(RESTART_REQUESTER_ENV, None)
 
     target_port = int(getattr(args, "port", _default_port()))
     target_server_pid, target_source = _resolve_server_identity(target_port, adopt_listener=False)

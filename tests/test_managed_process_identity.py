@@ -289,6 +289,49 @@ class SafeLifecycleTests(unittest.TestCase):
         start.assert_not_called()
         status_write.assert_any_call("failed", stage="stop", exit_code=1, helper_pid=os.getpid())
 
+    def test_restart_handoff_child_clears_worker_identity_before_start(self) -> None:
+        args = argparse.Namespace(timeout=1.0, host="127.0.0.1", port=8765)
+        inherited: list[tuple[str | None, str | None]] = []
+
+        def start_side_effect(_args):
+            inherited.append((
+                os.environ.get(cli.RESTART_HANDOFF_ENV),
+                os.environ.get(cli.RESTART_REQUESTER_ENV),
+            ))
+            return 0
+
+        with patch.dict(
+            os.environ,
+            {cli.RESTART_HANDOFF_ENV: "1", cli.RESTART_REQUESTER_ENV: "4242"},
+            clear=False,
+        ),              patch.object(cli, "_load_env"),              patch.object(cli, "_write_restart_status"),              patch.object(cli, "_wait_for_restart_requester_exit", return_value=True),              patch.object(cli, "stop", return_value=0),              patch.object(cli, "start", side_effect=start_side_effect),              patch.object(cli, "_restart_health_ok", return_value=True),              patch.object(cli, "_resolve_server_identity", return_value=(4321, "pid_record")):
+            code = cli.restart(args)
+
+        self.assertEqual(0, code)
+        self.assertEqual([(None, None)], inherited)
+
+    def test_start_server_strips_restart_coordination_from_uvicorn_env(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-restart-env-") as td:
+            state = Path(td)
+            args = argparse.Namespace(host="127.0.0.1", port=8765, reload=False)
+            missing = ProcessValidation(
+                "missing", None, "server", None, "pid_file_missing",
+            )
+            snap = server_snapshot(4321, cli.PROJECT_ROOT)
+            with patch.dict(
+                os.environ,
+                {cli.RESTART_HANDOFF_ENV: "1", cli.RESTART_REQUESTER_ENV: "4242"},
+                clear=False,
+            ),                  patch.object(cli, "STATE_DIR", state),                  patch.object(cli, "PID_FILE", state / "mac-mcp.pid"),                  patch.object(cli, "LOG_FILE", state / "mac-mcp.log"),                  patch.object(cli, "_validate_managed_pid", return_value=missing),                  patch.object(cli, "_server_listener_state", return_value=([], [])),                  patch.object(cli.subprocess, "Popen") as popen,                  patch.object(cli, "process_snapshot", return_value=snap),                  patch.object(cli, "matches_role", return_value=True),                  patch.object(cli, "write_process_record"),                  patch.object(cli, "_launch_menu_app"),                  patch.object(cli.time, "sleep"):
+                popen.return_value.pid = 4321
+                popen.return_value.poll.return_value = None
+                code = cli._start_server(args)
+
+        self.assertEqual(0, code)
+        spawn_env = popen.call_args.kwargs["env"]
+        self.assertNotIn(cli.RESTART_HANDOFF_ENV, spawn_env)
+        self.assertNotIn(cli.RESTART_REQUESTER_ENV, spawn_env)
+
     def test_restart_handoff_child_requires_health_before_success(self) -> None:
         args = argparse.Namespace(timeout=1.0, host="127.0.0.1", port=8765)
         with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: "1"}, clear=False), \
