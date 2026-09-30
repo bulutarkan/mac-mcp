@@ -564,6 +564,150 @@ class UpdateHelperTests(unittest.TestCase):
         (runtime / "mcp_server/.env").write_text("SECRET_SENTINEL=preserve-me\n", encoding="utf-8")
         return root, repo, runtime, old, target
 
+    def test_crash_after_runtime_sync_recovers_previous_checkpoint(self):
+        _, repo, runtime, old, target = self.make_fixture()
+
+        def crash(stage: str) -> None:
+            if stage == "runtime_synced":
+                raise SystemExit("simulated abrupt updater death")
+
+        with patch("mcp_server.update_helper._test_update_checkpoint_hook", side_effect=crash):
+            with self.assertRaises(SystemExit):
+                apply_update(repo, runtime, skip_restart=True, skip_deps=True)
+
+        self.assertEqual(target, run("git", "rev-parse", "HEAD", cwd=repo))
+        self.assertIn("VALUE = 'new'", (runtime / "mcp_server/main.py").read_text(encoding="utf-8"))
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual("runtime_synced", state["status"])
+        self.assertTrue(state["runtime_sync_started"])
+
+        with patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health") as restart, \
+                patch("mcp_server.update_helper._health_ok", return_value=True):
+            recovered = update_helper_module.recover_incomplete_update(repo, runtime)
+
+        self.assertIsNotNone(recovered)
+        self.assertEqual(old, run("git", "rev-parse", "HEAD", cwd=repo))
+        self.assertEqual("VALUE = 'old'\n", (runtime / "mcp_server/main.py").read_text(encoding="utf-8"))
+        self.assertEqual(old, (self.update_dir / "deployed-commit").read_text(encoding="utf-8").strip())
+        restart.assert_called_once()
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual("recovered", state["status"])
+        self.assertTrue(state["recovered_after_crash"])
+        self.assertEqual("passed", state["recovery"]["health"]["status"])
+
+    def test_crash_during_restart_recovers_and_restarts_previous_runtime(self):
+        _, repo, runtime, old, target = self.make_fixture()
+        with patch("mcp_server.update_helper._restart_service", side_effect=SystemExit("simulated kill after service stop")):
+            with self.assertRaises(SystemExit):
+                apply_update(repo, runtime, skip_deps=True)
+
+        self.assertEqual(target, run("git", "rev-parse", "HEAD", cwd=repo))
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual("restarting", state["status"])
+
+        with patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health") as restart, \
+                patch("mcp_server.update_helper._health_ok", return_value=True):
+            update_helper_module.recover_incomplete_update(repo, runtime)
+
+        self.assertEqual(old, run("git", "rev-parse", "HEAD", cwd=repo))
+        self.assertEqual("VALUE = 'old'\n", (runtime / "mcp_server/main.py").read_text(encoding="utf-8"))
+        restart.assert_called_once()
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual("recovered", state["status"])
+
+    def test_crash_after_dependency_swap_restores_previous_environment(self):
+        _, repo, runtime, old, target = self.make_fixture(deps_change=True)
+        venv = runtime / ".venv"
+        (venv / "bin").mkdir(parents=True)
+        (venv / "bin/python").write_text("python\n", encoding="utf-8")
+        (venv / "state.txt").write_text("old-env\n", encoding="utf-8")
+
+        def fake_prepare(runtime_path: Path, _requirements: Path, _target_commit: str) -> Path:
+            staging_root = Path(tempfile.mkdtemp(prefix=f".{runtime_path.name}.venv-update-", dir=str(runtime_path.parent)))
+            staged = staging_root / "candidate"
+            shutil.copytree(runtime_path / ".venv", staged)
+            (staged / "state.txt").write_text("new-env\n", encoding="utf-8")
+            return staged
+
+        def crash(stage: str) -> None:
+            if stage == "dependencies_activated":
+                raise SystemExit("simulated abrupt updater death")
+
+        with patch("mcp_server.update_helper._prepare_dependency_environment", side_effect=fake_prepare), \
+                patch("mcp_server.update_helper._test_update_checkpoint_hook", side_effect=crash):
+            with self.assertRaises(SystemExit):
+                apply_update(repo, runtime)
+
+        self.assertEqual(target, run("git", "rev-parse", "HEAD", cwd=repo))
+        self.assertEqual("new-env\n", (runtime / ".venv/state.txt").read_text(encoding="utf-8"))
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual("dependencies_activated", state["status"])
+
+        with patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health"), \
+                patch("mcp_server.update_helper._health_ok", return_value=True):
+            update_helper_module.recover_incomplete_update(repo, runtime)
+
+        self.assertEqual(old, run("git", "rev-parse", "HEAD", cwd=repo))
+        self.assertEqual("old-env\n", (runtime / ".venv/state.txt").read_text(encoding="utf-8"))
+        self.assertFalse((runtime / ".venv/.mac-mcp-update-env").exists())
+        self.assertEqual("VALUE = 'old'\n", (runtime / "mcp_server/main.py").read_text(encoding="utf-8"))
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual("recovered", state["status"])
+        self.assertEqual("restored", state["recovery"]["dependency"]["status"])
+
+    def test_crash_after_dependency_commit_is_finalized_by_next_update_invocation(self):
+        _, repo, runtime, _old, target = self.make_fixture(deps_change=True)
+        venv = runtime / ".venv"
+        (venv / "bin").mkdir(parents=True)
+        (venv / "bin/python").write_text("python\n", encoding="utf-8")
+        (venv / "state.txt").write_text("old-env\n", encoding="utf-8")
+
+        def fake_prepare(runtime_path: Path, _requirements: Path, _target_commit: str) -> Path:
+            staging_root = Path(tempfile.mkdtemp(prefix=f".{runtime_path.name}.venv-update-", dir=str(runtime_path.parent)))
+            staged = staging_root / "candidate"
+            shutil.copytree(runtime_path / ".venv", staged)
+            (staged / "state.txt").write_text("new-env\n", encoding="utf-8")
+            return staged
+
+        def crash(stage: str) -> None:
+            if stage == "dependency_committed":
+                raise SystemExit("simulated abrupt updater death")
+
+        with patch("mcp_server.update_helper._prepare_dependency_environment", side_effect=fake_prepare), \
+                patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health"), \
+                patch("mcp_server.update_helper._health_ok", return_value=True), \
+                patch("mcp_server.update_helper._test_update_checkpoint_hook", side_effect=crash):
+            with self.assertRaises(SystemExit):
+                apply_update(repo, runtime)
+
+        self.assertEqual(target, run("git", "rev-parse", "HEAD", cwd=repo))
+        self.assertEqual(target, (self.update_dir / "deployed-commit").read_text(encoding="utf-8").strip())
+        self.assertEqual("new-env\n", (runtime / ".venv/state.txt").read_text(encoding="utf-8"))
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual("dependency_committed", state["status"])
+
+        with patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health") as restart, \
+                patch("mcp_server.update_helper._health_ok", return_value=True):
+            result = apply_update(repo, runtime, skip_deps=True)
+
+        self.assertFalse(result["updated"])
+        self.assertEqual(target, run("git", "rev-parse", "HEAD", cwd=repo))
+        self.assertEqual("new-env\n", (runtime / ".venv/state.txt").read_text(encoding="utf-8"))
+        restart.assert_called_once()
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual("completed", state["status"])
+        self.assertTrue(state["recovered_after_crash"])
+        self.assertEqual("finalized_target", state["recovery"]["status"])
+
+    def test_transaction_checkpoint_persistence_is_required_before_repo_mutation(self):
+        _, repo, runtime, old, _target = self.make_fixture()
+        with patch("mcp_server.update_helper.write_update_state", return_value=None), \
+                patch("mcp_server.update_helper.read_update_state", return_value=None):
+            with self.assertRaisesRegex(UpdateError, "durably persist updater transaction checkpoint 'prepared'"):
+                apply_update(repo, runtime, skip_restart=True, skip_deps=True)
+        self.assertEqual(old, run("git", "rev-parse", "HEAD", cwd=repo))
+        self.assertEqual("VALUE = 'old'\n", (runtime / "mcp_server/main.py").read_text(encoding="utf-8"))
+
     def test_check_and_update_preserve_runtime_overlay_and_env(self):
         _, repo, runtime, old, target = self.make_fixture()
         info = check_update(repo, runtime)

@@ -25,7 +25,14 @@ if __package__:
         validate_process_record,
         write_process_record,
     )
-    from .update_state import backups_root, read_deployed_commit, update_root, write_deployed_commit, write_update_state
+    from .update_state import (
+        backups_root,
+        read_deployed_commit,
+        read_update_state,
+        update_root,
+        write_deployed_commit,
+        write_update_state,
+    )
 else:
     # The detached updater is launched as a staged standalone script. Keep the
     # staged siblings ahead of the repo and site-packages on sys.path so the
@@ -39,7 +46,14 @@ else:
         validate_process_record,
         write_process_record,
     )
-    from update_state import backups_root, read_deployed_commit, update_root, write_deployed_commit, write_update_state
+    from update_state import (
+        backups_root,
+        read_deployed_commit,
+        read_update_state,
+        update_root,
+        write_deployed_commit,
+        write_update_state,
+    )
 
 DEFAULT_BRANCH = "main"
 DEFAULT_REMOTE = "origin"
@@ -50,6 +64,11 @@ _STAGING_DIR_RE = re.compile(r"^mac-mcp-update-upd_[0-9a-f]{10}-[a-z0-9_]+$")
 
 class UpdateError(RuntimeError):
     pass
+
+
+def _test_update_checkpoint_hook(_stage: str) -> None:
+    """Test seam for simulating abrupt updater termination after durable checkpoints."""
+    return None
 
 
 @dataclass
@@ -878,13 +897,18 @@ def _prepare_dependency_environment(runtime: Path, requirements: Path, target_co
         raise
 
 
-def _activate_dependency_environment(runtime: Path, staged: Path) -> DependencyEnvironmentTransaction:
+def _activate_dependency_environment(
+    runtime: Path,
+    staged: Path,
+    *,
+    marker_token: str | None = None,
+) -> DependencyEnvironmentTransaction:
     canonical = runtime / ".venv"
     if not staged.is_dir() or not (staged / "bin" / "python").exists():
         raise UpdateError("Staged dependency environment is incomplete.")
     staging_root = staged.parent
     previous_backup = staging_root / "previous"
-    marker_token = f"{os.getpid()}-{time.time_ns()}"
+    marker_token = marker_token or f"{os.getpid()}-{time.time_ns()}"
     marker = staged / ".mac-mcp-update-env"
     marker.write_text(marker_token + "\n", encoding="utf-8")
 
@@ -1087,6 +1111,267 @@ def _same_checkout_restore_guard(
     return True, "The checkout is still at the verified clean pre-update revision."
 
 
+_INCOMPLETE_UPDATE_STATES = {
+    "prepared",
+    "repo_updating",
+    "repo_updated",
+    "runtime_syncing",
+    "runtime_synced",
+    "dependency_activating",
+    "dependencies_activated",
+    "restarting",
+    "health_verified",
+    "marker_committed",
+    "dependency_commit_started",
+    "dependency_committed",
+    "rolling_back",
+}
+
+
+def _journal_dependency_payload(
+    runtime: Path,
+    staged: Path,
+    marker_token: str,
+) -> dict[str, str]:
+    root = staged.parent
+    return {
+        "staging_root": str(root),
+        "candidate": str(staged),
+        "previous_backup": str(root / "previous"),
+        "marker_token": marker_token,
+        "canonical": str(runtime / ".venv"),
+    }
+
+
+def _recover_dependency_from_journal(runtime: Path, payload: dict) -> dict[str, str]:
+    dep = payload.get("dependency")
+    if not isinstance(dep, dict):
+        return {"status": "skipped", "reason": "No dependency transaction was recorded."}
+    marker_token = str(dep.get("marker_token") or "")
+    staging_root = Path(str(dep.get("staging_root") or ""))
+    previous = Path(str(dep.get("previous_backup") or ""))
+    candidate = Path(str(dep.get("candidate") or ""))
+    canonical = runtime / ".venv"
+    if not marker_token or not str(staging_root):
+        return {"status": "failed", "reason": "Dependency recovery journal is incomplete."}
+
+    marker = canonical / ".mac-mcp-update-env"
+    active_matches = False
+    try:
+        active_matches = marker.is_file() and marker.read_text(encoding="utf-8").strip() == marker_token
+    except OSError:
+        active_matches = False
+
+    if active_matches and previous.exists():
+        txn = DependencyEnvironmentTransaction(
+            runtime=runtime,
+            staging_root=staging_root,
+            staged_env=canonical,
+            previous_backup=previous,
+            marker_token=marker_token,
+        )
+        return _rollback_dependency_environment(txn)
+
+    if not canonical.exists() and previous.exists():
+        try:
+            os.replace(previous, canonical)
+            shutil.rmtree(staging_root, ignore_errors=True)
+            if not (canonical / "bin" / "python").exists():
+                raise UpdateError("Recovered dependency environment is incomplete.")
+            return {"status": "restored", "reason": "Previous dependency environment was restored after an interrupted swap."}
+        except Exception as exc:
+            return {"status": "failed", "reason": str(exc)}
+
+    if canonical.exists() and previous.exists() and not active_matches:
+        # The commit phase removes the marker before deleting the previous env.
+        # If a crash lands in that window, both trees are still available and
+        # the safest recovery is to restore the previous tree.
+        if str(payload.get("status") or "") == "dependency_commit_started":
+            try:
+                failed = staging_root / "failed-candidate"
+                if failed.exists() or failed.is_symlink():
+                    _remove_path(failed)
+                os.replace(canonical, failed)
+                os.replace(previous, canonical)
+                _remove_path(failed)
+                shutil.rmtree(staging_root, ignore_errors=True)
+                return {"status": "restored", "reason": "Previous dependency environment was restored from an interrupted commit."}
+            except Exception as exc:
+                return {"status": "failed", "reason": str(exc)}
+        return {
+            "status": "failed",
+            "reason": "Dependency environment changed during interrupted update; refusing an ambiguous overwrite.",
+        }
+
+    if canonical.exists() and not previous.exists():
+        # Before activation, the old canonical env is untouched and the staged
+        # candidate still lives under staging_root. During commit, absence of
+        # previous means the new environment was already made durable.
+        if str(payload.get("status") or "") in {"dependency_commit_started", "dependency_committed"}:
+            return {"status": "committed", "reason": "Dependency commit completed before updater interruption."}
+        if candidate.exists() or staging_root.exists():
+            shutil.rmtree(staging_root, ignore_errors=True)
+        return {"status": "unchanged", "reason": "Dependency activation had not replaced the canonical environment."}
+
+    return {"status": "failed", "reason": "Dependency recovery could not identify a safe environment state."}
+
+
+def _recover_repo_from_journal(repo: Path, payload: dict) -> dict[str, str]:
+    pre = str(payload.get("pre_update_head") or "")
+    post = str(payload.get("post_merge_head") or payload.get("to_commit") or "")
+    branch = str(payload.get("branch") or DEFAULT_BRANCH)
+    if not pre:
+        return {"status": "failed", "reason": "Recovery journal is missing the pre-update repository HEAD."}
+    try:
+        current_branch = _git(repo, "branch", "--show-current")
+        current_head = _git(repo, "rev-parse", "HEAD")
+        status = _git(repo, "status", "--porcelain", "--untracked-files=all")
+    except Exception as exc:
+        return {"status": "failed", "reason": f"Could not inspect repository during recovery: {exc}"}
+    if current_branch != branch:
+        return {"status": "failed", "reason": f"Repository branch changed to '{current_branch or 'detached HEAD'}'."}
+    if current_head == pre:
+        return {"status": "restored", "reason": "Repository was already at the pre-update HEAD."}
+    if current_head != post:
+        return {
+            "status": "failed",
+            "reason": f"Repository HEAD {_short(current_head)} is neither the pre-update nor updater target revision.",
+        }
+    if status:
+        return {"status": "failed", "reason": "Repository contains user changes; automatic crash recovery will not overwrite them."}
+    return _rollback_repo(repo, branch, pre, post, True)
+
+
+def recover_incomplete_update(
+    repo: Path,
+    runtime: Path,
+    *,
+    launchd_label: str = DEFAULT_LAUNCHD_LABEL,
+    skip_restart: bool = False,
+) -> dict | None:
+    payload = read_update_state()
+    if not isinstance(payload, dict) or int(payload.get("transaction_version") or 0) != 1:
+        return None
+    status = str(payload.get("status") or "")
+    if status not in _INCOMPLETE_UPDATE_STATES:
+        return None
+    if Path(str(payload.get("repo") or "")).resolve(strict=False) != repo.resolve(strict=False):
+        raise UpdateError("Incomplete updater transaction belongs to a different repository; refusing automatic recovery.")
+    if Path(str(payload.get("runtime") or "")).resolve(strict=False) != runtime.resolve(strict=False):
+        raise UpdateError("Incomplete updater transaction belongs to a different runtime; refusing automatic recovery.")
+
+    print(f"[mac-mcp update] Recovering interrupted update transaction at stage '{status}'...", flush=True)
+    dep_result = _recover_dependency_from_journal(runtime, payload)
+
+    # If dependency commit completed before the crash, rolling source/runtime
+    # backward would create a mixed old-code/new-deps installation. In that one
+    # narrow case, finish the already-verified target commit instead.
+    if status in {"dependency_commit_started", "dependency_committed"} and dep_result.get("status") == "committed":
+        target = str(payload.get("to_commit") or "")
+        try:
+            head = _git(repo, "rev-parse", "HEAD")
+        except Exception as exc:
+            raise UpdateError(f"Could not verify interrupted dependency commit: {exc}") from exc
+        if head != target or read_deployed_commit(runtime) != target:
+            raise UpdateError("Dependency commit completed but source/deployed markers do not match target; manual recovery required.")
+        if skip_restart:
+            raise UpdateError("Interrupted committed update requires a verified service restart before recovery can complete.")
+        health_url = _restart_service(runtime, str(payload.get("launchd_label") or launchd_label))
+        if not _health_ok(health_url):
+            raise UpdateError("Interrupted committed update could not restore a healthy target service.")
+        recovered = {
+            **payload,
+            "status": "completed",
+            "recovered_after_crash": True,
+            "recovery": {"status": "finalized_target", "health_url": health_url},
+        }
+        _write_update_state(runtime, recovered)
+        return recovered
+
+    if dep_result.get("status") == "failed":
+        failed = {**payload, "status": "recovery_failed", "recovery": {"dependency": dep_result}}
+        _write_update_state(runtime, failed)
+        raise UpdateError(dep_result.get("reason") or "Dependency crash recovery failed.")
+
+    repo_result = _recover_repo_from_journal(repo, payload)
+    if repo_result.get("status") != "restored":
+        failed = {
+            **payload,
+            "status": "recovery_failed",
+            "recovery": {"dependency": dep_result, "repo": repo_result},
+        }
+        _write_update_state(runtime, failed)
+        raise UpdateError(repo_result.get("reason") or "Repository crash recovery failed.")
+
+    runtime_result: dict[str, str] = {"status": "skipped", "reason": "Runtime synchronization had not started."}
+    runtime_sync_started = bool(payload.get("runtime_sync_started"))
+    backup_raw = str(payload.get("backup") or "")
+    if runtime_sync_started:
+        backup = Path(backup_raw)
+        if not backup.is_dir() or not (backup / "manifest.json").is_file():
+            runtime_result = {"status": "failed", "reason": "Runtime backup required for crash recovery is missing."}
+        else:
+            same_checkout = repo.resolve(strict=False) == runtime.resolve(strict=False)
+            if same_checkout:
+                safe, reason = _same_checkout_restore_guard(repo, str(payload.get("branch") or DEFAULT_BRANCH), str(payload.get("pre_update_head") or ""))
+                if not safe:
+                    runtime_result = {"status": "failed", "reason": reason}
+                else:
+                    _restore_runtime(runtime, backup)
+                    runtime_result = {"status": "restored", "reason": "Previous runtime files were restored from the durable backup."}
+            else:
+                _restore_runtime(runtime, backup)
+                runtime_result = {"status": "restored", "reason": "Previous runtime files were restored from the durable backup."}
+            if runtime_result.get("status") == "restored":
+                _write_state_commit(runtime, str(payload.get("from_commit") or payload.get("pre_update_head") or ""))
+
+    if runtime_result.get("status") == "failed":
+        failed = {
+            **payload,
+            "status": "recovery_failed",
+            "recovery": {"dependency": dep_result, "repo": repo_result, "runtime": runtime_result},
+        }
+        _write_update_state(runtime, failed)
+        raise UpdateError(runtime_result.get("reason") or "Runtime crash recovery failed.")
+
+    needs_restart = runtime_sync_started or status in {
+        "dependency_activating", "dependencies_activated", "restarting", "health_verified",
+        "marker_committed", "dependency_commit_started", "dependency_committed",
+    }
+    health_result: dict[str, str] = {"status": "skipped", "reason": "Service restart was not required."}
+    if needs_restart:
+        if skip_restart:
+            failed = {
+                **payload,
+                "status": "recovery_failed",
+                "recovery": {"dependency": dep_result, "repo": repo_result, "runtime": runtime_result,
+                             "health": {"status": "unverified", "reason": "Recovery restart was skipped."}},
+            }
+            _write_update_state(runtime, failed)
+            raise UpdateError("Interrupted update recovery requires a verified service restart.")
+        health_url = _restart_service(runtime, str(payload.get("launchd_label") or launchd_label))
+        if not _health_ok(health_url):
+            health_result = {"status": "failed", "reason": "Recovered runtime failed its health check."}
+        else:
+            health_result = {"status": "passed", "reason": "Recovered runtime restart and health check passed."}
+
+    recovery = {
+        "dependency": dep_result,
+        "repo": repo_result,
+        "runtime": runtime_result,
+        "health": health_result,
+    }
+    if health_result.get("status") == "failed":
+        failed = {**payload, "status": "recovery_failed", "recovery": recovery}
+        _write_update_state(runtime, failed)
+        raise UpdateError("Interrupted update rollback restored files but service health verification failed.")
+
+    recovered = {**payload, "status": "recovered", "recovered_after_crash": True, "recovery": recovery}
+    _write_update_state(runtime, recovered)
+    print("[mac-mcp update] Interrupted update recovered to the previous working checkpoint.", flush=True)
+    return recovered
+
+
 def apply_update(
     repo: str | Path | None = None,
     runtime: str | Path | None = None,
@@ -1100,6 +1385,12 @@ def apply_update(
     if deferred_seconds > 0:
         time.sleep(deferred_seconds)
     repo_path, runtime_path = resolve_paths(str(repo) if repo else None, str(runtime) if runtime else None)
+    recover_incomplete_update(
+        repo_path,
+        runtime_path,
+        launchd_label=launchd_label,
+        skip_restart=skip_restart,
+    )
     print("[mac-mcp update] Checking repository...", flush=True)
     info = check_update(repo_path, runtime_path, branch=branch, remote=remote, fetch=True)
     print(f"[mac-mcp update] Current deployed commit: {_short(info.deployed_commit)}", flush=True)
@@ -1177,6 +1468,38 @@ def apply_update(
         "status": "skipped",
         "reason": "Rollback runtime was not restored or restarted.",
     }
+    journal: dict = {
+        "transaction_version": 1,
+        "transaction_id": f"upd-{os.getpid()}-{time.time_ns()}",
+        "status": "preparing",
+        "repo": str(repo_path),
+        "runtime": str(runtime_path),
+        "branch": expected_branch,
+        "remote": remote,
+        "launchd_label": launchd_label,
+        "from_commit": info.deployed_commit,
+        "to_commit": info.target_commit,
+        "pre_update_head": pre_update_head,
+        "post_merge_head": info.target_commit,
+        "runtime_sync_started": False,
+    }
+
+    def checkpoint(status: str, **extra: object) -> None:
+        journal.update(extra)
+        journal["status"] = status
+        journal["updated_at"] = time.time()
+        _write_update_state(runtime_path, dict(journal))
+        persisted = read_update_state()
+        if (
+            not isinstance(persisted, dict)
+            or persisted.get("transaction_id") != journal["transaction_id"]
+            or persisted.get("status") != status
+        ):
+            raise UpdateError(
+                f"Could not durably persist updater transaction checkpoint '{status}'; refusing to continue."
+            )
+        _test_update_checkpoint_hook(status)
+
     deps_changed = _deps_changed(repo_path, info.deployed_commit, info.target_commit)
     try:
         current_branch = _git(repo_path, "branch", "--show-current")
@@ -1202,6 +1525,7 @@ def apply_update(
         backup, old_files, new_files = _backup_runtime(
             repo_path, runtime_path, info.deployed_commit, info.target_commit
         )
+        checkpoint("prepared", backup=str(backup), old_files=old_files, new_files=new_files)
         print(f"[mac-mcp update] Runtime backup: {backup}", flush=True)
 
         current_branch = _git(repo_path, "branch", "--show-current")
@@ -1216,6 +1540,7 @@ def apply_update(
                 f"Repository changed while preparing the update: expected {_short(pre_update_head)}, "
                 f"found {_short(current_head)}."
             )
+        checkpoint("repo_updating")
         print("[mac-mcp update] Updating repository (fast-forward)...", flush=True)
         _git(repo_path, "merge", "--ff-only", info.target_commit)
         merge_completed = True
@@ -1227,9 +1552,12 @@ def apply_update(
                 f"Repository fast-forward ended at {_short(observed_head)}, "
                 f"expected {_short(info.target_commit)}."
             )
+        checkpoint("repo_updated", repo_head_moved=repo_head_moved)
 
         runtime_sync_attempted = True
+        checkpoint("runtime_syncing", runtime_sync_started=True)
         synced = _sync_runtime(stage, runtime_path, old_files, new_files)
+        checkpoint("runtime_synced", runtime_sync_started=True, synced_files=synced)
         print(f"[mac-mcp update] Synced {synced} managed runtime file(s).", flush=True)
 
         if _refresh_installed_menu_app(runtime_path):
@@ -1240,8 +1568,29 @@ def apply_update(
             print("[mac-mcp update] Preparing transactional dependency environment...", flush=True)
             dependency_install_attempted = True
             staged_env = _prepare_dependency_environment(runtime_path, requirements, info.target_commit)
-            dependency_env_transaction = _activate_dependency_environment(runtime_path, staged_env)
+            dependency_marker_token = f"{os.getpid()}-{time.time_ns()}"
+            dependency_journal = _journal_dependency_payload(
+                runtime_path,
+                staged_env,
+                dependency_marker_token,
+            )
+            checkpoint(
+                "dependency_activating",
+                dependency=dependency_journal,
+                dependency_install_attempted=True,
+            )
+            dependency_env_transaction = _activate_dependency_environment(
+                runtime_path,
+                staged_env,
+                marker_token=dependency_marker_token,
+            )
             dependencies_updated = True
+            checkpoint(
+                "dependencies_activated",
+                dependency=dependency_journal,
+                dependency_install_attempted=True,
+                dependencies_updated=True,
+            )
             print("[mac-mcp update] Transactional dependency environment activated.", flush=True)
         elif deps_changed:
             print("[mac-mcp update] Dependency installation skipped (test mode).", flush=True)
@@ -1253,16 +1602,12 @@ def apply_update(
         if skip_restart:
             print("[mac-mcp update] Service restart skipped (test mode).", flush=True)
         else:
-            if target_has_health_gate:
-                _write_update_state(runtime_path, {
-                    "status": "health_gate",
-                    "from_commit": info.deployed_commit,
-                    "to_commit": info.target_commit,
-                    "repo": str(repo_path),
-                    "runtime": str(runtime_path),
-                    "release_id": verified_release.release_id,
-                    "release_version": verified_release.version,
-                })
+            checkpoint(
+                "restarting",
+                target_has_health_gate=target_has_health_gate,
+                release_id=verified_release.release_id,
+                release_version=verified_release.version,
+            )
             print("[mac-mcp update] Restarting Mac MCP...", flush=True)
             health_url = _restart_service(runtime_path, launchd_label)
             if not _health_ok(health_url):
@@ -1299,10 +1644,18 @@ def apply_update(
                     flush=True,
                 )
 
+        checkpoint(
+            "health_verified",
+            health_url=health_url,
+            health_skipped=skip_restart,
+        )
         _write_state_commit(runtime_path, info.target_commit)
+        checkpoint("marker_committed", deployed_marker=info.target_commit)
 
         if dependency_env_transaction is not None:
+            checkpoint("dependency_commit_started")
             dependency_commit = _commit_dependency_environment(dependency_env_transaction)
+            checkpoint("dependency_committed", dependency_commit=dependency_commit)
             print(
                 f"[mac-mcp update] Dependency environment {dependency_commit['status']}: "
                 f"{dependency_commit['reason']}",
@@ -1336,12 +1689,13 @@ def apply_update(
     except Exception as exc:
         message = str(exc)
         print(f"[mac-mcp update] ERROR: {message}", flush=True)
-        _write_update_state(runtime_path, {
-            "status": "rolling_back",
-            "error": message,
-            "from_commit": info.deployed_commit,
-            "to_commit": info.target_commit,
-        })
+        try:
+            checkpoint("rolling_back", error=message)
+        except Exception as journal_exc:
+            print(
+                f"[mac-mcp update] WARNING: could not persist rolling-back checkpoint: {journal_exc}",
+                flush=True,
+            )
         if dependency_env_transaction is not None:
             dependency_rollback = _rollback_dependency_environment(dependency_env_transaction)
             print(

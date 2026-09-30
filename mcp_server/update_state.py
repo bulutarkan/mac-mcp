@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -50,11 +51,53 @@ def write_deployed_commit(commit: str) -> None:
     deployed_commit_path().write_text(commit + "\n", encoding="utf-8")
 
 
-def write_update_state(payload: dict[str, Any]) -> None:
+def read_update_state() -> dict[str, Any] | None:
+    path = update_state_path()
+    if not path.exists():
+        return None
     try:
-        update_state_path().write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def write_update_state(payload: dict[str, Any]) -> None:
+    path = update_state_path()
+    root = path.parent
+    root.mkdir(parents=True, exist_ok=True)
+    fd = -1
+    tmp: Path | None = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(prefix=".state.", suffix=".tmp", dir=str(root), text=True)
+        tmp = Path(tmp_name)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+        try:
+            directory_fd = os.open(root, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
     except Exception:
         pass
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
 
 def migrate_completed_legacy_update(runtime: Path) -> bool:

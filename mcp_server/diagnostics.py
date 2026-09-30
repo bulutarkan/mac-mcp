@@ -270,6 +270,30 @@ def _check_update_recovery_state() -> CheckResult:
             "Updater state has an invalid shape.", started=started,
             remediation="Inspect ~/.mac-mcp/update/state.json before running another update.",
         )
+    update_status = str(payload.get("status") or "")
+    transaction_version = int(payload.get("transaction_version") or 0)
+    incomplete_states = {
+        "prepared", "repo_updating", "repo_updated", "runtime_syncing", "runtime_synced",
+        "dependency_activating", "dependencies_activated", "restarting", "health_verified",
+        "marker_committed", "dependency_commit_started", "dependency_committed", "rolling_back",
+    }
+    if transaction_version == 1 and update_status in incomplete_states:
+        return result(
+            "update.recovery", "update", FAIL, "UPDATE_RECOVERY_REQUIRED",
+            f"Updater transaction stopped during '{update_status}' and requires crash recovery.",
+            started=started,
+            remediation="Run `mac-mcp update` again to recover the interrupted transaction before making other runtime changes.",
+            details={"update_status": update_status, "transaction_id": payload.get("transaction_id")},
+        )
+    if update_status == "recovery_failed":
+        return result(
+            "update.recovery", "update", FAIL, "UPDATE_RECOVERY_FAILED",
+            "Automatic updater crash recovery failed and manual inspection is required.",
+            started=started,
+            remediation="Inspect updater state and backups under ~/.mac-mcp/update before retrying the update.",
+            details={"update_status": update_status, "transaction_id": payload.get("transaction_id")},
+        )
+
     runtime_rollback = payload.get("runtime_rollback") if isinstance(payload.get("runtime_rollback"), dict) else {}
     rollback_health = payload.get("rollback_health") if isinstance(payload.get("rollback_health"), dict) else {}
     rollback_status = str(runtime_rollback.get("status") or "")

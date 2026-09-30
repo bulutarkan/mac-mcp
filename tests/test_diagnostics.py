@@ -212,6 +212,33 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual("trusted", row["details"]["profile"])
         self.assertEqual("env", row["details"]["profile_source"])
 
+    def test_update_recovery_incomplete_transaction_requires_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            path.write_text(json.dumps({
+                "transaction_version": 1,
+                "transaction_id": "upd-test",
+                "status": "runtime_synced",
+            }), encoding="utf-8")
+            with patch("mcp_server.diagnostics.update_state_path", return_value=path):
+                row = diagnostics._check_update_recovery_state().to_dict()
+        self.assertEqual("fail", row["status"])
+        self.assertEqual("UPDATE_RECOVERY_REQUIRED", row["reason_code"])
+        self.assertEqual("runtime_synced", row["details"]["update_status"])
+
+    def test_update_recovery_failed_transaction_is_actionable(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            path.write_text(json.dumps({
+                "transaction_version": 1,
+                "transaction_id": "upd-test",
+                "status": "recovery_failed",
+            }), encoding="utf-8")
+            with patch("mcp_server.diagnostics.update_state_path", return_value=path):
+                row = diagnostics._check_update_recovery_state().to_dict()
+        self.assertEqual("fail", row["status"])
+        self.assertEqual("UPDATE_RECOVERY_FAILED", row["reason_code"])
+
     def test_update_recovery_degraded_state_fails_doctor_check(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "state.json"
