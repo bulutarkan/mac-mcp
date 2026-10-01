@@ -2,7 +2,7 @@
   "use strict";
   const $ = (id) => document.getElementById(id);
   const LEGACY_STORAGE_KEY = "mac_mcp_mobile_session";
-  const state = { timer: null };
+  const state = { timer: null, agentCollapsed: null, activeAgents: null };
 
   function clearLegacySessionExposure() {
     try { localStorage.removeItem(LEGACY_STORAGE_KEY); } catch (_) {}
@@ -120,6 +120,52 @@
     const n = Number(v); if (!Number.isFinite(n)) return "—";
     return (Math.round(n*10)%10===0 ? Math.round(n) : n.toFixed(1)) + "%";
   }
+  function svgIcon(name, cls="ui-icon") {
+    const icons = {
+      terminal: '<path d="M5 7l4 5-4 5M11 17h8"/>',
+      browser: '<circle cx="12" cy="12" r="8.5"/><path d="m15.8 8.2-2.2 5.4-5.4 2.2 2.2-5.4 5.4-2.2Z"/><circle cx="12" cy="12" r="1.1" class="icon-fill"/>',
+      file: '<path d="M7 3.5h6l4 4V20.5H7z"/><path d="M13 3.5v4h4M9.5 12h5M9.5 15h5"/>',
+      search: '<circle cx="10.5" cy="10.5" r="5.5"/><path d="m14.6 14.6 4 4"/>',
+      agent: '<rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 2.5v2.5M15 2.5v2.5M9 19v2.5M15 19v2.5M2.5 9H5M2.5 15H5M19 9h2.5M19 15h2.5M9.5 10h5v4h-5z"/>',
+      network: '<circle cx="12" cy="12" r="8.5"/><path d="M3.8 12h16.4M12 3.5c2.2 2.3 3.3 5.1 3.3 8.5S14.2 18.2 12 20.5M12 3.5C9.8 5.8 8.7 8.6 8.7 12s1.1 6.2 3.3 8.5"/>',
+      code: '<path d="m9 7-5 5 5 5M15 7l5 5-5 5M13.5 5l-3 14"/>',
+      observe: '<rect x="4" y="5" width="16" height="12" rx="2"/><path d="M9 20h6M12 17v3"/><circle cx="12" cy="11" r="2.2"/>',
+      tool: '<path d="m14.2 6.2 3.6-2a4.4 4.4 0 0 1-5.5 5.5l-6.7 6.7a1.8 1.8 0 1 0 2.5 2.5l6.7-6.7a4.4 4.4 0 0 1 5.5-5.5l-2 3.6-4.1-4.1Z"/>',
+      session: '<rect x="5" y="4" width="14" height="11" rx="2"/><path d="M8 18h8M8 20.5h8"/>'
+    };
+    return '<svg class="' + cls + '" viewBox="0 0 24 24" aria-hidden="true">' + (icons[name] || icons.tool) + '</svg>';
+  }
+  function toolIconName(value) {
+    const v = String(value || "").toLowerCase();
+    if (v.includes("browser") || v.includes("safari") || v.includes("chrome")) return "browser";
+    if (v.includes("execute_js") || v.includes("javascript") || v.includes("script")) return "code";
+    if (v.includes("command") || v.includes("terminal") || v === "bash" || v.includes("shell") || v.includes("applescript")) return "terminal";
+    if (v.includes("read") || v.includes("write") || v.includes("edit") || v.includes("file")) return "file";
+    if (v.includes("search") || v.includes("find")) return "search";
+    if (v.includes("agent")) return "agent";
+    if (v.includes("http") || v.includes("web") || v.includes("network")) return "network";
+    if (v.includes("observe") || v.includes("screen") || v.includes("ui")) return "observe";
+    return "tool";
+  }
+  function setAgentCollapsed(collapsed) {
+    state.agentCollapsed = Boolean(collapsed);
+    $("agentsCollapse").classList.toggle("collapsed", state.agentCollapsed);
+    $("agentsToggle").setAttribute("aria-expanded", state.agentCollapsed ? "false" : "true");
+  }
+  function updateAgentDisclosure(activeCount) {
+    const count = Math.max(0, Number(activeCount || 0));
+    const idle = count === 0;
+    const section = $("agentsSection");
+    const toggle = $("agentsToggle");
+    section.classList.toggle("collapsible", idle);
+    toggle.disabled = !idle;
+    if (!idle) {
+      setAgentCollapsed(false);
+    } else if (state.activeAgents !== 0 || state.agentCollapsed === null) {
+      setAgentCollapsed(true);
+    }
+    state.activeAgents = count;
+  }
   function agentRow(a) {
     const status = String(a.status || "");
     const running = status === "running" || status === "starting";
@@ -128,11 +174,14 @@
     const provider = [a.provider, a.model].filter(Boolean).join(" · ");
     const detail = a.last_tool || a.phase || status || "Idle";
     const side = running ? duration(a.duration_ms) : (a.ended_at ? ago(a.ended_at) : duration(a.duration_ms));
+    const detailIcon = toolIconName(a.last_tool || a.phase || status);
     return '<div class="agent">' +
-      '<span class="state ' + (running ? "running" : (failed ? "failed" : "")) + '"></span>' +
+      '<span class="row-icon agent-icon">' + svgIcon("agent") +
+      '<span class="icon-state ' + (running ? "running" : (failed ? "failed" : "")) + '"></span></span>' +
       '<div class="agent-main"><div class="agent-title"><strong>' + esc(title) + '</strong>' +
       (a.reasoning ? '<span class="badge">' + esc(a.reasoning) + '</span>' : '') +
-      '</div><div class="agent-sub"><span>' + esc(provider) + '</span><span>·</span><span>' + esc(detail) + '</span></div></div>' +
+      '</div><div class="agent-sub"><span>' + esc(provider) + '</span><span>·</span><span class="detail-with-icon">' +
+      svgIcon(detailIcon, "mini-icon") + esc(detail) + '</span></div></div>' +
       '<div class="agent-side"><strong>' + esc(side) + '</strong>' +
       (a.tool_call_count ? '<span>' + esc(a.tool_call_count) + ' tools</span>' : '') + '</div></div>';
   }
@@ -141,7 +190,8 @@
     const site = e.browser_context && e.browser_context.site ? e.browser_context.site : "";
     const sub = [e.source, site, ago(t)].filter(Boolean).join(" · ");
     const cls = e.status === "running" ? "running" : (e.status === "error" ? "error" : "");
-    return '<div class="activity-row"><div class="activity-main"><strong>' + esc(e.tool || "Tool call") +
+    return '<div class="activity-row"><span class="row-icon activity-icon">' +
+      svgIcon(toolIconName(e.tool)) + '</span><div class="activity-main"><strong>' + esc(e.tool || "Tool call") +
       '</strong><span>' + esc(sub) + '</span></div><div class="activity-side"><span>' +
       esc(duration(e.duration_ms)) + '</span><span class="result ' + cls + '"></span></div></div>';
   }
@@ -176,8 +226,9 @@
     const pending = Number(s.pending_instruction_count || s.queued || 0);
     const awaiting = Number(s.awaiting_acknowledgement_count || 0);
     const queueText = pending ? pending + " queued" : (awaiting ? awaiting + " awaiting ack" : "");
+    const iconName = terminal ? "session" : toolIconName([s.tool, s.detail, s.label].filter(Boolean).join(" "));
     return '<div class="session-card ' + section + '">' +
-      '<span class="session-status"></span>' +
+      '<span class="row-icon session-icon">' + svgIcon(iconName) + '<span class="session-status"></span></span>' +
       '<div class="session-main"><div class="session-title">' + esc(title) + '</div>' +
       '<div class="session-sub">' + esc(detail || "Session") + '</div></div>' +
       '<div class="session-side"><strong>' + esc(activity || lifecycle) + '</strong>' +
@@ -273,6 +324,7 @@
       $("agentHint").textContent = status.active_agents ? "Running on your Mac right now" : "Nothing running right now";
       $("agentMeta").textContent = agents.active_count ? agents.active_count + " active" : ((agents.count || 0) ? "Recent" : "");
       $("agents").innerHTML = (agents.agents || []).map(agentRow).join("") || '<div class="empty">No delegated agents yet.</div>';
+      updateAgentDisclosure(agents.active_count ?? status.active_agents ?? 0);
       const seen = new Set();
       const rows = [...(activity.active || []), ...(activity.events || [])].filter(e => {
         const key = e.event_id || ((e.tool || "") + ":" + (e.timestamp || e.started_at || ""));
@@ -302,6 +354,13 @@
     }
     await refresh();
     if (!state.timer && !$("dashboard").classList.contains("hidden")) state.timer = setInterval(refresh, 4000);
+  }
+  const agentsToggle = $("agentsToggle");
+  if (agentsToggle) {
+    agentsToggle.addEventListener("click", () => {
+      if (!$("agentsSection").classList.contains("collapsible")) return;
+      setAgentCollapsed(!state.agentCollapsed);
+    });
   }
   const manualPairInput = $("manualPairCode");
   const manualPairForm = $("manualPairForm");

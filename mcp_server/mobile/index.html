@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-title" content="Mac MCP">
   <title>Mac MCP</title>
   <link rel="manifest" href="/mobile/assets/manifest.json">
-  <link rel="stylesheet" href="/mobile/assets/mobile.css?v=mobile-v5">
+  <link rel="stylesheet" href="/mobile/assets/mobile.css?v=mobile-v6">
 </head>
 <body>
   <main class="shell">
@@ -69,12 +69,17 @@
         </div>
       </section>
 
-      <section class="section">
+      <section id="agentsSection" class="section agents-section">
         <div class="section-head">
           <h2>Agents</h2>
-          <span id="agentMeta"></span>
+          <button id="agentsToggle" class="section-toggle" type="button" aria-expanded="true" aria-controls="agentsCollapse">
+            <span id="agentMeta"></span>
+            <svg class="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 6 8 10.5 12.5 6"/></svg>
+          </button>
         </div>
-        <div id="agents" class="stack"></div>
+        <div id="agentsCollapse" class="agent-collapse">
+          <div id="agents" class="stack"></div>
+        </div>
       </section>
 
       <section class="section sessions-section">
@@ -96,6 +101,6 @@
       </section>
     </div>
   </main>
-  <script src="/mobile/assets/mobile.js?v=mobile-v5" defer></script>
+  <script src="/mobile/assets/mobile.js?v=mobile-v6" defer></script>
 </body>
 </html>

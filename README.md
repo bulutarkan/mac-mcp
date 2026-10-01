@@ -2,7 +2,7 @@
   <img src="assets/screenshots/mac-mcp.png" alt="Mac MCP" width="760">
 </p>
 
-# Mac MCP 2.1.6
+# Mac MCP 2.1.7
 
 Mac MCP is a local macOS control server for AI agents. It exposes your Mac through a native MCP endpoint and a REST/OpenAPI surface, with shell, files, browser automation, macOS UI control, delegated OpenCode/Codex agents, memory, Agent Skills, voice interaction, self-update tooling, and a local operations dashboard.
 
@@ -28,20 +28,17 @@ This is a powerful combination, not a Mac MCP-only voice feature. ChatGPT provid
 
 **Secure bootstrap defaults:** missing configuration fails closed. Without explicit settings, MCP authentication is required, shell execution and HTTP/browser host allowlists are disabled, and the global permission profile defaults to `standard` rather than `trusted`. A normal installer run generates the API key and writes the intended settings explicitly. Deliberate `MCP_ALLOW_NO_AUTH=true` is accepted only on loopback with no managed public endpoint; non-loopback or tunneled no-auth startup is refused.
 
-## What's new in 2.1.6
+## What's new in 2.1.7
 
-2.1.6 is the public roll-up of the signed 2.1.5 stable checkpoints through **r13**. The main changes are:
+2.1.7 focuses on making Mac MCP safer to leave running, easier to recover, and much easier to understand from both the Mac and a paired phone.
 
-- **Safer delegated agents:** restricted providers use stronger process boundaries, delegated control-plane access is lineage-scoped, and uncertain side effects fail closed instead of being replayed.
-- **Real team orchestration:** agent teams now support dependency graphs, reviewer quality gates, failure-aware quorum semantics, shared deadlines/retry/tool budgets, and adaptive retry admission.
-- **Isolated coding work:** `workspace_write` agents can work in per-agent Git worktrees with conflict-aware fan-in and explicit safe apply back to the user's checkout.
-- **Global scheduling and resource ownership:** concurrent teams share a persisted admission scheduler with provider capacity, FIFO-aware queueing, browser/native/process/clipboard claims, crash-safe leases, and pre-start revision checks.
-- **Closed-loop Computer Use:** `computer_plan` v2 adds `wait_until`, conditional branches, bounded retry/fallback, fresh browser/native semantic rebind, AXIdentifier-backed native identity, and resource preflight while refusing duplicate mutation after ambiguous/no-effect outcomes.
-- **Cancellation and outcome safety:** client cancellation now propagates through sync workers and owned process/browser/native work, with bounded cleanup and explicit non-retryable `outcome_unknown` when a mutating result cannot be proven.
-- **Better accountability:** the dashboard can show sanitized task/session-scoped **What Changed on My Mac** receipts without exposing raw commands, page content, request bodies, or secrets.
-- **Regression-backed security:** the public Security Assurance Matrix now covers ten control classes, while Computer Use conformance v3 checks 18 deterministic safety/reliability contracts in CI, including model self-escalation attempts for browser foreground focus.
-
-The underlying signed 2.1.5 checkpoints were: **r1 verified stable channel; r2 provider process boundary; r3-r4 dependency graph/quality-gate hardening; r5 change receipts; r6 team budgets/adaptive retries; r7 assurance matrix; r8 lineage isolation; r9 failure-aware quorum; r10 cancellation propagation; r11 Git worktree isolation; r12 global admission scheduler; r13 closed-loop Computer Use recovery.**
+- **Secure mobile control surface:** /mobile now supports persistent paired devices, manual pairing codes, compact agent/activity visibility, and lifecycle-aware Sessions grouped into Needs Attention, Active, and Recent.
+- **Cleaner mobile UX:** idle delegated agents collapse by default, while Agents, Sessions, and Recent Activity use compact tool-aware icons for terminal, browser, file, search, and related work without changing the dashboard's minimal dark theme.
+- **Durable updates and recovery:** update state is journaled across prepare, backup, sync, dependencies, restart, health, rollback, and recovery; the native app shows real progress and distinguishes completed, recovered, blocked, and recovery-failed outcomes.
+- **Safer restart/process ownership:** restart and updater flows verify managed process identity, refuse foreign listeners/PID reuse, survive cancellation where appropriate, and validate post-restart health before reporting success.
+- **Transactional dependency and runtime changes:** dependency activation and update migration are guarded so failures can recover without silently leaving a half-updated runtime.
+- **Stronger Computer Use reliability:** event-driven waits, delta-aware observe, trusted Chrome pointer dispatch, stricter click-effect verification, modal targeting, and foreground-capability enforcement reduce focus stealing and ambiguous browser actions.
+- **More accountable delegated work:** typed agent result envelopes, safer fan-in, whole-run filesystem undo, and unified tool discovery/invocation make multi-agent work easier to inspect and recover.
 
 ## Browser automation that doesn't hijack your Mac
 
