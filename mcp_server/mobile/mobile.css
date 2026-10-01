@@ -13,7 +13,7 @@ body{
     radial-gradient(700px 380px at 50% -140px,rgba(255,255,255,.055),transparent 65%),
     var(--bg);
 }
-.shell{width:min(100%,480px);margin:0 auto;padding:calc(18px + env(safe-area-inset-top)) 16px calc(28px + env(safe-area-inset-bottom))}
+.shell{width:min(100%,480px);min-height:100vh;min-height:100dvh;margin:0 auto;padding:calc(18px + env(safe-area-inset-top)) 16px calc(28px + env(safe-area-inset-bottom))}
 .topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:2px 1px 22px}
 .identity{display:flex;align-items:center;gap:11px;min-width:0}
 .mark{
@@ -90,6 +90,50 @@ h1{margin:0;font-size:17px;line-height:1.15;letter-spacing:-.025em;font-weight:7
 .result.running{background:var(--amber)}
 .result.error{background:var(--red)}
 .empty{padding:22px 14px;text-align:center;color:var(--soft);font-size:9.5px}
+.sessions-surface{display:grid;gap:12px}
+.session-group{overflow:hidden;border-radius:16px;border:1px solid #1e1e22;background:#101012}
+.session-group-head{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  min-height:34px;padding:8px 11px;border-bottom:1px solid #1c1c20
+}
+.session-group-title{display:flex;align-items:center;gap:7px;min-width:0}
+.session-group-title strong{font-size:9.5px;font-weight:720}
+.session-group-title span:last-child{color:var(--soft);font-size:8px}
+.session-group-count{
+  min-width:20px;height:18px;padding:0 6px;border-radius:8px;display:grid;place-items:center;
+  background:#171719;color:#8e8e95;font-size:8px;font-weight:720
+}
+.session-group.attention .session-group-count{color:#ff8c90;background:rgba(255,99,104,.08)}
+.session-group.active .session-group-count{color:#73dca2;background:rgba(54,208,124,.08)}
+.session-list{display:grid}
+.session-card{
+  display:grid;grid-template-columns:10px minmax(0,1fr) auto;gap:10px;align-items:center;
+  min-height:58px;padding:10px 12px;border-top:1px solid #1c1c20
+}
+.session-card:first-child{border-top:0}
+.session-status{width:8px;height:8px;border-radius:50%;background:#55555c}
+.session-card.active .session-status{background:var(--green);box-shadow:0 0 0 3px rgba(54,208,124,.07)}
+.session-card.attention .session-status{background:var(--red);box-shadow:0 0 0 3px rgba(255,99,104,.06)}
+.session-main{min-width:0}
+.session-title{
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:10.5px;font-weight:680
+}
+.session-sub{
+  display:flex;align-items:center;gap:5px;min-width:0;margin-top:5px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:8.5px
+}
+.session-side{text-align:right;white-space:nowrap}
+.session-side strong{display:block;color:#9b9ba1;font-size:8.5px;font-weight:680}
+.session-side span{display:block;margin-top:5px;color:var(--soft);font-size:8px}
+.session-loading,.session-error{
+  padding:22px 14px;border:1px solid #1e1e22;border-radius:16px;background:#101012;
+  text-align:center;color:var(--soft);font-size:9.5px
+}
+.session-error button{
+  margin-top:10px;height:30px;padding:0 11px;border-radius:9px;border:1px solid #2d2d31;
+  background:#18181b;color:#d8d8dc;font-size:9px;font-weight:680
+}
 .pairing{
   margin-top:14vh;padding:34px 24px 28px;border-radius:22px;
   border:1px solid #202024;background:#111113;text-align:center;box-shadow:0 18px 50px rgba(0,0,0,.28)

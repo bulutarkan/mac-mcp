@@ -17,7 +17,7 @@ from .mobile_auth import DEFAULT_SESSION_TTL_S, PAIR_PREFIX, SESSION_PREFIX, Mob
 from .observability import TelemetryManager
 from .public_endpoint import PublicEndpointError, resolve_public_endpoint
 from .security import Settings, dashboard_authorized
-from .steering import SteeringManager
+from .steering import STEERING_SCHEMA_VERSION, SteeringManager
 from .tools_agents import list_agents
 from .version import __version__
 
@@ -105,12 +105,33 @@ def _mobile_agent_rows(items: list[Dict[str, Any]], limit: int = 6) -> list[Dict
 
 def _safe_session(item: Dict[str, Any]) -> Dict[str, Any]:
     keys = (
-        "session_id", "flow_number", "label", "tool", "state", "queued",
-        "activity_state", "lifecycle_state", "last_transition_at",
+        "schema_version", "session_id", "flow_number", "label", "detail", "tool",
+        "state", "queued", "activity_state", "lifecycle_state", "last_transition_at",
         "created_at", "last_activity_at", "activity_ms", "active_calls",
         "pending_instruction_count", "awaiting_acknowledgement_count",
     )
-    return {key: item.get(key) for key in keys}
+    lifecycle = str(item.get("lifecycle_state") or "").strip().lower()
+    last_error = str(item.get("last_error") or "").strip()
+    safe = {key: item.get(key) for key in keys}
+    safe["needs_attention"] = bool(last_error) or lifecycle in {
+        "failed", "disconnected", "expired", "unknown",
+    }
+    return safe
+
+
+def _safe_recent_session(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if item.get("kind") != "session":
+        return None
+    lifecycle = str(item.get("lifecycle_state") or "").strip().lower()
+    return {
+        "session_id": item.get("session_id"),
+        "status": item.get("status"),
+        "lifecycle_state": item.get("lifecycle_state"),
+        "created_at": item.get("created_at"),
+        "transitioned_at": item.get("transitioned_at"),
+        "tool": item.get("tool"),
+        "needs_attention": lifecycle in {"failed", "disconnected", "expired", "unknown"},
+    }
 
 
 def _safe_event(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -334,10 +355,28 @@ def create_mobile_routes(
         _session, denied = require_mobile(request)
         if denied is not None:
             return denied
-        rows = [] if steering is None else [
-            _safe_session(row) for row in steering.sessions()[:8]
-        ]
-        return JSONResponse({"ok": True, "count": len(rows), "sessions": rows})
+        if steering is None:
+            return JSONResponse({
+                "ok": True,
+                "schema_version": STEERING_SCHEMA_VERSION,
+                "count": 0,
+                "sessions": [],
+                "recent": [],
+                "session_ttl_minutes": 10,
+            })
+        rows = [_safe_session(row) for row in steering.sessions()[:12]]
+        recent = [
+            safe for safe in (_safe_recent_session(row) for row in steering.recent(30))
+            if safe is not None
+        ][:12]
+        return JSONResponse({
+            "ok": True,
+            "schema_version": STEERING_SCHEMA_VERSION,
+            "count": len(rows),
+            "sessions": rows,
+            "recent": recent,
+            "session_ttl_minutes": steering.session_ttl_minutes,
+        })
 
     async def activity_view(request: Request) -> Response:
         _session, denied = require_mobile(request)

@@ -22,7 +22,7 @@ DASHBOARD_AUTH = {"authorization": "Bearer " + DASHBOARD_TOKEN}
 
 
 class MobileDashboardTests(unittest.TestCase):
-    def make_app(self, root: Path):
+    def make_app(self, root: Path, steering=None):
         telemetry = TelemetryManager(db_path=root / "telemetry.sqlite3")
         store = MobileAuthStore(root / "mobile_auth.sqlite3")
         settings = load_settings()
@@ -32,7 +32,7 @@ class MobileDashboardTests(unittest.TestCase):
             telemetry,
             settings,
             DASHBOARD_TOKEN,
-            steering=None,
+            steering=steering,
             auth_store=store,
         ))
         return Starlette(routes=routes), telemetry, store
@@ -401,6 +401,102 @@ class MobileDashboardTests(unittest.TestCase):
             self.assertIn("read_file", activity.text)
             self.assertNotIn("/tmp/private-file", activity.text)
             self.assertNotIn("secret-output", activity.text)
+
+    def test_mobile_sessions_expose_grouping_signals_without_error_details(self):
+        class FakeSteering:
+            session_ttl_minutes = 10
+
+            def sessions(self):
+                now = time.time()
+                return [
+                    {
+                        "schema_version": 1,
+                        "session_id": "sess_active",
+                        "flow_number": 1,
+                        "label": "Safari · example.com",
+                        "detail": "browser observe",
+                        "tool": "browser_observe",
+                        "state": "working",
+                        "queued": 1,
+                        "activity_state": "working",
+                        "lifecycle_state": "queued",
+                        "last_transition_at": now - 3,
+                        "created_at": now - 40,
+                        "last_activity_at": now - 2,
+                        "activity_ms": 2_000,
+                        "active_calls": 1,
+                        "pending_instruction_count": 1,
+                        "awaiting_acknowledgement_count": 0,
+                        "last_error": None,
+                    },
+                    {
+                        "schema_version": 1,
+                        "session_id": "sess_attention",
+                        "flow_number": 2,
+                        "label": "Agent session",
+                        "detail": "Idle",
+                        "tool": "read_file",
+                        "state": "idle",
+                        "queued": 0,
+                        "activity_state": "idle",
+                        "lifecycle_state": "ready",
+                        "last_transition_at": now - 8,
+                        "created_at": now - 50,
+                        "last_activity_at": now - 8,
+                        "activity_ms": 8_000,
+                        "active_calls": 0,
+                        "pending_instruction_count": 0,
+                        "awaiting_acknowledgement_count": 0,
+                        "last_error": "security:private-policy-detail",
+                    },
+                ]
+
+            def recent(self, _limit=30):
+                now = time.time()
+                return [
+                    {
+                        "kind": "instruction",
+                        "session_id": "sess_active",
+                        "lifecycle_state": "queued",
+                        "text": "must-not-leak",
+                        "transitioned_at": now - 4,
+                    },
+                    {
+                        "kind": "session",
+                        "session_id": "sess_expired",
+                        "status": "session_expired",
+                        "lifecycle_state": "expired",
+                        "created_at": now - 90,
+                        "transitioned_at": now - 6,
+                        "tool": "write_file",
+                        "last_error": "secret-terminal-detail",
+                    },
+                ]
+
+        with tempfile.TemporaryDirectory() as td:
+            app, _telemetry, _store = self.make_app(Path(td), steering=FakeSteering())
+            manager = TestClient(app, base_url="https://testserver")
+            code = self.pair_code(self.create_pairing(manager)["pair_url"])
+            phone = TestClient(app, base_url="https://testserver")
+            self.assertEqual(
+                200,
+                phone.post("/mobile/pair", json={"code": code, "device_name": "iPhone"}).status_code,
+            )
+
+            response = phone.get("/mobile/api/sessions")
+            self.assertEqual(200, response.status_code)
+            body = response.json()
+            self.assertEqual(1, body["schema_version"])
+            self.assertEqual(2, body["count"])
+            self.assertEqual(10, body["session_ttl_minutes"])
+            self.assertEqual(["sess_active", "sess_attention"], [row["session_id"] for row in body["sessions"]])
+            self.assertFalse(body["sessions"][0]["needs_attention"])
+            self.assertTrue(body["sessions"][1]["needs_attention"])
+            self.assertEqual("sess_expired", body["recent"][0]["session_id"])
+            self.assertTrue(body["recent"][0]["needs_attention"])
+            self.assertNotIn("private-policy-detail", response.text)
+            self.assertNotIn("secret-terminal-detail", response.text)
+            self.assertNotIn("must-not-leak", response.text)
 
     def test_revoke_invalidates_existing_mobile_session(self):
         with tempfile.TemporaryDirectory() as td:

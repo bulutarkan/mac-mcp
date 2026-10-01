@@ -145,6 +145,107 @@
       '</strong><span>' + esc(sub) + '</span></div><div class="activity-side"><span>' +
       esc(duration(e.duration_ms)) + '</span><span class="result ' + cls + '"></span></div></div>';
   }
+  function lifecycleLabel(value) {
+    return ({
+      ready:"Ready", queued:"Queued", delivered:"Delivered", acknowledged:"Acknowledged",
+      failed:"Failed", disconnected:"Disconnected", expired:"Expired", unknown:"Needs attention"
+    })[String(value || "").toLowerCase()] || "Ready";
+  }
+  function sessionSection(s) {
+    const lifecycle = String(s.lifecycle_state || "").toLowerCase();
+    if (s.needs_attention || ["failed","disconnected","expired","unknown"].includes(lifecycle)) return "attention";
+    if (
+      String(s.activity_state || s.state || "").toLowerCase() === "working" ||
+      ["queued","delivered"].includes(lifecycle) ||
+      Number(s.pending_instruction_count || s.queued || 0) > 0 ||
+      Number(s.awaiting_acknowledgement_count || 0) > 0
+    ) return "active";
+    return "recent";
+  }
+  function sessionCard(s, section, terminal=false) {
+    const lifecycle = lifecycleLabel(s.lifecycle_state);
+    const title = terminal
+      ? "Session ended"
+      : (s.label || (s.flow_number ? "Session " + s.flow_number : "Agent session"));
+    const detail = [s.detail || s.tool, lifecycle].filter(Boolean).join(" · ");
+    const activity = terminal
+      ? ago(s.transitioned_at || s.created_at)
+      : (section === "active" && Number(s.activity_ms || 0) > 0
+          ? duration(s.activity_ms)
+          : ago(s.last_activity_at || s.last_transition_at || s.created_at));
+    const pending = Number(s.pending_instruction_count || s.queued || 0);
+    const awaiting = Number(s.awaiting_acknowledgement_count || 0);
+    const queueText = pending ? pending + " queued" : (awaiting ? awaiting + " awaiting ack" : "");
+    return '<div class="session-card ' + section + '">' +
+      '<span class="session-status"></span>' +
+      '<div class="session-main"><div class="session-title">' + esc(title) + '</div>' +
+      '<div class="session-sub">' + esc(detail || "Session") + '</div></div>' +
+      '<div class="session-side"><strong>' + esc(activity || lifecycle) + '</strong>' +
+      '<span>' + esc(queueText || lifecycle) + '</span></div></div>';
+  }
+  function sessionGroup(key, title, subtitle, rows) {
+    if (!rows.length) return "";
+    return '<div class="session-group ' + key + '">' +
+      '<div class="session-group-head"><div class="session-group-title"><strong>' + esc(title) +
+      '</strong><span>' + esc(subtitle) + '</span></div><span class="session-group-count">' +
+      rows.length + '</span></div><div class="session-list">' + rows.join("") + '</div></div>';
+  }
+  function renderSessions(data) {
+    const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+    const ttlSeconds = Math.max(60, Number(data.session_ttl_minutes || 10) * 60);
+    const cutoff = Date.now()/1000 - ttlSeconds;
+    const groups = { attention: [], active: [], recent: [] };
+    sessions.forEach(s => groups[sessionSection(s)].push(s));
+    groups.attention.sort((a,b) => Number(b.last_transition_at || b.last_activity_at || 0) - Number(a.last_transition_at || a.last_activity_at || 0));
+    groups.active.sort((a,b) => {
+      const aw = String(a.activity_state || a.state || "") === "working";
+      const bw = String(b.activity_state || b.state || "") === "working";
+      return aw === bw
+        ? Number(b.last_activity_at || 0) - Number(a.last_activity_at || 0)
+        : (aw ? -1 : 1);
+    });
+    groups.recent = groups.recent
+      .filter(s => Number(s.last_activity_at || s.created_at || 0) >= cutoff)
+      .sort((a,b) => Number(b.last_activity_at || 0) - Number(a.last_activity_at || 0));
+
+    const liveIDs = new Set(sessions.map(s => String(s.session_id || "")));
+    const terminal = [];
+    const seen = new Set();
+    (Array.isArray(data.recent) ? data.recent : []).forEach(s => {
+      const id = String(s.session_id || "");
+      const transitioned = Number(s.transitioned_at || 0);
+      if (!id || liveIDs.has(id) || seen.has(id) || !s.needs_attention || transitioned < cutoff) return;
+      seen.add(id); terminal.push(s);
+    });
+
+    const attentionRows = groups.attention.map(s => sessionCard(s, "attention"))
+      .concat(terminal.map(s => sessionCard(s, "attention", true)));
+    const activeRows = groups.active.map(s => sessionCard(s, "active"));
+    const recentRows = groups.recent.map(s => sessionCard(s, "recent"));
+    const total = attentionRows.length + activeRows.length + recentRows.length;
+    $("sessionMeta").textContent = activeRows.length ? activeRows.length + " active" : (total ? total + " visible" : "");
+    $("sessions").innerHTML =
+      sessionGroup("attention", "Needs Attention", "Review before continuing", attentionRows) +
+      sessionGroup("active", "Active", "Working or awaiting delivery", activeRows) +
+      sessionGroup("recent", "Recent", "Still within session retention", recentRows) ||
+      '<div class="empty">No sessions yet.</div>';
+  }
+  function renderSessionError() {
+    $("sessionMeta").textContent = "Unavailable";
+    $("sessions").innerHTML =
+      '<div class="session-error">Sessions couldn’t be loaded.<br><button id="sessionRetry" type="button">Retry</button></div>';
+    const retry = $("sessionRetry");
+    if (retry) retry.addEventListener("click", () => refreshSessions());
+  }
+  async function refreshSessions() {
+    try {
+      const sessions = await api("/mobile/api/sessions");
+      renderSessions(sessions);
+    } catch (e) {
+      if (e.status === 401) throw e;
+      renderSessionError();
+    }
+  }
   function locked(showError=false) {
     $("dashboard").classList.add("hidden");
     $("pairing").classList.remove("hidden");
@@ -178,6 +279,7 @@
         if (seen.has(key)) return false; seen.add(key); return true;
       }).slice(0, 8);
       $("activity").innerHTML = rows.map(activityRow).join("") || '<div class="empty">No tool activity in the last hour.</div>';
+      await refreshSessions();
     } catch (e) {
       if (e.status === 401) {
         clearLegacySessionExposure();

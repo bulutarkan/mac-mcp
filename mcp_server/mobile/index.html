@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-title" content="Mac MCP">
   <title>Mac MCP</title>
   <link rel="manifest" href="/mobile/assets/manifest.json">
-  <link rel="stylesheet" href="/mobile/assets/mobile.css?v=mobile-v4">
+  <link rel="stylesheet" href="/mobile/assets/mobile.css?v=mobile-v5">
 </head>
 <body>
   <main class="shell">
@@ -77,6 +77,16 @@
         <div id="agents" class="stack"></div>
       </section>
 
+      <section class="section sessions-section">
+        <div class="section-head">
+          <h2>Sessions</h2>
+          <span id="sessionMeta">Loading</span>
+        </div>
+        <div id="sessions" class="sessions-surface" aria-live="polite">
+          <div class="session-loading">Loading sessions…</div>
+        </div>
+      </section>
+
       <section class="section">
         <div class="section-head">
           <h2>Recent Activity</h2>
@@ -86,6 +96,6 @@
       </section>
     </div>
   </main>
-  <script src="/mobile/assets/mobile.js?v=mobile-v4" defer></script>
+  <script src="/mobile/assets/mobile.js?v=mobile-v5" defer></script>
 </body>
 </html>
