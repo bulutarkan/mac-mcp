@@ -693,6 +693,7 @@ struct UpdateProgressStep: Identifiable, Equatable {
 struct UpdateStateSnapshot: Decodable, Equatable {
     let status: String
     let transactionID: String?
+    let updaterPID: Int32?
     let updatedAt: Double?
     let fromCommit: String?
     let toCommit: String?
@@ -717,6 +718,7 @@ struct UpdateStateSnapshot: Decodable, Equatable {
     enum CodingKeys: String, CodingKey {
         case status, backup, error, recovery
         case transactionID = "transaction_id"
+        case updaterPID = "updater_pid"
         case updatedAt = "updated_at"
         case fromCommit = "from_commit"
         case toCommit = "to_commit"
@@ -747,9 +749,15 @@ struct UpdateStateSnapshot: Decodable, Equatable {
         return pid_t(raw)
     }
 
+    var activeProcessPID: pid_t? {
+        if let transactionPID { return transactionPID }
+        if let updaterPID, updaterPID > 0 { return pid_t(updaterPID) }
+        return nil
+    }
+
     var isInProgress: Bool {
         [
-            "preparing", "prepared", "repo_updating", "repo_updated",
+            "starting", "preparing", "prepared", "repo_updating", "repo_updated",
             "runtime_syncing", "runtime_synced", "dependency_activating",
             "dependencies_activated", "restarting", "health_verified",
             "marker_committed", "dependency_commit_started", "dependency_committed",
@@ -776,6 +784,7 @@ struct UpdateStateSnapshot: Decodable, Equatable {
 
     var statusTitle: String {
         switch normalizedStatus {
+        case "starting": return "Starting updater"
         case "preparing": return "Preparing update"
         case "prepared": return "Backup ready"
         case "repo_updating": return "Updating source"
@@ -804,6 +813,8 @@ struct UpdateStateSnapshot: Decodable, Equatable {
 
     var statusDetail: String {
         switch normalizedStatus {
+        case "starting":
+            return "The detached updater is starting and will publish durable progress shortly."
         case "preparing":
             return "Verifying the release and preparing a safe runtime merge."
         case "prepared":
@@ -865,7 +876,7 @@ struct UpdateStateSnapshot: Decodable, Equatable {
         let activeIndex: Int?
         let completedThrough: Int
         switch status {
-        case "preparing":
+        case "starting", "preparing":
             activeIndex = 0; completedThrough = -1
         case "prepared":
             activeIndex = 2; completedThrough = 1
@@ -1518,8 +1529,8 @@ final class AppState: ObservableObject {
         let snapshot = UpdateStateStore.load()
         setIfChanged(\.updateProgress, snapshot)
         let transactionActive: Bool
-        if let snapshot, snapshot.isInProgress, let pid = snapshot.transactionPID {
-            transactionActive = Self.pidExists(pid)
+        if let snapshot, snapshot.isInProgress, let pid = snapshot.activeProcessPID {
+            transactionActive = Self.updaterProcessMatches(pid)
         } else {
             transactionActive = false
         }
@@ -2216,10 +2227,33 @@ final class AppState: ObservableObject {
         do { try proc.run(); proc.waitUntilExit(); return proc.terminationStatus == 0 } catch { return false }
     }
 
-    nonisolated private static func pidExists(_ pid: pid_t) -> Bool {
+    nonisolated private static func updaterProcessMatches(_ pid: pid_t) -> Bool {
         guard pid > 0 else { return false }
-        if Darwin.kill(pid, 0) == 0 { return true }
-        return errno == EPERM
+        if Darwin.kill(pid, 0) != 0 && errno != EPERM { return false }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-p", String(pid), "-o", "command="]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return false }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let command = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                !command.isEmpty else { return false }
+            let lower = command.lowercased()
+            let cliUpdate = lower.contains("mac-mcp") && lower.contains(" update")
+            let detachedHelper = lower.contains("update_helper.py")
+                && lower.contains("--repo")
+                && lower.contains("--runtime")
+            return cliUpdate || detachedHelper
+        } catch {
+            return false
+        }
     }
 
     nonisolated private static func runCLI(args: [String], configuredPath: String, settingsPath: String, input: String? = nil) async -> (code: Int32, output: String) {
