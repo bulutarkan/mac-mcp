@@ -17,7 +17,7 @@ import mcp_server.release_trust as release_trust
 import mcp_server.tools_update as tools_update_module
 import mcp_server.update_helper as update_helper_module
 from mcp_server.tools_update import mac_mcp_update
-from mcp_server.update_helper import UpdateError, apply_update, check_update, format_check
+from mcp_server.update_helper import UpdateError, apply_update, check_update, format_check, format_check_json
 from mcp_server.update_state import migrate_completed_legacy_update
 
 
@@ -755,6 +755,27 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertTrue(info.update_available)
         self.assertEqual(1, info.behind_by)
         self.assertIn("Verified update available", format_check(info))
+        structured = json.loads(format_check_json(info))
+        self.assertTrue(structured["ok"])
+        self.assertTrue(structured["update_available"])
+        self.assertEqual(info.target_commit, structured["target_commit"])
+
+        cli_result = subprocess.run(
+            [
+                sys.executable, "-m", "mcp_server.cli", "update", "--check", "--json",
+                "--repo", str(repo), "--runtime", str(runtime),
+            ],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            env=os.environ.copy(),
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+        self.assertEqual(0, cli_result.returncode, cli_result.stderr)
+        cli_payload = json.loads(cli_result.stdout)
+        self.assertTrue(cli_payload["ok"])
+        self.assertTrue(cli_payload["update_available"])
+        self.assertEqual(info.target_commit, cli_payload["target_commit"])
 
         result = apply_update(repo, runtime, skip_restart=True, skip_deps=True)
         self.assertTrue(result["updated"])

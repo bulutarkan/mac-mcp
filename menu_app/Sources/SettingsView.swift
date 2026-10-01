@@ -60,6 +60,12 @@ struct SettingsView: View {
             await state.refreshMobileDevices()
         }
         .task(id: selection) {
+            if selection == .advanced {
+                if state.updateCheckInfo == nil, !state.updateTransactionActive {
+                    state.checkForUpdates()
+                }
+                return
+            }
             guard selection == .mobile else { return }
             while !Task.isCancelled {
                 await state.refreshMobileDevices()
@@ -656,14 +662,7 @@ struct SettingsView: View {
                     .padding(.top, 5)
                 }
 
-                GroupBox("Updates") {
-                    HStack {
-                        Button("Check Update") { state.checkForUpdates() }
-                        Button("Update Now") { state.installUpdate() }
-                        Spacer()
-                    }
-                    .padding(.top, 5)
-                }
+                updateCard
 
                 if let action = state.actionNotice {
                     Label(action.message, systemImage: action.symbolName)
@@ -679,6 +678,191 @@ struct SettingsView: View {
                 Spacer(minLength: 0)
             }
             .padding(20)
+        }
+    }
+
+    private var currentUpdateCommit: String {
+        if let progress = state.updateProgress,
+           progress.normalizedStatus == "completed",
+           let value = progress.toShort ?? progress.toCommit.map({ String($0.prefix(8)) }) {
+            return value
+        }
+        if let value = state.updateCheckInfo?.deployedShort { return value }
+        if let progress = state.updateProgress {
+            if let value = progress.fromShort { return value }
+            if let commit = progress.fromCommit { return String(commit.prefix(8)) }
+        }
+        return "—"
+    }
+
+    private var currentUpdateVersion: String {
+        if state.version != "—", !state.version.isEmpty { return "v\(state.version)" }
+        if state.updateProgress?.normalizedStatus == "completed",
+           let releaseVersion = state.updateProgress?.releaseVersion {
+            return "v\(releaseVersion)"
+        }
+        return "—"
+    }
+
+    private var availableUpdateText: String {
+        guard let info = state.updateCheckInfo else { return "Check for update" }
+        if info.dirty { return "Blocked by local changes" }
+        if info.updateAvailable {
+            let version = info.releaseVersion.map { "v\($0)" } ?? "Verified release"
+            return "\(version) · \(info.targetShort)"
+        }
+        if let ahead = info.unverifiedAhead, ahead > 0 {
+            return "No newer stable release · \(ahead) dev commit(s) ahead"
+        }
+        return "Up to date · \(info.targetShort)"
+    }
+
+    private var updateCard: some View {
+        GroupBox("Updates") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Current")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(currentUpdateVersion)
+                            .font(.subheadline.weight(.semibold))
+                        Text(currentUpdateCommit)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    Divider().frame(height: 48)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Available")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(availableUpdateText)
+                            .font(.subheadline.weight(.medium))
+                            .lineLimit(2)
+                        if state.updateCheckLoading {
+                            Text("Checking verified release channel…")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        } else if state.updateCheckInfo?.releaseVerified == true {
+                            Text("Verified release")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                }
+
+                if let progress = state.updateProgress {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 7) {
+                            Image(systemName: updateStatusSymbol(progress.statusKind))
+                                .foregroundStyle(updateStatusColor(progress.statusKind))
+                            Text(progress.statusTitle)
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            if state.updateTransactionActive {
+                                Text("Running")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(.quaternary, in: Capsule())
+                            }
+                        }
+                        Text(progress.statusDetail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if !progress.steps.isEmpty {
+                            VStack(spacing: 5) {
+                                ForEach(progress.steps) { step in
+                                    HStack(spacing: 8) {
+                                        updateStepIcon(step.state)
+                                            .frame(width: 15)
+                                        Text(step.title)
+                                            .font(.caption)
+                                        Spacer()
+                                        Text(step.detail)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            .padding(9)
+                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+                }
+
+                Divider()
+                HStack {
+                    Button {
+                        state.checkForUpdates()
+                    } label: {
+                        if state.updateCheckLoading {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("Checking…")
+                            }
+                        } else {
+                            Text("Check Update")
+                        }
+                    }
+                    .disabled(!state.canCheckForUpdates)
+
+                    Button(state.updateActionTitle) {
+                        state.installUpdate()
+                    }
+                    .disabled(!state.canInstallUpdate)
+
+                    Spacer()
+
+                    if state.updateTransactionActive {
+                        Text("Updater transaction is active")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(.top, 5)
+        }
+    }
+
+    private func updateStatusColor(_ kind: UpdateStatusKind) -> Color {
+        switch kind {
+        case .running: return .accentColor
+        case .success: return .green
+        case .warning: return .orange
+        case .error: return .red
+        case .recovery: return .orange
+        }
+    }
+
+    private func updateStatusSymbol(_ kind: UpdateStatusKind) -> String {
+        switch kind {
+        case .running: return "arrow.triangle.2.circlepath"
+        case .success: return "checkmark.circle.fill"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .error: return "xmark.octagon.fill"
+        case .recovery: return "arrow.counterclockwise.circle.fill"
+        }
+    }
+
+    @ViewBuilder
+    private func updateStepIcon(_ stepState: UpdateProgressStep.State) -> some View {
+        switch stepState {
+        case .active:
+            ProgressView().controlSize(.small)
+        case .complete:
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.green)
+        case .failed:
+            Image(systemName: "xmark.circle.fill").foregroundStyle(Color.red)
+        case .skipped:
+            Image(systemName: "minus.circle").foregroundStyle(Color.secondary)
+        case .pending:
+            Image(systemName: "circle").foregroundStyle(Color.secondary)
         }
     }
 

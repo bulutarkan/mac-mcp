@@ -709,8 +709,24 @@ struct MenuBarView: View {
                         Text("Port")
                         TextField("8000", value: $settings.serverPort, format: .number).frame(width: 70).onSubmit { persistSettings(); Task { await state.refresh() } }
                         Spacer()
-                        Button("Check Update") { state.checkForUpdates() }
-                        Button("Update Now") { state.installUpdate() }
+                        Button(state.updateCheckLoading ? "Checking…" : "Check Update") { state.checkForUpdates() }
+                            .disabled(!state.canCheckForUpdates)
+                        Button(state.updateActionTitle) { state.installUpdate() }
+                            .disabled(!state.canInstallUpdate)
+                    }
+                    if let progress = state.updateProgress,
+                       progress.isInProgress || ["failed", "recovered", "recovery_failed", "rolling_back"].contains(progress.normalizedStatus) {
+                        HStack(spacing: 6) {
+                            Image(systemName: progress.statusKind == .error ? "exclamationmark.triangle.fill" : "arrow.triangle.2.circlepath")
+                                .foregroundStyle(progress.statusKind == .error ? Color.red : Color.secondary)
+                            Text(progress.statusTitle)
+                                .lineLimit(1)
+                            Spacer()
+                            if state.updateTransactionActive {
+                                Text("Running").foregroundStyle(.secondary)
+                            }
+                        }
+                        .font(.caption2)
                     }
                     HStack { Text("CLI"); TextField("Auto-detect", text: $settings.cliPath).onSubmit { persistSettings() } }.font(.caption)
                 }.padding(.top, 8)

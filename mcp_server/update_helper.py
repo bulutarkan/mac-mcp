@@ -291,6 +291,10 @@ def check_update(
     )
 
 
+def format_check_json(info: UpdateInfo) -> str:
+    return json.dumps({"ok": True, **asdict(info)}, ensure_ascii=False, sort_keys=True)
+
+
 def format_check(info: UpdateInfo) -> str:
     lines = [
         "Mac MCP Update Check",

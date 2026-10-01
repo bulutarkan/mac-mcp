@@ -44,7 +44,7 @@ from .runtime_resolver import (
     resolve_cloudflared_binary,
     resolve_ngrok_binary,
 )
-from .update_helper import UpdateError, apply_update, check_update, format_check
+from .update_helper import UpdateError, apply_update, check_update, format_check, format_check_json
 from .version import __version__
 
 APP_MODULE = "mcp_server.main:app"
@@ -1570,8 +1570,11 @@ def update(args: argparse.Namespace) -> int:
     try:
         if args.check:
             info = check_update(args.repo, args.runtime, branch=args.branch, remote=args.remote, fetch=True)
-            print(format_check(info))
+            print(format_check_json(info) if getattr(args, "json", False) else format_check(info))
             return 2 if info.dirty else 0
+        if getattr(args, "json", False):
+            print("mac-mcp update: --json requires --check", file=sys.stderr)
+            return 2
         apply_update(
             repo=args.repo, runtime=args.runtime, branch=args.branch, remote=args.remote,
             launchd_label=os.getenv("MAC_MCP_LAUNCHD_LABEL", "mac-mcp-uvicorn"),
@@ -1640,6 +1643,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_update = sub.add_parser("update", help="Update Mac MCP from the latest commit on a Git branch.")
     p_update.add_argument("--check", action="store_true", help="Check for updates without changing files.")
+    p_update.add_argument("--json", action="store_true", help="Print the update check as JSON (requires --check).")
     p_update.add_argument("--repo", default=None, help="Git repository path. Defaults to ~/Projects/mac-mcp.")
     p_update.add_argument("--runtime", default=None, help="Runtime path. Defaults to ~/mac-mcp.")
     p_update.add_argument("--branch", default="main", help="Git branch to follow. Defaults to main.")
