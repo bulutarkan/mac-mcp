@@ -528,6 +528,8 @@ def create_app():
         name="spawn_agent",
         description=(
             "Delegate one task to OpenCode, Codex, or ChatGPT Web CLI in a non-blocking background process. "
+            "When provider/model/reasoning are omitted, Mac MCP resolves the saved Settings > Subagents Default Agent preset; "
+            "explicit fields always override saved values and model/reasoning never cross provider boundaries. "
             "ChatGPT accepts project=...; when omitted it uses CHATGPT_SUBAGENT_PROJECT if locally configured, "
             "otherwise it starts a normal new chat. ChatGPT long turns use bounded checkpoint/continue and "
             "rate-limit cooldown/resume protection; reasoning defaults to high unless explicitly overridden. "
@@ -538,7 +540,7 @@ def create_app():
             "Codex enforces access_mode; OpenCode read_only is refused; ChatGPT access_mode is behavioral."
         ),
     )
-    def _spawn_agent(provider: str, prompt: str, model: Optional[str] = None,
+    def _spawn_agent(prompt: str, provider: Optional[str] = None, model: Optional[str] = None,
                      reasoning: Optional[str] = None, cwd: Optional[str] = None,
                      timeout_s: Optional[int] = None, title: Optional[str] = None,
                      result_style: str = "concise", access_mode: str = "workspace_write",
@@ -560,7 +562,9 @@ def create_app():
     @mcp.tool(
         name="spawn_agents",
         description=(
-            "Spawn 1-10 background agent tasks as one team. Optional task.id + depends_on create a bounded DAG; "
+            "Spawn 1-10 background agent tasks as one team. When provider/model/reasoning are omitted, the saved "
+            "Settings > Subagents Default Agent preset is resolved once for the team; explicit fields override it and "
+            "saved model/reasoning never cross provider boundaries. Optional task.id + depends_on create a bounded DAG; "
             "max_parallel limits concurrent nodes. A reviewer task may set review_of=<task id> and must end with "
             "QUALITY_GATE: PASS or FAIL; FAIL can trigger up to max_revisions bounded revisions. Team-level admission controls include "
             "team_timeout_s, max_team_retries, max_total_tool_calls and max_total_tokens; max_parallel is the concurrency budget. "
@@ -576,7 +580,7 @@ def create_app():
             "Returns immediately with parent-visible budget and global admission/queue state."
         ),
     )
-    def _spawn_agents(tasks: List[Dict[str, Any]], provider: str, model: Optional[str] = None,
+    def _spawn_agents(tasks: List[Dict[str, Any]], provider: Optional[str] = None, model: Optional[str] = None,
                       reasoning: Optional[str] = None, cwd: Optional[str] = None,
                       timeout_s: Optional[int] = None, idle_timeout_s: Optional[int] = None,
                       retries: int = 1, result_style: str = "concise",

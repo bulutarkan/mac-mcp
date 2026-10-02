@@ -4,10 +4,10 @@ import CoreImage.CIFilterBuiltins
 import SwiftUI
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
-    case subagents
-    case browser
+    case general
+    case agents
     case permissions
-    case mobile
+    case connections
     case voice
     case advanced
 
@@ -15,10 +15,10 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .subagents: return "Subagents"
-        case .browser: return "Browser Activity"
-        case .permissions: return "Permissions & Approvals"
-        case .mobile: return "Mobile Access"
+        case .general: return "General"
+        case .agents: return "Agents"
+        case .permissions: return "Permissions & Safety"
+        case .connections: return "Connections"
         case .voice: return "Voice"
         case .advanced: return "Advanced"
         }
@@ -26,24 +26,67 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 
     var symbol: String {
         switch self {
-        case .subagents: return "cpu"
-        case .browser: return "sparkles.rectangle.stack"
+        case .general: return "slider.horizontal.3"
+        case .agents: return "cpu"
         case .permissions: return "checkmark.shield"
-        case .mobile: return "iphone.and.arrow.forward"
+        case .connections: return "network"
         case .voice: return "waveform.and.mic"
-        case .advanced: return "gearshape.2"
+        case .advanced: return "wrench.and.screwdriver"
         }
     }
+
+    var searchTerms: String {
+        switch self {
+        case .general:
+            return "general overview update version status"
+        case .agents:
+            return "agents subagents provider codex opencode chatgpt model reasoning thinking default agent"
+        case .permissions:
+            return "permissions safety approvals security profile read only trusted access"
+        case .connections:
+            return "connections browser safari chrome mobile iphone ipad pairing public endpoint ngrok cloudflare tunnel"
+        case .voice:
+            return "voice audio microphone speaker groq language"
+        case .advanced:
+            return "advanced developer runtime server port cli command"
+        }
+    }
+}
+
+private enum ConnectionsTab: String, CaseIterable, Identifiable {
+    case browser
+    case mobile
+
+    var id: String { rawValue }
+    var title: String { self == .browser ? "Browser" : "Mobile" }
+    var symbol: String { self == .browser ? "safari" : "iphone" }
+}
+
+
+private enum SettingsFeedbackScope: String, Equatable {
+    case agents
+    case endpoint
+    case runtime
+    case voice
+}
+
+private struct SettingsSaveFeedback: Equatable {
+    let scope: SettingsFeedbackScope
+    let message: String
+    let isError: Bool
 }
 
 struct SettingsView: View {
     @ObservedObject var state: AppState
     @ObservedObject var settings: SettingsStore
     @StateObject private var audio = AudioDeviceStore()
-    @MacMCPState private var selection: SettingsSection = .subagents
+    @MacMCPState private var selection: SettingsSection = .general
     @MacMCPState private var notice = ""
     @MacMCPState private var groqKey = ""
     @MacMCPState private var cloudflareToken = ""
+    @MacMCPState private var settingsSearch = ""
+    @MacMCPState private var connectionsTab: ConnectionsTab = .browser
+    @MacMCPState private var saveFeedback: SettingsSaveFeedback?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -51,7 +94,7 @@ struct SettingsView: View {
             Divider()
             detail
         }
-        .frame(width: 720, height: 520)
+        .frame(minWidth: 820, idealWidth: 920, minHeight: 560, idealHeight: 640)
         .background(.regularMaterial)
         .task {
             audio.refresh()
@@ -60,17 +103,126 @@ struct SettingsView: View {
             await state.refreshMobileDevices()
         }
         .task(id: selection) {
-            if selection == .advanced {
-                if state.updateCheckInfo == nil, !state.updateTransactionActive {
-                    state.checkForUpdates()
-                }
-                return
+            if selection == .general, state.updateCheckInfo == nil, !state.updateTransactionActive {
+                state.checkForUpdates()
             }
-            guard selection == .mobile else { return }
+            guard selection == .connections else { return }
             while !Task.isCancelled {
                 await state.refreshMobileDevices()
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
+        }
+    }
+
+    private var filteredSections: [SettingsSection] {
+        let query = settingsSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return SettingsSection.allCases }
+        return SettingsSection.allCases.filter {
+            $0.title.lowercased().contains(query) || $0.searchTerms.contains(query)
+        }
+    }
+
+    private var generalPane: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                paneHeader(
+                    "General",
+                    subtitle: "A quick view of this Mac MCP instance, software updates, and everyday status."
+                )
+
+                GroupBox("Overview") {
+                    HStack(spacing: 12) {
+                        overviewMetric(
+                            title: "Server",
+                            value: state.serverRunning ? "Running" : "Disconnected",
+                            symbol: state.serverRunning ? "checkmark.circle.fill" : "exclamationmark.circle",
+                            accent: state.serverRunning ? .green : .orange
+                        )
+                        overviewMetric(
+                            title: "Version",
+                            value: state.version == "—" ? "Unknown" : "v\(state.version)",
+                            symbol: "shippingbox",
+                            accent: .secondary
+                        )
+                        overviewMetric(
+                            title: "Active Agents",
+                            value: String(state.activeAgents),
+                            symbol: "cpu",
+                            accent: state.activeAgents > 0 ? .accentColor : .secondary
+                        )
+                    }
+                    .padding(.top, 5)
+                }
+
+                GroupBox("Connectivity") {
+                    HStack(spacing: 12) {
+                        Image(systemName: settings.publicEndpointMode == "none" ? "lock.laptopcomputer" : "network")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(settings.publicEndpointMode == "none" ? Color.secondary : Color.accentColor)
+                            .frame(width: 34)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(publicEndpointDisplayName)
+                                .font(.subheadline.weight(.semibold))
+                            Text(
+                                settings.publicEndpointMode == "none"
+                                    ? "Local only. Configure remote access in Connections when you need mobile or external access."
+                                    : "Remote access is configured under Connections. Runtime/server internals stay in Advanced."
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer()
+                        Button("Open Connections") {
+                            selection = .connections
+                            notice = ""
+                        }
+                    }
+                    .padding(.top, 5)
+                }
+
+                updateCard
+
+                if let action = state.actionNotice {
+                    Label(action.message, systemImage: action.symbolName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(22)
+        }
+    }
+
+    private func overviewMetric(title: String, value: String, symbol: String, accent: Color) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(accent)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.55), in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private var publicEndpointDisplayName: String {
+        switch settings.publicEndpointMode {
+        case "ngrok": return "ngrok"
+        case "cloudflare": return "Cloudflare Tunnel"
+        case "custom": return "Custom HTTPS"
+        default: return "Local only"
         }
     }
 
@@ -82,7 +234,13 @@ struct SettingsView: View {
                 .padding(.top, 16)
                 .padding(.bottom, 8)
 
-            ForEach(SettingsSection.allCases) { item in
+            TextField("Search Settings", text: $settingsSearch)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 5)
+
+            ForEach(filteredSections) { item in
                 Button {
                     selection = item
                     notice = ""
@@ -116,17 +274,17 @@ struct SettingsView: View {
                     .padding(.bottom, 14)
             }
         }
-        .frame(width: 160)
+        .frame(width: 200)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.38))
     }
 
     @ViewBuilder
     private var detail: some View {
         switch selection {
-        case .subagents: subagentsPane
-        case .browser: browserPane
+        case .general: generalPane
+        case .agents: subagentsPane
         case .permissions: permissionsPane
-        case .mobile: mobilePane
+        case .connections: connectionsPane
         case .voice: voicePane
         case .advanced: advancedPane
         }
@@ -136,8 +294,8 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 paneHeader(
-                    "Subagents",
-                    subtitle: "Choose which delegated-agent providers Mac MCP may expose and spawn.",
+                    "Agents",
+                    subtitle: "Choose delegated providers, models, and the default agent Mac MCP uses for new work.",
                     refresh: true
                 )
 
@@ -147,6 +305,18 @@ struct SettingsView: View {
                         .foregroundStyle(settings.providerSettingsLocked ? Color.orange : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                settingsDataStateRow(state.providerSettingsState) {
+                    Task { await state.refreshProviders() }
+                }
+                saveFeedbackRow(.agents)
+
+                defaultAgentCard
+
+                Text("PROVIDERS")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .tracking(0.5)
 
                 providerRow(id: "opencode", title: "OpenCode", subtitle: "External OpenCode CLI provider")
                 providerRow(id: "codex", title: "Codex", subtitle: "External Codex CLI provider")
@@ -169,7 +339,11 @@ struct SettingsView: View {
     private var browserPane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                paneHeader("Browser Activity", subtitle: "Visual Companion setup and background browser integration status.")
+                sectionLead("Browser Companions", subtitle: "Visual Companion status and background-safe browser integration.")
+
+                settingsDataStateRow(state.browserSettingsState) {
+                    state.refreshSafariExtensionState()
+                }
 
                 GroupBox("Safari") {
                     HStack(spacing: 12) {
@@ -240,7 +414,14 @@ struct SettingsView: View {
     private var permissionsPane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                paneHeader("Permissions & Approvals", subtitle: "Review capability profiles and approval behavior for Mac MCP actions.")
+                paneHeader("Permissions & Safety", subtitle: "Review capability boundaries, approval behavior, and the active security profile.")
+
+                settingsDataStateRow(state.permissionsSettingsState) {
+                    Task { await state.refresh() }
+                }
+                if let issue = state.permissionActionIssue {
+                    inlineError(issue)
+                }
 
                 if let semantics = state.securitySemantics {
                     if let profile = semantics.profiles.first(where: { $0.name == semantics.activeProfile }) {
@@ -336,10 +517,133 @@ struct SettingsView: View {
         }
     }
 
+    private var connectionsPane: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 13) {
+                paneHeader(
+                    "Connections",
+                    subtitle: "Browser companions, mobile access, and the public endpoint used to reach this Mac."
+                )
+
+                Picker("", selection: $connectionsTab) {
+                    ForEach(ConnectionsTab.allCases) { item in
+                        Label(item.title, systemImage: item.symbol).tag(item)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 300)
+
+                publicEndpointCard
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 22)
+            .padding(.bottom, 12)
+
+            Divider()
+
+            if connectionsTab == .browser {
+                browserPane
+            } else {
+                mobilePane
+            }
+        }
+    }
+
+    private var publicEndpointCard: some View {
+        GroupBox("Public Endpoint") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Mode")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 92, alignment: .leading)
+                    Picker("", selection: $settings.publicEndpointMode) {
+                        Text("Local only").tag("none")
+                        Text("ngrok").tag("ngrok")
+                        Text("Cloudflare").tag("cloudflare")
+                        Text("Custom HTTPS").tag("custom")
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .onChange(of: settings.publicEndpointMode) { _ in
+                        settings.ngrokOnStart = settings.publicEndpointMode == "ngrok"
+                        persistEndpointSettings()
+                    }
+                }
+
+                if settings.publicEndpointMode == "custom" || settings.publicEndpointMode == "cloudflare" {
+                    HStack {
+                        Text("Public URL")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 92, alignment: .leading)
+                        TextField("https://example.com/mcp", text: $settings.publicURL)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { persistEndpointSettings() }
+                    }
+                    if let issue = publicURLValidationMessage {
+                        inlineError(issue, leadingInset: 92)
+                    }
+                }
+
+                if settings.publicEndpointMode == "cloudflare" {
+                    HStack {
+                        Text("Credential")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 92, alignment: .leading)
+                        SecureField("Paste once; it is never written to settings.json", text: $cloudflareToken)
+                            .textFieldStyle(.roundedBorder)
+                        Button(state.cloudflareCredentialConfigured ? "Replace credential" : "Save credential") {
+                            let token = cloudflareToken
+                            cloudflareToken = ""
+                            state.saveCloudflareCredential(token)
+                        }
+                        .disabled(
+                            cloudflareToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                || state.busyAction != nil
+                        )
+                    }
+
+                    HStack(spacing: 8) {
+                        Text("").frame(width: 92)
+                        Label(
+                            state.cloudflareCredentialConfigured ? "Credential configured" : "Credential not configured",
+                            systemImage: state.cloudflareCredentialConfigured ? "checkmark.shield.fill" : "exclamationmark.shield"
+                        )
+                        .foregroundStyle(state.cloudflareCredentialConfigured ? Color.secondary : Color.orange)
+                        Spacer()
+                    }
+                    .font(.caption)
+
+                    DisclosureGroup("Tunnel details") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("Named tunnel")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 92, alignment: .leading)
+                                TextField("Optional name or UUID", text: $settings.cloudflareTunnel)
+                                    .textFieldStyle(.roundedBorder)
+                                    .onSubmit { persistEndpointSettings() }
+                            }
+                            Text("The credential stays in an owner-only file and is never written into settings.json.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.top, 6)
+                    }
+                    .font(.caption)
+                }
+
+                saveFeedbackRow(.endpoint)
+            }
+            .padding(.top, 5)
+        }
+    }
+
     private var voicePane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 paneHeader("Voice", subtitle: "Configure the experimental Ask User Voice tool and audio devices.")
+                saveFeedbackRow(.voice)
 
                 Toggle(isOn: $settings.voiceEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -348,7 +652,7 @@ struct SettingsView: View {
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
-                .onChange(of: settings.voiceEnabled) { _ in persistSettings() }
+                .onChange(of: settings.voiceEnabled) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
 
                 Divider()
 
@@ -419,12 +723,12 @@ struct SettingsView: View {
                     }
                 }
                 .font(.caption)
-                .onChange(of: settings.inputDevice) { _ in persistSettings() }
-                .onChange(of: settings.outputDevice) { _ in persistSettings() }
-                .onChange(of: settings.language) { _ in persistSettings() }
-                .onChange(of: settings.timeoutSeconds) { _ in persistSettings() }
-                .onChange(of: settings.voiceName) { _ in persistSettings() }
-                .onChange(of: settings.ttsRate) { _ in persistSettings() }
+                .onChange(of: settings.inputDevice) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
+                .onChange(of: settings.outputDevice) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
+                .onChange(of: settings.language) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
+                .onChange(of: settings.timeoutSeconds) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
+                .onChange(of: settings.voiceName) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
+                .onChange(of: settings.ttsRate) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
 
                 Spacer(minLength: 0)
             }
@@ -435,16 +739,20 @@ struct SettingsView: View {
     private var mobilePane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                paneHeader(
+                sectionLead(
                     "Mobile Access",
                     subtitle: "Pair an iPhone or iPad with this Mac MCP instance for a secure read-only dashboard."
                 )
+
+                settingsDataStateRow(state.mobileSettingsState) {
+                    Task { await state.refreshMobileDevices() }
+                }
 
                 GroupBox("Pair a device") {
                     VStack(alignment: .leading, spacing: 12) {
                         if settings.publicEndpointMode == "none" {
                             Label(
-                                "Configure ngrok, Cloudflare, or Custom HTTPS in Advanced before pairing a phone.",
+                                "Choose a public endpoint above before pairing a phone.",
                                 systemImage: "exclamationmark.triangle"
                             )
                             .font(.caption)
@@ -468,6 +776,10 @@ struct SettingsView: View {
                                     Image(systemName: "arrow.clockwise")
                                 }
                                 .help("Refresh connected devices")
+                            }
+
+                            if let issue = state.mobilePairingIssue {
+                                inlineError(issue)
                             }
 
                             if let pairingURL = state.mobilePairingURL,
@@ -519,10 +831,26 @@ struct SettingsView: View {
                 GroupBox("Connected Devices") {
                     VStack(alignment: .leading, spacing: 8) {
                         if state.mobileDevices.isEmpty {
-                            Text("No paired mobile devices.")
+                            switch state.mobileSettingsState.phase {
+                            case .loading:
+                                HStack(spacing: 7) {
+                                    ProgressView().controlSize(.small)
+                                    Text("Loading connected devices…")
+                                }
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .padding(.vertical, 6)
+                            case .error, .unavailable:
+                                Text("Connected devices could not be loaded. Use Retry above.")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                                    .padding(.vertical, 6)
+                            default:
+                                Text("No paired mobile devices.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(.vertical, 6)
+                            }
                         } else {
                             ForEach(state.mobileDevices) { device in
                                 HStack(spacing: 10) {
@@ -555,6 +883,10 @@ struct SettingsView: View {
                     .padding(.top, 5)
                 }
 
+                if let issue = state.mobileDeviceActionIssue {
+                    inlineError(issue)
+                }
+
                 Text("The public /mobile page can be reached through the selected connector, but agent, session, and activity APIs require a paired device session.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -569,115 +901,83 @@ struct SettingsView: View {
     private var advancedPane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                paneHeader("Advanced", subtitle: "Server startup, CLI location, and update controls.")
+                paneHeader(
+                    "Advanced",
+                    subtitle: "Developer and runtime controls. Most users should not need to change these."
+                )
 
-                GroupBox("Server") {
+                GroupBox("Runtime") {
                     VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Text("Public endpoint")
-                                .foregroundStyle(.secondary)
-                                .frame(width: 105, alignment: .leading)
-                            Picker("", selection: $settings.publicEndpointMode) {
-                                Text("Local only").tag("none")
-                                Text("ngrok").tag("ngrok")
-                                Text("Cloudflare").tag("cloudflare")
-                                Text("Custom HTTPS").tag("custom")
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.segmented)
-                            .onChange(of: settings.publicEndpointMode) { _ in
-                                settings.ngrokOnStart = settings.publicEndpointMode == "ngrok"
-                                persistSettings()
-                            }
-                        }
-                        if settings.publicEndpointMode == "custom" || settings.publicEndpointMode == "cloudflare" {
-                            HStack {
-                                Text("Public URL")
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 105, alignment: .leading)
-                                TextField("https://example.com/mcp", text: $settings.publicURL)
-                                    .textFieldStyle(.roundedBorder)
-                                    .onSubmit { persistSettings() }
-                            }
-                        }
-                        if settings.publicEndpointMode == "cloudflare" {
-                            HStack {
-                                Text("Tunnel token")
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 105, alignment: .leading)
-                                SecureField("Paste once; it is never written to settings.json", text: $cloudflareToken)
-                                    .textFieldStyle(.roundedBorder)
-                                Button(state.cloudflareCredentialConfigured ? "Replace credential" : "Save credential") {
-                                    let token = cloudflareToken
-                                    cloudflareToken = ""
-                                    state.saveCloudflareCredential(token)
-                                }
-                                .disabled(cloudflareToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.busyAction != nil)
-                            }
-                            HStack(spacing: 8) {
-                                Text("")
-                                    .frame(width: 105)
-                                Label(
-                                    state.cloudflareCredentialConfigured ? "Credential configured" : "Credential not configured",
-                                    systemImage: state.cloudflareCredentialConfigured ? "checkmark.shield.fill" : "exclamationmark.shield"
-                                )
-                                .foregroundStyle(state.cloudflareCredentialConfigured ? Color.secondary : Color.orange)
-                                Spacer()
-                            }
-                            .font(.caption)
-                            HStack {
-                                Text("Named tunnel")
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 105, alignment: .leading)
-                                TextField("Optional name or UUID (token-file is preferred)", text: $settings.cloudflareTunnel)
-                                    .textFieldStyle(.roundedBorder)
-                                    .onSubmit { persistSettings() }
-                            }
-                            Text("cloudflared runs directly on this Mac and forwards to localhost. Install it with `brew install cloudflared` if it is not already available. The tunnel token is stored only in an owner-only 0600 credential file.")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
                         HStack {
                             Text("Port")
                                 .foregroundStyle(.secondary)
-                                .frame(width: 55, alignment: .leading)
-                            TextField("8000", value: $settings.serverPort, format: .number)
-                                .frame(width: 90)
+                                .frame(width: 82, alignment: .leading)
+                            TextField("8000", value: $settings.serverPort, format: .number.grouping(.never))
+                                .frame(width: 100)
                                 .onSubmit {
-                                    persistSettings()
+                                    persistRuntimeSettings()
                                     Task { await state.refresh() }
                                 }
                             Spacer()
-                        }
-                        HStack {
-                            Text("CLI")
+                            Text("Restart required")
+                                .font(.caption2.weight(.medium))
                                 .foregroundStyle(.secondary)
-                                .frame(width: 55, alignment: .leading)
+                        }
+
+                        HStack {
+                            Text("CLI path")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 82, alignment: .leading)
                             TextField("Auto-detect", text: $settings.cliPath)
                                 .font(.system(.caption, design: .monospaced))
-                                .onSubmit { persistSettings() }
+                                .textFieldStyle(.roundedBorder)
+                                .onSubmit { persistRuntimeSettings() }
                         }
+
+                        if let issue = serverPortValidationMessage {
+                            inlineError(issue)
+                        }
+                        if let issue = cliPathValidationMessage {
+                            inlineError(issue)
+                        }
+                        saveFeedbackRow(.runtime)
                     }
                     .padding(.top, 5)
                 }
 
-                updateCard
-
-                if let action = state.actionNotice {
-                    Label(action.message, systemImage: action.symbolName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                GroupBox("Session Lifecycle") {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Steering session visibility")
+                                .font(.subheadline.weight(.semibold))
+                            Text("How long inactive delegated sessions stay visible in the control surface.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Stepper(
+                            "\(settings.steeringSessionMinutes) min",
+                            value: $settings.steeringSessionMinutes,
+                            in: 1...120,
+                            step: 1
+                        )
+                        .frame(width: 150)
+                        .onChange(of: settings.steeringSessionMinutes) { _ in persistSettings(scope: .runtime, success: "Saved · applies live") }
+                    }
+                    .padding(.top, 5)
                 }
 
-                Text("Some server settings take effect the next time Mac MCP is restarted.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Label(
+                    "Changes here affect runtime behavior; public endpoint and mobile/browser connectivity now live under Connections.",
+                    systemImage: "wrench.and.screwdriver"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 0)
             }
-            .padding(20)
+            .padding(22)
         }
     }
 
@@ -866,6 +1166,133 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private func settingsDataStateRow(_ dataState: SettingsDataState, retry: (() -> Void)? = nil) -> some View {
+        let presentation = settingsDataPresentation(dataState)
+        HStack(alignment: .top, spacing: 8) {
+            if dataState.phase == .loading {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: presentation.symbol)
+                    .foregroundStyle(presentation.color)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(presentation.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(presentation.color)
+                if let detail = presentation.detail {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer()
+            if let retry, [.stale, .unavailable, .error].contains(dataState.phase) {
+                Button("Retry", action: retry)
+                    .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(presentation.color.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func settingsDataPresentation(_ dataState: SettingsDataState) -> (title: String, detail: String?, symbol: String, color: Color) {
+        let timestamp = dataState.lastUpdatedAt.map {
+            "Last updated " + $0.formatted(date: .omitted, time: .shortened)
+        }
+        switch dataState.phase {
+        case .loading:
+            return ("Loading", timestamp, "arrow.clockwise", .secondary)
+        case .fresh:
+            return ("Fresh", timestamp, "checkmark.circle.fill", .green)
+        case .stale:
+            let detail = [dataState.message, timestamp].compactMap { $0 }.joined(separator: " · ")
+            return ("Stale", detail.isEmpty ? nil : detail, "clock.badge.exclamationmark", .orange)
+        case .unavailable:
+            return ("Unavailable", dataState.message, "minus.circle.fill", .orange)
+        case .error:
+            return ("Could not load", dataState.message, "exclamationmark.triangle.fill", .red)
+        }
+    }
+
+    @ViewBuilder
+    private func inlineError(_ message: String, leadingInset: CGFloat = 0) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            if leadingInset > 0 { Color.clear.frame(width: leadingInset) }
+            Image(systemName: "exclamationmark.circle.fill")
+            Text(message).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .font(.caption2)
+        .foregroundStyle(.red)
+    }
+
+    @ViewBuilder
+    private func saveFeedbackRow(_ scope: SettingsFeedbackScope) -> some View {
+        if let feedback = saveFeedback, feedback.scope == scope {
+            Label(
+                feedback.message,
+                systemImage: feedback.isError ? "exclamationmark.circle.fill" : "checkmark.circle.fill"
+            )
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(feedback.isError ? Color.red : Color.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var publicURLValidationMessage: String? {
+        guard settings.publicEndpointMode == "custom" || settings.publicEndpointMode == "cloudflare" else { return nil }
+        let value = settings.publicURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return "Public URL is required for this endpoint mode." }
+        guard let components = URLComponents(string: value),
+              components.scheme?.lowercased() == "https",
+              let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil else {
+            return "Enter a valid HTTPS URL without embedded credentials."
+        }
+        return nil
+    }
+
+    private var serverPortValidationMessage: String? {
+        (1...65535).contains(settings.serverPort) ? nil : "Port must be between 1 and 65535."
+    }
+
+    private var cliPathValidationMessage: String? {
+        let value = settings.cliPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        guard value.hasPrefix("/") else { return "Use an absolute CLI path or leave it blank for auto-detect." }
+        guard FileManager.default.isExecutableFile(atPath: value) else { return "No executable was found at this CLI path." }
+        return nil
+    }
+
+    private func persistEndpointSettings() {
+        if let issue = publicURLValidationMessage {
+            saveFeedback = SettingsSaveFeedback(scope: .endpoint, message: issue, isError: true)
+            return
+        }
+        persistSettings(scope: .endpoint, success: "Saved · restart Mac MCP to apply connector changes")
+    }
+
+    private func persistRuntimeSettings() {
+        if let issue = serverPortValidationMessage ?? cliPathValidationMessage {
+            saveFeedback = SettingsSaveFeedback(scope: .runtime, message: issue, isError: true)
+            return
+        }
+        persistSettings(scope: .runtime, success: "Saved · restart required")
+    }
+
+    private func sectionLead(_ title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.headline.weight(.semibold))
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     private func paneHeader(_ title: String, subtitle: String, refresh: Bool = false) -> some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 3) {
@@ -884,22 +1311,304 @@ struct SettingsView: View {
         }
     }
 
+    private var defaultAgentCard: some View {
+        let status = defaultAgentStatus
+        return GroupBox {
+            VStack(alignment: .leading, spacing: 11) {
+                HStack(alignment: .center, spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(.quaternary)
+                            .frame(width: 36, height: 36)
+                        Image(systemName: "person.crop.circle.badge.checkmark")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(status.color)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Default Agent")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Used only when a delegated request omits provider, model, or thinking.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Label(status.label, systemImage: status.symbol)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(status.color)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(status.color.opacity(0.10), in: Capsule())
+                }
+
+                Divider()
+
+                defaultAgentPickerRow(title: "Provider") {
+                    Picker("", selection: defaultProviderBinding) {
+                        Text("Not set").tag("")
+                        ForEach(defaultProviderOptions, id: \.self) { id in
+                            Text(providerDisplayName(id)).tag(id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 250)
+                }
+
+                defaultAgentPickerRow(title: "Model") {
+                    Picker("", selection: defaultModelBinding) {
+                        Text("Provider default").tag("")
+                        if !settings.defaultAgentModel.isEmpty,
+                           !defaultModelOptions.contains(where: { $0.id == settings.defaultAgentModel }) {
+                            Text("\(settings.defaultAgentModel) · Unavailable")
+                                .tag(settings.defaultAgentModel)
+                        }
+                        ForEach(defaultModelOptions) { item in
+                            Text(item.displayName).tag(item.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 250)
+                    .disabled(settings.defaultAgentProvider.isEmpty)
+                }
+
+                defaultAgentPickerRow(title: "Thinking") {
+                    Picker("", selection: defaultReasoningBinding) {
+                        Text("Provider default").tag("")
+                        if !settings.defaultAgentReasoning.isEmpty,
+                           !defaultReasoningOptions.contains(settings.defaultAgentReasoning) {
+                            Text("\(settings.defaultAgentReasoning.capitalized) · Unsupported")
+                                .tag(settings.defaultAgentReasoning)
+                        }
+                        ForEach(defaultReasoningOptions, id: \.self) { value in
+                            Text(reasoningDisplayName(value)).tag(value)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 250)
+                    .disabled(settings.defaultAgentProvider.isEmpty || defaultReasoningOptions.isEmpty)
+                }
+
+                Text(status.detail)
+                    .font(.caption2)
+                    .foregroundStyle(status.color == .green ? Color.secondary : status.color)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 4)
+        } label: {
+            Label("Delegation Default", systemImage: "slider.horizontal.3")
+                .font(.caption.weight(.semibold))
+        }
+        .disabled(settings.providerSettingsLocked)
+    }
+
+    private func defaultAgentPickerRow<Content: View>(
+        title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 72, alignment: .leading)
+            Spacer()
+            content()
+        }
+    }
+
+    private var defaultProviderOptions: [String] {
+        var values = state.providerStatuses
+            .filter { $0.enabled && $0.detected }
+            .map(\.id)
+        let current = settings.defaultAgentProvider
+        if !current.isEmpty && !values.contains(current) {
+            values.append(current)
+        }
+        let order = ["opencode", "codex", "chatgpt"]
+        return values.sorted {
+            (order.firstIndex(of: $0) ?? 99) < (order.firstIndex(of: $1) ?? 99)
+        }
+    }
+
+    private var defaultProviderCatalog: ProviderCatalogInfo? {
+        guard !settings.defaultAgentProvider.isEmpty else { return nil }
+        return state.providerCatalogs[settings.defaultAgentProvider]
+    }
+
+    private var defaultModelOptions: [AgentModelInfo] {
+        defaultProviderCatalog?.modelItems ?? []
+    }
+
+    private var defaultSelectedModelInfo: AgentModelInfo? {
+        guard let catalog = defaultProviderCatalog else { return nil }
+        let modelID = settings.defaultAgentModel.isEmpty
+            ? (catalog.defaultModel ?? "")
+            : settings.defaultAgentModel
+        guard !modelID.isEmpty else { return nil }
+        return catalog.modelItems.first(where: { $0.id == modelID })
+    }
+
+    private var defaultReasoningOptions: [String] {
+        defaultSelectedModelInfo?.reasoningValues ?? []
+    }
+
+    private var defaultProviderBinding: Binding<String> {
+        Binding(
+            get: { settings.defaultAgentProvider },
+            set: { value in
+                settings.defaultAgentProvider = value
+                settings.defaultAgentModel = ""
+                settings.defaultAgentReasoning = ""
+                persistDefaultAgent()
+            }
+        )
+    }
+
+    private var defaultModelBinding: Binding<String> {
+        Binding(
+            get: { settings.defaultAgentModel },
+            set: { value in
+                settings.defaultAgentModel = value
+                persistDefaultAgent()
+            }
+        )
+    }
+
+    private var defaultReasoningBinding: Binding<String> {
+        Binding(
+            get: { settings.defaultAgentReasoning },
+            set: { value in
+                settings.defaultAgentReasoning = value
+                persistDefaultAgent()
+            }
+        )
+    }
+
+    private var defaultAgentStatus: (label: String, detail: String, symbol: String, color: Color) {
+        let providerID = settings.defaultAgentProvider
+        guard !providerID.isEmpty else {
+            return (
+                "Not configured",
+                "Delegated requests must keep passing a provider explicitly until a default is selected.",
+                "minus.circle",
+                .secondary
+            )
+        }
+        if state.providerStatuses.isEmpty {
+            switch state.providerSettingsState.phase {
+            case .loading:
+                return ("Loading", "Checking the delegated provider before validating this default.", "arrow.clockwise", .secondary)
+            case .error, .unavailable:
+                return ("Unavailable", state.providerSettingsState.message ?? "Provider status could not be loaded.", "exclamationmark.triangle.fill", .orange)
+            default:
+                break
+            }
+        }
+        guard let provider = state.providerStatuses.first(where: { $0.id == providerID }) else {
+            return ("Unavailable", "The saved provider is not present in the latest provider response.", "exclamationmark.triangle.fill", .orange)
+        }
+        guard provider.enabled else {
+            return ("Disabled", "Enable \(providerDisplayName(providerID)) before using it as the default.", "pause.circle.fill", .orange)
+        }
+        guard provider.detected else {
+            return ("Unavailable", "\(providerDisplayName(providerID)) CLI is not currently detected.", "exclamationmark.triangle.fill", .orange)
+        }
+        guard let catalog = defaultProviderCatalog, catalog.available else {
+            return ("Unavailable", "The live model catalog for \(providerDisplayName(providerID)) is unavailable.", "exclamationmark.triangle.fill", .orange)
+        }
+        if catalog.catalogFreshness == "stale" {
+            return ("Stale", "The provider model catalog is stale. Refresh the provider before spawning this default.", "clock.badge.exclamationmark", .orange)
+        }
+        if !settings.defaultAgentModel.isEmpty && defaultSelectedModelInfo == nil {
+            return ("Stale model", "\(settings.defaultAgentModel) is no longer in the live provider catalog.", "exclamationmark.triangle.fill", .orange)
+        }
+        if !settings.defaultAgentReasoning.isEmpty {
+            guard let model = defaultSelectedModelInfo else {
+                return ("Check thinking", "Choose a catalog-backed model before pinning a thinking level.", "exclamationmark.triangle.fill", .orange)
+            }
+            guard model.reasoningValues.contains(settings.defaultAgentReasoning) else {
+                return (
+                    "Unsupported",
+                    "\(reasoningDisplayName(settings.defaultAgentReasoning)) is not supported by \(model.displayName).",
+                    "exclamationmark.triangle.fill",
+                    .orange
+                )
+            }
+        }
+        let modelName = defaultSelectedModelInfo?.displayName ?? "Provider default model"
+        let thinking = settings.defaultAgentReasoning.isEmpty
+            ? "provider default thinking"
+            : reasoningDisplayName(settings.defaultAgentReasoning)
+        return (
+            "Ready",
+            "\(providerDisplayName(providerID)) · \(modelName) · \(thinking). Explicit spawn arguments still take precedence.",
+            "checkmark.circle.fill",
+            .green
+        )
+    }
+
+    private func reasoningDisplayName(_ value: String) -> String {
+        switch value.lowercased() {
+        case "xhigh": return "Extra High"
+        case "extra-high": return "Extra High"
+        case "max": return "Max"
+        case "ultra": return "Ultra"
+        default: return value.capitalized
+        }
+    }
+
+    private func persistDefaultAgent() {
+        do {
+            try settings.save()
+            let message = settings.defaultAgentProvider.isEmpty
+                ? "Default Agent cleared · applies live"
+                : "Default Agent saved · applies live"
+            saveFeedback = SettingsSaveFeedback(scope: .agents, message: message, isError: false)
+            notice = message
+        } catch {
+            settings.load()
+            let message = "Could not save Default Agent: \(error.localizedDescription)"
+            saveFeedback = SettingsSaveFeedback(scope: .agents, message: message, isError: true)
+            notice = message
+        }
+    }
+
     private func providerRow(id: String, title: String, subtitle: String) -> some View {
         let provider = state.providerStatuses.first(where: { $0.id == id })
         let detected = provider?.detected ?? false
         let version = provider?.version?.trimmingCharacters(in: .whitespacesAndNewlines)
         let path = provider?.binaryPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let detectionLabel: String = {
+            guard provider != nil else {
+                switch state.providerSettingsState.phase {
+                case .loading: return "Checking…"
+                case .stale: return "Stale"
+                case .error, .unavailable: return "Unavailable"
+                case .fresh: return "Not detected"
+                }
+            }
+            return detected ? "Detected" : "Not detected"
+        }()
+        let detectionColor: Color = {
+            guard provider != nil else {
+                switch state.providerSettingsState.phase {
+                case .error: return .red
+                case .stale, .unavailable: return .orange
+                default: return .secondary
+                }
+            }
+            return detected ? .green : .secondary
+        }()
 
         return VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 10) {
                 Image(systemName: detected ? "checkmark.circle.fill" : "minus.circle")
-                    .foregroundStyle(detected ? Color.green : Color.secondary)
+                    .foregroundStyle(detectionColor)
                     .font(.system(size: 16, weight: .medium))
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 7) {
                         Text(title).font(.subheadline.weight(.semibold))
-                        Text(detected ? "Detected" : "Not detected")
+                        Text(detectionLabel)
                             .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(detectionColor)
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .background(.quaternary, in: Capsule())
                     }
@@ -941,22 +1650,36 @@ struct SettingsView: View {
                 settings.setProviderEnabled(id, enabled: enabled)
                 do {
                     try settings.save()
-                    notice = "\(providerDisplayName(id)) is now \(enabled ? "enabled" : "disabled")."
+                    let message = "\(providerDisplayName(id)) is now \(enabled ? "enabled" : "disabled") · applies live"
+                    saveFeedback = SettingsSaveFeedback(scope: .agents, message: message, isError: false)
+                    notice = message
                     Task { await state.refreshProviders() }
                 } catch {
                     settings.load()
-                    notice = "Could not save provider settings."
+                    let message = "Could not save provider settings."
+                    saveFeedback = SettingsSaveFeedback(scope: .agents, message: message, isError: true)
+                    notice = message
                 }
             }
         )
     }
 
-    private func persistSettings() {
+    private func persistSettings(
+        scope: SettingsFeedbackScope? = nil,
+        success: String = "Saved"
+    ) {
         do {
             try settings.save()
-            notice = "Saved."
+            notice = success
+            if let scope {
+                saveFeedback = SettingsSaveFeedback(scope: scope, message: success, isError: false)
+            }
         } catch {
-            notice = "Could not save settings: \(error.localizedDescription)"
+            let message = "Could not save settings: \(error.localizedDescription)"
+            notice = message
+            if let scope {
+                saveFeedback = SettingsSaveFeedback(scope: scope, message: message, isError: true)
+            }
         }
     }
 

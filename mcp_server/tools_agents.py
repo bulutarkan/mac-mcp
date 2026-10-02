@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+from datetime import datetime
 import os
 import re
 import shutil
@@ -24,7 +25,7 @@ from .policy_scope import (
 )
 from .scoped_auth import get_scoped_credential_store
 from .security import BASE_DIR, Settings, truncate
-from .runtime_settings import provider_enabled, provider_setting
+from .runtime_settings import load_runtime_settings_state, provider_enabled, provider_setting
 from .tools_lessons import (
     VALID_ROLES, TAINTED_PROVENANCE, extract_lesson_candidates, lesson_candidate_instruction,
     lesson_context, lesson_record_agent_candidate,
@@ -1405,6 +1406,7 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
                     seed_worktree_agent_ids=seed_agent_ids,
                     admission_lease_id=str(task.get("admission_lease_id") or "") or None,
                     admission_resources=resource_claims,
+                    selection_validation=team.get("model_selection_validation"),
                 )
             except Exception as exc:
                 _release_task_admission(task)
@@ -2167,24 +2169,138 @@ def _opencode_models(binary: str) -> List[str]:
         return []
 
 
-def _codex_known_models() -> Tuple[List[str], Optional[str], Optional[str]]:
-    config = Path.home() / ".codex" / "config.toml"
+_CODEX_MODEL_CACHE_MAX_AGE_S = 24 * 60 * 60
+
+
+def _codex_config_path() -> Path:
+    return Path.home() / ".codex" / "config.toml"
+
+
+def _codex_models_cache_path() -> Path:
+    return Path.home() / ".codex" / "models_cache.json"
+
+
+def _codex_config_defaults() -> Tuple[Optional[str], Optional[str]]:
+    config = _codex_config_path()
     if not config.exists():
-        return [], None, None
+        return None, None
     try:
         text = config.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return [], None, None
+        return None, None
     default_model_match = re.search(r'^model\s*=\s*"([^"]+)"', text, re.MULTILINE)
     default_reasoning_match = re.search(r'^model_reasoning_effort\s*=\s*"([^"]+)"', text, re.MULTILINE)
-    section_match = re.search(r'\[tui\.model_availability_nux\](.*?)(?:\n\[|\Z)', text, re.DOTALL)
-    models: List[str] = []
-    if section_match:
-        models.extend(re.findall(r'^"([^"]+)"\s*=', section_match.group(1), re.MULTILINE))
-    default_model = default_model_match.group(1) if default_model_match else None
-    if default_model and default_model not in models:
-        models.insert(0, default_model)
-    return models, default_model, default_reasoning_match.group(1) if default_reasoning_match else None
+    return (
+        default_model_match.group(1) if default_model_match else None,
+        default_reasoning_match.group(1) if default_reasoning_match else None,
+    )
+
+
+def _parse_catalog_timestamp(value: Any) -> Optional[float]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _catalog_freshness(fetched_at: Any, *, max_age_s: int = _CODEX_MODEL_CACHE_MAX_AGE_S) -> str:
+    timestamp = _parse_catalog_timestamp(fetched_at)
+    if timestamp is None:
+        return "unknown"
+    age = max(0.0, _now() - timestamp)
+    return "fresh" if age <= max_age_s else "stale"
+
+
+def _codex_model_catalog() -> Dict[str, Any]:
+    default_model, default_reasoning = _codex_config_defaults()
+    cache = _codex_models_cache_path()
+    if not cache.exists():
+        return {
+            "models": [],
+            "model_items": [],
+            "default_model": default_model,
+            "default_reasoning": default_reasoning,
+            "source": "config_default" if default_model or default_reasoning else "unavailable",
+            "fetched_at": None,
+            "freshness": "unavailable",
+            "error": None,
+        }
+    try:
+        payload = json.loads(cache.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "models": [],
+            "model_items": [],
+            "default_model": default_model,
+            "default_reasoning": default_reasoning,
+            "source": "config_default" if default_model or default_reasoning else "unavailable",
+            "fetched_at": None,
+            "freshness": "unavailable",
+            "error": f"models_cache_unreadable:{exc.__class__.__name__}",
+        }
+    rows = payload.get("models") if isinstance(payload, dict) else None
+    fetched_at = payload.get("fetched_at") if isinstance(payload, dict) else None
+    items: List[Dict[str, Any]] = []
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            model_id = str(row.get("slug") or "").strip()
+            visibility = str(row.get("visibility") or "").strip().lower()
+            if not model_id or visibility != "list":
+                continue
+            reasoning_options: List[Dict[str, str]] = []
+            raw_reasoning = row.get("supported_reasoning_levels")
+            if isinstance(raw_reasoning, list):
+                for option in raw_reasoning:
+                    if not isinstance(option, dict):
+                        continue
+                    effort = str(option.get("effort") or "").strip().lower()
+                    if not effort:
+                        continue
+                    reasoning_options.append({
+                        "value": effort,
+                        "description": str(option.get("description") or "").strip(),
+                    })
+            reasoning_values = [item["value"] for item in reasoning_options]
+            item_default_reasoning = str(row.get("default_reasoning_level") or "").strip().lower() or None
+            items.append({
+                "id": model_id,
+                "display_name": str(row.get("display_name") or model_id).strip() or model_id,
+                "visibility": visibility,
+                "reasoning_values": reasoning_values,
+                "reasoning_options": reasoning_options,
+                "default_reasoning": item_default_reasoning,
+                "source": "codex_models_cache",
+                "priority": row.get("priority"),
+            })
+    items.sort(key=lambda item: (
+        item.get("priority") if isinstance(item.get("priority"), (int, float)) else 10**9,
+        str(item.get("display_name") or item["id"]).lower(),
+    ))
+    freshness = _catalog_freshness(fetched_at)
+    return {
+        "models": [item["id"] for item in items],
+        "model_items": items,
+        "default_model": default_model,
+        "default_reasoning": default_reasoning,
+        "source": "codex_models_cache",
+        "fetched_at": fetched_at,
+        "freshness": freshness,
+        "error": None,
+    }
+
+
+def _codex_known_models() -> Tuple[List[str], Optional[str], Optional[str]]:
+    catalog = _codex_model_catalog()
+    return (
+        list(catalog.get("models") or []),
+        catalog.get("default_model"),
+        catalog.get("default_reasoning"),
+    )
 
 
 def _chatgpt_cached_models(binary: str) -> Tuple[List[str], Optional[str]]:
@@ -2695,6 +2811,28 @@ def provider_overview() -> Dict[str, Any]:
     return {"ok": True, "providers": rows}
 
 
+def _legacy_model_items(
+    models: List[str],
+    *,
+    source: str,
+    reasoning_values: Optional[List[str]] = None,
+    default_reasoning: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    values = list(reasoning_values or [])
+    return [
+        {
+            "id": model,
+            "display_name": model,
+            "visibility": "list",
+            "reasoning_values": values,
+            "reasoning_options": [{"value": value, "description": ""} for value in values],
+            "default_reasoning": default_reasoning,
+            "source": source,
+        }
+        for model in models
+    ]
+
+
 def agent_catalog(
     settings: Settings,
     provider: Optional[str] = None,
@@ -2718,15 +2856,23 @@ def agent_catalog(
         if model_filter:
             q = model_filter.lower().strip()
             matched = [m for m in matched if q in m.lower()]
+        model_items = _legacy_model_items(matched[:limit], source="opencode_cli")
         providers["opencode"] = {
             "available": bool(binary),
             "version": _version(binary),
             "model_count": len(all_models),
             "matched_count": len(matched),
             "models": matched[:limit],
+            "model_items": model_items,
             "models_truncated": len(matched) > limit,
             "free_models": free_models[:50],
-            "reasoning": "Pass a model-supported OpenCode --variant value such as minimal/low/medium/high/max.",
+            "reasoning_values": [],
+            "default_reasoning": None,
+            "catalog_source": "opencode_cli" if binary else "unavailable",
+            "catalog_fetched_at": None,
+            "catalog_freshness": "fresh" if binary and all_models else "unavailable",
+            "catalog_error": None,
+            "reasoning": "OpenCode variants are model/provider specific; Mac MCP does not invent unsupported variant values.",
             "access_modes": {
                 "read_only": {"supported": _sandbox_exec_available(), **_access_mode_info("opencode", "read_only")},
                 "workspace_write": {"supported": _sandbox_exec_available(), **_access_mode_info("opencode", "workspace_write")},
@@ -2735,14 +2881,38 @@ def agent_catalog(
         }
     if (not requested or requested == "codex") and provider_enabled("codex"):
         binary = _find_binary("codex")
-        models, default_model, default_reasoning = _codex_known_models()
+        catalog = _codex_model_catalog()
+        all_items = list(catalog.get("model_items") or [])
+        filtered_items = all_items
+        if model_filter:
+            q = model_filter.lower().strip()
+            filtered_items = [
+                item for item in filtered_items
+                if q in str(item.get("id") or "").lower()
+                or q in str(item.get("display_name") or "").lower()
+            ]
+        matched_count = len(filtered_items)
+        matched_items = filtered_items[:limit]
+        reasoning_values: List[str] = []
+        for item in all_items:
+            for value in item.get("reasoning_values") or []:
+                if value not in reasoning_values:
+                    reasoning_values.append(value)
         providers["codex"] = {
             "available": bool(binary),
             "version": _version(binary),
-            "models": models,
-            "default_model": default_model,
-            "default_reasoning": default_reasoning,
-            "reasoning_values": ["none", "low", "medium", "high", "xhigh", "max"],
+            "model_count": len(all_items),
+            "matched_count": matched_count,
+            "models": [item["id"] for item in matched_items],
+            "model_items": matched_items,
+            "models_truncated": matched_count > len(matched_items),
+            "default_model": catalog.get("default_model"),
+            "default_reasoning": catalog.get("default_reasoning"),
+            "reasoning_values": reasoning_values,
+            "catalog_source": catalog.get("source"),
+            "catalog_fetched_at": catalog.get("fetched_at"),
+            "catalog_freshness": catalog.get("freshness"),
+            "catalog_error": catalog.get("error"),
             "access_modes": {
                 mode: {"supported": mode == "full", **_access_mode_info("codex", mode)}
                 for mode in sorted(_ACCESS_MODES)
@@ -2755,13 +2925,28 @@ def agent_catalog(
         if model_filter:
             q = model_filter.lower().strip()
             matched = [m for m in matched if q in m.lower()]
+        reasoning_values = ["low", "medium", "high", "extra-high"]
+        default_reasoning = str(provider_setting("chatgpt", "default_reasoning", "high") or "high")
         providers["chatgpt"] = {
             "available": bool(binary),
             "version": _version(binary),
+            "model_count": len(models),
+            "matched_count": len(matched),
             "models": matched[:limit],
+            "model_items": _legacy_model_items(
+                matched[:limit],
+                source="chatgpt_model_cache_or_cli",
+                reasoning_values=reasoning_values,
+                default_reasoning=default_reasoning,
+            ),
+            "models_truncated": len(matched) > limit,
             "default_model": default_model,
-            "reasoning_values": ["low", "medium", "high", "extra-high"],
-            "default_reasoning": str(provider_setting("chatgpt", "default_reasoning", "high") or "high"),
+            "reasoning_values": reasoning_values,
+            "default_reasoning": default_reasoning,
+            "catalog_source": "chatgpt_model_cache_or_cli" if binary else "unavailable",
+            "catalog_fetched_at": None,
+            "catalog_freshness": "unknown" if binary and models else "unavailable",
+            "catalog_error": None,
             "turn_budget_s": _chatgpt_budget_config()[0],
             "hard_tool_budget_s": _chatgpt_budget_config()[1],
             "rate_limit_backoff_s": _chatgpt_cooldown_seconds(1),
@@ -2775,6 +2960,212 @@ def agent_catalog(
             },
         }
     return {"ok": True, "providers": providers}
+
+
+def _clean_optional_selection(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _resolve_agent_selection(
+    provider: Optional[str],
+    model: Optional[str],
+    reasoning: Optional[str],
+) -> Dict[str, Any]:
+    explicit_provider = _clean_optional_selection(provider)
+    if explicit_provider is not None:
+        explicit_provider = explicit_provider.lower()
+        if explicit_provider not in _PROVIDER_NAMES:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"provider must be one of: {', '.join(sorted(_PROVIDER_NAMES))}",
+            )
+
+    explicit_model = _clean_optional_selection(model)
+    explicit_reasoning = _clean_optional_selection(reasoning)
+    if explicit_reasoning is not None:
+        explicit_reasoning = explicit_reasoning.lower()
+
+    state = load_runtime_settings_state()
+    subagents = state.data.get("subagents") if state.ok else None
+    preset = subagents.get("default") if isinstance(subagents, dict) else None
+    preset_provider: Optional[str] = None
+    preset_model: Optional[str] = None
+    preset_reasoning: Optional[str] = None
+    preset_valid = False
+    if isinstance(preset, dict):
+        raw_provider = preset.get("provider")
+        if isinstance(raw_provider, str):
+            candidate = raw_provider.strip().lower()
+            if candidate in _PROVIDER_NAMES:
+                preset_provider = candidate
+                preset_model = _clean_optional_selection(preset.get("model"))
+                preset_reasoning = _clean_optional_selection(preset.get("reasoning"))
+                if preset_reasoning is not None:
+                    preset_reasoning = preset_reasoning.lower()
+                preset_valid = True
+
+    default_provider_used = explicit_provider is None
+    if default_provider_used:
+        if not state.ok:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"default_agent_unavailable: settings.json is {state.status}; repair Settings > Subagents or pass provider explicitly.",
+            )
+        if not preset_valid or preset_provider is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "default_agent_not_configured: choose a Default Agent in Mac MCP Settings > Subagents or pass provider explicitly.",
+            )
+        effective_provider = preset_provider
+    else:
+        effective_provider = explicit_provider
+
+    same_as_saved_provider = bool(preset_valid and preset_provider == effective_provider)
+    inherited_model = explicit_model is None and same_as_saved_provider and preset_model is not None
+    inherited_reasoning = explicit_reasoning is None and same_as_saved_provider and preset_reasoning is not None
+
+    effective_model = explicit_model if explicit_model is not None else (preset_model if inherited_model else None)
+    effective_reasoning = (
+        explicit_reasoning if explicit_reasoning is not None else (preset_reasoning if inherited_reasoning else None)
+    )
+
+    if default_provider_used and not provider_enabled(effective_provider):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"default_agent_unavailable: saved provider {effective_provider!r} is disabled in Mac MCP Settings > Subagents.",
+        )
+
+    selection_validation: Optional[Dict[str, Any]] = None
+    if default_provider_used:
+        binary = _find_binary(effective_provider)
+        if not binary:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                f"default_agent_unavailable: saved provider {effective_provider!r} is enabled but its CLI is unavailable.",
+            )
+    if inherited_model or inherited_reasoning:
+        binary = _find_binary(effective_provider)
+        if not binary:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                f"default_agent_unavailable: saved provider {effective_provider!r} is enabled but its CLI is unavailable.",
+            )
+        try:
+            selection_validation = _validate_provider_model_selection(
+                effective_provider, binary, effective_model, effective_reasoning
+            )
+        except HTTPException as exc:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"default_agent_invalid: {exc.detail}",
+            ) from exc
+
+    return {
+        "provider": effective_provider,
+        "model": effective_model,
+        "reasoning": effective_reasoning,
+        "default_provider_used": default_provider_used,
+        "default_model_used": inherited_model,
+        "default_reasoning_used": inherited_reasoning,
+        "saved_provider": preset_provider,
+        "provider_source": "default" if default_provider_used else "explicit",
+        "model_source": "explicit" if explicit_model is not None else ("default" if inherited_model else "provider_default"),
+        "reasoning_source": (
+            "explicit" if explicit_reasoning is not None else ("default" if inherited_reasoning else "provider_default")
+        ),
+        "selection_validation": selection_validation,
+    }
+
+
+def _validate_provider_model_selection(
+    provider: str,
+    binary: str,
+    model: Optional[str],
+    reasoning: Optional[str],
+) -> Dict[str, Any]:
+    provider = str(provider or "").strip().lower()
+    selected_model = str(model or "").strip() or None
+    selected_reasoning = str(reasoning or "").strip().lower() or None
+    result: Dict[str, Any] = {
+        "provider": provider,
+        "requested_model": selected_model,
+        "requested_reasoning": selected_reasoning,
+        "catalog_source": None,
+        "catalog_freshness": None,
+        "validated": False,
+    }
+    binary_path = Path(str(binary or "")).expanduser()
+    if not binary_path.is_file() or not os.access(binary_path, os.X_OK):
+        result["catalog_source"] = "provider_binary_unavailable"
+        result["catalog_freshness"] = "unavailable"
+        return result
+
+    if provider == "codex":
+        catalog = _codex_model_catalog()
+        result["catalog_source"] = catalog.get("source")
+        result["catalog_freshness"] = catalog.get("freshness")
+        items = list(catalog.get("model_items") or [])
+        effective_for_validation = selected_model or str(catalog.get("default_model") or "").strip() or None
+        if selected_model:
+            if catalog.get("source") != "codex_models_cache" or not items:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "provider_catalog_unavailable: explicit Codex model selection requires the local Codex model cache; use provider default or refresh Codex models.",
+                )
+            if catalog.get("freshness") != "fresh":
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "provider_catalog_stale: Codex model cache is stale; refresh the Codex model picker before spawning an explicit model.",
+                )
+            match = next((item for item in items if item.get("id") == selected_model), None)
+            if match is None:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"unsupported_model: Codex model {selected_model!r} is not present in the current local model catalog.",
+                )
+            result["validated"] = True
+            result["model_item"] = match
+        else:
+            match = next((item for item in items if item.get("id") == effective_for_validation), None)
+            if match is not None and catalog.get("freshness") == "fresh":
+                result["model_item"] = match
+
+        match = result.get("model_item")
+        if selected_reasoning and selected_reasoning != "none" and isinstance(match, dict):
+            supported = list(match.get("reasoning_values") or [])
+            if supported and selected_reasoning not in supported:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"unsupported_reasoning: Codex model {match.get('id')!r} supports {supported}, not {selected_reasoning!r}.",
+                )
+        return result
+
+    if provider == "opencode":
+        models = _opencode_models(binary)
+        result["catalog_source"] = "opencode_cli"
+        result["catalog_freshness"] = "fresh" if models else "unavailable"
+        if selected_model and models and selected_model not in models:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"unsupported_model: OpenCode model {selected_model!r} is not present in the current CLI model catalog.",
+            )
+        result["validated"] = bool(selected_model and models)
+        return result
+
+    if provider == "chatgpt":
+        models, _ = _chatgpt_models(binary)
+        result["catalog_source"] = "chatgpt_model_cache_or_cli"
+        result["catalog_freshness"] = "unknown" if models else "unavailable"
+        if selected_model and models and selected_model not in models:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"unsupported_model: ChatGPT model {selected_model!r} is not present in the current account model catalog.",
+            )
+        result["validated"] = bool(selected_model and models)
+        return result
+
+    return result
 
 
 def _worktree_public(state: Any) -> Dict[str, Any]:
@@ -2950,6 +3341,14 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "provider": meta.get("provider"),
         "model": meta.get("model"),
         "reasoning": meta.get("reasoning"),
+        "requested_model": meta.get("requested_model", meta.get("model")),
+        "requested_reasoning": meta.get("requested_reasoning", meta.get("reasoning")),
+        "effective_model": meta.get("effective_model"),
+        "effective_reasoning": meta.get("effective_reasoning"),
+        "model_selection_verified": bool(meta.get("model_selection_verified")),
+        "model_catalog_source": meta.get("model_catalog_source"),
+        "model_catalog_freshness": meta.get("model_catalog_freshness"),
+        "model_mismatch": bool(meta.get("model_mismatch")),
         "project": meta.get("project"),
         "cwd": meta.get("cwd"),
         "source_cwd": meta.get("source_cwd"),
@@ -3116,6 +3515,7 @@ def _spawn_internal(
     seed_worktree_agent_ids: Optional[List[str]] = None,
     admission_lease_id: Optional[str] = None,
     admission_resources: Optional[List[Dict[str, str]]] = None,
+    selection_validation: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     provider = provider.lower().strip()
     clean_role = str(role or "").strip().lower() or None
@@ -3139,6 +3539,11 @@ def _spawn_internal(
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"{provider} CLI is not installed or not executable.")
     if not prompt or not prompt.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "prompt is required.")
+    selection_validation = (
+        dict(selection_validation)
+        if isinstance(selection_validation, dict)
+        else _validate_provider_model_selection(provider, binary, model, reasoning)
+    )
     if result_style not in _RESULT_STYLES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"result_style must be one of: {', '.join(sorted(_RESULT_STYLES))}")
     if access_mode not in _ACCESS_MODES:
@@ -3254,6 +3659,14 @@ def _spawn_internal(
         "binary": binary,
         "model": model,
         "reasoning": reasoning,
+        "requested_model": model,
+        "requested_reasoning": reasoning,
+        "effective_model": None,
+        "effective_reasoning": None,
+        "model_selection_verified": bool(selection_validation.get("validated")),
+        "model_catalog_source": selection_validation.get("catalog_source"),
+        "model_catalog_freshness": selection_validation.get("catalog_freshness"),
+        "model_mismatch": False,
         "project": project,
         "cwd": str(workdir),
         "source_cwd": str(source_workdir),
@@ -3438,7 +3851,7 @@ def _spawn_internal(
 
 def spawn_agent(
     settings: Settings,
-    provider: str,
+    provider: Optional[str],
     prompt: str,
     model: Optional[str] = None,
     reasoning: Optional[str] = None,
@@ -3458,6 +3871,10 @@ def spawn_agent(
     provenance_class: str = "local",
     git_isolation: str = "auto",
 ) -> Dict[str, Any]:
+    selection = _resolve_agent_selection(provider, model, reasoning)
+    provider = str(selection["provider"])
+    model = selection.get("model")
+    reasoning = selection.get("reasoning")
     workdir = _resolve_cwd(cwd)
     effective_scope, permission_profile, effective_capability_profile = _requested_agent_scope(
         workdir, access_mode, scope, parent_scope, parent_profile, capability_profile
@@ -3469,13 +3886,14 @@ def spawn_agent(
         capability_profile=effective_capability_profile, parent_agent_id=context.agent_id,
         idle_timeout_s=idle_timeout_s, retries=retries, project=project,
         role=role, provenance_class=provenance_class, git_isolation=git_isolation,
+        selection_validation=selection.get("selection_validation"),
     )
 
 
 def spawn_agents(
     settings: Settings,
     tasks: List[Dict[str, Any]],
-    provider: str,
+    provider: Optional[str],
     model: Optional[str] = None,
     reasoning: Optional[str] = None,
     cwd: Optional[str] = None,
@@ -3501,9 +3919,10 @@ def spawn_agents(
     max_total_tokens: Optional[int] = None,
     git_isolation: str = "auto",
 ) -> Dict[str, Any]:
-    provider = str(provider or "").strip().lower()
-    if provider not in _PROVIDER_NAMES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"provider must be one of: {', '.join(sorted(_PROVIDER_NAMES))}")
+    selection = _resolve_agent_selection(provider, model, reasoning)
+    provider = str(selection["provider"])
+    model = selection.get("model")
+    reasoning = selection.get("reasoning")
     if not provider_enabled(provider):
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"provider_disabled: {provider} is disabled in Mac MCP Settings > Subagents.")
     if provider != "chatgpt" and project:
@@ -3628,7 +4047,8 @@ def spawn_agents(
     _validate_team_graph(normalized)
     # Preserve validation precedence: malformed team/task input must fail with 4xx
     # even on hosts where the selected provider binary is not installed (e.g. CI).
-    if not _find_binary(provider):
+    provider_binary = _find_binary(provider)
+    if not provider_binary:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"{provider} CLI is not installed or not executable.")
     workdir = _resolve_cwd(cwd)
     team_scope, team_profile, effective_capability_profile = _requested_agent_scope(
@@ -3636,6 +4056,11 @@ def spawn_agents(
     )
     access_mode = team_scope.access_mode.value
     _validate_provider_access_mode(provider, access_mode)
+    team_selection_validation = (
+        dict(selection["selection_validation"])
+        if isinstance(selection.get("selection_validation"), dict)
+        else _validate_provider_model_selection(provider, provider_binary, model, reasoning)
+    )
 
     persisted_tasks: List[Dict[str, Any]] = []
     for task in normalized:
@@ -3701,6 +4126,7 @@ def spawn_agents(
         "provider": provider,
         "model": model,
         "reasoning": reasoning,
+        "model_selection_validation": team_selection_validation,
         "project": (str(project or _chatgpt_default_project() or "").strip() or None) if provider == "chatgpt" else None,
         "cwd": str(workdir),
         "git_isolation": git_isolation,
@@ -4783,6 +5209,18 @@ def _apply_provider_event(meta: Dict[str, Any], event: Dict[str, Any], now: floa
             meta["phase"] = meta.get("phase") or "working"
     elif provider == "codex":
         item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        event_model = event.get("model") or event.get("model_slug") or event.get("model_id")
+        event_reasoning = event.get("reasoning") or event.get("reasoning_effort")
+        if event_model:
+            meta["effective_model"] = str(event_model)
+            requested_model = str(meta.get("requested_model") or meta.get("model") or "").strip()
+            if requested_model and requested_model != str(event_model):
+                meta["model_mismatch"] = True
+                meta["note"] = (
+                    f"Provider model mismatch: requested {requested_model}, effective {event_model}."
+                )
+        if event_reasoning:
+            meta["effective_reasoning"] = str(event_reasoning)
         if event_type == "thread.started":
             meta["phase"] = "starting"
             thread_id = event.get("thread_id")

@@ -191,6 +191,44 @@ struct ProviderInfo: Decodable, Identifiable, Equatable {
 
 struct ProvidersEnvelope: Decodable { let providers: [ProviderInfo] }
 
+struct AgentModelInfo: Decodable, Identifiable, Equatable {
+    let id: String
+    let displayName: String
+    let reasoningValues: [String]
+    let defaultReasoning: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case displayName = "display_name"
+        case reasoningValues = "reasoning_values"
+        case defaultReasoning = "default_reasoning"
+    }
+}
+
+struct ProviderCatalogInfo: Decodable, Equatable {
+    let available: Bool
+    let modelItems: [AgentModelInfo]
+    let defaultModel: String?
+    let defaultReasoning: String?
+    let catalogSource: String?
+    let catalogFreshness: String?
+    let catalogError: String?
+
+    enum CodingKeys: String, CodingKey {
+        case available
+        case modelItems = "model_items"
+        case defaultModel = "default_model"
+        case defaultReasoning = "default_reasoning"
+        case catalogSource = "catalog_source"
+        case catalogFreshness = "catalog_freshness"
+        case catalogError = "catalog_error"
+    }
+}
+
+struct AgentCatalogEnvelope: Decodable {
+    let providers: [String: ProviderCatalogInfo]
+}
+
 struct MobileDeviceInfo: Decodable, Identifiable, Equatable {
     let deviceID: String
     let deviceName: String
@@ -979,6 +1017,41 @@ struct ActionNotice: Identifiable, Equatable {
     }
 }
 
+struct SettingsDataState: Equatable {
+    enum Phase: String, Equatable {
+        case loading
+        case fresh
+        case stale
+        case unavailable
+        case error
+    }
+
+    let phase: Phase
+    let lastUpdatedAt: Date?
+    let message: String?
+
+    static func loading(lastUpdatedAt: Date? = nil) -> SettingsDataState {
+        SettingsDataState(phase: .loading, lastUpdatedAt: lastUpdatedAt, message: nil)
+    }
+
+    static func fresh(at date: Date = Date()) -> SettingsDataState {
+        SettingsDataState(phase: .fresh, lastUpdatedAt: date, message: nil)
+    }
+
+    static func stale(lastUpdatedAt: Date?, message: String) -> SettingsDataState {
+        SettingsDataState(phase: .stale, lastUpdatedAt: lastUpdatedAt, message: message)
+    }
+
+    static func unavailable(_ message: String) -> SettingsDataState {
+        SettingsDataState(phase: .unavailable, lastUpdatedAt: nil, message: message)
+    }
+
+    static func error(_ message: String) -> SettingsDataState {
+        SettingsDataState(phase: .error, lastUpdatedAt: nil, message: message)
+    }
+}
+
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var serverRunning = false
@@ -1001,11 +1074,19 @@ final class AppState: ObservableObject {
     @Published var permissionProfileChanging = false
     @Published var agents: [AgentInfo] = []
     @Published var providerStatuses: [ProviderInfo] = []
+    @Published var providerCatalogs: [String: ProviderCatalogInfo] = [:]
     @Published var mobileDevices: [MobileDeviceInfo] = []
     @Published var mobilePairingURL: String?
     @Published var mobilePairingCode: String?
     @Published var mobilePairingExpiresAt: Double?
     @Published var mobilePairingLoading = false
+    @Published private(set) var providerSettingsState: SettingsDataState = .loading()
+    @Published private(set) var mobileSettingsState: SettingsDataState = .loading()
+    @Published private(set) var permissionsSettingsState: SettingsDataState = .loading()
+    @Published private(set) var browserSettingsState: SettingsDataState = .loading()
+    @Published private(set) var mobilePairingIssue: String?
+    @Published private(set) var mobileDeviceActionIssue: String?
+    @Published private(set) var permissionActionIssue: String?
     @Published var steeringSessions: [SteeringSession] = []
     @Published var steeringRecent: [SteeringRecent] = []
     @Published private(set) var steeringGenerationID: String?
@@ -1072,6 +1153,8 @@ final class AppState: ObservableObject {
     }
 
     func refreshSafariExtensionState() {
+        let previous = browserSettingsState
+        setIfChanged(\.browserSettingsState, .loading(lastUpdatedAt: previous.lastUpdatedAt))
         let identifier = safariExtensionBundleIdentifier
         SFSafariExtensionManager.getStateOfSafariExtension(withIdentifier: identifier) { [weak self] state, error in
             DispatchQueue.main.async {
@@ -1080,10 +1163,19 @@ final class AppState: ObservableObject {
                     self.safariExtensionRegistered = true
                     self.safariExtensionEnabled = state.isEnabled
                     self.safariExtensionStatus = state.isEnabled ? "On" : "Needs enabling"
+                    self.browserSettingsState = .fresh()
+                } else if let error {
+                    let message = "Could not check the Safari companion: \(error.localizedDescription)"
+                    if let lastUpdatedAt = previous.lastUpdatedAt {
+                        self.browserSettingsState = .stale(lastUpdatedAt: lastUpdatedAt, message: message)
+                    } else {
+                        self.browserSettingsState = .error(message)
+                    }
                 } else {
                     self.safariExtensionRegistered = false
                     self.safariExtensionEnabled = false
                     self.safariExtensionStatus = "Developer setup"
+                    self.browserSettingsState = .unavailable("Safari Visual Companion is not registered in this build.")
                 }
             }
         }
@@ -1290,7 +1382,15 @@ final class AppState: ObservableObject {
             do {
                 let semantics = try await securityFetch
                 setIfChanged(\.securitySemantics, semantics)
+                setIfChanged(\.permissionsSettingsState, .fresh())
             } catch {
+                let message = "Could not refresh permission semantics: \(Self.issueText(for: error))"
+                let state = settingsFailureState(
+                    from: permissionsSettingsState,
+                    hasData: securitySemantics != nil,
+                    message: message
+                )
+                setIfChanged(\.permissionsSettingsState, state)
                 secondaryIssue = secondaryIssue ?? "Security: \(Self.issueText(for: error))"
             }
 
@@ -1305,12 +1405,39 @@ final class AppState: ObservableObject {
             let state = Self.failureState(for: error)
             setIfChanged(\.serverRunning, state == .degraded)
             if state == .disconnected { setIfChanged(\.activeAgents, 0) }
+            let permissionMessage = "Could not refresh permission semantics: \(Self.issueText(for: error))"
+            let permissionState = settingsFailureState(
+                from: permissionsSettingsState,
+                hasData: securitySemantics != nil,
+                message: permissionMessage
+            )
+            setIfChanged(\.permissionsSettingsState, permissionState)
             recordRefreshFailure(state: state, issue: Self.issueText(for: error))
         }
     }
 
+    private func settingsFailureState(
+        from current: SettingsDataState,
+        hasData: Bool,
+        message: String,
+        updatedAt: Date? = nil
+    ) -> SettingsDataState {
+        if hasData || current.lastUpdatedAt != nil {
+            return .stale(lastUpdatedAt: updatedAt ?? current.lastUpdatedAt, message: message)
+        }
+        return .error(message)
+    }
+
     func refreshProviders() async {
-        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else {
+            setIfChanged(\.providerSettingsState, .error("Could not load providers because the server URL is invalid."))
+            return
+        }
+        let previous = providerSettingsState
+        setIfChanged(\.providerSettingsState, .loading(lastUpdatedAt: previous.lastUpdatedAt))
+
+        var failures: [String] = []
+        var didUpdate = false
         do {
             let envelope: ProvidersEnvelope = try await fetch(
                 base.appendingPathComponent("dashboard/api/providers"),
@@ -1318,28 +1445,64 @@ final class AppState: ObservableObject {
                 timeout: 8.0
             )
             setIfChanged(\.providerStatuses, envelope.providers)
+            didUpdate = true
         } catch {
-            // Provider detection is supplemental Settings data. Keep the last
-            // known values and let the normal dashboard poll own connection UI.
+            failures.append("provider detection: \(Self.issueText(for: error))")
+        }
+        do {
+            let catalog: AgentCatalogEnvelope = try await fetch(
+                base.appendingPathComponent("dashboard/api/agent-catalog"),
+                query: [:],
+                timeout: 12.0
+            )
+            setIfChanged(\.providerCatalogs, catalog.providers)
+            didUpdate = true
+        } catch {
+            failures.append("model catalog: \(Self.issueText(for: error))")
+        }
+
+        if failures.isEmpty {
+            setIfChanged(\.providerSettingsState, .fresh())
+        } else {
+            let message = "Could not fully refresh providers (\(failures.joined(separator: "; ")))."
+            let hasData = didUpdate || !providerStatuses.isEmpty || !providerCatalogs.isEmpty
+            let updatedAt = didUpdate ? Date() : previous.lastUpdatedAt
+            setIfChanged(
+                \.providerSettingsState,
+                settingsFailureState(from: previous, hasData: hasData, message: message, updatedAt: updatedAt)
+            )
         }
     }
 
     func refreshMobileDevices() async {
-        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else {
+            setIfChanged(\.mobileSettingsState, .error("Could not load mobile devices because the server URL is invalid."))
+            return
+        }
+        let previous = mobileSettingsState
+        setIfChanged(\.mobileSettingsState, .loading(lastUpdatedAt: previous.lastUpdatedAt))
         do {
             let envelope: MobileDevicesEnvelope = try await fetch(
                 base.appendingPathComponent("dashboard/api/mobile/devices"),
                 query: [:]
             )
             setIfChanged(\.mobileDevices, envelope.devices)
+            setIfChanged(\.mobileSettingsState, .fresh())
+            setIfChanged(\.mobileDeviceActionIssue, nil)
         } catch {
-            // Mobile Access is optional. Keep the last known device list if the
-            // server is older or temporarily unavailable.
+            let message = "Could not load connected devices: \(Self.issueText(for: error))"
+            let state = settingsFailureState(
+                from: previous,
+                hasData: !mobileDevices.isEmpty,
+                message: message
+            )
+            setIfChanged(\.mobileSettingsState, state)
         }
     }
 
     func createMobilePairing() async {
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        setIfChanged(\.mobilePairingIssue, nil)
         setIfChanged(\.mobilePairingLoading, true)
         defer { setIfChanged(\.mobilePairingLoading, false) }
         do {
@@ -1350,20 +1513,21 @@ final class AppState: ObservableObject {
             setIfChanged(\.mobilePairingURL, envelope.pairURL)
             setIfChanged(\.mobilePairingCode, envelope.manualCode)
             setIfChanged(\.mobilePairingExpiresAt, envelope.expiresAt)
+            setIfChanged(\.mobilePairingIssue, nil)
             await refreshMobileDevices()
         } catch {
             setIfChanged(\.mobilePairingURL, nil)
             setIfChanged(\.mobilePairingCode, nil)
             setIfChanged(\.mobilePairingExpiresAt, nil)
-            showNotice(ActionNotice(
-                kind: .error,
-                message: "Couldn’t create a mobile pairing code. Configure a public HTTPS endpoint and make sure Mac MCP is running."
-            ))
+            let message = "Couldn’t create a mobile pairing code. Check the public HTTPS endpoint and Mac MCP server, then retry."
+            setIfChanged(\.mobilePairingIssue, message)
+            showNotice(ActionNotice(kind: .error, message: message))
         }
     }
 
     func revokeMobileDevice(_ deviceID: String) async {
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        setIfChanged(\.mobileDeviceActionIssue, nil)
         do {
             let envelope: MobileRevokeEnvelope = try await post(
                 base.appendingPathComponent("dashboard/api/mobile/revoke"),
@@ -1371,10 +1535,13 @@ final class AppState: ObservableObject {
             )
             if envelope.revoked {
                 setIfChanged(\.mobileDevices, mobileDevices.filter { $0.deviceID != deviceID })
+                setIfChanged(\.mobileDeviceActionIssue, nil)
                 showNotice(ActionNotice(kind: .success, message: "Mobile device revoked."))
             }
         } catch {
-            showNotice(ActionNotice(kind: .error, message: "Couldn’t revoke the mobile device."))
+            let message = "Couldn’t revoke the mobile device. Retry after refreshing the device list."
+            setIfChanged(\.mobileDeviceActionIssue, message)
+            showNotice(ActionNotice(kind: .error, message: message))
         }
     }
 
@@ -1443,6 +1610,7 @@ final class AppState: ObservableObject {
         guard securitySemantics?.activeProfile != profile else { return }
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
         permissionProfileChanging = true
+        setIfChanged(\.permissionActionIssue, nil)
         Task {
             defer { permissionProfileChanging = false }
             do {
@@ -1451,8 +1619,12 @@ final class AppState: ObservableObject {
                     body: ["profile": profile]
                 )
                 setIfChanged(\.securitySemantics, response)
+                setIfChanged(\.permissionsSettingsState, .fresh())
+                setIfChanged(\.permissionActionIssue, nil)
                 await refresh()
             } catch {
+                let message = "Couldn’t change the permission profile. Refresh and try again."
+                setIfChanged(\.permissionActionIssue, message)
                 await refresh()
             }
         }

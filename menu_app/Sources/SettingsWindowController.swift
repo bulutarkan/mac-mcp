@@ -23,10 +23,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         )
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Mac MCP Settings"
-        window.styleMask = [.titled, .closable]
-        window.setContentSize(NSSize(width: 720, height: 520))
-        window.minSize = NSSize(width: 720, height: 520)
-        window.maxSize = NSSize(width: 720, height: 520)
+        window.styleMask = [.titled, .closable, .resizable]
+        window.setContentSize(NSSize(width: 920, height: 640))
+        window.minSize = NSSize(width: 820, height: 560)
+        window.maxSize = NSSize(width: 1240, height: 860)
+        window.setFrameAutosaveName("MacMCPSettingsWindow")
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self

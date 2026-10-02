@@ -27,8 +27,19 @@ struct MenuSettings: Codable {
         var binary_path: String?
         var default_project: String?
     }
+    struct DefaultAgent: Codable {
+        var provider: String
+        var model: String?
+        var reasoning: String?
+    }
     struct Subagents: Codable {
         var providers: [String: Provider]
+        var defaultAgent: DefaultAgent?
+
+        enum CodingKeys: String, CodingKey {
+            case providers
+            case defaultAgent = "default"
+        }
     }
 
     var experimental_tools: [String: ExperimentalTool]
@@ -43,11 +54,14 @@ struct MenuSettings: Codable {
             voice: Voice(language: "auto", input_device: "auto", output_device: "system", tts_rate: "-5%", timeout_s: 45, voice: "tr-TR-AhmetNeural"),
             server: Server(port: 8000, cli_path: "", ngrok_on_start: false, public_endpoint_mode: "none", public_url: "", cloudflare_tunnel: ""),
             steering: Steering(session_ttl_minutes: 10),
-            subagents: Subagents(providers: [
-                "opencode": Provider(enabled: false, binary_path: nil, default_project: nil),
-                "codex": Provider(enabled: false, binary_path: nil, default_project: nil),
-                "chatgpt": Provider(enabled: false, binary_path: nil, default_project: nil),
-            ])
+            subagents: Subagents(
+                providers: [
+                    "opencode": Provider(enabled: false, binary_path: nil, default_project: nil),
+                    "codex": Provider(enabled: false, binary_path: nil, default_project: nil),
+                    "chatgpt": Provider(enabled: false, binary_path: nil, default_project: nil),
+                ],
+                defaultAgent: nil
+            )
         )
     }
 }
@@ -75,6 +89,9 @@ final class SettingsStore: ObservableObject {
     @Published var codexBinaryPath = ""
     @Published var chatgptBinaryPath = ""
     @Published var chatgptDefaultProject = ""
+    @Published var defaultAgentProvider = ""
+    @Published var defaultAgentModel = ""
+    @Published var defaultAgentReasoning = ""
     @Published var hasGroqKey = false
     @Published private(set) var settingsLoadIssue = ""
     @Published private(set) var providerSettingsLocked = false
@@ -148,6 +165,9 @@ final class SettingsStore: ObservableObject {
         codexBinaryPath = providers["codex"]?.binary_path ?? ""
         chatgptBinaryPath = providers["chatgpt"]?.binary_path ?? ""
         chatgptDefaultProject = providers["chatgpt"]?.default_project ?? ""
+        defaultAgentProvider = current.subagents?.defaultAgent?.provider ?? ""
+        defaultAgentModel = current.subagents?.defaultAgent?.model ?? ""
+        defaultAgentReasoning = current.subagents?.defaultAgent?.reasoning ?? ""
         if cliPath.isEmpty { cliPath = defaultCLIPath() }
     }
 
@@ -171,11 +191,16 @@ final class SettingsStore: ObservableObject {
                 cloudflare_tunnel: cloudflareTunnel
             ),
             steering: .init(session_ttl_minutes: max(1, steeringSessionMinutes)),
-            subagents: .init(providers: [
-                "opencode": .init(enabled: opencodeEnabled, binary_path: opencodeBinaryPath.nilIfEmpty, default_project: nil),
-                "codex": .init(enabled: codexEnabled, binary_path: codexBinaryPath.nilIfEmpty, default_project: nil),
-                "chatgpt": .init(enabled: chatgptEnabled, binary_path: chatgptBinaryPath.nilIfEmpty, default_project: chatgptDefaultProject.nilIfEmpty),
-            ])
+            subagents: .init(
+                providers: [
+                    "opencode": .init(enabled: opencodeEnabled, binary_path: opencodeBinaryPath.nilIfEmpty, default_project: nil),
+                    "codex": .init(enabled: codexEnabled, binary_path: codexBinaryPath.nilIfEmpty, default_project: nil),
+                    "chatgpt": .init(enabled: chatgptEnabled, binary_path: chatgptBinaryPath.nilIfEmpty, default_project: chatgptDefaultProject.nilIfEmpty),
+                ],
+                defaultAgent: defaultAgentProvider.nilIfEmpty.map {
+                    .init(provider: $0, model: defaultAgentModel.nilIfEmpty, reasoning: defaultAgentReasoning.nilIfEmpty)
+                }
+            )
         )
         let payloadData = try JSONEncoder.pretty.encode(payload)
         guard let payloadObject = try JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {
@@ -186,7 +211,18 @@ final class SettingsStore: ObservableObject {
            let currentObject = try? JSONSerialization.jsonObject(with: currentData) as? [String: Any] {
             existing = currentObject
         }
-        let merged = Self.deepMerge(existing, payloadObject)
+        var merged = Self.deepMerge(existing, payloadObject)
+        if var subagents = merged["subagents"] as? [String: Any] {
+            if let provider = defaultAgentProvider.nilIfEmpty {
+                var preset: [String: Any] = ["provider": provider]
+                if let model = defaultAgentModel.nilIfEmpty { preset["model"] = model }
+                if let reasoning = defaultAgentReasoning.nilIfEmpty { preset["reasoning"] = reasoning }
+                subagents["default"] = preset
+            } else {
+                subagents.removeValue(forKey: "default")
+            }
+            merged["subagents"] = subagents
+        }
         let data = try JSONSerialization.data(withJSONObject: merged, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: path, options: .atomic)

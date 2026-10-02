@@ -99,6 +99,19 @@ def steering_setting(name: str, default: Any = None) -> Any:
 
 
 
+def subagent_default_preset() -> dict[str, Any] | None:
+    state = load_runtime_settings_state()
+    if not state.ok:
+        return None
+    subagents = state.data.get("subagents")
+    if not isinstance(subagents, dict):
+        return None
+    preset = subagents.get("default")
+    if not isinstance(preset, dict):
+        return None
+    return dict(preset)
+
+
 def provider_setting(provider: str, name: str, default: Any = None) -> Any:
     subagents = load_runtime_settings().get("subagents", {})
     if not isinstance(subagents, dict):

@@ -27,7 +27,7 @@ from .steering import (
     SteeringIdempotencyExpired,
     SteeringManager,
 )
-from .tools_agents import list_agents, provider_overview
+from .tools_agents import agent_catalog, list_agents, provider_overview
 from .tools_browser import browser_activate_tab
 from .version import __version__
 
@@ -461,6 +461,16 @@ def create_dashboard_routes(
             return JSONResponse({"ok": False, "providers": [], "error": str(sanitize_value(exc))})
         return JSONResponse(data)
 
+    async def agent_catalog_data(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        try:
+            data = await asyncio.to_thread(agent_catalog, settings)
+        except Exception as exc:
+            return JSONResponse({"ok": False, "providers": {}, "error": str(sanitize_value(exc))})
+        return JSONResponse(data)
+
     async def agents(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -653,6 +663,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/changes", changes, methods=["GET"]),
         Route("/dashboard/api/browser/show-tab", show_browser_tab, methods=["POST"]),
         Route("/dashboard/api/providers", providers, methods=["GET"]),
+        Route("/dashboard/api/agent-catalog", agent_catalog_data, methods=["GET"]),
         Route("/dashboard/api/agents", agents, methods=["GET"]),
         Route("/dashboard/api/steering", steering_state, methods=["GET"]),
         Route("/dashboard/api/steering", steering_send, methods=["POST"]),
