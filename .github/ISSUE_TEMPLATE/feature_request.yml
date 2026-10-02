@@ -1,0 +1,69 @@
+name: Feature request
+description: Suggest a focused improvement to Mac MCP.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Good feature requests start with the user problem, not only the proposed implementation.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for the same or a closely related request.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the workflow, limitation, or friction you are trying to address.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What should Mac MCP do differently?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - MCP server / API
+        - Native menu bar app / Settings
+        - Browser / Computer Use
+        - Delegated agents
+        - Mobile dashboard
+        - Installer / update
+        - Public endpoint / tunnel
+        - Voice
+        - Documentation / developer experience
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: If relevant, explain current workarounds or other approaches you considered.
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security or permission impact
+      description: Does this change authentication, permissions, shell/files, browser control, remote access, or delegated-agent capabilities?
+      placeholder: None / describe impact
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots, mockups, examples, or related links are welcome.

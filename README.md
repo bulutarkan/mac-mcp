@@ -518,6 +518,10 @@ Grant only the permissions required by the tools you use:
 - **Automation** when macOS asks permission to control Safari, Chrome, System Events, Reminders, or other apps;
 - **Microphone** for `ask_user_voice`.
 
+## Contributing and security
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and pull request workflow. Use the GitHub issue forms for bugs and feature requests, follow [SECURITY.md](SECURITY.md) for private vulnerability reporting, and see [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community expectations.
+
 ## Development
 
 Run tests:
