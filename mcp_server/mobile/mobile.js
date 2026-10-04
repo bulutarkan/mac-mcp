@@ -172,7 +172,10 @@
     const failed = status === "failed" || status === "error";
     const title = a.title || a.team_task_id || "Agent";
     const provider = [a.provider, a.model].filter(Boolean).join(" · ");
-    const detail = a.last_tool || a.phase || status || "Idle";
+    const interactiveResource = Array.isArray(a.resource_activity)
+      ? a.resource_activity.find((r) => ["browser_tab", "native_window", "native_app"].includes(String(r.kind || "")))
+      : null;
+    const detail = (interactiveResource && interactiveResource.label) || a.last_tool || a.phase || status || "Idle";
     const side = running ? duration(a.duration_ms) : (a.ended_at ? ago(a.ended_at) : duration(a.duration_ms));
     const detailIcon = toolIconName(a.last_tool || a.phase || status);
     return '<div class="agent">' +

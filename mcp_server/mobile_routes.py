@@ -74,7 +74,7 @@ def _safe_agent(item: Dict[str, Any]) -> Dict[str, Any]:
     keys = (
         "agent_id", "team_task_id", "status", "phase", "title", "role",
         "provider", "model", "reasoning", "started_at", "ended_at", "duration_ms",
-        "idle_seconds", "last_tool", "tool_call_count",
+        "idle_seconds", "last_tool", "tool_call_count", "resource_activity",
     )
     return {key: item.get(key) for key in keys}
 

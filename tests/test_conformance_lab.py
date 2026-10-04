@@ -29,8 +29,10 @@ class ComputerUseConformanceTests(unittest.TestCase):
         self.assertIn("native.semantic_identity", ids)
         self.assertIn("native.background_semantic_input", ids)
         self.assertIn("native.foreground_capability", ids)
+        self.assertIn("workspace.human_priority", ids)
+        self.assertIn("workspace.resource_lease_contract", ids)
         self.assertIn("observe.event_delta_pipeline", ids)
-        self.assertEqual(report["baseline_version"], 6)
+        self.assertEqual(report["baseline_version"], 7)
 
     def test_regression_flips_report_red(self) -> None:
         with patch("mcp_server.conformance._background_open_default", return_value=False):

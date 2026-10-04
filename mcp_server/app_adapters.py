@@ -8,6 +8,9 @@ from typing import Any, Dict, Optional
 
 from .security import Settings
 from .foreground_guard import current_foreground_authorization
+from .workspace_arbitration import (
+    claim_delegated_resource, native_app_human_takeover, native_app_resource_id,
+)
 from .tools_ui import (
     _apple_string,
     _capture_focus_context,
@@ -959,6 +962,32 @@ def mac_app(
             f"{canonical} adapter does not support action '{normalized_action}'.",
         )
 
+    if normalized_action not in _READ_ACTIONS:
+        human_guard = native_app_human_takeover(canonical)
+        if human_guard is not None:
+            reason_code = str(
+                human_guard.get("reason_code") or "HUMAN_ACTIVE_RESOURCE"
+            )
+            return {
+                **_base(canonical, normalized_action),
+                "ok": False,
+                "reason_code": reason_code,
+                "error": reason_code.lower(),
+                "retryable": True,
+                "retry_after_ms": 750,
+                "human_priority": True,
+                "yielded": True,
+                "resource_kind": "native_app",
+                "message": (
+                    "The user currently owns this visible native app. "
+                    "The delegated agent yielded instead of changing its UI."
+                    if reason_code == "HUMAN_ACTIVE_RESOURCE"
+                    else
+                    "Mac MCP could not prove this native app is free of human ownership; "
+                    "the delegated agent yielded fail-closed."
+                ),
+            }
+
     foreground_grant = current_foreground_authorization()
     if (
         normalized_action not in _READ_ACTIONS
@@ -978,6 +1007,31 @@ def mac_app(
                 "parameter cannot authorize focus changes."
             ),
         }
+
+    if normalized_action not in _READ_ACTIONS:
+        arbitration = claim_delegated_resource(
+            "native_app",
+            native_app_resource_id(app=canonical),
+            mode="write",
+        )
+        if arbitration is not None and not arbitration.get("ok"):
+            reason_code = str(
+                arbitration.get("reason_code") or "RESOURCE_BUSY"
+            )
+            return {
+                **_base(canonical, normalized_action),
+                "ok": False,
+                "reason_code": reason_code,
+                "error": reason_code.lower(),
+                "retryable": bool(arbitration.get("retryable", True)),
+                "retry_after_ms": 750,
+                "yielded": True,
+                "resource_kind": "native_app",
+                "message": (
+                    "Another agent owns this native app resource. "
+                    "The delegated adapter action yielded before mutation."
+                ),
+            }
 
     try:
         bounded = _bounded_limit(limit)

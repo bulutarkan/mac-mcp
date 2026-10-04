@@ -123,7 +123,7 @@ class ComputerPlanExecutorTests(unittest.TestCase):
                 }
             ]))
 
-    def test_clipboard_backed_native_actions_preclaim_global_clipboard(self) -> None:
+    def test_only_foreground_text_input_preclaims_global_clipboard(self) -> None:
         paste_claims = derive_computer_plan_resources([
             {"id": "paste", "tool": "mac_act", "arguments": {
                 "app": "TextEdit",
@@ -136,16 +136,21 @@ class ComputerPlanExecutorTests(unittest.TestCase):
                 "actions": [{"type": "type", "element_id": "w1/1", "text": "hello"}],
             }},
         ])
-        key_claims = derive_computer_plan_resources([
-            {"id": "key", "tool": "mac_act", "arguments": {
+        foreground_claims = derive_computer_plan_resources([
+            {"id": "foreground", "tool": "mac_act", "arguments": {
                 "app": "TextEdit",
-                "actions": [{"type": "key", "key": "return"}],
+                "actions": [{
+                    "type": "paste",
+                    "element_id": "w1/1",
+                    "text": "hello",
+                    "input_mode": "foreground",
+                }],
             }},
         ])
         clipboard = {"kind": "clipboard", "id": "system", "mode": "write"}
-        self.assertIn(clipboard, paste_claims)
-        self.assertIn(clipboard, type_claims)
-        self.assertNotIn(clipboard, key_claims)
+        self.assertNotIn(clipboard, paste_claims)
+        self.assertNotIn(clipboard, type_claims)
+        self.assertIn(clipboard, foreground_claims)
 
     def test_clipboard_resource_preflight_blocks_conflicting_plan_before_action(self) -> None:
         async def run() -> None:
@@ -168,7 +173,12 @@ class ComputerPlanExecutorTests(unittest.TestCase):
                     "tool": "mac_act",
                     "arguments": {
                         "app": "TextEdit",
-                        "actions": [{"type": "paste", "element_id": "w1/1", "text": "hello"}],
+                        "actions": [{
+                            "type": "paste",
+                            "element_id": "w1/1",
+                            "text": "hello",
+                            "input_mode": "foreground",
+                        }],
                     },
                 }]
                 try:

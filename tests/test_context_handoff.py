@@ -90,7 +90,7 @@ class ContextHandoffEnvelopeTests(unittest.TestCase):
     def _create_browser_text(self, *, selected: str = "Selected browser text") -> dict:
         source = _browser_row()
         with patch.object(ch.browser_tabs, "resolve_tab", return_value=(1, 1, source)), \
-             patch("mcp_server.tools_browser.browser_execute_js", return_value={
+             patch("mcp_server.tools_browser._browser_execute_js_read", return_value={
                  "ok": True,
                  "result": json.dumps({"selection": selected, "url": source["url"], "title": source["title"]}),
              }):
@@ -153,7 +153,7 @@ class ContextHandoffEnvelopeTests(unittest.TestCase):
     def test_browser_navigation_during_capture_is_rejected(self) -> None:
         source = _browser_row(url="https://example.test/old")
         with patch.object(ch.browser_tabs, "resolve_tab", return_value=(1, 1, source)), \
-             patch("mcp_server.tools_browser.browser_execute_js", return_value={
+             patch("mcp_server.tools_browser._browser_execute_js_read", return_value={
                  "ok": True,
                  "result": json.dumps({"selection": "x", "url": "https://example.test/new", "title": "New"}),
              }):
@@ -221,7 +221,7 @@ class ContextHandoffMailTests(unittest.TestCase):
         obs_id = tools_ui._save_observation("Mail", 1, [node], meta)
         source = _browser_row()
         with patch.object(ch.browser_tabs, "resolve_tab", return_value=(1, 1, source)), \
-             patch("mcp_server.tools_browser.browser_execute_js", return_value={
+             patch("mcp_server.tools_browser._browser_execute_js_read", return_value={
                  "ok": True,
                  "result": json.dumps({"selection": "hello", "url": source["url"], "title": source["title"]}),
              }):
@@ -240,7 +240,7 @@ class ContextHandoffMailTests(unittest.TestCase):
         win = meta["windows"][0]
         self.assertEqual("fingerprint", win["identity_kind"])
         with patch.object(ch.browser_tabs, "resolve_tab", return_value=(1, 1, source)), \
-             patch("mcp_server.tools_browser.browser_execute_js", return_value={
+             patch("mcp_server.tools_browser._browser_execute_js_read", return_value={
                  "ok": True, "result": json.dumps({"selection": "hello", "url": source["url"], "title": source["title"]}),
              }):
             handoff = ch.create_browser_text_handoff(
@@ -508,7 +508,7 @@ class ContextHandoffMacActTests(unittest.TestCase):
         }
         obs_id = tools_ui._save_observation("DemoApp", 1, [node], self.meta)
         with patch.object(ch.browser_tabs, "resolve_tab", return_value=(1, 1, source)), \
-             patch("mcp_server.tools_browser.browser_execute_js", return_value={
+             patch("mcp_server.tools_browser._browser_execute_js_read", return_value={
                  "ok": True,
                  "result": json.dumps({"selection": "hello", "url": source["url"], "title": source["title"]}),
              }):
@@ -551,7 +551,7 @@ class ContextHandoffMacActTests(unittest.TestCase):
         win_b = self.meta["windows"][1]["window_handle"]
         source = _browser_row()
         with patch.object(ch.browser_tabs, "resolve_tab", return_value=(1, 1, source)), \
-             patch("mcp_server.tools_browser.browser_execute_js", return_value={
+             patch("mcp_server.tools_browser._browser_execute_js_read", return_value={
                  "ok": True,
                  "result": json.dumps({"selection": "hello", "url": source["url"], "title": source["title"]}),
              }):

@@ -15,6 +15,8 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException, status
 
+from .workspace_arbitration import browser_human_takeover, claim_delegated_resource
+
 
 _LOCK = threading.RLock()
 _REGISTRY: Dict[str, Dict[str, Any]] = {}
@@ -142,6 +144,12 @@ def _claim_logical_lease(
     row: Dict[str, Any], *, allow_rebind: bool = False, created_by_owner: bool = False,
 ) -> Dict[str, Any]:
     owner, agent_id, profile = _logical_owner()
+    team_id = None
+    try:
+        from .policy import current_policy_context
+        team_id = str(current_policy_context().team_id or "").strip() or None
+    except Exception:
+        team_id = None
     handle = str(row.get("tab_handle") or "")
     if not owner or not handle:
         return {"generation": 0, "owner": owner, "rebound": False, "previous_origin": None}
@@ -170,6 +178,7 @@ def _claim_logical_lease(
             active["last_seen_at"] = now
             active["origin"] = current_origin or active.get("origin")
             active["profile"] = profile or active.get("profile")
+            active["team_id"] = team_id or active.get("team_id")
             return {
                 "generation": int(active.get("generation") or 0),
                 "owner": owner,
@@ -194,6 +203,7 @@ def _claim_logical_lease(
         lease = {
             "owner": owner,
             "agent_id": agent_id,
+            "team_id": team_id,
             "profile": profile,
             "origin": current_origin,
             "generation": generation,
@@ -504,6 +514,7 @@ def tab_lease(
     tab_index: Optional[int] = None,
     *,
     allow_rebind: bool = False,
+    mutation: bool = False,
 ) -> Iterator[TabTarget]:
     """Exclusively lease one logical tab without queueing competing callers.
 
@@ -533,6 +544,53 @@ def tab_lease(
         )
     try:
         _, _, row = resolve_tab(browser, handle)
+        if mutation:
+            human = browser_human_takeover(browser, row)
+            if human is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "ok": False,
+                        "error": str(human.get("reason_code") or "HUMAN_ACTIVE_RESOURCE").lower(),
+                        "reason_code": human.get("reason_code"),
+                        "retryable": bool(human.get("retryable", True)),
+                        "retry_after_ms": 750,
+                        "human_priority": True,
+                        "yielded": True,
+                        "resource_kind": "browser_tab",
+                        "message": (
+                            "The user is currently on this browser tab. "
+                            "The delegated agent yielded instead of mutating the visible resource."
+                        ),
+                    },
+                    headers={"Retry-After": "1"},
+                )
+            arbitration = claim_delegated_resource(
+                "browser_tab",
+                str(row.get("tab_handle") or handle),
+                mode="write",
+            )
+            if arbitration is not None and not arbitration.get("ok"):
+                reason_code = str(
+                    arbitration.get("reason_code") or "RESOURCE_BUSY"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "ok": False,
+                        "error": reason_code.lower(),
+                        "reason_code": reason_code,
+                        "retryable": bool(arbitration.get("retryable", True)),
+                        "retry_after_ms": 750,
+                        "yielded": True,
+                        "resource_kind": "browser_tab",
+                        "message": (
+                            "Another agent owns this browser tab resource. "
+                            "The delegated action yielded before mutation."
+                        ),
+                    },
+                    headers={"Retry-After": "1"},
+                )
         lease = _claim_logical_lease(row, allow_rebind=allow_rebind)
         yield _target_from_row(row, lease)
     finally:

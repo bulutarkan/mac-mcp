@@ -241,8 +241,11 @@ def normalize_claims(claims: Optional[Iterable[Mapping[str, Any]]]) -> list[Dict
             raise AdmissionError("invalid_resource_id", f"resource claim {kind!r} requires id")
         if kind in _PATH_KINDS:
             identifier = _canonical_path(identifier)
-        else:
-            identifier = identifier.lower() if kind in {"native_app"} else identifier
+        elif kind == "native_app":
+            identifier = identifier.lower()
+        elif kind == "native_window" and ":" in identifier:
+            prefix, suffix = identifier.split(":", 1)
+            identifier = f"{prefix.lower()}:{suffix}"
         expected_revision = str(raw.get("expected_revision") or "").strip() or None
         if expected_revision and kind != "file":
             raise AdmissionError("invalid_expected_revision", "expected_revision is only supported for kind=file")
@@ -490,6 +493,23 @@ def _validate_expected_revisions(resources: Sequence[Mapping[str, str]]) -> None
             )
 
 
+def _next_lease_generation_unlocked(state: Dict[str, Any]) -> int:
+    try:
+        generation = max(1, int(state.get("next_lease_generation") or 1))
+    except (TypeError, ValueError):
+        generation = 1
+    state["next_lease_generation"] = generation + 1
+    return generation
+
+
+def _lease_modes(resources: Sequence[Mapping[str, Any]]) -> list[str]:
+    return sorted({
+        str(item.get("mode") or "write").strip().lower()
+        for item in resources
+        if isinstance(item, Mapping)
+    })
+
+
 def request_admission(
     root: Path,
     *,
@@ -518,8 +538,16 @@ def request_admission(
             if str(lease.get("request_id") or "") == rid:
                 lease["expires_at"] = current + lease_ttl_s()
                 lease["last_heartbeat_at"] = current
+                lease["last_activity_at"] = current
                 _write_unlocked(locked_root, state)
-                return {"admitted": True, "lease_id": lease_id, "queued": False, "expired_leases": expired}
+                return {
+                    "admitted": True,
+                    "lease_id": lease_id,
+                    "generation": lease.get("generation"),
+                    "resources": normalize_claims(lease.get("resources") or []),
+                    "queued": False,
+                    "expired_leases": expired,
+                }
 
         request = queue.get(rid)
         if request is None:
@@ -587,13 +615,16 @@ def request_admission(
         lease_id = "lease_" + uuid.uuid4().hex[:20]
         lease = {
             "lease_id": lease_id,
+            "generation": _next_lease_generation_unlocked(state),
             "request_id": rid,
             "team_id": str(team_id),
             "task_id": str(task_id),
             "provider": str(provider),
             "resources": claims,
+            "resource_modes": _lease_modes(claims),
             "agent_id": None,
             "acquired_at": current,
+            "last_activity_at": current,
             "last_heartbeat_at": current,
             "expires_at": current + lease_ttl_s(),
         }
@@ -605,6 +636,7 @@ def request_admission(
             "queued": False,
             "request_id": rid,
             "lease_id": lease_id,
+            "generation": lease["generation"],
             "resources": claims,
             "global_limit": global_limit(),
             "provider_limit": _effective_provider_limit(str(provider), provider_limit_override),
@@ -629,16 +661,30 @@ def request_resource_lease(
                 "expired_leases": expired,
             }
         lease_id = "lease_" + uuid.uuid4().hex[:20]
-        state.setdefault("leases", {})[lease_id] = {
-            "lease_id": lease_id, "request_id": f"computer-plan:{owner_id}",
-            "team_id": None, "task_id": None, "provider": "computer_plan",
-            "resources": claims, "agent_id": None, "owner_id": str(owner_id),
-            "capacity_weight": 0, "acquired_at": current,
-            "last_heartbeat_at": current, "expires_at": current + ttl,
+        lease = {
+            "lease_id": lease_id,
+            "generation": _next_lease_generation_unlocked(state),
+            "request_id": f"computer-plan:{owner_id}",
+            "team_id": None,
+            "task_id": None,
+            "provider": "computer_plan",
+            "resources": claims,
+            "resource_modes": _lease_modes(claims),
+            "agent_id": None,
+            "owner_id": str(owner_id),
+            "capacity_weight": 0,
+            "acquired_at": current,
+            "last_activity_at": current,
+            "last_heartbeat_at": current,
+            "expires_at": current + ttl,
         }
+        state.setdefault("leases", {})[lease_id] = lease
         _write_unlocked(locked_root, state)
         return {
-            "admitted": True, "lease_id": lease_id, "resources": claims,
+            "admitted": True,
+            "lease_id": lease_id,
+            "generation": lease["generation"],
+            "resources": claims,
             "expired_leases": expired,
         }
 
@@ -675,13 +721,120 @@ def extend_resource_lease(
                 "expired_leases": expired,
             }
         lease["resources"] = merged
+        lease["resource_modes"] = _lease_modes(merged)
+        lease["last_activity_at"] = current
         lease["last_heartbeat_at"] = current
         lease["expires_at"] = current + ttl
         _write_unlocked(locked_root, state)
         return {
             "admitted": True,
             "lease_id": lid,
+            "generation": lease.get("generation"),
             "resources": merged,
+            "expired_leases": expired,
+        }
+
+
+def claim_agent_resources(
+    root: Path,
+    *,
+    agent_id: str,
+    resources: Optional[Iterable[Mapping[str, Any]]] = None,
+    ttl_s: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Atomically extend or create one delegated agent's interactive resource lease."""
+    owner = str(agent_id or "").strip()
+    if not owner:
+        raise AdmissionError("invalid_agent_id", "agent_id is required for dynamic resource claims")
+    claims = normalize_claims(resources)
+    _validate_expected_revisions(claims)
+    if not claims:
+        return {"admitted": True, "resources": [], "agent_id": owner}
+
+    current = _now()
+    ttl = max(5, min(int(ttl_s or lease_ttl_s()), 600))
+    with _locked(root) as locked_root:
+        state = _read_unlocked(locked_root)
+        expired = _prune_expired_unlocked(state, current)
+        leases = state.setdefault("leases", {})
+
+        owned = [
+            (lid, lease)
+            for lid, lease in leases.items()
+            if str(lease.get("agent_id") or "") == owner
+        ]
+        owned.sort(
+            key=lambda item: (
+                -int(item[1].get("capacity_weight") if item[1].get("capacity_weight") is not None else 1),
+                float(item[1].get("acquired_at") or 0),
+                str(item[0]),
+            )
+        )
+
+        primary_id: Optional[str] = None
+        primary: Optional[Dict[str, Any]] = None
+        if owned:
+            primary_id, primary = owned[0]
+
+        merged = normalize_claims(
+            list((primary or {}).get("resources") or []) + claims
+        )
+        blockers: list[Dict[str, Any]] = []
+        for lease_id, lease in leases.items():
+            if str(lease.get("agent_id") or "") == owner:
+                continue
+            conflicts = resources_conflict(merged, lease.get("resources") or [])
+            if conflicts:
+                blockers.append({
+                    "lease_id": lease_id,
+                    "team_id": lease.get("team_id"),
+                    "task_id": lease.get("task_id"),
+                    "agent_id": lease.get("agent_id"),
+                    "provider": lease.get("provider"),
+                    "conflicts": conflicts,
+                })
+        if blockers:
+            return {
+                "admitted": False,
+                "reason": "resource_busy",
+                "agent_id": owner,
+                "blockers": blockers,
+                "expired_leases": expired,
+            }
+
+        if primary is None:
+            primary_id = "lease_" + uuid.uuid4().hex[:20]
+            primary = {
+                "lease_id": primary_id,
+                "generation": _next_lease_generation_unlocked(state),
+                "request_id": f"agent-dynamic:{owner}",
+                "team_id": None,
+                "task_id": None,
+                "provider": "delegated_dynamic",
+                "resources": [],
+                "resource_modes": [],
+                "agent_id": owner,
+                "owner_id": f"agent:{owner}",
+                "capacity_weight": 0,
+                "acquired_at": current,
+                "last_activity_at": current,
+                "last_heartbeat_at": current,
+                "expires_at": current + ttl,
+            }
+            leases[primary_id] = primary
+
+        primary["resources"] = merged
+        primary["resource_modes"] = _lease_modes(merged)
+        primary["last_activity_at"] = current
+        primary["last_heartbeat_at"] = current
+        primary["expires_at"] = current + ttl
+        _write_unlocked(locked_root, state)
+        return {
+            "admitted": True,
+            "lease_id": primary_id,
+            "generation": primary.get("generation"),
+            "resources": merged,
+            "agent_id": owner,
             "expired_leases": expired,
         }
 
@@ -695,8 +848,10 @@ def bind_agent(root: Path, lease_id: str, agent_id: str) -> Dict[str, Any]:
         if lease is None:
             raise AdmissionError("admission_lease_missing", "Admission lease expired before agent bind.")
         lease["agent_id"] = str(agent_id)
-        lease["last_heartbeat_at"] = _now()
-        lease["expires_at"] = _now() + lease_ttl_s()
+        now = _now()
+        lease["last_activity_at"] = now
+        lease["last_heartbeat_at"] = now
+        lease["expires_at"] = now + lease_ttl_s()
         _write_unlocked(locked_root, state)
         return dict(lease)
 
@@ -714,6 +869,7 @@ def heartbeat(root: Path, *, lease_id: Optional[str] = None, agent_id: Optional[
                 continue
             if agent_id and str(lease.get("agent_id") or "") != str(agent_id):
                 continue
+            lease["last_activity_at"] = current
             lease["last_heartbeat_at"] = current
             lease["expires_at"] = current + lease_ttl_s()
             found = True

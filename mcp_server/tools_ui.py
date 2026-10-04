@@ -53,6 +53,10 @@ from .context_handoff import (
     resolve_mail_text_handoff, resolve_native_file_handoff, resolve_native_text_handoff,
 )
 from .foreground_guard import current_foreground_authorization
+from .workspace_arbitration import (
+    claim_delegated_resource, delegated_agent_identity, native_app_resource_id,
+    native_window_resource_id, recent_user_input,
+)
 
 
 _FIELD_SEPARATOR = chr(31)
@@ -1764,6 +1768,87 @@ def _capture_focus_context(deadline: Optional[float] = None) -> Tuple[Optional[D
         "window_handle": (focused or {}).get("window_handle"),
         "window_identity_status": (focused or {}).get("identity_status"),
     }, None
+
+
+def _delegated_native_human_guard(
+    target: Dict[str, Any],
+    deadline: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    identity = delegated_agent_identity()
+    if identity is None:
+        return None
+
+    focus, error = _current_focus_key(deadline)
+    if focus is None:
+        return {
+            "reason_code": "HUMAN_OWNERSHIP_UNKNOWN",
+            "retryable": True,
+            "human_priority": True,
+            "yielded": True,
+            "resource_kind": "native_window",
+            "probe_error": error,
+            **identity,
+        }
+
+    target_pid = int(target.get("pid") or 0)
+    target_window_index = int(target.get("window_index") or 0)
+    if target_pid <= 0 or target_window_index <= 0:
+        return {
+            "reason_code": "HUMAN_OWNERSHIP_UNKNOWN",
+            "retryable": True,
+            "human_priority": True,
+            "yielded": True,
+            "resource_kind": "native_window",
+            "probe_error": "target_focus_identity_unavailable",
+            **identity,
+        }
+
+    if focus != (target_pid, target_window_index):
+        return None
+
+    return {
+        "reason_code": "HUMAN_ACTIVE_RESOURCE",
+        "retryable": True,
+        "human_priority": True,
+        "yielded": True,
+        "resource_kind": "native_window",
+        **identity,
+    }
+
+
+def _delegated_native_resource_claim(
+    target: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    window_handle = str(target.get("window_handle") or "").strip()
+    if window_handle:
+        return claim_delegated_resource(
+            "native_window",
+            native_window_resource_id(
+                window_handle,
+                bundle_id=str(target.get("bundle_id") or "") or None,
+                app_handle=str(target.get("app_handle") or "") or None,
+                app=str(target.get("app") or "") or None,
+            ),
+            mode="write",
+        )
+    app_identity = native_app_resource_id(
+        bundle_id=str(target.get("bundle_id") or "") or None,
+        app=str(target.get("app") or "") or None,
+        app_handle=str(target.get("app_handle") or "") or None,
+    )
+    if not app_identity:
+        return {
+            "ok": False,
+            "reason_code": "RESOURCE_IDENTITY_UNAVAILABLE",
+            "retryable": True,
+            "yielded": True,
+            "resource_kind": "native_app",
+        } if delegated_agent_identity() is not None else None
+    return claim_delegated_resource(
+        "native_app",
+        app_identity,
+        mode="write",
+    )
 
 
 def _current_focus_key(deadline: Optional[float] = None) -> Tuple[Optional[Tuple[int, int]], Optional[str]]:
@@ -3610,6 +3695,30 @@ def act_ui(
                 return mismatch
             last_target = target
 
+            human_guard = _delegated_native_human_guard(target, deadline)
+            if human_guard is not None:
+                reason_code = str(
+                    human_guard.get("reason_code") or "HUMAN_ACTIVE_RESOURCE"
+                )
+                return _native_target_error(
+                    reason_code,
+                    (
+                        "The user currently owns this visible native resource. "
+                        "The delegated agent yielded instead of mutating it."
+                        if reason_code == "HUMAN_ACTIVE_RESOURCE"
+                        else
+                        "Mac MCP could not prove the native resource is free of human ownership; "
+                        "the delegated agent yielded fail-closed."
+                    ),
+                    actions=results,
+                    failed_action_index=index,
+                    retryable=True,
+                    retry_after_ms=750,
+                    human_priority=True,
+                    yielded=True,
+                    resource_kind="native_window",
+                )
+
             if target.get("window_handle") and (
                 action_type in {"key", "keyboard", "shortcut", "drag"}
                 or (action_type in {"click", "double_click", "scroll"} and original_element_id is None)
@@ -3812,6 +3921,9 @@ def act_ui(
             focus_restore_exact = False
             focus_restore_message: Optional[str] = None
             focus_user_changed = False
+            human_takeover_during_action = False
+            human_input_age_ms: Optional[int] = None
+            human_input_probe_error: Optional[str] = None
             # Background actions are always focus-guarded. preserve_focus only
             # controls whether an explicitly authorized foreground action is restored.
             focus_guard_active = (not focus_required) or bool(preserve_focus)
@@ -3843,6 +3955,46 @@ def act_ui(
                     focus_mode = "temporary_foreground_restore" if focus_transition else "foreground_same_target"
             elif focus_required:
                 focus_mode = "foreground_authorized"
+
+            if delegated_agent_identity() is not None:
+                human_guard = _delegated_native_human_guard(target, deadline)
+                if human_guard is not None:
+                    reason_code = str(
+                        human_guard.get("reason_code") or "HUMAN_ACTIVE_RESOURCE"
+                    )
+                    return _native_target_error(
+                        reason_code,
+                        (
+                            "The user took ownership of this native resource while the "
+                            "delegated action was preparing; the agent yielded before mutation."
+                        ),
+                        actions=results,
+                        failed_action_index=index,
+                        retryable=True,
+                        retry_after_ms=750,
+                        human_priority=True,
+                        yielded=True,
+                        resource_kind="native_window",
+                    )
+
+                arbitration = _delegated_native_resource_claim(target)
+                if arbitration is not None and not arbitration.get("ok"):
+                    reason_code = str(
+                        arbitration.get("reason_code") or "RESOURCE_BUSY"
+                    )
+                    return _native_target_error(
+                        reason_code,
+                        (
+                            "Another agent owns this native resource. "
+                            "The delegated action yielded before mutation."
+                        ),
+                        actions=results,
+                        failed_action_index=index,
+                        retryable=bool(arbitration.get("retryable", True)),
+                        retry_after_ms=750,
+                        yielded=True,
+                        resource_kind=arbitration.get("resource_kind") or "native_window",
+                    )
 
             started = time.perf_counter()
             timed_out = False
@@ -3925,15 +4077,40 @@ def act_ui(
                         focus_context, target, deadline
                     )
                     if focus_decision == "restore":
-                        focus_restore_attempted = True
-                        try:
-                            focus_restore_ok, restore_message, focus_restore_exact = _restore_focus_context(
-                                focus_context, deadline
+                        delegated_identity = delegated_agent_identity()
+                        recent_input: Optional[bool] = False
+                        input_probe_error: Optional[str] = None
+                        input_age: Optional[float] = None
+                        if delegated_identity is not None and not focus_required:
+                            recent_input, input_probe_error, input_age = recent_user_input()
+                        if (
+                            delegated_identity is not None
+                            and not focus_required
+                            and recent_input is not False
+                        ):
+                            focus_user_changed = True
+                            focus_restore_ok = True
+                            focus_restore_message = (
+                                "focus restoration skipped because recent human input may have "
+                                "taken over the delegated agent's target"
                             )
-                            focus_restore_message = restore_message
-                        except TimeoutError as exc:
-                            focus_restore_ok = False
-                            focus_restore_message = str(exc)
+                            human_takeover_during_action = True
+                            human_input_age_ms = (
+                                int(input_age * 1000)
+                                if input_age is not None and input_age != float("inf")
+                                else None
+                            )
+                            human_input_probe_error = input_probe_error
+                        else:
+                            focus_restore_attempted = True
+                            try:
+                                focus_restore_ok, restore_message, focus_restore_exact = _restore_focus_context(
+                                    focus_context, deadline
+                                )
+                                focus_restore_message = restore_message
+                            except TimeoutError as exc:
+                                focus_restore_ok = False
+                                focus_restore_message = str(exc)
                     elif focus_decision == "preserved":
                         focus_restore_ok = True
                     elif focus_decision == "user_changed":
@@ -3982,6 +4159,14 @@ def act_ui(
                     result["focus_restore_skipped_user_change"] = True
                     if focus_restore_message:
                         result["focus_restore_message"] = focus_restore_message
+                if human_takeover_during_action:
+                    result["human_priority"] = True
+                    result["yielded"] = True
+                    result["human_takeover_during_action"] = True
+                    if human_input_age_ms is not None:
+                        result["human_input_age_ms"] = human_input_age_ms
+                    if human_input_probe_error:
+                        result["human_input_probe_error"] = human_input_probe_error
                 if focus_restore_attempted:
                     result["focus_restored"] = focus_restore_ok is True
                     result["focus_restore_exact"] = bool(focus_restore_exact)

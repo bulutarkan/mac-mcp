@@ -5,7 +5,7 @@ import time
 from typing import Callable
 from unittest.mock import patch
 
-from . import browser_tabs
+from . import agent_admission, browser_tabs
 from .diagnostics import FAIL, PASS, WARN, CheckResult, build_report, result
 from .tools_browser import browser_activate_tab, browser_coordinate_click, browser_open_url, browser_press_key
 from . import computer_plan
@@ -18,10 +18,11 @@ from .tools_browser_agent import (
     browser_act,
 )
 from .tools_ui import (
-    _native_action_focus_policy, _observation_script, _semantic_text_write, act_ui, observe_ui,
+    _delegated_native_human_guard, _native_action_focus_policy, _observation_script,
+    _semantic_text_write, act_ui, observe_ui,
 )
 
-CONFORMANCE_BASELINE_VERSION = 6
+CONFORMANCE_BASELINE_VERSION = 7
 
 
 def _contract(
@@ -243,6 +244,36 @@ def _native_foreground_self_escalation_blocked() -> bool:
     )
 
 
+def _workspace_human_priority_contract_present() -> bool:
+    tab_signature = inspect.signature(browser_tabs.tab_lease)
+    tab_source = inspect.getsource(browser_tabs.tab_lease)
+    native_source = inspect.getsource(_delegated_native_human_guard)
+    act_source = inspect.getsource(act_ui)
+    return (
+        tab_signature.parameters["mutation"].default is False
+        and "browser_human_takeover" in tab_source
+        and "HUMAN_ACTIVE_RESOURCE" in native_source
+        and "delegated_agent_identity" in native_source
+        and "_delegated_native_human_guard" in act_source
+        and "human_takeover_during_action" in act_source
+    )
+
+
+def _workspace_resource_lease_contract_present() -> bool:
+    write = {"kind": "native_window", "id": "app:win", "mode": "write"}
+    read = {"kind": "native_window", "id": "app:win", "mode": "read"}
+    admission_source = inspect.getsource(agent_admission.request_resource_lease)
+    heartbeat_source = inspect.getsource(agent_admission.heartbeat)
+    return (
+        bool(agent_admission.resources_conflict([write], [read]))
+        and not agent_admission.resources_conflict([read], [read])
+        and '"generation"' in admission_source
+        and '"last_activity_at"' in admission_source
+        and '"resource_modes"' in admission_source
+        and '"last_activity_at"' in heartbeat_source
+    )
+
+
 def _event_delta_pipeline_contract_present() -> bool:
     browser_source = _event_wait_js(
         {"for": "selector", "selector": "#ready", "timeout_s": 1.0},
@@ -282,6 +313,8 @@ def deterministic_checks() -> list[CheckResult]:
         ("native.semantic_identity", "Native observations include AXIdentifier-backed semantic identity for stale-target recovery.", _native_semantic_identity_contract_present, None),
         ("native.background_semantic_input", "Native text input prefers AXValue/AXSelectedText background writes without foreground activation.", _native_background_semantic_input_contract_present, True),
         ("native.foreground_capability", "Model-visible native input options cannot self-authorize foreground keyboard/pointer control.", _native_foreground_self_escalation_blocked, True),
+        ("workspace.human_priority", "Delegated browser/native mutations yield when the user owns the visible target, including mid-action takeover races.", _workspace_human_priority_contract_present, True),
+        ("workspace.resource_lease_contract", "Interactive resource leases expose generation/activity/mode semantics and preserve read-read sharing with write exclusion.", _workspace_resource_lease_contract_present, None),
         ("observe.event_delta_pipeline", "Browser waits prefer event wakeups with bounded fallback and native observe exposes opt-in conditional delta/not-modified reads.", _event_delta_pipeline_contract_present, True),
     ]
     return [_contract(check_id, summary, probe, focus_safe=focus_safe) for check_id, summary, probe, focus_safe in specs]

@@ -222,6 +222,7 @@ def _tab_lease(
     tab_index: Optional[int],
     *,
     allow_rebind: bool = False,
+    mutation: bool = False,
 ) -> Iterator[browser_tabs.TabTarget]:
     with ExitStack() as stack:
         try:
@@ -232,6 +233,7 @@ def _tab_lease(
                     window_index=window_index,
                     tab_index=tab_index,
                     allow_rebind=allow_rebind,
+                    mutation=mutation,
                 )
             )
         except KeyError as exc:
@@ -710,7 +712,7 @@ def browser_open_url(
             )
             selected_handle = str(selected.get("tab_handle") or "")
 
-        with _tab_lease(b, selected_handle, window_index, tab_index) as target:
+        with _tab_lease(b, selected_handle, window_index, tab_index, mutation=True) as target:
             guard = _tab_identity_guard(target)
             native_property = "id" if b == "Google Chrome" else "pid"
             script = f'''
@@ -973,7 +975,7 @@ def browser_activate_tab(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "window_index and tab_index must be >= 1")
     _require_stable_handle_for_mutation(b, tab_handle, window_index, "activate_tab")
 
-    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+    with _tab_lease(b, tab_handle, window_index, tab_index, mutation=True) as target:
         guard = _tab_identity_guard(target)
         if b == "Safari":
             script = f'''
@@ -1048,7 +1050,7 @@ def browser_close_tab(
 
         closed: List[Dict[str, Any]] = []
         for handle in requested_handles:
-            with _tab_lease(b, handle, window_index, tab_index) as target:
+            with _tab_lease(b, handle, window_index, tab_index, mutation=True) as target:
                 guard = _tab_identity_guard(target)
                 script = f'''
                 tell application "{b}"
@@ -1085,7 +1087,7 @@ def browser_close_tab(
     if window_index < 1 or tab_index < 1:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "window_index and tab_index must be >= 1")
 
-    with _tab_lease(b, None, window_index, tab_index) as target:
+    with _tab_lease(b, None, window_index, tab_index, mutation=True) as target:
         guard = _tab_identity_guard(target)
         script = f'''
         tell application "{b}"
@@ -1312,13 +1314,16 @@ end tell'''
         raise
 
 
-def browser_execute_js(
+def _browser_execute_js_mode(
     settings: Settings,
     browser: str,
     js: str,
     window_index: int = 1,
     tab_index: Optional[int] = None,
     tab_handle: Optional[str] = None,
+    *,
+    mutation: bool,
+    allow_rebind: bool = False,
 ) -> Dict[str, Any]:
     b = _norm_browser(browser)
     if not tab_handle and window_index < 1:
@@ -1326,7 +1331,14 @@ def browser_execute_js(
     if not tab_handle and tab_index is not None and tab_index < 1:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "tab_index must be >= 1")
 
-    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+    with _tab_lease(
+        b,
+        tab_handle,
+        window_index,
+        tab_index,
+        mutation=mutation,
+        allow_rebind=allow_rebind,
+    ) as target:
         raw = _execute_js_for_target(
             b,
             js,
@@ -1335,6 +1347,48 @@ def browser_execute_js(
         )
     raw, truncated = truncate(raw, settings.max_js_result_chars)
     return {"ok": True, "browser": b, "result": raw, "truncated": truncated}
+
+
+def _browser_execute_js_read(
+    settings: Settings,
+    browser: str,
+    js: str,
+    window_index: int = 1,
+    tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Private browser JS read path that never mutates or foregrounds the target."""
+    return _browser_execute_js_mode(
+        settings,
+        browser,
+        js,
+        window_index=window_index,
+        tab_index=tab_index,
+        tab_handle=tab_handle,
+        mutation=False,
+        allow_rebind=True,
+    )
+
+
+def browser_execute_js(
+    settings: Settings,
+    browser: str,
+    js: str,
+    window_index: int = 1,
+    tab_index: Optional[int] = None,
+    tab_handle: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Public arbitrary-JS surface: conservatively treated as mutation-capable."""
+    return _browser_execute_js_mode(
+        settings,
+        browser,
+        js,
+        window_index=window_index,
+        tab_index=tab_index,
+        tab_handle=tab_handle,
+        mutation=True,
+        allow_rebind=False,
+    )
 
 
 def browser_click_selector(
@@ -1413,7 +1467,7 @@ def browser_wait_for_selector(
     start = time.time()
     while True:
         js = f"(function(){{return !!document.querySelector({sel});}})()"
-        res = browser_execute_js(
+        res = _browser_execute_js_read(
             settings,
             browser,
             js,
@@ -1439,7 +1493,7 @@ def browser_get_html(
 ) -> Dict[str, Any]:
     lim = settings.max_html_chars if max_chars is None else max(1, min(max_chars, 2_000_000))
     js = "document.documentElement.outerHTML"
-    res = browser_execute_js(
+    res = _browser_execute_js_read(
         settings,
         browser,
         js,
@@ -1665,7 +1719,7 @@ def browser_upload_artifact(
         require_foreground_authorization("browser_upload_artifact", browser=b)
     artifact = resolve_artifact(artifact_id, expected_path=path, verify_hash=True)
     timeout_s = max(2, min(int(timeout_s), settings.max_wait_s, 60))
-    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+    with _tab_lease(b, tab_handle, window_index, tab_index, mutation=True) as target:
         if handoff_id:
             try:
                 resolve_browser_upload_handoff(
@@ -1995,7 +2049,7 @@ def browser_press_key(
             "foreground_required": True,
         }
 
-    with _tab_lease(b, handle, window_index, None) as target:
+    with _tab_lease(b, handle, window_index, None, mutation=True) as target:
         if lease_generation is not None and int(lease_generation) != int(target.lease_generation):
             return {
                 "ok": False,
@@ -2211,7 +2265,7 @@ def browser_get_snapshot(
     """Return the visible DOM tree. Each element includes coordinates (rect).
     You can use these coordinates with browser_coordinate_click."""
     js = _SNAPSHOT_JS.replace("MAX_DEPTH", str(max_depth)).replace("MAX_CHILDREN", str(max_children))
-    raw = browser_execute_js(
+    raw = _browser_execute_js_read(
         settings,
         browser,
         js,

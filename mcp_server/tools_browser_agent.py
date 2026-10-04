@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import HTTPException, status
 from mcp.server.fastmcp.utilities.types import Image
 
-from .security import Settings
+from .security import Settings, truncate
 from .computer_use_perf import record_computer_use_sample
 from . import browser_tabs
 from .chrome_background_bridge import chrome_background_bridge
@@ -130,15 +130,25 @@ def _run_json_js(
     tab_index: Optional[int] = None,
     tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
-    raw = browser_execute_js(
-        settings,
-        browser=browser,
-        js=js,
-        window_index=window_index,
-        tab_index=tab_index,
-        tab_handle=tab_handle,
-    )
-    return _decode_js_payload(raw)
+    # Internal semantic reads/actions already execute under their outer operation's
+    # tab lease. Keep this helper itself non-mutating so delegated agents may still
+    # observe/find the tab the human is looking at; public mutation entry points
+    # (browser_execute_js/browser_act/browser_do/etc.) own the human-priority guard.
+    b = _norm_browser(browser)
+    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+        value = _execute_js_for_target(
+            b,
+            js,
+            target,
+            timeout_s=min(60, settings.max_wait_s),
+        )
+    value, truncated = truncate(value, settings.max_js_result_chars)
+    return _decode_js_payload({
+        "ok": True,
+        "browser": b,
+        "result": value,
+        "truncated": truncated,
+    })
 
 
 def _ensure_visual_companion(
@@ -2762,7 +2772,7 @@ def browser_act(
     b = _norm_browser(browser)
     _require_stable_handle_for_mutation(b, tab_handle, window_index, "browser_act")
     _ensure_visual_companion(settings, b, window_index, tab_index, tab_handle)
-    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+    with _tab_lease(b, tab_handle, window_index, tab_index, mutation=True) as target:
         return _browser_act_locked(
             settings=settings,
             browser=target.browser,

@@ -15,6 +15,7 @@ from .agent_admission import (
     release as admission_release,
     request_resource_lease,
 )
+from .workspace_arbitration import native_app_resource_id, native_window_resource_id
 
 _ALLOWED_TOOLS = frozenset({
     "open_app",
@@ -36,6 +37,15 @@ _MUTATING_TOOLS = frozenset({
     "open_app", "mac_act", "mac_app", "browser_close_tab", "browser_act", "browser_do",
 })
 _CLIPBOARD_BACKED_NATIVE_ACTIONS = frozenset({"type", "type_text", "paste"})
+_READ_ONLY_MAC_APP_ACTIONS = frozenset({
+    "capabilities",
+    "selection",
+    "find_notes",
+    "find_messages",
+    "find_events",
+    "list_documents",
+    "list_panes",
+})
 _MAX_STEPS = 8
 _MAX_EXPANDED_STEPS = 16
 _MAX_ACTION_UNITS = 24
@@ -1252,16 +1262,43 @@ def derive_computer_plan_resources(steps: Sequence[Mapping[str, Any]]) -> list[d
                 if isinstance(tab, str):
                     add("browser_tab", tab, browser_mode)
             native_mode = "read" if tool in {"mac_snapshot", "mac_observe"} else "write"
+            if tool == "mac_app":
+                app_action = str(args.get("action") or "capabilities").strip().lower().replace("-", "_")
+                if app_action in _READ_ONLY_MAC_APP_ACTIONS:
+                    native_mode = "read"
             if tool.startswith("mac_") or tool == "open_app":
                 window = args.get("window_handle")
                 app_handle = args.get("app_handle")
                 app = args.get("app")
                 if isinstance(window, str):
-                    add("native_window", window, native_mode)
-                elif isinstance(app_handle, str):
-                    add("native_app", app_handle, native_mode)
-                elif isinstance(app, str):
-                    add("native_app", app, native_mode)
+                    add(
+                        "native_window",
+                        native_window_resource_id(
+                            window,
+                            bundle_id=(
+                                args.get("target_bundle_id")
+                                if isinstance(args.get("target_bundle_id"), str)
+                                else None
+                            ),
+                            app_handle=app_handle if isinstance(app_handle, str) else None,
+                            app=app if isinstance(app, str) else None,
+                        ),
+                        native_mode,
+                    )
+                elif isinstance(app_handle, str) or isinstance(app, str):
+                    add(
+                        "native_app",
+                        native_app_resource_id(
+                            bundle_id=(
+                                args.get("target_bundle_id")
+                                if isinstance(args.get("target_bundle_id"), str)
+                                else None
+                            ),
+                            app=app if isinstance(app, str) else None,
+                            app_handle=app_handle if isinstance(app_handle, str) else None,
+                        ),
+                        native_mode,
+                    )
             if tool == "mac_act":
                 actions = args.get("actions")
                 if isinstance(actions, list):
@@ -1269,7 +1306,11 @@ def derive_computer_plan_resources(steps: Sequence[Mapping[str, Any]]) -> list[d
                         if not isinstance(action, Mapping):
                             continue
                         action_type = str(action.get("type") or "").strip().lower().replace("-", "_")
-                        if action_type in _CLIPBOARD_BACKED_NATIVE_ACTIONS:
+                        input_mode = str(action.get("input_mode") or "auto").strip().lower().replace("-", "_")
+                        if (
+                            action_type in _CLIPBOARD_BACKED_NATIVE_ACTIONS
+                            and input_mode == "foreground"
+                        ):
                             add("clipboard", "system", "write")
                             break
             fallback = raw.get("fallback")

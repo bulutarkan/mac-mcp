@@ -125,6 +125,12 @@ struct SecuritySemanticsEnvelope: Decodable, Equatable {
     }
 }
 
+struct AgentResourceActivity: Decodable, Equatable {
+    let kind: String?
+    let mode: String?
+    let label: String?
+}
+
 struct AgentInfo: Decodable, Identifiable, Equatable {
     let agentID: String
     let status: String?
@@ -138,6 +144,7 @@ struct AgentInfo: Decodable, Identifiable, Equatable {
     let lastTool: String?
     let lastToolDurationMS: Int?
     let toolCallCount: Int?
+    let resourceActivity: [AgentResourceActivity]?
     let retryCount: Int?
     let durationMS: Int?
     let turnCount: Int?
@@ -159,6 +166,7 @@ struct AgentInfo: Decodable, Identifiable, Equatable {
         case lastTool = "last_tool"
         case lastToolDurationMS = "last_tool_duration_ms"
         case toolCallCount = "tool_call_count"
+        case resourceActivity = "resource_activity"
         case retryCount = "retry_count"
         case durationMS = "duration_ms"
         case turnCount = "turn_count"

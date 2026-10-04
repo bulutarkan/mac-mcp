@@ -33,6 +33,13 @@ class AgentResilienceDashboardTests(unittest.TestCase):
                 "last_durable_checkpoint_at": 120.0,
                 "resumable": True, "throttle_count": 1, "last_throttled_at": 110.0,
                 "last_throttle_reason": "requesting_too_fast", "cooldown_until": 200.0,
+                "admission_generation": 7,
+                "resource_activity": [
+                    {"kind": "browser_tab", "mode": "write", "label": "Browser tab"},
+                ],
+                "admission_resources": [
+                    {"kind": "browser_tab", "mode": "write", "id": "secret-tab-handle"},
+                ],
             }
             admission = {
                 "global_active": 2, "global_limit": 8, "provider_active": {"chatgpt": 1},
@@ -58,6 +65,13 @@ class AgentResilienceDashboardTests(unittest.TestCase):
             self.assertEqual("mcp_tool_completed", row["checkpoint_cursor"]["kind"])
             self.assertEqual(7, row["checkpoint_cursor"]["seq"])
             self.assertTrue(row["resumable"])
+            self.assertEqual(7, row["admission_generation"])
+            self.assertEqual(
+                [{"kind": "browser_tab", "mode": "write", "label": "Browser tab"}],
+                row["resource_activity"],
+            )
+            self.assertNotIn("admission_resources", row)
+            self.assertNotIn("secret-tab-handle", response.text)
             global_admission = response.json()["global_admission"]
             self.assertEqual(2, global_admission["global_active"])
             self.assertEqual(8, global_admission["global_limit"])

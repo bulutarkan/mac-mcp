@@ -315,8 +315,8 @@ def create_browser_text_handoff(
         target_element_id=target_element_id, clear=clear,
     )
     source = _browser_source(browser, tab_handle)
-    from .tools_browser import browser_execute_js
-    result = browser_execute_js(
+    from .tools_browser import _browser_execute_js_read
+    result = _browser_execute_js_read(
         settings, browser=browser, tab_handle=tab_handle,
         js=(
             "JSON.stringify({selection:String(window.getSelection?window.getSelection().toString():''),"

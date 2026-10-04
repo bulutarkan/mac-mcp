@@ -52,6 +52,7 @@ from .agent_admission import (
     heartbeat as admission_heartbeat, normalize_claims as normalize_admission_claims, release as admission_release,
     request_admission, snapshot as admission_snapshot,
 )
+from .workspace_arbitration import sanitize_resource_claims
 
 AGENTS_DIR = BASE_DIR / "agents"
 TEAMS_DIR = BASE_DIR / "agent_teams"
@@ -881,17 +882,21 @@ def _release_agent_admission(agent_id: str, meta: Optional[Dict[str, Any]] = Non
     except HTTPException:
         current = {}
     lease_id = str(current.get("admission_lease_id") or "").strip() or None
-    if not lease_id:
-        return
     try:
-        admission_release(AGENTS_DIR, lease_id=lease_id)
+        # Release the main admission lease and any zero-capacity dynamic resource
+        # lease owned by this delegated agent. Physical browser tabs/windows are
+        # never closed by admission cleanup.
+        admission_release(AGENTS_DIR, agent_id=agent_id)
+        if lease_id:
+            admission_release(AGENTS_DIR, lease_id=lease_id)
     except Exception:
         return
     try:
         def clear(current_meta: Dict[str, Any]) -> Optional[bool]:
-            if str(current_meta.get("admission_lease_id") or "") != lease_id:
+            if lease_id and str(current_meta.get("admission_lease_id") or "") != lease_id:
                 return False
             current_meta["admission_lease_id"] = None
+            current_meta["admission_generation"] = None
             current_meta["admission_released_at"] = _now()
             current_meta["updated_at"] = _now()
             return True
@@ -911,6 +916,7 @@ def _release_task_admission(task: Dict[str, Any]) -> None:
     except Exception:
         pass
     task["admission_lease_id"] = None
+    task["admission_generation"] = None
     task["admission_request_id"] = None
     task["queued_since"] = None
     task["queued_reason"] = None
@@ -1352,6 +1358,7 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
                 changed = True
                 continue
             task["admission_lease_id"] = admission.get("lease_id")
+            task["admission_generation"] = admission.get("generation")
             task["queued_reason"] = None
             task["queued_details"] = None
             task["queue_position"] = None
@@ -1405,6 +1412,11 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
                     ),
                     seed_worktree_agent_ids=seed_agent_ids,
                     admission_lease_id=str(task.get("admission_lease_id") or "") or None,
+                    admission_generation=(
+                        int(task["admission_generation"])
+                        if task.get("admission_generation") is not None
+                        else None
+                    ),
                     admission_resources=resource_claims,
                     selection_validation=team.get("model_selection_validation"),
                 )
@@ -1565,6 +1577,10 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
             "queued_details": task.get("queued_details"),
             "queue_position": task.get("queue_position"),
             "admission_lease_id": task.get("admission_lease_id"),
+            "admission_generation": task.get("admission_generation"),
+            "resource_activity": sanitize_resource_claims(
+                task.get("resource_claims") or []
+            ),
             "result_outcome": task_result_outcome,
             "result_contract_status": task_envelope.get("contract_status") if isinstance(task_envelope, dict) else None,
             "result_confidence": task_envelope.get("confidence") if isinstance(task_envelope, dict) else None,
@@ -3355,7 +3371,10 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "git_isolation": meta.get("git_isolation", "off"),
         "worktree": _worktree_public(meta.get("worktree")),
         "admission_lease_id": meta.get("admission_lease_id"),
-        "admission_resources": list(meta.get("admission_resources") or []),
+        "admission_generation": meta.get("admission_generation"),
+        "resource_activity": sanitize_resource_claims(
+            meta.get("admission_resources") or []
+        ),
         "access_mode": meta.get("access_mode"),
         "permission_profile": meta.get("permission_profile"),
         "capability_profile": meta.get("capability_profile"),
@@ -3514,6 +3533,7 @@ def _spawn_internal(
     reuse_worktree_agent_id: Optional[str] = None,
     seed_worktree_agent_ids: Optional[List[str]] = None,
     admission_lease_id: Optional[str] = None,
+    admission_generation: Optional[int] = None,
     admission_resources: Optional[List[Dict[str, str]]] = None,
     selection_validation: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -3674,6 +3694,7 @@ def _spawn_internal(
         "git_isolation": git_isolation,
         "worktree": worktree_state,
         "admission_lease_id": str(admission_lease_id or "").strip() or None,
+        "admission_generation": admission_generation,
         "admission_resources": [dict(item) for item in (admission_resources or [])],
         "access_mode": access_mode,
         "permission_profile": permission_profile,
@@ -4182,6 +4203,19 @@ def list_agents(settings: Settings, status_filter: Optional[str] = None, limit: 
     if team_id:
         _authorize_team_control(str(team_id), "list_agents")
     delegated = current_policy_context().agent_id is not None
+    try:
+        live_admission = admission_snapshot(AGENTS_DIR)
+    except Exception:
+        live_admission = None
+    live_leases_by_agent: Dict[str, List[Dict[str, Any]]] = {}
+    if isinstance(live_admission, dict):
+        for lease in live_admission.get("leases") or []:
+            if not isinstance(lease, dict):
+                continue
+            owner = str(lease.get("agent_id") or "").strip()
+            if owner:
+                live_leases_by_agent.setdefault(owner, []).append(lease)
+
     items: List[Dict[str, Any]] = []
     for path in sorted(AGENTS_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
         if not path.is_dir() or not (path / "meta.json").exists():
@@ -4202,6 +4236,24 @@ def list_agents(settings: Settings, status_filter: Optional[str] = None, limit: 
         if team_id and meta.get("team_id") != team_id:
             continue
         public = _public_meta(path.name, meta)
+        live_leases = live_leases_by_agent.get(path.name) or []
+        if live_leases:
+            live_claims: List[Dict[str, Any]] = []
+            live_generations: List[int] = []
+            for lease in live_leases:
+                live_claims.extend(
+                    dict(item)
+                    for item in (lease.get("resources") or [])
+                    if isinstance(item, dict)
+                )
+                try:
+                    if lease.get("generation") is not None:
+                        live_generations.append(int(lease["generation"]))
+                except (TypeError, ValueError):
+                    pass
+            public["resource_activity"] = sanitize_resource_claims(live_claims)
+            if live_generations:
+                public["admission_generation"] = max(live_generations)
         if meta.get("status") == "completed":
             envelope = _read_result_envelope(path.name, meta=meta, allow_legacy=True)
             if envelope is not None:
@@ -4211,14 +4263,15 @@ def list_agents(settings: Settings, status_filter: Optional[str] = None, limit: 
         if len(items) >= max(1, min(int(limit), 200)):
             break
     result: Dict[str, Any] = {"ok": True, "count": len(items), "agents": items}
-    try:
-        snap = admission_snapshot(AGENTS_DIR)
+    if isinstance(live_admission, dict):
         result["global_admission"] = {
-            "global_active": snap.get("global_active"), "global_limit": snap.get("global_limit"),
-            "provider_active": snap.get("provider_active"), "provider_limits": snap.get("provider_limits"),
-            "queued_count": snap.get("queued_count"),
+            "global_active": live_admission.get("global_active"),
+            "global_limit": live_admission.get("global_limit"),
+            "provider_active": live_admission.get("provider_active"),
+            "provider_limits": live_admission.get("provider_limits"),
+            "queued_count": live_admission.get("queued_count"),
         }
-    except Exception:
+    else:
         result["global_admission"] = None
     if team_id:
         result["team"] = _team_summary(team_id)

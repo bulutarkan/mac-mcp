@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from mcp_server import tools_ui
 from mcp_server.foreground_guard import foreground_authorization
+from mcp_server.policy import PolicyContext, reset_policy_context, set_policy_context
 from mcp_server.security import load_settings
 
 
@@ -208,6 +209,139 @@ class NativeFocusActTests(unittest.TestCase):
         self.assertTrue(action["focus_user_changed"])
         self.assertTrue(action["focus_restore_skipped_user_change"])
         self.assertFalse(action["focus_restore_attempted"])
+
+    def test_delegated_frontmost_target_yields_before_readiness_or_action(self) -> None:
+        token = set_policy_context(
+            PolicyContext(
+                profile="trusted",
+                actor="agent:agt_human_priority",
+                agent_id="agt_human_priority",
+                team_id="team_human_priority",
+            )
+        )
+        try:
+            with patch.object(
+                tools_ui, "_resolve_action_native_target", return_value=(self.target, None)
+            ), patch.object(
+                tools_ui,
+                "_delegated_native_human_guard",
+                return_value={
+                    "reason_code": "HUMAN_ACTIVE_RESOURCE",
+                    "retryable": True,
+                    "human_priority": True,
+                    "yielded": True,
+                    "resource_kind": "native_window",
+                },
+            ), patch.object(
+                tools_ui, "_wait_for_native_readiness"
+            ) as readiness, patch.object(
+                tools_ui, "_perform_action"
+            ) as perform:
+                result = self._act(
+                    {"type": "click", "element_id": "w1/1"}
+                )
+        finally:
+            reset_policy_context(token)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("HUMAN_ACTIVE_RESOURCE", result["reason_code"])
+        self.assertTrue(result["human_priority"])
+        self.assertTrue(result["yielded"])
+        self.assertEqual("native_window", result["resource_kind"])
+        readiness.assert_not_called()
+        perform.assert_not_called()
+
+    def test_delegated_mid_action_human_takeover_never_restores_over_user(self) -> None:
+        token = set_policy_context(
+            PolicyContext(
+                profile="trusted",
+                actor="agent:agt_human_race",
+                agent_id="agt_human_race",
+                team_id="team_human_race",
+            )
+        )
+        try:
+            with patch.object(
+                tools_ui, "_resolve_action_native_target", return_value=(self.target, None)
+            ), patch.object(
+                tools_ui, "_delegated_native_human_guard", return_value=None
+            ), patch.object(
+                tools_ui, "_wait_for_native_readiness", return_value=self.ready
+            ), patch.object(
+                tools_ui, "_capture_focus_context", return_value=(self.user_focus, None)
+            ), patch.object(
+                tools_ui, "_post_action_focus_decision", return_value=("restore", None)
+            ), patch.object(
+                tools_ui,
+                "_delegated_native_resource_claim",
+                return_value={"ok": True, "resource_kind": "native_window"},
+            ), patch.object(
+                tools_ui, "recent_user_input", return_value=(True, None, 0.1)
+            ), patch.object(
+                tools_ui, "_perform_action", return_value=(True, "semantic click completed")
+            ) as perform, patch.object(
+                tools_ui, "_restore_focus_context"
+            ) as restore, patch.object(
+                tools_ui, "_wait_for_native_effect", return_value=self.effect
+            ):
+                result = self._act(
+                    {"type": "click", "element_id": "w1/1"}
+                )
+        finally:
+            reset_policy_context(token)
+
+        self.assertTrue(result["ok"])
+        perform.assert_called_once()
+        restore.assert_not_called()
+        action = result["actions"][0]
+        self.assertTrue(action["human_priority"])
+        self.assertTrue(action["yielded"])
+        self.assertTrue(action["human_takeover_during_action"])
+        self.assertTrue(action["focus_restore_skipped_user_change"])
+        self.assertFalse(action["focus_restore_attempted"])
+        self.assertEqual(100, action["human_input_age_ms"])
+
+    def test_delegated_resource_busy_yields_before_native_mutation(self) -> None:
+        token = set_policy_context(
+            PolicyContext(
+                profile="trusted",
+                actor="agent:agt_resource_busy",
+                agent_id="agt_resource_busy",
+                team_id="team_resource_busy",
+            )
+        )
+        try:
+            with patch.object(
+                tools_ui, "_resolve_action_native_target", return_value=(self.target, None)
+            ), patch.object(
+                tools_ui, "_delegated_native_human_guard", return_value=None
+            ), patch.object(
+                tools_ui, "_wait_for_native_readiness", return_value=self.ready
+            ), patch.object(
+                tools_ui, "_capture_focus_context", return_value=(self.user_focus, None)
+            ), patch.object(
+                tools_ui, "_delegated_native_resource_claim",
+                return_value={
+                    "ok": False,
+                    "reason_code": "RESOURCE_BUSY",
+                    "retryable": True,
+                    "yielded": True,
+                    "resource_kind": "native_window",
+                },
+            ), patch.object(
+                tools_ui, "_perform_action"
+            ) as perform:
+                result = self._act(
+                    {"type": "click", "element_id": "w1/1"}
+                )
+        finally:
+            reset_policy_context(token)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual("RESOURCE_BUSY", result["reason_code"])
+        self.assertTrue(result["yielded"])
+        self.assertEqual("native_window", result["resource_kind"])
+        perform.assert_not_called()
 
     def test_preserve_focus_false_cannot_disable_background_focus_safety(self) -> None:
         with patch.object(tools_ui, "_resolve_action_native_target", return_value=(self.target, None)),              patch.object(tools_ui, "_wait_for_native_readiness", return_value=self.ready),              patch.object(tools_ui, "_capture_focus_context", return_value=(self.user_focus, None)) as capture,              patch.object(tools_ui, "_post_action_focus_decision", return_value=("preserved", None)),              patch.object(tools_ui, "_perform_action", return_value=(True, "semantic click completed")) as perform,              patch.object(tools_ui, "_wait_for_native_effect", return_value=self.effect):

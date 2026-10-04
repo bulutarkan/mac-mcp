@@ -369,7 +369,16 @@ struct MenuBarView: View {
                 }
 
                 HStack(spacing: 5) {
-                    if let tool = agent.lastTool, !tool.isEmpty {
+                    if let resource = primaryInteractiveResource(agent),
+                       let label = resource.label, !label.isEmpty {
+                        Image(systemName: resourceSymbol(resource.kind))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(label)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else if let tool = agent.lastTool, !tool.isEmpty {
                         Image(systemName: toolSymbol(tool)).font(.caption2).foregroundStyle(.secondary)
                         Text(cleanToolName(tool)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     } else {
@@ -867,6 +876,22 @@ struct MenuBarView: View {
         case "xhigh": return "XHigh"
         case "none": return "None"
         default: return value.capitalized
+        }
+    }
+
+    private func primaryInteractiveResource(_ agent: AgentInfo) -> AgentResourceActivity? {
+        agent.resourceActivity?.first {
+            guard let kind = $0.kind?.lowercased() else { return false }
+            return ["browser_tab", "native_window", "native_app"].contains(kind)
+        }
+    }
+
+    private func resourceSymbol(_ kind: String?) -> String {
+        switch kind?.lowercased() {
+        case "browser_tab": return "safari.fill"
+        case "native_window": return "macwindow"
+        case "native_app": return "app.fill"
+        default: return "square.stack.3d.up.fill"
         }
     }
 
