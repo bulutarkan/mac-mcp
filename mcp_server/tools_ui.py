@@ -39,6 +39,7 @@ from .native_targets import (
     window_by_handle as _window_by_handle,
     window_handle_map as _window_handle_map,
 )
+from .native_window_capture import resolve_window_id as _resolve_native_window_id
 from .security import Settings, truncate
 from .computer_use_perf import record_computer_use_sample
 from .clipboard_guard import ClipboardBusyError, clipboard_guard
@@ -620,6 +621,96 @@ def _capture_screen(timeout_s: float = 15) -> Tuple[Optional[bytes], Optional[st
         return data, None
     except Exception as exc:
         return None, f"Could not capture screen: {exc}"
+    finally:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
+def _capture_window(
+    pid: int,
+    window: Dict[str, Any],
+    timeout_s: float = 15,
+) -> Tuple[Optional[bytes], Optional[str], Dict[str, Any]]:
+    started = time.monotonic()
+    window_id, reason_code, resolution = _resolve_native_window_id(
+        pid,
+        window,
+        timeout_s=min(5.0, max(0.1, float(timeout_s))),
+    )
+    metadata: Dict[str, Any] = {
+        "scope": "window",
+        "capture_method": "cgwindow+screencapture",
+        "match_basis": resolution.get("match_basis"),
+        "on_screen": resolution.get("on_screen"),
+    }
+    if window_id is None:
+        metadata["reason_code"] = reason_code or "WINDOW_CAPTURE_TARGET_UNAVAILABLE"
+        return None, metadata["reason_code"], metadata
+
+    fd, path = tempfile.mkstemp(prefix="mac-mcp-window-", suffix=".jpg")
+    os.close(fd)
+    try:
+        cancellation_checkpoint()
+        proc = subprocess.Popen(
+            [
+                "/usr/sbin/screencapture",
+                "-x",
+                "-o",
+                "-t",
+                _SCREENSHOT_FORMAT,
+                f"-l{int(window_id)}",
+                path,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        cleanup_token = register_cancellation_cleanup(lambda: _terminate_process_group(proc))
+        cancellation_checkpoint()
+        try:
+            _, stderr = proc.communicate(timeout=_operation_timeout(None, timeout_s))
+            cancellation_checkpoint()
+        except ToolCancelledError:
+            _terminate_process_group(proc)
+            proc.wait()
+            raise
+        except subprocess.TimeoutExpired:
+            _terminate_process_group(proc)
+            proc.wait()
+            metadata["reason_code"] = "WINDOW_CAPTURE_TIMEOUT"
+            return None, f"window capture timed out after {timeout_s}s", metadata
+        finally:
+            unregister_cancellation_cleanup(cleanup_token)
+
+        if proc.returncode != 0:
+            metadata["reason_code"] = "WINDOW_CAPTURE_FAILED"
+            message = (stderr or "").strip() or "screencapture window capture failed"
+            return None, message, metadata
+
+        remaining = timeout_s - (time.monotonic() - started)
+        if remaining > 0.1:
+            _resize_screenshot(path, min(5.0, remaining))
+        data = Path(path).read_bytes()
+        if not data:
+            metadata["reason_code"] = "WINDOW_CAPTURE_EMPTY"
+            return None, "window capture returned an empty image", metadata
+        if len(data) > _SCREENSHOT_MAX_BYTES:
+            metadata["reason_code"] = "WINDOW_CAPTURE_TOO_LARGE"
+            return None, (
+                f"window capture omitted because its encoded size ({len(data)} bytes) "
+                f"exceeds the {_SCREENSHOT_MAX_BYTES}-byte connector safety limit"
+            ), metadata
+
+        metadata["encoded_bytes"] = len(data)
+        metadata["capture_duration_ms"] = int((time.monotonic() - started) * 1000)
+        return data, None, metadata
+    except Exception as exc:
+        metadata["reason_code"] = "WINDOW_CAPTURE_EXCEPTION"
+        return None, f"Could not capture native window: {exc}", metadata
     finally:
         try:
             os.unlink(path)
@@ -1327,17 +1418,43 @@ def _collect_observation(
         fingerprint=fingerprint, tree_revision=tree_revision,
     )
 
+    selected_handle = selected_window.get("window_handle") if selected_window else None
     image_data: Optional[bytes] = None
     screenshot_error: Optional[str] = None
+    screenshot_details: Dict[str, Any] = {
+        "scope": "window" if selected_window is not None else "screen",
+        "capture_method": None,
+    }
     if include_screenshot or ocr:
+        capture_started = time.monotonic()
         try:
-            image_data, screenshot_error = _capture_screen(
-                _operation_timeout(local_deadline, 10)
-            )
+            if selected_window is not None:
+                if not selected_handle:
+                    screenshot_error = "WINDOW_CAPTURE_IDENTITY_UNAVAILABLE"
+                    screenshot_details["reason_code"] = "WINDOW_CAPTURE_IDENTITY_UNAVAILABLE"
+                else:
+                    image_data, screenshot_error, screenshot_details = _capture_window(
+                        int(metadata.get("pid") or 0),
+                        selected_window,
+                        _operation_timeout(local_deadline, 10),
+                    )
+            else:
+                image_data, screenshot_error = _capture_screen(
+                    _operation_timeout(local_deadline, 10)
+                )
+                screenshot_details.update({
+                    "scope": "screen",
+                    "capture_method": "screencapture",
+                })
         except TimeoutError as exc:
             image_data, screenshot_error = None, str(exc)
+            screenshot_details.setdefault("reason_code", "SCREENSHOT_TIMEOUT")
+        screenshot_details.setdefault(
+            "capture_duration_ms", int((time.monotonic() - capture_started) * 1000)
+        )
+        if image_data:
+            screenshot_details.setdefault("encoded_bytes", len(image_data))
 
-    selected_handle = selected_window.get("window_handle") if selected_window else None
     payload: Dict[str, Any] = {
         "ok": True,
         "observation_id": observation_id,
@@ -1367,6 +1484,7 @@ def _collect_observation(
             "requested": include_screenshot,
             "included_as_image_content": bool(image_data and include_screenshot),
             "mime_type": f"image/{_SCREENSHOT_FORMAT}" if image_data and include_screenshot else None,
+            **screenshot_details,
         },
     }
     if selected_window is not None and not selected_handle:
@@ -1397,6 +1515,12 @@ def _collect_observation(
                 "error": screenshot_error or "OCR could not capture the screen",
             }
 
+    if image_data:
+        payload["telemetry"]["visual_bytes"] = len(image_data)
+    if screenshot_details.get("capture_duration_ms") is not None:
+        payload["telemetry"]["capture_duration_ms"] = int(
+            screenshot_details["capture_duration_ms"]
+        )
     payload["telemetry"]["payload_bytes"] = len(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     )

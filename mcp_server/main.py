@@ -945,8 +945,9 @@ def create_app():
         description=(
             "Read the frontmost or named macOS application's current UI state. "
             "Returns an observation_id, Accessibility tree nodes with element_id, role, "
-            "title, value, position, enabled state and supported actions, plus a screen "
-            "image when include_screenshot=true. Screenshots are returned as connector-safe "
+            "title, value, position, enabled state and supported actions, plus a targeted "
+            "native-window image when include_screenshot=true and one stable window is selected. "
+            "window_index=0 retains whole-screen capture. Screenshots are returned as connector-safe "
             "JPEG image content. Use ocr=true only when Accessibility text is insufficient. "
             "Returns process-bound app_handle and stable window_handle values when the window "
             "can be uniquely identified. Pass observation_id to mac_act; handles are re-resolved "
