@@ -142,7 +142,7 @@ class ChangeSummaryTests(unittest.TestCase):
         self.assertIn("renderChanges", js)
         self.assertIn("scheduleChangesRefresh", js)
         self.assertIn(".changes-card", css)
-        self.assertRegex(css, r"\.right-rail\s*\{[^}]*overflow-y:\s*auto;[^}]*\}")
+        self.assertRegex(css, r"\.right-rail\s*\{[^}]*grid-template-rows:\s*auto\s+146px\s+max-content;[^}]*overflow-y:\s*auto;[^}]*\}")
 
     def test_observed_tool_call_persists_public_session_id(self) -> None:
         async def run() -> None:
