@@ -398,6 +398,29 @@ def create_dashboard_routes(
         )
         return JSONResponse({"ok": True, "change_sets": sets})
 
+    async def usage(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        days = max(1, min(_int_query(request, "days", 365), 400))
+        actor = str(request.query_params.get("actor") or "all").strip().lower()
+        actor_class = actor if actor in {"primary", "scoped_subagent"} else None
+        try:
+            payload = telemetry.usage_summary(days=days, actor_class=actor_class)
+        except Exception as exc:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "days": days,
+                    "actor_class": actor_class or "all",
+                    "daily": [],
+                    "top_tools": [],
+                    "error": str(sanitize_value(exc)),
+                },
+                status_code=500,
+            )
+        return JSONResponse(payload)
+
     async def events(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -661,6 +684,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/security/events", security_events, methods=["GET"]),
         Route("/dashboard/api/security/escalate", security_escalate, methods=["POST"]),
         Route("/dashboard/api/events", events, methods=["GET"]),
+        Route("/dashboard/api/usage", usage, methods=["GET"]),
         Route("/dashboard/api/changes", changes, methods=["GET"]),
         Route("/dashboard/api/browser/show-tab", show_browser_tab, methods=["POST"]),
         Route("/dashboard/api/providers", providers, methods=["GET"]),

@@ -1,11 +1,13 @@
 import AppKit
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import Foundation
 import SwiftUI
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general
     case agents
+    case usage
     case permissions
     case connections
     case voice
@@ -17,6 +19,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "General"
         case .agents: return "Agents"
+        case .usage: return "Usage"
         case .permissions: return "Permissions & Safety"
         case .connections: return "Connections"
         case .voice: return "Voice"
@@ -28,6 +31,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "slider.horizontal.3"
         case .agents: return "cpu"
+        case .usage: return "chart.bar.xaxis"
         case .permissions: return "checkmark.shield"
         case .connections: return "network"
         case .voice: return "waveform.and.mic"
@@ -41,6 +45,8 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
             return "general overview update version status"
         case .agents:
             return "agents subagents provider codex opencode chatgpt model reasoning thinking default agent"
+        case .usage:
+            return "usage tokens payload calls errors latency heatmap activity input output top tools"
         case .permissions:
             return "permissions safety approvals security profile read only trusted access"
         case .connections:
@@ -60,6 +66,38 @@ private enum ConnectionsTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String { self == .browser ? "Browser" : "Mobile" }
     var symbol: String { self == .browser ? "safari" : "iphone" }
+}
+
+
+private struct UsageHeatCell: Identifiable {
+    let dateKey: String
+    let value: Int
+    let calls: Int
+
+    var id: String { dateKey }
+}
+
+private enum UsageAggregation: String, CaseIterable, Identifiable {
+    case daily = "Daily"
+    case weekly = "Weekly"
+    case cumulative = "Cumulative"
+
+    var id: String { rawValue }
+}
+
+private enum UsageActorFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case primary = "Primary"
+    case subagents = "Subagents"
+
+    var id: String { rawValue }
+    var apiValue: String {
+        switch self {
+        case .all: return "all"
+        case .primary: return "primary"
+        case .subagents: return "scoped_subagent"
+        }
+    }
 }
 
 
@@ -86,6 +124,8 @@ struct SettingsView: View {
     @MacMCPState private var cloudflareToken = ""
     @MacMCPState private var settingsSearch = ""
     @MacMCPState private var connectionsTab: ConnectionsTab = .browser
+    @MacMCPState private var usageAggregation: UsageAggregation = .daily
+    @MacMCPState private var usageActor: UsageActorFilter = .all
     @MacMCPState private var saveFeedback: SettingsSaveFeedback?
 
     var body: some View {
@@ -101,8 +141,12 @@ struct SettingsView: View {
             state.refreshCloudflareCredentialState()
             await state.refreshProviders()
             await state.refreshMobileDevices()
+            await state.refreshUsage(actorClass: usageActor.apiValue)
         }
         .task(id: selection) {
+            if selection == .usage {
+                await state.refreshUsage(actorClass: usageActor.apiValue)
+            }
             if selection == .general, state.updateCheckInfo == nil, !state.updateTransactionActive {
                 state.checkForUpdates()
             }
@@ -283,6 +327,7 @@ struct SettingsView: View {
         switch selection {
         case .general: generalPane
         case .agents: subagentsPane
+        case .usage: usagePane
         case .permissions: permissionsPane
         case .connections: connectionsPane
         case .voice: voicePane
@@ -334,6 +379,370 @@ struct SettingsView: View {
             }
             .padding(20)
         }
+    }
+
+    private var usagePane: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top) {
+                    paneHeader(
+                        "Usage",
+                        subtitle: "12 months of Mac-MCP-attributable tool payload activity. This is not provider billing or model context usage."
+                    )
+                    Spacer(minLength: 12)
+                    if state.usageLoading {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button {
+                            Task { await state.refreshUsage(actorClass: usageActor.apiValue) }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .help("Refresh usage")
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    Picker("View", selection: $usageAggregation) {
+                        ForEach(UsageAggregation.allCases) { item in
+                            Text(item.rawValue).tag(item)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 310)
+
+                    Picker("Source", selection: $usageActor) {
+                        ForEach(UsageActorFilter.allCases) { item in
+                            Text(item.rawValue).tag(item)
+                        }
+                    }
+                    .frame(width: 150)
+                    .onChange(of: usageActor) { value in
+                        Task { await state.refreshUsage(actorClass: value.apiValue) }
+                    }
+                }
+
+                if let issue = state.usageIssue {
+                    Label(issue, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let usage = state.usageSummary {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 11) {
+                            HStack(spacing: 9) {
+                                usageMetricCard(
+                                    title: "Input",
+                                    value: compactNumber(usage.totals.inputTokens),
+                                    detail: "payload tokens",
+                                    symbol: "arrow.down.left"
+                                )
+                                usageMetricCard(
+                                    title: "Output",
+                                    value: compactNumber(usage.totals.outputTokens),
+                                    detail: "payload tokens",
+                                    symbol: "arrow.up.right"
+                                )
+                                usageMetricCard(
+                                    title: "Tool Calls",
+                                    value: compactNumber(usage.totals.calls),
+                                    detail: "\(usage.totals.errorCount) errors",
+                                    symbol: "hammer"
+                                )
+                                usageMetricCard(
+                                    title: "Latency",
+                                    value: latencyPairText(
+                                        p50: usage.totals.p50LatencyMs,
+                                        p95: usage.totals.p95LatencyMs
+                                    ),
+                                    detail: "p50 / p95",
+                                    symbol: "timer"
+                                )
+                            }
+
+                            Divider()
+
+                            HStack(spacing: 8) {
+                                Label(
+                                    "\(byteText(usage.totals.inputBytes + usage.totals.outputBytes)) payload",
+                                    systemImage: "doc.text"
+                                )
+                                if usage.totals.imageCount > 0 {
+                                    Label("\(usage.totals.imageCount) images", systemImage: "photo")
+                                }
+                                if usage.totals.binaryBytes > 0 {
+                                    Label("\(byteText(usage.totals.binaryBytes)) binary", systemImage: "shippingbox")
+                                }
+                                Spacer()
+                                if let since = usage.availableSince {
+                                    Text("Available since \(since)")
+                                } else {
+                                    Text("Collection starts with the first measured call")
+                                }
+                            }
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        }
+                        .padding(2)
+                    } label: {
+                        Label("MCP Payload Tokens", systemImage: "waveform.path.ecg")
+                    }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) {
+                            usageHeatmap(usage)
+
+                            HStack(spacing: 8) {
+                                Text("Less")
+                                ForEach(0..<5, id: \.self) { level in
+                                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                        .fill(usageHeatColor(level: level))
+                                        .frame(width: 11, height: 11)
+                                }
+                                Text("More")
+                                Spacer()
+                                Text(usageAggregation.rawValue)
+                            }
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 2)
+                    } label: {
+                        Label("Activity", systemImage: "square.grid.3x3.fill")
+                    }
+
+                    if !usage.topTools.isEmpty {
+                        GroupBox {
+                            VStack(spacing: 0) {
+                                let maxTokens = max(1, usage.topTools.map(\.totalTokens).max() ?? 1)
+                                ForEach(Array(usage.topTools.enumerated()), id: \.element.id) { index, tool in
+                                    VStack(spacing: 7) {
+                                        HStack {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(tool.tool)
+                                                    .font(.system(.caption, design: .monospaced).weight(.medium))
+                                                    .lineLimit(1)
+                                                Text("\(compactNumber(tool.calls)) calls · \(compactNumber(tool.totalTokens)) tokens")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            Spacer()
+                                            if tool.errorCount > 0 {
+                                                Label("\(tool.errorCount)", systemImage: "exclamationmark.circle")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.orange)
+                                            }
+                                        }
+                                        ProgressView(value: Double(tool.totalTokens), total: Double(maxTokens))
+                                            .controlSize(.mini)
+                                    }
+                                    .padding(.vertical, 8)
+                                    if index < usage.topTools.count - 1 { Divider() }
+                                }
+                            }
+                        } label: {
+                            Label("Top Tools", systemImage: "list.number")
+                        }
+                    }
+
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text(usage.metricScope)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            HStack(spacing: 14) {
+                                Label("Input = tool arguments", systemImage: "arrow.down.left")
+                                Label("Output = tool result", systemImage: "arrow.up.right")
+                                Spacer()
+                            }
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+
+                            HStack {
+                                Text("Metric")
+                                Spacer()
+                                Text(usage.tokenizerId)
+                                    .font(.system(.caption2, design: .monospaced))
+                            }
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+
+                            if let diagnostics = usage.diagnostics,
+                               (diagnostics.queueDropped ?? 0) > 0 || (diagnostics.workerErrors ?? 0) > 0 {
+                                Label(
+                                    "Metering diagnostics: \(diagnostics.queueDropped ?? 0) dropped · \(diagnostics.workerErrors ?? 0) worker errors",
+                                    systemImage: "exclamationmark.triangle"
+                                )
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                            }
+                        }
+                    } label: {
+                        Label("Measurement", systemImage: "ruler")
+                    }
+                } else if state.usageLoading {
+                    GroupBox {
+                        HStack {
+                            ProgressView().controlSize(.small)
+                            Text("Loading Usage…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                        .padding(.vertical, 8)
+                    }
+                } else {
+                    GroupBox {
+                        Text("Usage becomes available after the first measured MCP tool call.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 8)
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(22)
+        }
+    }
+
+    @ViewBuilder
+    private func usageHeatmap(_ usage: UsageSummaryEnvelope) -> some View {
+        let cells = usageHeatCells(usage)
+        let paddedCount = ((cells.count + 6) / 7) * 7
+        let padded: [UsageHeatCell?] = cells.map(Optional.some)
+            + Array(repeating: nil, count: max(0, paddedCount - cells.count))
+        let columns = stride(from: 0, to: padded.count, by: 7).map {
+            Array(padded[$0..<min($0 + 7, padded.count)])
+        }
+        let maxValue = max(1, cells.map(\.value).max() ?? 1)
+
+        HStack(alignment: .top, spacing: 3) {
+            ForEach(Array(columns.enumerated()), id: \.offset) { _, week in
+                VStack(spacing: 3) {
+                    ForEach(Array(week.enumerated()), id: \.offset) { _, cell in
+                        if let cell {
+                            let ratio = Double(cell.value) / Double(maxValue)
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .fill(usageHeatColor(ratio: ratio, active: cell.value > 0))
+                                .frame(width: 10, height: 10)
+                                .help("\(cell.dateKey) · \(compactNumber(cell.value)) tokens · \(cell.calls) calls")
+                        } else {
+                            Color.clear.frame(width: 10, height: 10)
+                        }
+                    }
+                }
+            }
+        }
+        .accessibilityLabel("MCP Payload Tokens activity heatmap")
+    }
+
+    private func usageHeatCells(_ usage: UsageSummaryEnvelope) -> [UsageHeatCell] {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        let calendar = Calendar(identifier: .gregorian)
+        let today = calendar.startOfDay(for: Date())
+        let start = calendar.date(byAdding: .day, value: -364, to: today) ?? today
+        let dailyMap = Dictionary(uniqueKeysWithValues: usage.daily.map { ($0.date, $0) })
+
+        var base: [(String, Int, Int, Date)] = []
+        for offset in 0..<365 {
+            guard let date = calendar.date(byAdding: .day, value: offset, to: start) else { continue }
+            let key = formatter.string(from: date)
+            let day = dailyMap[key]
+            base.append((key, day?.totalTokens ?? 0, day?.calls ?? 0, date))
+        }
+
+        switch usageAggregation {
+        case .daily:
+            return base.map { UsageHeatCell(dateKey: $0.0, value: $0.1, calls: $0.2) }
+        case .weekly:
+            var weekTotals: [String: (tokens: Int, calls: Int)] = [:]
+            for row in base {
+                let comps = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: row.3)
+                let weekKey = "\(comps.yearForWeekOfYear ?? 0)-\(comps.weekOfYear ?? 0)"
+                let current = weekTotals[weekKey] ?? (0, 0)
+                weekTotals[weekKey] = (current.tokens + row.1, current.calls + row.2)
+            }
+            return base.map { row in
+                let comps = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: row.3)
+                let key = "\(comps.yearForWeekOfYear ?? 0)-\(comps.weekOfYear ?? 0)"
+                let total = weekTotals[key] ?? (0, 0)
+                return UsageHeatCell(dateKey: row.0, value: total.tokens, calls: total.calls)
+            }
+        case .cumulative:
+            var tokens = 0
+            var calls = 0
+            return base.map { row in
+                tokens += row.1
+                calls += row.2
+                return UsageHeatCell(dateKey: row.0, value: tokens, calls: calls)
+            }
+        }
+    }
+
+    private func usageHeatColor(ratio: Double, active: Bool) -> Color {
+        guard active else { return Color.secondary.opacity(0.10) }
+        let clamped = max(0.0, min(1.0, ratio))
+        return Color.accentColor.opacity(0.24 + 0.70 * sqrt(clamped))
+    }
+
+    private func usageHeatColor(level: Int) -> Color {
+        guard level > 0 else { return Color.secondary.opacity(0.10) }
+        return Color.accentColor.opacity(0.20 + Double(level) * 0.17)
+    }
+
+    private func usageMetricCard(title: String, value: String, detail: String, symbol: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label(title, systemImage: symbol)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.title3.weight(.semibold))
+                .monospacedDigit()
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func compactNumber(_ value: Int) -> String {
+        let absolute = Double(abs(value))
+        if absolute >= 1_000_000_000 {
+            return String(format: "%.1fB", Double(value) / 1_000_000_000)
+        }
+        if absolute >= 1_000_000 {
+            return String(format: "%.1fM", Double(value) / 1_000_000)
+        }
+        if absolute >= 1_000 {
+            return String(format: "%.1fK", Double(value) / 1_000)
+        }
+        return "\(value)"
+    }
+
+    private func byteText(_ value: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(max(0, value)), countStyle: .file)
+    }
+
+    private func latencyPairText(p50: Int?, p95: Int?) -> String {
+        "\(latencyText(p50)) / \(latencyText(p95))"
+    }
+
+    private func latencyText(_ value: Int?) -> String {
+        guard let value else { return "—" }
+        if value >= 5000 { return "≥5s" }
+        if value >= 1000 {
+            return String(format: "%.1fs", Double(value) / 1000)
+        }
+        return "\(value)ms"
     }
 
     private var browserPane: some View {

@@ -393,6 +393,37 @@ def create_mobile_routes(
             "active": [_safe_event(row) for row in active[:6]],
         })
 
+    async def usage_view(request: Request) -> Response:
+        _session, denied = require_mobile(request)
+        if denied is not None:
+            return denied
+        try:
+            days = int(request.query_params.get("days") or 365)
+        except ValueError:
+            days = 365
+        days = max(1, min(days, 400))
+        actor = str(request.query_params.get("actor") or "all").strip().lower()
+        actor_class = actor if actor in {"primary", "scoped_subagent"} else None
+        try:
+            payload = await asyncio.to_thread(
+                telemetry.usage_summary,
+                days=days,
+                actor_class=actor_class,
+            )
+        except Exception:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "days": days,
+                    "actor_class": actor_class or "all",
+                    "daily": [],
+                    "top_tools": [],
+                    "error": "usage_unavailable",
+                },
+                status_code=503,
+            )
+        return JSONResponse(payload)
+
     async def create_pairing(request: Request) -> Response:
         denied = _management_guard(request, dashboard_token)
         if denied is not None:
@@ -446,6 +477,7 @@ def create_mobile_routes(
         Route("/mobile/api/agents", agents_view, methods=["GET"]),
         Route("/mobile/api/sessions", sessions_view, methods=["GET"]),
         Route("/mobile/api/activity", activity_view, methods=["GET"]),
+        Route("/mobile/api/usage", usage_view, methods=["GET"]),
         Route("/dashboard/api/mobile/pairings", create_pairing, methods=["POST"]),
         Route("/dashboard/api/mobile/devices", devices, methods=["GET"]),
         Route("/dashboard/api/mobile/revoke", revoke, methods=["POST"]),

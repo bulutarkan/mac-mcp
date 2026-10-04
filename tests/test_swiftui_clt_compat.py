@@ -24,7 +24,7 @@ class SwiftUICommandLineToolsCompatibilityTests(unittest.TestCase):
         menu = (SOURCES / "MenuBarView.swift").read_text(encoding="utf-8")
         settings = (SOURCES / "SettingsView.swift").read_text(encoding="utf-8")
         self.assertEqual(8, menu.count("@MacMCPState "))
-        self.assertEqual(7, settings.count("@MacMCPState "))
+        self.assertEqual(9, settings.count("@MacMCPState "))
 
     def test_build_script_compiles_compatibility_source(self) -> None:
         script = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")

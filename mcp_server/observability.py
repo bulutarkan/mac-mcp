@@ -33,6 +33,12 @@ from .tool_cancellation import (
     ToolCancellationContext, current_tool_cancellation, reset_tool_cancellation,
     set_tool_cancellation,
 )
+from .usage_metering import (
+    UsageCollector,
+    UsageSample,
+    ensure_usage_schema,
+    query_usage_summary,
+)
 
 from .policy import (
     PolicyContext,
@@ -299,6 +305,7 @@ class TelemetryManager:
         retention_days: Optional[int] = None,
         max_events: Optional[int] = None,
         preview_chars: Optional[int] = None,
+        usage_enabled: Optional[bool] = None,
     ) -> None:
         self.started_at = time.time()
         telemetry_dir = Path(os.getenv("MAC_MCP_TELEMETRY_DIR", str(DEFAULT_TELEMETRY_DIR))).expanduser()
@@ -315,12 +322,17 @@ class TelemetryManager:
             "MAC_MCP_TELEMETRY_PREVIEW_CHARS", DEFAULT_PREVIEW_CHARS, 256, 40_000
         )
         self._active: Dict[str, Dict[str, Any]] = {}
+        self._usage_arguments: Dict[str, Any] = {}
         self._recent: deque[Dict[str, Any]] = deque(maxlen=RECENT_MEMORY_EVENTS)
         self._subscribers: List[Tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = []
         self._lock = threading.RLock()
         self._writes = 0
         self._summary_cache: Dict[float, tuple[float, int, Dict[str, Any]]] = {}
         self._init_db()
+        # Explicit db_path is primarily used by tests/isolated callers. Keep their
+        # lifecycle deterministic unless usage collection is explicitly requested.
+        effective_usage_enabled = (db_path is None) if usage_enabled is None else bool(usage_enabled)
+        self._usage = UsageCollector(self.db_path, enabled=effective_usage_enabled)
         self._load_recent()
 
     def _connect(self) -> sqlite3.Connection:
@@ -399,6 +411,7 @@ class TelemetryManager:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_time ON security_events(timestamp DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_session ON security_events(session_id, timestamp DESC)")
+        ensure_usage_schema(conn)
 
     def _init_db(self) -> None:
         migrated = False
@@ -497,6 +510,8 @@ class TelemetryManager:
             event[field] = sanitize_value((metadata or {}).get(field), preview_chars=self.preview_chars)
         with self._lock:
             self._active[event_id] = event
+            if str(source or "mcp") == "mcp":
+                self._usage_arguments[event_id] = arguments or {}
         self._publish(event)
         return event_id
 
@@ -508,6 +523,8 @@ class TelemetryManager:
                 event["arguments"] = sanitize_value(
                     sanitize_tool_arguments(tool, arguments), preview_chars=self.preview_chars
                 )
+                if str(event.get("source") or "") == "mcp":
+                    self._usage_arguments[event_id] = arguments
 
     def update_context(
         self,
@@ -537,6 +554,7 @@ class TelemetryManager:
         ended = time.time()
         with self._lock:
             started_event = self._active.pop(event_id, None)
+            usage_arguments = self._usage_arguments.pop(event_id, None)
         if started_event is None:
             return {"event_id": event_id, "status": "unknown"}
         telemetry_result = result
@@ -575,6 +593,23 @@ class TelemetryManager:
             value = (metadata or {}).get(field, started_event.get(field))
             event[field] = sanitize_value(value, preview_chars=self.preview_chars)
         self._insert_event(event)
+        if str(started_event.get("source") or "") == "mcp":
+            actor_class = "scoped_subagent" if str(event.get("agent_id") or "").strip() else "primary"
+            try:
+                self._usage.submit(
+                    UsageSample(
+                        timestamp=ended,
+                        tool=str(event.get("tool") or "unknown"),
+                        actor_class=actor_class,
+                        status=str(event.get("status") or "error"),
+                        duration_ms=int(event.get("duration_ms") or 0),
+                        arguments=usage_arguments if usage_arguments is not None else {},
+                        result=None if error is not None else result,
+                    )
+                )
+            except Exception:
+                # Usage is observability only; never fail a tool because metering failed.
+                pass
         with self._lock:
             self._recent.append(event)
         self._publish(event)
@@ -629,6 +664,25 @@ class TelemetryManager:
                 """,
                 (self.max_events,),
             )
+
+    def wait_usage_idle(self, timeout_s: float = 2.0) -> bool:
+        return self._usage.wait_idle(timeout_s)
+
+    def usage_diagnostics(self) -> Dict[str, Any]:
+        return self._usage.diagnostics()
+
+    def usage_summary(
+        self,
+        *,
+        days: int = 365,
+        actor_class: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return query_usage_summary(
+            self.db_path,
+            days=days,
+            actor_class=actor_class,
+            diagnostics=self._usage.diagnostics(),
+        )
 
     def record_security_event(
         self, *, session_id: Optional[str], event_type: str, tool: Optional[str],

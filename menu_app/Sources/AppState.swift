@@ -5,6 +5,167 @@ import Darwin
 import Foundation
 import SafariServices
 
+struct UsageTotals: Decodable, Equatable {
+    let calls: Int
+    let successCount: Int
+    let errorCount: Int
+    let inputTokens: Int
+    let outputTokens: Int
+    let inputBytes: Int
+    let outputBytes: Int
+    let imageCount: Int
+    let binaryBytes: Int
+    let durationTotalMs: Int
+    let p50LatencyMs: Int?
+    let p95LatencyMs: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case calls
+        case successCount = "success_count"
+        case errorCount = "error_count"
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case inputBytes = "input_bytes"
+        case outputBytes = "output_bytes"
+        case imageCount = "image_count"
+        case binaryBytes = "binary_bytes"
+        case durationTotalMs = "duration_total_ms"
+        case p50LatencyMs = "p50_latency_ms"
+        case p95LatencyMs = "p95_latency_ms"
+    }
+
+    static let empty = UsageTotals(
+        calls: 0, successCount: 0, errorCount: 0,
+        inputTokens: 0, outputTokens: 0, inputBytes: 0, outputBytes: 0,
+        imageCount: 0, binaryBytes: 0, durationTotalMs: 0,
+        p50LatencyMs: nil, p95LatencyMs: nil
+    )
+}
+
+struct UsageDay: Decodable, Identifiable, Equatable {
+    let date: String
+    let calls: Int
+    let successCount: Int
+    let errorCount: Int
+    let inputTokens: Int
+    let outputTokens: Int
+    let inputBytes: Int
+    let outputBytes: Int
+    let imageCount: Int
+    let binaryBytes: Int
+    let durationTotalMs: Int
+    let p50LatencyMs: Int?
+    let p95LatencyMs: Int?
+
+    var id: String { date }
+    var totalTokens: Int { inputTokens + outputTokens }
+
+    enum CodingKeys: String, CodingKey {
+        case date, calls
+        case successCount = "success_count"
+        case errorCount = "error_count"
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case inputBytes = "input_bytes"
+        case outputBytes = "output_bytes"
+        case imageCount = "image_count"
+        case binaryBytes = "binary_bytes"
+        case durationTotalMs = "duration_total_ms"
+        case p50LatencyMs = "p50_latency_ms"
+        case p95LatencyMs = "p95_latency_ms"
+    }
+}
+
+struct UsageTool: Decodable, Identifiable, Equatable {
+    let tool: String
+    let calls: Int
+    let successCount: Int
+    let errorCount: Int
+    let inputTokens: Int
+    let outputTokens: Int
+    let inputBytes: Int
+    let outputBytes: Int
+    let imageCount: Int
+    let binaryBytes: Int
+    let durationTotalMs: Int
+    let p50LatencyMs: Int?
+    let p95LatencyMs: Int?
+
+    var id: String { tool }
+    var totalTokens: Int { inputTokens + outputTokens }
+
+    enum CodingKeys: String, CodingKey {
+        case tool, calls
+        case successCount = "success_count"
+        case errorCount = "error_count"
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case inputBytes = "input_bytes"
+        case outputBytes = "output_bytes"
+        case imageCount = "image_count"
+        case binaryBytes = "binary_bytes"
+        case durationTotalMs = "duration_total_ms"
+        case p50LatencyMs = "p50_latency_ms"
+        case p95LatencyMs = "p95_latency_ms"
+    }
+}
+
+struct UsageDiagnostics: Decodable, Equatable {
+    let enabled: Bool?
+    let queueDepth: Int?
+    let queueCapacity: Int?
+    let queueDropped: Int?
+    let workerErrors: Int?
+    let processed: Int?
+    let workerAlive: Bool?
+    let tokenizerId: String?
+    let measurementClass: String?
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case queueDepth = "queue_depth"
+        case queueCapacity = "queue_capacity"
+        case queueDropped = "queue_dropped"
+        case workerErrors = "worker_errors"
+        case processed
+        case workerAlive = "worker_alive"
+        case tokenizerId = "tokenizer_id"
+        case measurementClass = "measurement_class"
+    }
+}
+
+struct UsageSummaryEnvelope: Decodable, Equatable {
+    let ok: Bool
+    let days: Int
+    let actorClass: String
+    let availableSince: String?
+    let historyCompleteSince: String?
+    let tokenizerId: String
+    let measurementClass: String
+    let metricName: String
+    let metricScope: String
+    let inputDefinition: String
+    let outputDefinition: String
+    let daily: [UsageDay]
+    let totals: UsageTotals
+    let topTools: [UsageTool]
+    let diagnostics: UsageDiagnostics?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, days, daily, totals, diagnostics
+        case actorClass = "actor_class"
+        case availableSince = "available_since"
+        case historyCompleteSince = "history_complete_since"
+        case tokenizerId = "tokenizer_id"
+        case measurementClass = "measurement_class"
+        case metricName = "metric_name"
+        case metricScope = "metric_scope"
+        case inputDefinition = "input_definition"
+        case outputDefinition = "output_definition"
+        case topTools = "top_tools"
+    }
+}
+
 struct DashboardSummary: Decodable {
     let version: String?
     let totalCalls: Int?
@@ -1075,6 +1236,9 @@ final class AppState: ObservableObject {
     @Published var totalCalls = 0
     @Published var successRate = 100.0
     @Published var activeAgents = 0
+    @Published private(set) var usageSummary: UsageSummaryEnvelope?
+    @Published private(set) var usageLoading = false
+    @Published private(set) var usageIssue: String?
     @Published var recentEvents: [ToolEvent] = []
     @Published var activeEvents: [ToolEvent] = []
     @Published var browserActionStatus = ""
@@ -1434,6 +1598,29 @@ final class AppState: ObservableObject {
             return .stale(lastUpdatedAt: updatedAt ?? current.lastUpdatedAt, message: message)
         }
         return .error(message)
+    }
+
+    func refreshUsage(days: Int = 365, actorClass: String = "all") async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else {
+            setIfChanged(\.usageIssue, "Could not load Usage because the server URL is invalid.")
+            return
+        }
+        setIfChanged(\.usageLoading, true)
+        defer { setIfChanged(\.usageLoading, false) }
+        do {
+            let summary: UsageSummaryEnvelope = try await fetch(
+                base.appendingPathComponent("dashboard/api/usage"),
+                query: [
+                    "days": String(max(1, min(days, 400))),
+                    "actor": actorClass,
+                ],
+                timeout: 4.0
+            )
+            setIfChanged(\.usageSummary, summary)
+            setIfChanged(\.usageIssue, nil)
+        } catch {
+            setIfChanged(\.usageIssue, "Could not refresh Usage: \(Self.issueText(for: error))")
+        }
     }
 
     func refreshProviders() async {
