@@ -455,7 +455,9 @@ struct SettingsView: View {
                                     title: "Latency",
                                     value: latencyPairText(
                                         p50: usage.totals.p50LatencyMs,
-                                        p95: usage.totals.p95LatencyMs
+                                        p50Relation: usage.totals.p50LatencyRelation,
+                                        p95: usage.totals.p95LatencyMs,
+                                        p95Relation: usage.totals.p95LatencyRelation
                                     ),
                                     detail: "p50 / p95",
                                     symbol: "timer"
@@ -732,17 +734,22 @@ struct SettingsView: View {
         ByteCountFormatter.string(fromByteCount: Int64(max(0, value)), countStyle: .file)
     }
 
-    private func latencyPairText(p50: Int?, p95: Int?) -> String {
-        "\(latencyText(p50)) / \(latencyText(p95))"
+    private func latencyPairText(
+        p50: Int?,
+        p50Relation: String?,
+        p95: Int?,
+        p95Relation: String?
+    ) -> String {
+        "\(latencyText(p50, relation: p50Relation)) / \(latencyText(p95, relation: p95Relation))"
     }
 
-    private func latencyText(_ value: Int?) -> String {
+    private func latencyText(_ value: Int?, relation: String?) -> String {
         guard let value else { return "—" }
-        if value >= 5000 { return "≥5s" }
+        let prefix = relation == "gte" ? "≥" : (relation == "lt" ? "<" : "")
         if value >= 1000 {
-            return String(format: "%.1fs", Double(value) / 1000)
+            return prefix + String(format: "%.1fs", Double(value) / 1000)
         }
-        return "\(value)ms"
+        return "\(prefix)\(value)ms"
     }
 
     private var browserPane: some View {

@@ -462,17 +462,21 @@ class UsageCollector:
             conn.close()
 
 
-def _latency_percentile(bucket_counts: Mapping[str, int], percentile: float) -> Optional[int]:
+def _latency_percentile(
+    bucket_counts: Mapping[str, int], percentile: float
+) -> tuple[Optional[int], Optional[str]]:
     total = sum(max(0, int(bucket_counts.get(name, 0))) for name, _ in _LATENCY_BUCKETS)
     if total <= 0:
-        return None
+        return None, None
     threshold = max(1, int(math.ceil(total * percentile)))
     seen = 0
     for name, ceiling in _LATENCY_BUCKETS:
         seen += max(0, int(bucket_counts.get(name, 0)))
         if seen >= threshold:
-            return 5000 if ceiling is None else ceiling
-    return 5000
+            if ceiling is None:
+                return 5000, "gte"
+            return int(ceiling), "lt"
+    return 5000, "gte"
 
 
 def query_usage_summary(
@@ -549,6 +553,7 @@ def query_usage_summary(
                 "image_count": 0, "binary_bytes": 0,
                 "duration_total_ms": 0,
                 "p50_latency_ms": None, "p95_latency_ms": None,
+                "p50_latency_relation": None, "p95_latency_relation": None,
             }
         data = {
             key: int(row[key] or 0)
@@ -559,8 +564,12 @@ def query_usage_summary(
             )
         }
         buckets = {name: int(row[f"latency_{name}"] or 0) for name, _ in _LATENCY_BUCKETS}
-        data["p50_latency_ms"] = _latency_percentile(buckets, 0.50)
-        data["p95_latency_ms"] = _latency_percentile(buckets, 0.95)
+        p50_ms, p50_relation = _latency_percentile(buckets, 0.50)
+        p95_ms, p95_relation = _latency_percentile(buckets, 0.95)
+        data["p50_latency_ms"] = p50_ms
+        data["p95_latency_ms"] = p95_ms
+        data["p50_latency_relation"] = p50_relation
+        data["p95_latency_relation"] = p95_relation
         return data
 
     daily = []

@@ -114,6 +114,28 @@ class UsageCollectorTests(unittest.TestCase):
             self.assertEqual(TOKENIZER_ID, persisted["tokenizer_id"])
             self.assertIn("not provider billing", persisted["metric_scope"])
 
+    def test_latency_percentiles_report_histogram_bound_direction(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "telemetry.sqlite3"
+            collector = UsageCollector(db, enabled=True)
+            for latency in (1200, 1300, 1400, 5200):
+                collector.submit(UsageSample(
+                    timestamp=time.time(),
+                    tool="latency_fixture",
+                    actor_class="primary",
+                    status="success",
+                    duration_ms=latency,
+                    arguments={},
+                    result={"ok": True},
+                ))
+            self.assertTrue(collector.wait_idle(3.0))
+            from mcp_server.usage_metering import query_usage_summary
+            totals = query_usage_summary(db, days=1)["totals"]
+            self.assertEqual(5000, totals["p50_latency_ms"])
+            self.assertEqual("lt", totals["p50_latency_relation"])
+            self.assertEqual(5000, totals["p95_latency_ms"])
+            self.assertEqual("gte", totals["p95_latency_relation"])
+
     def test_usage_db_stores_no_raw_prompt_or_result_text(self) -> None:
         secret_in = "usage-secret-input-never-persist"
         secret_out = "usage-secret-output-never-persist"

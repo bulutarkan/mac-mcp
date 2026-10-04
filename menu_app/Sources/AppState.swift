@@ -18,6 +18,8 @@ struct UsageTotals: Decodable, Equatable {
     let durationTotalMs: Int
     let p50LatencyMs: Int?
     let p95LatencyMs: Int?
+    let p50LatencyRelation: String?
+    let p95LatencyRelation: String?
 
     enum CodingKeys: String, CodingKey {
         case calls
@@ -32,13 +34,16 @@ struct UsageTotals: Decodable, Equatable {
         case durationTotalMs = "duration_total_ms"
         case p50LatencyMs = "p50_latency_ms"
         case p95LatencyMs = "p95_latency_ms"
+        case p50LatencyRelation = "p50_latency_relation"
+        case p95LatencyRelation = "p95_latency_relation"
     }
 
     static let empty = UsageTotals(
         calls: 0, successCount: 0, errorCount: 0,
         inputTokens: 0, outputTokens: 0, inputBytes: 0, outputBytes: 0,
         imageCount: 0, binaryBytes: 0, durationTotalMs: 0,
-        p50LatencyMs: nil, p95LatencyMs: nil
+        p50LatencyMs: nil, p95LatencyMs: nil,
+        p50LatencyRelation: nil, p95LatencyRelation: nil
     )
 }
 
