@@ -2,6 +2,7 @@
 
 ## [2.1.7] - 2026-10-01
 
+- Fixed the Operations dashboard right rail so What Changed on My Mac, Hot tools, and Delegated agents remain vertically scrollable when their combined content exceeds the fixed desktop viewport.
 - Added secure paired /mobile access with persistent device sessions, manual pairing, lifecycle-aware Sessions grouping, compact tool-aware icons, and a collapsible idle Agents section.
 - Added durable native update progress/recovery UI backed by the updater journal, including explicit prepare/backup/update/sync/dependency/restart/health phases and distinct recovered/recovery-failed states.
 - Hardened updater/restart process identity, foreign-listener handling, cancellation-surviving restart handoff, transactional dependency activation, and post-update product-health verification.

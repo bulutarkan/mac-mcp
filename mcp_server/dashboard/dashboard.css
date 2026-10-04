@@ -213,7 +213,7 @@ h2 { margin: 0; font-size: 15px; letter-spacing: -.015em; font-weight: 630; }
 .empty-state strong { color: #9fb5c5; font-size: 12px; }
 .empty-state span { max-width: 360px; margin-top: 6px; font-size: 10px; line-height: 1.45; }
 
-.right-rail { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto 146px minmax(0, 1fr); gap: 10px; }
+.right-rail { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto 146px minmax(0, 1fr); gap: 10px; overflow-y: auto; overscroll-behavior-y: contain; padding-right: 2px; }
 .rail-card, .recorder-note { border-radius: var(--radius-lg); }
 .rail-card { min-width: 0; padding: 14px; overflow: hidden; }
 .rail-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 10px; }
