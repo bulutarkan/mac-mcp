@@ -511,6 +511,70 @@ class PlanWaitPipelineTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_browser_observe_wait_until_chains_previous_observation_id(self) -> None:
+        async def run() -> None:
+            calls: list[dict] = []
+            count = 0
+
+            async def caller(tool: str, args: dict):
+                nonlocal count
+                self.assertEqual("browser_observe", tool)
+                calls.append(dict(args))
+                count += 1
+                if count == 1:
+                    return {
+                        "ok": True,
+                        "observation_id": "b1",
+                        "elements": [],
+                    }
+                if count == 2:
+                    self.assertEqual("b1", args.get("previous_observation_id"))
+                    return {
+                        "ok": True,
+                        "state_mode": "not_modified",
+                        "not_modified": True,
+                        "observation_id": "b1",
+                        "previous_observation_id": "b1",
+                    }
+                self.assertEqual("b1", args.get("previous_observation_id"))
+                return {
+                    "ok": True,
+                    "observation_id": "b2",
+                    "elements": [{
+                        "element_id": "e_ready",
+                        "role": "button",
+                        "text": "Ready",
+                    }],
+                }
+
+            result = await execute_computer_plan(
+                caller,
+                plan_version=2,
+                steps=[{
+                    "id": "wait_browser",
+                    "type": "wait_until",
+                    "tool": "browser_observe",
+                    "arguments": {
+                        "browser": "Safari",
+                        "tab_handle": "tab-a",
+                        "scope": "interactive",
+                        "visual": "none",
+                    },
+                    "target": {
+                        "role": "button",
+                        "title": "Ready",
+                    },
+                    "timeout_s": 1.0,
+                    "poll_ms": 20,
+                }],
+            )
+            self.assertTrue(result["ok"])
+            self.assertGreaterEqual(len(calls), 3)
+            self.assertNotIn("previous_observation_id", calls[0])
+            self.assertEqual("b1", calls[1]["previous_observation_id"])
+
+        asyncio.run(run())
+
     def test_native_wait_until_chains_previous_observation_id(self) -> None:
         async def run() -> None:
             calls: list[dict] = []

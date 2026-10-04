@@ -270,9 +270,11 @@ def create_app():
             "Routing order: dedicated semantic tool first, then shell/file API, then browser DOM, with native UI only as a fallback. "
             "Use open_app to launch apps, run_command for shell work, and file tools for filesystem work. "
             "If a dedicated capability is unavailable or policy-denied, do not reproduce the same side effect through Terminal, AppleScript, or generic UI; policy denial is not a fallback reason. "
-            "For browser visual grounding, prefer one browser_observe call with visual='viewport' or visual='full_page'; "
-            "it can target a background tab and returns compact DOM plus MCP image content without focusing the browser. "
-            "Prefer the smallest number of tool calls that safely completes and verifies the task."
+            "Perception ladder: start with mac_snapshot or semantic browser/native observation; reuse previous_observation_id "
+            "for delta/not_modified reads; escalate to targeted element/window visual only when semantic state is insufficient; "
+            "use OCR or full-page/full-screen visual last. For browser visual grounding, prefer visual='element' or 'viewport' "
+            "before visual='full_page'. All visual paths can target background resources without focusing them. "
+            "Prefer the smallest number of tool calls and smallest bounded context that safely completes and verifies the task."
         ),
         streamable_http_path="/mcp",
         stateless_http=False,
@@ -904,7 +906,8 @@ def create_app():
         name="mac_snapshot",
         title="Read Mac Snapshot",
         description=(
-            "Collect a compact read-only Mac context snapshot in parallel. By default returns six bounded sections: "
+            "First rung of the low-context perception pipeline: collect a compact read-only Mac context snapshot in parallel. "
+            "By default returns six bounded sections: "
             "visible apps, frontmost native windows, Finder selected paths/context, Safari/Chrome tabs, clipboard metadata "
             "without clipboard contents, and basic system health. Use sections to request a subset and limits to bound output. "
             "Independent section failures are reported as partial results instead of failing the whole snapshot."
@@ -947,8 +950,10 @@ def create_app():
             "Returns an observation_id, Accessibility tree nodes with element_id, role, "
             "title, value, position, enabled state and supported actions, plus a targeted "
             "native-window image when include_screenshot=true and one stable window is selected. "
+            "Default to semantic-only observation and reuse previous_observation_id before requesting visuals. "
             "window_index=0 retains whole-screen capture. Screenshots are returned as connector-safe "
-            "JPEG image content. Use ocr=true only when Accessibility text is insufficient. "
+            "JPEG image content. OCR is last-resort: when ocr=true but Accessibility already contains semantic text, "
+            "OCR/capture is skipped automatically. "
             "Returns process-bound app_handle and stable window_handle values when the window "
             "can be uniquely identified. Pass observation_id to mac_act; handles are re-resolved "
             "before each action so window reordering cannot silently retarget an element. "
@@ -1240,8 +1245,11 @@ def create_app():
         description=(
             "High-level browser observation. Returns compact DOM with stable e1/e2 IDs; optional JPEG visuals keep the DOM list in the same response. "
             "scope: interactive, visible, content, or leaf; visual: none, viewport, element, or full_page. "
-            "Visual capture is rendered inside the target tab DOM and returned as MCP image content without "
-            "activating Safari/Chrome, switching tabs, scrolling the page, or leaving screenshot files on disk."
+            "Start semantic-only (visual='none'); pass previous_observation_id on repeated reads so unchanged DOM returns "
+            "compact not_modified instead of resending the element list. Escalate to visual='element' or 'viewport' only "
+            "when semantic state is insufficient; reserve full_page for true full-page grounding. Visual capture is rendered "
+            "inside the target tab DOM and returned as MCP image content without activating Safari/Chrome, switching tabs, "
+            "scrolling the page, or leaving screenshot files on disk."
         ),
         annotations=ToolAnnotations(
             readOnlyHint=True,
@@ -1254,13 +1262,15 @@ def create_app():
     def _browser_observe(browser: str, window_index: int = 1, tab_index: Optional[int] = None,
                          tab_handle: Optional[str] = None,
                          scope: str = "interactive", max_elements: int = 40,
-                         visual: str = "none", element_id: Optional[str] = None) -> Any:
+                         visual: str = "none", element_id: Optional[str] = None,
+                         previous_observation_id: Optional[str] = None) -> Any:
         return _log(
             audit_logger, "browser_observe",
             lambda: browser_observe(settings, browser=browser, window_index=window_index,
                                     tab_index=tab_index, tab_handle=tab_handle,
                                     scope=scope, max_elements=max_elements,
-                                    visual=visual, element_id=element_id),
+                                    visual=visual, element_id=element_id,
+                                    previous_observation_id=previous_observation_id),
         )
 
     @mcp.tool(

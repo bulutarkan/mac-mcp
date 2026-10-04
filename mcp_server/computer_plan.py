@@ -975,7 +975,7 @@ async def _execute_wait_until(
         if tool_name == "browser_find" and "wait_timeout_s" not in arguments:
             arguments["wait_timeout_s"] = min(60.0, remaining_s)
         if (
-            tool_name == "mac_observe"
+            tool_name in {"mac_observe", "browser_observe"}
             and "previous_observation_id" not in arguments
             and isinstance(last_payload, Mapping)
             and last_payload.get("observation_id")

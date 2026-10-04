@@ -6,6 +6,7 @@ from typing import Callable
 from unittest.mock import patch
 
 from . import agent_admission, browser_tabs
+from .perception import PERCEPTION_LADDER, finalize_perception_telemetry
 from .diagnostics import FAIL, PASS, WARN, CheckResult, build_report, result
 from .tools_browser import browser_activate_tab, browser_coordinate_click, browser_open_url, browser_press_key
 from . import computer_plan
@@ -16,13 +17,14 @@ from .tools_browser_agent import (
     _wait_for_element_readiness,
     _event_wait_js,
     browser_act,
+    browser_observe,
 )
 from .tools_ui import (
     _delegated_native_human_guard, _native_action_focus_policy, _observation_script,
     _semantic_text_write, act_ui, observe_ui,
 )
 
-CONFORMANCE_BASELINE_VERSION = 7
+CONFORMANCE_BASELINE_VERSION = 8
 
 
 def _contract(
@@ -290,6 +292,42 @@ def _event_delta_pipeline_contract_present() -> bool:
     )
 
 
+def _perception_ladder_contract_present() -> bool:
+    browser_signature = inspect.signature(browser_observe)
+    plan_source = inspect.getsource(computer_plan)
+    return (
+        tuple(PERCEPTION_LADDER)
+        == ("snapshot", "semantic", "conditional", "targeted_visual", "ocr_full_visual")
+        and "previous_observation_id" in browser_signature.parameters
+        and browser_signature.parameters["visual"].default == "none"
+        and "previous_observation_id" in inspect.signature(observe_ui).parameters
+        and 'tool_name in {"mac_observe", "browser_observe"}' in plan_source
+    )
+
+
+def _bounded_perception_telemetry_contract_present() -> bool:
+    payload = {"ok": True, "telemetry": {}}
+    finalize_perception_telemetry(
+        payload,
+        stage="semantic",
+        state_mode="full",
+        node_count=1,
+        duration_ms=1,
+        context_budget_bytes=4096,
+    )
+    telemetry = payload.get("telemetry") or {}
+    context = telemetry.get("context_budget") or {}
+    native_source = inspect.getsource(observe_ui)
+    return (
+        int(telemetry.get("payload_bytes") or 0) > 0
+        and int(telemetry.get("payload_tokens_estimate") or 0) > 0
+        and telemetry.get("node_count") == 1
+        and context.get("limit_bytes") == 4096
+        and "ocr" in inspect.signature(observe_ui).parameters
+        and "previous_observation_id" in native_source
+    )
+
+
 def deterministic_checks() -> list[CheckResult]:
     specs = [
         ("browser.background_open_default", "Browser URL opens default to background/non-focus-stealing mode.", _background_open_default, True),
@@ -316,6 +354,8 @@ def deterministic_checks() -> list[CheckResult]:
         ("workspace.human_priority", "Delegated browser/native mutations yield when the user owns the visible target, including mid-action takeover races.", _workspace_human_priority_contract_present, True),
         ("workspace.resource_lease_contract", "Interactive resource leases expose generation/activity/mode semantics and preserve read-read sharing with write exclusion.", _workspace_resource_lease_contract_present, None),
         ("observe.event_delta_pipeline", "Browser waits prefer event wakeups with bounded fallback and native observe exposes opt-in conditional delta/not-modified reads.", _event_delta_pipeline_contract_present, True),
+        ("observe.perception_ladder", "Computer perception is semantic-first, reuses conditional observations, and escalates to targeted visual/OCR only as needed.", _perception_ladder_contract_present, True),
+        ("observe.bounded_context_telemetry", "Perception results expose bounded payload/token/node metadata without raw-content telemetry.", _bounded_perception_telemetry_contract_present, None),
     ]
     return [_contract(check_id, summary, probe, focus_safe=focus_safe) for check_id, summary, probe, focus_safe in specs]
 

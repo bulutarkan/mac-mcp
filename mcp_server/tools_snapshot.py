@@ -12,6 +12,7 @@ from .tools_browser import browser_list_tabs
 from .tools_macos import get_running_apps
 from .tools_terminal import get_system_info
 from .tools_ui import _scan_native_windows
+from .perception import finalize_perception_telemetry, json_bytes, refresh_perception_size
 
 
 DEFAULT_SECTIONS = ("apps", "windows", "selected_context", "browser_tabs", "clipboard", "system")
@@ -237,6 +238,24 @@ def _with_output_bytes(payload: Dict[str, Any]) -> Dict[str, Any]:
         payload["output_bytes"] = measured
     return payload
 
+def _stabilize_snapshot_sizes(payload: Dict[str, Any]) -> Dict[str, Any]:
+    # output_bytes and perception payload_bytes both describe the final JSON.
+    # Iterate them together because each field contributes a few bytes itself.
+    for _ in range(8):
+        refresh_perception_size(payload)
+        _with_output_bytes(payload)
+        measured = _json_bytes(payload)
+        telemetry = payload.setdefault("telemetry", {})
+        if (
+            int(payload.get("output_bytes") or 0) == measured
+            and int(telemetry.get("payload_bytes") or 0) == measured
+        ):
+            break
+        payload["output_bytes"] = measured
+        telemetry["payload_bytes"] = measured
+    return payload
+
+
 def _fit_snapshot(payload: Dict[str, Any], budget_bytes: int) -> Dict[str, Any]:
     budget = max(4_096, min(int(budget_bytes), _MAX_OUTPUT_BUDGET))
     candidate = _with_output_bytes(dict(payload))
@@ -260,6 +279,23 @@ def _fit_snapshot(payload: Dict[str, Any], budget_bytes: int) -> Dict[str, Any]:
             compact_sections[name]["data_omitted"] = True
     out["sections"] = compact_sections
     return _with_output_bytes(out)
+
+
+def _snapshot_item_count(sections: Dict[str, Dict[str, Any]]) -> int:
+    total = 0
+    for row in sections.values():
+        if not isinstance(row, dict) or not row.get("ok"):
+            continue
+        data = row.get("data")
+        if isinstance(data, dict):
+            count = data.get("count")
+            if isinstance(count, int):
+                total += max(0, count)
+            elif isinstance(data.get("tabs"), list):
+                total += len(data["tabs"])
+            else:
+                total += 1
+    return total
 
 
 def unified_read_snapshot(
@@ -318,4 +354,25 @@ def unified_read_snapshot(
         "sections": ordered,
         "limits": limits,
     }
-    return _fit_snapshot(payload, max_output_bytes)
+    item_count = _snapshot_item_count(ordered)
+    finalize_perception_telemetry(
+        payload,
+        stage="snapshot",
+        state_mode="snapshot",
+        node_count=item_count,
+        duration_ms=int(payload["duration_ms"]),
+        context_budget_bytes=max_output_bytes,
+    )
+    fitted = _fit_snapshot(payload, max_output_bytes)
+    if fitted.get("output_truncated"):
+        telemetry = fitted.setdefault("telemetry", {})
+        context = telemetry.setdefault("context_budget", {})
+        context["truncated"] = True
+        context["expand_hint"] = (
+            "Request fewer snapshot sections or raise max_output_bytes within the bounded limit."
+        )
+        refresh_perception_size(fitted)
+        if json_bytes(fitted) > max(4_096, min(int(max_output_bytes), _MAX_OUTPUT_BUDGET)):
+            fitted = _fit_snapshot(fitted, max_output_bytes)
+    _stabilize_snapshot_sizes(fitted)
+    return fitted

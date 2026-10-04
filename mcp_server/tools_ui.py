@@ -42,6 +42,7 @@ from .native_targets import (
 from .native_window_capture import resolve_window_id as _resolve_native_window_id
 from .security import Settings, truncate
 from .computer_use_perf import record_computer_use_sample
+from .perception import finalize_perception_telemetry, refresh_perception_size
 from .clipboard_guard import ClipboardBusyError, clipboard_guard
 from .tool_cancellation import (
     ToolCancelledError, cancellable_sleep, cancellation_checkpoint, cancellation_cleanup_scope,
@@ -150,6 +151,14 @@ _RISKY_WORDS = {
 
 _OBSERVATIONS: Dict[str, Dict[str, Any]] = {}
 _OBSERVATIONS_LOCK = threading.Lock()
+
+
+def _observation_owner_key() -> str:
+    identity = delegated_agent_identity()
+    if identity is None:
+        return "local"
+    agent_id = str(identity.get("agent_id") or "").strip()
+    return f"agent:{agent_id}" if agent_id else "local"
 
 
 def _operation_timeout(deadline: Optional[float], fallback_s: float) -> float:
@@ -595,6 +604,40 @@ return outputText
 '''
 
 
+def _image_dimensions(path: str, timeout_s: float = 2.0) -> Tuple[Optional[int], Optional[int]]:
+    executable = shutil.which("sips") or "/usr/bin/sips"
+    if not Path(executable).exists():
+        return None, None
+    try:
+        proc = subprocess.run(
+            [executable, "-g", "pixelWidth", "-g", "pixelHeight", path],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=max(0.2, min(float(timeout_s), 5.0)),
+            check=False,
+        )
+    except Exception:
+        return None, None
+    if proc.returncode != 0:
+        return None, None
+    width = height = None
+    for line in (proc.stdout or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("pixelWidth:"):
+            try:
+                width = int(stripped.split(":", 1)[1].strip())
+            except ValueError:
+                pass
+        elif stripped.startswith("pixelHeight:"):
+            try:
+                height = int(stripped.split(":", 1)[1].strip())
+            except ValueError:
+                pass
+    return width, height
+
+
 def _capture_screen(timeout_s: float = 15) -> Tuple[Optional[bytes], Optional[str]]:
     fd, path = tempfile.mkstemp(prefix="mac-mcp-screen-", suffix=".jpg")
     os.close(fd)
@@ -715,6 +758,10 @@ def _capture_window(
         remaining = timeout_s - (time.monotonic() - started)
         if remaining > 0.1:
             _resize_screenshot(path, min(5.0, remaining))
+        output_width, output_height = _image_dimensions(path)
+        if output_width is not None and output_height is not None:
+            metadata["output_width"] = output_width
+            metadata["output_height"] = output_height
         data = Path(path).read_bytes()
         if not data:
             metadata["reason_code"] = "WINDOW_CAPTURE_EMPTY"
@@ -812,7 +859,6 @@ def _native_child_state_signature(
             "role": str(row.get("role") or ""),
             "subrole": str(row.get("subrole") or ""),
             "title": str(row.get("title") or ""),
-            "description": str(row.get("description") or ""),
             "value": str(row.get("value") or ""),
             "enabled": bool(row.get("enabled", False)),
             "focused": bool(row.get("focused", False)),
@@ -964,6 +1010,231 @@ tell application "System Events"
 end tell'''
 
 
+def _fingerprint_observation_script(
+    app: Optional[str],
+    window_index: int,
+    max_depth: int,
+    max_children: int,
+    max_nodes: int,
+    *,
+    app_pid: Optional[int] = None,
+) -> str:
+    if app_pid is not None:
+        app_selection = f"set p to first application process whose unix id is {int(app_pid)}"
+    else:
+        app_selection = (
+            "set p to first application process whose frontmost is true"
+            if app is None
+            else f"set p to first application process whose name is {_apple_string(app)}"
+        )
+    return f"""
+on cleanFpText(v, fs, rs)
+    set t to v as text
+    set AppleScript's text item delimiters to fs
+    set parts to text items of t
+    set AppleScript's text item delimiters to " "
+    set t to parts as text
+    set AppleScript's text item delimiters to rs
+    set parts to text items of t
+    set AppleScript's text item delimiters to " "
+    set t to parts as text
+    set AppleScript's text item delimiters to ""
+    return t
+end cleanFpText
+
+using terms from application "System Events"
+on fpNodeRecord(nodeRef, nodeId, parentId, fs, rs)
+    set roleText to ""
+    set subroleText to ""
+    set titleText to ""
+    set valueText to ""
+    set enabledText to "false"
+    set focusedText to "false"
+    set identifierText to ""
+    set childCountText to "0"
+    tell application "System Events"
+        try
+            set roleText to role of nodeRef as text
+        end try
+        try
+            set subroleText to subrole of nodeRef as text
+        end try
+        try
+            set titleText to title of nodeRef as text
+        end try
+        try
+            set valueText to value of nodeRef as text
+        end try
+        if roleText contains "SecureText" or subroleText contains "Secure" then set valueText to "[redacted]"
+        try
+            set enabledText to enabled of nodeRef as text
+        end try
+        try
+            set focusedText to focused of nodeRef as text
+        end try
+        try
+            set identifierText to value of attribute "AXIdentifier" of nodeRef as text
+        end try
+        try
+            set childCountText to count of UI elements of nodeRef as text
+        end try
+    end tell
+    return "__FPNODE__" & fs & my cleanFpText(nodeId, fs, rs) & fs & ¬
+        my cleanFpText(parentId, fs, rs) & fs & my cleanFpText(roleText, fs, rs) & fs & ¬
+        my cleanFpText(subroleText, fs, rs) & fs & my cleanFpText(titleText, fs, rs) & fs & ¬
+        my cleanFpText(valueText, fs, rs) & fs & my cleanFpText(enabledText, fs, rs) & fs & ¬
+        my cleanFpText(focusedText, fs, rs) & fs & my cleanFpText(identifierText, fs, rs) & fs & ¬
+        my cleanFpText(childCountText, fs, rs)
+end fpNodeRecord
+
+on walkFpNode(nodeRef, nodeId, parentId, depth, maxDepth, maxChildren, maxNodes, recordList, counter, fs, rs)
+    if (item 1 of counter) is greater than or equal to maxNodes then return
+    set item 1 of counter to ((item 1 of counter) + 1)
+    set end of recordList to my fpNodeRecord(nodeRef, nodeId, parentId, fs, rs)
+    if depth is greater than or equal to maxDepth then return
+    tell application "System Events"
+        try
+            set children to UI elements of nodeRef
+            set childIndex to 1
+            repeat with childItem in children
+                if childIndex is greater than maxChildren then exit repeat
+                if (item 1 of counter) is greater than or equal to maxNodes then exit repeat
+                set childRef to contents of childItem
+                my walkFpNode(childRef, nodeId & "/" & childIndex, nodeId, depth + 1, maxDepth, maxChildren, maxNodes, recordList, counter, fs, rs)
+                set childIndex to childIndex + 1
+            end repeat
+        end try
+    end tell
+end walkFpNode
+end using terms from
+
+set fs to character id 31
+set rs to character id 30
+set windowIndex to {int(window_index)}
+set maxDepth to {int(max_depth)}
+set maxChildren to {int(max_children)}
+set maxNodes to {int(max_nodes)}
+set recordList to {{}}
+set counter to {{0}}
+
+tell application "System Events"
+    {app_selection}
+    set pidText to ""
+    try
+        set pidText to unix id of p as text
+    end try
+    set wc to count of windows of p
+    if windowIndex is less than 1 or windowIndex is greater than wc then return ""
+    set w to window windowIndex of p
+    set titleText to ""
+    set documentText to ""
+    set identifierText to ""
+    set xText to ""
+    set yText to ""
+    set widthText to ""
+    set heightText to ""
+    set subroleText to ""
+    set focusedText to "false"
+    set mainText to "false"
+    set childCountText to "0"
+    try
+        set titleText to title of w as text
+    end try
+    try
+        set documentText to value of attribute "AXDocument" of w as text
+    end try
+    try
+        set identifierText to value of attribute "AXIdentifier" of w as text
+    end try
+    try
+        set wp to position of w
+        set xText to item 1 of wp as text
+        set yText to item 2 of wp as text
+    end try
+    try
+        set ws to size of w
+        set widthText to item 1 of ws as text
+        set heightText to item 2 of ws as text
+    end try
+    try
+        set subroleText to subrole of w as text
+    end try
+    try
+        set focusedText to value of attribute "AXFocused" of w as text
+    end try
+    try
+        set mainText to value of attribute "AXMain" of w as text
+    end try
+    try
+        set childCountText to count of UI elements of w as text
+    end try
+end tell
+
+set end of recordList to "__FPMETA__" & fs & pidText & fs & (wc as text) & fs & (windowIndex as text) & fs & ¬
+    my cleanFpText(titleText, fs, rs) & fs & my cleanFpText(documentText, fs, rs) & fs & ¬
+    my cleanFpText(identifierText, fs, rs) & fs & xText & fs & yText & fs & widthText & fs & heightText & fs & ¬
+    my cleanFpText(subroleText, fs, rs) & fs & focusedText & fs & mainText & fs & childCountText
+my walkFpNode(w, "w" & windowIndex, "", 0, maxDepth, maxChildren, maxNodes, recordList, counter, fs, rs)
+
+set AppleScript's text item delimiters to rs
+set outputText to recordList as text
+set AppleScript's text item delimiters to ""
+return outputText
+"""
+
+
+def _parse_fingerprint_observation(raw: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    metadata: Dict[str, Any] = {"windows": []}
+    nodes: List[Dict[str, Any]] = []
+
+    def num(value: str) -> Optional[int]:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return None
+
+    for record in str(raw or "").split(_RECORD_SEPARATOR):
+        if not record:
+            continue
+        fields = record.split(_FIELD_SEPARATOR)
+        if not fields:
+            continue
+        if fields[0] == "__FPMETA__" and len(fields) >= 15:
+            window = {
+                "index": num(fields[3]) or 0,
+                "title": fields[4],
+                "document": fields[5],
+                "identifier": fields[6],
+                "position": {
+                    "x": num(fields[7]), "y": num(fields[8]),
+                    "width": num(fields[9]), "height": num(fields[10]),
+                },
+                "subrole": fields[11],
+                "focused": str(fields[12]).lower() == "true",
+                "main": str(fields[13]).lower() == "true",
+            }
+            metadata.update({
+                "pid": num(fields[1]) or 0,
+                "window_count": num(fields[2]) or 0,
+                "windows": [window],
+            })
+            continue
+        if fields[0] == "__FPNODE__" and len(fields) >= 11:
+            nodes.append({
+                "element_id": fields[1],
+                "parent_id": fields[2] or None,
+                "role": fields[3],
+                "subrole": fields[4],
+                "title": fields[5],
+                "value": fields[6],
+                "enabled": str(fields[7]).lower() == "true",
+                "focused": str(fields[8]).lower() == "true",
+                "identifier": fields[9],
+                "child_count": num(fields[10]) or 0,
+            })
+    return metadata, nodes
+
+
 def _probe_native_observation_fingerprint(
     app: Optional[str],
     window_index: int,
@@ -975,20 +1246,34 @@ def _probe_native_observation_fingerprint(
 ) -> Tuple[Optional[str], Optional[str]]:
     probe_depth = max(0, min(int(max_depth), _NATIVE_FINGERPRINT_STATE_DEPTH))
     probe_children = max(1, min(int(max_children), _NATIVE_FINGERPRINT_STATE_MAX_CHILDREN))
-    ok, raw, error = _run_osascript(
-        _observation_script(
+    if int(window_index) <= 0:
+        script = _observation_script(
             app,
             window_index,
             probe_depth,
             probe_children,
             max_nodes=_NATIVE_FINGERPRINT_STATE_MAX_NODES,
             app_pid=app_pid,
-        ),
+        )
+        parser = _parse_observation
+    else:
+        script = _fingerprint_observation_script(
+            app,
+            window_index,
+            probe_depth,
+            probe_children,
+            _NATIVE_FINGERPRINT_STATE_MAX_NODES,
+            app_pid=app_pid,
+        )
+        parser = _parse_fingerprint_observation
+
+    ok, raw, error = _run_osascript(
+        script,
         timeout_s=_operation_timeout(deadline, 5),
     )
     if not ok:
         return None, error or "native fingerprint probe failed"
-    metadata, nodes = _parse_observation(str(raw or ""))
+    metadata, nodes = parser(str(raw or ""))
     if not metadata.get("windows"):
         return None, "invalid native fingerprint payload"
     components = _native_fingerprint_components(
@@ -1056,16 +1341,28 @@ def _native_not_modified_payload(
             "mime_type": None,
         },
     }
-    payload["telemetry"]["payload_bytes"] = len(
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    finalize_perception_telemetry(
+        payload,
+        stage="conditional",
+        state_mode="not_modified",
+        node_count=0,
+        duration_ms=int(duration_ms),
+        context_budget_bytes=64_000,
     )
-    payload["telemetry"]["benchmark"] = record_computer_use_sample(
+    metrics = payload["telemetry"]
+    metrics["cached_node_count"] = len(previous.get("nodes") or {})
+    metrics["benchmark"] = record_computer_use_sample(
         "native_observe",
         duration_ms=int(duration_ms),
-        payload_bytes=int(payload["telemetry"]["payload_bytes"]),
+        payload_bytes=int(metrics.get("payload_bytes") or 0),
+        payload_tokens_estimate=int(metrics.get("payload_tokens_estimate") or 0),
         remote_js_calls=0,
         ax_traversals=int(ax_traversals),
+        visual_bytes=0,
+        node_count=0,
+        state_mode="not_modified",
     )
+    refresh_perception_size(payload)
     return payload
 
 
@@ -1085,6 +1382,7 @@ def _save_observation(
     window_handles = _window_handle_map(metadata)
     with _OBSERVATIONS_LOCK:
         _OBSERVATIONS[observation_id] = {
+            "owner_key": _observation_owner_key(),
             "active_app": active_app,
             "app_handle": metadata.get("app_handle"),
             "app_pid": metadata.get("pid"),
@@ -1118,6 +1416,9 @@ def _get_observation(observation_id: str) -> Optional[Dict[str, Any]]:
     with _OBSERVATIONS_LOCK:
         observation = _OBSERVATIONS.get(observation_id)
         if observation is None:
+            return None
+        owner_key = str(observation.get("owner_key") or "local")
+        if owner_key != _observation_owner_key():
             return None
         if time.time() - float(observation.get("created_at", 0)) > _OBSERVATION_TTL_S:
             _OBSERVATIONS.pop(observation_id, None)
@@ -1192,6 +1493,8 @@ def _store_derived_observation(
     with _OBSERVATIONS_LOCK:
         base = _OBSERVATIONS.get(base_observation_id)
         if base is None or now - float(base.get("created_at", 0)) > _OBSERVATION_TTL_S:
+            return None, None
+        if str(base.get("owner_key") or "local") != _observation_owner_key():
             return None, None
         derived = copy.deepcopy(base)
         nodes = dict(derived.get("nodes") or {})
@@ -1382,6 +1685,32 @@ def _format_result(payload: Dict[str, Any], image_data: Optional[bytes] = None) 
     return text
 
 
+def _native_semantic_text_available(nodes: List[Dict[str, Any]]) -> bool:
+    for node in nodes:
+        for key in ("title", "description", "value"):
+            value = node.get(key)
+            if isinstance(value, str) and value.strip():
+                return True
+    return False
+
+
+def _native_context_truncated(
+    nodes: List[Dict[str, Any]],
+    *,
+    max_depth: int,
+    max_children: int,
+) -> bool:
+    for node in nodes:
+        child_count = int(node.get("child_count") or 0)
+        if child_count > int(max_children):
+            return True
+        element_id = str(node.get("element_id") or "")
+        depth = element_id.count("/")
+        if child_count > 0 and depth >= int(max_depth):
+            return True
+    return False
+
+
 def _collect_observation(
     settings: Settings,
     app: Optional[str],
@@ -1440,13 +1769,15 @@ def _collect_observation(
     )
 
     selected_handle = selected_window.get("window_handle") if selected_window else None
+    semantic_text_available = _native_semantic_text_available(nodes)
+    ocr_should_run = bool(ocr and not semantic_text_available)
     image_data: Optional[bytes] = None
     screenshot_error: Optional[str] = None
     screenshot_details: Dict[str, Any] = {
         "scope": "window" if selected_window is not None else "screen",
         "capture_method": None,
     }
-    if include_screenshot or ocr:
+    if include_screenshot or ocr_should_run:
         capture_started = time.monotonic()
         try:
             if selected_window is not None:
@@ -1514,7 +1845,15 @@ def _collect_observation(
         payload["screenshot"]["error"] = screenshot_error
 
     if ocr:
-        if image_data:
+        if semantic_text_available:
+            payload["ocr"] = {
+                "requested": True,
+                "ok": True,
+                "skipped": True,
+                "reason": "semantic_text_available",
+                "text": "",
+            }
+        elif image_data:
             try:
                 ocr_text, ocr_error = _ocr_image(
                     image_data, _operation_timeout(local_deadline, 15)
@@ -1524,6 +1863,7 @@ def _collect_observation(
             payload["ocr"] = {
                 "requested": True,
                 "ok": ocr_error is None,
+                "skipped": False,
                 "text": ocr_text or "",
             }
             if ocr_error:
@@ -1532,18 +1872,42 @@ def _collect_observation(
             payload["ocr"] = {
                 "requested": True,
                 "ok": False,
+                "skipped": False,
                 "text": "",
                 "error": screenshot_error or "OCR could not capture the screen",
             }
 
-    if image_data:
-        payload["telemetry"]["visual_bytes"] = len(image_data)
     if screenshot_details.get("capture_duration_ms") is not None:
         payload["telemetry"]["capture_duration_ms"] = int(
             screenshot_details["capture_duration_ms"]
         )
-    payload["telemetry"]["payload_bytes"] = len(
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    context_truncated = _native_context_truncated(
+        nodes,
+        max_depth=max_depth,
+        max_children=max_children,
+    )
+    expand_hint = None
+    if context_truncated:
+        expand_hint = (
+            "Target the specific window/element or increase max_depth/max_children within bounded limits."
+        )
+    stage = (
+        "ocr_full_visual"
+        if bool(ocr and ocr_should_run)
+        else ("targeted_visual" if include_screenshot else "semantic")
+    )
+    finalize_perception_telemetry(
+        payload,
+        stage=stage,
+        state_mode="full",
+        node_count=len(nodes),
+        visual_bytes=len(image_data) if image_data else 0,
+        visual_width=screenshot_details.get("output_width"),
+        visual_height=screenshot_details.get("output_height"),
+        ocr_used=bool(ocr and ocr_should_run and image_data),
+        context_budget_bytes=64_000,
+        context_truncated=context_truncated,
+        expand_hint=expand_hint,
     )
     return payload, image_data if include_screenshot else None
 
@@ -1635,9 +1999,14 @@ def observe_ui(
                     "native_observe",
                     duration_ms=elapsed_ms,
                     payload_bytes=int(payload["telemetry"].get("payload_bytes") or 0),
+                    payload_tokens_estimate=int(payload["telemetry"].get("payload_tokens_estimate") or 0),
                     remote_js_calls=0,
                     ax_traversals=int(payload["telemetry"].get("ax_traversals") or 1),
+                    visual_bytes=int(payload["telemetry"].get("visual_bytes") or 0),
+                    node_count=int(payload["telemetry"].get("node_count") or 0),
+                    state_mode=str(payload["telemetry"].get("state_mode") or payload.get("state_mode") or "full"),
                 )
+                refresh_perception_size(payload)
             return _format_result(payload, image_data)
 
         new_observation_id = str(payload.get("observation_id") or "")
@@ -1695,16 +2064,28 @@ def observe_ui(
                     "mime_type": None,
                 },
             }
-            delta_payload["telemetry"]["payload_bytes"] = len(
-                json.dumps(delta_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            )
-            delta_payload["telemetry"]["benchmark"] = record_computer_use_sample(
-                "native_observe",
+            finalize_perception_telemetry(
+                delta_payload,
+                stage="conditional",
+                state_mode="delta",
+                node_count=int(delta_payload.get("delta", {}).get("changed_count") or 0)
+                    + int(delta_payload.get("delta", {}).get("added_count") or 0),
                 duration_ms=int(delta_payload["telemetry"]["duration_ms"]),
-                payload_bytes=int(delta_payload["telemetry"]["payload_bytes"]),
+                context_budget_bytes=64_000,
+            )
+            metrics = delta_payload["telemetry"]
+            metrics["benchmark"] = record_computer_use_sample(
+                "native_observe",
+                duration_ms=int(metrics.get("duration_ms") or 0),
+                payload_bytes=int(metrics.get("payload_bytes") or 0),
+                payload_tokens_estimate=int(metrics.get("payload_tokens_estimate") or 0),
                 remote_js_calls=0,
                 ax_traversals=1,
+                visual_bytes=0,
+                node_count=int(metrics.get("node_count") or 0),
+                state_mode="delta",
             )
+            refresh_perception_size(delta_payload)
             return _format_result(delta_payload)
 
         payload["state_mode"] = "full"
@@ -1712,16 +2093,37 @@ def observe_ui(
         payload["structural_refresh"] = True
         payload.setdefault("telemetry", {})["payload_mode"] = "full"
         payload["telemetry"]["duration_ms"] = int((time.perf_counter() - started) * 1000)
-        payload["telemetry"]["payload_bytes"] = len(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        )
-        payload["telemetry"]["benchmark"] = record_computer_use_sample(
-            "native_observe",
+        # _collect_observation already attached semantic/visual metadata; refresh
+        # timing and benchmark after marking this as a structural full refresh.
+        finalize_perception_telemetry(
+            payload,
+            stage=str(payload["telemetry"].get("perception_stage") or "semantic"),
+            state_mode="full",
+            node_count=int(payload.get("node_count") or 0),
             duration_ms=int(payload["telemetry"]["duration_ms"]),
-            payload_bytes=int(payload["telemetry"]["payload_bytes"]),
+            visual_bytes=int(payload["telemetry"].get("visual_bytes") or 0),
+            visual_width=((payload["telemetry"].get("visual_dimensions") or {}).get("width")),
+            visual_height=((payload["telemetry"].get("visual_dimensions") or {}).get("height")),
+            ocr_used=bool(payload["telemetry"].get("ocr_used")),
+            context_budget_bytes=64_000,
+            context_truncated=bool(
+                (payload["telemetry"].get("context_budget") or {}).get("truncated")
+            ),
+            expand_hint=(payload["telemetry"].get("context_budget") or {}).get("expand_hint"),
+        )
+        metrics = payload["telemetry"]
+        metrics["benchmark"] = record_computer_use_sample(
+            "native_observe",
+            duration_ms=int(metrics.get("duration_ms") or 0),
+            payload_bytes=int(metrics.get("payload_bytes") or 0),
+            payload_tokens_estimate=int(metrics.get("payload_tokens_estimate") or 0),
             remote_js_calls=0,
             ax_traversals=1,
+            visual_bytes=int(metrics.get("visual_bytes") or 0),
+            node_count=int(metrics.get("node_count") or 0),
+            state_mode="full",
         )
+        refresh_perception_size(payload)
         return _format_result(payload, image_data)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}

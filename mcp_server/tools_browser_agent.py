@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import unicodedata
 import uuid
@@ -17,9 +18,11 @@ from mcp.server.fastmcp.utilities.types import Image
 
 from .security import Settings, truncate
 from .computer_use_perf import record_computer_use_sample
+from .perception import finalize_perception_telemetry, refresh_perception_size
 from . import browser_tabs
 from .chrome_background_bridge import chrome_background_bridge
 from .tool_cancellation import cancellable_sleep, cancellation_checkpoint
+from .workspace_arbitration import delegated_agent_identity
 from .tools_browser import (
     _execute_js_for_target,
     _norm_browser,
@@ -39,6 +42,37 @@ _DEFAULT_OBSERVE_ELEMENTS = 40
 _MAX_ACTIONS = 20
 _VISUAL_MODES = {"none", "viewport", "element", "full_page"}
 _RETURN_STATE_MODES = {"none", "compact", "full"}
+
+_BROWSER_OBSERVATION_OWNER_LOCK = threading.RLock()
+_BROWSER_OBSERVATION_OWNERS: Dict[str, str] = {}
+_MAX_BROWSER_OBSERVATION_OWNERS = 512
+
+
+def _perception_owner_key() -> str:
+    identity = delegated_agent_identity()
+    if identity is None:
+        return "local"
+    agent_id = str(identity.get("agent_id") or "").strip()
+    return f"agent:{agent_id}" if agent_id else "local"
+
+
+def _remember_browser_observation(observation_id: Optional[str]) -> None:
+    key = str(observation_id or "").strip()
+    if not key:
+        return
+    with _BROWSER_OBSERVATION_OWNER_LOCK:
+        _BROWSER_OBSERVATION_OWNERS[key] = _perception_owner_key()
+        while len(_BROWSER_OBSERVATION_OWNERS) > _MAX_BROWSER_OBSERVATION_OWNERS:
+            oldest = next(iter(_BROWSER_OBSERVATION_OWNERS))
+            _BROWSER_OBSERVATION_OWNERS.pop(oldest, None)
+
+
+def _browser_observation_owned_by_current(observation_id: Optional[str]) -> bool:
+    key = str(observation_id or "").strip()
+    if not key:
+        return False
+    with _BROWSER_OBSERVATION_OWNER_LOCK:
+        return _BROWSER_OBSERVATION_OWNERS.get(key) == _perception_owner_key()
 _VISUAL_ENSURE_CACHE: Dict[Tuple[str, str, str], float] = {}
 _VISUAL_ENSURE_TTL_S = 12.0
 _DOM_RASTERIZER_PATH = Path(__file__).resolve().parent / "vendor" / "html2canvas.min.js"
@@ -655,7 +689,8 @@ function __mcpStartMutationWatch(s,ttl){
 }
 function __mcpState(){
   var s=window.__macMcpBrowserAgent;
-  if(!s){var stableAt=Date.now();try{var nav=performance.getEntriesByType&&performance.getEntriesByType('navigation')[0];if(document.readyState==='complete'&&nav&&nav.loadEventEnd>0&&performance.now()-nav.loadEventEnd>=300)stableAt=Date.now()-1000;}catch(e){}s=window.__macMcpBrowserAgent={counter:0,ids:new WeakMap(),elements:Object.create(null),pageToken:Math.random().toString(36).slice(2,10),mutationRevision:0,lastMutationAt:stableAt,observations:Object.create(null),rootObservers:[],observerTimer:null};}
+  if(!s){var stableAt=Date.now();try{var nav=performance.getEntriesByType&&performance.getEntriesByType('navigation')[0];if(document.readyState==='complete'&&nav&&nav.loadEventEnd>0&&performance.now()-nav.loadEventEnd>=300)stableAt=Date.now()-1000;}catch(e){}s=window.__macMcpBrowserAgent={counter:0,ids:new WeakMap(),elements:Object.create(null),pageToken:Math.random().toString(36).slice(2,10),mutationRevision:0,lastMutationAt:stableAt,observations:Object.create(null),observationMeta:Object.create(null),rootObservers:[],observerTimer:null};}
+if(!s.observationMeta)s.observationMeta=Object.create(null);
   return s;
 }
 function __mcpVisualTarget(el){
@@ -1021,6 +1056,7 @@ for(var i=0;i<all.length && elements.length<{max_elements};i++){{
 }}
 var obs='bobs_'+s.pageToken+'_'+Date.now().toString(36);
 s.observations[obs]=s.mutationRevision;
+s.observationMeta[obs]={{scope:scope,max_elements:{max_elements}}};
 var metrics={{screenX:screenX,screenY:screenY,outerWidth:outerWidth,outerHeight:outerHeight,innerWidth:innerWidth,innerHeight:innerHeight,devicePixelRatio:devicePixelRatio}};
 return __mcpB64({{
   ok:true, observation_id:obs, dom_revision:s.mutationRevision,
@@ -1031,19 +1067,52 @@ return __mcpB64({{
 }})()'''
 
 
+def _conditional_observe_js(
+    previous_observation_id: str,
+    scope: str,
+    max_elements: int,
+) -> str:
+    previous = json.dumps(str(previous_observation_id or ""))
+    wanted_scope = json.dumps(str(scope or "interactive"))
+    wanted_max = max(1, min(int(max_elements), _MAX_OBSERVE_ELEMENTS))
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var s=__mcpState(),prev={previous};
+var known=Object.prototype.hasOwnProperty.call(s.observations,prev);
+var meta=known&&s.observationMeta?s.observationMeta[prev]:null;
+var compatible=!!(meta&&String(meta.scope||'')==={wanted_scope}&&Number(meta.max_elements||0)==={wanted_max});
+var previousRevision=known?Number(s.observations[prev]):null;
+var currentRevision=Number(s.mutationRevision||0);
+return __mcpB64({{
+  ok:true,
+  known:known,
+  compatible:compatible,
+  not_modified:known&&compatible&&previousRevision===currentRevision,
+  previous_observation_id:prev,
+  dom_revision:currentRevision,
+  url:String(location.href),
+  title:String(document.title)
+}});
+}})()'''
+
+
 def _observe_payload(
     settings: Settings, browser: str, scope: str, max_elements: int,
     window_index: int, tab_index: Optional[int], tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     requested = max_elements
     attempt = max_elements
+    remote_js_calls = 0
     while True:
         try:
+            remote_js_calls += 1
             payload = _run_json_js(
                 settings, browser, _observe_js(scope, attempt),
                 window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
             )
             payload["requested_max_elements"] = requested
+            payload["_remote_js_calls"] = remote_js_calls
             if attempt != requested:
                 payload["payload_limited"] = True
                 payload["effective_max_elements"] = attempt
@@ -1126,6 +1195,10 @@ def _format_observation(payload: Dict[str, Any], image_data: Optional[bytes]) ->
             "viewport": payload.get("viewport"),
             "scroll": payload.get("scroll"),
             "duration_ms": payload.get("duration_ms"),
+            "state_mode": payload.get("state_mode"),
+            "not_modified": payload.get("not_modified"),
+            "previous_observation_id": payload.get("previous_observation_id"),
+            "telemetry": payload.get("telemetry"),
             "visual": {
                 "mode": visual.get("mode"),
                 "w": visual.get("output_width"),
@@ -1150,6 +1223,7 @@ def browser_observe(
     max_elements: int = _DEFAULT_OBSERVE_ELEMENTS,
     visual: str = "none",
     element_id: Optional[str] = None,
+    previous_observation_id: Optional[str] = None,
 ) -> Any:
     """Compact DOM observation with stable element IDs and optional background-safe page image."""
     b = _norm_browser(browser)
@@ -1172,6 +1246,7 @@ def browser_observe(
             max_elements=max_elements,
             visual=visual,
             element_id=element_id,
+            previous_observation_id=previous_observation_id,
         )
         lease_meta = {"lease_generation": target.lease_generation}
         if target.lease_rebound:
@@ -1183,6 +1258,8 @@ def browser_observe(
                 return observed
             if isinstance(payload, dict):
                 payload.update(lease_meta)
+                if isinstance(payload.get("telemetry"), dict):
+                    refresh_perception_size(payload)
                 return json.dumps(payload, ensure_ascii=False, indent=2)
         if isinstance(observed, list) and observed and isinstance(observed[0], str):
             try:
@@ -1191,6 +1268,8 @@ def browser_observe(
                 return observed
             if isinstance(payload, dict):
                 payload.update(lease_meta)
+                if isinstance(payload.get("telemetry"), dict):
+                    refresh_perception_size(payload)
                 observed = list(observed)
                 observed[0] = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         return observed
@@ -1206,6 +1285,7 @@ def _browser_observe_locked(
     max_elements: int = _DEFAULT_OBSERVE_ELEMENTS,
     visual: str = "none",
     element_id: Optional[str] = None,
+    previous_observation_id: Optional[str] = None,
 ) -> Any:
     _norm_browser(browser)
     window_index, tab_index = _resolve_tab_target(browser, tab_handle, window_index, tab_index)
@@ -1217,6 +1297,74 @@ def _browser_observe_locked(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "visual must be none, viewport, element, or full_page.")
     max_elements = max(1, min(int(max_elements), _MAX_OBSERVE_ELEMENTS))
     started = time.perf_counter()
+    conditional_js_calls = 0
+    if (
+        previous_observation_id
+        and visual == "none"
+        and _browser_observation_owned_by_current(previous_observation_id)
+    ):
+        conditional_js_calls = 1
+        conditional = _run_json_js(
+            settings,
+            browser,
+            _conditional_observe_js(
+                previous_observation_id,
+                scope,
+                max_elements,
+            ),
+            window_index=window_index,
+            tab_index=tab_index,
+            tab_handle=tab_handle,
+        )
+        if bool(conditional.get("known")) and bool(conditional.get("not_modified")):
+            out: Dict[str, Any] = {
+                "ok": True,
+                "state_mode": "not_modified",
+                "not_modified": True,
+                "observation_id": str(previous_observation_id),
+                "previous_observation_id": str(previous_observation_id),
+                "dom_revision": conditional.get("dom_revision"),
+                "url": conditional.get("url"),
+                "title": conditional.get("title"),
+                "element_count": 0,
+                "elements": [],
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+                "cache_validation": "dom_mutation_revision",
+                "telemetry": {
+                    "remote_js_calls": 1,
+                    "payload_mode": "not_modified",
+                },
+            }
+            finalize_perception_telemetry(
+                out,
+                stage="conditional",
+                state_mode="not_modified",
+                node_count=0,
+                duration_ms=int(out["duration_ms"]),
+                context_budget_bytes=64_000,
+            )
+            metrics = out["telemetry"]
+            metrics["benchmark"] = record_computer_use_sample(
+                "browser_observe",
+                duration_ms=int(metrics.get("duration_ms") or 0),
+                payload_bytes=int(metrics.get("payload_bytes") or 0),
+                payload_tokens_estimate=int(metrics.get("payload_tokens_estimate") or 0),
+                remote_js_calls=1,
+                ax_traversals=0,
+                visual_bytes=0,
+                node_count=0,
+                state_mode="not_modified",
+            )
+            finalize_perception_telemetry(
+                out,
+                stage="conditional",
+                state_mode="not_modified",
+                node_count=0,
+                duration_ms=int(out["duration_ms"]),
+                context_budget_bytes=64_000,
+            )
+            return _format_observation(out, None)
+
     payload = _observe_payload(
         settings,
         browser,
@@ -1227,6 +1375,7 @@ def _browser_observe_locked(
         tab_handle=tab_handle,
     )
     payload["duration_ms"] = int((time.perf_counter() - started) * 1000)
+    _remember_browser_observation(payload.get("observation_id"))
 
     image_data: Optional[bytes] = None
     if visual != "none":
@@ -1273,6 +1422,64 @@ def _browser_observe_locked(
                 payload["visual"][key] = capture_meta[key]
         if image_error:
             payload["visual"]["error"] = image_error
+
+    payload["state_mode"] = "full"
+    payload["not_modified"] = False
+    if previous_observation_id:
+        payload["previous_observation_id"] = str(previous_observation_id)
+    remote_js_calls = int(payload.pop("_remote_js_calls", 1) or 1) + conditional_js_calls
+    visual_meta = payload.get("visual") if isinstance(payload.get("visual"), dict) else {}
+    visual_bytes = int((visual_meta or {}).get("bytes") or (len(image_data) if image_data else 0))
+    context_truncated = bool(payload.get("payload_limited"))
+    expand_hint = None
+    if context_truncated:
+        expand_hint = (
+            "Use browser_find for a targeted semantic scan or request a smaller scope/max_elements; "
+            "use visual='element' only for the specific element that needs visual grounding."
+        )
+    finalize_perception_telemetry(
+        payload,
+        stage="targeted_visual" if visual != "none" else "semantic",
+        state_mode="full",
+        node_count=int(payload.get("element_count") or len(payload.get("elements") or [])),
+        duration_ms=int(payload.get("duration_ms") or 0),
+        visual_bytes=visual_bytes,
+        visual_width=(visual_meta or {}).get("output_width"),
+        visual_height=(visual_meta or {}).get("output_height"),
+        ocr_used=False,
+        context_budget_bytes=64_000,
+        context_truncated=context_truncated,
+        expand_hint=expand_hint,
+    )
+    metrics = payload["telemetry"]
+    metrics["remote_js_calls"] = remote_js_calls
+    if visual_meta.get("elapsed_ms") is not None:
+        metrics["capture_duration_ms"] = int(visual_meta.get("elapsed_ms") or 0)
+    metrics["benchmark"] = record_computer_use_sample(
+        "browser_observe",
+        duration_ms=int(metrics.get("duration_ms") or 0),
+        payload_bytes=int(metrics.get("payload_bytes") or 0),
+        payload_tokens_estimate=int(metrics.get("payload_tokens_estimate") or 0),
+        remote_js_calls=remote_js_calls,
+        ax_traversals=0,
+        visual_bytes=visual_bytes,
+        node_count=int(metrics.get("node_count") or 0),
+        state_mode="full",
+    )
+    finalize_perception_telemetry(
+        payload,
+        stage="targeted_visual" if visual != "none" else "semantic",
+        state_mode="full",
+        node_count=int(payload.get("element_count") or len(payload.get("elements") or [])),
+        duration_ms=int(payload.get("duration_ms") or 0),
+        visual_bytes=visual_bytes,
+        visual_width=(visual_meta or {}).get("output_width"),
+        visual_height=(visual_meta or {}).get("output_height"),
+        ocr_used=False,
+        context_budget_bytes=64_000,
+        context_truncated=context_truncated,
+        expand_hint=expand_hint,
+    )
     return _format_observation(payload, image_data)
 
 
