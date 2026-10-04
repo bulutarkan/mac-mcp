@@ -52,6 +52,7 @@ from .context_handoff import (
     HandoffError, mark_handoff_consumed, resolve_mail_attachment_handoff,
     resolve_mail_text_handoff, resolve_native_file_handoff, resolve_native_text_handoff,
 )
+from .foreground_guard import current_foreground_authorization
 
 
 _FIELD_SEPARATOR = chr(31)
@@ -71,6 +72,22 @@ _ACTION_BUDGET_S = 60
 _SCREENSHOT_FORMAT = "jpeg"
 _SCREENSHOT_MAX_DIMENSION = 1600
 _SCREENSHOT_MAX_BYTES = 600_000
+
+_NATIVE_ACTION_TYPES = {
+    "click", "double_click", "scroll",
+    "type", "type_text", "paste",
+    "key", "keyboard", "shortcut",
+    "action", "accessibility_action", "menu",
+    "drag", "file_dialog",
+    "handoff_mail_text", "handoff_mail_attachment",
+}
+
+
+class NativeForegroundRequiredError(RuntimeError):
+    def __init__(self, message: str, *, semantic_reason: str = "") -> None:
+        super().__init__(message)
+        self.semantic_reason = semantic_reason
+
 
 _KEY_CODES: Dict[str, int] = {
     "return": 36,
@@ -1908,25 +1925,40 @@ end tell''',
     return False, verify_error or "Previous focus could not be verified after restoration.", exact_window
 
 
-def _action_requires_foreground(action: Dict[str, Any]) -> bool:
+def _native_input_mode(action: Dict[str, Any]) -> str:
+    mode = str(action.get("input_mode") or "auto").strip().lower().replace("-", "_")
+    if mode not in {"auto", "semantic", "foreground"}:
+        raise ValueError("input_mode must be 'auto', 'semantic', or 'foreground'")
+    return mode
+
+
+def _native_action_focus_policy(action: Dict[str, Any]) -> str:
     action_type = str(action.get("type") or "").strip().lower().replace("-", "_")
     element_id = action.get("element_id")
+    if action_type in {"type", "type_text", "paste"} and element_id is not None:
+        return "foreground_required" if _native_input_mode(action) == "foreground" else "background_semantic"
     if action_type in {"click", "double_click"}:
         try:
             click_count = int(action.get("click_count", 2 if action_type == "double_click" else 1))
         except (TypeError, ValueError):
-            return True
+            return "foreground_required"
         button = str(action.get("button", "left")).lower()
-        return not (element_id is not None and action_type == "click" and click_count == 1 and button == "left")
+        if element_id is not None and action_type == "click" and click_count == 1 and button == "left":
+            return "background_ax"
+        return "foreground_required"
     if action_type == "scroll":
-        return element_id is None
-    if action_type in {"action", "accessibility_action", "menu", "handoff_mail_text", "handoff_mail_attachment"}:
-        return False
-    if action_type in {"type", "type_text", "paste", "key", "keyboard", "shortcut", "file_dialog"}:
-        return True
-    if action_type == "drag":
-        return True
-    return True
+        return "background_ax" if element_id is not None else "foreground_required"
+    if action_type in {"action", "accessibility_action", "menu"}:
+        return "background_ax"
+    if action_type in {"handoff_mail_text", "handoff_mail_attachment"}:
+        return "background_verified_adapter"
+    if action_type in {"key", "keyboard", "shortcut", "file_dialog", "drag"}:
+        return "foreground_required"
+    return "unsupported"
+
+
+def _action_requires_foreground(action: Dict[str, Any]) -> bool:
+    return _native_action_focus_policy(action) == "foreground_required"
 
 
 def _focus_transition_needed(context: Dict[str, Any], target: Dict[str, Any]) -> bool:
@@ -2854,7 +2886,7 @@ def _get_clipboard(deadline: Optional[float] = None) -> Tuple[Optional[str], Opt
     return stdout or "", None
 
 
-def _paste_text(
+def _paste_text_foreground(
     app: str,
     element_id: str,
     text: str,
@@ -2894,7 +2926,70 @@ def _paste_text(
         return False, "system clipboard is busy; retry the paste"
 
 
-def _type_text(
+def _paste_text(
+    app: str,
+    element_id: str,
+    text: str,
+    deadline: Optional[float] = None,
+    app_pid: Optional[int] = None,
+    activate_target: bool = True,
+) -> Tuple[bool, str]:
+    """Backward-compatible trusted foreground clipboard helper.
+
+    Normal mac_act paste actions do not call this helper unless a trusted
+    foreground capability has already authorized input_mode='foreground'.
+    """
+    return _paste_text_foreground(
+        app,
+        element_id,
+        text,
+        deadline,
+        app_pid,
+        activate_target,
+    )
+
+
+def _semantic_text_write(
+    app: str,
+    element_id: str,
+    text: str,
+    *,
+    replace: bool,
+    deadline: Optional[float] = None,
+    app_pid: Optional[int] = None,
+) -> Tuple[bool, str]:
+    attribute = "AXValue" if replace else "AXSelectedText"
+    operation = "replace" if replace else "insert"
+    body = f"""
+        set attributeNames to name of attributes of targetElement
+        if attributeNames does not contain {_apple_string(attribute)} then
+            error "semantic_attribute_unavailable:{attribute}"
+        end if
+        set value of attribute {_apple_string(attribute)} of targetElement to {_apple_string(text)}
+    """
+    ok, _, error = _run_osascript(
+        _target_script(
+            app,
+            element_id,
+            body,
+            activate=False,
+            app_pid=app_pid,
+        ),
+        timeout_s=_operation_timeout(deadline, 30),
+    )
+    if ok:
+        return True, f"text {operation} completed via {attribute} without foreground focus"
+    raise NativeForegroundRequiredError(
+        (
+            f"Background semantic text {operation} is unavailable for this element. "
+            "A trusted local foreground capability is required for keyboard/clipboard fallback; "
+            "normal MCP/model parameters cannot authorize it."
+        ),
+        semantic_reason=(error or f"{attribute}_set_failed"),
+    )
+
+
+def _type_text_foreground(
     app: str,
     element_id: str,
     text: str,
@@ -2923,7 +3018,7 @@ def _type_text(
     )
     if ok:
         return True, "text typed"
-    pasted, paste_error = _paste_text(app, element_id, text, deadline, app_pid, activate_target)
+    pasted, paste_error = _paste_text_foreground(app, element_id, text, deadline, app_pid, activate_target)
     return pasted, paste_error if not pasted else "text pasted as typing fallback"
 
 
@@ -3219,7 +3314,19 @@ def _perform_action(
             raise ValueError("text must be a string")
         if len(text) > _MAX_TEXT_CHARS:
             raise ValueError(f"text must be at most {_MAX_TEXT_CHARS} characters")
-        return _type_text(app, element_id, text, bool(action.get("clear", True)), deadline, app_pid, activate_target)
+        clear = bool(action.get("clear", True))
+        if _native_input_mode(action) == "foreground":
+            return _type_text_foreground(
+                app, element_id, text, clear, deadline, app_pid, activate_target
+            )
+        return _semantic_text_write(
+            app,
+            element_id,
+            text,
+            replace=clear,
+            deadline=deadline,
+            app_pid=app_pid,
+        )
     if action_type == "paste":
         element_id = _validate_element_id(action.get("element_id"))
         text = action.get("text", "")
@@ -3227,7 +3334,18 @@ def _perform_action(
             raise ValueError("text must be a string")
         if len(text) > _MAX_TEXT_CHARS:
             raise ValueError(f"text must be at most {_MAX_TEXT_CHARS} characters")
-        return _paste_text(app, element_id, text, deadline, app_pid, activate_target)
+        if _native_input_mode(action) == "foreground":
+            return _paste_text_foreground(
+                app, element_id, text, deadline, app_pid, activate_target
+            )
+        return _semantic_text_write(
+            app,
+            element_id,
+            text,
+            replace=False,
+            deadline=deadline,
+            app_pid=app_pid,
+        )
     if action_type in {"key", "keyboard", "shortcut"}:
         return _key(app, action.get("key"), action.get("modifiers", []), deadline, app_pid, activate_target)
     if action_type in {"action", "accessibility_action", "menu"}:
@@ -3419,7 +3537,31 @@ def act_ui(
                 return {"ok": False, "error": f"actions[{index}] must be an object"}
 
             action_type = str(action.get("type", "")).strip().lower().replace("-", "_")
+            if action_type not in _NATIVE_ACTION_TYPES:
+                return _native_target_error(
+                    "UNSUPPORTED_NATIVE_ACTION",
+                    (
+                        f"Unsupported action type '{action_type or '<empty>'}'. "
+                        "Use click, double_click, scroll, type, paste, key/shortcut, drag, "
+                        "accessibility_action/menu, file_dialog, or a verified handoff action."
+                    ),
+                    actions=results,
+                    failed_action_index=index,
+                    retryable=False,
+                    focus_mode="unsupported",
+                )
+
             original_element_id = action.get("element_id")
+            if action_type in {"type", "type_text", "paste"} and original_element_id is None:
+                return _native_target_error(
+                    "ELEMENT_ID_REQUIRED",
+                    f"actions[{index}].element_id is required for semantic text input.",
+                    actions=results,
+                    failed_action_index=index,
+                    retryable=False,
+                    focus_mode="unsupported",
+                )
+
             node = None
             if original_element_id is not None:
                 original_element_id = _validate_element_id(original_element_id)
@@ -3605,17 +3747,76 @@ def act_ui(
                     }
 
             focus_context: Optional[Dict[str, Any]] = None
-            focus_required = _action_requires_foreground(resolved_action)
+            try:
+                focus_policy = _native_action_focus_policy(resolved_action)
+            except ValueError as exc:
+                failed = {
+                    "index": index,
+                    "type": action_type,
+                    "element_id": original_element_id,
+                    "ok": False,
+                    "error": str(exc),
+                    "reason_code": "INVALID_NATIVE_INPUT_MODE",
+                    "retryable": False,
+                    "app_handle": target.get("app_handle"),
+                    "window_handle": target.get("window_handle"),
+                    "resolved_window_index": target.get("window_index"),
+                }
+                results.append(failed)
+                return _native_target_error(
+                    "INVALID_NATIVE_INPUT_MODE",
+                    str(exc),
+                    actions=results,
+                    failed_action_index=index,
+                    retryable=False,
+                )
+
+            focus_required = focus_policy == "foreground_required"
+            foreground_grant = current_foreground_authorization()
+            if focus_required and foreground_grant is None:
+                failed = {
+                    "index": index,
+                    "type": action_type,
+                    "element_id": original_element_id,
+                    "ok": False,
+                    "error": "foreground_required",
+                    "reason_code": "FOREGROUND_REQUIRED",
+                    "retryable": False,
+                    "foreground_required": True,
+                    "focus_mode": "foreground_required",
+                    "app_handle": target.get("app_handle"),
+                    "window_handle": target.get("window_handle"),
+                    "resolved_window_index": target.get("window_index"),
+                    "message": (
+                        "This native action requires foreground keyboard/pointer control. "
+                        "Normal MCP/model calls cannot authorize a focus change. "
+                        "Use a semantic element-targeted action, or an explicit trusted local-user foreground action."
+                    ),
+                }
+                results.append(failed)
+                return _native_target_error(
+                    "FOREGROUND_REQUIRED",
+                    failed["message"],
+                    actions=results,
+                    failed_action_index=index,
+                    retryable=False,
+                    foreground_required=True,
+                    focus_mode="foreground_required",
+                )
+
             focus_transition = False
-            activate_target = True
-            focus_mode = "foreground_allowed"
+            activate_target = bool(focus_required)
+            focus_mode = focus_policy
             focus_restore_attempted = False
             focus_restore_ok: Optional[bool] = None
             focus_restore_exact = False
             focus_restore_message: Optional[str] = None
             focus_user_changed = False
+            # Background actions are always focus-guarded. preserve_focus only
+            # controls whether an explicitly authorized foreground action is restored.
+            focus_guard_active = (not focus_required) or bool(preserve_focus)
 
-            if preserve_focus:
+            if focus_guard_active:
                 focus_context, focus_error = _capture_focus_context(deadline)
                 if focus_context is None:
                     return _native_target_error(
@@ -3638,14 +3839,15 @@ def act_ui(
                         failed_action_index=index,
                         retryable=False,
                     )
-                activate_target = bool(focus_required)
-                focus_mode = "temporary_foreground_restore" if focus_required and focus_transition else (
-                    "foreground_same_target" if focus_required else "background_ax"
-                )
+                if focus_required:
+                    focus_mode = "temporary_foreground_restore" if focus_transition else "foreground_same_target"
+            elif focus_required:
+                focus_mode = "foreground_authorized"
 
             started = time.perf_counter()
             timed_out = False
             cancel_exc: Optional[ToolCancelledError] = None
+            foreground_required_exc: Optional[NativeForegroundRequiredError] = None
             dialog_details: Optional[Dict[str, Any]] = None
             handoff_details: Optional[Dict[str, Any]] = None
             try:
@@ -3699,6 +3901,9 @@ def act_ui(
                         int(target["pid"]) if target.get("pid") else None,
                         activate_target,
                     )
+            except NativeForegroundRequiredError as exc:
+                ok, message = False, str(exc)
+                foreground_required_exc = exc
             except ToolCancelledError as exc:
                 ok, message = False, str(exc)
                 cancel_exc = exc
@@ -3714,7 +3919,7 @@ def act_ui(
             except ValueError as exc:
                 ok, message = False, str(exc)
 
-            if preserve_focus and focus_context is not None:
+            if focus_guard_active and focus_context is not None:
                 with cancellation_cleanup_scope() if cancel_exc is not None else nullcontext():
                     focus_decision, focus_decision_error = _post_action_focus_decision(
                         focus_context, target, deadline
@@ -3759,8 +3964,17 @@ def act_ui(
                 "resolved_window_index": target.get("window_index"),
                 "focus_mode": focus_mode,
                 "preserve_focus": bool(preserve_focus),
+                "focus_guard_active": bool(focus_guard_active),
             }
-            if preserve_focus:
+            if foreground_grant is not None and focus_required:
+                result["foreground_authorization_source"] = foreground_grant.source
+            if foreground_required_exc is not None:
+                result["reason_code"] = "FOREGROUND_REQUIRED"
+                result["foreground_required"] = True
+                result["automatic_retry"] = False
+                if foreground_required_exc.semantic_reason:
+                    result["semantic_reason"] = foreground_required_exc.semantic_reason
+            if focus_guard_active:
                 result["focus_preserved"] = focus_restore_ok is True
                 result["focus_restore_attempted"] = focus_restore_attempted
                 if focus_user_changed:
@@ -3865,7 +4079,7 @@ def act_ui(
                 delta_structural_refresh = True
                 delta_refresh_reasons.append("unbound_action_effect")
 
-            if preserve_focus and focus_restore_ok is False:
+            if focus_guard_active and focus_restore_ok is False:
                 result.update({
                     "ok": False,
                     "error": "focus_restore_failed",

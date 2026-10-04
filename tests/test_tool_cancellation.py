@@ -15,6 +15,7 @@ from mcp_server import tools_agents as agents
 from mcp_server import tools_browser_agent as browser_agent
 from mcp_server import tools_jobs, tools_ui
 from mcp_server.observability import ObservedFastMCP, TelemetryManager
+from mcp_server.foreground_guard import foreground_authorization
 from mcp_server.policy import PolicyContext
 from mcp_server.security import load_settings
 from mcp_server.tool_cancellation import (
@@ -224,9 +225,9 @@ class CancellationPrimitiveTests(unittest.TestCase):
             def restore(*args, **kwargs):
                 restored["count"] += 1
                 return True, "previous focus restored", True
-            with patch.object(tools_ui, "_resolve_action_native_target", return_value=(target, None)), \
+            with foreground_authorization("test_native_cancel"), \
+                 patch.object(tools_ui, "_resolve_action_native_target", return_value=(target, None)), \
                  patch.object(tools_ui, "_capture_focus_context", return_value=(focus_context, None)), \
-                 patch.object(tools_ui, "_action_requires_foreground", return_value=True), \
                  patch.object(tools_ui, "_focus_transition_needed", return_value=True), \
                  patch.object(tools_ui, "_perform_action", side_effect=cancel_action), \
                  patch.object(tools_ui, "_post_action_focus_decision", return_value=("restore", None)), \

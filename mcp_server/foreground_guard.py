@@ -23,11 +23,11 @@ _CURRENT_FOREGROUND_AUTHORIZATION: contextvars.ContextVar[Optional[ForegroundAut
 
 @contextmanager
 def foreground_authorization(source: str) -> Iterator[ForegroundAuthorization]:
-    """Grant foreground browser capability only inside one trusted internal call scope.
+    """Grant foreground UI capability only inside one trusted internal call scope.
 
     This helper is intentionally not exposed as an MCP/REST tool. Model-visible
-    booleans such as allow_foreground are request intent only and cannot mint this
-    capability.
+    flags such as allow_foreground, preserve_focus, or native input_mode express
+    request intent only and cannot mint this capability.
     """
     normalized = str(source or "").strip()
     if not normalized:

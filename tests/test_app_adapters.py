@@ -15,6 +15,7 @@ from mcp_server.app_adapters import (
     supported_actions,
 )
 from mcp_server.computer_plan import execute_computer_plan
+from mcp_server.foreground_guard import foreground_authorization
 from mcp_server.policy import evaluate_profile, resolve_risk
 
 
@@ -69,6 +70,51 @@ class AdapterRegistryTests(unittest.TestCase):
         self.assertTrue(evaluate_profile("standard", action).allowed)
         self.assertFalse(evaluate_profile("read_only", action).allowed)
         self.assertFalse(action.destructive)
+
+    def test_model_cannot_disable_focus_guard_for_mutating_adapter(self) -> None:
+        with patch("mcp_server.app_adapters._run") as run:
+            result = mac_app(
+                SETTINGS,
+                app="Notes",
+                action="open_note",
+                item_id="note-1",
+                preserve_focus=False,
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual("FOREGROUND_REQUIRED", result["reason_code"])
+        self.assertTrue(result["foreground_required"])
+        self.assertFalse(result["retryable"])
+        run.assert_not_called()
+
+    def test_read_adapter_does_not_treat_preserve_focus_false_as_escalation(self) -> None:
+        raw = f"note-1{_US}Fixture{_US}Tests"
+        with patch("mcp_server.app_adapters._run", return_value=raw) as run:
+            result = mac_app(
+                SETTINGS,
+                app="Notes",
+                action="find_notes",
+                query="Fixture",
+                preserve_focus=False,
+            )
+        self.assertTrue(result["ok"])
+        run.assert_called_once()
+
+    def test_trusted_foreground_capability_can_disable_adapter_restore(self) -> None:
+        raw = f"OK{_US}note-1{_US}Fixture"
+        with foreground_authorization("test_mac_app_foreground"),              patch("mcp_server.app_adapters._run", return_value=raw),              patch("mcp_server.app_adapters._focus_begin", return_value=None) as begin,              patch("mcp_server.app_adapters._focus_finish", return_value={"status": "not_requested"}):
+            result = mac_app(
+                SETTINGS,
+                app="Notes",
+                action="open_note",
+                item_id="note-1",
+                preserve_focus=False,
+            )
+        self.assertTrue(result["ok"])
+        begin.assert_called_once_with(False, unittest.mock.ANY)
+        self.assertEqual(
+            "test_mac_app_foreground",
+            result["foreground_authorization_source"],
+        )
 
     def test_computer_plan_accepts_mac_app_as_nested_step(self) -> None:
         async def run() -> None:

@@ -14,7 +14,7 @@ class ComputerUseConformanceTests(unittest.TestCase):
         report = conformance.run_conformance()
         self.assertTrue(report["ok"], report)
         self.assertGreaterEqual(report["deterministic_check_count"], 10)
-        self.assertLessEqual(report["deterministic_check_count"], 20)
+        self.assertLessEqual(report["deterministic_check_count"], 24)
         self.assertEqual(report["metrics"]["deterministic_pass_rate"], 100.0)
         self.assertEqual(report["metrics"]["focus_safety_regressions"], 0)
         self.assertGreaterEqual(report["metrics"]["focus_safe_contracts"], 4)
@@ -27,8 +27,10 @@ class ComputerUseConformanceTests(unittest.TestCase):
         self.assertIn("browser.activate_tab_user_gate", ids)
         self.assertIn("computer_plan.closed_loop_recovery", ids)
         self.assertIn("native.semantic_identity", ids)
+        self.assertIn("native.background_semantic_input", ids)
+        self.assertIn("native.foreground_capability", ids)
         self.assertIn("observe.event_delta_pipeline", ids)
-        self.assertEqual(report["baseline_version"], 5)
+        self.assertEqual(report["baseline_version"], 6)
 
     def test_regression_flips_report_red(self) -> None:
         with patch("mcp_server.conformance._background_open_default", return_value=False):

@@ -17,9 +17,11 @@ from .tools_browser_agent import (
     _event_wait_js,
     browser_act,
 )
-from .tools_ui import _observation_script, observe_ui
+from .tools_ui import (
+    _native_action_focus_policy, _observation_script, _semantic_text_write, act_ui, observe_ui,
+)
 
-CONFORMANCE_BASELINE_VERSION = 5
+CONFORMANCE_BASELINE_VERSION = 6
 
 
 def _contract(
@@ -209,6 +211,38 @@ def _native_semantic_identity_contract_present() -> bool:
     )
 
 
+def _native_background_semantic_input_contract_present() -> bool:
+    replace_policy = _native_action_focus_policy({
+        "type": "type", "element_id": "w1/1", "text": "x", "clear": True,
+    })
+    insert_policy = _native_action_focus_policy({
+        "type": "paste", "element_id": "w1/1", "text": "x",
+    })
+    source = inspect.getsource(_semantic_text_write)
+    return (
+        replace_policy == "background_semantic"
+        and insert_policy == "background_semantic"
+        and 'attribute = "AXValue" if replace else "AXSelectedText"' in source
+        and "activate=False" in source
+    )
+
+
+def _native_foreground_self_escalation_blocked() -> bool:
+    policy = _native_action_focus_policy({
+        "type": "type",
+        "element_id": "w1/1",
+        "text": "x",
+        "input_mode": "foreground",
+    })
+    source = inspect.getsource(act_ui)
+    return (
+        policy == "foreground_required"
+        and "current_foreground_authorization()" in source
+        and '"FOREGROUND_REQUIRED"' in source
+        and "preserve_focus" in source
+    )
+
+
 def _event_delta_pipeline_contract_present() -> bool:
     browser_source = _event_wait_js(
         {"for": "selector", "selector": "#ready", "timeout_s": 1.0},
@@ -246,6 +280,8 @@ def deterministic_checks() -> list[CheckResult]:
         ("browser.batch_bounds", "Browser action batches have an explicit bounded action limit.", _batch_action_limit_present, None),
         ("computer_plan.closed_loop_recovery", "Composite computer plans expose bounded fail-closed recovery, semantic rebind, wait and resource-preflight contracts.", _closed_loop_plan_contract_present, None),
         ("native.semantic_identity", "Native observations include AXIdentifier-backed semantic identity for stale-target recovery.", _native_semantic_identity_contract_present, None),
+        ("native.background_semantic_input", "Native text input prefers AXValue/AXSelectedText background writes without foreground activation.", _native_background_semantic_input_contract_present, True),
+        ("native.foreground_capability", "Model-visible native input options cannot self-authorize foreground keyboard/pointer control.", _native_foreground_self_escalation_blocked, True),
         ("observe.event_delta_pipeline", "Browser waits prefer event wakeups with bounded fallback and native observe exposes opt-in conditional delta/not-modified reads.", _event_delta_pipeline_contract_present, True),
     ]
     return [_contract(check_id, summary, probe, focus_safe=focus_safe) for check_id, summary, probe, focus_safe in specs]

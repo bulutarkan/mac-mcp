@@ -1722,7 +1722,7 @@
                   },
                   "preserve_focus": {
                     "type": "boolean",
-                    "description": "Preserve the user's current frontmost app/window when possible. Temporarily focused global-input actions restore the prior focus. Set false only when intentionally leaving the target foreground.",
+                    "description": "Controls whether Mac MCP restores the previous focus after a trusted foreground action is already authorized. It does not grant foreground access. Background-safe native actions remain focus-guarded even when false.",
                     "default": true
                   }
                 },

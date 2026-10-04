@@ -1003,7 +1003,9 @@ def create_app():
             "accessibility_action/menu. Use observation_id to prevent stale element paths. "
             "Optional app_handle/window_handle values pin execution to a previously observed native target. "
             "Potentially consequential clicks require allow_risky=true explicitly. "
-            "By default preserve_focus=true keeps background-safe AX actions off the foreground and restores prior focus after global input; set false only for intentional foreground control. "
+            "Text input is background-first: type/type_text uses AXValue for exact replacement and AXSelectedText for insertion; paste uses AXSelectedText, without keyboard or clipboard focus stealing when supported. "
+            "Foreground-required input (keyboard shortcuts, drag, double-click/global pointer, file dialogs, or input_mode='foreground') fails closed for normal MCP/model calls; only a trusted local-user foreground capability can authorize it. "
+            "preserve_focus controls restoration after an already-authorized foreground action and cannot grant foreground access. Background actions remain focus-guarded even when preserve_focus=false. "
             "Screenshots are omitted after actions unless include_screenshot=true. The legacy return_state boolean remains supported. "
             "The complete action batch has a 60-second safety budget."
         ),
@@ -1056,6 +1058,7 @@ def create_app():
             "Notes: find_notes|open_note. Mail: find_messages|open_message. Calendar: find_events|open_event. "
             "Preview: list_documents|open_document. System Settings: list_panes|open_pane. "
             "Unsupported apps/actions return an explicit mac_observe/mac_act fallback; no generic AX action runs automatically. "
+            "Mutating/open adapter actions preserve the user's current focus by default. preserve_focus=false is foreground intent only and fails closed for normal MCP/model calls; only a trusted local-user foreground capability can authorize it. "
             "Use item_id returned by find/list actions for deterministic open actions when available."
         ),
         structured_output=False,

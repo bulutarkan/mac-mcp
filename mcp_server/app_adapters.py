@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .security import Settings
+from .foreground_guard import current_foreground_authorization
 from .tools_ui import (
     _apple_string,
     _capture_focus_context,
@@ -958,6 +959,26 @@ def mac_app(
             f"{canonical} adapter does not support action '{normalized_action}'.",
         )
 
+    foreground_grant = current_foreground_authorization()
+    if (
+        normalized_action not in _READ_ACTIONS
+        and preserve_focus is False
+        and foreground_grant is None
+    ):
+        return {
+            **_base(canonical, normalized_action),
+            "ok": False,
+            "reason_code": "FOREGROUND_REQUIRED",
+            "error": "foreground_required",
+            "foreground_required": True,
+            "retryable": False,
+            "message": (
+                "Leaving a native app adapter action in the foreground requires an explicit "
+                "trusted local-user foreground capability. A model-visible preserve_focus=false "
+                "parameter cannot authorize focus changes."
+            ),
+        }
+
     try:
         bounded = _bounded_limit(limit)
         timeout = max(1.0, min(float(timeout_s), 30.0))
@@ -1033,4 +1054,7 @@ def mac_app(
             "error": str(exc)[:800],
         }
 
-    return {**_base(canonical, normalized_action), **payload}
+    result = {**_base(canonical, normalized_action), **payload}
+    if foreground_grant is not None and preserve_focus is False and normalized_action not in _READ_ACTIONS:
+        result["foreground_authorization_source"] = foreground_grant.source
+    return result
