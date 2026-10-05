@@ -2,7 +2,7 @@
   <img src="assets/screenshots/mac-mcp.png" alt="Mac MCP" width="760">
 </p>
 
-# Mac MCP 2.1.7
+# Mac MCP 2.1.8
 
 Mac MCP is a local macOS control server for AI agents. It exposes your Mac through a native MCP endpoint and a REST/OpenAPI surface, with shell, files, browser automation, macOS UI control, delegated OpenCode/Codex agents, memory, Agent Skills, voice interaction, self-update tooling, and a local operations dashboard.
 
@@ -28,17 +28,16 @@ This is a powerful combination, not a Mac MCP-only voice feature. ChatGPT provid
 
 **Secure bootstrap defaults:** missing configuration fails closed. Without explicit settings, MCP authentication is required, shell execution and HTTP/browser host allowlists are disabled, and the global permission profile defaults to `standard` rather than `trusted`. A normal installer run generates the API key and writes the intended settings explicitly. Deliberate `MCP_ALLOW_NO_AUTH=true` is accepted only on loopback with no managed public endpoint; non-loopback or tunneled no-auth startup is refused.
 
-## What's new in 2.1.7
+## What's new in 2.1.8
 
-2.1.7 focuses on making Mac MCP safer to leave running, easier to recover, and much easier to understand from both the Mac and a paired phone.
+2.1.8 focuses on keeping long-running Computer Use lightweight, background-safe, and easier to inspect while making restricted delegated Codex work practical again.
 
-- **Secure mobile control surface:** /mobile now supports persistent paired devices, manual pairing codes, compact agent/activity visibility, and lifecycle-aware Sessions grouped into Needs Attention, Active, and Recent.
-- **Cleaner mobile UX:** idle delegated agents collapse by default, while Agents, Sessions, and Recent Activity use compact tool-aware icons for terminal, browser, file, search, and related work without changing the dashboard's minimal dark theme.
-- **Durable updates and recovery:** update state is journaled across prepare, backup, sync, dependencies, restart, health, rollback, and recovery; the native app shows real progress and distinguishes completed, recovered, blocked, and recovery-failed outcomes.
-- **Safer restart/process ownership:** restart and updater flows verify managed process identity, refuse foreign listeners/PID reuse, survive cancellation where appropriate, and validate post-restart health before reporting success.
-- **Transactional dependency and runtime changes:** dependency activation and update migration are guarded so failures can recover without silently leaving a half-updated runtime.
-- **Stronger Computer Use reliability:** event-driven waits, delta-aware observe, trusted Chrome pointer dispatch, stricter click-effect verification, modal targeting, and foreground-capability enforcement reduce focus stealing and ambiguous browser actions.
-- **More accountable delegated work:** typed agent result envelopes, safer fan-in, whole-run filesystem undo, and unified tool discovery/invocation make multi-agent work easier to inspect and recover.
+- **Low-context perception pipeline:** snapshot, semantic observation, conditional reuse, targeted visuals, and OCR-last fallbacks now form one bounded perception ladder with explicit payload/visual/context telemetry.
+- **Background native Computer Use:** window-scoped capture, zero-focus semantic input, and human/agent workspace arbitration let agents work on specific native windows without unnecessarily taking over the Mac.
+- **Trustworthy Usage visibility:** Settings now separates MCP payload metering from native provider-reported delegated-agent token usage for Codex and OpenCode, with privacy-minimized local aggregates, period filters, exact tooltips, and responsive layout at the minimum Settings window size.
+- **Codex restricted access restored safely:** read_only and scoped workspace_write Codex agents run inside a Mac MCP-enforced macOS Seatbelt boundary instead of relying on provider-native read semantics; workspace-external reads and disallowed writes fail closed.
+- **Dashboard and Settings polish:** the Operations right rail remains scrollable under dense activity, agent cards no longer clip, and the Usage heatmap adapts to available width instead of forcing the Settings window sideways.
+
 
 ## Browser automation that doesn't hijack your Mac
 

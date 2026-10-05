@@ -1,5 +1,15 @@
 ## Unreleased
 
+## [2.1.8] - 2026-10-05
+
+- Added a unified low-context perception ladder across snapshot, semantic observation, conditional reuse, targeted visuals, and OCR-last fallback, with bounded context/visual telemetry and deterministic conformance coverage.
+- Added background native window capture, zero-focus semantic input paths, and human/agent workspace arbitration so scoped Computer Use can coexist with the person using the Mac.
+- Added MCP payload Usage metering plus separate provider-native Codex/OpenCode delegated-agent token rollups with local privacy-minimized persistence, 30/90/365-day views, model attribution only when attested, and fail-closed handling for unknown or unavailable accounting.
+- Restored Codex read_only and scoped workspace_write delegation using a Mac MCP-enforced macOS Seatbelt boundary with private provider state; workspace-external reads and disallowed writes fail closed while full access remains explicit.
+- Fixed the Operations dashboard right rail scrolling/card clipping and made the native Usage heatmap adapt to the available Settings width so the sidebar and detail pane no longer get pushed into the window edges.
+- Added public contribution/issue templates and refined Settings/default-agent presentation without changing provider security guarantees.
+
+
 ## [2.1.7] - 2026-10-01
 
 - Fixed the Operations dashboard right rail so What Changed on My Mac, Hot tools, and Delegated agents remain vertically scrollable when their combined content exceeds the fixed desktop viewport; agent cards now size to their full content instead of being clipped into the remaining grid row.

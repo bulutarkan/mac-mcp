@@ -63,7 +63,7 @@ class CliErgonomicsTests(unittest.TestCase):
         with redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
             cli.main(["--version"])
         self.assertEqual(0, ctx.exception.code)
-        self.assertEqual("mac-mcp 2.1.7", out.getvalue().strip())
+        self.assertEqual("mac-mcp 2.1.8", out.getvalue().strip())
 
     def test_doctor_reports_absolute_invocation_when_cli_not_on_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mac-mcp-cli-doctor-") as td:

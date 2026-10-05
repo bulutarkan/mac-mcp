@@ -835,23 +835,32 @@ struct SettingsView: View {
         }
         let maxValue = max(1, cells.map(\.value).max() ?? 1)
 
-        HStack(alignment: .top, spacing: 3) {
-            ForEach(Array(columns.enumerated()), id: \.offset) { _, week in
-                VStack(spacing: 3) {
-                    ForEach(Array(week.enumerated()), id: \.offset) { _, cell in
-                        if let cell {
-                            let ratio = Double(cell.value) / Double(maxValue)
-                            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                .fill(usageHeatColor(ratio: ratio, active: cell.value > 0))
-                                .frame(width: 10, height: 10)
-                                .help("\(cell.dateKey) · \(compactNumber(cell.value)) tokens · \(cell.calls) calls")
-                        } else {
-                            Color.clear.frame(width: 10, height: 10)
+        GeometryReader { proxy in
+            let spacing: CGFloat = 3
+            let weekCount = max(1, columns.count)
+            let totalSpacing = CGFloat(max(0, weekCount - 1)) * spacing
+            let fittedSize = (proxy.size.width - totalSpacing) / CGFloat(weekCount)
+            let cellSize = min(10, max(7, fittedSize))
+
+            HStack(alignment: .top, spacing: spacing) {
+                ForEach(Array(columns.enumerated()), id: \.offset) { _, week in
+                    VStack(spacing: spacing) {
+                        ForEach(Array(week.enumerated()), id: \.offset) { _, cell in
+                            if let cell {
+                                let ratio = Double(cell.value) / Double(maxValue)
+                                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                    .fill(usageHeatColor(ratio: ratio, active: cell.value > 0))
+                                    .frame(width: cellSize, height: cellSize)
+                                    .help("\(cell.dateKey) · \(compactNumber(cell.value)) tokens · \(cell.calls) calls")
+                            } else {
+                                Color.clear.frame(width: cellSize, height: cellSize)
+                            }
                         }
                     }
                 }
             }
         }
+        .frame(height: 88)
         .accessibilityLabel("MCP Payload Tokens activity heatmap")
     }
 
