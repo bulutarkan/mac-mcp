@@ -1991,6 +1991,183 @@ def _restricted_provider_state(agent_id: str) -> Path:
     return root
 
 
+def _boundary_metadata_ancestors(paths: List[Path]) -> List[Path]:
+    ancestors: set[Path] = set()
+    for raw in paths:
+        path = Path(raw).expanduser().resolve(strict=False)
+        for parent in path.parents:
+            if parent == Path("/"):
+                break
+            ancestors.add(parent)
+    return sorted(ancestors, key=lambda item: (len(item.parts), str(item)))
+
+
+def _codex_state_owner_agent_id(agent_id: str, meta: Dict[str, Any]) -> str:
+    current_id = str(agent_id)
+    current = dict(meta)
+    seen: set[str] = set()
+    while current.get("resume_session_id"):
+        parent_id = str(current.get("parent_agent_id") or "").strip()
+        if not parent_id or parent_id in seen:
+            break
+        seen.add(parent_id)
+        current_id = parent_id
+        try:
+            current = _read_meta(parent_id)
+        except HTTPException:
+            break
+    return current_id
+
+
+def _codex_native_binary(binary: str) -> Path:
+    launcher = Path(binary).expanduser().resolve(strict=False)
+    roots: List[Path] = []
+    if launcher.name == "codex.js" and launcher.parent.name == "bin":
+        roots.append(launcher.parent.parent)
+    roots.append(launcher.parent)
+    for root in roots:
+        for candidate in sorted(
+            root.glob("node_modules/@openai/codex-darwin-*/vendor/*/bin/codex")
+        ):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return candidate.resolve(strict=False)
+    if launcher.is_file() and os.access(launcher, os.X_OK) and launcher.name == "codex":
+        return launcher
+    raise HTTPException(
+        status.HTTP_409_CONFLICT,
+        "Codex restricted access is unavailable: native Codex executable could not be resolved.",
+    )
+
+
+def _codex_secret_auth_path(agent_id: str, meta: Dict[str, Any]) -> Path:
+    owner_id = _codex_state_owner_agent_id(agent_id, meta)
+    return (
+        _agent_dir(owner_id) / "provider_secrets" / "codex" / "auth.json"
+    ).resolve(strict=False)
+
+
+def _restricted_codex_state(agent_id: str, meta: Dict[str, Any]) -> Path:
+    owner_id = _codex_state_owner_agent_id(agent_id, meta)
+    root = _agent_dir(owner_id) / "provider_state" / "codex"
+    home = root / "home"
+    codex_home = root / "codex-home"
+    tmp = root / "tmp"
+    for path in (root, home, codex_home, tmp):
+        path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.chmod(0o700)
+        except OSError:
+            pass
+
+    source_home = Path(
+        os.getenv("CODEX_HOME") or (Path.home() / ".codex")
+    ).expanduser().resolve(strict=False)
+
+    secret_auth = _codex_secret_auth_path(agent_id, meta)
+    secret_auth.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        secret_auth.parent.chmod(0o700)
+    except OSError:
+        pass
+    source_auth = source_home / "auth.json"
+    if not secret_auth.exists() and source_auth.is_file():
+        try:
+            shutil.copy2(source_auth, secret_auth)
+            secret_auth.chmod(0o600)
+        except OSError:
+            secret_auth.unlink(missing_ok=True)
+
+    auth_link = codex_home / "auth.json"
+    if secret_auth.exists():
+        try:
+            if auth_link.is_symlink() or auth_link.exists():
+                auth_link.unlink()
+            auth_link.symlink_to(secret_auth)
+        except OSError:
+            auth_link.unlink(missing_ok=True)
+
+    for name in ("models_cache.json", "installation_id"):
+        source = source_home / name
+        target = codex_home / name
+        if target.exists() or not source.is_file():
+            continue
+        try:
+            shutil.copy2(source, target)
+            target.chmod(0o600)
+        except OSError:
+            target.unlink(missing_ok=True)
+    return root
+
+
+def _codex_sandbox_profile(agent_id: str, meta: Dict[str, Any]) -> Path:
+    if not _sandbox_exec_available():
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Codex restricted access requires macOS sandbox-exec; this host cannot enforce the requested process boundary.",
+        )
+
+    scope = ResourceScope.from_dict(meta.get("scope"))
+    access_mode = str(meta.get("access_mode") or "workspace_write")
+    state_root = _restricted_codex_state(agent_id, meta).resolve()
+    result_path = (_agent_dir(agent_id) / "result.txt").resolve(strict=False)
+    secret_auth = _codex_secret_auth_path(agent_id, meta)
+    native_binary = _codex_native_binary(str(meta.get("binary") or "codex"))
+
+    allowed_read = {state_root}
+    for raw in scope.path_roots or ():
+        allowed_read.add(Path(raw).expanduser().resolve(strict=False))
+
+    metadata_paths = _boundary_metadata_ancestors(
+        [*allowed_read, result_path, secret_auth]
+    )
+    deny_specs = " ".join(
+        f'(subpath "{_sbpl_quote(root)}")'
+        for root in _RESTRICTED_READ_DENY_ROOTS
+    )
+    read_specs = " ".join(
+        f'(subpath "{_sbpl_quote(root)}")'
+        for root in sorted(allowed_read, key=lambda item: str(item))
+    )
+    metadata_specs = " ".join(
+        f'(literal "{_sbpl_quote(path)}")'
+        for path in metadata_paths
+    )
+
+    write_roots = {state_root}
+    if access_mode == "workspace_write":
+        write_roots.update(
+            Path(raw).expanduser().resolve(strict=False)
+            for raw in (scope.path_roots or ())
+        )
+    write_specs = " ".join(
+        f'(subpath "{_sbpl_quote(root)}")'
+        for root in sorted(write_roots, key=lambda item: str(item))
+    )
+    exec_denies = "\n".join(
+        f'(deny process-exec (literal "{_sbpl_quote(path)}"))'
+        for path in _RESTRICTED_ESCAPE_EXECUTABLES
+    )
+
+    profile = _agent_dir(agent_id) / "provider-boundary.sb"
+    profile.write_text(
+        "(version 1)\n"
+        "(allow default)\n"
+        f"(deny file-read* {deny_specs})\n"
+        f"(allow file-read* {read_specs})\n"
+        f"(allow file-read-metadata {metadata_specs})\n"
+        f'(with-filter (process-path "{_sbpl_quote(native_binary)}") '
+        f'(allow file-read* (literal "{_sbpl_quote(secret_auth)}")))\n'
+        "(deny file-write*)\n"
+        f"(allow file-write* {write_specs})\n"
+        f'(allow file-write* (literal "{_sbpl_quote(result_path)}"))\n'
+        f'(allow file-read* (literal "{_sbpl_quote(result_path)}"))\n'
+        f"{exec_denies}\n",
+        encoding="utf-8",
+    )
+    profile.chmod(0o600)
+    return profile
+
+
 def _opencode_sandbox_profile(agent_id: str, meta: Dict[str, Any]) -> Path:
     if not _sandbox_exec_available():
         raise HTTPException(
@@ -2036,9 +2213,13 @@ def _opencode_sandbox_profile(agent_id: str, meta: Dict[str, Any]) -> Path:
 def _provider_process_command(agent_id: str, meta: Dict[str, Any], cmd: List[str]) -> Tuple[List[str], Optional[Path]]:
     provider = str(meta.get("provider") or "").lower()
     access_mode = str(meta.get("access_mode") or "workspace_write")
-    if provider == "opencode" and access_mode != "full":
-        profile = _opencode_sandbox_profile(agent_id, meta)
-        return [str(_SANDBOX_EXEC), "-f", str(profile), *cmd], profile
+    if access_mode != "full":
+        if provider == "opencode":
+            profile = _opencode_sandbox_profile(agent_id, meta)
+            return [str(_SANDBOX_EXEC), "-f", str(profile), *cmd], profile
+        if provider == "codex":
+            profile = _codex_sandbox_profile(agent_id, meta)
+            return [str(_SANDBOX_EXEC), "-f", str(profile), *cmd], profile
     return cmd, None
 
 
@@ -2050,6 +2231,13 @@ def _provider_env(agent_id: str, meta: Dict[str, Any], scoped_token: str) -> Tup
     else:
         env.pop("MAC_MCP_AGENT_TOKEN", None)
     cleanup_root: Optional[Path] = None
+    if provider == "codex" and str(meta.get("access_mode") or "workspace_write") != "full":
+        state_root = _restricted_codex_state(agent_id, meta)
+        env.update({
+            "HOME": str(state_root / "home"),
+            "CODEX_HOME": str(state_root / "codex-home"),
+            "TMPDIR": str(state_root / "tmp"),
+        })
     if provider == "opencode":
         if str(meta.get("access_mode") or "workspace_write") != "full":
             state_root = _restricted_provider_state(agent_id)
@@ -2680,12 +2868,14 @@ def _access_mode_info(provider: str, access_mode: str) -> Dict[str, Any]:
             "note": "Full mode is an intentional unrestricted provider process; no filesystem sandbox is claimed.",
         }
     if provider == "codex":
+        available = _sandbox_exec_available()
         return {
-            "enforced": False,
-            "boundary": "unsupported",
+            "enforced": available,
+            "boundary": "macos_seatbelt" if available else "unsupported",
             "note": (
-                "This Codex CLI build does not enforce workspace-scoped reads for legacy sandbox or permission-profile modes. "
-                "Restricted modes are refused; use full only when intentionally granting broad local access."
+                "Codex runs inside a Mac MCP macOS Seatbelt boundary with scoped filesystem roots and a private CODEX_HOME."
+                if available else
+                "Codex restricted access is unavailable because macOS sandbox-exec is not available; the request is refused."
             ),
         }
     if provider == "opencode":
@@ -2721,12 +2911,10 @@ def _validate_provider_access_mode(provider: str, access_mode: str) -> None:
             status.HTTP_409_CONFLICT,
             "OpenCode restricted access is unavailable: macOS sandbox-exec is missing, so Mac MCP refuses to rely on prompt-only boundaries.",
         )
-    if provider == "codex":
+    if provider == "codex" and not _sandbox_exec_available():
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "Codex restricted access is unavailable on this provider build: live boundary probes show that both legacy sandbox and "
-            "permission-profile modes can read outside the requested workspace. The request was refused instead of claiming a false guarantee; "
-            "use full explicitly when broad local access is intended.",
+            "Codex restricted access is unavailable: macOS sandbox-exec is missing, so Mac MCP refuses to rely on provider-native read-only semantics alone.",
         )
     if provider == "chatgpt":
         raise HTTPException(
@@ -2802,10 +2990,11 @@ def _scope_prompt(scope: ResourceScope, profile: str, provider: str) -> str:
         f"Permission profile: {profile}. Scope: {scope_json}. "
         "Use only the resources and tool families inside this scope."
     )
-    if provider == "opencode":
+    if provider in {"opencode", "codex"}:
+        provider_name = "OpenCode" if provider == "opencode" else "Codex"
         return (
             base
-            + " In restricted access modes, Mac MCP also places the entire OpenCode provider process and its descendants "
+            + f" In restricted access modes, Mac MCP also places the entire {provider_name} provider process and its descendants "
               "inside a macOS Seatbelt filesystem boundary. Do not attempt to evade that boundary or launch external UI/keychain helpers."
         )
     if provider == "chatgpt":
@@ -2937,7 +3126,10 @@ def agent_catalog(
             "catalog_freshness": catalog.get("freshness"),
             "catalog_error": catalog.get("error"),
             "access_modes": {
-                mode: {"supported": mode == "full", **_access_mode_info("codex", mode)}
+                mode: {
+                    "supported": mode == "full" or _sandbox_exec_available(),
+                    **_access_mode_info("codex", mode),
+                }
                 for mode in sorted(_ACCESS_MODES)
             },
         }
@@ -5158,10 +5350,14 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
 
     if resume_session_id:
         cmd = [binary, "exec", "resume", "--json", "--skip-git-repo-check", "-o", str(result_path)]
-        sandbox_map = {"read_only": "read-only", "workspace_write": "workspace-write", "full": "danger-full-access"}
+        if access_mode == "full":
+            cmd += [
+                "--config", 'approval_policy="never"',
+                "--config", 'sandbox_mode="danger-full-access"',
+            ]
+        else:
+            cmd.append("--dangerously-bypass-approvals-and-sandbox")
         cmd += [
-            "--config", 'approval_policy="never"',
-            "--config", f'sandbox_mode="{sandbox_map[access_mode]}"',
             "--config", 'shell_environment_policy.inherit="none"',
             "--config", 'shell_environment_policy.set.PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"',
         ]
@@ -5176,12 +5372,16 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
     cmd = [
         binary, "exec", "--json", "--color", "never", "--skip-git-repo-check",
         "-C", meta["cwd"], "-o", str(result_path),
-        "--config", 'approval_policy="never"',
         "--config", 'shell_environment_policy.inherit="none"',
         "--config", 'shell_environment_policy.set.PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"',
     ]
-    sandbox_map = {"read_only": "read-only", "workspace_write": "workspace-write", "full": "danger-full-access"}
-    cmd += ["--sandbox", sandbox_map[access_mode]]
+    if access_mode == "full":
+        cmd += [
+            "--config", 'approval_policy="never"',
+            "--sandbox", "danger-full-access",
+        ]
+    else:
+        cmd.append("--dangerously-bypass-approvals-and-sandbox")
     cmd += _codex_scoped_mcp_args(meta)
     if model:
         cmd += ["--model", model]

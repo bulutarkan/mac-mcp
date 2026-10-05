@@ -59,9 +59,10 @@ class AgentDelegationTests(unittest.TestCase):
         }
         cmd = _build_provider_command(meta, "PROMPT", Path("/tmp/result.txt"))
         self.assertIn("gpt-test", cmd)
-        self.assertIn("read-only", cmd)
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", cmd)
+        self.assertNotIn("read-only", cmd)
         self.assertTrue(any('model_reasoning_effort="low"' in item for item in cmd))
-        self.assertTrue(any('approval_policy="never"' in item for item in cmd))
+        self.assertFalse(any('approval_policy="never"' in item for item in cmd))
 
     def test_concise_handoff_instruction_discourages_process_narration(self):
         text = _handoff_instruction("concise")

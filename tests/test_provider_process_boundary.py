@@ -170,6 +170,151 @@ class OpenCodeSeatbeltBoundaryTests(unittest.TestCase):
         self.assertEqual("explicit_full", info["boundary"])
 
 
+@unittest.skipUnless(
+    sys.platform == "darwin" and Path("/usr/bin/sandbox-exec").exists(),
+    "macOS Seatbelt required",
+)
+class CodexSeatbeltBoundaryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(dir="/tmp")
+        self.root = Path(self.tmp.name).resolve()
+        self.workspace = self.root / "workspace"
+        self.workspace.mkdir()
+        self.outside = self.root / "outside-secret.txt"
+        self.outside.write_text("SENTINEL-SECRET", encoding="utf-8")
+        self.inside = self.workspace / "inside.txt"
+        self.inside.write_text("INSIDE", encoding="utf-8")
+        self.source_codex_home = self.root / "source-codex"
+        self.source_codex_home.mkdir()
+        (self.source_codex_home / "auth.json").write_text(
+            '{"auth_mode":"dummy-secret"}',
+            encoding="utf-8",
+        )
+
+        self.old_agents = agents.AGENTS_DIR
+        agents.AGENTS_DIR = self.root / "agents"
+        self.agent_id = "agt_codex_boundary"
+        (agents.AGENTS_DIR / self.agent_id).mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        agents.AGENTS_DIR = self.old_agents
+        self.tmp.cleanup()
+
+    def _meta(self, mode: str) -> dict:
+        scope = ResourceScope(path_roots=(str(self.workspace),), access_mode=mode)
+        return {
+            "provider": "codex",
+            "binary": "/opt/homebrew/bin/codex",
+            "cwd": str(self.workspace),
+            "model": "gpt-test",
+            "access_mode": mode,
+            "scope": scope.to_dict(),
+        }
+
+    def _run(self, mode: str, shell: str) -> subprocess.CompletedProcess[str]:
+        meta = self._meta(mode)
+        with patch.dict(
+            os.environ,
+            {"CODEX_HOME": str(self.source_codex_home)},
+            clear=False,
+        ), patch.object(
+            agents,
+            "_codex_native_binary",
+            return_value=Path("/usr/bin/true"),
+        ):
+            env, cleanup = agents._provider_env(
+                self.agent_id, meta, "scoped-token"
+            )
+            profile = None
+            try:
+                cmd, profile = agents._provider_process_command(
+                    self.agent_id, meta, ["/bin/sh", "-c", shell]
+                )
+                return subprocess.run(
+                    cmd,
+                    cwd=self.workspace,
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    timeout=10,
+                )
+            finally:
+                if profile is not None:
+                    profile.unlink(missing_ok=True)
+                agents._cleanup_provider_config(cleanup)
+
+    def test_read_only_can_read_workspace_but_not_outside_or_write(self) -> None:
+        allowed = self._run("read_only", f'/bin/cat "{self.inside}"')
+        self.assertEqual(0, allowed.returncode, allowed.stderr)
+        self.assertEqual("INSIDE", allowed.stdout.strip())
+
+        outside = self._run("read_only", f'/bin/cat "{self.outside}"')
+        self.assertNotEqual(0, outside.returncode)
+        self.assertNotIn("SENTINEL-SECRET", outside.stdout)
+
+        write_inside = self._run(
+            "read_only", f'echo CHANGED >> "{self.inside}"'
+        )
+        self.assertNotEqual(0, write_inside.returncode)
+        self.assertEqual("INSIDE", self.inside.read_text(encoding="utf-8"))
+
+    def test_workspace_write_is_scoped(self) -> None:
+        write_inside = self._run(
+            "workspace_write", f'echo OK >> "{self.inside}"'
+        )
+        self.assertEqual(0, write_inside.returncode, write_inside.stderr)
+        self.assertIn("OK", self.inside.read_text(encoding="utf-8"))
+
+        write_outside = self._run(
+            "workspace_write", f'echo LEAK >> "{self.outside}"'
+        )
+        self.assertNotEqual(0, write_outside.returncode)
+        self.assertEqual(
+            "SENTINEL-SECRET",
+            self.outside.read_text(encoding="utf-8"),
+        )
+
+    def test_shell_cannot_read_private_codex_auth(self) -> None:
+        completed = self._run(
+            "read_only",
+            '/bin/cat "$CODEX_HOME/auth.json"',
+        )
+        self.assertNotEqual(0, completed.returncode)
+        self.assertNotIn("dummy-secret", completed.stdout + completed.stderr)
+
+    def test_full_mode_is_unwrapped(self) -> None:
+        meta = self._meta("full")
+        cmd = ["/bin/echo", "ok"]
+        wrapped, profile = agents._provider_process_command(
+            self.agent_id, meta, cmd
+        )
+        self.assertEqual(cmd, wrapped)
+        self.assertIsNone(profile)
+
+    def test_resume_chain_reuses_parent_private_state(self) -> None:
+        parent_id = "agt_codex_parent"
+        parent_dir = agents.AGENTS_DIR / parent_id
+        parent_dir.mkdir(parents=True)
+        parent_meta = {
+            "provider": "codex",
+            "resume_session_id": None,
+            "parent_agent_id": None,
+        }
+        (parent_dir / "meta.json").write_text(
+            __import__("json").dumps(parent_meta),
+            encoding="utf-8",
+        )
+        child_meta = {
+            "provider": "codex",
+            "resume_session_id": "thread-1",
+            "parent_agent_id": parent_id,
+        }
+        self.assertEqual(
+            parent_id,
+            agents._codex_state_owner_agent_id("agt_child", child_meta),
+        )
+
+
 class ProviderModeMatrixTests(unittest.TestCase):
     def test_chatgpt_restricted_modes_fail_closed(self) -> None:
         for mode in ("read_only", "workspace_write"):
@@ -187,15 +332,38 @@ class ProviderModeMatrixTests(unittest.TestCase):
             self.assertFalse(info["enforced"])
             self.assertEqual("unsupported", info["boundary"])
 
-    def test_codex_restricted_modes_fail_closed(self) -> None:
-        for mode in ("read_only", "workspace_write"):
-            with self.subTest(mode=mode), self.assertRaises(HTTPException) as ctx:
-                agents._validate_provider_access_mode("codex", mode)
-            self.assertEqual(409, ctx.exception.status_code)
+    def test_codex_restricted_modes_use_hard_boundary_on_macos(self) -> None:
+        if agents._sandbox_exec_available():
+            agents._validate_provider_access_mode("codex", "read_only")
+            agents._validate_provider_access_mode("codex", "workspace_write")
+            info = agents._access_mode_info("codex", "read_only")
+            self.assertTrue(info["enforced"])
+            self.assertEqual("macos_seatbelt", info["boundary"])
+        else:
+            for mode in ("read_only", "workspace_write"):
+                with self.subTest(mode=mode), self.assertRaises(HTTPException) as ctx:
+                    agents._validate_provider_access_mode("codex", mode)
+                self.assertEqual(409, ctx.exception.status_code)
         agents._validate_provider_access_mode("codex", "full")
-        info = agents._access_mode_info("codex", "read_only")
-        self.assertFalse(info["enforced"])
-        self.assertEqual("unsupported", info["boundary"])
+
+    def test_codex_restricted_command_defers_to_outer_seatbelt(self) -> None:
+        meta = {
+            "provider": "codex",
+            "binary": "/opt/homebrew/bin/codex",
+            "cwd": "/tmp",
+            "model": "gpt-test",
+            "reasoning": "high",
+            "access_mode": "read_only",
+            "scoped_mcp": True,
+            "mcp_endpoint": "http://127.0.0.1:8765/mcp",
+        }
+        cmd = agents._build_provider_command(
+            meta, "PROMPT", Path("/tmp/result.txt")
+        )
+        joined = " ".join(cmd)
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", joined)
+        self.assertNotIn("--sandbox read-only", joined)
+        self.assertIn('shell_environment_policy.inherit="none"', joined)
 
     def test_codex_full_command_still_strips_shell_environment(self) -> None:
         meta = {

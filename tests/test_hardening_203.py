@@ -256,8 +256,9 @@ class DelegatedProviderTests(unittest.TestCase):
         }
         cmd = _build_provider_command(meta, "PROMPT", Path("/tmp/result.txt"))
         joined = " ".join(cmd)
-        self.assertIn('sandbox_mode="read-only"', joined)
-        self.assertIn('approval_policy="never"', joined)
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", joined)
+        self.assertNotIn('sandbox_mode="read-only"', joined)
+        self.assertNotIn('approval_policy="never"', joined)
         self.assertIn("bearer_token_env_var", joined)
         self.assertIn('model_reasoning_effort="high"', joined)
 
