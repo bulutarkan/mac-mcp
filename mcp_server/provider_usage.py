@@ -227,6 +227,20 @@ class ProviderUsageStore:
             );
             """
         )
+        event_columns = {
+            str(row[1])
+            for row in conn.execute(
+                "PRAGMA table_info(provider_usage_events)"
+            ).fetchall()
+        }
+        if "requested_model" not in event_columns:
+            conn.execute(
+                "ALTER TABLE provider_usage_events ADD COLUMN requested_model TEXT"
+            )
+        if "effective_model" not in event_columns:
+            conn.execute(
+                "ALTER TABLE provider_usage_events ADD COLUMN effective_model TEXT"
+            )
 
     def _init_db(self) -> None:
         with self._lock, closing(self._connect()) as conn, conn:

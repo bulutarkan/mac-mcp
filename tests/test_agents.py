@@ -1,5 +1,6 @@
 import inspect
 import json
+import os
 import tempfile
 import time
 import unittest
@@ -135,8 +136,12 @@ class AgentOrchestrationTests(unittest.TestCase):
                 {"type": "item.completed", "item": {"id": "item_2", "type": "agent_message", "text": "Done"}},
                 {"type": "turn.completed", "usage": {"input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 12, "reasoning_output_tokens": 3}},
             ]
-            for event in events:
-                agents._record_provider_event(agent_id, json.dumps(event))
+            with patch.dict(
+                os.environ,
+                {"MAC_MCP_STATE_DIR": str(Path(td) / "state")},
+            ):
+                for event in events:
+                    agents._record_provider_event(agent_id, json.dumps(event))
             saved = agents._read_meta(agent_id)
             self.assertEqual(1, saved["step_count"])
             self.assertEqual(1, saved["tool_call_count"])

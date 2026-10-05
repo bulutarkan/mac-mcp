@@ -111,6 +111,47 @@ class ProviderUsageStoreTests(unittest.TestCase):
             effective_model=None,
         )
 
+    def test_legacy_schema_adds_requested_and_effective_model_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "provider.sqlite3"
+            with sqlite3.connect(path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE provider_usage_events (
+                        event_key TEXT PRIMARY KEY,
+                        provider TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        event_id TEXT NOT NULL,
+                        timestamp REAL NOT NULL,
+                        local_date TEXT NOT NULL,
+                        timezone TEXT NOT NULL,
+                        agent_id TEXT,
+                        model TEXT,
+                        model_verified INTEGER NOT NULL DEFAULT 0,
+                        source TEXT NOT NULL,
+                        schema_version INTEGER NOT NULL,
+                        provider_version TEXT,
+                        input_tokens INTEGER,
+                        output_tokens INTEGER,
+                        reasoning_tokens INTEGER,
+                        cache_read_tokens INTEGER,
+                        cache_write_tokens INTEGER,
+                        total_tokens INTEGER
+                    )
+                    """
+                )
+                conn.commit()
+            provider_usage.ProviderUsageStore(path)
+            with sqlite3.connect(path) as conn:
+                columns = [
+                    row[1]
+                    for row in conn.execute(
+                        "PRAGMA table_info(provider_usage_events)"
+                    )
+                ]
+            self.assertIn("requested_model", columns)
+            self.assertIn("effective_model", columns)
+
     def test_duplicate_event_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             store = provider_usage.ProviderUsageStore(Path(td) / "provider.sqlite3")
