@@ -44,7 +44,11 @@ from .runtime_resolver import (
     resolve_cloudflared_binary,
     resolve_ngrok_binary,
 )
-from .update_helper import UpdateError, apply_update, check_update, format_check, format_check_json
+from .update_helper import (
+    UpdateError, check_update, format_check, format_check_json,
+    resolve_paths as resolve_update_paths, secure_bootstrap_update_blocker,
+)
+from .tools_update import launch_detached_update
 from .version import __version__
 
 APP_MODULE = "mcp_server.main:app"
@@ -1575,13 +1579,41 @@ def update(args: argparse.Namespace) -> int:
         if getattr(args, "json", False):
             print("mac-mcp update: --json requires --check", file=sys.stderr)
             return 2
-        apply_update(
-            repo=args.repo, runtime=args.runtime, branch=args.branch, remote=args.remote,
+        repo, runtime = resolve_update_paths(args.repo, args.runtime)
+        info = check_update(repo, runtime, branch=args.branch, remote=args.remote, fetch=True)
+        if info.dirty:
+            raise UpdateError("Repository has local changes. Commit or stash them before updating.")
+        if not info.update_available:
+            print("[mac-mcp update] Mac MCP is already up to date.")
+            return 0
+        blocker = secure_bootstrap_update_blocker(runtime)
+        if blocker is not None:
+            raise UpdateError(
+                str(blocker.get("summary") or "Secure bootstrap migration is required before updating.")
+            )
+        payload, proc = launch_detached_update(
+            info,
+            repo,
+            runtime,
+            branch=args.branch,
+            remote=args.remote,
             launchd_label=os.getenv("MAC_MCP_LAUNCHD_LABEL", "mac-mcp-uvicorn"),
             skip_restart=getattr(args, "skip_restart", False),
             skip_deps=getattr(args, "skip_deps", False),
         )
-        return 0
+        print(
+            f"[mac-mcp update] Detached updater started (pid {payload['updater_pid']}).",
+            flush=True,
+        )
+        return_code = proc.wait()
+        log_path = Path(str(payload["log_path"]))
+        try:
+            log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            log_text = ""
+        if log_text:
+            print(log_text, end="" if log_text.endswith("\n") else "\n")
+        return 0 if return_code == 0 else 1
     except UpdateError as exc:
         print(f"mac-mcp update failed: {exc}", file=sys.stderr)
         return 1

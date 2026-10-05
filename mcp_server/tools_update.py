@@ -40,6 +40,98 @@ def _public_info(info) -> Dict[str, Any]:
     }
 
 
+def launch_detached_update(
+    info,
+    repo: Path,
+    runtime: Path,
+    *,
+    branch: str,
+    remote: str,
+    launchd_label: str = "",
+    skip_restart: bool = False,
+    skip_deps: bool = False,
+) -> tuple[Dict[str, Any], subprocess.Popen]:
+    """Launch the staged updater in a process session that survives its caller."""
+    payload = _public_info(info)
+    update_id = f"upd_{uuid.uuid4().hex[:10]}"
+    status_path = update_state_path()
+    logs_dir = status_path.parent / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_path = logs_dir / f"{update_id}.log"
+
+    helper_src = Path(__file__).with_name("update_helper.py")
+    state_src = helper_src.with_name("update_state.py")
+    release_trust_src = helper_src.with_name("release_trust.py")
+    managed_process_src = helper_src.with_name("managed_process.py")
+    trusted_signers_src = helper_src.with_name("release_trusted_signers.txt")
+    helper_tmp_dir = Path(tempfile.mkdtemp(prefix=f"mac-mcp-update-{update_id}-"))
+    helper_tmp = helper_tmp_dir / "update_helper.py"
+    shutil.copy2(helper_src, helper_tmp)
+    shutil.copy2(state_src, helper_tmp_dir / "update_state.py")
+    shutil.copy2(release_trust_src, helper_tmp_dir / "release_trust.py")
+    shutil.copy2(managed_process_src, helper_tmp_dir / "managed_process.py")
+    shutil.copy2(trusted_signers_src, helper_tmp_dir / "release_trusted_signers.txt")
+
+    started_state = {
+        "status": "starting",
+        "update_id": update_id,
+        "from_commit": info.deployed_commit,
+        "to_commit": info.target_commit,
+        "repo": str(repo),
+        "runtime": str(runtime),
+        "release_id": info.release_id,
+        "release_version": info.release_version,
+        "log_path": str(log_path),
+        "status_path": str(status_path),
+    }
+    status_path.write_text(json.dumps(started_state, indent=2) + "\n", encoding="utf-8")
+
+    log = log_path.open("a", encoding="utf-8")
+    cmd = [
+        sys.executable,
+        str(helper_tmp),
+        "--repo", str(repo),
+        "--runtime", str(runtime),
+        "--branch", branch,
+        "--remote", remote,
+        "--deferred-seconds", "0.8",
+    ]
+    if launchd_label:
+        cmd.extend(["--launchd-label", launchd_label])
+    if skip_restart:
+        cmd.append("--skip-restart")
+    if skip_deps:
+        cmd.append("--skip-deps")
+    cmd.extend(["--cleanup-staging-dir", str(helper_tmp_dir)])
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            cwd=str(repo),
+            start_new_session=True,
+            close_fds=True,
+        )
+        log.close()
+    except Exception:
+        log.close()
+        shutil.rmtree(helper_tmp_dir, ignore_errors=True)
+        raise
+
+    payload.update({
+        "ok": True,
+        "check_only": False,
+        "update_started": True,
+        "update_id": update_id,
+        "updater_pid": proc.pid,
+        "log_path": str(log_path),
+        "status_path": str(status_path),
+        "message": "Update started. Mac MCP will restart automatically; refresh the MCP tools after it reconnects.",
+    })
+    return payload, proc
+
+
 def mac_mcp_update(check_only: bool = True, branch: str = "main") -> Dict[str, Any]:
     """Check for a commit-based Mac MCP update or start a safe detached update."""
     branch = str(branch or "main").strip()
@@ -81,76 +173,18 @@ def mac_mcp_update(check_only: bool = True, branch: str = "main") -> Dict[str, A
         payload.update({"ok": True, "updated": False, "message": "Mac MCP is already up to date."})
         return payload
 
-    update_id = f"upd_{uuid.uuid4().hex[:10]}"
-    status_path = update_state_path()
-    logs_dir = status_path.parent / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_path = logs_dir / f"{update_id}.log"
-    helper_src = Path(__file__).with_name("update_helper.py")
-    state_src = helper_src.with_name("update_state.py")
-    release_trust_src = helper_src.with_name("release_trust.py")
-    managed_process_src = helper_src.with_name("managed_process.py")
-    trusted_signers_src = helper_src.with_name("release_trusted_signers.txt")
-    helper_tmp_dir = Path(tempfile.mkdtemp(prefix=f"mac-mcp-update-{update_id}-"))
-    helper_tmp = helper_tmp_dir / "update_helper.py"
-    shutil.copy2(helper_src, helper_tmp)
-    shutil.copy2(state_src, helper_tmp_dir / "update_state.py")
-    shutil.copy2(release_trust_src, helper_tmp_dir / "release_trust.py")
-    shutil.copy2(managed_process_src, helper_tmp_dir / "managed_process.py")
-    shutil.copy2(trusted_signers_src, helper_tmp_dir / "release_trusted_signers.txt")
-
-    started_state = {
-        "status": "starting",
-        "update_id": update_id,
-        "from_commit": info.deployed_commit,
-        "to_commit": info.target_commit,
-        "repo": str(repo),
-        "runtime": str(runtime),
-        "release_id": info.release_id,
-        "release_version": info.release_version,
-        "log_path": str(log_path),
-        "status_path": str(status_path),
-    }
-    status_path.write_text(json.dumps(started_state, indent=2) + "\n", encoding="utf-8")
-
-    log = log_path.open("a", encoding="utf-8")
-    cmd = [
-        sys.executable,
-        str(helper_tmp),
-        "--repo", str(repo),
-        "--runtime", str(runtime),
-        "--branch", branch,
-        "--remote", "origin",
-        "--deferred-seconds", "0.8",
-    ]
-    label = os.getenv("MAC_MCP_LAUNCHD_LABEL", "").strip()
-    if label:
-        cmd.extend(["--launchd-label", label])
-    cmd.extend(["--cleanup-staging-dir", str(helper_tmp_dir)])
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            cwd=str(repo),
-            start_new_session=True,
-            close_fds=True,
+        payload, _proc = launch_detached_update(
+            info,
+            repo,
+            runtime,
+            branch=branch,
+            remote="origin",
+            launchd_label=os.getenv("MAC_MCP_LAUNCHD_LABEL", "").strip(),
         )
-        log.close()
     except Exception as exc:
-        log.close()
-        shutil.rmtree(helper_tmp_dir, ignore_errors=True)
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Could not start updater: {exc}") from exc
-
-    payload.update({
-        "ok": True,
-        "check_only": False,
-        "update_started": True,
-        "update_id": update_id,
-        "updater_pid": proc.pid,
-        "log_path": str(log_path),
-        "status_path": str(status_path),
-        "message": "Update started. Mac MCP will restart automatically; refresh the MCP tools after it reconnects.",
-    })
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"Could not start updater: {exc}",
+        ) from exc
     return payload

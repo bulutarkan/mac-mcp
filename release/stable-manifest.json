@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "fe9b62781e9d7d8dd2854170ebea11a2f1399af8",
+  "base_commit": "c5c3fd63c24c9bbc9b2b956fad276b2d8dce6296",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -67,8 +67,8 @@
     {
       "mode": "100644",
       "path": "CHANGELOG.md",
-      "sha256": "5adfe5022e8187a1795f6f658783b36f351dfd98267275a76c394e312461d504",
-      "size": 42849
+      "sha256": "23259f0c559cebb17ac20bb5f89fa9c038dc365fbd1624b09c460d0df693212b",
+      "size": 43090
     },
     {
       "mode": "100644",
@@ -223,8 +223,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/cli.py",
-      "sha256": "54908aa23c19aedbebf8dc78d1591ba8d7e07490f04764e8a6e85e3c0baa68d8",
-      "size": 60490
+      "sha256": "d6dcf68d59b4829ea655bb03594d4acce3a50f5050f9055f4fd059d99e86a773",
+      "size": 61810
     },
     {
       "mode": "100644",
@@ -625,8 +625,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/tools_update.py",
-      "sha256": "369d3c625ae4a76b6838d234cf4865ff6f879540c6c6e4fe100b1af0ceeb24b7",
-      "size": 5999
+      "sha256": "945ec70d80cdffce50ddbc0b5aa6c2c04ad159b7ee8f6e9f91b089689246aac8",
+      "size": 6784
     },
     {
       "mode": "100644",
@@ -1471,8 +1471,8 @@
     {
       "mode": "100644",
       "path": "tests/test_update.py",
-      "sha256": "42fb41e6419f7b954df83bcb37238c1b7578361a3563b33885e958be76c8fc1a",
-      "size": 64990
+      "sha256": "ebd85c0eaacec0429de342cdaf18d1f9cf2457a734fe8c085aacb2c1259ae136",
+      "size": 66997
     },
     {
       "mode": "100644",
@@ -1499,10 +1499,10 @@
       "size": 3924
     }
   ],
-  "generated_at": "2026-10-05T09:58:05Z",
-  "payload_sha256": "bef91d40c45a80a8b3649403bccc92cdca17ea5a523228693c75fdf56fb9ed4f",
+  "generated_at": "2026-10-05T10:39:14Z",
+  "payload_sha256": "ac5767cc3ee28b4710698a957ca5135916134b847585aa2435912bc5ff76bc65",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.8-r1",
+  "release_id": "stable-2.1.8-r2",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",

@@ -315,6 +315,46 @@ class UpdateHelperTests(unittest.TestCase):
             cwd=repo,
         )
 
+    def test_cli_update_waits_on_detached_helper_instead_of_running_inline(self):
+        root = Path(tempfile.mkdtemp(prefix="mac-mcp-cli-detached-update-test-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        repo = root / "repo"
+        runtime = root / "runtime"
+        repo.mkdir()
+        runtime.mkdir()
+        log_path = root / "update.log"
+        log_path.write_text("[mac-mcp update] Update complete: old -> new\n", encoding="utf-8")
+        info = SimpleNamespace(
+            repo=str(repo), runtime=str(runtime), branch="main", remote="origin",
+            deployed_commit="a" * 40, target_commit="b" * 40, behind_by=1,
+            update_available=True, dirty=False, release_verified=True,
+            release_id="stable-test", release_version="2.1.8",
+            release_payload_sha256="c" * 64, release_signer_fingerprint="SHA256:test",
+            release_file_count=4, release_artifact_count=0,
+            branch_tip_commit="b" * 40, unverified_ahead=0,
+        )
+        proc = SimpleNamespace(pid=4242, wait=lambda: 0)
+        args = SimpleNamespace(
+            check=False, json=False, repo=str(repo), runtime=str(runtime),
+            branch="main", remote="origin", skip_restart=False, skip_deps=False,
+        )
+        with patch(
+            "mcp_server.cli.resolve_update_paths", return_value=(repo, runtime)
+        ), patch(
+            "mcp_server.cli.check_update", return_value=info
+        ), patch(
+            "mcp_server.cli.secure_bootstrap_update_blocker", return_value=None
+        ), patch(
+            "mcp_server.cli.launch_detached_update",
+            return_value=({"updater_pid": 4242, "log_path": str(log_path)}, proc),
+        ) as launch:
+            from mcp_server import cli as cli_module
+            rc = cli_module.update(args)
+        self.assertEqual(0, rc)
+        launch.assert_called_once()
+        self.assertEqual("main", launch.call_args.kwargs["branch"])
+        self.assertEqual("origin", launch.call_args.kwargs["remote"])
+
     def test_detached_update_stages_helper_and_keeps_single_checkout_clean(self):
         root = Path(tempfile.mkdtemp(prefix="mac-mcp-detached-bootstrap-test-"))
         self.addCleanup(shutil.rmtree, root, True)

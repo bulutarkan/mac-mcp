@@ -2,6 +2,7 @@
 
 ## [2.1.8] - 2026-10-05
 
+- Hardened CLI-driven updates so the updater runs in a detached process session before restarting Mac MCP; updates launched from Mac MCP shell tools now survive their own server restart instead of being cancelled with the hosting tool call.
 - Added a unified low-context perception ladder across snapshot, semantic observation, conditional reuse, targeted visuals, and OCR-last fallback, with bounded context/visual telemetry and deterministic conformance coverage.
 - Added background native window capture, zero-focus semantic input paths, and human/agent workspace arbitration so scoped Computer Use can coexist with the person using the Mac.
 - Added MCP payload Usage metering plus separate provider-native Codex/OpenCode delegated-agent token rollups with local privacy-minimized persistence, 30/90/365-day views, model attribution only when attested, and fail-closed handling for unknown or unavailable accounting.
