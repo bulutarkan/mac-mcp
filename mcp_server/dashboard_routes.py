@@ -17,6 +17,7 @@ from starlette.routing import Route
 from .chrome_background_bridge import chrome_background_bridge
 from .foreground_guard import foreground_authorization
 from .observability import TelemetryManager, sanitize_value
+from .provider_usage import summary as provider_usage_summary
 from .policy import GLOBAL_PROFILE_NAMES, RISK_REGISTRY, is_global_permission_profile, permission_semantics
 from .security import Settings, dashboard_authorized
 from .security_context import SecurityContextManager
@@ -421,6 +422,25 @@ def create_dashboard_routes(
             )
         return JSONResponse(payload)
 
+    async def provider_usage(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        days = max(1, min(_int_query(request, "days", 365), 400))
+        try:
+            payload = provider_usage_summary(days=days)
+        except Exception as exc:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "days": days,
+                    "providers": {},
+                    "error": str(sanitize_value(exc)),
+                },
+                status_code=500,
+            )
+        return JSONResponse(payload)
+
     async def events(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -685,6 +705,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/security/escalate", security_escalate, methods=["POST"]),
         Route("/dashboard/api/events", events, methods=["GET"]),
         Route("/dashboard/api/usage", usage, methods=["GET"]),
+        Route("/dashboard/api/provider-usage", provider_usage, methods=["GET"]),
         Route("/dashboard/api/changes", changes, methods=["GET"]),
         Route("/dashboard/api/browser/show-tab", show_browser_tab, methods=["POST"]),
         Route("/dashboard/api/providers", providers, methods=["GET"]),

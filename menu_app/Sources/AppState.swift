@@ -171,6 +171,69 @@ struct UsageSummaryEnvelope: Decodable, Equatable {
     }
 }
 
+struct ProviderUsageModel: Decodable, Identifiable, Equatable {
+    let model: String
+    let turns: Int
+    let totalTokens: Int?
+
+    var id: String { model }
+
+    enum CodingKeys: String, CodingKey {
+        case model, turns
+        case totalTokens = "total_tokens"
+    }
+}
+
+struct ProviderUsageProvider: Decodable, Equatable {
+    let provider: String
+    let available: Bool?
+    let reason: String?
+    let turns: Int
+    let agents: Int
+    let source: String?
+    let sources: [String]?
+    let schemaVersion: Int
+    let inputTokens: Int?
+    let outputTokens: Int?
+    let reasoningTokens: Int?
+    let cacheReadTokens: Int?
+    let cacheWriteTokens: Int?
+    let totalTokens: Int?
+    let models: [ProviderUsageModel]
+
+    enum CodingKeys: String, CodingKey {
+        case provider, available, reason, turns, agents, source, sources, models
+        case schemaVersion = "schema_version"
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case reasoningTokens = "reasoning_tokens"
+        case cacheReadTokens = "cache_read_tokens"
+        case cacheWriteTokens = "cache_write_tokens"
+        case totalTokens = "total_tokens"
+    }
+}
+
+struct ProviderUsageSummaryEnvelope: Decodable, Equatable {
+    let ok: Bool
+    let days: Int
+    let availableSince: String?
+    let schemaVersion: Int
+    let metricName: String
+    let metricScope: String
+    let fallbackPolicy: String?
+    let providers: [String: ProviderUsageProvider]
+    let diagnostics: [String: Int]
+
+    enum CodingKeys: String, CodingKey {
+        case ok, days, providers, diagnostics
+        case availableSince = "available_since"
+        case schemaVersion = "schema_version"
+        case metricName = "metric_name"
+        case metricScope = "metric_scope"
+        case fallbackPolicy = "fallback_policy"
+    }
+}
+
 struct DashboardSummary: Decodable {
     let version: String?
     let totalCalls: Int?
@@ -1244,6 +1307,9 @@ final class AppState: ObservableObject {
     @Published private(set) var usageSummary: UsageSummaryEnvelope?
     @Published private(set) var usageLoading = false
     @Published private(set) var usageIssue: String?
+    @Published private(set) var providerUsageSummary: ProviderUsageSummaryEnvelope?
+    @Published private(set) var providerUsageLoading = false
+    @Published private(set) var providerUsageIssue: String?
     @Published var recentEvents: [ToolEvent] = []
     @Published var activeEvents: [ToolEvent] = []
     @Published var browserActionStatus = ""
@@ -1625,6 +1691,32 @@ final class AppState: ObservableObject {
             setIfChanged(\.usageIssue, nil)
         } catch {
             setIfChanged(\.usageIssue, "Could not refresh Usage: \(Self.issueText(for: error))")
+        }
+    }
+
+    func refreshProviderUsage(days: Int = 365) async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else {
+            setIfChanged(
+                \.providerUsageIssue,
+                "Could not load Provider Tokens because the server URL is invalid."
+            )
+            return
+        }
+        setIfChanged(\.providerUsageLoading, true)
+        defer { setIfChanged(\.providerUsageLoading, false) }
+        do {
+            let summary: ProviderUsageSummaryEnvelope = try await fetch(
+                base.appendingPathComponent("dashboard/api/provider-usage"),
+                query: ["days": String(max(1, min(days, 400)))],
+                timeout: 4.0
+            )
+            setIfChanged(\.providerUsageSummary, summary)
+            setIfChanged(\.providerUsageIssue, nil)
+        } catch {
+            setIfChanged(
+                \.providerUsageIssue,
+                "Could not refresh Provider Tokens: \(Self.issueText(for: error))"
+            )
         }
     }
 

@@ -101,6 +101,23 @@ private enum UsageActorFilter: String, CaseIterable, Identifiable {
 }
 
 
+private enum ProviderUsagePeriod: String, CaseIterable, Identifiable {
+    case month = "30D"
+    case quarter = "90D"
+    case year = "1Y"
+
+    var id: String { rawValue }
+
+    var days: Int {
+        switch self {
+        case .month: return 30
+        case .quarter: return 90
+        case .year: return 365
+        }
+    }
+}
+
+
 private enum SettingsFeedbackScope: String, Equatable {
     case agents
     case endpoint
@@ -126,6 +143,7 @@ struct SettingsView: View {
     @MacMCPState private var connectionsTab: ConnectionsTab = .browser
     @MacMCPState private var usageAggregation: UsageAggregation = .daily
     @MacMCPState private var usageActor: UsageActorFilter = .all
+    @MacMCPState private var providerUsagePeriod: ProviderUsagePeriod = .year
     @MacMCPState private var saveFeedback: SettingsSaveFeedback?
 
     var body: some View {
@@ -142,10 +160,12 @@ struct SettingsView: View {
             await state.refreshProviders()
             await state.refreshMobileDevices()
             await state.refreshUsage(actorClass: usageActor.apiValue)
+            await state.refreshProviderUsage(days: providerUsagePeriod.days)
         }
         .task(id: selection) {
             if selection == .usage {
                 await state.refreshUsage(actorClass: usageActor.apiValue)
+                await state.refreshProviderUsage(days: providerUsagePeriod.days)
             }
             if selection == .general, state.updateCheckInfo == nil, !state.updateTransactionActive {
                 state.checkForUpdates()
@@ -394,7 +414,10 @@ struct SettingsView: View {
                         ProgressView().controlSize(.small)
                     } else {
                         Button {
-                            Task { await state.refreshUsage(actorClass: usageActor.apiValue) }
+                            Task {
+                                await state.refreshUsage(actorClass: usageActor.apiValue)
+                                await state.refreshProviderUsage(days: providerUsagePeriod.days)
+                            }
                         } label: {
                             Image(systemName: "arrow.clockwise")
                         }
@@ -550,6 +573,77 @@ struct SettingsView: View {
                     }
 
                     GroupBox {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(alignment: .center) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Provider Tokens")
+                                        .font(.subheadline.weight(.semibold))
+                                    Text("Native delegated-agent usage. Never added to MCP Payload Tokens.")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Picker("Period", selection: $providerUsagePeriod) {
+                                    ForEach(ProviderUsagePeriod.allCases) { period in
+                                        Text(period.rawValue).tag(period)
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.segmented)
+                                .frame(width: 150)
+                                .onChange(of: providerUsagePeriod) { period in
+                                    Task {
+                                        await state.refreshProviderUsage(days: period.days)
+                                    }
+                                }
+                            }
+
+                            if state.providerUsageLoading && state.providerUsageSummary == nil {
+                                HStack {
+                                    ProgressView().controlSize(.small)
+                                    Text("Loading provider usage…")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                }
+                            } else {
+                                HStack(alignment: .top, spacing: 10) {
+                                    providerUsageCard(
+                                        title: "Codex",
+                                        symbol: "terminal",
+                                        usage: state.providerUsageSummary?.providers["codex"]
+                                    )
+                                    providerUsageCard(
+                                        title: "OpenCode",
+                                        symbol: "chevron.left.forwardslash.chevron.right",
+                                        usage: state.providerUsageSummary?.providers["opencode"]
+                                    )
+                                }
+                            }
+
+                            if let issue = state.providerUsageIssue {
+                                Label(issue, systemImage: "exclamationmark.triangle")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            } else if let summary = state.providerUsageSummary {
+                                HStack(alignment: .top) {
+                                    Text(summary.metricScope)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Spacer(minLength: 12)
+                                    if let since = summary.availableSince {
+                                        Text("Since \(since)")
+                                    }
+                                }
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    } label: {
+                        Label("Delegated Agents", systemImage: "cpu")
+                    }
+
+                    GroupBox {
                         VStack(alignment: .leading, spacing: 7) {
                             Text(usage.metricScope)
                                 .font(.caption)
@@ -609,6 +703,125 @@ struct SettingsView: View {
             }
             .padding(22)
         }
+    }
+
+    private func providerUsageCard(
+        title: String,
+        symbol: String,
+        usage: ProviderUsageProvider?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Label(title, systemImage: symbol)
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if let usage, usage.available != false {
+                    Text(providerSourceLabel(usage.source))
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(.quaternary, in: Capsule())
+                }
+            }
+
+            if let usage, usage.available != false, usage.turns > 0 {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(providerTokenText(usage.totalTokens))
+                        .font(.title3.weight(.semibold))
+                        .monospacedDigit()
+                        .help(providerExactTokenText(usage.totalTokens))
+                    Text("total tokens")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+
+                HStack(spacing: 8) {
+                    providerUsageMetric("Input", usage.inputTokens)
+                    providerUsageMetric("Cache R", usage.cacheReadTokens)
+                    providerUsageMetric("Cache W", usage.cacheWriteTokens)
+                    providerUsageMetric("Output", usage.outputTokens)
+                    providerUsageMetric("Reason", usage.reasoningTokens)
+                }
+
+                HStack {
+                    Text("\(usage.turns) turns · \(usage.agents) agents")
+                    Spacer()
+                    if usage.models.isEmpty {
+                        Text("Model unattributed")
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+
+                if !usage.models.isEmpty {
+                    DisclosureGroup("By model") {
+                        VStack(spacing: 5) {
+                            ForEach(usage.models) { model in
+                                HStack {
+                                    Text(model.model)
+                                        .font(.system(.caption2, design: .monospaced))
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Text(providerTokenText(model.totalTokens))
+                                        .font(.caption2.monospacedDigit())
+                                        .help(providerExactTokenText(model.totalTokens))
+                                }
+                            }
+                        }
+                        .padding(.top, 5)
+                    }
+                    .font(.caption2)
+                }
+            } else {
+                Text("No provider-reported usage in this period.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(minHeight: 62, alignment: .leading)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(
+            .quaternary.opacity(0.38),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+    }
+
+    private func providerUsageMetric(_ title: String, _ value: Int?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+            Text(providerTokenText(value))
+                .font(.caption.weight(.medium).monospacedDigit())
+                .help(providerExactTokenText(value))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func providerSourceLabel(_ source: String?) -> String {
+        switch source {
+        case "report": return "Exact · Provider"
+        case "native_tokenizer": return "Native tokenizer"
+        case "estimate": return "Estimate"
+        case "mixed": return "Mixed sources"
+        default: return "Provider"
+        }
+    }
+
+    private func providerTokenText(_ value: Int?) -> String {
+        guard let value else { return "—" }
+        return compactNumber(value)
+    }
+
+    private func providerExactTokenText(_ value: Int?) -> String {
+        guard let value else { return "Unavailable for part of this period" }
+        return NumberFormatter.localizedString(
+            from: NSNumber(value: value),
+            number: .decimal
+        ) + " tokens"
     }
 
     @ViewBuilder

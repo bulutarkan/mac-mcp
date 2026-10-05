@@ -53,6 +53,13 @@ from .agent_admission import (
     request_admission, snapshot as admission_snapshot,
 )
 from .workspace_arbitration import sanitize_resource_claims
+from .provider_usage import (
+    SOURCE_REPORT as PROVIDER_USAGE_SOURCE_REPORT,
+    UsageRecord as ProviderUsageRecord,
+    get_store as get_provider_usage_store,
+    normalize_codex_usage,
+    normalize_opencode_usage,
+)
 
 AGENTS_DIR = BASE_DIR / "agents"
 TEAMS_DIR = BASE_DIR / "agent_teams"
@@ -5340,6 +5347,229 @@ def _apply_provider_event(meta: Dict[str, Any], event: Dict[str, Any], now: floa
     return True
 
 
+def _provider_usage_models(
+    meta: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str], Optional[str], bool]:
+    effective = str(meta.get("effective_model") or "").strip() or None
+    requested = (
+        str(meta.get("requested_model") or meta.get("model") or "").strip() or None
+    )
+    if not bool(meta.get("model_selection_verified")):
+        requested = None
+    aggregate = effective or requested
+    return requested, effective, aggregate, bool(aggregate)
+
+
+def _provider_usage_timestamp(event: Dict[str, Any], fallback: float) -> float:
+    raw = event.get("timestamp")
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+        if value > 10_000_000_000:
+            value /= 1000.0
+        if value > 0:
+            return value
+    return fallback
+
+
+def _prepare_codex_usage_attempt(
+    meta: Dict[str, Any],
+    agent_id: str,
+    attempt_index: int,
+) -> str:
+    usage_attempt_key = (
+        f"{agent_id}:attempt:{int(meta.get('attempt') or 1)}:"
+        f"retry:{int(attempt_index)}"
+    )
+    if str(meta.get("provider_usage_attempt_key") or "") != usage_attempt_key:
+        meta["provider_usage_attempt_key"] = usage_attempt_key
+        meta["provider_usage_attempt_claimed_key"] = None
+        meta["provider_usage_turn_key"] = None
+        meta["provider_usage_turn_ordinal"] = None
+        meta["provider_usage_turn_open"] = False
+    return usage_attempt_key
+
+
+def _codex_usage_attempt_key(agent_id: str, meta: Dict[str, Any]) -> str:
+    existing = str(meta.get("provider_usage_attempt_key") or "").strip()
+    if existing:
+        return existing
+    return (
+        f"{agent_id}:attempt:{int(meta.get('attempt') or 1)}:"
+        f"retry:{int(meta.get('retry_count') or 0)}"
+    )
+
+
+def _persist_codex_usage_turn(
+    agent_id: str,
+    saved: Dict[str, Any],
+) -> Dict[str, Any]:
+    attempt_key = _codex_usage_attempt_key(agent_id, saved)
+    if (
+        str(saved.get("provider_usage_attempt_claimed_key") or "") == attempt_key
+        and saved.get("provider_usage_turn_key")
+    ):
+        return saved
+
+    session_id = str(
+        saved.get("session_id")
+        or saved.get("resume_session_id")
+        or f"agent:{agent_id}"
+    ).strip()
+    try:
+        ordinal, event_key = get_provider_usage_store().begin_codex_turn(session_id)
+    except Exception:
+        try:
+            get_provider_usage_store().diagnostic_increment(
+                "codex_turn_identity_errors"
+            )
+        except Exception:
+            pass
+        return saved
+
+    def update(current: Dict[str, Any]) -> None:
+        current["provider_usage_attempt_key"] = attempt_key
+        current["provider_usage_attempt_claimed_key"] = attempt_key
+        current["provider_usage_turn_ordinal"] = ordinal
+        current["provider_usage_turn_key"] = event_key
+        current["provider_usage_turn_open"] = True
+        current["updated_at"] = _now()
+
+    try:
+        return _update_meta(agent_id, update)
+    except HTTPException:
+        return saved
+
+
+def _close_codex_usage_turn(agent_id: str, event_key: Optional[str]) -> None:
+    def close(current: Dict[str, Any]) -> None:
+        current["provider_usage_turn_open"] = False
+        if event_key:
+            current["provider_usage_last_event_key"] = event_key
+        current["updated_at"] = _now()
+
+    try:
+        _update_meta(agent_id, close)
+    except HTTPException:
+        pass
+
+
+def _ingest_provider_usage_event(
+    agent_id: str,
+    saved: Dict[str, Any],
+    event: Dict[str, Any],
+    now: float,
+) -> None:
+    provider = str(saved.get("provider") or "").strip().lower()
+    event_type = str(event.get("type") or "")
+    if provider not in {"codex", "opencode"}:
+        return
+
+    store = get_provider_usage_store()
+    requested_model, effective_model, model, model_verified = (
+        _provider_usage_models(saved)
+    )
+    timestamp = _provider_usage_timestamp(event, now)
+
+    if provider == "codex":
+        if event_type == "turn.started":
+            _persist_codex_usage_turn(agent_id, saved)
+            return
+        if event_type in {"turn.failed", "error"}:
+            _close_codex_usage_turn(
+                agent_id,
+                str(saved.get("provider_usage_turn_key") or "").strip() or None,
+            )
+            return
+        if event_type != "turn.completed":
+            return
+
+        current = saved
+        if not current.get("provider_usage_turn_key"):
+            current = _persist_codex_usage_turn(agent_id, current)
+        event_key = str(current.get("provider_usage_turn_key") or "").strip()
+        ordinal = current.get("provider_usage_turn_ordinal")
+        session_id = str(
+            current.get("session_id")
+            or current.get("resume_session_id")
+            or f"agent:{agent_id}"
+        ).strip()
+        usage = event.get("usage") if isinstance(event.get("usage"), dict) else None
+        normalized = normalize_codex_usage(usage)
+        try:
+            if not normalized.recognized:
+                if usage:
+                    store.diagnostic_increment("unknown_usage_schema_codex")
+                return
+            if not event_key or ordinal is None:
+                store.diagnostic_increment("invalid_identity_codex")
+                return
+            store.ingest(ProviderUsageRecord(
+                event_key=event_key,
+                provider="codex",
+                session_id=session_id,
+                event_id=f"turn:{int(ordinal)}",
+                timestamp=timestamp,
+                agent_id=agent_id,
+                model=model,
+                model_verified=model_verified,
+                source=PROVIDER_USAGE_SOURCE_REPORT,
+        requested_model=requested_model,
+        effective_model=effective_model,
+                input_tokens=normalized.input_tokens,
+                output_tokens=normalized.output_tokens,
+                reasoning_tokens=normalized.reasoning_tokens,
+                cache_read_tokens=normalized.cache_read_tokens,
+                cache_write_tokens=normalized.cache_write_tokens,
+                total_tokens=normalized.total_tokens,
+            ))
+        finally:
+            _close_codex_usage_turn(agent_id, event_key or None)
+        return
+
+    if event_type != "step_finish":
+        return
+    part = event.get("part") if isinstance(event.get("part"), dict) else {}
+    tokens = part.get("tokens") if isinstance(part.get("tokens"), dict) else None
+    normalized = normalize_opencode_usage(tokens)
+    if not normalized.recognized:
+        if tokens:
+            store.diagnostic_increment("unknown_usage_schema_opencode")
+        return
+
+    session_id = str(
+        event.get("sessionID")
+        or part.get("sessionID")
+        or saved.get("session_id")
+        or saved.get("resume_session_id")
+        or ""
+    ).strip()
+    part_id = str(part.get("id") or "").strip()
+    message_id = str(part.get("messageID") or part.get("messageId") or "").strip()
+    if not session_id or not part_id:
+        store.diagnostic_increment("invalid_identity_opencode")
+        return
+    event_id = part_id if not message_id else f"{message_id}:{part_id}"
+    store.ingest(ProviderUsageRecord(
+        event_key=f"opencode:{session_id}:{part_id}",
+        provider="opencode",
+        session_id=session_id,
+        event_id=event_id,
+        timestamp=timestamp,
+        agent_id=agent_id,
+        model=model,
+        model_verified=model_verified,
+        source=PROVIDER_USAGE_SOURCE_REPORT,
+        requested_model=requested_model,
+        effective_model=effective_model,
+        input_tokens=normalized.input_tokens,
+        output_tokens=normalized.output_tokens,
+        reasoning_tokens=normalized.reasoning_tokens,
+        cache_read_tokens=normalized.cache_read_tokens,
+        cache_write_tokens=normalized.cache_write_tokens,
+        total_tokens=normalized.total_tokens,
+    ))
+
+
 def _record_provider_event(agent_id: str, raw_line: str) -> None:
     now = _now()
     try:
@@ -5348,6 +5578,11 @@ def _record_provider_event(agent_id: str, raw_line: str) -> None:
         event = {"type": "output"}
     try:
         saved = _update_meta(agent_id, lambda meta: _apply_provider_event(meta, event, now))
+        try:
+            _ingest_provider_usage_event(agent_id, saved, event, now)
+        except Exception:
+            # Provider token accounting is observational; it must never fail an agent.
+            pass
         try:
             update_provider_state(
                 agent_id, session_id=str(saved.get("session_id") or "") or None,
@@ -5426,6 +5661,8 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
                 "provider_pid": proc.pid, "provider_started_at": now, "last_activity_at": now,
                 "phase": "provider_starting", "updated_at": now, "retry_count": attempt_index,
             })
+            if str(current.get("provider") or "").lower() == "codex":
+                _prepare_codex_usage_attempt(current, agent_id, attempt_index)
             if str(current.get("provider") or "").lower() == "chatgpt" and not current.get("turn_started_at"):
                 current["turn_started_at"] = now
                 current["turn_count"] = max(1, int(current.get("turn_count") or 0))
