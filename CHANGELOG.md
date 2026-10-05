@@ -2,6 +2,7 @@
 
 ## [2.1.8] - 2026-10-05
 
+- Sanitized updater-spawned server environments so PYTHONPATH/PYTHONHOME overrides cannot redirect a restarted runtime back to a source checkout; the restarted server is explicitly bound to the deployed runtime root.
 - Hardened updater restart ownership recovery so a missing/stale server PID record can be rebuilt only from exactly one verified Mac MCP listener; foreign or ambiguous listeners still fail closed.
 - Hardened CLI-driven updates so the updater runs in a detached process session before restarting Mac MCP; updates launched from Mac MCP shell tools now survive their own server restart instead of being cancelled with the hosting tool call.
 - Added a unified low-context perception ladder across snapshot, semantic observation, conditional reuse, targeted visuals, and OCR-last fallback, with bounded context/visual telemetry and deterministic conformance coverage.

@@ -734,10 +734,15 @@ def _restart_cli(runtime: Path, host: str, port: int) -> None:
     if not python.exists():
         raise UpdateError(f"Runtime Python was not found: {python}")
     state_dir.mkdir(parents=True, exist_ok=True)
+    server_env = os.environ.copy()
+    server_env.pop("PYTHONPATH", None)
+    server_env.pop("PYTHONHOME", None)
+    server_env["MAC_MCP_RUNTIME_DIR"] = str(runtime)
     log = log_file.open("a", encoding="utf-8")
     proc = subprocess.Popen(
         [str(python), "-m", "uvicorn", "mcp_server.main:app", "--host", host, "--port", str(port)],
         cwd=str(runtime), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+        env=server_env,
         start_new_session=True,
     )
 

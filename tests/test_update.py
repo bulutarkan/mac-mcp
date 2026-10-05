@@ -376,6 +376,54 @@ class UpdateHelperTests(unittest.TestCase):
                 write_record.call_args.kwargs["metadata"]["ownership_source"],
             )
 
+    def test_restart_cli_strips_python_import_overrides_from_server_env(self):
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-update-restart-env-") as td:
+            root = Path(td)
+            runtime = root / "runtime"
+            python = runtime / ".venv" / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.write_text("", encoding="utf-8")
+            pid_file = Path.home() / ".mac-mcp" / "mac-mcp.pid"
+            missing = SimpleNamespace(
+                legacy_match=False,
+                pid=None,
+                status="missing",
+                valid=False,
+                reason="pid_file_missing",
+            )
+            snapshot = SimpleNamespace(pid=4321)
+            proc = SimpleNamespace(pid=4321)
+            proc.poll = lambda: None
+            proc.terminate = lambda: None
+
+            with patch.dict(
+                os.environ,
+                {"PYTHONPATH": "/tmp/source-override", "PYTHONHOME": "/tmp/python-home"},
+                clear=False,
+            ), patch.object(
+                update_helper_module.Path, "home", return_value=root / "home"
+            ), patch.object(
+                update_helper_module, "validate_process_record", return_value=missing
+            ), patch.object(
+                update_helper_module, "_adopt_verified_runtime_listener", return_value=None
+            ), patch.object(
+                update_helper_module.subprocess, "Popen", return_value=proc
+            ) as popen, patch.object(
+                update_helper_module, "process_snapshot", return_value=snapshot
+            ), patch.object(
+                update_helper_module, "matches_role", return_value=True
+            ), patch.object(
+                update_helper_module, "write_process_record"
+            ), patch.object(
+                update_helper_module.time, "sleep"
+            ):
+                update_helper_module._restart_cli(runtime, "127.0.0.1", 8765)
+
+            env = popen.call_args.kwargs["env"]
+            self.assertNotIn("PYTHONPATH", env)
+            self.assertNotIn("PYTHONHOME", env)
+            self.assertEqual(str(runtime), env["MAC_MCP_RUNTIME_DIR"])
+
     def test_updater_refuses_foreign_listener_when_pid_record_is_missing(self):
         with tempfile.TemporaryDirectory(prefix="mac-mcp-update-adopt-foreign-") as td:
             root = Path(td)
