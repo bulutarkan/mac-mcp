@@ -113,14 +113,31 @@ return (finderRunning as text) & rs & folderPath & rs & selectedText
     }
 
 
+def _browser_process_running(browser: str) -> bool:
+    process_name = "Safari" if browser == "Safari" else "Google Chrome"
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/pgrep", "-x", process_name],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
 def _read_browser_tabs(settings: Settings, *, browser_tab_limit: int, **_: Any) -> Dict[str, Any]:
     browsers: Dict[str, Any] = {}
     combined: List[Dict[str, Any]] = []
     for browser in ("Safari", "Chrome"):
+        if not _browser_process_running(browser):
+            browsers[browser] = {"ok": True, "count": 0, "running": False}
+            continue
         try:
             result = browser_list_tabs(settings, browser)
             tabs = list(result.get("tabs") or [])
-            browsers[browser] = {"ok": True, "count": len(tabs)}
+            browsers[browser] = {"ok": True, "count": len(tabs), "running": True}
             for row in tabs:
                 if not isinstance(row, dict):
                     continue

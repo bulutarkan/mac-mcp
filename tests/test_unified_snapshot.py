@@ -109,6 +109,53 @@ class UnifiedSnapshotTests(unittest.TestCase):
         self.assertTrue(result["output_truncated"])
         self.assertEqual(len(encoded), result["output_bytes"])
 
+    def test_browser_snapshot_skips_closed_browsers_without_enumerating_them(self) -> None:
+        with patch.object(
+            tools_snapshot, "_browser_process_running", return_value=False
+        ), patch.object(
+            tools_snapshot, "browser_list_tabs"
+        ) as list_tabs:
+            data = tools_snapshot._read_browser_tabs(
+                self.settings, browser_tab_limit=12
+            )
+
+        list_tabs.assert_not_called()
+        self.assertEqual(0, data["count"])
+        self.assertFalse(data["browsers"]["Safari"]["running"])
+        self.assertFalse(data["browsers"]["Chrome"]["running"])
+
+    def test_browser_snapshot_only_enumerates_running_browser(self) -> None:
+        def running(browser: str) -> bool:
+            return browser == "Safari"
+
+        with patch.object(
+            tools_snapshot, "_browser_process_running", side_effect=running
+        ), patch.object(
+            tools_snapshot,
+            "browser_list_tabs",
+            return_value={
+                "ok": True,
+                "tabs": [{
+                    "browser": "Safari",
+                    "window_index": 1,
+                    "tab_index": 1,
+                    "active": True,
+                    "title": "Example",
+                    "url": "https://example.com",
+                    "tab_handle": "btab_safari_example",
+                }],
+            },
+        ) as list_tabs:
+            data = tools_snapshot._read_browser_tabs(
+                self.settings, browser_tab_limit=12
+            )
+
+        list_tabs.assert_called_once_with(self.settings, "Safari")
+        self.assertEqual(1, data["count"])
+        self.assertTrue(data["browsers"]["Safari"]["running"])
+        self.assertFalse(data["browsers"]["Chrome"]["running"])
+        self.assertEqual("btab_safari_example", data["tabs"][0]["tab_handle"])
+
     def test_clipboard_reader_returns_metadata_not_contents(self) -> None:
         with patch.object(tools_snapshot, "_run_osascript", return_value="«class utf8», 37, string, 37"):
             data = tools_snapshot._read_clipboard(self.settings)
