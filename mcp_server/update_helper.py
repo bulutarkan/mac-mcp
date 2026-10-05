@@ -19,8 +19,10 @@ from typing import Iterable, Optional
 if __package__:
     from . import release_trust
     from .managed_process import (
+        listener_pids,
         matches_role,
         migrate_legacy_record,
+        port_is_listening,
         process_snapshot,
         validate_process_record,
         write_process_record,
@@ -40,8 +42,10 @@ else:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import release_trust
     from managed_process import (
+        listener_pids,
         matches_role,
         migrate_legacy_record,
+        port_is_listening,
         process_snapshot,
         validate_process_record,
         write_process_record,
@@ -584,13 +588,81 @@ def _restart_launchd(label: str) -> None:
         raise UpdateError((proc.stderr or proc.stdout or f"Could not restart launchd service {label}").strip())
 
 
+def _adopt_verified_runtime_listener(
+    pid_file: Path,
+    runtime: Path,
+    port: int,
+):
+    """Adopt exactly one verified Mac MCP listener when durable PID state is absent.
+
+    Port occupancy alone is never ownership proof. Foreign or ambiguous listeners
+    remain fail-closed.
+    """
+    owned: list[tuple[int, object]] = []
+    foreign: list[int] = []
+    for pid in listener_pids(int(port)):
+        snapshot = process_snapshot(pid)
+        if snapshot is not None and matches_role(
+            snapshot,
+            "server",
+            port=int(port),
+            project_root=runtime,
+        ):
+            owned.append((pid, snapshot))
+        else:
+            foreign.append(pid)
+
+    if not owned and not foreign and port_is_listening(int(port)):
+        foreign.append(0)
+
+    if foreign:
+        rendered = ", ".join(str(pid) for pid in foreign if pid > 0) or "unknown"
+        raise UpdateError(
+            f"Port {port} is listening under unmanaged process pid(s) {rendered}; "
+            "refusing updater adoption."
+        )
+    if len(owned) > 1:
+        raise UpdateError(
+            f"Port {port} has multiple verified Mac MCP listeners; refusing ambiguous updater adoption."
+        )
+    if not owned:
+        return None
+
+    pid, snapshot = owned[0]
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        write_process_record(
+            pid_file,
+            "server",
+            pid,
+            metadata={
+                "port": int(port),
+                "ownership_source": "updater_verified_listener",
+            },
+            snapshot=snapshot,
+        )
+    except (OSError, RuntimeError) as exc:
+        raise UpdateError(
+            "Verified Mac MCP listener could not be recorded safely for updater restart."
+        ) from exc
+
+    validation = validate_process_record(
+        pid_file,
+        "server",
+        port=int(port),
+        project_root=runtime,
+    )
+    if not validation.valid or validation.pid != pid:
+        raise UpdateError(
+            "Verified Mac MCP listener adoption could not be revalidated before restart."
+        )
+    return validation
+
+
 def _restart_cli(runtime: Path, host: str, port: int) -> None:
     state_dir = Path.home() / ".mac-mcp"
     pid_file = state_dir / "mac-mcp.pid"
     log_file = state_dir / "mac-mcp.log"
-    if not pid_file.exists():
-        raise UpdateError("Could not determine how Mac MCP is managed. Restart the service manually.")
-
     validation = validate_process_record(
         pid_file,
         "server",
@@ -609,7 +681,8 @@ def _restart_cli(runtime: Path, host: str, port: int) -> None:
     old_pid = validation.pid
     if validation.status in {"dead", "missing", "invalid_record"}:
         pid_file.unlink(missing_ok=True)
-        old_pid = None
+        validation = _adopt_verified_runtime_listener(pid_file, runtime, int(port))
+        old_pid = validation.pid if validation is not None else None
     elif not validation.valid or old_pid is None:
         raise UpdateError(
             "Refusing to restart Mac MCP because the recorded PID identity could not be verified "

@@ -355,6 +355,42 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertEqual("main", launch.call_args.kwargs["branch"])
         self.assertEqual("origin", launch.call_args.kwargs["remote"])
 
+    def test_updater_adopts_single_verified_listener_when_pid_record_is_missing(self):
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-update-adopt-") as td:
+            root = Path(td)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            pid_file = root / "state" / "mac-mcp.pid"
+            snapshot = SimpleNamespace(pid=4242)
+            valid = SimpleNamespace(valid=True, pid=4242)
+
+            with patch.object(update_helper_module, "listener_pids", return_value=[4242]),                  patch.object(update_helper_module, "process_snapshot", return_value=snapshot),                  patch.object(update_helper_module, "matches_role", return_value=True),                  patch.object(update_helper_module, "port_is_listening", return_value=True),                  patch.object(update_helper_module, "write_process_record") as write_record,                  patch.object(update_helper_module, "validate_process_record", return_value=valid):
+                adopted = update_helper_module._adopt_verified_runtime_listener(
+                    pid_file, runtime, 8765
+                )
+
+            self.assertIs(adopted, valid)
+            write_record.assert_called_once()
+            self.assertEqual(
+                "updater_verified_listener",
+                write_record.call_args.kwargs["metadata"]["ownership_source"],
+            )
+
+    def test_updater_refuses_foreign_listener_when_pid_record_is_missing(self):
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-update-adopt-foreign-") as td:
+            root = Path(td)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            pid_file = root / "state" / "mac-mcp.pid"
+            snapshot = SimpleNamespace(pid=9999)
+
+            with patch.object(update_helper_module, "listener_pids", return_value=[9999]),                  patch.object(update_helper_module, "process_snapshot", return_value=snapshot),                  patch.object(update_helper_module, "matches_role", return_value=False),                  patch.object(update_helper_module, "port_is_listening", return_value=True),                  patch.object(update_helper_module, "write_process_record") as write_record:
+                with self.assertRaisesRegex(UpdateError, "unmanaged process"):
+                    update_helper_module._adopt_verified_runtime_listener(
+                        pid_file, runtime, 8765
+                    )
+            write_record.assert_not_called()
+
     def test_detached_update_stages_helper_and_keeps_single_checkout_clean(self):
         root = Path(tempfile.mkdtemp(prefix="mac-mcp-detached-bootstrap-test-"))
         self.addCleanup(shutil.rmtree, root, True)
