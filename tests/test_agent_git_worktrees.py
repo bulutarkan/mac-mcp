@@ -20,6 +20,7 @@ from mcp_server.agent_worktrees import (
     prepare_worktree,
     reuse_worktree,
     seed_worktree,
+    validate_integration_worktree,
 )
 from mcp_server.policy_scope import ResourceScope
 
@@ -237,6 +238,38 @@ class AgentGitWorktreeCoreTests(unittest.TestCase):
             self.assertEqual("b0\n", (repo / "b.txt").read_text())
             self.assertEqual(2, len(seeded["seeded_from"]))
 
+    def test_dependency_fan_in_same_file_disjoint_hunks_stays_on_fast_path(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = init_repo(Path(td))
+            baseline = "\n".join(f"line-{index}" for index in range(1, 13)) + "\n"
+            (repo / "a.txt").write_text(baseline, encoding="utf-8")
+            git(repo, "add", "a.txt")
+            git(repo, "commit", "-m", "multiline base")
+            base = git(repo, "rev-parse", "HEAD")
+            first = prepare_worktree(agent_id="agt_hunk_a", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            second = prepare_worktree(agent_id="agt_hunk_b", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            target = prepare_worktree(agent_id="agt_hunk_i", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            self.addCleanup(cleanup_worktree, first, force=True)
+            self.addCleanup(cleanup_worktree, second, force=True)
+            self.addCleanup(cleanup_worktree, target, force=True)
+            first_lines = baseline.splitlines()
+            first_lines[1] = "line-2-from-a"
+            Path(first["path"], "a.txt").write_text("\n".join(first_lines) + "\n", encoding="utf-8")
+            second_lines = baseline.splitlines()
+            second_lines[10] = "line-11-from-b"
+            Path(second["path"], "a.txt").write_text("\n".join(second_lines) + "\n", encoding="utf-8")
+
+            seeded = seed_worktree(target, [first, second], conflict_mode="manifest")
+
+            merged = Path(seeded["path"], "a.txt").read_text(encoding="utf-8")
+            self.assertIn("line-2-from-a", merged)
+            self.assertIn("line-11-from-b", merged)
+            self.assertFalse(seeded["integration_required"])
+            self.assertEqual("clean_fan_in", seeded["integration_state"])
+            self.assertEqual("applied", seeded["seeded_from"][0]["status"])
+            self.assertEqual("applied", seeded["seeded_from"][1]["status"])
+            self.assertEqual(baseline, (repo / "a.txt").read_text(encoding="utf-8"))
+
     def test_dependency_fan_in_overlap_fails_without_mutating_target_or_main(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             repo = init_repo(Path(td))
@@ -254,6 +287,150 @@ class AgentGitWorktreeCoreTests(unittest.TestCase):
             self.assertEqual("git_dependency_conflict", ctx.exception.code)
             # First dependency may already be present in the throwaway target; source tree is never touched.
             self.assertEqual("a0\n", (repo / "a.txt").read_text())
+
+    def test_dependency_fan_in_overlap_can_emit_bounded_integration_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = init_repo(Path(td))
+            base = git(repo, "rev-parse", "HEAD")
+            first = prepare_worktree(agent_id="agt_dep_a", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            second = prepare_worktree(agent_id="agt_dep_b", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            target = prepare_worktree(agent_id="agt_integrate", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            self.addCleanup(cleanup_worktree, first, force=True)
+            self.addCleanup(cleanup_worktree, second, force=True)
+            self.addCleanup(cleanup_worktree, target, force=True)
+            Path(first["path"], "a.txt").write_text("from-a\n", encoding="utf-8")
+            Path(second["path"], "a.txt").write_text("from-b\n", encoding="utf-8")
+            first_source = {**first, "source_agent_id": "agt_dep_a", "source_task_id": "task-a"}
+            second_source = {**second, "source_agent_id": "agt_dep_b", "source_task_id": "task-b"}
+
+            seeded = seed_worktree(target, [first_source, second_source], conflict_mode="manifest")
+
+            self.assertEqual("from-a\n", Path(seeded["path"], "a.txt").read_text())
+            self.assertEqual("a0\n", (repo / "a.txt").read_text())
+            self.assertTrue(seeded["integration_required"])
+            self.assertEqual("integration_required", seeded["integration_state"])
+            manifest = seeded["conflict_manifest"]
+            self.assertEqual(1, manifest["version"])
+            self.assertEqual(base, manifest["base_commit"])
+            self.assertEqual(1, len(manifest["conflicts"]))
+            conflict = manifest["conflicts"][0]
+            self.assertEqual("agt_dep_b", conflict["source_agent_id"])
+            self.assertEqual("task-b", conflict["source_task_id"])
+            self.assertEqual(["a.txt"], conflict["changed_files"])
+            self.assertIn("from-b", conflict["patch"])
+            self.assertEqual(64, len(conflict["patch_sha256"]))
+            self.assertIn("a.txt", conflict["seed_fingerprints"])
+            self.assertEqual("conflict", seeded["seeded_from"][1]["status"])
+
+    def test_integration_validation_blocks_unchanged_conflict_path_and_markers(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = init_repo(Path(td))
+            base = git(repo, "rev-parse", "HEAD")
+            first = prepare_worktree(agent_id="agt_val_a", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            second = prepare_worktree(agent_id="agt_val_b", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            target = prepare_worktree(agent_id="agt_val_i", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            self.addCleanup(cleanup_worktree, first, force=True)
+            self.addCleanup(cleanup_worktree, second, force=True)
+            self.addCleanup(cleanup_worktree, target, force=True)
+            Path(first["path"], "a.txt").write_text("from-a\n", encoding="utf-8")
+            Path(second["path"], "a.txt").write_text("from-b\n", encoding="utf-8")
+            seeded = seed_worktree(target, [first, second], conflict_mode="manifest")
+            with self.assertRaises(AgentWorktreeError) as unchanged:
+                validate_integration_worktree(seeded)
+            self.assertEqual("git_integration_unresolved", unchanged.exception.code)
+            self.assertEqual(["a.txt"], unchanged.exception.details["unchanged_paths"])
+
+            Path(seeded["path"], "a.txt").write_text(
+                "<<<<<<< dependency-a\nfrom-a\n=======\nfrom-b\n>>>>>>> dependency-b\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(AgentWorktreeError) as markers:
+                validate_integration_worktree(seeded)
+            self.assertEqual("git_integration_unresolved", markers.exception.code)
+            self.assertEqual(["a.txt"], markers.exception.details["conflict_marker_paths"])
+
+            Path(seeded["path"], "a.txt").write_text("from-a + from-b\n", encoding="utf-8")
+            resolved = validate_integration_worktree(seeded)
+            self.assertTrue(resolved["ok"])
+            self.assertEqual("resolved", resolved["integration_state"])
+            self.assertEqual(1, resolved["conflict_count"])
+
+    def test_later_clean_patch_cannot_fake_resolution_of_earlier_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = init_repo(Path(td))
+            baseline = "\n".join(f"line-{index}" for index in range(1, 13)) + "\n"
+            (repo / "a.txt").write_text(baseline, encoding="utf-8")
+            git(repo, "add", "a.txt")
+            git(repo, "commit", "-m", "fan-in base")
+            base = git(repo, "rev-parse", "HEAD")
+            first = prepare_worktree(agent_id="agt_three_a", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            second = prepare_worktree(agent_id="agt_three_b", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            third = prepare_worktree(agent_id="agt_three_c", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            target = prepare_worktree(agent_id="agt_three_i", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            for state in (first, second, third, target):
+                self.addCleanup(cleanup_worktree, state, force=True)
+            a_lines = baseline.splitlines()
+            a_lines[1] = "line-2-from-a"
+            Path(first["path"], "a.txt").write_text("\n".join(a_lines) + "\n", encoding="utf-8")
+            b_lines = baseline.splitlines()
+            b_lines[1] = "line-2-from-b"
+            Path(second["path"], "a.txt").write_text("\n".join(b_lines) + "\n", encoding="utf-8")
+            c_lines = baseline.splitlines()
+            c_lines[10] = "line-11-from-c"
+            Path(third["path"], "a.txt").write_text("\n".join(c_lines) + "\n", encoding="utf-8")
+
+            seeded = seed_worktree(target, [first, second, third], conflict_mode="manifest")
+
+            merged = Path(seeded["path"], "a.txt").read_text(encoding="utf-8")
+            self.assertIn("line-2-from-a", merged)
+            self.assertIn("line-11-from-c", merged)
+            self.assertNotIn("line-2-from-b", merged)
+            self.assertEqual("conflict", seeded["seeded_from"][1]["status"])
+            with self.assertRaises(AgentWorktreeError) as ctx:
+                validate_integration_worktree(seeded)
+            self.assertEqual("git_integration_unresolved", ctx.exception.code)
+            self.assertEqual(["a.txt"], ctx.exception.details["unchanged_paths"])
+
+    def test_integration_validation_rejects_tampered_manifest_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = init_repo(Path(td))
+            base = git(repo, "rev-parse", "HEAD")
+            first = prepare_worktree(agent_id="agt_tamper_a", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            second = prepare_worktree(agent_id="agt_tamper_b", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            target = prepare_worktree(agent_id="agt_tamper_i", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            for state in (first, second, target):
+                self.addCleanup(cleanup_worktree, state, force=True)
+            Path(first["path"], "a.txt").write_text("from-a\n", encoding="utf-8")
+            Path(second["path"], "a.txt").write_text("from-b\n", encoding="utf-8")
+            seeded = seed_worktree(target, [first, second], conflict_mode="manifest")
+            tampered = dict(seeded)
+            tampered_manifest = json.loads(json.dumps(seeded["conflict_manifest"]))
+            tampered_manifest["total_patch_bytes"] += 1
+            tampered["conflict_manifest"] = tampered_manifest
+            with self.assertRaises(AgentWorktreeError) as ctx:
+                validate_integration_worktree(tampered)
+            self.assertEqual("git_integration_manifest_corrupt", ctx.exception.code)
+
+    def test_dependency_fan_in_manifest_rejects_binary_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = init_repo(Path(td))
+            binary = repo / "blob.bin"
+            binary.write_bytes(b"\x00base\n")
+            git(repo, "add", "blob.bin")
+            git(repo, "commit", "-m", "binary base")
+            base = git(repo, "rev-parse", "HEAD")
+            first = prepare_worktree(agent_id="agt_bin_a", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            second = prepare_worktree(agent_id="agt_bin_b", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            target = prepare_worktree(agent_id="agt_bin_i", cwd=repo, path_roots=[str(repo)], mode="required", base_commit=base)
+            self.addCleanup(cleanup_worktree, first, force=True)
+            self.addCleanup(cleanup_worktree, second, force=True)
+            self.addCleanup(cleanup_worktree, target, force=True)
+            Path(first["path"], "blob.bin").write_bytes(b"\x00first\n")
+            Path(second["path"], "blob.bin").write_bytes(b"\x00second\n")
+            with self.assertRaises(AgentWorktreeError) as ctx:
+                seed_worktree(target, [first, second], conflict_mode="manifest")
+            self.assertEqual("git_dependency_conflict_unsupported", ctx.exception.code)
+            self.assertEqual(b"\x00base\n", binary.read_bytes())
 
     def test_reuse_keeps_same_worktree_for_resume_or_revision(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -385,6 +562,44 @@ class AgentGitWorktreeSpawnIntegrationTests(unittest.TestCase):
         self.assertEqual(parent["agent_id"], child_meta["worktree"]["shared_from_agent_id"])
         self.assertEqual("carried\n", Path(child_meta["cwd"], "a.txt").read_text())
 
+    def test_spawn_internal_turns_dependency_conflict_into_isolated_integration_agent(self) -> None:
+        base = git(self.repo, "rev-parse", "HEAD")
+        first_id = "agt_seed_a"
+        second_id = "agt_seed_b"
+        first = prepare_worktree(agent_id=first_id, cwd=self.repo, path_roots=[str(self.repo)], mode="required", base_commit=base)
+        second = prepare_worktree(agent_id=second_id, cwd=self.repo, path_roots=[str(self.repo)], mode="required", base_commit=base)
+        Path(first["path"], "a.txt").write_text("from-a\n", encoding="utf-8")
+        Path(second["path"], "a.txt").write_text("from-b\n", encoding="utf-8")
+        agents._write_meta(first_id, {"agent_id": first_id, "team_task_id": "task-a", "worktree": first})
+        agents._write_meta(second_id, {"agent_id": second_id, "team_task_id": "task-b", "worktree": second})
+        scope = ResourceScope.from_dict({
+            "access_mode": "workspace_write", "path_roots": [str(self.repo.resolve())],
+        })
+
+        result = agents._spawn_internal(
+            settings=None, provider="opencode", prompt="integrate dependencies", model=None, reasoning=None,
+            cwd=str(self.repo), timeout_s=60, title="integrate", result_style="concise",
+            access_mode="workspace_write", scope=scope, permission_profile="developer",
+            git_isolation="required", git_base_commit=base,
+            seed_worktree_agent_ids=[first_id, second_id], seed_conflict_mode="manifest",
+        )
+
+        meta = agents._read_meta(result["agent_id"])
+        state = meta["worktree"]
+        self.assertTrue(state["integration_required"])
+        self.assertEqual("resolving", state["integration_state"])
+        self.assertEqual("from-a\n", Path(state["path"], "a.txt").read_text(encoding="utf-8"))
+        self.assertEqual("a0\n", (self.repo / "a.txt").read_text(encoding="utf-8"))
+        manifest = json.loads((agents.AGENTS_DIR / result["agent_id"] / "conflict_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual("agt_seed_b", manifest["conflicts"][0]["source_agent_id"])
+        self.assertEqual("task-b", manifest["conflicts"][0]["source_task_id"])
+        effective_prompt = (agents.AGENTS_DIR / result["agent_id"] / "effective_prompt.txt").read_text(encoding="utf-8")
+        self.assertIn("Dependency integration is required", effective_prompt)
+        self.assertIn("from-b", effective_prompt)
+        self.assertTrue(result["worktree"]["integration_required"])
+        self.assertEqual("resolving", result["worktree"]["integration_state"])
+        self.assertNotIn("conflict_manifest", result["worktree"])
+
     def test_team_tick_revision_passes_worktree_reuse_id(self) -> None:
         team_id = "team_revision_reuse"
         now = time.time()
@@ -500,6 +715,56 @@ class AgentGitWorktreeLifecycleTests(unittest.TestCase):
             self.assertEqual("a0\n", (self.repo / "a.txt").read_text())
         finally:
             reset_policy_context(token)
+
+    def test_agent_action_apply_blocks_unresolved_integration_until_conflict_is_resolved(self) -> None:
+        base = git(self.repo, "rev-parse", "HEAD")
+        first = prepare_worktree(agent_id="agt_apply_seed_a", cwd=self.repo, path_roots=[str(self.repo)], mode="required", base_commit=base)
+        second = prepare_worktree(agent_id="agt_apply_seed_b", cwd=self.repo, path_roots=[str(self.repo)], mode="required", base_commit=base)
+        target = prepare_worktree(agent_id="agt_apply_integrate", cwd=self.repo, path_roots=[str(self.repo)], mode="required", base_commit=base)
+        self.addCleanup(cleanup_worktree, first, force=True)
+        self.addCleanup(cleanup_worktree, second, force=True)
+        Path(first["path"], "a.txt").write_text("from-a\n", encoding="utf-8")
+        Path(second["path"], "a.txt").write_text("from-b\n", encoding="utf-8")
+        state = seed_worktree(target, [first, second], conflict_mode="manifest")
+        state["integration_state"] = "resolving"
+        agent_id = "agt_apply_integrate"
+        self._terminal_meta(agent_id, state)
+
+        with self.assertRaises(HTTPException) as blocked:
+            agents._agent_action_single(None, agent_id, "apply")
+        self.assertEqual(409, blocked.exception.status_code)
+        self.assertEqual("git_integration_unresolved", blocked.exception.detail["error"])
+        self.assertEqual("a0\n", (self.repo / "a.txt").read_text(encoding="utf-8"))
+
+        latest = agents._read_meta(agent_id)["worktree"]
+        Path(latest["path"], "a.txt").write_text("from-a + from-b\n", encoding="utf-8")
+        (agents.AGENTS_DIR / agent_id / "result.envelope.json").write_text(
+            json.dumps({"contract_status": "valid", "outcome": "partial_failure", "errors": [{"message": "tests failed"}], "evidence": [{"summary": "tests failed"}]}),
+            encoding="utf-8",
+        )
+        with self.assertRaises(HTTPException) as failed_result:
+            agents._agent_action_single(None, agent_id, "apply")
+        self.assertEqual(409, failed_result.exception.status_code)
+        self.assertEqual("git_integration_result_not_success", failed_result.exception.detail["error"])
+        self.assertEqual("a0\n", (self.repo / "a.txt").read_text(encoding="utf-8"))
+
+        (agents.AGENTS_DIR / agent_id / "result.envelope.json").write_text(
+            json.dumps({"contract_status": "valid", "outcome": "success", "errors": [], "evidence": []}),
+            encoding="utf-8",
+        )
+        with self.assertRaises(HTTPException) as missing_evidence:
+            agents._agent_action_single(None, agent_id, "apply")
+        self.assertEqual("git_integration_verification_missing", missing_evidence.exception.detail["error"])
+        self.assertEqual("a0\n", (self.repo / "a.txt").read_text(encoding="utf-8"))
+
+        (agents.AGENTS_DIR / agent_id / "result.envelope.json").write_text(
+            json.dumps({"contract_status": "valid", "outcome": "success", "errors": [], "evidence": [{"summary": "tests passed"}]}),
+            encoding="utf-8",
+        )
+        result = agents._agent_action_single(None, agent_id, "apply")
+        self.assertTrue(result["ok"])
+        self.assertEqual("from-a + from-b\n", (self.repo / "a.txt").read_text(encoding="utf-8"))
+        self.assertEqual("resolved", result["worktree"]["integration_state"])
 
     def test_agent_action_apply_then_despawn_cleans_worktree(self) -> None:
         agent_id = "agt_apply"

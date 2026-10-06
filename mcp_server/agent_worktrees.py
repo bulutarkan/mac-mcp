@@ -15,6 +15,10 @@ from typing import Any, Iterable, Iterator
 GIT_ISOLATION_MODES = frozenset({"auto", "off", "required"})
 _WORKTREE_DIRNAME = ".mac-mcp-worktrees"
 _EXCLUDE_LINE = f"{_WORKTREE_DIRNAME}/"
+_CONFLICT_MODES = frozenset({"fail", "manifest"})
+_MAX_INTEGRATION_CONFLICTS = 4
+_MAX_INTEGRATION_PATCH_BYTES = 48_000
+_MAX_INTEGRATION_TOTAL_PATCH_BYTES = 96_000
 
 
 class AgentWorktreeError(RuntimeError):
@@ -336,13 +340,98 @@ def _patch_for_state(state: dict[str, Any]) -> bytes:
     )
 
 
-def seed_worktree(target: dict[str, Any], sources: Iterable[dict[str, Any]]) -> dict[str, Any]:
+def _integration_path_fingerprint(root: Path, relative_path: str) -> dict[str, Any]:
+    root_path = root.resolve(strict=False)
+    relative = Path(str(relative_path))
+    if relative.is_absolute() or ".." in relative.parts:
+        raise AgentWorktreeError(
+            "git_dependency_conflict_unsupported",
+            "Dependency conflict path escapes the isolated worktree.",
+            details={"path": str(relative_path)},
+        )
+    candidate = root_path / relative
+    parent = candidate.parent
+    while parent != root_path:
+        try:
+            parent.relative_to(root_path)
+        except ValueError as exc:
+            raise AgentWorktreeError(
+                "git_dependency_conflict_unsupported",
+                "Dependency conflict path escapes the isolated worktree.",
+                details={"path": str(relative_path)},
+            ) from exc
+        if parent.is_symlink():
+            raise AgentWorktreeError(
+                "git_dependency_conflict_unsupported",
+                "Dependency conflict traverses a symlinked parent and cannot be fingerprinted safely.",
+                details={"path": str(relative_path)},
+            )
+        parent = parent.parent
+    try:
+        mode = candidate.lstat().st_mode
+    except FileNotFoundError:
+        return {"exists": False, "type": "missing"}
+    if stat.S_ISLNK(mode):
+        target = os.readlink(candidate)
+        return {
+            "exists": True,
+            "type": "symlink",
+            "sha256": hashlib.sha256(target.encode("utf-8", errors="surrogateescape")).hexdigest(),
+        }
+    if stat.S_ISREG(mode):
+        digest = hashlib.sha256()
+        size = 0
+        with candidate.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                digest.update(chunk)
+        return {"exists": True, "type": "file", "size": size, "sha256": digest.hexdigest()}
+    if stat.S_ISDIR(mode):
+        return {"exists": True, "type": "directory"}
+    return {"exists": True, "type": "other", "mode": int(mode)}
+
+
+def _contains_conflict_markers(path: Path) -> bool:
+    try:
+        if not path.is_file() or path.is_symlink():
+            return False
+        with path.open("rb") as handle:
+            for line in handle:
+                stripped = line.rstrip(b"\r\n")
+                if stripped.startswith(b"<<<<<<< ") or stripped == b"=======" or stripped.startswith(b">>>>>>> "):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _integration_patch_is_binary(patch: bytes) -> bool:
+    return b"GIT binary patch" in patch or b"Binary files " in patch
+
+
+def seed_worktree(
+    target: dict[str, Any],
+    sources: Iterable[dict[str, Any]],
+    *,
+    conflict_mode: str = "fail",
+) -> dict[str, Any]:
     current = dict(target or {})
     if not current.get("enabled"):
         return current
+    mode = str(conflict_mode or "fail").strip().lower()
+    if mode not in _CONFLICT_MODES:
+        raise AgentWorktreeError(
+            "invalid_dependency_conflict_mode",
+            f"conflict_mode must be one of: {', '.join(sorted(_CONFLICT_MODES))}",
+        )
     target_path = Path(str(current["path"]))
     base = str(current.get("base_commit") or "")
     seeded: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    total_conflict_bytes = 0
     for source in sources:
         if not source or not source.get("enabled"):
             continue
@@ -353,9 +442,18 @@ def seed_worktree(target: dict[str, Any], sources: Iterable[dict[str, Any]]) -> 
                 "Dependency worktrees do not share the team's pinned Git base.",
                 details={"target_base": base, "source_base": source_base},
             )
+        inspected = inspect_worktree(source)
+        changed_files = [str(item) for item in (inspected.get("changed_files") or [])]
+        source_agent_id = str(source.get("source_agent_id") or "").strip() or None
+        source_task_id = str(source.get("source_task_id") or "").strip() or None
+        seed_row = {
+            "path": source.get("path"),
+            "source_agent_id": source_agent_id,
+            "source_task_id": source_task_id,
+        }
         patch = _patch_for_state(source)
         if not patch:
-            seeded.append({"path": source.get("path"), "changed": False})
+            seeded.append({**seed_row, "changed": False, "status": "unchanged"})
             continue
         check = _run(
             ["git", "-C", str(target_path), "apply", "--check", "--binary", "-"],
@@ -363,16 +461,259 @@ def seed_worktree(target: dict[str, Any], sources: Iterable[dict[str, Any]]) -> 
         )
         if check.returncode != 0:
             detail = (check.stderr or check.stdout or b"dependency patch conflict").decode("utf-8", errors="replace").strip()
-            raise AgentWorktreeError(
-                "git_dependency_conflict",
-                "Dependency worktree changes conflict while preparing a downstream isolated task.",
-                details={"detail": detail[:1200], "source_path": source.get("path")},
+            source_path = Path(str(inspected.get("path") or source.get("path") or ""))
+            already_integrated = bool(changed_files) and all(
+                _integration_path_fingerprint(target_path, relative_path)
+                == _integration_path_fingerprint(source_path, relative_path)
+                for relative_path in changed_files
             )
+            if already_integrated:
+                seeded.append({**seed_row, "changed": True, "status": "already_integrated"})
+                continue
+            if mode == "fail":
+                raise AgentWorktreeError(
+                    "git_dependency_conflict",
+                    "Dependency worktree changes conflict while preparing a downstream isolated task.",
+                    details={
+                        "detail": detail[:1200],
+                        "source_path": source.get("path"),
+                        "source_agent_id": source_agent_id,
+                        "source_task_id": source_task_id,
+                        "changed_files": changed_files,
+                    },
+                )
+            if (
+                not changed_files
+                or _integration_patch_is_binary(patch)
+                or b"\x00" in patch
+                or len(patch) > _MAX_INTEGRATION_PATCH_BYTES
+                or len(conflicts) >= _MAX_INTEGRATION_CONFLICTS
+                or total_conflict_bytes + len(patch) > _MAX_INTEGRATION_TOTAL_PATCH_BYTES
+            ):
+                raise AgentWorktreeError(
+                    "git_dependency_conflict_unsupported",
+                    "Dependency conflict is binary, oversized, or exceeds the bounded automatic integration limits.",
+                    details={
+                        "source_agent_id": source_agent_id,
+                        "source_task_id": source_task_id,
+                        "changed_files": changed_files,
+                        "patch_bytes": len(patch),
+                    },
+                )
+            try:
+                patch_text = patch.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise AgentWorktreeError(
+                    "git_dependency_conflict_unsupported",
+                    "Dependency conflict contains non-UTF-8 text and cannot be represented safely for automatic integration.",
+                    details={
+                        "source_agent_id": source_agent_id,
+                        "source_task_id": source_task_id,
+                        "changed_files": changed_files,
+                        "patch_bytes": len(patch),
+                    },
+                ) from exc
+            seed_fingerprints = {
+                relative_path: _integration_path_fingerprint(target_path, relative_path)
+                for relative_path in changed_files
+            }
+            source_fingerprints = {
+                relative_path: _integration_path_fingerprint(source_path, relative_path)
+                for relative_path in changed_files
+            }
+            required_resolution_paths = [
+                relative_path for relative_path in changed_files
+                if seed_fingerprints[relative_path] != source_fingerprints[relative_path]
+            ]
+            conflicts.append({
+                "source_agent_id": source_agent_id,
+                "source_task_id": source_task_id,
+                "changed_files": changed_files,
+                "patch_sha256": hashlib.sha256(patch).hexdigest(),
+                "patch_bytes": len(patch),
+                "patch": patch_text,
+                "seed_fingerprints": seed_fingerprints,
+                "source_fingerprints": source_fingerprints,
+                "required_resolution_paths": required_resolution_paths,
+                "apply_error": detail[:1200],
+            })
+            total_conflict_bytes += len(patch)
+            seeded.append({**seed_row, "changed": True, "status": "conflict"})
+            continue
         _run(["git", "-C", str(target_path), "apply", "--binary", "-"], input_bytes=patch, timeout=120)
-        seeded.append({"path": source.get("path"), "changed": True})
+        seeded.append({**seed_row, "changed": True, "status": "applied"})
+    if conflicts:
+        finalized_conflicts: list[dict[str, Any]] = []
+        for conflict in conflicts:
+            changed_files = [str(item) for item in (conflict.get("changed_files") or [])]
+            source_fingerprints = conflict.get("source_fingerprints") if isinstance(conflict.get("source_fingerprints"), dict) else {}
+            seed_fingerprints = {
+                relative_path: _integration_path_fingerprint(target_path, relative_path)
+                for relative_path in changed_files
+            }
+            required_resolution_paths = [
+                relative_path for relative_path in changed_files
+                if seed_fingerprints.get(relative_path) != source_fingerprints.get(relative_path)
+            ]
+            if not required_resolution_paths:
+                for row in seeded:
+                    if (
+                        row.get("status") == "conflict"
+                        and row.get("source_agent_id") == conflict.get("source_agent_id")
+                        and row.get("source_task_id") == conflict.get("source_task_id")
+                    ):
+                        row["status"] = "already_integrated_after_fan_in"
+                        break
+                continue
+            conflict["seed_fingerprints"] = seed_fingerprints
+            conflict["required_resolution_paths"] = required_resolution_paths
+            finalized_conflicts.append(conflict)
+        conflicts = finalized_conflicts
+        total_conflict_bytes = sum(int(item.get("patch_bytes") or 0) for item in conflicts)
+
     current["seeded_from"] = seeded
     current["seeded_at"] = time.time() if seeded else None
+    if conflicts:
+        current["integration_required"] = True
+        current["integration_state"] = "integration_required"
+        current["conflict_manifest"] = {
+            "version": 1,
+            "base_commit": base,
+            "conflict_count": len(conflicts),
+            "total_patch_bytes": total_conflict_bytes,
+            "conflicts": conflicts,
+        }
+    elif seeded:
+        current["integration_required"] = False
+        current["integration_state"] = "clean_fan_in"
+        current.pop("conflict_manifest", None)
     return current
+
+
+def validate_integration_worktree(state: dict[str, Any]) -> dict[str, Any]:
+    current = dict(state or {})
+    if not current.get("integration_required"):
+        return {"ok": True, "integration_required": False, "integration_state": current.get("integration_state")}
+    if not current.get("enabled"):
+        raise AgentWorktreeError(
+            "git_integration_manifest_corrupt",
+            "Integration validation requires an enabled isolated worktree.",
+        )
+    manifest = current.get("conflict_manifest")
+    if not isinstance(manifest, dict) or int(manifest.get("version") or 0) != 1:
+        raise AgentWorktreeError(
+            "git_integration_manifest_corrupt",
+            "Integration conflict manifest is missing or has an unsupported version.",
+        )
+    conflicts = manifest.get("conflicts")
+    if not isinstance(conflicts, list) or not conflicts:
+        raise AgentWorktreeError(
+            "git_integration_manifest_corrupt",
+            "Integration conflict manifest contains no conflicts.",
+        )
+    base_commit = str(current.get("base_commit") or "")
+    if str(manifest.get("base_commit") or "") != base_commit:
+        raise AgentWorktreeError(
+            "git_integration_manifest_corrupt",
+            "Integration conflict manifest base commit does not match the isolated worktree.",
+        )
+    if int(manifest.get("conflict_count") or 0) != len(conflicts) or len(conflicts) > _MAX_INTEGRATION_CONFLICTS:
+        raise AgentWorktreeError(
+            "git_integration_manifest_corrupt",
+            "Integration conflict manifest count is inconsistent or exceeds the supported bound.",
+        )
+    worktree = Path(str(current.get("path") or ""))
+    if not worktree.exists():
+        raise AgentWorktreeError("git_worktree_missing", "Integration worktree is missing before validation.")
+
+    unchanged_paths: list[str] = []
+    marker_paths: list[str] = []
+    source_rows: list[dict[str, Any]] = []
+    calculated_patch_bytes = 0
+    for conflict in conflicts:
+        if not isinstance(conflict, dict):
+            raise AgentWorktreeError("git_integration_manifest_corrupt", "Integration conflict entry is invalid.")
+        patch_text = conflict.get("patch")
+        patch_sha256 = str(conflict.get("patch_sha256") or "")
+        if not isinstance(patch_text, str):
+            raise AgentWorktreeError(
+                "git_integration_manifest_corrupt",
+                "Integration conflict patch is missing or invalid.",
+            )
+        patch_bytes = patch_text.encode("utf-8")
+        declared_patch_bytes = int(conflict.get("patch_bytes") or 0)
+        if (
+            declared_patch_bytes != len(patch_bytes)
+            or declared_patch_bytes <= 0
+            or declared_patch_bytes > _MAX_INTEGRATION_PATCH_BYTES
+            or hashlib.sha256(patch_bytes).hexdigest() != patch_sha256
+        ):
+            raise AgentWorktreeError(
+                "git_integration_manifest_corrupt",
+                "Integration conflict patch size or provenance hash does not match the manifest.",
+            )
+        calculated_patch_bytes += declared_patch_bytes
+        changed_files = [str(item) for item in (conflict.get("changed_files") or [])]
+        required_resolution_paths = [
+            str(item) for item in (conflict.get("required_resolution_paths") or changed_files)
+        ]
+        seed_fingerprints = conflict.get("seed_fingerprints")
+        if not changed_files or not required_resolution_paths or not isinstance(seed_fingerprints, dict):
+            raise AgentWorktreeError(
+                "git_integration_manifest_corrupt",
+                "Integration conflict paths or seed fingerprints are missing.",
+            )
+        for relative_path in required_resolution_paths:
+            before = seed_fingerprints.get(relative_path)
+            if not isinstance(before, dict):
+                raise AgentWorktreeError(
+                    "git_integration_manifest_corrupt",
+                    "Integration conflict seed fingerprint is missing.",
+                    details={"path": relative_path},
+                )
+            after = _integration_path_fingerprint(worktree, relative_path)
+            if after == before:
+                unchanged_paths.append(relative_path)
+            candidate = worktree / relative_path
+            if _contains_conflict_markers(candidate):
+                marker_paths.append(relative_path)
+        source_rows.append({
+            "source_agent_id": conflict.get("source_agent_id"),
+            "source_task_id": conflict.get("source_task_id"),
+            "changed_files": changed_files,
+            "patch_sha256": patch_sha256,
+        })
+
+    declared_total_patch_bytes = int(manifest.get("total_patch_bytes") or 0)
+    if (
+        calculated_patch_bytes != declared_total_patch_bytes
+        or declared_total_patch_bytes <= 0
+        or declared_total_patch_bytes > _MAX_INTEGRATION_TOTAL_PATCH_BYTES
+    ):
+        raise AgentWorktreeError(
+            "git_integration_manifest_corrupt",
+            "Integration conflict manifest total patch size is inconsistent or exceeds the supported bound.",
+        )
+
+    unchanged_paths = sorted(set(unchanged_paths))
+    marker_paths = sorted(set(marker_paths))
+    if unchanged_paths or marker_paths:
+        raise AgentWorktreeError(
+            "git_integration_unresolved",
+            "Integration worktree did not resolve every conflicting dependency path safely.",
+            details={
+                "unchanged_paths": unchanged_paths,
+                "conflict_marker_paths": marker_paths,
+                "conflict_sources": source_rows,
+            },
+        )
+    return {
+        "ok": True,
+        "integration_required": True,
+        "integration_state": "resolved",
+        "conflict_count": len(conflicts),
+        "conflict_sources": source_rows,
+    }
 
 
 def inspect_worktree(state: dict[str, Any]) -> dict[str, Any]:

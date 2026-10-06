@@ -84,6 +84,7 @@ class DependencyGraphSchedulerTests(unittest.TestCase):
             "git_base_commit": kwargs.get("git_base_commit"),
             "reuse_worktree_agent_id": kwargs.get("reuse_worktree_agent_id"),
             "seed_worktree_agent_ids": list(kwargs.get("seed_worktree_agent_ids") or []),
+            "seed_conflict_mode": kwargs.get("seed_conflict_mode"),
         })
         self.prompts[agent_id] = prompt
         return {"ok": True, "agent_id": agent_id, "team_task_id": team_task_id, "status": "running", "title": title}
@@ -131,10 +132,70 @@ class DependencyGraphSchedulerTests(unittest.TestCase):
             [self.spawned[0]["agent_id"], self.spawned[1]["agent_id"]],
             self.spawned[2]["seed_worktree_agent_ids"],
         )
+        self.assertEqual("manifest", self.spawned[2]["seed_conflict_mode"])
 
         self.complete(self.spawned[2]["agent_id"], "C result")
         agents._team_tick(team_id)
         self.assertEqual("completed", agents._team_summary(team_id)["status"])
+
+    def test_completed_integration_task_is_blocked_when_resolution_validation_fails(self) -> None:
+        team = self.spawn_team([{"id": "integrate", "prompt": "Integrate"}])
+        team_id = team["team_id"]
+        agent_id = self.spawned[0]["agent_id"]
+        agents._update_meta(agent_id, lambda meta: meta.update({
+            "worktree": {"enabled": True, "integration_required": True, "integration_state": "resolving"},
+        }))
+        self.complete(agent_id, "claimed done")
+        error = agents.AgentWorktreeError(
+            "git_integration_unresolved", "conflicts remain", details={"unchanged_paths": ["a.txt"]},
+        )
+        with patch.object(agents, "_ensure_integration_resolved", side_effect=error):
+            agents._team_tick(team_id)
+        task = self.task(team_id, "integrate")
+        self.assertEqual("failed", task["state"])
+        self.assertEqual("integration_failed:git_integration_unresolved", task["failure_reason"])
+        self.assertEqual("failed", task["integration_state"])
+        summary_task = agents._team_summary(team_id)["tasks"][0]
+        self.assertEqual("failed", summary_task["integration_state"])
+        self.assertEqual("git_integration_unresolved", summary_task["integration_error"])
+
+    def test_completed_integration_task_rejects_partial_failure_result(self) -> None:
+        team = self.spawn_team([{"id": "integrate", "prompt": "Integrate"}])
+        team_id = team["team_id"]
+        agent_id = self.spawned[0]["agent_id"]
+        worktree = {"enabled": True, "integration_required": True, "integration_state": "resolving"}
+        agents._update_meta(agent_id, lambda meta: meta.update({"worktree": worktree}))
+        self.complete(agent_id, "partially resolved")
+        error = agents.AgentWorktreeError(
+            "git_integration_result_not_success",
+            "tests failed",
+            details={"outcome": "partial_failure", "error_count": 1},
+        )
+        with patch.object(agents, "_ensure_integration_resolved", side_effect=error):
+            agents._team_tick(team_id)
+        task = self.task(team_id, "integrate")
+        self.assertEqual("failed", task["state"])
+        self.assertEqual("integration_failed:git_integration_result_not_success", task["failure_reason"])
+        self.assertEqual("git_integration_result_not_success", task["integration_error"])
+
+    def test_completed_integration_task_records_resolved_state_before_completion(self) -> None:
+        team = self.spawn_team([{"id": "integrate", "prompt": "Integrate"}])
+        team_id = team["team_id"]
+        agent_id = self.spawned[0]["agent_id"]
+        worktree = {"enabled": True, "integration_required": True, "integration_state": "resolving"}
+        agents._update_meta(agent_id, lambda meta: meta.update({"worktree": worktree}))
+        self.complete(agent_id, "resolved")
+        resolved = {
+            **worktree,
+            "integration_state": "resolved",
+            "conflict_manifest": {"conflicts": [{"source_agent_id": "a"}, {"source_agent_id": "b"}]},
+        }
+        with patch.object(agents, "_ensure_integration_resolved", return_value=resolved):
+            agents._team_tick(team_id)
+        task = self.task(team_id, "integrate")
+        self.assertEqual("completed", task["state"])
+        self.assertEqual("resolved", task["integration_state"])
+        self.assertEqual(2, task["integration_conflict_count"])
 
     def test_max_parallel_one_serializes_independent_tasks(self) -> None:
         team = self.spawn_team([
