@@ -8,11 +8,13 @@ private struct ToolActivityLane: Identifiable, Equatable {
     let description: String
     let startedAt: Date
     let ordinal: Int
+    let settling: Bool
 }
 
 @MainActor
 private final class ToolActivityBubbleModel: ObservableObject {
     @Published var lanes: [ToolActivityLane] = []
+    @Published var expanded = false
     @Published var sequence = 0
 }
 
@@ -36,7 +38,8 @@ private struct ToolActivityBubbleView: View {
             tool: "run_command",
             description: "Checking RAM & Disk Health",
             startedAt: Date(),
-            ordinal: 1
+            ordinal: 1,
+            settling: false
         )
     }
 
@@ -48,24 +51,23 @@ private struct ToolActivityBubbleView: View {
         max(0, model.lanes.count - visibleLanes.count)
     }
 
-    private var isMultiAgent: Bool {
-        model.lanes.count > 1
+    private var activeLaneCount: Int {
+        model.lanes.filter { !$0.settling }.count
     }
 
     var body: some View {
         Group {
-            if isMultiAgent {
-                multiAgentBody
+            if model.expanded {
+                expandedBody
             } else {
-                singleAgentBody
+                compactBody
             }
         }
-        .animation(.spring(response: 0.30, dampingFraction: 0.88), value: model.lanes.count)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
     }
 
-    private var singleAgentBody: some View {
+    private var compactBody: some View {
         HStack(spacing: 9) {
             toolIcon(for: primaryLane.tool, size: 27, symbolSize: 12)
 
@@ -106,7 +108,7 @@ private struct ToolActivityBubbleView: View {
         .padding(6)
     }
 
-    private var multiAgentBody: some View {
+    private var expandedBody: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
                 Text("Mac MCP")
@@ -115,7 +117,7 @@ private struct ToolActivityBubbleView: View {
 
                 Spacer()
 
-                Text("\(model.lanes.count) agents active")
+                Text(activeLaneCount > 0 ? "\(activeLaneCount) agents active" : "Finishing")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
@@ -139,12 +141,20 @@ private struct ToolActivityBubbleView: View {
 
                     Spacer(minLength: 3)
 
-                    ProgressView()
-                        .controlSize(.mini)
-                        .scaleEffect(0.72)
-                        .tint(.secondary)
+                    if lane.settling {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .scaleEffect(0.72)
+                            .tint(.secondary)
+                    }
                 }
                 .padding(.vertical, 3)
+                .opacity(lane.settling ? 0.58 : 1)
+                .transition(.opacity)
             }
 
             if hiddenCount > 0 {
@@ -153,11 +163,13 @@ private struct ToolActivityBubbleView: View {
                     .foregroundStyle(.secondary)
                     .padding(.leading, 34)
             }
+
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
         .padding(.top, 15)
         .padding(.bottom, 13)
-        .frame(width: 306, height: multiAgentBodyHeight, alignment: .topLeading)
+        .frame(width: 306, height: 202, alignment: .topLeading)
         .background(
             Color(nsColor: .windowBackgroundColor).opacity(0.96),
             in: ToolActivityBubbleShape()
@@ -170,22 +182,11 @@ private struct ToolActivityBubbleView: View {
         .padding(6)
     }
 
-    private var multiAgentBodyHeight: CGFloat {
-        switch model.lanes.count {
-        case ...2:
-            return 140
-        case 3:
-            return 182
-        default:
-            return 202
-        }
-    }
-
     private var accessibilityText: String {
-        if model.lanes.count <= 1 {
+        if !model.expanded {
             return "Mac MCP tool activity, \(primaryLane.description)"
         }
-        return "Mac MCP, \(model.lanes.count) agents active, " +
+        return "Mac MCP, \(activeLaneCount) agents active, " +
             visibleLanes.map { "\($0.label): \($0.description)" }.joined(separator: ", ")
     }
 
@@ -234,6 +235,8 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
 
     private static let originXKey = "ToolActivityBubbleOriginX"
     private static let originYKey = "ToolActivityBubbleOriginY"
+    private static let compactSize = NSSize(width: 304, height: 82)
+    private static let expandedSize = NSSize(width: 324, height: 214)
 
     private struct ActiveIntent {
         let eventID: String
@@ -243,15 +246,26 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
         let startedAt: Date
     }
 
+    private struct SettlingLane {
+        let laneKey: String
+        let tool: String
+        let description: String
+        let startedAt: Date
+    }
+
     private let model = ToolActivityBubbleModel()
     private var panel: ToolActivityPanel?
     private var active: [String: ActiveIntent] = [:]
+    private var settling: [String: SettlingLane] = [:]
     private var laneOrdinals: [String: Int] = [:]
     private var nextLaneOrdinal = 1
+    private var expandedEpoch = false
     private var hideTask: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
-    private let minimumVisibleSeconds: TimeInterval = 2.0
-    private let settledVisibleSeconds: TimeInterval = 0.45
+    private var settlingTasks: [String: Task<Void, Never>] = [:]
+
+    private let postActivityVisibleSeconds: TimeInterval = 2.0
+    private let laneSettleSeconds: TimeInterval = 0.65
 
     private override init() {
         super.init()
@@ -268,16 +282,17 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
         let cleanDescription = description.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !eventID.isEmpty, !cleanDescription.isEmpty else { return }
 
+        hideTask?.cancel()
+        hideTask = nil
+
         let laneKey = laneKey(
             eventID: eventID,
             sessionID: sessionID,
             agentID: agentID,
             teamID: teamID
         )
-        if laneOrdinals[laneKey] == nil {
-            laneOrdinals[laneKey] = nextLaneOrdinal
-            nextLaneOrdinal += 1
-        }
+        ensureLaneOrdinal(laneKey)
+        cancelSettling(laneKey)
 
         active[eventID] = ActiveIntent(
             eventID: eventID,
@@ -286,15 +301,31 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
             description: cleanDescription,
             startedAt: Date()
         )
-        presentActiveLanes()
+        refreshPresentation()
     }
 
     func finish(eventID: String) {
-        let finished = active.removeValue(forKey: eventID)
+        guard let finished = active.removeValue(forKey: eventID) else { return }
+
+        if active.values.contains(where: { $0.laneKey == finished.laneKey }) {
+            refreshPresentation()
+            return
+        }
+
+        settling[finished.laneKey] = SettlingLane(
+            laneKey: finished.laneKey,
+            tool: finished.tool,
+            description: finished.description,
+            startedAt: finished.startedAt
+        )
+
         if active.isEmpty {
-            scheduleHide(startedAt: finished?.startedAt)
+            cancelAllSettlingTasks()
+            refreshPresentation()
+            scheduleHideAfterActivity()
         } else {
-            presentActiveLanes()
+            scheduleSettlingRemoval(finished.laneKey)
+            refreshPresentation()
         }
     }
 
@@ -317,12 +348,14 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
     func hideImmediately() {
         hideTask?.cancel()
         previewTask?.cancel()
+        cancelAllSettlingTasks()
         active.removeAll()
-        resetLaneOrdinals()
-        model.lanes = []
+        settling.removeAll()
+        resetEpoch()
         guard let panel else { return }
         panel.alphaValue = 0
         panel.orderOut(nil)
+        preparePanelForNextEpoch(panel)
     }
 
     private func laneKey(
@@ -349,23 +382,58 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
         return "event:\(eventID)"
     }
 
-    private func presentActiveLanes() {
+    private func ensureLaneOrdinal(_ laneKey: String) {
+        guard laneOrdinals[laneKey] == nil else { return }
+        laneOrdinals[laneKey] = nextLaneOrdinal
+        nextLaneOrdinal += 1
+    }
+
+    private func cancelSettling(_ laneKey: String) {
+        settling.removeValue(forKey: laneKey)
+        settlingTasks.removeValue(forKey: laneKey)?.cancel()
+    }
+
+    private func cancelAllSettlingTasks() {
+        for task in settlingTasks.values {
+            task.cancel()
+        }
+        settlingTasks.removeAll()
+    }
+
+    private func scheduleSettlingRemoval(_ laneKey: String) {
+        settlingTasks.removeValue(forKey: laneKey)?.cancel()
+        settlingTasks[laneKey] = Task { [weak self] in
+            try? await Task.sleep(
+                nanoseconds: UInt64((self?.laneSettleSeconds ?? 0.65) * 1_000_000_000)
+            )
+            guard !Task.isCancelled, let self else { return }
+            self.settling.removeValue(forKey: laneKey)
+            self.settlingTasks.removeValue(forKey: laneKey)
+            self.refreshPresentation()
+        }
+    }
+
+    private func refreshPresentation() {
         let lanes = currentLanes()
         guard !lanes.isEmpty else {
-            scheduleHide()
+            if active.isEmpty {
+                scheduleHideAfterActivity()
+            }
             return
         }
 
-        hideTask?.cancel()
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+        if lanes.count > 1 && !expandedEpoch {
+            promoteEpochToExpanded()
+        }
+
+        withAnimation(.easeInOut(duration: 0.16)) {
             model.lanes = lanes
             model.sequence += 1
         }
 
         let panel = ensurePanel()
-        resize(panel, laneCount: lanes.count)
-
         if !panel.isVisible {
+            panel.setContentSize(expandedEpoch ? Self.expandedSize : Self.compactSize)
             position(panel)
             panel.alphaValue = 0
             panel.orderFrontRegardless()
@@ -390,18 +458,33 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
             latestByLane[intent.laneKey] = intent
         }
 
-        return latestByLane.map { laneKey, intent in
-            let ordinal = laneOrdinals[laneKey] ?? 999
-            return ToolActivityLane(
+        var lanes: [ToolActivityLane] = latestByLane.map { laneKey, intent in
+            ToolActivityLane(
                 id: laneKey,
-                label: "Agent \(ordinal)",
+                label: "Agent \(laneOrdinals[laneKey] ?? 999)",
                 tool: intent.tool,
                 description: intent.description,
                 startedAt: intent.startedAt,
-                ordinal: ordinal
+                ordinal: laneOrdinals[laneKey] ?? 999,
+                settling: false
             )
         }
-        .sorted { lhs, rhs in
+
+        for (laneKey, lane) in settling where latestByLane[laneKey] == nil {
+            lanes.append(
+                ToolActivityLane(
+                    id: laneKey,
+                    label: "Agent \(laneOrdinals[laneKey] ?? 999)",
+                    tool: lane.tool,
+                    description: lane.description,
+                    startedAt: lane.startedAt,
+                    ordinal: laneOrdinals[laneKey] ?? 999,
+                    settling: true
+                )
+            )
+        }
+
+        return lanes.sorted { lhs, rhs in
             if lhs.ordinal != rhs.ordinal {
                 return lhs.ordinal < rhs.ordinal
             }
@@ -409,49 +492,69 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func scheduleHide(startedAt: Date? = nil) {
+    private func promoteEpochToExpanded() {
+        guard !expandedEpoch else { return }
+        expandedEpoch = true
+
+        let panel = ensurePanel()
+        let current = panel.frame
+        let target = NSRect(
+            x: current.maxX - Self.expandedSize.width,
+            y: current.maxY - Self.expandedSize.height,
+            width: Self.expandedSize.width,
+            height: Self.expandedSize.height
+        )
+        panel.setFrame(clampedFrame(target), display: true, animate: false)
+        model.expanded = true
+    }
+
+    private func scheduleHideAfterActivity() {
+        guard active.isEmpty else { return }
         hideTask?.cancel()
-        let elapsed = startedAt.map { max(0, Date().timeIntervalSince($0)) } ?? minimumVisibleSeconds
-        let delay = max(settledVisibleSeconds, minimumVisibleSeconds - elapsed)
         hideTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64((self?.postActivityVisibleSeconds ?? 2.0) * 1_000_000_000))
             guard !Task.isCancelled, let self, self.active.isEmpty, let panel = self.panel else { return }
+
+            self.cancelAllSettlingTasks()
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = 0.24
                 panel.animator().alphaValue = 0
             }, completionHandler: {
                 panel.orderOut(nil)
                 Task { @MainActor [weak self] in
-                    self?.model.lanes = []
-                    self?.resetLaneOrdinals()
+                    guard let self else { return }
+                    self.settling.removeAll()
+                    self.resetEpoch()
+                    self.preparePanelForNextEpoch(panel)
                 }
             })
         }
     }
 
-    private func resetLaneOrdinals() {
+    private func resetEpoch() {
+        expandedEpoch = false
         laneOrdinals.removeAll(keepingCapacity: true)
         nextLaneOrdinal = 1
+        model.lanes = []
+        model.expanded = false
     }
 
-    private func panelSize(for laneCount: Int) -> NSSize {
-        switch laneCount {
-        case ...1:
-            return NSSize(width: 304, height: 82)
-        case 2:
-            return NSSize(width: 324, height: 152)
-        case 3:
-            return NSSize(width: 324, height: 194)
-        default:
-            return NSSize(width: 324, height: 214)
-        }
+    private func preparePanelForNextEpoch(_ panel: ToolActivityPanel) {
+        let current = panel.frame
+        let compactFrame = NSRect(
+            x: current.maxX - Self.compactSize.width,
+            y: current.maxY - Self.compactSize.height,
+            width: Self.compactSize.width,
+            height: Self.compactSize.height
+        )
+        panel.setFrame(clampedFrame(compactFrame), display: false, animate: false)
     }
 
     private func ensurePanel() -> ToolActivityPanel {
         if let panel { return panel }
 
         let panel = ToolActivityPanel(
-            contentRect: NSRect(origin: .zero, size: panelSize(for: 1)),
+            contentRect: NSRect(origin: .zero, size: Self.compactSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -469,22 +572,6 @@ final class ToolActivityBubbleController: NSObject, NSWindowDelegate {
         panel.contentView = NSHostingView(rootView: ToolActivityBubbleView(model: model))
         self.panel = panel
         return panel
-    }
-
-    private func resize(_ panel: ToolActivityPanel, laneCount: Int) {
-        let target = panelSize(for: laneCount)
-        let current = panel.frame
-        guard abs(current.width - target.width) > 0.5 || abs(current.height - target.height) > 0.5 else {
-            return
-        }
-
-        let anchored = NSRect(
-            x: current.maxX - target.width,
-            y: current.maxY - target.height,
-            width: target.width,
-            height: target.height
-        )
-        panel.setFrame(clampedFrame(anchored), display: true, animate: panel.isVisible)
     }
 
     private func clampedFrame(_ proposed: NSRect) -> NSRect {
