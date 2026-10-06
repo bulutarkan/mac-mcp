@@ -212,6 +212,17 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual("trusted", row["details"]["profile"])
         self.assertEqual("env", row["details"]["profile_source"])
 
+    def test_update_recovery_corrupt_journal_fails_doctor_check(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            path.write_text("{broken", encoding="utf-8")
+            with patch("mcp_server.diagnostics.update_state_path", return_value=path), \
+                    patch("mcp_server.update_state.update_state_path", return_value=path):
+                row = diagnostics._check_update_recovery_state().to_dict()
+        self.assertEqual("fail", row["status"])
+        self.assertEqual("UPDATE_STATE_CORRUPT", row["reason_code"])
+        self.assertEqual("update_state_corrupt", row["details"]["state_error"])
+
     def test_update_recovery_incomplete_transaction_requires_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "state.json"

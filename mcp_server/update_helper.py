@@ -28,6 +28,8 @@ if __package__:
         write_process_record,
     )
     from .update_state import (
+        INCOMPLETE_UPDATE_STATES,
+        UpdateStateError,
         backups_root,
         read_deployed_commit,
         read_update_state,
@@ -51,6 +53,8 @@ else:
         write_process_record,
     )
     from update_state import (
+        INCOMPLETE_UPDATE_STATES,
+        UpdateStateError,
         backups_root,
         read_deployed_commit,
         read_update_state,
@@ -68,6 +72,16 @@ _STAGING_DIR_RE = re.compile(r"^mac-mcp-update-upd_[0-9a-f]{10}-[a-z0-9_]+$")
 
 class UpdateError(RuntimeError):
     pass
+
+
+def validate_update_state() -> dict | None:
+    try:
+        return read_update_state()
+    except UpdateStateError as exc:
+        condition = "unreadable" if exc.code == "update_state_unreadable" else "corrupt"
+        raise UpdateError(
+            f"Updater state is {condition} at {exc.path}; refusing to continue until the journal is inspected or repaired."
+        ) from exc
 
 
 def _test_update_checkpoint_hook(_stage: str) -> None:
@@ -1193,23 +1207,6 @@ def _same_checkout_restore_guard(
     return True, "The checkout is still at the verified clean pre-update revision."
 
 
-_INCOMPLETE_UPDATE_STATES = {
-    "prepared",
-    "repo_updating",
-    "repo_updated",
-    "runtime_syncing",
-    "runtime_synced",
-    "dependency_activating",
-    "dependencies_activated",
-    "restarting",
-    "health_verified",
-    "marker_committed",
-    "dependency_commit_started",
-    "dependency_committed",
-    "rolling_back",
-}
-
-
 def _journal_dependency_payload(
     runtime: Path,
     staged: Path,
@@ -1331,11 +1328,17 @@ def recover_incomplete_update(
     launchd_label: str = DEFAULT_LAUNCHD_LABEL,
     skip_restart: bool = False,
 ) -> dict | None:
-    payload = read_update_state()
+    try:
+        payload = read_update_state()
+    except UpdateStateError as exc:
+        raise UpdateError(
+            "Updater recovery journal is corrupt or unreadable; refusing to continue until "
+            "~/.mac-mcp/update/state.json is inspected or repaired."
+        ) from exc
     if not isinstance(payload, dict) or int(payload.get("transaction_version") or 0) != 1:
         return None
     status = str(payload.get("status") or "")
-    if status not in _INCOMPLETE_UPDATE_STATES:
+    if status not in INCOMPLETE_UPDATE_STATES:
         return None
     if Path(str(payload.get("repo") or "")).resolve(strict=False) != repo.resolve(strict=False):
         raise UpdateError("Incomplete updater transaction belongs to a different repository; refusing automatic recovery.")

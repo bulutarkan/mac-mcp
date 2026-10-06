@@ -47,6 +47,7 @@ from .runtime_resolver import (
 from .update_helper import (
     UpdateError, check_update, format_check, format_check_json,
     resolve_paths as resolve_update_paths, secure_bootstrap_update_blocker,
+    validate_update_state,
 )
 from .tools_update import launch_detached_update
 from .version import __version__
@@ -1572,6 +1573,7 @@ def conformance(args: argparse.Namespace) -> int:
 
 def update(args: argparse.Namespace) -> int:
     try:
+        validate_update_state()
         if args.check:
             info = check_update(args.repo, args.runtime, branch=args.branch, remote=args.remote, fetch=True)
             print(format_check_json(info) if getattr(args, "json", False) else format_check(info))

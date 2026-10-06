@@ -9,6 +9,29 @@ from typing import Any
 
 LEGACY_COMMIT_FILE = ".mac-mcp-deployed-commit"
 LEGACY_STATE_FILE = ".mac-mcp-update.json"
+INCOMPLETE_UPDATE_STATES = frozenset({
+    "prepared",
+    "repo_updating",
+    "repo_updated",
+    "runtime_syncing",
+    "runtime_synced",
+    "dependency_activating",
+    "dependencies_activated",
+    "restarting",
+    "health_verified",
+    "marker_committed",
+    "dependency_commit_started",
+    "dependency_committed",
+    "rolling_back",
+})
+
+
+class UpdateStateError(RuntimeError):
+    def __init__(self, code: str, message: str, *, path: Path, error_type: str | None = None):
+        super().__init__(message)
+        self.code = code
+        self.path = path
+        self.error_type = error_type
 
 
 def update_root() -> Path:
@@ -85,15 +108,62 @@ def write_deployed_commit(commit: str) -> None:
     _atomic_text_write(deployed_commit_path(), commit + "\n")
 
 
-def read_update_state() -> dict[str, Any] | None:
-    path = update_state_path()
+def read_update_state(path: Path | None = None) -> dict[str, Any] | None:
+    path = path or update_state_path()
     if not path.exists():
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise UpdateStateError(
+            "update_state_unreadable",
+            "Updater state could not be read reliably.",
+            path=path,
+            error_type=type(exc).__name__,
+        ) from exc
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise UpdateStateError(
+            "update_state_corrupt",
+            "Updater state is not valid JSON.",
+            path=path,
+            error_type=type(exc).__name__,
+        ) from exc
+    if not isinstance(payload, dict):
+        raise UpdateStateError(
+            "update_state_corrupt",
+            "Updater state root must be a JSON object.",
+            path=path,
+        )
+
+    transaction_version = payload.get("transaction_version")
+    if transaction_version is not None:
+        try:
+            parsed_version = int(transaction_version)
+        except (TypeError, ValueError) as exc:
+            raise UpdateStateError(
+                "update_state_corrupt",
+                "Updater transaction version is invalid.",
+                path=path,
+                error_type=type(exc).__name__,
+            ) from exc
+        if parsed_version != 1:
+            raise UpdateStateError(
+                "update_state_corrupt",
+                f"Updater transaction version {parsed_version} is unsupported.",
+                path=path,
+            )
+        payload["transaction_version"] = parsed_version
+
+    status = str(payload.get("status") or "")
+    if status in INCOMPLETE_UPDATE_STATES and transaction_version is None:
+        raise UpdateStateError(
+            "update_state_corrupt",
+            "Incomplete updater state is missing its transaction version.",
+            path=path,
+        )
+    return payload
 
 
 def write_update_state(payload: dict[str, Any]) -> None:

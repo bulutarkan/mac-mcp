@@ -41,7 +41,7 @@ from .policy import (
 )
 from .security import dashboard_token_path, load_settings
 from .version import __version__
-from .update_state import read_deployed_commit, update_state_path
+from .update_state import UpdateStateError, read_deployed_commit, read_update_state, update_state_path
 
 SCHEMA_VERSION = 1
 PASS = "pass"
@@ -250,25 +250,19 @@ def _check_state_dir() -> CheckResult:
 def _check_update_recovery_state() -> CheckResult:
     started = time.perf_counter()
     path = update_state_path()
-    if not path.exists():
+    try:
+        payload = read_update_state(path)
+    except UpdateStateError as exc:
+        return result(
+            "update.recovery", "update", FAIL, "UPDATE_STATE_CORRUPT",
+            "Updater state is corrupt or unreadable; automatic update recovery is blocked.", started=started,
+            remediation="Inspect ~/.mac-mcp/update/state.json and updater backups before running another update.",
+            details={"state_error": exc.code, "error_type": exc.error_type},
+        )
+    if payload is None:
         return result(
             "update.recovery", "update", INFO, "UPDATE_STATE_ABSENT",
             "No persisted updater state is present yet.", started=started,
-        )
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return result(
-            "update.recovery", "update", WARN, "UPDATE_STATE_UNREADABLE",
-            "Updater state could not be read reliably.", started=started,
-            remediation="Inspect ~/.mac-mcp/update/state.json before running another update.",
-            details={"error_type": type(exc).__name__},
-        )
-    if not isinstance(payload, dict):
-        return result(
-            "update.recovery", "update", WARN, "UPDATE_STATE_INVALID",
-            "Updater state has an invalid shape.", started=started,
-            remediation="Inspect ~/.mac-mcp/update/state.json before running another update.",
         )
     update_status = str(payload.get("status") or "")
     transaction_version = int(payload.get("transaction_version") or 0)

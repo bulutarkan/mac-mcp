@@ -12,8 +12,14 @@ from typing import Any, Dict
 
 from fastapi import HTTPException, status
 
-from .update_helper import UpdateError, check_update, resolve_paths, secure_bootstrap_update_blocker
-from .update_state import update_state_path
+from .update_helper import (
+    UpdateError,
+    check_update,
+    resolve_paths,
+    secure_bootstrap_update_blocker,
+    validate_update_state,
+)
+from .update_state import INCOMPLETE_UPDATE_STATES, update_state_path
 
 
 def _public_info(info) -> Dict[str, Any]:
@@ -72,6 +78,12 @@ def launch_detached_update(
     shutil.copy2(managed_process_src, helper_tmp_dir / "managed_process.py")
     shutil.copy2(trusted_signers_src, helper_tmp_dir / "release_trusted_signers.txt")
 
+    existing_state = validate_update_state()
+    preserve_recovery_journal = bool(
+        isinstance(existing_state, dict)
+        and int(existing_state.get("transaction_version") or 0) == 1
+        and str(existing_state.get("status") or "") in INCOMPLETE_UPDATE_STATES
+    )
     started_state = {
         "status": "starting",
         "update_id": update_id,
@@ -84,7 +96,8 @@ def launch_detached_update(
         "log_path": str(log_path),
         "status_path": str(status_path),
     }
-    status_path.write_text(json.dumps(started_state, indent=2) + "\n", encoding="utf-8")
+    if not preserve_recovery_journal:
+        status_path.write_text(json.dumps(started_state, indent=2) + "\n", encoding="utf-8")
 
     log = log_path.open("a", encoding="utf-8")
     cmd = [
@@ -138,6 +151,7 @@ def mac_mcp_update(check_only: bool = True, branch: str = "main") -> Dict[str, A
     if not branch or len(branch) > 120:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "branch must be a non-empty Git branch name.")
     try:
+        validate_update_state()
         repo, runtime = resolve_paths()
         info = check_update(repo, runtime, branch=branch, remote="origin", fetch=True)
     except UpdateError as exc:

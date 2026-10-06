@@ -16,6 +16,7 @@ import mcp_server.menu_app_bootstrap as menu_bootstrap_module
 import mcp_server.release_trust as release_trust
 import mcp_server.tools_update as tools_update_module
 import mcp_server.update_helper as update_helper_module
+import mcp_server.update_state as update_state_module
 from mcp_server.tools_update import mac_mcp_update
 from mcp_server.update_helper import UpdateError, apply_update, check_update, format_check, format_check_json
 from mcp_server.update_state import migrate_completed_legacy_update
@@ -285,6 +286,72 @@ class UpdateHelperTests(unittest.TestCase):
         )
         self.env_patcher.start()
         self.addCleanup(self.env_patcher.stop)
+
+    def test_corrupt_update_state_is_not_treated_as_missing(self) -> None:
+        state_path = self.update_dir / "state.json"
+        state_path.write_text("{broken", encoding="utf-8")
+        with self.assertRaises(update_state_module.UpdateStateError) as ctx:
+            update_state_module.read_update_state()
+        self.assertEqual("update_state_corrupt", ctx.exception.code)
+        self.assertTrue(state_path.exists())
+        self.assertEqual("{broken", state_path.read_text(encoding="utf-8"))
+
+    def test_schema_invalid_update_state_is_not_treated_as_missing(self) -> None:
+        state_path = self.update_dir / "state.json"
+        state_path.write_text(json.dumps({"transaction_version": "x", "status": "runtime_synced"}), encoding="utf-8")
+        with self.assertRaises(update_state_module.UpdateStateError) as ctx:
+            update_state_module.read_update_state()
+        self.assertEqual("update_state_corrupt", ctx.exception.code)
+
+    def test_corrupt_update_state_blocks_recovery_before_any_mutation(self) -> None:
+        state_path = self.update_dir / "state.json"
+        state_path.write_text("{broken", encoding="utf-8")
+        repo = self.update_dir / "repo"
+        runtime = self.update_dir / "runtime"
+        repo.mkdir()
+        runtime.mkdir()
+        with self.assertRaisesRegex(UpdateError, "journal is corrupt or unreadable"):
+            update_helper_module.recover_incomplete_update(repo, runtime)
+        self.assertEqual("{broken", state_path.read_text(encoding="utf-8"))
+
+    def test_detached_launch_preserves_existing_incomplete_recovery_journal(self) -> None:
+        repo = self.update_dir / "repo-preserve"
+        runtime = self.update_dir / "runtime-preserve"
+        repo.mkdir()
+        runtime.mkdir()
+        journal = {
+            "transaction_version": 1,
+            "transaction_id": "upd-existing",
+            "status": "runtime_synced",
+            "repo": str(repo),
+            "runtime": str(runtime),
+        }
+        state_path = self.update_dir / "state.json"
+        state_path.write_text(json.dumps(journal), encoding="utf-8")
+        info = SimpleNamespace(
+            repo=str(repo), runtime=str(runtime), branch="main", remote="origin",
+            deployed_commit="a" * 40, target_commit="b" * 40, behind_by=1,
+            update_available=True, dirty=False, release_verified=True,
+            release_id="test-stable", release_version="1.0.0",
+            release_payload_sha256="c" * 64, release_signer_fingerprint="SHA256:test",
+            release_file_count=4, release_artifact_count=0,
+            branch_tip_commit="b" * 40, unverified_ahead=0,
+        )
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            kwargs["stdout"].close()
+            return SimpleNamespace(pid=4242)
+
+        with patch("mcp_server.tools_update.subprocess.Popen", side_effect=fake_popen):
+            payload, _proc = tools_update_module.launch_detached_update(
+                info, repo, runtime, branch="main", remote="origin"
+            )
+        self.assertTrue(payload["update_started"])
+        self.assertEqual(journal, json.loads(state_path.read_text(encoding="utf-8")))
+        helper = Path(captured["cmd"][1])
+        self.addCleanup(shutil.rmtree, helper.parent, True)
 
     def sign_index_release(self, repo: Path, release_id: str = "test-stable") -> None:
         manifest = release_trust.build_manifest_from_index(
