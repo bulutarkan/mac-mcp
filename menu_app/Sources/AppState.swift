@@ -1666,7 +1666,10 @@ final class AppState: ObservableObject {
         ToolActivityBubbleController.shared.begin(
             eventID: eventID,
             tool: String(describing: payload["tool"] ?? "tool"),
-            description: description
+            description: description,
+            sessionID: payload["session_id"] as? String,
+            agentID: payload["agent_id"] as? String,
+            teamID: payload["team_id"] as? String
         )
     }
 

@@ -33,7 +33,6 @@ from .tool_cancellation import (
     ToolCancellationContext, current_tool_cancellation, reset_tool_cancellation,
     set_tool_cancellation,
 )
-from .runtime_settings import tool_activity_setting
 from .usage_metering import (
     UsageCollector,
     UsageSample,
@@ -949,6 +948,7 @@ class ObservedFastMCP(FastMCP):
         policy_context_provider: Callable[[], PolicyContext] = current_policy_context,
         security_context: Optional[SecurityContextManager] = None,
         security_approval_provider: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        intent_descriptions_provider: Optional[Callable[[], bool]] = None,
         **kwargs: Any,
     ) -> None:
         self.telemetry = telemetry
@@ -956,6 +956,7 @@ class ObservedFastMCP(FastMCP):
         self.security_context = security_context or SecurityContextManager()
         self._security_approval_provider = security_approval_provider
         self._policy_context_provider = policy_context_provider
+        self._intent_descriptions_provider = intent_descriptions_provider or (lambda: False)
         super().__init__(*args, **kwargs)
 
     def effective_tool_availability(self, tool_name: str) -> dict[str, Any]:
@@ -990,9 +991,8 @@ class ObservedFastMCP(FastMCP):
             availability["scope_limited"] = True
         return availability
 
-    @staticmethod
-    def intent_descriptions_enabled() -> bool:
-        return bool(tool_activity_setting("require_descriptions", False))
+    def intent_descriptions_enabled(self) -> bool:
+        return bool(self._intent_descriptions_provider())
 
     @staticmethod
     def _with_intent_schema(tool: Any) -> Any:
@@ -1171,20 +1171,10 @@ class ObservedFastMCP(FastMCP):
             and name != "tool_invoke"
         )
         decision = evaluate_profile(policy_context.profile, effective)
-        metadata = policy_metadata(policy_context, declared, effective, decision)
-        telemetry_arguments = dict(arguments)
-        if intent_description:
-            telemetry_arguments["description"] = intent_description
-        event_id = self.telemetry.start_call(
-            "mcp", name, telemetry_arguments, metadata=metadata
-        )
 
         parent_event = _STEERING_PARENT_EVENT.get()
         top_level = parent_event is None
-        steering_token = _STEERING_PARENT_EVENT.set(event_id) if top_level else None
         steering_identity = None
-        call_registered = False
-        security_token = None
         security_pair = _SECURITY_SESSION.get()
 
         if top_level:
@@ -1202,13 +1192,26 @@ class ObservedFastMCP(FastMCP):
                 policy_context, steering_identity.key if steering_identity is not None else None
             )
             security_pair = (security_key, public_session_id)
-            security_token = _SECURITY_SESSION.set(security_pair)
         elif security_pair is None:
             public_session_id = policy_context.agent_id or f"actor:{policy_context.actor}"
             security_pair = (self.security_context.identity_key(policy_context, None), public_session_id)
 
         security_key, public_session_id = security_pair
-        self.telemetry.update_context(event_id, metadata={"session_id": public_session_id})
+        metadata = policy_metadata(policy_context, declared, effective, decision)
+        # Publish the stable logical MCP session on call_started itself. The
+        # Tool Activity UI consumes the live SSE event and cannot wait for a
+        # later telemetry context update when multiple clients run concurrently.
+        metadata["session_id"] = public_session_id
+        telemetry_arguments = dict(arguments)
+        if intent_description:
+            telemetry_arguments["description"] = intent_description
+        event_id = self.telemetry.start_call(
+            "mcp", name, telemetry_arguments, metadata=metadata
+        )
+
+        steering_token = _STEERING_PARENT_EVENT.set(event_id) if top_level else None
+        call_registered = False
+        security_token = _SECURITY_SESSION.set(security_pair) if top_level else None
 
         def security_event(
             event_type: str, decision_name: str, reason_code: str, *,

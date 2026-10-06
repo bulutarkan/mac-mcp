@@ -68,6 +68,7 @@ from .tools_memory import memory_add, memory_search, memory_get, memory_update, 
 from .tools_lessons import lesson_consolidate, lesson_feedback, lesson_record, lesson_search
 from .tools_skills import skill_list, skill_search, skill_get, skill_register, skill_update_index
 from .menu_app_bootstrap import bootstrap_menu_app_and_legacy_state
+from .runtime_settings import tool_activity_setting
 from .cli_bootstrap import ensure_cli_launcher
 from .post_update_health import get_or_start_post_update_health_gate, pending_update_context
 from .data_guard import format_security_approval_question
@@ -280,6 +281,9 @@ def create_app():
         stateless_http=False,
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
         security_approval_provider=security_approval,
+        intent_descriptions_provider=lambda: bool(
+            tool_activity_setting("require_descriptions", False)
+        ),
     )
 
     def current_provenance_class() -> str:
