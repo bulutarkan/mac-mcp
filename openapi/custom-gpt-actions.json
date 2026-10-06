@@ -15,7 +15,7 @@
     "/api/run": {
       "post": {
         "operationId": "run_command",
-        "x-openai-isConsequential": false,
+        "x-openai-isConsequential": true,
         "summary": "Run a shell command on macOS using zsh",
         "description": "Runs a local command and returns bounded output and timing information.",
         "requestBody": {

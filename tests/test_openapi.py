@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from mcp_server.policy import RISK_REGISTRY
 from mcp_server.rest_routes import router
 
 
@@ -47,6 +48,22 @@ class OpenAPICoverageTests(unittest.TestCase):
         mac_act_schema = schema["paths"]["/api/mac_act"]["post"]["requestBody"]["content"]["application/json"]["schema"]
         self.assertIn("target_bundle_id", mac_act_schema["properties"])
         self.assertIn("process-bound target", schema["paths"]["/api/mac_act"]["post"]["description"])
+
+    def test_consequential_metadata_matches_representative_policy_risk(self):
+        schema = json.loads(
+            (Path(__file__).parents[1] / "openapi" / "custom-gpt-actions.json").read_text()
+        )
+        operations = {
+            item["post"]["operationId"]: item["post"]
+            for item in schema["paths"].values()
+        }
+
+        for operation_id in ("run_command", "run_commands_parallel", "process_list"):
+            with self.subTest(operation_id=operation_id):
+                self.assertEqual(
+                    RISK_REGISTRY[operation_id].destructive,
+                    operations[operation_id]["x-openai-isConsequential"],
+                )
 
     def test_fastapi_router_publishes_the_same_operation_ids(self):
         app = FastAPI()

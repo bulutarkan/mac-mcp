@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -198,6 +199,28 @@ class GlobalAdmissionCoreTests(unittest.TestCase):
         self.assertFalse(second["admitted"])
         self.assertEqual("resource_busy", second["reason"])
 
+    def test_invalid_primary_schema_versions_recover_last_known_good(self) -> None:
+        first = self.admit("one", resources=[{"kind":"browser_tab","id":"tab_123","mode":"write"}])
+        self.assertTrue(first["admitted"])
+        state_path = self.root / ".global-admission.json"
+        backup_path = self.root / ".global-admission.last-good.json"
+        valid_primary = state_path.read_text(encoding="utf-8")
+        valid_backup = backup_path.read_text(encoding="utf-8")
+
+        for index, invalid_version in enumerate(("x", None, admission.SCHEMA_VERSION + 1)):
+            with self.subTest(schema_version=invalid_version):
+                state_path.write_text(valid_primary, encoding="utf-8")
+                backup_path.write_text(valid_backup, encoding="utf-8")
+                payload = json.loads(valid_primary)
+                payload["schema_version"] = invalid_version
+                state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+                second = self.admit(f"two-{index}", provider="codex", resources=[
+                    {"kind":"browser_tab","id":"tab_123","mode":"write"},
+                ])
+                self.assertFalse(second["admitted"])
+                self.assertEqual("resource_busy", second["reason"])
+
     def test_corrupt_primary_and_backup_fail_closed(self) -> None:
         first = self.admit("one")
         self.assertTrue(first["admitted"])
@@ -207,6 +230,23 @@ class GlobalAdmissionCoreTests(unittest.TestCase):
         with self.assertRaises(admission.AdmissionError) as ctx:
             self.admit("two", provider="codex")
         self.assertEqual("admission_state_unavailable", ctx.exception.code)
+
+    def test_invalid_schema_versions_in_primary_and_backup_fail_closed(self) -> None:
+        first = self.admit("one")
+        self.assertTrue(first["admitted"])
+        for path, invalid_version in (
+            (self.root / ".global-admission.json", "x"),
+            (self.root / ".global-admission.last-good.json", admission.SCHEMA_VERSION + 1),
+        ):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["schema_version"] = invalid_version
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with self.assertRaises(admission.AdmissionError) as ctx:
+            self.admit("two", provider="codex")
+        self.assertEqual("admission_state_unavailable", ctx.exception.code)
+        self.assertEqual("admission_state_corrupt", ctx.exception.details["primary_error"])
+        self.assertEqual("admission_state_corrupt", ctx.exception.details["backup_error"])
 
     def test_missing_primary_recovers_backup_instead_of_assuming_empty(self) -> None:
         first = self.admit("one", resources=[{"kind":"clipboard","id":"system","mode":"write"}])

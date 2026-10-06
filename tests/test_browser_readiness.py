@@ -271,10 +271,56 @@ class BrowserElementReadinessTests(unittest.TestCase):
         run.assert_not_called()
 
     # ASSURANCE: SEC-FOCUS-001
+    def test_trusted_chrome_click_does_not_dispatch_when_prepare_reports_stale(self) -> None:
+        readiness = {"ready": True, "element_id": "e_1", "stable_for_ms": 500, "rect": {"x": 10, "y": 20, "w": 100, "h": 40}, "_js_calls": 1}
+        stale = {"ok": False, "error": "stale_element", "reason_code": "ELEMENT_DETACHED", "observe_again": True}
+        with patch("mcp_server.tools_browser_agent._wait_for_element_readiness", return_value=readiness), \
+             patch("mcp_server.tools_browser_agent.chrome_background_bridge.is_connected", return_value=True), \
+             patch("mcp_server.tools_browser_agent.chrome_background_bridge.request_dispatch_mouse") as dispatch, \
+             patch("mcp_server.tools_browser_agent.browser_tabs.resolve_tab") as resolve_tab, \
+             patch("mcp_server.tools_browser_agent._run_json_js", return_value=stale):
+            result = _verified_dom_action(
+                MagicMock(), "Google Chrome",
+                {"type": "click", "element_id": "e_1", "input_mode": "trusted"},
+                None, 1, 2, "tab-a",
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual("stale_element", result["error"])
+        self.assertEqual("ELEMENT_DETACHED", result["reason_code"])
+        self.assertTrue(result["observe_again"])
+        self.assertTrue(result["retryable"])
+        dispatch.assert_not_called()
+        resolve_tab.assert_not_called()
+
+    # ASSURANCE: SEC-FOCUS-001
+    def test_trusted_chrome_click_does_not_dispatch_when_target_identity_changes(self) -> None:
+        readiness = {"ready": True, "element_id": "e_1", "stable_for_ms": 500, "rect": {"x": 10, "y": 20, "w": 100, "h": 40}, "_js_calls": 1}
+        rebound = {
+            "ok": True, "connected": True, "element_id": "e_2", "rect": {"x": 10, "y": 20, "w": 100, "h": 40},
+            "stable_for_ms": 500, "dom_revision": 6,
+        }
+        with patch("mcp_server.tools_browser_agent._wait_for_element_readiness", return_value=readiness), \
+             patch("mcp_server.tools_browser_agent.chrome_background_bridge.is_connected", return_value=True), \
+             patch("mcp_server.tools_browser_agent.chrome_background_bridge.request_dispatch_mouse") as dispatch, \
+             patch("mcp_server.tools_browser_agent.browser_tabs.resolve_tab") as resolve_tab, \
+             patch("mcp_server.tools_browser_agent._run_json_js", return_value=rebound):
+            result = _verified_dom_action(
+                MagicMock(), "Google Chrome",
+                {"type": "click", "element_id": "e_1", "input_mode": "trusted"},
+                None, 1, 2, "tab-a",
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual("stale_element", result["error"])
+        self.assertEqual("TARGET_CHANGED", result["reason_code"])
+        dispatch.assert_not_called()
+        resolve_tab.assert_not_called()
+
+    # ASSURANCE: SEC-FOCUS-001
     def test_trusted_chrome_click_uses_background_debugger_coordinates_and_verifies_effect(self) -> None:
-        readiness = {"ready": True, "stable_for_ms": 500, "rect": {"x": 10, "y": 20, "w": 100, "h": 40}, "_js_calls": 1}
+        readiness = {"ready": True, "element_id": "e_1", "stable_for_ms": 500, "rect": {"x": 10, "y": 20, "w": 100, "h": 40}, "_js_calls": 1}
         before = {
-            "ok": True, "connected": True, "url": "https://example.test/app", "title": "App",
+            "ok": True, "connected": True, "element_id": "e_1", "rect": {"x": 30, "y": 40, "w": 100, "h": 40},
+            "stable_for_ms": 500, "url": "https://example.test/app", "title": "App",
             "dom_revision": 5, "value": "", "text": "", "checked": False, "modal_fingerprint": "", "activation_network_count": 0,
         }
         changed = {
@@ -292,7 +338,7 @@ class BrowserElementReadinessTests(unittest.TestCase):
                 {"type": "click", "element_id": "e_1", "input_mode": "trusted", "verify_timeout_s": 0.1},
                 None, 1, 2, "tab-a",
             )
-        dispatch.assert_called_once_with("99", 60.0, 40.0, click_count=1, timeout_s=8.0)
+        dispatch.assert_called_once_with("99", 80.0, 60.0, click_count=1, timeout_s=8.0)
         self.assertTrue(result["ok"])
         self.assertTrue(result["effect_observed"])
         self.assertEqual("trusted_chrome_cdp", result["activation_mode"])

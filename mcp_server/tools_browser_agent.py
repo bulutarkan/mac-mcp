@@ -2048,20 +2048,26 @@ checked:typeof el.checked==='boolean'?!!el.checked:null,aria_expanded:el.getAttr
 }})()'''
 
 
-def _trusted_activation_prepare_js(element_id: str) -> str:
+def _trusted_activation_prepare_js(element_id: str, stable_ms: int = 0) -> str:
     eid = json.dumps(str(element_id or ""))
+    stable = max(0, min(int(stable_ms), 1500))
     return f'''(function(){{
 {_browser_state_bootstrap()}
 function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
 var s=__mcpState(),el=__mcpRecoverElement({eid},s);
-if(!el)return __mcpB64({{ok:false,error:'stale_element'}});
+if(!el)return __mcpB64({{ok:false,error:'stale_element',reason_code:'ELEMENT_DETACHED',observe_again:true}});
+__mcpFlushMutations(s);__mcpStartMutationWatch(s,2000);
+var target=__mcpActivationTarget(el);if(!target||!target.isConnected)return __mcpB64({{ok:false,error:'stale_element',reason_code:'ELEMENT_DETACHED',observe_again:true}});
+var rd=__mcpElementReadiness(target,'click',{stable});
+if(!rd.ready)return __mcpB64({{ok:false,error:rd.reason_code==='ELEMENT_DETACHED'?'stale_element':'element_not_ready',reason_code:rd.reason_code||'ELEMENT_NOT_READY',observe_again:true,readiness:rd}});
+el=target;
 var win=__mcpOwnerWindow(el),trace={{mode:'trusted_chrome_cdp',target_click_seen:false,window_click_seen:false,click_is_trusted:null,click_default_prevented:null,dispatch_canceled:[]}};
 s.lastActivationTrace=trace;__mcpStartActionNetworkProbe(s,trace);
 var targetRecorder=function(ev){{trace.target_click_seen=true;trace.click_is_trusted=!!ev.isTrusted;}};
 var windowRecorder=function(ev){{try{{var path=typeof ev.composedPath==='function'?ev.composedPath():[];if(ev.target===el||path.indexOf(el)>=0||__mcpComposedContains(el,ev.target)){{trace.window_click_seen=true;trace.click_is_trusted=!!ev.isTrusted;trace.click_default_prevented=!!ev.defaultPrevented;}}}}catch(e){{}}}};
 try{{el.addEventListener('click',targetRecorder,{{capture:true,once:true}});win.addEventListener('click',windowRecorder,{{capture:false,once:true}});setTimeout(function(){{try{{el.removeEventListener('click',targetRecorder,true);win.removeEventListener('click',windowRecorder,false);}}catch(e){{}}}},750);}}catch(e){{}}
 var role=__mcpRole(el),value='',text='';try{{value=('value' in el)?String(el.value==null?'':el.value):'';}}catch(e){{}}try{{if(!value&&(el.isContentEditable||role==='textbox'||role==='searchbox'))text=String(el.textContent||'');}}catch(e){{}}
-return __mcpB64({{ok:true,connected:!!el.isConnected,url:location.href,title:document.title,dom_revision:s.mutationRevision,value:value,text:text,checked:typeof el.checked==='boolean'?!!el.checked:null,aria_expanded:el.getAttribute('aria-expanded'),aria_selected:el.getAttribute('aria-selected'),aria_pressed:el.getAttribute('aria-pressed'),aria_checked:el.getAttribute('aria-checked'),class_name:String(el.className||''),modal_fingerprint:__mcpModalEffectFingerprint(),activation_network_count:0,activation_trace:trace}});
+return __mcpB64({{ok:true,connected:!!el.isConnected,element_id:rd.element_id,rect:rd.rect,stable_for_ms:rd.stable_for_ms,hit_target:rd.hit_target,url:location.href,title:document.title,dom_revision:rd.dom_revision,value:value,text:text,checked:typeof el.checked==='boolean'?!!el.checked:null,aria_expanded:el.getAttribute('aria-expanded'),aria_selected:el.getAttribute('aria-selected'),aria_pressed:el.getAttribute('aria-pressed'),aria_checked:el.getAttribute('aria-checked'),class_name:String(el.className||''),modal_fingerprint:__mcpModalEffectFingerprint(),activation_network_count:0,activation_trace:trace}});
 }})()'''
 
 
@@ -2155,11 +2161,36 @@ def _verified_dom_action(
                 "activation_mode": "trusted_requested", "automatic_retry": False,
                 "foreground_fallback": False, "retryable": True, "readiness": readiness, "_js_calls": js_calls,
             }
+        stable_ms = max(0, min(int(action.get("readiness_stable_ms", _ELEMENT_READINESS_STABLE_MS)), 1500))
         before = _run_json_js(
-            settings, browser, _trusted_activation_prepare_js(element_id),
+            settings, browser, _trusted_activation_prepare_js(element_id, stable_ms),
             window_index, tab_index, tab_handle,
         )
         js_calls += 1
+        if not before.get("ok") or not before.get("connected", True):
+            error = str(before.get("error") or "stale_element")
+            return {
+                "ok": False, "type": typ, "element_id": element_id or None,
+                "error": error,
+                "reason_code": str(before.get("reason_code") or ("ELEMENT_DETACHED" if error == "stale_element" else "ELEMENT_NOT_READY")),
+                "observe_again": True, "retryable": True,
+                "readiness": before.get("readiness") if isinstance(before.get("readiness"), dict) else readiness,
+                "_js_calls": js_calls,
+            }
+        ready_element_id = readiness.get("element_id")
+        fresh_element_id = before.get("element_id")
+        if ready_element_id and fresh_element_id and ready_element_id != fresh_element_id:
+            return {
+                "ok": False, "type": typ, "element_id": element_id or None,
+                "error": "stale_element", "reason_code": "TARGET_CHANGED",
+                "observe_again": True, "retryable": True,
+                "readiness": readiness, "_js_calls": js_calls,
+            }
+        refreshed_readiness = dict(readiness)
+        for key in ("element_id", "rect", "stable_for_ms", "hit_target", "dom_revision"):
+            if before.get(key) is not None:
+                refreshed_readiness[key] = before.get(key)
+        readiness = refreshed_readiness
         try:
             _, _, row = browser_tabs.resolve_tab(browser, str(tab_handle or ""))
             native_id = row.get("native_id")
@@ -2172,6 +2203,13 @@ def _verified_dom_action(
                 "observe_again": True, "readiness": readiness, "_js_calls": js_calls,
             }
         rect = readiness.get("rect") if isinstance(readiness.get("rect"), dict) else {}
+        if float(rect.get("w") or 0) <= 0 or float(rect.get("h") or 0) <= 0:
+            return {
+                "ok": False, "type": typ, "element_id": element_id or None,
+                "error": "element_not_ready", "reason_code": "ELEMENT_ZERO_BOUNDS",
+                "observe_again": True, "retryable": True,
+                "readiness": readiness, "_js_calls": js_calls,
+            }
         x = float(rect.get("x") or 0) + float(rect.get("w") or 0) / 2.0
         y = float(rect.get("y") or 0) + float(rect.get("h") or 0) / 2.0
         try:

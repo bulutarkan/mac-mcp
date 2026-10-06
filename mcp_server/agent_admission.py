@@ -127,7 +127,21 @@ def _read_state_file(path: Path) -> Dict[str, Any]:
             f"Agent admission state is not valid JSON: {path.name}",
             details={"path": str(path)},
         ) from exc
-    if not isinstance(payload, dict) or int(payload.get("schema_version") or 0) != SCHEMA_VERSION:
+    if not isinstance(payload, dict):
+        raise AdmissionError(
+            "admission_state_corrupt",
+            f"Agent admission state schema is invalid: {path.name}",
+            details={"path": str(path)},
+        )
+    try:
+        schema_version = int(payload.get("schema_version") or 0)
+    except (TypeError, ValueError) as exc:
+        raise AdmissionError(
+            "admission_state_corrupt",
+            f"Agent admission state schema is invalid: {path.name}",
+            details={"path": str(path)},
+        ) from exc
+    if schema_version != SCHEMA_VERSION:
         raise AdmissionError(
             "admission_state_corrupt",
             f"Agent admission state schema is invalid: {path.name}",
