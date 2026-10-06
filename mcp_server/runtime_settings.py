@@ -97,6 +97,11 @@ def steering_setting(name: str, default: Any = None) -> Any:
     return steering.get(name, default)
 
 
+def tool_activity_setting(name: str, default: Any = None) -> Any:
+    activity = load_runtime_settings().get("tool_activity", {})
+    if not isinstance(activity, dict):
+        return default
+    return activity.get(name, default)
 
 
 def subagent_default_preset() -> dict[str, Any] | None:

@@ -22,6 +22,10 @@ struct MenuSettings: Codable {
     struct Steering: Codable {
         var session_ttl_minutes: Int
     }
+    struct ToolActivity: Codable {
+        var show_bubble: Bool
+        var require_descriptions: Bool
+    }
     struct Provider: Codable {
         var enabled: Bool
         var binary_path: String?
@@ -46,6 +50,7 @@ struct MenuSettings: Codable {
     var voice: Voice
     var server: Server
     var steering: Steering?
+    var tool_activity: ToolActivity?
     var subagents: Subagents?
 
     static func defaults() -> MenuSettings {
@@ -54,6 +59,7 @@ struct MenuSettings: Codable {
             voice: Voice(language: "auto", input_device: "auto", output_device: "system", tts_rate: "-5%", timeout_s: 45, voice: "tr-TR-AhmetNeural"),
             server: Server(port: 8000, cli_path: "", ngrok_on_start: false, public_endpoint_mode: "none", public_url: "", cloudflare_tunnel: ""),
             steering: Steering(session_ttl_minutes: 10),
+            tool_activity: ToolActivity(show_bubble: false, require_descriptions: false),
             subagents: Subagents(
                 providers: [
                     "opencode": Provider(enabled: false, binary_path: nil, default_project: nil),
@@ -82,6 +88,8 @@ final class SettingsStore: ObservableObject {
     @Published var publicURL = ""
     @Published var cloudflareTunnel = ""
     @Published var steeringSessionMinutes = 10
+    @Published var showToolActivity = false
+    @Published var requireToolDescriptions = false
     @Published var opencodeEnabled = false
     @Published var codexEnabled = false
     @Published var chatgptEnabled = false
@@ -157,6 +165,11 @@ final class SettingsStore: ObservableObject {
         cloudflareTunnel = current.server.cloudflare_tunnel ?? ""
         ngrokOnStart = publicEndpointMode == "ngrok"
         steeringSessionMinutes = max(1, current.steering?.session_ttl_minutes ?? 10)
+        showToolActivity = current.tool_activity?.show_bubble ?? false
+        requireToolDescriptions = current.tool_activity?.require_descriptions ?? false
+        if !requireToolDescriptions {
+            showToolActivity = false
+        }
         let providers = current.subagents?.providers ?? [:]
         opencodeEnabled = providerConfigValid ? (providers["opencode"]?.enabled ?? false) : false
         codexEnabled = providerConfigValid ? (providers["codex"]?.enabled ?? false) : false
@@ -191,6 +204,10 @@ final class SettingsStore: ObservableObject {
                 cloudflare_tunnel: cloudflareTunnel
             ),
             steering: .init(session_ttl_minutes: max(1, steeringSessionMinutes)),
+            tool_activity: .init(
+                show_bubble: showToolActivity && requireToolDescriptions,
+                require_descriptions: requireToolDescriptions
+            ),
             subagents: .init(
                 providers: [
                     "opencode": .init(enabled: opencodeEnabled, binary_path: opencodeBinaryPath.nilIfEmpty, default_project: nil),

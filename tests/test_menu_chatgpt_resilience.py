@@ -51,9 +51,10 @@ struct AgentResilienceDecodeHarness {
                 "xcrun", "swiftc", "-parse-as-library",
                 str(APP_STATE),
                 str(ROOT / "menu_app/Sources/SettingsStore.swift"),
+                str(ROOT / "menu_app/Sources/ToolActivityBubbleController.swift"),
                 str(ROOT / "menu_app/Sources/KeychainStore.swift"),
                 str(source),
-                "-framework", "AppKit", "-framework", "Security", "-framework", "Combine",
+                "-framework", "SwiftUI", "-framework", "AppKit", "-framework", "Security", "-framework", "Combine",
                 "-o", str(binary),
             ]
             compiled = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=90)

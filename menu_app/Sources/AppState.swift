@@ -1350,6 +1350,7 @@ final class AppState: ObservableObject {
 
     let settings = SettingsStore()
     private var pollTask: Task<Void, Never>?
+    private var toolActivityStreamTask: Task<Void, Never>?
     private var pulseTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
     private var updateStatePollTask: Task<Void, Never>?
@@ -1377,6 +1378,7 @@ final class AppState: ObservableObject {
     }
     deinit {
         pollTask?.cancel()
+        toolActivityStreamTask?.cancel()
         pulseTask?.cancel()
         noticeTask?.cancel()
         updateStatePollTask?.cancel()
@@ -1564,6 +1566,7 @@ final class AppState: ObservableObject {
     }
 
     func startTasks() {
+        restartToolActivityStream()
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -1573,6 +1576,98 @@ final class AppState: ObservableObject {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
         }
+    }
+
+    func restartToolActivityStream() {
+        toolActivityStreamTask?.cancel()
+        toolActivityStreamTask = nil
+
+        guard settings.requireToolDescriptions, settings.showToolActivity else {
+            ToolActivityBubbleController.shared.hideImmediately()
+            return
+        }
+
+        toolActivityStreamTask = Task { [weak self] in
+            await self?.consumeToolActivityStream()
+        }
+    }
+
+    private func consumeToolActivityStream() async {
+        while !Task.isCancelled {
+            guard settings.requireToolDescriptions, settings.showToolActivity else {
+                ToolActivityBubbleController.shared.hideImmediately()
+                return
+            }
+            guard let url = URL(
+                string: "http://127.0.0.1:\(settings.serverPort)/dashboard/events"
+            ) else { return }
+
+            var request = URLRequest(url: url)
+            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+            authorizeDashboardRequest(&request)
+            request.timeoutInterval = 35
+
+            do {
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                guard
+                    let http = response as? HTTPURLResponse,
+                    (200..<300).contains(http.statusCode)
+                else {
+                    throw URLError(.badServerResponse)
+                }
+
+                for try await line in bytes.lines {
+                    if Task.isCancelled { return }
+                    guard line.hasPrefix("data:") else { continue }
+                    let json = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                    guard
+                        let data = json.data(using: .utf8),
+                        let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                    else { continue }
+                    handleToolActivityPayload(payload)
+                }
+            } catch {
+                if Task.isCancelled { return }
+            }
+
+            try? await Task.sleep(nanoseconds: 900_000_000)
+        }
+    }
+
+    private func handleToolActivityPayload(_ payload: [String: Any]) {
+        let kind = String(describing: payload["kind"] ?? "")
+
+        if kind == "connected" {
+            ToolActivityBubbleController.shared.hideImmediately()
+            guard let active = payload["active"] as? [[String: Any]] else { return }
+            for event in active.reversed() {
+                presentToolActivityEvent(event)
+            }
+            return
+        }
+
+        guard let eventID = payload["event_id"] as? String, !eventID.isEmpty else { return }
+        if kind == "call_started" {
+            presentToolActivityEvent(payload)
+        } else if kind == "call_finished" {
+            ToolActivityBubbleController.shared.finish(eventID: eventID)
+        }
+    }
+
+    private func presentToolActivityEvent(_ payload: [String: Any]) {
+        guard settings.requireToolDescriptions, settings.showToolActivity else { return }
+        guard
+            let eventID = payload["event_id"] as? String,
+            let arguments = payload["arguments"] as? [String: Any],
+            let description = arguments["description"] as? String,
+            !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return }
+
+        ToolActivityBubbleController.shared.begin(
+            eventID: eventID,
+            tool: String(describing: payload["tool"] ?? "tool"),
+            description: description
+        )
     }
 
     func refresh() async {

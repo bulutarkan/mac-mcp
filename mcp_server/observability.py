@@ -24,7 +24,7 @@ ensure_fastmcp_settings_model_complete()
 from .steering import SteeringManager, attach_steering, preemption_error, steering_identity_from_context
 from . import browser_tabs
 from .security_context import SecurityContextManager
-from .data_guard import redact_sensitive_source_result, redact_sensitive_text, sanitize_tool_arguments
+from .data_guard import contains_direct_secret, redact_sensitive_source_result, redact_sensitive_text, sanitize_tool_arguments
 from .workflow_checkpoints import (
     WorkflowCheckpointError, abandon_side_effect, begin_side_effect,
     mark_checkpoint_unknown, record_side_effect_outcome, risk_has_side_effect,
@@ -33,6 +33,7 @@ from .tool_cancellation import (
     ToolCancellationContext, current_tool_cancellation, reset_tool_cancellation,
     set_tool_cancellation,
 )
+from .runtime_settings import tool_activity_setting
 from .usage_metering import (
     UsageCollector,
     UsageSample,
@@ -61,6 +62,20 @@ DEFAULT_RETENTION_DAYS = 7
 DEFAULT_MAX_EVENTS = 20_000
 DEFAULT_PREVIEW_CHARS = 4_000
 RECENT_MEMORY_EVENTS = 250
+_TOOL_INTENT_MAX_CHARS = 80
+_TOOL_INTENT_PATH_RE = re.compile(
+    r"(?:https?://|file://|(?:^|\s)(?:/Users/|/private/|/Volumes/|~/))",
+    re.IGNORECASE,
+)
+_TOOL_INTENT_SCHEMA = {
+    "type": "string",
+    "minLength": 3,
+    "maxLength": _TOOL_INTENT_MAX_CHARS,
+    "description": (
+        "Brief user-facing summary of why this tool is being used. "
+        "Use plain language; do not include raw commands, URLs, paths, tokens, or secrets."
+    ),
+}
 
 _SECRET_KEYS = {
     "authorization", "proxy_authorization", "api_key", "apikey", "access_key",
@@ -975,12 +990,36 @@ class ObservedFastMCP(FastMCP):
             availability["scope_limited"] = True
         return availability
 
+    @staticmethod
+    def intent_descriptions_enabled() -> bool:
+        return bool(tool_activity_setting("require_descriptions", False))
+
+    @staticmethod
+    def _with_intent_schema(tool: Any) -> Any:
+        schema = dict(getattr(tool, "inputSchema", None) or {})
+        properties = dict(schema.get("properties") or {})
+        if "description" in properties:
+            raise RuntimeError(
+                f"tool_intent_reserved_field_conflict: tool={tool.name}; field=description"
+            )
+        properties["description"] = dict(_TOOL_INTENT_SCHEMA)
+        required = [
+            str(item) for item in (schema.get("required") or [])
+            if str(item) != "description"
+        ]
+        required.append("description")
+        schema["properties"] = properties
+        schema["required"] = required
+        return tool.model_copy(update={"inputSchema": schema})
+
     async def list_available_tools(self, *, compact: bool = True):
         tools = await super().list_tools()
         tools = [
             tool for tool in tools
             if self.effective_tool_availability(tool.name).get("available") is True
         ]
+        if self.intent_descriptions_enabled():
+            tools = [self._with_intent_schema(tool) for tool in tools]
         if not compact or os.getenv("MAC_MCP_TOOL_PROFILE", "core").strip().lower() != "core":
             return tools
         extra = {
@@ -1090,6 +1129,39 @@ class ObservedFastMCP(FastMCP):
             raise
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):
+        incoming_arguments = dict(arguments or {})
+        top_level_request = _STEERING_PARENT_EVENT.get() is None
+        require_intent_description = self.intent_descriptions_enabled() and top_level_request
+        intent_description: Optional[str] = None
+
+        if require_intent_description:
+            raw_description = incoming_arguments.get("description")
+            if not isinstance(raw_description, str):
+                raise ToolError(f"intent_description_required: tool={name}")
+            intent_description = " ".join(raw_description.split()).strip()
+            if len(intent_description) < 3:
+                raise ToolError(f"intent_description_required: tool={name}")
+            if len(intent_description) > _TOOL_INTENT_MAX_CHARS:
+                raise ToolError(
+                    f"intent_description_too_long: tool={name}; max={_TOOL_INTENT_MAX_CHARS}"
+                )
+            if contains_direct_secret(intent_description):
+                raise ToolError(f"intent_description_sensitive: tool={name}")
+            redacted_description = redact_sensitive_text(intent_description)
+            if (
+                redacted_description != intent_description
+                or _TOOL_INTENT_PATH_RE.search(intent_description)
+            ):
+                raise ToolError(f"intent_description_sensitive: tool={name}")
+            incoming_arguments["description"] = intent_description
+
+        if require_intent_description:
+            execution_arguments = dict(incoming_arguments)
+            execution_arguments.pop("description", None)
+            arguments = execution_arguments
+        else:
+            arguments = incoming_arguments
+
         declared, effective = resolve_risk(name, arguments)
         policy_context = self._policy_context_provider()
         receipt_capabilities = [capability.value for capability in effective.capabilities]
@@ -1100,7 +1172,12 @@ class ObservedFastMCP(FastMCP):
         )
         decision = evaluate_profile(policy_context.profile, effective)
         metadata = policy_metadata(policy_context, declared, effective, decision)
-        event_id = self.telemetry.start_call("mcp", name, arguments, metadata=metadata)
+        telemetry_arguments = dict(arguments)
+        if intent_description:
+            telemetry_arguments["description"] = intent_description
+        event_id = self.telemetry.start_call(
+            "mcp", name, telemetry_arguments, metadata=metadata
+        )
 
         parent_event = _STEERING_PARENT_EVENT.get()
         top_level = parent_event is None

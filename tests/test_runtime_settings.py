@@ -35,6 +35,20 @@ class RuntimeSettingsTests(unittest.TestCase):
                 path.write_text(json.dumps({"steering": {"session_ttl_minutes": 120}}))
                 self.assertEqual(120, runtime_settings.steering_setting("session_ttl_minutes", 10))
 
+    def test_tool_activity_setting_is_read_live_from_disk(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "settings.json"
+            with patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(path)}):
+                self.assertFalse(runtime_settings.tool_activity_setting("require_descriptions", False))
+                path.write_text(json.dumps({
+                    "tool_activity": {
+                        "show_bubble": True,
+                        "require_descriptions": True,
+                    }
+                }))
+                self.assertTrue(runtime_settings.tool_activity_setting("show_bubble", False))
+                self.assertTrue(runtime_settings.tool_activity_setting("require_descriptions", False))
+
     def test_provider_settings_fail_closed_until_explicitly_enabled(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "settings.json"

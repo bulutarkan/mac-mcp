@@ -245,6 +245,79 @@ struct SettingsView: View {
                     .padding(.top, 5)
                 }
 
+                GroupBox("Tool Activity") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .center, spacing: 12) {
+                            Image(systemName: "bubble.left.and.text.bubble.right.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 34)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Explain active tool work")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("Show a short, human-readable intent while an MCP tool is running.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer()
+                            if settings.showToolActivity && settings.requireToolDescriptions {
+                                Button("Preview") {
+                                    ToolActivityBubbleController.shared.preview(
+                                        tool: "run_command",
+                                        description: "Checking RAM & Disk Health"
+                                    )
+                                }
+                                .controlSize(.small)
+                            }
+                        }
+
+                        Divider()
+
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Show Tool Activity")
+                                    .font(.subheadline.weight(.medium))
+                                Text("Displays the native menu-bar speech bubble. Drag it anywhere; its position is remembered. Descriptions can stay enabled when this is off.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer()
+                            Toggle("", isOn: showToolActivityBinding)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .disabled(!settings.requireToolDescriptions)
+                        }
+
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Require Tool Descriptions")
+                                    .font(.subheadline.weight(.medium))
+                                Text("Adds a short required description field to MCP tool schemas. Turn this off to remove the field entirely.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer()
+                            Toggle("", isOn: requireToolDescriptionsBinding)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                        }
+
+                        if settings.requireToolDescriptions {
+                            Label(
+                                "Reconnect MCP clients after changing this setting so they refresh their tool schemas.",
+                                systemImage: "arrow.triangle.2.circlepath"
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.top, 5)
+                }
+
                 updateCard
 
                 if let action = state.actionNotice {
@@ -2298,6 +2371,39 @@ struct SettingsView: View {
                     saveFeedback = SettingsSaveFeedback(scope: .agents, message: message, isError: true)
                     notice = message
                 }
+            }
+        )
+    }
+
+    private var showToolActivityBinding: Binding<Bool> {
+        Binding(
+            get: { settings.showToolActivity && settings.requireToolDescriptions },
+            set: { enabled in
+                settings.showToolActivity = enabled && settings.requireToolDescriptions
+                persistSettings(success: enabled ? "Tool Activity bubble enabled." : "Tool Activity bubble hidden.")
+                state.restartToolActivityStream()
+                if !enabled {
+                    ToolActivityBubbleController.shared.hideImmediately()
+                }
+            }
+        )
+    }
+
+    private var requireToolDescriptionsBinding: Binding<Bool> {
+        Binding(
+            get: { settings.requireToolDescriptions },
+            set: { enabled in
+                settings.requireToolDescriptions = enabled
+                if !enabled {
+                    settings.showToolActivity = false
+                    ToolActivityBubbleController.shared.hideImmediately()
+                }
+                persistSettings(
+                    success: enabled
+                        ? "Tool descriptions enabled. Reconnect MCP clients to refresh schemas."
+                        : "Tool descriptions disabled. Reconnect MCP clients to refresh schemas."
+                )
+                state.restartToolActivityStream()
             }
         )
     }
