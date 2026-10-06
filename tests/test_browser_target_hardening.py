@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from mcp_server import browser_tabs
 from mcp_server.policy import evaluate_tool_scope
 from mcp_server.policy_scope import ResourceScope
-from mcp_server.tools_browser import browser_open_url, _require_stable_handle_for_mutation
+from mcp_server.tools_browser import browser_open_url, _require_stable_handle_for_mutation, _resolve_tab_target
 
 
 class BrowserTargetHardeningTests(unittest.TestCase):
@@ -17,6 +17,52 @@ class BrowserTargetHardeningTests(unittest.TestCase):
         browser_tabs._RESOURCE_LOCKS.clear()
         browser_tabs._LOGICAL_LEASES.clear()
         browser_tabs._LEASE_HISTORY.clear()
+
+    def test_duplicate_safari_tabs_without_native_identity_fail_closed_on_rebind(self) -> None:
+        duplicates = [
+            {"browser": "Safari", "window_index": 1, "tab_index": 1, "active": True,
+             "native_id": "0", "title": "Same", "url": "https://example.test/same"},
+            {"browser": "Safari", "window_index": 1, "tab_index": 2, "active": False,
+             "native_id": "0", "title": "Same", "url": "https://example.test/same"},
+        ]
+        with patch("mcp_server.browser_tabs._scan", side_effect=[duplicates, duplicates]):
+            old_handle = browser_tabs.list_tabs("Safari")[0]["tab_handle"]
+            with self.assertRaises(browser_tabs.AmbiguousTabHandleError):
+                browser_tabs.resolve_tab("Safari", old_handle)
+
+    def test_duplicate_safari_tabs_surface_retryable_ambiguous_handle_error(self) -> None:
+        duplicates = [
+            {"browser": "Safari", "window_index": 1, "tab_index": 1, "active": True,
+             "native_id": "0", "title": "Same", "url": "https://example.test/same"},
+            {"browser": "Safari", "window_index": 1, "tab_index": 2, "active": False,
+             "native_id": "0", "title": "Same", "url": "https://example.test/same"},
+        ]
+        with patch("mcp_server.browser_tabs._scan", side_effect=[duplicates, duplicates]):
+            old_handle = browser_tabs.list_tabs("Safari")[0]["tab_handle"]
+            with self.assertRaises(HTTPException) as ctx:
+                _resolve_tab_target("Safari", old_handle, 1, None)
+        self.assertEqual(409, ctx.exception.status_code)
+        self.assertEqual("ambiguous_tab_handle", ctx.exception.detail["error"])
+        self.assertEqual("AMBIGUOUS_TAB_HANDLE", ctx.exception.detail["reason_code"])
+        self.assertTrue(ctx.exception.detail["retryable"])
+        self.assertEqual("browser_list_tabs", ctx.exception.detail["required_action"])
+        self.assertTrue(ctx.exception.detail["do_not_fallback_to_active_tab"])
+
+    def test_unique_safari_tab_without_native_identity_can_rebind_semantically_after_shift(self) -> None:
+        first = [{
+            "browser": "Safari", "window_index": 1, "tab_index": 1, "active": True,
+            "native_id": "0", "title": "Unique", "url": "https://example.test/unique",
+        }]
+        shifted = [
+            {"browser": "Safari", "window_index": 1, "tab_index": 1, "active": True,
+             "native_id": "0", "title": "Other", "url": "https://example.test/other"},
+            {**first[0], "tab_index": 2, "active": False},
+        ]
+        with patch("mcp_server.browser_tabs._scan", side_effect=[first, shifted]):
+            handle = browser_tabs.list_tabs("Safari")[0]["tab_handle"]
+            wi, ti, row = browser_tabs.resolve_tab("Safari", handle)
+        self.assertEqual((1, 2), (wi, ti))
+        self.assertEqual("https://example.test/unique", row["url"])
 
     def test_safari_pid_change_never_resurrects_closed_handle_by_url(self) -> None:
         old = [{

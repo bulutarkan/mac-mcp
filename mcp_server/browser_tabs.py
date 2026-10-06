@@ -32,6 +32,10 @@ _OWNER_OVERRIDE: contextvars.ContextVar[Optional[tuple[str, Optional[str], Optio
 )
 
 
+class AmbiguousTabHandleError(KeyError):
+    """A stale Safari handle cannot be rebound to one unique current tab."""
+
+
 @dataclass(frozen=True)
 class TabTarget:
     browser: str
@@ -374,21 +378,25 @@ def _best_existing_safari(row: Dict[str, Any], used: set[str]) -> Optional[str]:
     exact = [(h, r) for h, r in candidates if r.get("url") == url and r.get("title") == title]
     if len(exact) == 1:
         return exact[0][0]
+    if len(exact) > 1:
+        return None
 
     same_url = [(h, r) for h, r in candidates if url and r.get("url") == url]
     if len(same_url) == 1:
         return same_url[0][0]
+    if len(same_url) > 1:
+        return None
 
-    # Only fall back to the old location when Safari did not expose a WebContent PID.
-    # If a PID exists but is new, location matching would incorrectly steal the handle
-    # from the tab that used to occupy that index after the user inserts/reorders tabs.
-    if not pid or pid == "0":
-        for handle, record in candidates:
-            if (
-                record.get("window_index") == row.get("window_index")
-                and record.get("tab_index") == row.get("tab_index")
-            ):
-                return handle
+    # Window/tab position is not stable Safari identity. If current semantic
+    # metadata exists but does not match, a newly inserted or reordered tab may
+    # now occupy the old index; never steal an existing handle by position.
+    if url or title:
+        return None
+
+    # With no PID and no semantic metadata, reuse is safe only when exactly one
+    # prior Safari candidate exists. Multiple anonymous tabs are ambiguous.
+    if len(candidates) == 1:
+        return candidates[0][0]
     return None
 
 
@@ -450,13 +458,43 @@ def rebind_safari_handle(tab_handle: str, row: Dict[str, Any]) -> Dict[str, Any]
     return record
 
 
+def _safari_rebind_is_ambiguous(previous: Dict[str, Any], rows: List[Dict[str, Any]]) -> bool:
+    native_id = str(previous.get("native_id") or "")
+    if native_id and native_id != "0":
+        return False
+    url = str(previous.get("url") or "")
+    title = str(previous.get("title") or "")
+    exact = [row for row in rows if str(row.get("url") or "") == url and str(row.get("title") or "") == title]
+    if len(exact) > 1:
+        return True
+    if len(exact) == 1:
+        return False
+    if url:
+        same_url = [row for row in rows if str(row.get("url") or "") == url]
+        if len(same_url) > 1:
+            return True
+    if not url and not title:
+        anonymous = [
+            row for row in rows
+            if not str(row.get("native_id") or "") or str(row.get("native_id") or "") == "0"
+        ]
+        return len(anonymous) > 1
+    return False
+
+
 def resolve_tab(browser: str, tab_handle: str) -> Tuple[int, int, Dict[str, Any]]:
     handle = str(tab_handle or "").strip()
     if not handle:
         raise KeyError("tab_handle is empty")
-    for row in list_tabs(browser):
+    app = _browser_key(browser)
+    with _LOCK:
+        previous = dict(_REGISTRY.get(handle) or {})
+    rows = list_tabs(browser)
+    for row in rows:
         if row.get("tab_handle") == handle:
             return int(row["window_index"]), int(row["tab_index"]), row
+    if app == "Safari" and previous and _safari_rebind_is_ambiguous(previous, rows):
+        raise AmbiguousTabHandleError(f"Ambiguous Safari tab_handle after refresh: {handle}")
     raise KeyError(f"Unknown or closed tab_handle: {handle}")
 
 

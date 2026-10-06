@@ -150,6 +150,22 @@ def _require_stable_handle_for_mutation(
         )
 
 
+def _ambiguous_tab_http_error(tab_handle: Optional[str]) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "ok": False,
+            "error": "ambiguous_tab_handle",
+            "reason_code": "AMBIGUOUS_TAB_HANDLE",
+            "retryable": True,
+            "tab_handle": str(tab_handle or ""),
+            "required_action": "browser_list_tabs",
+            "do_not_fallback_to_active_tab": True,
+            "message": "The requested Safari tab can no longer be uniquely identified. Refresh tabs and retry with a fresh tab_handle; never fall back to the active tab.",
+        },
+    )
+
+
 def _stale_tab_http_error(tab_handle: Optional[str]) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -210,6 +226,8 @@ def _resolve_tab_target(
     try:
         wi, ti, _ = browser_tabs.resolve_tab(browser, tab_handle)
         return wi, ti
+    except browser_tabs.AmbiguousTabHandleError as exc:
+        raise _ambiguous_tab_http_error(tab_handle) from exc
     except KeyError as exc:
         raise _stale_tab_http_error(tab_handle) from exc
 
@@ -236,6 +254,8 @@ def _tab_lease(
                     mutation=mutation,
                 )
             )
+        except browser_tabs.AmbiguousTabHandleError as exc:
+            raise _ambiguous_tab_http_error(tab_handle) from exc
         except KeyError as exc:
             raise _stale_tab_http_error(tab_handle) from exc
         yield target
