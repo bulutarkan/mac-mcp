@@ -3,7 +3,7 @@
   "info": {
     "title": "Mac MCP Server",
     "version": "1.1.1",
-    "description": "OpenAPI schema for connecting Mac MCP Server to Custom GPT Actions. Every MCP tool is exposed as one named REST operation; legacy grouped REST endpoints remain available for compatibility but are intentionally omitted from this published schema."
+    "description": "OpenAPI schema for connecting Mac MCP Server to Custom GPT Actions. It exposes selected MCP tools through a stable REST-compatible operation surface; other capabilities intentionally remain MCP-only. Legacy grouped REST endpoints remain available for compatibility but are intentionally omitted from this published schema."
   },
   "servers": [
     {
@@ -44,7 +44,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunCommandResult"
+                }
+              }
+            }
           }
         }
       }
@@ -73,7 +80,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -116,7 +130,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -128,7 +149,14 @@
         "summary": "Get macOS system information",
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -180,7 +208,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -212,7 +247,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -261,7 +303,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -303,7 +352,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -340,7 +396,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -387,7 +450,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -437,7 +507,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -474,7 +551,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -530,7 +614,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -573,7 +664,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadFileResult"
+                }
+              }
+            }
           }
         }
       }
@@ -610,7 +708,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -658,7 +763,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -695,7 +807,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -732,7 +851,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -769,7 +895,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -801,7 +934,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -839,7 +979,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -871,7 +1018,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -903,7 +1057,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -948,7 +1109,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -988,7 +1156,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1030,7 +1205,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1042,7 +1224,14 @@
         "summary": "Read the current Mac clipboard",
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1074,7 +1263,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1106,7 +1302,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1139,7 +1342,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1173,7 +1383,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1185,7 +1402,14 @@
         "summary": "Get current system volume",
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1220,7 +1444,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1254,7 +1485,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1294,7 +1532,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1306,7 +1551,14 @@
         "summary": "List visible running macOS applications",
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1371,7 +1623,14 @@
         },
         "responses": {
           "200": {
-            "description": "Artifact operation result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1507,7 +1766,14 @@
         },
         "responses": {
           "200": {
-            "description": "Handoff metadata or structured validation failure returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1581,7 +1847,14 @@
         },
         "responses": {
           "200": {
-            "description": "Compact snapshot result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1647,7 +1920,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1735,7 +2015,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1784,7 +2071,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1822,7 +2116,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1878,7 +2179,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1925,7 +2233,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -1961,7 +2276,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserListTabsResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2009,7 +2331,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2057,7 +2386,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2109,7 +2445,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2161,7 +2504,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2223,7 +2573,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2281,7 +2638,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2333,7 +2697,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2380,7 +2751,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         },
         "description": "Returns completed=true only after a new/matching file is stable, then returns artifact_id plus SHA-256 identity for downstream Preview/open/upload operations."
@@ -2458,7 +2836,14 @@
         },
         "responses": {
           "200": {
-            "description": "Verified file-input selection result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2509,7 +2894,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2570,7 +2962,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2633,7 +3032,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2690,7 +3096,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2749,7 +3162,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2794,7 +3214,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskUserResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2854,7 +3281,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskChoiceResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2909,7 +3343,14 @@
         },
         "responses": {
           "200": {
-            "description": "Tool result returned as JSON."
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskConfirmationResult"
+                }
+              }
+            }
           }
         }
       }
@@ -2921,6 +3362,260 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "MCP_API_KEY"
+      }
+    },
+    "schemas": {
+      "ToolResult": {
+        "type": "object",
+        "description": "Common JSON result envelope. Tool-specific fields may be present in addition to these stable fields.",
+        "additionalProperties": true,
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "Whether the tool completed successfully when the tool reports an explicit status."
+          },
+          "error": {
+            "type": "string",
+            "description": "Stable or human-readable error identifier when returned in-band."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable result or error context when available."
+          }
+        }
+      },
+      "RunCommandResult": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "ok",
+          "exit_code",
+          "stdout",
+          "stderr",
+          "duration_ms",
+          "command",
+          "sandboxed",
+          "cwd"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "stdout": {
+            "type": "string"
+          },
+          "stderr": {
+            "type": "string"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "command": {
+            "type": "string"
+          },
+          "sandboxed": {
+            "type": "boolean"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "reversible_capture": {
+            "type": "boolean"
+          },
+          "transaction_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ReadFileResult": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "ok",
+          "path",
+          "content",
+          "truncated",
+          "revision"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "path": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "string"
+          }
+        }
+      },
+      "BrowserTab": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "browser",
+          "window_index",
+          "tab_index",
+          "active",
+          "native_id",
+          "title",
+          "url",
+          "tab_handle"
+        ],
+        "properties": {
+          "browser": {
+            "type": "string"
+          },
+          "window_index": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "tab_index": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "native_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "tab_handle": {
+            "type": "string"
+          }
+        }
+      },
+      "BrowserListTabsResult": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "ok",
+          "browser",
+          "tabs"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "browser": {
+            "type": "string"
+          },
+          "tabs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BrowserTab"
+            }
+          }
+        }
+      },
+      "AskUserResult": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "response": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timed_out": {
+            "type": "boolean"
+          },
+          "skipped": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "AskChoiceResult": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "choice": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "choice_index": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "cancelled": {
+            "type": "boolean"
+          },
+          "timed_out": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "AskConfirmationResult": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "confirmed": {
+            "type": "boolean"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "confirmed",
+              "denied",
+              "cancelled",
+              "timed_out"
+            ]
+          },
+          "cancelled": {
+            "type": "boolean"
+          },
+          "timed_out": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
       }
     }
   },

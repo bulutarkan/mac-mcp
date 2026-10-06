@@ -8,7 +8,7 @@ from mcp_server.policy import RISK_REGISTRY
 from mcp_server.rest_routes import router
 
 
-EXPECTED_TOOLS = {
+PUBLISHED_REST_OPERATION_IDS = {
     "run_command", "process_list", "kill_process", "get_system_info",
     "start_background_job", "get_job_status", "get_job_output", "stop_job",
     "list_jobs", "wait_jobs", "run_commands_parallel", "write_file",
@@ -29,7 +29,7 @@ EXPECTED_TOOLS = {
 
 
 class OpenAPICoverageTests(unittest.TestCase):
-    def test_published_schema_has_one_operation_per_mcp_tool(self):
+    def test_published_schema_matches_explicit_rest_surface_contract(self):
         schema = json.loads(
             (Path(__file__).parents[1] / "openapi" / "custom-gpt-actions.json").read_text()
         )
@@ -37,7 +37,7 @@ class OpenAPICoverageTests(unittest.TestCase):
         operation_ids = {operation["operationId"] for operation in operations}
 
         self.assertEqual(63, len(schema["paths"]))
-        self.assertEqual(EXPECTED_TOOLS, operation_ids)
+        self.assertEqual(PUBLISHED_REST_OPERATION_IDS, operation_ids)
         choice_schema = schema["paths"]["/api/interactive/choice"]["post"]["requestBody"]["content"]["application/json"]["schema"]
         self.assertEqual(2, choice_schema["properties"]["choices"]["minItems"])
         self.assertEqual(3, choice_schema["properties"]["choices"]["maxItems"])
@@ -48,6 +48,40 @@ class OpenAPICoverageTests(unittest.TestCase):
         mac_act_schema = schema["paths"]["/api/mac_act"]["post"]["requestBody"]["content"]["application/json"]["schema"]
         self.assertIn("target_bundle_id", mac_act_schema["properties"])
         self.assertIn("process-bound target", schema["paths"]["/api/mac_act"]["post"]["description"])
+        description = schema["info"]["description"]
+        self.assertNotIn("Every MCP tool", description)
+        self.assertIn("selected MCP tools", description)
+        self.assertIn("MCP-only", description)
+
+    def test_published_operations_have_machine_readable_json_response_schemas(self):
+        schema = json.loads(
+            (Path(__file__).parents[1] / "openapi" / "custom-gpt-actions.json").read_text()
+        )
+        components = schema["components"]["schemas"]
+        for path, item in schema["paths"].items():
+            with self.subTest(path=path):
+                response = item["post"]["responses"]["200"]
+                body_schema = response["content"]["application/json"]["schema"]
+                self.assertTrue(body_schema)
+                ref = body_schema.get("$ref")
+                if ref:
+                    name = ref.removeprefix("#/components/schemas/")
+                    self.assertIn(name, components)
+
+        expected_refs = {
+            "/api/run": "RunCommandResult",
+            "/api/read_file": "ReadFileResult",
+            "/api/browser_list_tabs": "BrowserListTabsResult",
+            "/api/interactive": "AskUserResult",
+            "/api/interactive/choice": "AskChoiceResult",
+            "/api/interactive/confirmation": "AskConfirmationResult",
+            "/api/mac_act": "ToolResult",
+        }
+        for path, component in expected_refs.items():
+            self.assertEqual(
+                f"#/components/schemas/{component}",
+                schema["paths"][path]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            )
 
     def test_consequential_metadata_matches_representative_policy_risk(self):
         schema = json.loads(
@@ -78,7 +112,7 @@ class OpenAPICoverageTests(unittest.TestCase):
         operation_ids = {operation["operationId"] for operation in operations}
 
         self.assertEqual(63, len(operations))
-        self.assertEqual(EXPECTED_TOOLS, operation_ids)
+        self.assertEqual(PUBLISHED_REST_OPERATION_IDS, operation_ids)
         self.assertEqual(
             3,
             schema["components"]["schemas"]["ChoiceRequest"]["properties"]["choices"]["maxItems"],
