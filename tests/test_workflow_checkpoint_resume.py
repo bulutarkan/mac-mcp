@@ -75,6 +75,7 @@ class WorkflowCheckpointStoreTests(unittest.TestCase):
         self.assertTrue(public["resumable"])
         self.assertEqual(1, public["side_effect_receipt_count"])
         self.assertEqual("interrupted", public["checkpoint_state"])
+        self.assertEqual("failed", public["checkpoint_terminal_status"])
 
         prepared = workflows.prepare_resume(
             "agt_checkpoint01", expected_input_hash=input_hash, session_id="sess-checkpoint-1",
@@ -97,6 +98,32 @@ class WorkflowCheckpointStoreTests(unittest.TestCase):
         self.assertEqual(child, resumed["current_agent_id"])
         self.assertEqual(1, resumed["receipt_count"])
         self.assertEqual("running", resumed["state"])
+        self.assertIsNone(resumed["terminal_status"])
+        self.assertIsNone(resumed["terminal_at"])
+
+    def test_terminal_checkpoint_first_writer_wins_and_is_idempotent(self) -> None:
+        self._create("agt_terminal_first")
+        first = workflows.mark_terminal("agt_terminal_first", "cancelled", terminal_at=20.0)
+        stale = workflows.mark_terminal("agt_terminal_first", "completed", terminal_at=30.0)
+        repeated = workflows.mark_terminal("agt_terminal_first", "cancelled", terminal_at=20.0)
+        self.assertEqual("interrupted", first["state"])
+        self.assertEqual("cancelled", first["terminal_status"])
+        self.assertEqual(20.0, first["terminal_at"])
+        self.assertEqual("cancelled", stale["terminal_status"])
+        self.assertEqual(20.0, stale["terminal_at"])
+        self.assertEqual("cancelled", repeated["terminal_status"])
+        public = workflows.public_state("agt_terminal_first")
+        self.assertEqual("cancelled", public["checkpoint_terminal_status"])
+        self.assertEqual(20.0, public["checkpoint_terminal_at"])
+
+    def test_completed_terminal_checkpoint_is_not_erased_by_late_cancel(self) -> None:
+        self._create("agt_terminal_completed")
+        workflows.mark_terminal("agt_terminal_completed", "completed", terminal_at=10.0)
+        workflows.mark_terminal("agt_terminal_completed", "cancelled", terminal_at=11.0)
+        state = workflows.workflow_for_agent("agt_terminal_completed")
+        self.assertEqual("completed", state["state"])
+        self.assertEqual("completed", state["terminal_status"])
+        self.assertEqual(10.0, state["terminal_at"])
 
     def test_corrupt_checkpoint_is_unknown_and_never_resumed(self) -> None:
         input_hash, checkpoint = self._create("agt_corrupt01")

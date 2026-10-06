@@ -248,6 +248,8 @@ def create_workflow(
         "provider": str(provider or "").lower(),
         "resume_generation": 0,
         "state": "running",
+        "terminal_status": None,
+        "terminal_at": None,
         "safety": "verified",
         "unknown_reason": None,
         "current_agent_id": agent_id,
@@ -591,7 +593,12 @@ def record_side_effect_outcome(
         return {"verified": True, **receipt, "workflow_id": workflow_id}
 
 
-def mark_terminal(agent_id: str, status: str) -> Optional[Dict[str, Any]]:
+def mark_terminal(
+    agent_id: str,
+    status: str,
+    *,
+    terminal_at: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
     workflow_id = workflow_id_for_agent(agent_id)
     if not workflow_id:
         return None
@@ -599,9 +606,38 @@ def mark_terminal(agent_id: str, status: str) -> Optional[Dict[str, Any]]:
         payload = read_workflow(workflow_id)
         if str(payload.get("current_agent_id") or "") != agent_id:
             return dict(payload)
-        normalized = str(status or "failed").lower()
-        payload["state"] = "completed" if normalized == "completed" else "interrupted"
+
+        normalized = str(status or "failed").strip().lower()
+        if normalized not in {"completed", "failed", "timeout", "stalled", "cancelled"}:
+            normalized = "failed"
+
+        existing_status = str(payload.get("terminal_status") or "").strip().lower()
+        if existing_status:
+            return dict(payload)
+
+        # Backward compatibility: older completed checkpoints predate terminal_status.
+        # Never let a late cancellation rewrite a durably completed workflow.
+        if str(payload.get("state") or "") == "completed":
+            payload["terminal_status"] = "completed"
+            payload["terminal_at"] = float(
+                payload.get("last_checkpoint_at") or payload.get("updated_at") or _now()
+            )
+            _write_workflow(payload)
+            return dict(payload)
+
         now = _now()
+        try:
+            effective_terminal_at = float(terminal_at) if terminal_at is not None else now
+        except (TypeError, ValueError):
+            effective_terminal_at = now
+        if effective_terminal_at <= 0:
+            effective_terminal_at = now
+
+        payload["terminal_status"] = normalized
+        payload["terminal_at"] = effective_terminal_at
+        payload["state"] = "completed" if normalized == "completed" else "interrupted"
+        payload["resume_parent_terminal_status"] = None
+        payload["resume_parent_terminal_at"] = None
         payload["updated_at"] = now
         payload["last_checkpoint_at"] = now
         _write_workflow(payload)
@@ -638,6 +674,8 @@ def prepare_resume(agent_id: str, *, expected_input_hash: str, session_id: str) 
             "resume_generation": generation,
             "resume_token": token,
             "resume_parent_agent_id": agent_id,
+            "resume_parent_terminal_status": payload.get("terminal_status"),
+            "resume_parent_terminal_at": payload.get("terminal_at"),
             "session_id": str(session_id),
             "updated_at": _now(),
         })
@@ -680,6 +718,8 @@ def bind_resumed_agent(
             "current_agent_id": agent_id,
             "agent_lineage": lineage,
             "session_id": str(session_id),
+            "terminal_status": None,
+            "terminal_at": None,
             "resume_token": None,
             "resume_parent_agent_id": None,
             "updated_at": _now(),
@@ -700,6 +740,8 @@ def abort_resume(workflow_id: str, *, resume_token: str, reason: str) -> None:
                 "state": "interrupted",
                 "resume_token": None,
                 "resume_parent_agent_id": None,
+                "resume_parent_terminal_status": None,
+                "resume_parent_terminal_at": None,
                 "last_resume_error": str(reason)[:200],
                 "updated_at": _now(),
             })
@@ -717,6 +759,10 @@ def rollback_resumed_agent(workflow_id: str, *, parent_agent_id: str, agent_id: 
             payload.update({
                 "state": "interrupted",
                 "current_agent_id": str(parent_agent_id),
+                "terminal_status": payload.get("resume_parent_terminal_status"),
+                "terminal_at": payload.get("resume_parent_terminal_at"),
+                "resume_parent_terminal_status": None,
+                "resume_parent_terminal_at": None,
                 "last_resume_error": str(reason)[:200],
                 "updated_at": _now(),
                 "last_checkpoint_at": _now(),
@@ -767,6 +813,8 @@ def public_state(agent_id: str) -> Dict[str, Any]:
             "side_effect_receipt_count": 0,
             "pending_side_effect_count": 0,
             "checkpoint_cursor": None,
+            "checkpoint_terminal_status": None,
+            "checkpoint_terminal_at": None,
             "resumable": False,
         }
     if workflow is None:
@@ -779,6 +827,8 @@ def public_state(agent_id: str) -> Dict[str, Any]:
             "side_effect_receipt_count": 0,
             "pending_side_effect_count": 0,
             "checkpoint_cursor": None,
+            "checkpoint_terminal_status": None,
+            "checkpoint_terminal_at": None,
             "resumable": False,
         }
     state = str(workflow.get("state") or "unknown")
@@ -794,6 +844,8 @@ def public_state(agent_id: str) -> Dict[str, Any]:
         "side_effect_receipt_count": int(workflow.get("receipt_count") or 0),
         "pending_side_effect_count": len(pending_effects),
         "checkpoint_cursor": dict(workflow.get("checkpoint_cursor") or {}) or None,
+        "checkpoint_terminal_status": workflow.get("terminal_status"),
+        "checkpoint_terminal_at": workflow.get("terminal_at"),
         "last_durable_checkpoint_at": workflow.get("last_checkpoint_at"),
         "resumable": bool(state == "interrupted" and safety == "verified" and workflow.get("session_id")),
     }

@@ -3731,7 +3731,41 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     return public
 
 
+def _claim_terminal_transition(
+    current: Dict[str, Any],
+    status_value: str,
+    *,
+    phase: Optional[str] = None,
+    terminal_at: Optional[float] = None,
+) -> bool:
+    if str(current.get("status") or "") in TERMINAL_STATUSES:
+        return False
+    now = float(terminal_at) if terminal_at is not None else _now()
+    current["status"] = str(status_value)
+    if phase is not None:
+        current["phase"] = str(phase)
+    current["ended_at"] = now
+    current["updated_at"] = now
+    return True
+
+
+def _converge_workflow_terminal(agent_id: str, meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    status_value = str(meta.get("status") or "").strip().lower()
+    if status_value not in TERMINAL_STATUSES:
+        return None
+    try:
+        return workflow_mark_terminal(
+            agent_id,
+            status_value,
+            terminal_at=meta.get("ended_at"),
+        )
+    except WorkflowCheckpointError:
+        return None
+
+
 def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+    if meta.get("status") in TERMINAL_STATUSES:
+        _converge_workflow_terminal(agent_id, meta)
     if meta.get("status") in TERMINAL_STATUSES and meta.get("admission_lease_id"):
         _release_agent_admission(agent_id, meta)
         try:
@@ -3762,10 +3796,7 @@ def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
             if meta.get("status") == "failed":
                 browser_tabs.release_agent_leases(agent_id)
                 _release_agent_admission(agent_id, meta)
-                try:
-                    workflow_mark_terminal(agent_id, "failed")
-                except WorkflowCheckpointError:
-                    pass
+                _converge_workflow_terminal(agent_id, meta)
                 try:
                     _refresh_agent_worktree(agent_id)
                     meta = _read_meta(agent_id)
@@ -4159,10 +4190,13 @@ def _spawn_internal(
     except OSError as exc:
         worker_log.close()
         spawn_error = str(exc)
-        def mark_spawn_failed(current: Dict[str, Any]) -> None:
-            current.update({"status": "failed", "ended_at": _now(), "updated_at": _now(), "note": spawn_error})
+        def mark_spawn_failed(current: Dict[str, Any]) -> Optional[bool]:
+            if not _claim_terminal_transition(current, "failed"):
+                return False
+            current["note"] = spawn_error
+            return True
 
-        _update_meta(agent_id, mark_spawn_failed)
+        meta = _update_meta(agent_id, mark_spawn_failed)
         if admission_lease_id:
             try:
                 admission_release(AGENTS_DIR, lease_id=str(admission_lease_id))
@@ -4181,7 +4215,7 @@ def _spawn_internal(
                     reason="agent_worker_spawn_failed",
                 )
             else:
-                workflow_mark_terminal(agent_id, "failed")
+                _converge_workflow_terminal(agent_id, meta)
         except WorkflowCheckpointError:
             pass
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Could not start agent worker: {exc}") from exc
@@ -4957,6 +4991,7 @@ def _agent_action_single(
 
     if action == "cancel":
         if meta.get("status") in TERMINAL_STATUSES:
+            _converge_workflow_terminal(agent_id, meta)
             _release_agent_admission(agent_id, meta)
             try:
                 meta = _read_meta(agent_id)
@@ -4968,21 +5003,25 @@ def _agent_action_single(
         allowed = {"TERM": signal_module.SIGTERM, "KILL": signal_module.SIGKILL, "INT": signal_module.SIGINT}
         if sig_name not in allowed:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "signal must be TERM, KILL, or INT.")
-        def mark_cancelled(current: Dict[str, Any]) -> None:
-            now = _now()
-            current.update({
-                "status": "cancelled",
-                "phase": "cancelled",
-                "ended_at": now,
-                "updated_at": now,
-                "note": f"Cancelled with {sig_name}.",
-            })
+        def mark_cancelled(current: Dict[str, Any]) -> Optional[bool]:
+            if not _claim_terminal_transition(current, "cancelled", phase="cancelled"):
+                return False
+            current["note"] = f"Cancelled with {sig_name}."
+            return True
 
         meta = _update_meta(agent_id, mark_cancelled)
-        try:
-            workflow_mark_terminal(agent_id, "cancelled")
-        except WorkflowCheckpointError:
-            pass
+        _converge_workflow_terminal(agent_id, meta)
+        if meta.get("status") != "cancelled":
+            _release_agent_admission(agent_id, meta)
+            try:
+                _wake_global_admission_queue(exclude_team_id=str(meta.get("team_id") or "") or None)
+            except Exception:
+                pass
+            return {
+                "ok": True,
+                **_public_meta(agent_id, meta),
+                "message": "Agent became terminal before cancellation could claim the terminal transition.",
+            }
         get_scoped_credential_store().revoke_agent(agent_id)
         browser_tabs.release_agent_leases(agent_id)
         provider_signal = allowed[sig_name]
@@ -6242,23 +6281,17 @@ def _worker(agent_id: str) -> int:
     except Exception as exc:
         worker_error = f"Agent worker error: {exc}"
         def record_worker_failure(current: Dict[str, Any]) -> Optional[bool]:
-            if current.get("status") == "cancelled":
+            if not _claim_terminal_transition(current, "failed", phase="failed"):
                 return False
-            now = _now()
-            current.update({
-                "status": "failed", "phase": "failed", "exit_code": None, "ended_at": now, "updated_at": now,
-                "note": worker_error,
-            })
+            current["exit_code"] = None
+            current["note"] = worker_error
             return True
 
         meta = _update_meta(agent_id, record_worker_failure)
-        if meta.get("status") != "cancelled":
+        if meta.get("status") == "failed":
             result_path.write_text(worker_error, encoding="utf-8")
-            try:
-                workflow_mark_terminal(agent_id, "failed")
-            except WorkflowCheckpointError:
-                pass
-        return 1
+        _converge_workflow_terminal(agent_id, meta)
+        return 0 if meta.get("status") in {"completed", "cancelled"} else 1
 
     meta = _read_meta(agent_id)
     if meta.get("status") == "cancelled":
@@ -6373,12 +6406,11 @@ def _worker(agent_id: str) -> int:
     envelope_chars = len(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")))
 
     def record_completion(current: Dict[str, Any]) -> Optional[bool]:
-        if current.get("status") == "cancelled":
+        completion_phase = "completed" if final_status == "completed" else final_status
+        if not _claim_terminal_transition(current, final_status, phase=completion_phase):
             return False
-        now = _now()
         current.update({
-            "status": final_status, "phase": "completed" if final_status == "completed" else final_status,
-            "exit_code": exit_code, "ended_at": now, "updated_at": now,
+            "exit_code": exit_code,
             "session_id": session_id or current.get("resume_session_id"), "usage": usage,
             "result_truncated": was_truncated, "result_chars": len(result),
             "result_original_chars": original_result_chars,
@@ -6421,7 +6453,7 @@ def _worker(agent_id: str) -> int:
             agent_id, session_id=str(meta.get("session_id") or "") or None,
             provider_job_id=str(meta.get("provider_job_id") or "") or None,
         )
-        workflow_mark_terminal(agent_id, final_status)
+        _converge_workflow_terminal(agent_id, meta)
     except WorkflowCheckpointError:
         pass
     try:
@@ -6429,9 +6461,7 @@ def _worker(agent_id: str) -> int:
         meta = _read_meta(agent_id)
     except Exception:
         pass
-    if meta.get("status") == "cancelled":
-        return 0
-    return 0 if final_status == "completed" else 1
+    return 0 if meta.get("status") in {"completed", "cancelled"} else 1
 
 
 def _main() -> int:

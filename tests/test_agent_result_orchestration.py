@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from mcp_server import tools_agents as agents
+import mcp_server.workflow_checkpoints as workflows
 from mcp_server.agent_results import RESULT_ENVELOPE_MARKER
 
 
@@ -122,6 +124,171 @@ class TypedResultWorkerTests(unittest.TestCase):
             self.assertEqual(1, result["result_envelope"]["schema_version"])
             self.assertEqual("test:1", result["result_envelope"]["evidence"][0]["ref"])
             self.assertNotIn("stdout", result)
+
+    def test_cancel_wins_when_it_terminalizes_during_worker_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as td, patch.dict(
+            os.environ, {"MAC_MCP_STATE_DIR": str(Path(td) / "state")}, clear=False,
+        ), patch.object(agents, "AGENTS_DIR", Path(td) / "agents"), patch.object(
+            agents, "TEAMS_DIR", Path(td) / "teams"
+        ):
+            root = Path(td)
+            agent_id = "agt_terminal_race"
+            self._fixture(root, agent_id)
+            payload = {
+                "schema_version": 1,
+                "outcome": "success",
+                "summary": "provider completed",
+                "claims": [],
+                "evidence": [],
+                "artifacts": [],
+                "warnings": [],
+                "confidence": 1.0,
+                "errors": [],
+            }
+            handoff = RESULT_ENVELOPE_MARKER + "\n" + json.dumps(payload)
+
+            def fake_attempt(*_args):
+                (root / "agents" / agent_id / "stdout.log").write_text(
+                    self._opencode_stdout(handoff), encoding="utf-8",
+                )
+                return 0, None
+
+            original_write = agents._write_result_envelope
+            cancellation = {"done": False}
+
+            def cancel_after_result_envelope(target_agent_id, envelope):
+                original_write(target_agent_id, envelope)
+                if cancellation["done"]:
+                    return
+                cancellation["done"] = True
+                cancelled_at = time.time()
+
+                def mark_cancelled(current):
+                    current.update({
+                        "status": "cancelled",
+                        "phase": "cancelled",
+                        "ended_at": cancelled_at,
+                        "updated_at": cancelled_at,
+                        "note": "Cancelled during terminal race test.",
+                    })
+
+                cancelled_meta = agents._update_meta(target_agent_id, mark_cancelled)
+                agents._converge_workflow_terminal(target_agent_id, cancelled_meta)
+
+            with patch.object(agents, "_run_provider_attempt", side_effect=fake_attempt), \
+                    patch.object(agents, "_write_result_envelope", side_effect=cancel_after_result_envelope):
+                rc = agents._worker(agent_id)
+
+            saved = agents._read_meta(agent_id)
+            checkpoint = workflows.workflow_for_agent(agent_id)
+            self.assertEqual(0, rc)
+            self.assertEqual("cancelled", saved["status"])
+            self.assertEqual("interrupted", checkpoint["state"])
+            self.assertEqual("cancelled", checkpoint["terminal_status"])
+            self.assertEqual(saved["ended_at"], checkpoint["terminal_at"])
+
+    def test_late_cancel_cannot_overwrite_completed_metadata_after_stale_read(self) -> None:
+        with tempfile.TemporaryDirectory() as td, patch.dict(
+            os.environ, {"MAC_MCP_STATE_DIR": str(Path(td) / "state")}, clear=False,
+        ), patch.object(agents, "AGENTS_DIR", Path(td) / "agents"), patch.object(
+            agents, "TEAMS_DIR", Path(td) / "teams"
+        ):
+            root = Path(td)
+            agent_id = "agt_late_cancel"
+            self._fixture(root, agent_id)
+
+            def mark_completed(current):
+                return agents._claim_terminal_transition(current, "completed", phase="completed")
+
+            completed_meta = agents._update_meta(agent_id, mark_completed)
+            agents._converge_workflow_terminal(agent_id, completed_meta)
+            stale = dict(completed_meta)
+            stale.update({"status": "running", "phase": "running", "ended_at": None})
+
+            with patch.object(agents, "_authorize_agent_control", return_value=stale), \
+                    patch.object(agents, "_normalize", side_effect=lambda _agent_id, meta: meta):
+                result = agents._agent_action_single(None, agent_id, "cancel")
+
+            saved = agents._read_meta(agent_id)
+            checkpoint = workflows.workflow_for_agent(agent_id)
+            self.assertEqual("completed", result["status"])
+            self.assertEqual("completed", saved["status"])
+            self.assertEqual("completed", checkpoint["state"])
+            self.assertEqual("completed", checkpoint["terminal_status"])
+            self.assertEqual(saved["ended_at"], checkpoint["terminal_at"])
+
+    def test_restart_normalization_repairs_missing_terminal_checkpoint_from_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as td, patch.dict(
+            os.environ, {"MAC_MCP_STATE_DIR": str(Path(td) / "state")}, clear=False,
+        ), patch.object(agents, "AGENTS_DIR", Path(td) / "agents"), patch.object(
+            agents, "TEAMS_DIR", Path(td) / "teams"
+        ):
+            root = Path(td)
+            agent_id = "agt_restart_terminal"
+            self._fixture(root, agent_id)
+
+            def mark_cancelled(current):
+                return agents._claim_terminal_transition(current, "cancelled", phase="cancelled")
+
+            cancelled_meta = agents._update_meta(agent_id, mark_cancelled)
+            before = workflows.workflow_for_agent(agent_id)
+            self.assertEqual("running", before["state"])
+            self.assertIsNone(before["terminal_status"])
+
+            normalized = agents._normalize(agent_id, cancelled_meta)
+            after = workflows.workflow_for_agent(agent_id)
+            self.assertEqual("cancelled", normalized["status"])
+            self.assertEqual("interrupted", after["state"])
+            self.assertEqual("cancelled", after["terminal_status"])
+            self.assertEqual(cancelled_meta["ended_at"], after["terminal_at"])
+
+    def test_simultaneous_terminal_claims_converge_metadata_and_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as td, patch.dict(
+            os.environ, {"MAC_MCP_STATE_DIR": str(Path(td) / "state")}, clear=False,
+        ), patch.object(agents, "AGENTS_DIR", Path(td) / "agents"), patch.object(
+            agents, "TEAMS_DIR", Path(td) / "teams"
+        ):
+            root = Path(td)
+            agent_id = "agt_terminal_barrier"
+            self._fixture(root, agent_id)
+            barrier = threading.Barrier(3)
+            observed: list[str] = []
+
+            def terminalize(status_value: str) -> None:
+                barrier.wait()
+
+                def claim(current):
+                    return agents._claim_terminal_transition(
+                        current,
+                        status_value,
+                        phase="completed" if status_value == "completed" else status_value,
+                    )
+
+                meta = agents._update_meta(agent_id, claim)
+                agents._converge_workflow_terminal(agent_id, meta)
+                observed.append(str(meta["status"]))
+
+            threads = [
+                threading.Thread(target=terminalize, args=("completed",)),
+                threading.Thread(target=terminalize, args=("cancelled",)),
+            ]
+            for thread in threads:
+                thread.start()
+            barrier.wait()
+            for thread in threads:
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+
+            saved = agents._read_meta(agent_id)
+            checkpoint = workflows.workflow_for_agent(agent_id)
+            self.assertEqual(2, len(observed))
+            self.assertEqual({saved["status"]}, set(observed))
+            self.assertEqual(saved["status"], checkpoint["terminal_status"])
+            self.assertEqual(saved["ended_at"], checkpoint["terminal_at"])
+            self.assertEqual(
+                "completed" if saved["status"] == "completed" else "interrupted",
+                checkpoint["state"],
+            )
 
     def test_invalid_marked_contract_cannot_be_success(self) -> None:
         with tempfile.TemporaryDirectory() as td, patch.dict(
