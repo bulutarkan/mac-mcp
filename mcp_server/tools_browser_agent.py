@@ -807,16 +807,18 @@ function __mcpSemanticVisible(el){
   var a=__mcpAssociation(el);return !a.ambiguous&&!!a.label&&__mcpVisible(a.label);
 }
 function __mcpTopBlockingModal(){
-  var all=__mcpQueryAll('dialog[open],[aria-modal="true"],[role="dialog"]'),best=null,bestZ=-2147483648,bestOrder=-1;
+  var all=__mcpQueryAll('dialog[open],[aria-modal="true"]'),best=null,bestZ=-2147483648,bestOrder=-1;
   for(var i=0;i<all.length;i++){
     var el=all[i],tag=String(el.tagName||'').toLowerCase(),role=String(el.getAttribute&&el.getAttribute('role')||'').toLowerCase(),aria=String(el.getAttribute&&el.getAttribute('aria-modal')||'').toLowerCase(),state=String(el.getAttribute&&el.getAttribute('data-state')||'').toLowerCase(),st=null,rect=null;
     if(state==='closed')continue;
     try{st=__mcpStyle(el);rect=__mcpTopRect(el);}catch(e){}
-    var semanticOpen=state==='open'||(tag==='dialog'&&el.hasAttribute('open'))||aria==='true';
-    var structurallyVisible=!!(st&&rect&&st.display!=='none'&&st.visibility!=='hidden'&&rect.width>=1&&rect.height>=1&&rect.bottom>0&&rect.right>0&&rect.top<innerHeight&&rect.left<innerWidth);
-    if(!__mcpVisible(el)&&!(semanticOpen&&structurallyVisible))continue;
-    var blocking=semanticOpen||(role==='dialog'&&st&&String(st.position||'').toLowerCase()==='fixed');
+    // role=dialog, fixed positioning and data-state=open do not imply modality.
+    // Native show() is non-modal; only showModal() matches :modal.
+    var nativeModal=false;try{nativeModal=tag==='dialog'&&el.matches(':modal');}catch(e){}
+    var blocking=aria==='true'||nativeModal;
     if(!blocking)continue;
+    var structurallyVisible=!!(st&&rect&&st.display!=='none'&&st.visibility!=='hidden'&&rect.width>=1&&rect.height>=1&&rect.bottom>0&&rect.right>0&&rect.top<innerHeight&&rect.left<innerWidth);
+    if(!__mcpVisible(el)&&!structurallyVisible)continue;
     if(best&&__mcpComposedContains(best,el)){best=el;bestOrder=i;try{bestZ=parseInt(st.zIndex,10)||0;}catch(e){bestZ=0;}continue;}
     var z=0;try{z=parseInt(st.zIndex,10);if(!isFinite(z))z=0;}catch(e){}
     if(!best||z>bestZ||(z===bestZ&&i>bestOrder)){best=el;bestZ=z;bestOrder=i;}
