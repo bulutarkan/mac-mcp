@@ -6,6 +6,15 @@
   const HOST_ID = 'mac-mcp-visual-companion-root';
   const HISTORY_KEY = '__mac_mcp_visual_history_v1';
   const MAX_HISTORY = 30;
+  const PANEL_ID = 'mac-mcp-activity-panel';
+  // Screen readers hear session-level transitions only, never per-action telemetry.
+  const ANNOUNCE_IDLE_MS = 8000;
+  const ANNOUNCE_DELAY_MS = 150;
+  const ANNOUNCEMENTS = {
+    started: 'Mac MCP started working on this tab',
+    attention: 'Mac MCP needs your attention on this tab',
+    finished: 'Mac MCP finished working on this tab'
+  };
   const SAFE_TARGETS = new Set(['Page', 'Button', 'Link', 'Text field', 'Menu', 'Checkbox', 'Option', 'Tab', 'Date', 'Item']);
   const SAFE_DETAILS = new Set(['Up', 'Down', 'Into view']);
   const HISTORY_LABELS = {
@@ -36,6 +45,10 @@
   let hideTimer = null;
   let cursorTimer = null;
   let lastSeq = null;
+  let announceTimer = null;
+  let announceIdleTimer = null;
+  let sessionAnnounced = false;
+  let attentionAnnounced = false;
   let history = loadHistory();
 
   function loadHistory() {
@@ -144,6 +157,10 @@
         .history-time { padding-top: 3px; color: rgba(255,255,255,.28); font-size: 9.5px; font-variant-numeric: tabular-nums; }
         .history-footer { flex: 0 0 auto; padding: 11px 16px 13px; border-top: 1px solid rgba(255,255,255,.065); display: flex; align-items: center; gap: 7px; color: rgba(255,255,255,.32); font-size: 9.5px; }
         .history-footer-dot { width: 4px; height: 4px; border-radius: 50%; background: rgba(90,200,250,.55); }
+        .history-rail:focus-visible, .history-close:focus-visible, .history-clear:focus-visible { outline: 2px solid rgba(116,211,255,.95); outline-offset: 2px; }
+        .history-rail:focus-visible { opacity: .94; }
+        .history-rail:focus-visible .rail-chevron { opacity: .9; }
+        .sr-status { position: fixed; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 
         @keyframes mcpPulse { 0%,100% { box-shadow: 0 0 12px rgba(90,200,250,.16); } 50% { box-shadow: 0 0 24px rgba(90,200,250,.38); } }
         @keyframes mcpDot { 0% { box-shadow: 0 0 0 0 rgba(90,200,250,.48); } 65%,100% { box-shadow: 0 0 0 6px rgba(90,200,250,0); } }
@@ -151,14 +168,15 @@
         @media (prefers-reduced-motion: reduce) { .frame,.dot { animation: none; } .cursor,.pill,.history-panel,.history-rail { transition-duration: .01ms; } }
       </style>
       <div class="companion">
-        <div class="frame"></div>
-        <div class="pill"><span class="dot"></span><span class="label">Mac MCP · Working</span></div>
-        <div class="cursor"></div>
-        <div class="ripple"></div>
-        <button class="history-rail" type="button" aria-label="Open Mac MCP tab activity">
-          <span class="rail-chevron"></span><span class="rail-count">0</span>
+        <div class="frame" aria-hidden="true"></div>
+        <div class="pill" aria-hidden="true"><span class="dot"></span><span class="label">Mac MCP · Working</span></div>
+        <div class="cursor" aria-hidden="true"></div>
+        <div class="ripple" aria-hidden="true"></div>
+        <div class="sr-status" role="status" aria-live="polite" aria-atomic="true"></div>
+        <button class="history-rail" type="button" aria-label="Mac MCP tab activity" aria-expanded="false" aria-controls="${PANEL_ID}">
+          <span class="rail-chevron" aria-hidden="true"></span><span class="rail-count" aria-hidden="true">0</span>
         </button>
-        <aside class="history-panel" aria-label="Mac MCP tab activity">
+        <aside class="history-panel" id="${PANEL_ID}" aria-label="Mac MCP tab activity">
           <div class="history-header">
             <div class="history-header-row">
               <div class="history-brand"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.1 4.8h9.8v10.4H5.1z"/><path d="M7.7 8h4.6M7.7 11h4.6"/></svg></div>
@@ -167,7 +185,7 @@
             </div>
             <div class="history-live">
               <div class="history-live-status"><span class="history-live-dot"></span><span class="history-live-copy">Ready</span></div>
-              <button class="history-clear" type="button">Clear</button>
+              <button class="history-clear" type="button" aria-label="Clear tab activity">Clear</button>
             </div>
           </div>
           <div class="history-list"></div>
@@ -178,12 +196,28 @@
 
     const companion = shadow.querySelector('.companion');
     const rail = shadow.querySelector('.history-rail');
+    const panel = shadow.querySelector('.history-panel');
     const close = shadow.querySelector('.history-close');
     const clear = shadow.querySelector('.history-clear');
     const stop = (event) => { event.preventDefault(); event.stopPropagation(); };
-    rail.addEventListener('click', (event) => { stop(event); companion.classList.toggle('sidebar-open'); });
-    close.addEventListener('click', (event) => { stop(event); companion.classList.remove('sidebar-open'); });
+    const setSidebarOpen = (open) => {
+      companion.classList.toggle('sidebar-open', open);
+      rail.setAttribute('aria-expanded', open ? 'true' : 'false');
+    };
+    // Only return focus to the rail when keyboard focus was inside the panel; mouse use never moves page focus.
+    const closeSidebar = () => {
+      const focusWasInPanel = panel.contains(shadow.activeElement);
+      setSidebarOpen(false);
+      if (focusWasInPanel) rail.focus({ preventScroll: true });
+    };
+    rail.addEventListener('click', (event) => { stop(event); setSidebarOpen(!companion.classList.contains('sidebar-open')); });
+    close.addEventListener('click', (event) => { stop(event); closeSidebar(); });
     clear.addEventListener('click', (event) => { stop(event); history = []; saveHistory(); renderHistory(shadow); });
+    panel.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape' || !companion.classList.contains('sidebar-open')) return;
+      stop(event);
+      closeSidebar();
+    });
     rail.addEventListener('mousedown', stop, true);
     close.addEventListener('mousedown', stop, true);
     clear.addEventListener('mousedown', stop, true);
@@ -198,6 +232,7 @@
     if (!list || !rail || !count) return;
     count.textContent = String(history.length);
     rail.classList.toggle('has-history', history.length > 0);
+    rail.setAttribute('aria-label', history.length ? `Mac MCP tab activity, ${history.length} ${history.length === 1 ? 'entry' : 'entries'}` : 'Mac MCP tab activity');
     if (!history.length) {
       list.innerHTML = `<div class="history-empty"><div class="history-empty-icon">${HISTORY_ICONS.Working}</div><strong>No activity yet</strong><span>Mac MCP actions on this tab will appear here as a clean visual timeline.</span></div>`;
       return;
@@ -236,6 +271,31 @@
     }
     saveHistory();
     renderHistory(ui);
+  }
+
+  function announce(ui, message) {
+    const region = ui.querySelector('.sr-status');
+    if (!region) return;
+    clearTimeout(announceTimer);
+    // Delay so a freshly mounted live region is registered before its text changes.
+    announceTimer = setTimeout(() => { region.textContent = message; }, ANNOUNCE_DELAY_MS);
+  }
+
+  function updateAnnouncements(ui, phase, ttl) {
+    clearTimeout(announceIdleTimer);
+    if (phase === 'attention') {
+      if (!attentionAnnounced) announce(ui, ANNOUNCEMENTS.attention);
+      attentionAnnounced = true;
+    } else {
+      attentionAnnounced = false;
+      if (!sessionAnnounced) announce(ui, ANNOUNCEMENTS.started);
+    }
+    sessionAnnounced = true;
+    announceIdleTimer = setTimeout(() => {
+      sessionAnnounced = false;
+      attentionAnnounced = false;
+      announce(ui, ANNOUNCEMENTS.finished);
+    }, phase === 'done' ? 450 : Math.max(ttl, ANNOUNCE_IDLE_MS));
   }
 
   function decodeEvent() {
@@ -292,6 +352,7 @@
       liveCopy.textContent = 'Ready';
     };
     hideTimer = setTimeout(finish, phase === 'done' ? 450 : ttl);
+    updateAnnouncements(ui, phase, ttl);
   }
 
   function install() {

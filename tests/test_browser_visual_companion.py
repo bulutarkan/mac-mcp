@@ -50,10 +50,57 @@ class BrowserVisualCompanionTests(unittest.TestCase):
         self.assertIn("history-rail", source)
         self.assertIn("history-panel", source)
         self.assertIn("This tab only · no page content stored", source)
-        self.assertIn("companion.classList.toggle('sidebar-open')", source)
+        self.assertIn("companion.classList.toggle('sidebar-open', open)", source)
         self.assertNotIn('<div class="companion sidebar-open">', source)
         self.assertIn("SAFE_TARGETS", source)
         self.assertIn("SAFE_DETAILS", source)
+
+    def test_visual_history_toggle_exposes_synchronized_expanded_state(self) -> None:
+        source = (ROOT / "menu_app/BrowserVisualCompanion/visual.js").read_text(encoding="utf-8")
+        self.assertIn('aria-expanded="false" aria-controls="${PANEL_ID}"', source)
+        self.assertIn('class="history-panel" id="${PANEL_ID}"', source)
+        set_start = source.index("const setSidebarOpen")
+        set_body = source[set_start:source.index("};", set_start)]
+        self.assertIn("companion.classList.toggle('sidebar-open', open)", set_body)
+        self.assertIn("rail.setAttribute('aria-expanded', open ? 'true' : 'false')", set_body)
+        # Every open/close path goes through the synchronized setter.
+        self.assertEqual(1, source.count("classList.toggle('sidebar-open'"))
+        self.assertNotIn("classList.remove('sidebar-open')", source)
+        self.assertNotIn("classList.add('sidebar-open')", source)
+
+    def test_visual_history_keyboard_close_restores_focus_without_stealing_page_focus(self) -> None:
+        source = (ROOT / "menu_app/BrowserVisualCompanion/visual.js").read_text(encoding="utf-8")
+        self.assertIn("event.key !== 'Escape'", source)
+        close_start = source.index("const closeSidebar")
+        close_body = source[close_start:source.index("};", close_start)]
+        self.assertIn("panel.contains(shadow.activeElement)", close_body)
+        self.assertIn("if (focusWasInPanel) rail.focus({ preventScroll: true })", close_body)
+        # Agent-driven rendering must never move focus.
+        render_start = source.index("function render()")
+        render_body = source[render_start:source.index("function install()", render_start)]
+        self.assertNotIn(".focus(", render_body)
+        for selector in (".history-rail:focus-visible", ".history-close:focus-visible", ".history-clear:focus-visible"):
+            self.assertIn(selector, source)
+
+    def test_visual_status_live_region_announces_only_session_transitions(self) -> None:
+        source = (ROOT / "menu_app/BrowserVisualCompanion/visual.js").read_text(encoding="utf-8")
+        self.assertEqual(1, source.count("aria-live="))
+        self.assertIn('<div class="sr-status" role="status" aria-live="polite" aria-atomic="true"></div>', source)
+        self.assertNotIn('aria-live="assertive"', source)
+        for decorative in ('class="frame" aria-hidden="true"', 'class="pill" aria-hidden="true"',
+                           'class="cursor" aria-hidden="true"', 'class="ripple" aria-hidden="true"'):
+            self.assertIn(decorative, source)
+        update_start = source.index("function updateAnnouncements")
+        update_body = source[update_start:source.index("function decodeEvent", update_start)]
+        self.assertIn("if (!sessionAnnounced) announce(ui, ANNOUNCEMENTS.started)", update_body)
+        self.assertIn("if (!attentionAnnounced) announce(ui, ANNOUNCEMENTS.attention)", update_body)
+        self.assertIn("Math.max(ttl, ANNOUNCE_IDLE_MS)", update_body)
+        # Per-action labels and metadata never reach the live region.
+        self.assertNotIn("action", update_body.replace("ANNOUNCEMENTS", ""))
+        announce_start = source.index("function announce(")
+        announce_body = source[announce_start:update_start]
+        self.assertIn("region.textContent = message", announce_body)
+        self.assertNotIn("innerHTML", announce_body)
 
     def test_visual_history_metadata_is_categorical_and_never_copies_typed_value(self) -> None:
         secret = "SIDEBAR_SECRET_MUST_NOT_LEAK"
