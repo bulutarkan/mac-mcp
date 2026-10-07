@@ -1252,9 +1252,13 @@ struct SettingsView: View {
                                         .disabled(state.serverApprovalProfileChanging)
                                     }
 
-                                    Text("Client and external approval flows remain separate. Mac MCP does not trust client-supplied “already approved” claims to bypass this server gate.")
+                                    Text(serverApproval.doublePromptGuidance)
                                         .font(.caption2.weight(.medium))
                                         .foregroundStyle(.orange)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Text("Remote callers cannot approve locally on their behalf. Allow Once is exact-action and single-use.")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                                 .padding(.top, 5)

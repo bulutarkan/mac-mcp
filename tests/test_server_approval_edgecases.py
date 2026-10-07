@@ -37,11 +37,12 @@ class ServerApprovalStartupTests(unittest.TestCase):
                 )
                 self.assertEqual("__invalid__", server_approval_profile_setting())
 
-    def test_main_startup_constructs_security_context_from_strict_loader(self) -> None:
+    def test_main_uses_live_server_approval_profile_without_restart(self) -> None:
         main_source = (
             Path(__file__).resolve().parents[1] / "mcp_server" / "main.py"
         ).read_text(encoding="utf-8")
-        self.assertIn(
+        self.assertIn("security_context = SecurityContextManager()", main_source)
+        self.assertNotIn(
             "server_approval_profile=server_approval_profile_setting()",
             main_source,
         )
@@ -153,7 +154,8 @@ class ServerApprovalSurfaceTests(unittest.TestCase):
         self.assertIn("setServerApprovalProfile", app_state)
         self.assertIn('GroupBox("Server Approval")', settings_view)
         self.assertIn("Headless behavior", settings_view)
-        self.assertIn("does not trust client-supplied", settings_view)
+        self.assertIn("doublePromptGuidance", settings_view)
+        self.assertIn("Remote callers cannot approve locally", settings_view)
         self.assertIn("optional approval overlay", readme)
         self.assertIn("client-supplied", readme)
         self.assertIn("optional Server Approval overlay", terminology)

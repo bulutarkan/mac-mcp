@@ -68,7 +68,7 @@ from .tools_memory import memory_add, memory_search, memory_get, memory_update, 
 from .tools_lessons import lesson_consolidate, lesson_feedback, lesson_record, lesson_search
 from .tools_skills import skill_list, skill_search, skill_get, skill_register, skill_update_index
 from .menu_app_bootstrap import bootstrap_menu_app_and_legacy_state
-from .runtime_settings import server_approval_profile_setting, tool_activity_setting
+from .runtime_settings import tool_activity_setting
 from .cli_bootstrap import ensure_cli_launcher
 from .post_update_health import get_or_start_post_update_health_gate, pending_update_context
 from .data_guard import format_security_approval_question
@@ -305,9 +305,7 @@ def create_app():
             confirm_label="Allow Once", deny_label="Block",
         )
 
-    security_context = SecurityContextManager(
-        server_approval_profile=server_approval_profile_setting()
-    )
+    security_context = SecurityContextManager()
     mcp = ObservedFastMCP(
         telemetry=telemetry,
         security_context=security_context,
