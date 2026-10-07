@@ -3398,6 +3398,13 @@ def _browser_act_locked(
     pending: List[Dict[str, Any]] = []
     compact_state_candidate: Optional[Dict[str, Any]] = None
 
+    def note_possible_navigation() -> None:
+        # Marked before dispatch: a click, key or select may start a cross-site
+        # navigation whose Safari pid swap lands while the action is still being
+        # verified. The marker lets that swap rebind this same handle.
+        if browser == "Safari" and tab_handle:
+            browser_tabs.expect_safari_navigation(tab_handle)
+
     def resolve_target(action: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         nonlocal internal_js_calls
         if action.get("element_id"):
@@ -3489,6 +3496,8 @@ def _browser_act_locked(
             if not flush_pending():
                 break
             if typ in {"click", "double_click", "type", "type_text", "paste"}:
+                if typ in {"click", "double_click"}:
+                    note_possible_navigation()
                 action_result = _verified_dom_action(
                     settings, browser, work_action, current_observation_id,
                     window_index, tab_index, tab_handle,
@@ -3518,6 +3527,7 @@ def _browser_act_locked(
                 if not extract_result.get("ok"):
                     break
             elif typ == "select":
+                note_possible_navigation()
                 select_result = _select_action(
                     settings,
                     browser,
@@ -3570,6 +3580,7 @@ def _browser_act_locked(
                     if blocked is not None:
                         results.append(blocked)
                         break
+                    note_possible_navigation()
                     key_result = _dom_key_action(
                         settings, browser, action, eid, window_index, tab_index, tab_handle,
                         prevalidated_target=mutation_target,
@@ -3603,6 +3614,7 @@ def _browser_act_locked(
                         results.extend(focus_result.get("actions") or [{"ok": False, "error": "could_not_focus"}])
                         break
                     current_observation_id = None
+                note_possible_navigation()
                 key_result = browser_press_key(
                     settings, browser=browser, key=str(action.get("key") or ""),
                     modifiers=action.get("modifiers") or [], window_index=window_index,

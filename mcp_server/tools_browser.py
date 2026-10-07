@@ -783,6 +783,7 @@ def browser_open_url(
             row["tab_handle"] = target.tab_handle
             if b == "Safari":
                 row = browser_tabs.rebind_safari_handle(target.tab_handle, row)
+                browser_tabs.expect_safari_navigation(target.tab_handle, expected_url=url)
             elif returned_native and returned_native != "0" and str(row.get("native_id") or "") != target.native_id:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -861,6 +862,9 @@ def browser_open_url(
             opened_index = int(created.get("tab_index") or opened_index)
             created_window = int(created.get("window_index") or target_window)
             handle = str(created.get("tab_handle") or "") or None
+            # Mark before any further tab scan: the new tab's Safari process may
+            # swap while the lease claim below is still resolving the handle.
+            browser_tabs.expect_safari_navigation(handle, expected_url=url)
             lease = browser_tabs.claim_created_tab(b, handle) if handle else None
 
         observed_url = _validate_observed_navigation(
