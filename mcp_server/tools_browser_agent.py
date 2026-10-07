@@ -84,6 +84,44 @@ _VISUAL_ENSURE_TTL_S = 12.0
 _DOM_RASTERIZER_PATH = Path(__file__).resolve().parent / "vendor" / "html2canvas.min.js"
 _DOM_CAPTURE_STATE_PREFIX = "__macMcpVisualCapture"
 _DOM_RASTERIZER_GLOBAL = "__macMcpHtml2Canvas"
+# html2canvas writes two fixed strings into DOM sinks. Pages that enforce Trusted
+# Types (Google Sheets, Docs) reject plain strings there, so both sinks go through
+# a Mac MCP policy that accepts only those two strings. The helper is a page
+# global, so it must never turn arbitrary markup into TrustedHTML.
+_TRUSTED_TYPES_SINK_PATCHES = (
+    (
+        'o.write(mn(document.doctype)+"<html></html>")',
+        'o.write(__macMcpTrustedHTML(mn(document.doctype)+"<html></html>"))',
+    ),
+    (
+        'e.innerHTML="function"==typeof"".repeat?"&#128104;".repeat(10):""',
+        'e.innerHTML=__macMcpTrustedHTML("function"==typeof"".repeat?"&#128104;".repeat(10):"")',
+    ),
+    # html2canvas 1.4.1 aborts the whole capture on CSS Color 4 functions such
+    # as color(srgb ...), which Google Sheets uses; fall back per color instead.
+    (
+        """if(void 0===t)throw new Error('Attempting to parse an unsupported color function "'+e.name+'"');""",
+        "if(void 0===t)return __macMcpUnsupportedColor(e);",
+    ),
+)
+_TRUSTED_TYPES_PRELUDE = r"""var __macMcpTrustedHTML=(function(){
+var shell=/^(<!DOCTYPE [^<>]*>)?<html><\/html>$/,emoji=new Array(11).join("&#128104;"),policy=null;
+try{if(window.trustedTypes&&typeof window.trustedTypes.createPolicy==="function"){
+policy=window.trustedTypes.createPolicy("mac-mcp-capture",{createHTML:function(value){
+if(value===""||value===emoji||shell.test(value))return value;
+throw new TypeError("mac-mcp-capture accepts only the rasterizer document shell");}});}}catch(e){policy=null;}
+return function(value){value=String(value);return policy?policy.createHTML(value):value;};
+})();
+var __macMcpUnsupportedColor=function(fn){
+var gray=((128<<24)|(128<<16)|(128<<8)|255)>>>0;
+try{var parts=(fn&&fn.values||[]).filter(function(t){return t&&(t.type===17||t.type===16);}).map(function(t){return t.type===16?t.number/100:t.number;});
+if(String(fn&&fn.name||"").toLowerCase()!=="color"||parts.length<3)return gray;
+var c=function(v){return Math.max(0,Math.min(255,Math.round(v*255)));},a=parts.length>3?Math.max(0,Math.min(1,parts[3])):1;
+return ((c(parts[0])<<24)|(c(parts[1])<<16)|(c(parts[2])<<8)|Math.round(255*a))>>>0;}catch(e){return gray;}
+};
+"""
+_DOM_RASTERIZER_RUNTIME_LOCK = threading.Lock()
+_DOM_RASTERIZER_RUNTIME: Dict[str, Any] = {}
 _DOM_CAPTURE_VIEWPORT_TIMEOUT_S = 18.0
 _DOM_CAPTURE_FULL_PAGE_TIMEOUT_S = 30.0
 _DOM_CAPTURE_MAX_CSS_HEIGHT = 20_000
@@ -272,6 +310,41 @@ def _execute_js_unbounded(
         )
 
 
+def _dom_rasterizer_source() -> str:
+    """Vendored html2canvas with its two DOM sinks routed through the Trusted Types helper."""
+    with _DOM_RASTERIZER_RUNTIME_LOCK:
+        cached = _DOM_RASTERIZER_RUNTIME.get("source")
+        if cached:
+            return str(cached)
+        source = _DOM_RASTERIZER_PATH.read_text(encoding="utf-8")
+        for original, patched in _TRUSTED_TYPES_SINK_PATCHES:
+            if source.count(original) != 1:
+                raise HTTPException(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    "DOM screenshot rasterizer does not match the expected html2canvas build.",
+                )
+            source = source.replace(original, patched)
+        source = _TRUSTED_TYPES_PRELUDE + source
+        _DOM_RASTERIZER_RUNTIME["source"] = source
+        return source
+
+
+def _dom_rasterizer_runtime_path() -> Path:
+    """Private on-disk copy of the patched rasterizer for Safari's AppleScript loader."""
+    source = _dom_rasterizer_source()
+    with _DOM_RASTERIZER_RUNTIME_LOCK:
+        cached = _DOM_RASTERIZER_RUNTIME.get("path")
+        if cached and Path(cached).is_file():
+            return Path(cached)
+        directory = Path(tempfile.mkdtemp(prefix="mac-mcp-rasterizer-"))
+        path = directory / "html2canvas-trusted-types.js"
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(source)
+        _DOM_RASTERIZER_RUNTIME["path"] = str(path)
+        return path
+
+
 def _ensure_dom_rasterizer(
     browser: str,
     window_index: int,
@@ -308,12 +381,12 @@ def _ensure_dom_rasterizer(
     )
     with _tab_lease(b, tab_handle, window_index, tab_index) as target:
         if b == "Google Chrome":
-            source = _DOM_RASTERIZER_PATH.read_text(encoding="utf-8")
+            source = _dom_rasterizer_source()
             _execute_js_for_target(b, pre_raw, target, timeout_s=10)
             _execute_js_for_target(b, source, target, timeout_s=30)
             loaded = _execute_js_for_target(b, post_raw, target, timeout_s=10)
         else:
-            path_literal = json.dumps(str(_DOM_RASTERIZER_PATH))
+            path_literal = json.dumps(str(_dom_rasterizer_runtime_path()))
             pre = _js_escape(pre_raw)
             post = _js_escape(post_raw)
             guard = _tab_identity_guard(target)
@@ -615,7 +688,14 @@ def _capture_dom_visual_locked(
             if state == "done":
                 break
             if state in {"error", "missing"}:
-                return None, str(finished.get("error") or f"DOM screenshot state became {state}."), meta
+                message = str(finished.get("error") or f"DOM screenshot state became {state}.")
+                if "trusted" in message.lower():
+                    meta["reason_code"] = "TRUSTED_TYPES_BLOCKED"
+                    message = (
+                        "The page's Trusted Types policy blocked the DOM screenshot. "
+                        "Use semantic observe or browser_find instead."
+                    )
+                return None, message, meta
             cancellable_sleep(0.12)
         else:
             return None, f"DOM screenshot timed out after {timeout_s:.0f}s.", meta
