@@ -16,6 +16,9 @@
     restoreFocus: null,
     agents: [],
     globalAdmission: null,
+    focusAgent: null,
+    focusTeam: null,
+    focusApplied: false,
     changeSets: [],
     selectedChangeSet: 0,
     changesRefreshTimer: null,
@@ -90,6 +93,9 @@
     return state.token ? {Authorization: `Bearer ${state.token}`} : {};
   }
   state.token = bootstrapAuthToken();
+  const initialQuery = new URLSearchParams(window.location.search);
+  state.focusAgent = initialQuery.get("focus_agent");
+  state.focusTeam = initialQuery.get("focus_team");
 
   async function fetchJSON(url) {
     const response = await fetch(url, {cache: "no-store", headers: authHeaders()});
@@ -436,9 +442,19 @@
     }
     const activeStatuses = new Set(["starting", "running"]);
     const hiddenStatuses = new Set(["stalled"]);
-    const active = agents.filter((agent) => activeStatuses.has(agent.status)).slice(0, 4);
+    const matchesFocus = (agent) => Boolean(
+      (state.focusAgent && agent.agent_id === state.focusAgent) ||
+      (state.focusTeam && agent.team_id === state.focusTeam)
+    );
+    const focusedAgents = (state.focusAgent || state.focusTeam)
+      ? agents.filter(matchesFocus).slice(0, 8)
+      : [];
+    const focusedIDs = new Set(focusedAgents.map((agent) => agent.agent_id));
+    const active = agents
+      .filter((agent) => activeStatuses.has(agent.status) && !focusedIDs.has(agent.agent_id))
+      .slice(0, 4);
     const recent = agents
-      .filter((agent) => !activeStatuses.has(agent.status) && !hiddenStatuses.has(agent.status))
+      .filter((agent) => !activeStatuses.has(agent.status) && !hiddenStatuses.has(agent.status) && !focusedIDs.has(agent.agent_id))
       .slice(0, Math.max(0, 8 - active.length));
     const card = (agent) => {
       const status = agent.status || "unknown";
@@ -451,7 +467,11 @@
         Number(agent.throttle_count || 0) > 0 ? `${number(agent.throttle_count)} throttles` : ''
       ].filter(Boolean).join(' · ');
       const avatar = String(agent.provider || "AI").slice(0, 2);
-      return `<div class="agent-card" data-status="${esc(status)}">
+      const focused = Boolean(
+        (state.focusAgent && agent.agent_id === state.focusAgent) ||
+        (state.focusTeam && agent.team_id === state.focusTeam)
+      );
+      return `<div class="agent-card${focused ? " is-focus" : ""}" data-status="${esc(status)}" data-agent-id="${esc(agent.agent_id || "")}" data-team-id="${esc(agent.team_id || "")}"${focused ? ' tabindex="-1"' : ""}>
         <div class="agent-avatar" aria-hidden="true">${esc(avatar)}</div>
         <div class="agent-content">
           <div class="agent-card-head">
@@ -464,9 +484,20 @@
     };
     const groups = [];
     if (scheduler) groups.push(scheduler);
+    if (focusedAgents.length) groups.push(`<div class="agent-group-label"><strong>Notification</strong><span>${focusedAgents.length}</span></div>${focusedAgents.map(card).join("")}`);
     if (active.length) groups.push(`<div class="agent-group-label"><strong>Active</strong><span>${active.length}</span></div>${active.map(card).join("")}`);
     if (recent.length) groups.push(`<div class="agent-group-label"><strong>Recent</strong><span>latest ${recent.length}</span></div>${recent.map(card).join("")}`);
     els.agentList.innerHTML = groups.join("");
+    if (!state.focusApplied && (state.focusAgent || state.focusTeam)) {
+      const focused = els.agentList.querySelector(".agent-card.is-focus");
+      if (focused) {
+        state.focusApplied = true;
+        window.requestAnimationFrame(() => {
+          focused.scrollIntoView({block: "center", behavior: "smooth"});
+          focused.focus({preventScroll: true});
+        });
+      }
+    }
   }
 
   function visibleEvents() {

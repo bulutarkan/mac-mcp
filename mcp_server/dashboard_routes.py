@@ -47,7 +47,7 @@ from .steering import (
     SteeringIdempotencyExpired,
     SteeringManager,
 )
-from .tools_agents import agent_catalog, list_agents, provider_overview
+from .tools_agents import agent_catalog, dashboard_team_summary, list_agents, provider_overview
 from .tools_browser import browser_activate_tab
 from .version import __version__
 
@@ -248,6 +248,24 @@ def create_dashboard_routes(
     steering: Optional[SteeringManager] = None, security_context: Optional[SecurityContextManager] = None,
 ) -> list[Route]:
     agent_cache: Dict[str, Any] = {"at": 0.0, "limit": 0, "data": None}
+    team_summary_cache: Dict[str, Dict[str, Any]] = {}
+    team_summary_cache_ttl_s = 4.0
+
+    def cached_team_summary(team_id: str) -> Dict[str, Any]:
+        now = time.monotonic()
+        cached = team_summary_cache.get(team_id)
+        if cached is not None and now - float(cached.get("at") or 0.0) < team_summary_cache_ttl_s:
+            return dict(cached.get("data") or {})
+        data = dashboard_team_summary(team_id)
+        team_summary_cache[team_id] = {"at": now, "data": dict(data)}
+        if len(team_summary_cache) > 32:
+            stale = sorted(
+                team_summary_cache.items(),
+                key=lambda item: float(item[1].get("at") or 0.0),
+            )[:-24]
+            for stale_team_id, _ in stale:
+                team_summary_cache.pop(stale_team_id, None)
+        return data
 
     def cached_agents(limit: int) -> Dict[str, Any]:
         bounded = max(1, min(int(limit), 100))
@@ -688,8 +706,40 @@ def create_dashboard_routes(
                     "retry_count", "output_tokens", "result_preview",
                 )
             })
+        public_teams = []
+        team_ids = []
+        for item in public_agents:
+            team_id = str(item.get("team_id") or "").strip()
+            if team_id and team_id not in team_ids:
+                team_ids.append(team_id)
+            if len(team_ids) >= 20:
+                break
+        for team_id in team_ids:
+            try:
+                team = cached_team_summary(team_id)
+            except Exception:
+                continue
+            public_teams.append({
+                "team_id": team.get("team_id"),
+                "status": team.get("status"),
+                "success": team.get("success"),
+                "outcome": team.get("outcome"),
+                "partial_failure": team.get("partial_failure"),
+                "successful_count": team.get("successful_count"),
+                "failure_count": team.get("failure_count"),
+                "pending_count": team.get("pending_count"),
+                "work_count": team.get("work_count"),
+                "title": sanitize_value(team.get("title"), preview_chars=96),
+                "provider": team.get("provider"),
+                "model": team.get("model"),
+                "created_at": team.get("created_at"),
+                "updated_at": team.get("updated_at"),
+                "count": team.get("count"),
+                "terminal_count": team.get("terminal_count"),
+            })
         return JSONResponse({
             "ok": True, "count": len(public_agents), "agents": public_agents,
+            "teams": public_teams,
             "global_admission": data.get("global_admission"),
         })
 

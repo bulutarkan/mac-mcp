@@ -42,7 +42,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     var searchTerms: String {
         switch self {
         case .general:
-            return "general overview update version status"
+            return "general overview update version status notifications alerts completion agents"
         case .agents:
             return "agents subagents provider codex opencode chatgpt model reasoning thinking default agent"
         case .usage:
@@ -161,6 +161,7 @@ struct SettingsView: View {
             await state.refreshMobileDevices()
             await state.refreshUsage(actorClass: usageActor.apiValue)
             await state.refreshProviderUsage(days: providerUsagePeriod.days)
+            await state.refreshAgentNotificationAuthorization()
         }
         .task(id: selection) {
             if selection == .usage {
@@ -312,6 +313,65 @@ struct SettingsView: View {
                             )
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.top, 5)
+                }
+
+                GroupBox("Agent Notifications") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: "bell.badge.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 34)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Completion & attention alerts")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("Notify when standalone delegated agents or whole agent teams finish while you work elsewhere.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer()
+                            if state.agentNotificationPermissionChanging {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Toggle("", isOn: agentCompletionNotificationsBinding)
+                                    .labelsHidden()
+                                    .toggleStyle(.switch)
+                            }
+                        }
+
+                        Divider()
+
+                        HStack {
+                            Text("macOS permission")
+                                .font(.caption.weight(.medium))
+                            Spacer()
+                            Text(state.agentNotificationAuthorizationState.displayName)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(
+                                    state.agentNotificationAuthorizationState == .denied
+                                        ? Color.orange
+                                        : Color.secondary
+                                )
+                        }
+
+                        Text("Teams are coalesced into one terminal notification. Alerts contain only a sanitized agent/team label — never prompts, results, file paths, URLs, or secrets.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if state.agentNotificationAuthorizationState == .denied {
+                            Label(
+                                "Notification permission is denied in macOS. Re-enable it in System Settings before turning this on.",
+                                systemImage: "bell.slash"
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                         }
                     }
@@ -2455,6 +2515,15 @@ struct SettingsView: View {
                     saveFeedback = SettingsSaveFeedback(scope: .agents, message: message, isError: true)
                     notice = message
                 }
+            }
+        )
+    }
+
+    private var agentCompletionNotificationsBinding: Binding<Bool> {
+        Binding(
+            get: { settings.agentCompletionNotificationsEnabled },
+            set: { enabled in
+                state.setAgentCompletionNotificationsEnabled(enabled)
             }
         )
     }

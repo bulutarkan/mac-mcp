@@ -284,6 +284,8 @@ h2 { margin: 0; font-size: 15px; letter-spacing: -.015em; font-weight: 630; }
 .agent-card[data-status="running"], .agent-card[data-status="starting"] { border-color: rgba(82, 157, 211, .2); }
 .agent-card[data-status="running"]::after, .agent-card[data-status="starting"]::after { background: var(--ice-deep); }
 .agent-card[data-status="completed"]::after { background: #559d87; }
+.agent-card.is-focus { border-color: rgba(102, 182, 235, .62); box-shadow: 0 0 0 2px rgba(72, 151, 208, .16), 0 10px 26px rgba(2, 10, 16, .28); }
+.agent-card.is-focus:focus { outline: 2px solid rgba(126, 202, 255, .72); outline-offset: 2px; }
 .agent-card[data-status="failed"]::after, .agent-card[data-status="stalled"]::after { background: #c86b70; }
 .agent-avatar { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px; color: #a9c8dd; background: linear-gradient(145deg, #173249, #102333); border: 1px solid rgba(120, 178, 219, .18); font-size: 10px; font-weight: 700; text-transform: uppercase; }
 .agent-content { min-width: 0; }

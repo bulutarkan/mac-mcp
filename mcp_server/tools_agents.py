@@ -1777,6 +1777,33 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         "tasks": public_tasks,
     }
 
+def dashboard_team_summary(team_id: str) -> Dict[str, Any]:
+    """Return a bounded team lifecycle summary for local dashboard consumers."""
+    team = _authorize_team_control(str(team_id), "list_agents")
+    summary = _team_summary(str(team_id), team)
+    return {
+        key: summary.get(key)
+        for key in (
+            "team_id",
+            "status",
+            "success",
+            "outcome",
+            "partial_failure",
+            "successful_count",
+            "failure_count",
+            "pending_count",
+            "work_count",
+            "title",
+            "provider",
+            "model",
+            "created_at",
+            "updated_at",
+            "count",
+            "terminal_count",
+        )
+    }
+
+
 def _tail_text(path: Path, max_lines: int = 40, max_chars: int = 6000) -> str:
     if not path.exists():
         return ""

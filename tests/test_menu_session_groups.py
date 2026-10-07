@@ -63,11 +63,12 @@ struct FixtureHarness {
             cmd = [
                 "xcrun", "swiftc", "-parse-as-library",
                 str(ROOT / "menu_app/Sources/AppState.swift"),
+                str(ROOT / "menu_app/Sources/AgentNotificationController.swift"),
                 str(ROOT / "menu_app/Sources/SettingsStore.swift"),
                 str(ROOT / "menu_app/Sources/ToolActivityBubbleController.swift"),
                 str(ROOT / "menu_app/Sources/KeychainStore.swift"),
                 str(source),
-                "-framework", "SwiftUI", "-framework", "AppKit", "-framework", "Security",
+                "-framework", "SwiftUI", "-framework", "AppKit", "-framework", "Security", "-framework", "UserNotifications",
                 "-o", str(binary),
             ]
             compile_result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=90)

@@ -434,6 +434,12 @@ The queue is FIFO-aware without turning an unrelated blocked resource into a glo
 
 `read_file` also returns an additive `revision` using the same fingerprint as filesystem transaction conflict checks. A task may attach that value as `expected_revision` on a `kind="file"` claim. Mac MCP rechecks it **before admission/provider start**; a mismatch returns `file_revision_conflict` and the provider never begins, providing a CAS-style guard for file mutation races.
 
+## Native agent completion notifications
+
+The macOS menu app can optionally notify you when delegated work finishes while Mac MCP is in the background. The feature is **off by default** and macOS notification permission is requested only when you explicitly enable **Agent Notifications** in General Settings.
+
+Standalone agents generate one terminal notification for completion or needs-attention states. Multi-agent teams are coalesced into one team-level terminal notification instead of one notification per child. Notification content is intentionally minimal: only a sanitized agent/team label is shown, never raw prompts, results, URLs, file paths, or secrets. Clicking an alert opens the local authenticated Operations dashboard focused on the relevant agent or team. Delivery timing, Do Not Disturb, Focus modes, and presentation remain under macOS control.
+
 ## Agent team budgets and adaptive retry
 
 ### Failure-aware team outcome and quorum

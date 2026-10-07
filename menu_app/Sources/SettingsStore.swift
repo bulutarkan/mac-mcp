@@ -26,6 +26,9 @@ struct MenuSettings: Codable {
         var show_bubble: Bool
         var require_descriptions: Bool
     }
+    struct Notifications: Codable {
+        var agent_completion: Bool
+    }
     struct Provider: Codable {
         var enabled: Bool
         var binary_path: String?
@@ -51,6 +54,7 @@ struct MenuSettings: Codable {
     var server: Server
     var steering: Steering?
     var tool_activity: ToolActivity?
+    var notifications: Notifications?
     var subagents: Subagents?
 
     static func defaults() -> MenuSettings {
@@ -60,6 +64,7 @@ struct MenuSettings: Codable {
             server: Server(port: 8000, cli_path: "", ngrok_on_start: false, public_endpoint_mode: "none", public_url: "", cloudflare_tunnel: ""),
             steering: Steering(session_ttl_minutes: 10),
             tool_activity: ToolActivity(show_bubble: false, require_descriptions: false),
+            notifications: Notifications(agent_completion: false),
             subagents: Subagents(
                 providers: [
                     "opencode": Provider(enabled: false, binary_path: nil, default_project: nil),
@@ -90,6 +95,7 @@ final class SettingsStore: ObservableObject {
     @Published var steeringSessionMinutes = 10
     @Published var showToolActivity = false
     @Published var requireToolDescriptions = false
+    @Published var agentCompletionNotificationsEnabled = false
     @Published var opencodeEnabled = false
     @Published var codexEnabled = false
     @Published var chatgptEnabled = false
@@ -170,6 +176,7 @@ final class SettingsStore: ObservableObject {
         if !requireToolDescriptions {
             showToolActivity = false
         }
+        agentCompletionNotificationsEnabled = current.notifications?.agent_completion ?? false
         let providers = current.subagents?.providers ?? [:]
         opencodeEnabled = providerConfigValid ? (providers["opencode"]?.enabled ?? false) : false
         codexEnabled = providerConfigValid ? (providers["codex"]?.enabled ?? false) : false
@@ -208,6 +215,7 @@ final class SettingsStore: ObservableObject {
                 show_bubble: showToolActivity && requireToolDescriptions,
                 require_descriptions: requireToolDescriptions
             ),
+            notifications: .init(agent_completion: agentCompletionNotificationsEnabled),
             subagents: .init(
                 providers: [
                     "opencode": .init(enabled: opencodeEnabled, binary_path: opencodeBinaryPath.nilIfEmpty, default_project: nil),

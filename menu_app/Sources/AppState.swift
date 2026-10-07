@@ -409,6 +409,8 @@ struct AgentResourceActivity: Decodable, Equatable {
 
 struct AgentInfo: Decodable, Identifiable, Equatable {
     let agentID: String
+    let teamID: String?
+    let teamTaskID: String?
     let status: String?
     let phase: String?
     let title: String?
@@ -436,6 +438,8 @@ struct AgentInfo: Decodable, Identifiable, Equatable {
     var isActive: Bool { status == "starting" || status == "running" }
     enum CodingKeys: String, CodingKey {
         case agentID = "agent_id"
+        case teamID = "team_id"
+        case teamTaskID = "team_task_id"
         case status, phase, title, provider, model, reasoning
         case accessMode = "access_mode"
         case capabilityProfile = "capability_profile"
@@ -457,7 +461,40 @@ struct AgentInfo: Decodable, Identifiable, Equatable {
     }
 }
 
-struct AgentsEnvelope: Decodable { let agents: [AgentInfo] }
+struct AgentTeamInfo: Decodable, Identifiable, Equatable {
+    let teamID: String
+    let status: String?
+    let success: Bool?
+    let outcome: String?
+    let partialFailure: Bool?
+    let successfulCount: Int?
+    let failureCount: Int?
+    let pendingCount: Int?
+    let workCount: Int?
+    let title: String?
+    let provider: String?
+    let model: String?
+    let count: Int?
+    let terminalCount: Int?
+
+    var id: String { teamID }
+
+    enum CodingKeys: String, CodingKey {
+        case teamID = "team_id"
+        case status, success, outcome, title, provider, model, count
+        case partialFailure = "partial_failure"
+        case successfulCount = "successful_count"
+        case failureCount = "failure_count"
+        case pendingCount = "pending_count"
+        case workCount = "work_count"
+        case terminalCount = "terminal_count"
+    }
+}
+
+struct AgentsEnvelope: Decodable {
+    let agents: [AgentInfo]
+    let teams: [AgentTeamInfo]?
+}
 
 struct ProviderInfo: Decodable, Identifiable, Equatable {
     let id: String
@@ -1364,6 +1401,9 @@ final class AppState: ObservableObject {
     @Published var permissionProfileChanging = false
     @Published var serverApprovalProfileChanging = false
     @Published var agents: [AgentInfo] = []
+    @Published private(set) var agentTeams: [AgentTeamInfo] = []
+    @Published private(set) var agentNotificationAuthorizationState: AgentNotificationAuthorizationState = .notDetermined
+    @Published private(set) var agentNotificationPermissionChanging = false
     @Published var providerStatuses: [ProviderInfo] = []
     @Published var providerCatalogs: [String: ProviderCatalogInfo] = [:]
     @Published var mobileDevices: [MobileDeviceInfo] = []
@@ -1410,6 +1450,7 @@ final class AppState: ObservableObject {
     private var pendingSteeringTextHash: String?
     private var pendingSteeringGenerationID: String?
     private var pendingSteeringRestoredFromDisk = false
+    private let agentNotificationTracker = AgentNotificationTransitionTracker()
     private var lastPublicProcessCheckAt = 0.0
     private static let activePollIntervalSeconds = 2.5
     private static let idlePollIntervalSeconds = 12.0
@@ -1422,7 +1463,17 @@ final class AppState: ObservableObject {
         refreshSafariExtensionState()
         refreshCloudflareCredentialState()
         refreshPersistedUpdateState()
-        if startBackgroundTasks { startTasks() }
+        if startBackgroundTasks {
+            AgentNotificationController.shared.configure { [weak self] kind, targetID in
+                Task { @MainActor in
+                    self?.openDashboardNotificationTarget(kind: kind, targetID: targetID)
+                }
+            }
+            startTasks()
+            Task { [weak self] in
+                await self?.refreshAgentNotificationAuthorization(reconcilePreference: true)
+            }
+        }
     }
     deinit {
         pollTask?.cancel()
@@ -1430,6 +1481,109 @@ final class AppState: ObservableObject {
         pulseTask?.cancel()
         noticeTask?.cancel()
         updateStatePollTask?.cancel()
+    }
+
+    func refreshAgentNotificationAuthorization(reconcilePreference: Bool = false) async {
+        let status = await AgentNotificationController.shared.authorizationState()
+        setIfChanged(\.agentNotificationAuthorizationState, status)
+        guard reconcilePreference,
+              settings.agentCompletionNotificationsEnabled,
+              status != .authorized else { return }
+        settings.agentCompletionNotificationsEnabled = false
+        try? settings.save()
+        seedAgentNotificationBaseline()
+    }
+
+    func setAgentCompletionNotificationsEnabled(_ enabled: Bool) {
+        if !enabled {
+            settings.agentCompletionNotificationsEnabled = false
+            do {
+                try settings.save()
+                AgentNotificationController.shared.removeDeliveredNotifications()
+                seedAgentNotificationBaseline()
+            } catch {
+                settings.agentCompletionNotificationsEnabled = true
+                showNotice(ActionNotice(kind: .error, message: "Couldn’t save notification settings."))
+            }
+            return
+        }
+
+        guard !agentNotificationPermissionChanging else { return }
+        setIfChanged(\.agentNotificationPermissionChanging, true)
+        Task { [weak self] in
+            guard let self else { return }
+            let granted = await AgentNotificationController.shared.requestAuthorization()
+            let status = await AgentNotificationController.shared.authorizationState()
+            self.setIfChanged(\.agentNotificationAuthorizationState, status)
+            self.setIfChanged(\.agentNotificationPermissionChanging, false)
+
+            guard granted, status == .authorized else {
+                self.settings.agentCompletionNotificationsEnabled = false
+                try? self.settings.save()
+                self.seedAgentNotificationBaseline()
+                self.showNotice(ActionNotice(
+                    kind: .info,
+                    message: "Agent completion notifications remain off because macOS notification permission was not granted."
+                ))
+                return
+            }
+
+            self.settings.agentCompletionNotificationsEnabled = true
+            do {
+                try self.settings.save()
+                self.seedAgentNotificationBaseline()
+                self.showNotice(ActionNotice(kind: .success, message: "Agent completion notifications enabled."))
+            } catch {
+                self.settings.agentCompletionNotificationsEnabled = false
+                try? self.settings.save()
+                self.showNotice(ActionNotice(kind: .error, message: "Couldn’t save notification settings."))
+            }
+        }
+    }
+
+    private func notificationAgentStates(_ values: [AgentInfo]) -> [AgentNotificationAgentState] {
+        values.map {
+            AgentNotificationAgentState(
+                id: $0.agentID,
+                teamID: $0.teamID,
+                status: $0.status,
+                title: $0.title
+            )
+        }
+    }
+
+    private func notificationTeamStates(_ values: [AgentTeamInfo]) -> [AgentNotificationTeamState] {
+        values.map {
+            AgentNotificationTeamState(
+                id: $0.teamID,
+                status: $0.status,
+                title: $0.title,
+                success: $0.success,
+                partialFailure: $0.partialFailure,
+                outcome: $0.outcome
+            )
+        }
+    }
+
+    private func seedAgentNotificationBaseline() {
+        agentNotificationTracker.reset(
+            agents: notificationAgentStates(agents),
+            teams: notificationTeamStates(agentTeams)
+        )
+    }
+
+    private func processAgentNotificationTransitions(
+        agents newAgents: [AgentInfo],
+        teams newTeams: [AgentTeamInfo]
+    ) {
+        let events = agentNotificationTracker.events(
+            agents: notificationAgentStates(newAgents),
+            teams: notificationTeamStates(newTeams),
+            enabled: settings.agentCompletionNotificationsEnabled
+        )
+        for event in events {
+            Task { await AgentNotificationController.shared.schedule(event) }
+        }
     }
 
     @discardableResult
@@ -1753,7 +1907,13 @@ final class AppState: ObservableObject {
             }
             do {
                 let agentsEnvelope = try await agentsFetch
+                let teams = agentsEnvelope.teams ?? []
+                processAgentNotificationTransitions(
+                    agents: agentsEnvelope.agents,
+                    teams: teams
+                )
                 setIfChanged(\.agents, agentsEnvelope.agents)
+                setIfChanged(\.agentTeams, teams)
                 resolvedActiveAgents = agentsEnvelope.agents.filter(\.isActive).count
             } catch {
                 secondaryIssue = secondaryIssue ?? "Agents: \(Self.issueText(for: error))"
@@ -2284,13 +2444,35 @@ final class AppState: ObservableObject {
         }
     }
 
-    func openDashboard() {
+    private func openDashboardNotificationTarget(
+        kind: AgentTerminalNotification.TargetKind,
+        targetID: String
+    ) {
+        switch kind {
+        case .agent:
+            openDashboard(focusAgentID: targetID)
+        case .team:
+            openDashboard(focusTeamID: targetID)
+        }
+    }
+
+    func openDashboard(focusAgentID: String? = nil, focusTeamID: String? = nil) {
         guard let dashboardURL else { return }
         guard let token = dashboardToken(), !token.isEmpty else {
             showNotice(ActionNotice(kind: .error, message: "Dashboard credential is unavailable. Restart Mac MCP once."))
             return
         }
         var components = URLComponents(url: dashboardURL, resolvingAgainstBaseURL: false)
+        var queryItems: [URLQueryItem] = []
+        if let focusAgentID, !focusAgentID.isEmpty {
+            queryItems.append(URLQueryItem(name: "focus_agent", value: focusAgentID))
+        }
+        if let focusTeamID, !focusTeamID.isEmpty {
+            queryItems.append(URLQueryItem(name: "focus_team", value: focusTeamID))
+        }
+        if !queryItems.isEmpty {
+            components?.queryItems = queryItems
+        }
         components?.fragment = "token=\(token)"
         if let url = components?.url { NSWorkspace.shared.open(url) }
     }
