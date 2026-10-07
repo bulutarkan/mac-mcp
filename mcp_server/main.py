@@ -92,8 +92,10 @@ MCP_AGENT_INSTRUCTIONS = (
 )
 
 BROWSER_OBSERVE_DESCRIPTION = (
+    "BATCH-FIRST HINT: multiple independent controls -> one browser_act for all follow-ups -> verify once. "
+    "Re-observe only for dependency/rerender, stale/takeover risk, or consequential verification. "
     "High-level browser observation. Returns compact DOM with stable e1/e2 IDs; optional JPEG visuals keep the DOM list in the same response. "
-    "BATCH-FIRST HINT: when multiple independent actionable form controls are present or discoverable, follow this observation with one browser_act "
+    "When multiple independent actionable form controls are present or discoverable, follow this observation with one browser_act "
     "containing all independent interactions instead of repeated field-by-field observe/action calls. Re-observe between action groups only when an "
     "earlier action materially changes later controls, stale-target/takeover risk requires it, or a consequential step needs separate verification. "
     "scope: interactive, visible, content, or leaf; visual: none, viewport, element, or full_page. "
@@ -103,7 +105,9 @@ BROWSER_OBSERVE_DESCRIPTION = (
 )
 
 BROWSER_ACT_DESCRIPTION = (
-    "BATCH-FIRST: for forms and repetitive browser interactions, prefer one browser_act call containing all independent actions instead of one call per field. "
+    "BATCH-FIRST: forms observe once -> one browser_act with independent type/select/click/scroll -> observe verify. "
+    "Custom dropdowns: select. Targets: element_id or query/role/text_match. Split only for dependencies. "
+    "Prefer one browser_act call containing all independent actions instead of one call per field. "
     "Recommended workflow: one browser_observe -> one batched browser_act -> one browser_observe verification. "
     "Combine independent type/select/click/scroll actions in the same actions list; custom dropdowns can use select. "
     "Targets may use stable element_id or semantic query/role/text_match, so element IDs are not always required. "

@@ -55,6 +55,30 @@ class BrowserBatchGuidanceTests(unittest.TestCase):
         self.assertIn("Re-observe between action groups only when", description)
         self.assertIn("materially changes later controls", description)
 
+    def test_core_catalog_truncation_preserves_complete_batch_mini_playbook(self) -> None:
+        def compact(description: str) -> str:
+            if len(description) <= 220:
+                return description
+            return description[:217].rsplit(" ", 1)[0] + "..."
+
+        act = compact(BROWSER_ACT_DESCRIPTION)
+        self.assertTrue(act.startswith("BATCH-FIRST:"))
+        self.assertIn("observe once", act)
+        self.assertIn("one browser_act", act)
+        self.assertIn("type/select/click/scroll", act)
+        self.assertIn("observe verify", act)
+        self.assertIn("Custom dropdowns: select", act)
+        self.assertIn("query/role/text_match", act)
+        self.assertIn("Split only for dependencies", act)
+
+        observe = compact(BROWSER_OBSERVE_DESCRIPTION)
+        self.assertIn("BATCH-FIRST HINT", observe)
+        self.assertIn("one browser_act", observe)
+        self.assertIn("verify once", observe)
+        self.assertIn("dependency/rerender", observe)
+        self.assertIn("stale/takeover", observe)
+        self.assertIn("consequential verification", observe)
+
     def test_fastmcp_registration_uses_batch_guidance_constants(self) -> None:
         source = inspect.getsource(create_app)
         self.assertIn("instructions=MCP_AGENT_INSTRUCTIONS", source)
