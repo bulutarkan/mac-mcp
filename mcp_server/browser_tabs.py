@@ -15,7 +15,11 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException, status
 
-from .workspace_arbitration import browser_human_takeover, claim_delegated_resource
+from .workspace_arbitration import (
+    browser_human_takeover,
+    claim_delegated_resource,
+    recent_user_input,
+)
 
 
 _LOCK = threading.RLock()
@@ -542,6 +546,147 @@ def _target_from_row(row: Dict[str, Any], lease: Optional[Dict[str, Any]] = None
         lease_rebound=bool(lease.get("rebound")),
         previous_origin=lease.get("previous_origin"),
     )
+
+
+def revalidate_mutation_lease(
+    browser: str,
+    tab_handle: str,
+    expected_generation: Optional[int],
+) -> Tuple[Optional[TabTarget], Optional[Dict[str, Any]]]:
+    """Revalidate one delegated browser mutation immediately before its side effect.
+
+    Return the freshly resolved target on success so the caller can execute the
+    side effect against that exact identity without performing a second tab scan.
+    """
+    owner, _, _ = _logical_owner()
+    if not owner:
+        return None, None
+
+    handle = str(tab_handle or "").strip()
+    if not handle:
+        return None, {
+            "ok": False,
+            "error": "stale_tab_handle",
+            "reason_code": "STALE_TAB_HANDLE",
+            "retryable": True,
+            "observe_again": True,
+            "resource_kind": "browser_tab",
+            "message": "The browser tab identity is unavailable; observe the target tab again before mutating it.",
+        }
+
+    try:
+        _, _, row = resolve_tab(browser, handle)
+    except AmbiguousTabHandleError:
+        return None, {
+            "ok": False,
+            "error": "ambiguous_tab_handle",
+            "reason_code": "AMBIGUOUS_TAB_HANDLE",
+            "retryable": True,
+            "observe_again": True,
+            "resource_kind": "browser_tab",
+            "tab_handle": handle,
+            "message": "The browser tab identity became ambiguous; observe the target tab again before mutating it.",
+        }
+    except KeyError:
+        return None, {
+            "ok": False,
+            "error": "stale_tab_handle",
+            "reason_code": "STALE_TAB_HANDLE",
+            "retryable": True,
+            "observe_again": True,
+            "resource_kind": "browser_tab",
+            "tab_handle": handle,
+            "message": "The browser tab changed or closed; observe the target tab again before mutating it.",
+        }
+
+    human = browser_human_takeover(browser, row)
+    if human is not None:
+        reason_code = str(human.get("reason_code") or "HUMAN_ACTIVE_RESOURCE")
+        result: Dict[str, Any] = {
+            "ok": False,
+            "error": reason_code.lower(),
+            "reason_code": reason_code,
+            "retryable": bool(human.get("retryable", True)),
+            "human_priority": True,
+            "yielded": True,
+            "human_takeover_during_action": True,
+            "resource_kind": "browser_tab",
+            "tab_handle": handle,
+            "message": (
+                "The user took ownership of this browser tab while the delegated "
+                "transaction was running; the agent yielded before the next mutation."
+            ),
+        }
+        if reason_code == "HUMAN_ACTIVE_RESOURCE":
+            recent, probe_error, age = recent_user_input()
+            if recent is not None:
+                result["human_input_recent"] = bool(recent)
+            if age is not None and age != float("inf"):
+                result["human_input_age_ms"] = int(max(0.0, age) * 1000)
+            if probe_error:
+                result["human_input_probe_error"] = probe_error
+        elif human.get("probe_error"):
+            result["probe_error"] = human.get("probe_error")
+        return None, result
+
+    now = time.time()
+    with _LEASE_LOCK:
+        _prune_logical_leases_locked(now)
+        active = _LOGICAL_LEASES.get(handle)
+        if active is None:
+            lease = None
+        else:
+            lease = dict(active)
+
+        if lease is not None and lease.get("owner") == owner:
+            actual_generation = int(lease.get("generation") or 0)
+            if expected_generation is None or int(expected_generation) == actual_generation:
+                active["last_seen_at"] = now
+                active["expires_at"] = now + _lease_ttl_s()
+                lease = dict(active)
+
+    if lease is None:
+        return None, {
+            "ok": False,
+            "error": "stale_tab_lease",
+            "reason_code": "STALE_TAB_LEASE",
+            "retryable": True,
+            "observe_again": True,
+            "resource_kind": "browser_tab",
+            "tab_handle": handle,
+            "expected_lease_generation": expected_generation,
+            "actual_lease_generation": None,
+            "message": "The browser tab lease expired or was released; observe the target tab again before mutating it.",
+        }
+
+    if lease.get("owner") != owner:
+        return None, {
+            "ok": False,
+            "error": "tab_owned_by_other_agent",
+            "reason_code": "TAB_OWNED_BY_OTHER_AGENT",
+            "retryable": True,
+            "yielded": True,
+            "resource_kind": "browser_tab",
+            "tab_handle": handle,
+            "message": "Another delegated agent owns this browser tab; this transaction yielded before mutation.",
+        }
+
+    actual_generation = int(lease.get("generation") or 0)
+    if expected_generation is not None and int(expected_generation) != actual_generation:
+        return None, {
+            "ok": False,
+            "error": "stale_tab_lease",
+            "reason_code": "STALE_TAB_LEASE",
+            "retryable": True,
+            "observe_again": True,
+            "resource_kind": "browser_tab",
+            "tab_handle": handle,
+            "expected_lease_generation": int(expected_generation),
+            "actual_lease_generation": actual_generation,
+            "message": "The browser tab lease generation changed; observe the target tab again before mutating it.",
+        }
+
+    return _target_from_row(row, lease), None
 
 
 @contextmanager

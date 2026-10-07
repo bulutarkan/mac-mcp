@@ -11,7 +11,7 @@ import time
 import unicodedata
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, status
 from mcp.server.fastmcp.utilities.types import Image
@@ -42,6 +42,11 @@ _DEFAULT_OBSERVE_ELEMENTS = 40
 _MAX_ACTIONS = 20
 _VISUAL_MODES = {"none", "viewport", "element", "full_page"}
 _RETURN_STATE_MODES = {"none", "compact", "full"}
+
+MutationRevalidator = Callable[
+    [str],
+    Tuple[Optional[browser_tabs.TabTarget], Optional[Dict[str, Any]]],
+]
 
 _BROWSER_OBSERVATION_OWNER_LOCK = threading.RLock()
 _BROWSER_OBSERVATION_OWNERS: Dict[str, str] = {}
@@ -163,13 +168,29 @@ def _run_json_js(
     window_index: int = 1,
     tab_index: Optional[int] = None,
     tab_handle: Optional[str] = None,
+    prevalidated_target: Optional[browser_tabs.TabTarget] = None,
 ) -> Dict[str, Any]:
     # Internal semantic reads/actions already execute under their outer operation's
-    # tab lease. Keep this helper itself non-mutating so delegated agents may still
-    # observe/find the tab the human is looking at; public mutation entry points
-    # (browser_execute_js/browser_act/browser_do/etc.) own the human-priority guard.
+    # tab lease. Keep ordinary calls non-mutating so delegated agents may still
+    # observe/find the tab the human is looking at. A delegated mutation may pass the
+    # fresh target returned by the immediate ownership revalidation, avoiding a
+    # second tab scan before executing the side effect.
     b = _norm_browser(browser)
-    with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+    if prevalidated_target is None:
+        with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+            value = _execute_js_for_target(
+                b,
+                js,
+                target,
+                timeout_s=min(60, settings.max_wait_s),
+            )
+    else:
+        target = prevalidated_target
+        if _norm_browser(target.browser) != b:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "Prevalidated browser target no longer matches the requested browser.",
+            )
         value = _execute_js_for_target(
             b,
             js,
@@ -1896,6 +1917,7 @@ def _select_action(
     window_index: int,
     tab_index: Optional[int],
     tab_handle: Optional[str] = None,
+    mutation_revalidator: Optional[MutationRevalidator] = None,
 ) -> Dict[str, Any]:
     element_id = str(action.get("element_id") or "")
     if not element_id:
@@ -1916,9 +1938,19 @@ def _select_action(
             "readiness": readiness, "observe_again": True,
             "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
         }
+    mutation_target = None
+    if mutation_revalidator is not None:
+        mutation_target, blocked = mutation_revalidator("select")
+        if blocked is not None:
+            return {
+                "type": "select", "element_id": element_id,
+                "duration_ms": int((time.perf_counter()-started)*1000),
+                "_js_calls": js_calls, **blocked,
+            }
     prep = _run_json_js(
         settings, browser, _select_prepare_js(element_id, observation_id, option),
         window_index, tab_index, tab_handle,
+        prevalidated_target=mutation_target,
     )
     js_calls += 1
     if not prep.get("ok"):
@@ -1931,9 +1963,19 @@ def _select_action(
             "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls,
         }
     while time.perf_counter() - started < timeout_s:
+        mutation_target = None
+        if mutation_revalidator is not None:
+            mutation_target, blocked = mutation_revalidator("select")
+            if blocked is not None:
+                return {
+                    "type": "select", "element_id": element_id,
+                    "duration_ms": int((time.perf_counter()-started)*1000),
+                    "_js_calls": js_calls, **blocked,
+                }
         found = _run_json_js(
             settings, browser, _select_option_js(element_id, option),
             window_index, tab_index, tab_handle,
+            prevalidated_target=mutation_target,
         )
         js_calls += 1
         if found.get("found"):
@@ -2108,6 +2150,7 @@ def _verified_dom_action(
     window_index: int,
     tab_index: Optional[int],
     tab_handle: Optional[str],
+    mutation_revalidator: Optional[MutationRevalidator] = None,
 ) -> Dict[str, Any]:
     typ = str(action.get("type") or "").lower().replace("-", "_")
     element_id = str(action.get("element_id") or "")
@@ -2191,17 +2234,6 @@ def _verified_dom_action(
             if before.get(key) is not None:
                 refreshed_readiness[key] = before.get(key)
         readiness = refreshed_readiness
-        try:
-            _, _, row = browser_tabs.resolve_tab(browser, str(tab_handle or ""))
-            native_id = row.get("native_id")
-            if native_id is None:
-                raise KeyError("Chrome tab has no native id")
-        except KeyError:
-            return {
-                "ok": False, "type": typ, "element_id": element_id or None,
-                "error": "stale_tab_handle", "reason_code": "STALE_TAB_HANDLE",
-                "observe_again": True, "readiness": readiness, "_js_calls": js_calls,
-            }
         rect = readiness.get("rect") if isinstance(readiness.get("rect"), dict) else {}
         if float(rect.get("w") or 0) <= 0 or float(rect.get("h") or 0) <= 0:
             return {
@@ -2212,6 +2244,28 @@ def _verified_dom_action(
             }
         x = float(rect.get("x") or 0) + float(rect.get("w") or 0) / 2.0
         y = float(rect.get("y") or 0) + float(rect.get("h") or 0) / 2.0
+        mutation_target = None
+        if mutation_revalidator is not None:
+            mutation_target, blocked = mutation_revalidator(typ)
+            if blocked is not None:
+                return {
+                    "type": typ, "element_id": element_id or None,
+                    "readiness": readiness, "_js_calls": js_calls, **blocked,
+                }
+        if mutation_target is not None:
+            native_id = mutation_target.native_id
+        else:
+            try:
+                _, _, row = browser_tabs.resolve_tab(browser, str(tab_handle or ""))
+                native_id = row.get("native_id")
+            except KeyError:
+                native_id = None
+        if not native_id:
+            return {
+                "ok": False, "type": typ, "element_id": element_id or None,
+                "error": "stale_tab_handle", "reason_code": "STALE_TAB_HANDLE",
+                "observe_again": True, "readiness": readiness, "_js_calls": js_calls,
+            }
         try:
             chrome_background_bridge.request_dispatch_mouse(
                 native_id, x, y, click_count=2 if typ == "double_click" else 1, timeout_s=8.0,
@@ -2244,9 +2298,18 @@ def _verified_dom_action(
         }
         out = {"ok": True, "actions": [result]}
     else:
+        mutation_target = None
+        if mutation_revalidator is not None:
+            mutation_target, blocked = mutation_revalidator(typ)
+            if blocked is not None:
+                return {
+                    "type": typ, "element_id": element_id or None,
+                    "readiness": readiness, "_js_calls": js_calls, **blocked,
+                }
         out = _run_json_js(
             settings, browser, _batch_js([action], observation_id),
             window_index, tab_index, tab_handle,
+            prevalidated_target=mutation_target,
         )
         js_calls += 1
         result = dict((out.get("actions") or [out])[0])
@@ -3060,6 +3123,26 @@ def _browser_act_locked(
     results: List[Dict[str, Any]] = []
     internal_js_calls = 0
     current_observation_id = observation_id
+    delegated_transaction = delegated_agent_identity() is not None
+
+    def revalidate_mutation(
+        action_type: str,
+    ) -> Tuple[Optional[browser_tabs.TabTarget], Optional[Dict[str, Any]]]:
+        if not delegated_transaction:
+            return None, None
+        cancellation_checkpoint()
+        fresh_target, blocked = browser_tabs.revalidate_mutation_lease(
+            browser,
+            str(tab_handle or ""),
+            lease_generation,
+        )
+        if blocked is None:
+            return fresh_target, None
+        result = dict(blocked)
+        result.setdefault("ok", False)
+        result["type"] = str(action_type or "mutation")
+        result["automatic_retry"] = False
+        return None, result
     needs_initial_url = any(
         isinstance(a, dict) and str(a.get("type") or "").lower().replace("-", "_") == "wait"
         and str(a.get("for") or a.get("condition") or "").lower().strip() == "url_change"
@@ -3103,6 +3186,14 @@ def _browser_act_locked(
         nonlocal pending, internal_js_calls, current_observation_id
         if not pending:
             return True
+        mutation_target, blocked = revalidate_mutation(
+            str(pending[0].get("type") or "mutation")
+        )
+        if blocked is not None:
+            blocked["blocked_action_count"] = len(pending)
+            results.append(blocked)
+            pending = []
+            return False
         out = _run_json_js(
             settings,
             browser,
@@ -3110,6 +3201,7 @@ def _browser_act_locked(
             window_index,
             tab_index,
             tab_handle,
+            prevalidated_target=mutation_target,
         )
         internal_js_calls += 1
         if not out.get("ok") and out.get("error") == "stale_observation":
@@ -3141,9 +3233,12 @@ def _browser_act_locked(
                 action_result = _verified_dom_action(
                     settings, browser, work_action, current_observation_id,
                     window_index, tab_index, tab_handle,
+                    mutation_revalidator=revalidate_mutation,
                 )
                 internal_js_calls += int(action_result.pop("_js_calls", 0))
-                compact_state_candidate = action_result.pop("_compact_state", None)
+                action_compact_state = action_result.pop("_compact_state", None)
+                if action_compact_state is not None:
+                    compact_state_candidate = action_compact_state
                 if resolved_target:
                     action_result["resolved_target"] = {
                         k: resolved_target.get(k)
@@ -3170,6 +3265,7 @@ def _browser_act_locked(
                     window_index,
                     tab_index,
                     tab_handle,
+                    mutation_revalidator=revalidate_mutation,
                 )
                 internal_js_calls += int(select_result.pop("_js_calls", 0))
                 if resolved_target:
@@ -3205,9 +3301,14 @@ def _browser_act_locked(
                         break
                 eid = key_action.get("element_id")
                 if eid:
+                    mutation_target, blocked = revalidate_mutation("key")
+                    if blocked is not None:
+                        results.append(blocked)
+                        break
                     focus_result = _run_json_js(
                         settings, browser, _batch_js([{"type": "focus", "element_id": eid}], current_observation_id),
                         window_index, tab_index, tab_handle,
+                        prevalidated_target=mutation_target,
                     )
                     internal_js_calls += 1
                     if not focus_result.get("ok"):
@@ -3247,6 +3348,20 @@ def _browser_act_locked(
         "internal_js_calls": internal_js_calls,
         "duration_ms": int((time.perf_counter() - started) * 1000),
     }
+    if not ok:
+        failed = next(
+            (item for item in results if isinstance(item, dict) and item.get("ok") is False),
+            None,
+        )
+        if failed is not None:
+            for key in (
+                "error", "reason_code", "retryable", "automatic_retry", "observe_again",
+                "human_priority", "yielded", "human_takeover_during_action",
+                "human_input_recent", "human_input_age_ms", "human_input_probe_error",
+                "resource_kind", "expected_lease_generation", "actual_lease_generation",
+            ):
+                if key in failed:
+                    response[key] = failed.get(key)
     if return_state == "compact":
         if compact_state_candidate is not None:
             response["state"] = compact_state_candidate
