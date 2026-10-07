@@ -15,6 +15,7 @@ from .agent_admission import (
     release as admission_release,
     request_resource_lease,
 )
+from . import decision_engine
 from .workspace_arbitration import native_app_resource_id, native_window_resource_id
 
 _ALLOWED_TOOLS = frozenset({
@@ -801,6 +802,52 @@ def _unique_native_match(fingerprint: Mapping[str, str], payload: Mapping[str, A
     return best
 
 
+async def _decide_ambiguous_rebind(
+    exc: _PlanStop,
+    *,
+    surface: str,
+    intent: str,
+    ranked: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], dict[str, Any]]:
+    """Let an enabled Decision pick among already-ranked rebind candidates, else re-raise."""
+    if exc.reason_code != "RECOVERY_AMBIGUOUS_TARGET":
+        raise exc
+    config = decision_engine.load_decision_config()
+    if not config.allows(surface):
+        raise exc
+    by_id = {f"c{index}": node for index, node in enumerate(ranked[: config.max_candidates], start=1)}
+    candidates = [
+        decision_engine.DecisionCandidate(
+            candidate_id=candidate_id,
+            label=str(
+                node.get("title") or node.get("aria_label") or node.get("text")
+                or node.get("description") or node.get("placeholder") or ""
+            ),
+            role=str(node.get("role") or ""),
+            tag=str(node.get("subrole") or node.get("tag") or ""),
+            context=str(node.get("description") or node.get("association_text") or node.get("context") or ""),
+            risky=decision_engine.is_risky_label(
+                node.get("title"), node.get("text"), node.get("aria_label"),
+                node.get("description"), node.get("value"),
+            ),
+        )
+        for candidate_id, node in by_id.items()
+    ]
+    result = await asyncio.to_thread(
+        decision_engine.resolve_ambiguity,
+        intent,
+        candidates,
+        surface=surface,
+        deterministic_id="c1",
+        config=config,
+    )
+    decision_engine.record_resolution(surface, ambiguous=True, result=result)
+    if not result.accepted:
+        exc.details["decision"] = result.metadata()
+        raise exc
+    return by_id[str(result.selected_id)], result.metadata()
+
+
 async def _nested_call(
     call_tool: NestedCaller,
     tool: str,
@@ -855,7 +902,19 @@ async def _recover_rebind(
         fresh = await _nested_call(call_tool, "browser_find", find_args, budget)
         if _result_failed(fresh) or not isinstance(fresh, Mapping):
             raise _PlanStop("RECOVERY_OBSERVE_FAILED", "fresh browser semantic scan failed", None)
-        best = _unique_browser_match(fresh)
+        decision: Optional[dict[str, Any]] = None
+        try:
+            best = _unique_browser_match(fresh)
+        except _PlanStop as exc:
+            best, decision = await _decide_ambiguous_rebind(
+                exc,
+                surface="browser",
+                intent=(
+                    f"Rebind stale browser target. query: {semantic.get('query') or ''}; "
+                    f"role: {semantic.get('role') or ''}; text: {semantic.get('text') or ''}"
+                ),
+                ranked=[item for item in (fresh.get("matches") or []) if isinstance(item, Mapping)],
+            )
         rebound = json.loads(json.dumps(arguments))
         rebound["observation_id"] = fresh.get("observation_id")
         old_id = str((action or {}).get("element_id") or "")
@@ -868,6 +927,7 @@ async def _recover_rebind(
             "new_element_id": best.get("element_id"),
             "observation_id": fresh.get("observation_id"),
             "confidence": best.get("confidence"),
+            **({"decision": decision} if decision else {}),
         }
 
     if tool == "mac_act":
@@ -889,7 +949,35 @@ async def _recover_rebind(
         fresh = await _nested_call(call_tool, "mac_observe", observe_args, budget)
         if _result_failed(fresh) or not isinstance(fresh, Mapping):
             raise _PlanStop("RECOVERY_OBSERVE_FAILED", "fresh native observation failed", None)
-        best = _unique_native_match(fingerprint, fresh)
+        decision = None
+        try:
+            best = _unique_native_match(fingerprint, fresh)
+        except _PlanStop as exc:
+            if fingerprint.get("identifier"):
+                # Duplicate AX identifiers are an identity collision, not a semantic tie.
+                raise
+            fresh_nodes = [item for item in (fresh.get("nodes") or []) if isinstance(item, Mapping)]
+            ranked = sorted(
+                (
+                    (_native_semantic_score(fingerprint, node, fresh_nodes), node)
+                    for node in fresh_nodes
+                ),
+                key=lambda item: item[0],
+                reverse=True,
+            )
+            best, decision = await _decide_ambiguous_rebind(
+                exc,
+                surface="native",
+                intent=(
+                    "Rebind stale macOS UI element. "
+                    + "; ".join(
+                        f"{key}: {fingerprint.get(key)}"
+                        for key in ("role", "subrole", "title", "description", "parent_role", "parent_title")
+                        if fingerprint.get(key)
+                    )
+                ),
+                ranked=[node for score, node in ranked if score >= 0.65],
+            )
         rebound = json.loads(json.dumps(arguments))
         rebound["observation_id"] = fresh.get("observation_id")
         if fresh.get("app_handle"):
@@ -907,6 +995,7 @@ async def _recover_rebind(
             "new_element_id": best.get("element_id"),
             "observation_id": fresh.get("observation_id"),
             "identifier": best.get("identifier") or None,
+            **({"decision": decision} if decision else {}),
         }
 
     # Read-only/precondition failures can be retried without target rebinding.

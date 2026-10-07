@@ -54,7 +54,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .voice:
             return "voice audio microphone speaker groq language"
         case .advanced:
-            return "advanced developer runtime server port cli command"
+            return "advanced developer runtime server port cli command decision acceleration openai decisions api key ambiguity"
         }
     }
 }
@@ -120,6 +120,7 @@ private enum ProviderUsagePeriod: String, CaseIterable, Identifiable {
 
 private enum SettingsFeedbackScope: String, Equatable {
     case agents
+    case decisions
     case endpoint
     case runtime
     case voice
@@ -138,6 +139,7 @@ struct SettingsView: View {
     @MacMCPState private var selection: SettingsSection = .general
     @MacMCPState private var notice = ""
     @MacMCPState private var groqKey = ""
+    @MacMCPState private var decisionsKey = ""
     @MacMCPState private var cloudflareToken = ""
     @MacMCPState private var settingsSearch = ""
     @MacMCPState private var connectionsTab: ConnectionsTab = .browser
@@ -1822,6 +1824,8 @@ struct SettingsView: View {
                     .padding(.top, 5)
                 }
 
+                decisionAccelerationBox
+
                 Label(
                     "Changes here affect runtime behavior; public endpoint and mobile/browser connectivity now live under Connections.",
                     systemImage: "wrench.and.screwdriver"
@@ -1833,6 +1837,105 @@ struct SettingsView: View {
                 Spacer(minLength: 0)
             }
             .padding(22)
+        }
+    }
+
+    private var decisionAccelerationBox: some View {
+        GroupBox("Decision Acceleration") {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("OpenAI Decisions for ambiguous targets")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Off by default. When off, or without a verified key, browser and Mac actions run exactly as before.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    Toggle("", isOn: $settings.decisionAccelerationEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .onChange(of: settings.decisionAccelerationEnabled) { _ in
+                            persistSettings(scope: .decisions, success: "Saved · applies live")
+                            Task { await state.refreshDecisionAcceleration(reloadKey: true) }
+                        }
+                }
+
+                HStack {
+                    Label(decisionKeyStatusText, systemImage: decisionKeyStatusSymbol)
+                        .font(.caption)
+                        .foregroundStyle(decisionKeyStatusColor)
+                    Spacer()
+                    if state.decisionVerifying {
+                        ProgressView().controlSize(.small)
+                    }
+                }
+
+                HStack {
+                    SecureField(settings.hasDecisionsKey ? "Replace OpenAI API key" : "OpenAI API key", text: $decisionsKey)
+                    Button("Save") { saveDecisionsKey() }
+                        .disabled(decisionsKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Test") { Task { await state.verifyDecisionsKey() } }
+                        .disabled(!settings.hasDecisionsKey || state.decisionVerifying)
+                        .help("Send one tiny Decisions request to check the key")
+                    if settings.hasDecisionsKey {
+                        Button { removeDecisionsKey() } label: { Image(systemName: "trash") }
+                            .help("Remove key")
+                    }
+                }
+
+                Text("Only used when the deterministic resolver finds several equally likely targets. The key is stored in Keychain, never in settings.json.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let issue = state.decisionIssue {
+                    inlineError(issue)
+                }
+                saveFeedbackRow(.decisions)
+            }
+            .padding(.top, 5)
+        }
+        .task { await state.refreshDecisionAcceleration() }
+    }
+
+    private var decisionKeyStatus: String {
+        guard settings.hasDecisionsKey else { return "missing" }
+        return state.decisionAcceleration?.keyStatus ?? "unverified"
+    }
+
+    private var decisionKeyStatusText: String {
+        switch decisionKeyStatus {
+        case "missing":
+            return "No key · Decision layer inactive"
+        case "valid":
+            return settings.decisionAccelerationEnabled ? "Key verified · Decision layer active" : "Key verified · turn on to use"
+        case "invalid":
+            return "Key rejected by OpenAI · Decision layer inactive"
+        default:
+            if let status = state.decisionAcceleration?.status, status != "valid" {
+                return "Key check: \(status.replacingOccurrences(of: "_", with: " "))"
+            }
+            return "Key saved · press Test to verify"
+        }
+    }
+
+    private var decisionKeyStatusSymbol: String {
+        switch decisionKeyStatus {
+        case "valid": return "checkmark.shield.fill"
+        case "invalid": return "xmark.shield"
+        case "missing": return "key"
+        default: return "questionmark.circle"
+        }
+    }
+
+    private var decisionKeyStatusColor: Color {
+        switch decisionKeyStatus {
+        case "valid": return .green
+        case "invalid": return .red
+        case "missing": return .orange
+        default: return .secondary
         }
     }
 
@@ -2587,6 +2690,35 @@ struct SettingsView: View {
             notice = "Groq key saved securely in Keychain."
         } catch {
             notice = "Could not save Groq key: \(error.localizedDescription)"
+        }
+    }
+
+    private func saveDecisionsKey() {
+        do {
+            try settings.saveDecisionsKey(decisionsKey)
+            decisionsKey = ""
+            saveFeedback = SettingsSaveFeedback(scope: .decisions, message: "Key saved in Keychain · verifying…", isError: false)
+            Task { await state.verifyDecisionsKey() }
+        } catch {
+            saveFeedback = SettingsSaveFeedback(
+                scope: .decisions,
+                message: "Could not save key: \(error.localizedDescription)",
+                isError: true
+            )
+        }
+    }
+
+    private func removeDecisionsKey() {
+        do {
+            try settings.removeDecisionsKey()
+            saveFeedback = SettingsSaveFeedback(scope: .decisions, message: "Key removed · Decision layer inactive", isError: false)
+            Task { await state.refreshDecisionAcceleration(reloadKey: true) }
+        } catch {
+            saveFeedback = SettingsSaveFeedback(
+                scope: .decisions,
+                message: "Could not remove key: \(error.localizedDescription)",
+                isError: true
+            )
         }
     }
 

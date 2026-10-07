@@ -364,6 +364,22 @@ The legacy `--ngrok` flag remains supported as an alias for `--public-mode ngrok
 
 Recovery has independent count/time budgets plus the existing total plan/action-unit limits. Mutating work is never automatically replayed after `ACTION_NO_EFFECT`, verification uncertainty, policy denial, `outcome_unknown`, an exception crossing a mutating tool boundary, or a partially successful action batch. Optional plan `resources` use the same global ownership state as delegated-agent admission, so a conflicting browser tab/native/workspace resource can fail at preflight before any plan step runs. Every nested action still goes back through normal Mac MCP policy, scope, browser/native leases, telemetry and effect verification.
 
+### Optional Decision Acceleration (experimental)
+
+**Settings → Advanced → Decision Acceleration** has an opt-in OpenAI Decisions resolver. It is off by default. The OpenAI API key is stored in Keychain (`com.bulutarkan.mac-mcp` / `openai-decisions-api-key`) and never in `settings.json`; **Test** sends one tiny verification request.
+
+When the switch is off, the key is missing, or OpenAI rejected the key, behavior is unchanged and no outbound call is made. When enabled with a working key:
+
+- `browser_act` asks Decisions only when the deterministic ranking finds two or more near-equal targets (top scores ≥ 0.60 and within 0.10). Unique targets never trigger a call.
+- `computer_plan` recovery asks Decisions only for an ambiguous browser/native rebind that would otherwise fail closed with `RECOVERY_AMBIGUOUS_TARGET`.
+- Decisions may only pick one of the already-ranked candidate IDs. A choice is accepted at confidence ≥ 0.80, or at ≥ 0.65 when it agrees with the deterministic top match. A `none` answer, for example on a true tie, keeps the deterministic choice.
+- A risky alternative (delete, send, pay, …) is never chosen over the deterministic match.
+- Timeouts (600 ms default), errors, rate limits, invalid keys and low confidence all fall back to the existing deterministic path.
+- Policy, approvals, leases, takeover checks and readiness still run after the choice and remain authoritative.
+- Only short, redacted candidate labels, roles and the requested target text are sent. Typed values, URLs and page content are not sent.
+
+`settings.json` → `decision_acceleration` also accepts `scope` (`browser`, `native`, `both`, `off`), `timeout_ms`, `accept_threshold`, `agree_threshold` and `max_candidates`; an invalid value disables the feature.
+
 Default local endpoint:
 
 ```text

@@ -29,6 +29,10 @@ struct MenuSettings: Codable {
     struct Notifications: Codable {
         var agent_completion: Bool
     }
+    struct DecisionAcceleration: Codable {
+        var enabled: Bool
+        var scope: String?
+    }
     struct Provider: Codable {
         var enabled: Bool
         var binary_path: String?
@@ -55,6 +59,7 @@ struct MenuSettings: Codable {
     var steering: Steering?
     var tool_activity: ToolActivity?
     var notifications: Notifications?
+    var decision_acceleration: DecisionAcceleration?
     var subagents: Subagents?
 
     static func defaults() -> MenuSettings {
@@ -65,6 +70,7 @@ struct MenuSettings: Codable {
             steering: Steering(session_ttl_minutes: 10),
             tool_activity: ToolActivity(show_bubble: false, require_descriptions: false),
             notifications: Notifications(agent_completion: false),
+            decision_acceleration: DecisionAcceleration(enabled: false, scope: "both"),
             subagents: Subagents(
                 providers: [
                     "opencode": Provider(enabled: false, binary_path: nil, default_project: nil),
@@ -107,6 +113,9 @@ final class SettingsStore: ObservableObject {
     @Published var defaultAgentModel = ""
     @Published var defaultAgentReasoning = ""
     @Published var hasGroqKey = false
+    @Published var decisionAccelerationEnabled = false
+    @Published var decisionAccelerationScope = "both"
+    @Published var hasDecisionsKey = false
     @Published private(set) var settingsLoadIssue = ""
     @Published private(set) var providerSettingsLocked = false
 
@@ -121,6 +130,7 @@ final class SettingsStore: ObservableObject {
         }
         load()
         hasGroqKey = KeychainStore.hasGroqKey()
+        hasDecisionsKey = KeychainStore.hasDecisionsKey()
     }
 
     func load() {
@@ -177,6 +187,9 @@ final class SettingsStore: ObservableObject {
             showToolActivity = false
         }
         agentCompletionNotificationsEnabled = current.notifications?.agent_completion ?? false
+        decisionAccelerationEnabled = current.decision_acceleration?.enabled ?? false
+        let rawDecisionScope = current.decision_acceleration?.scope?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        decisionAccelerationScope = ["off", "browser", "native", "both"].contains(rawDecisionScope) ? rawDecisionScope : "both"
         let providers = current.subagents?.providers ?? [:]
         opencodeEnabled = providerConfigValid ? (providers["opencode"]?.enabled ?? false) : false
         codexEnabled = providerConfigValid ? (providers["codex"]?.enabled ?? false) : false
@@ -216,6 +229,7 @@ final class SettingsStore: ObservableObject {
                 require_descriptions: requireToolDescriptions
             ),
             notifications: .init(agent_completion: agentCompletionNotificationsEnabled),
+            decision_acceleration: .init(enabled: decisionAccelerationEnabled, scope: decisionAccelerationScope),
             subagents: .init(
                 providers: [
                     "opencode": .init(enabled: opencodeEnabled, binary_path: opencodeBinaryPath.nilIfEmpty, default_project: nil),
@@ -295,6 +309,16 @@ final class SettingsStore: ObservableObject {
     func removeGroqKey() throws {
         try KeychainStore.removeGroqKey()
         hasGroqKey = false
+    }
+
+    func saveDecisionsKey(_ value: String) throws {
+        try KeychainStore.saveDecisionsKey(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        hasDecisionsKey = KeychainStore.hasDecisionsKey()
+    }
+
+    func removeDecisionsKey() throws {
+        try KeychainStore.removeDecisionsKey()
+        hasDecisionsKey = false
     }
 
     private func defaultCLIPath() -> String {

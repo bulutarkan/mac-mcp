@@ -219,9 +219,13 @@ def provider_enabled(provider: str, default: bool | None = None) -> bool:
     value = item.get("enabled")
     return value if isinstance(value, bool) else False
 
-def keychain_password() -> str | None:
-    service = os.getenv("MAC_MCP_VOICE_GROQ_KEYCHAIN_SERVICE", "com.bulutarkan.mac-mcp").strip()
-    account = os.getenv("MAC_MCP_VOICE_GROQ_KEYCHAIN_ACCOUNT", "groq-api-key").strip()
+def keychain_password(service: str | None = None, account: str | None = None) -> str | None:
+    if service is None:
+        service = os.getenv("MAC_MCP_VOICE_GROQ_KEYCHAIN_SERVICE", "com.bulutarkan.mac-mcp")
+    if account is None:
+        account = os.getenv("MAC_MCP_VOICE_GROQ_KEYCHAIN_ACCOUNT", "groq-api-key")
+    service = service.strip()
+    account = account.strip()
     if not service or not account:
         return None
     try:

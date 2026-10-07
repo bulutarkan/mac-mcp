@@ -14,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from . import decision_engine
 from .chrome_background_bridge import chrome_background_bridge
 from .foreground_guard import foreground_authorization
 from .file_transactions import (
@@ -333,6 +334,21 @@ def create_dashboard_routes(
             "version": __version__,
             "chrome_companion_connected": bool(chrome_background_bridge.is_connected()),
         })
+
+    async def decision_acceleration_status(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        if request.query_params.get("reload") == "1":
+            await asyncio.to_thread(decision_engine.reload_api_key)
+        return JSONResponse({"ok": True, **decision_engine.decision_status()})
+
+    async def decision_acceleration_verify(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        result = await asyncio.to_thread(decision_engine.verify_api_key)
+        return JSONResponse({**result, "key_status": decision_engine.decision_status()["key_status"]})
 
     async def security_semantics(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
@@ -898,6 +914,8 @@ def create_dashboard_routes(
         Route("/dashboard/assets/{name}", asset, methods=["GET"]),
         Route("/dashboard/api/summary", summary, methods=["GET"]),
         Route("/dashboard/api/diagnostics/runtime", runtime_diagnostics, methods=["GET"]),
+        Route("/dashboard/api/decision-acceleration", decision_acceleration_status, methods=["GET"]),
+        Route("/dashboard/api/decision-acceleration/verify", decision_acceleration_verify, methods=["POST"]),
         Route("/dashboard/api/security/semantics", security_semantics, methods=["GET"]),
         Route("/dashboard/api/security/profile", set_security_profile, methods=["POST"]),
         Route("/dashboard/api/security/server-approval", set_server_approval_profile, methods=["POST"]),

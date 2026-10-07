@@ -4,13 +4,43 @@ import Security
 enum KeychainStore {
     static let service = ProcessInfo.processInfo.environment["MAC_MCP_VOICE_GROQ_KEYCHAIN_SERVICE"] ?? "com.bulutarkan.mac-mcp"
     static let account = ProcessInfo.processInfo.environment["MAC_MCP_VOICE_GROQ_KEYCHAIN_ACCOUNT"] ?? "groq-api-key"
+    static let decisionsService = ProcessInfo.processInfo.environment["MAC_MCP_DECISIONS_KEYCHAIN_SERVICE"] ?? "com.bulutarkan.mac-mcp"
+    static let decisionsAccount = ProcessInfo.processInfo.environment["MAC_MCP_DECISIONS_KEYCHAIN_ACCOUNT"] ?? "openai-decisions-api-key"
 
     static func hasGroqKey() -> Bool {
-        guard let value = try? readGroqKey() else { return false }
-        return !value.isEmpty
+        hasValue(service: service, account: account)
     }
 
     static func readGroqKey() throws -> String {
+        try read(service: service, account: account)
+    }
+
+    static func saveGroqKey(_ value: String) throws {
+        try save(value, service: service, account: account)
+    }
+
+    static func removeGroqKey() throws {
+        try remove(service: service, account: account)
+    }
+
+    static func hasDecisionsKey() -> Bool {
+        hasValue(service: decisionsService, account: decisionsAccount)
+    }
+
+    static func saveDecisionsKey(_ value: String) throws {
+        try save(value, service: decisionsService, account: decisionsAccount)
+    }
+
+    static func removeDecisionsKey() throws {
+        try remove(service: decisionsService, account: decisionsAccount)
+    }
+
+    private static func hasValue(service: String, account: String) -> Bool {
+        guard let value = try? read(service: service, account: account) else { return false }
+        return !value.isEmpty
+    }
+
+    private static func read(service: String, account: String) throws -> String {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -29,7 +59,7 @@ enum KeychainStore {
         return value
     }
 
-    static func saveGroqKey(_ value: String) throws {
+    private static func save(_ value: String, service: String, account: String) throws {
         let data = Data(value.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -52,7 +82,7 @@ enum KeychainStore {
         }
     }
 
-    static func removeGroqKey() throws {
+    private static func remove(service: String, account: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

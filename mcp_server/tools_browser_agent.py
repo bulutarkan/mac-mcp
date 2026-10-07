@@ -18,6 +18,7 @@ from mcp.server.fastmcp.utilities.types import Image
 
 from .security import Settings, truncate
 from .computer_use_perf import record_computer_use_sample
+from . import decision_engine
 from .perception import finalize_perception_telemetry, refresh_perception_size
 from . import browser_tabs
 from .chrome_background_bridge import chrome_background_bridge
@@ -3057,6 +3058,62 @@ def _wait_action(
         return fallback
 
 
+_TARGET_CANDIDATE_LIMIT = 8
+
+
+def _decide_browser_target(
+    action: Dict[str, Any],
+    query: str,
+    role: Optional[str],
+    match_text: Optional[str],
+    matches: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Return the deterministic best match unless an enabled Decision resolves a tie.
+
+    Only already-ranked candidates are offered, so the result is always one of
+    ``matches``. Lease, takeover, readiness and stale checks still run after this.
+    """
+    best = matches[0]
+    assessment = decision_engine.assess_ambiguity([item.get("confidence") or 0.0 for item in matches])
+    if not assessment["ambiguous"]:
+        decision_engine.record_resolution("browser", ambiguous=False)
+        return best
+    plausible = [
+        item for item in matches
+        if float(item.get("confidence") or 0.0) >= decision_engine.AMBIGUITY_FLOOR
+    ]
+    by_candidate = {f"c{index}": item for index, item in enumerate(plausible, start=1)}
+    candidates = [
+        decision_engine.DecisionCandidate(
+            candidate_id=candidate_id,
+            label=str(
+                item.get("text") or item.get("aria_label") or item.get("placeholder")
+                or item.get("name") or item.get("title") or ""
+            ),
+            role=str(item.get("role") or ""),
+            tag=str(item.get("tag") or ""),
+            context=str(item.get("association_text") or item.get("context") or ""),
+            risky=decision_engine.is_risky_label(
+                item.get("text"), item.get("aria_label"), item.get("title"),
+                item.get("name"), item.get("value"),
+            ),
+        )
+        for candidate_id, item in by_candidate.items()
+    ]
+    action_type = str(action.get("type") or "").lower()
+    intent = f"Browser {action_type} target. query: {query}; role: {role or ''}; text: {match_text or ''}"
+    result = decision_engine.resolve_ambiguity(
+        intent, candidates, surface="browser", deterministic_id="c1",
+    )
+    decision_engine.record_resolution("browser", ambiguous=True, result=result)
+    if result.attempted:
+        record_computer_use_sample("browser_decision", duration_ms=result.latency_ms)
+    chosen = by_candidate.get(str(result.selected_id)) if result.accepted else None
+    out = dict(chosen or best)
+    out["decision"] = {"ambiguity": assessment, **result.metadata()}
+    return out
+
+
 def browser_act(
     settings: Settings,
     browser: str,
@@ -3169,7 +3226,8 @@ def _browser_act_locked(
             return dict(action), None
         found = browser_find(
             settings, browser, query=query, role=role, text=match_text,
-            window_index=window_index, tab_index=tab_index, tab_handle=tab_handle, max_results=1,
+            window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
+            max_results=_TARGET_CANDIDATE_LIMIT,
         )
         internal_js_calls += 1
         best = found.get("best_match")
@@ -3178,9 +3236,11 @@ def _browser_act_locked(
                 "ok": False, "error": "target_not_found", "query": query,
                 "role": role, "text": match_text,
             }
+        matches = [item for item in (found.get("matches") or []) if isinstance(item, dict)] or [best]
+        chosen = _decide_browser_target(action, query, role, match_text, matches)
         resolved = dict(action)
-        resolved["element_id"] = best.get("element_id")
-        return resolved, best
+        resolved["element_id"] = chosen.get("element_id")
+        return resolved, chosen
 
     def flush_pending() -> bool:
         nonlocal pending, internal_js_calls, current_observation_id
@@ -3244,6 +3304,8 @@ def _browser_act_locked(
                         k: resolved_target.get(k)
                         for k in ("element_id", "text", "role", "tag", "confidence")
                     }
+                    if resolved_target.get("decision"):
+                        action_result["resolved_target"]["decision"] = resolved_target["decision"]
                 results.append(action_result)
                 if not action_result.get("ok"):
                     break
@@ -3273,6 +3335,8 @@ def _browser_act_locked(
                         k: resolved_target.get(k)
                         for k in ("element_id", "text", "role", "tag", "confidence")
                     }
+                    if resolved_target.get("decision"):
+                        select_result["resolved_target"]["decision"] = resolved_target["decision"]
                 results.append(select_result)
                 if not select_result.get("ok"):
                     break

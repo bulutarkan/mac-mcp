@@ -289,6 +289,21 @@ struct BrowserShowTabEnvelope: Decodable {
     let ok: Bool
 }
 
+struct DecisionAccelerationEnvelope: Decodable, Equatable {
+    let enabled: Bool?
+    let scope: String?
+    let active: Bool?
+    let keyStatus: String?
+    let status: String?
+    let latencyMs: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, scope, active, status
+        case keyStatus = "key_status"
+        case latencyMs = "latency_ms"
+    }
+}
+
 struct ApprovalBehaviorInfo: Decodable, Equatable {
     let source: String
     let automaticConfirmation: Bool
@@ -1394,6 +1409,9 @@ final class AppState: ObservableObject {
     @Published private(set) var providerUsageSummary: ProviderUsageSummaryEnvelope?
     @Published private(set) var providerUsageLoading = false
     @Published private(set) var providerUsageIssue: String?
+    @Published private(set) var decisionAcceleration: DecisionAccelerationEnvelope?
+    @Published private(set) var decisionVerifying = false
+    @Published private(set) var decisionIssue: String?
     @Published var recentEvents: [ToolEvent] = []
     @Published var activeEvents: [ToolEvent] = []
     @Published var browserActionStatus = ""
@@ -1997,6 +2015,39 @@ final class AppState: ObservableObject {
             setIfChanged(\.usageIssue, nil)
         } catch {
             setIfChanged(\.usageIssue, "Could not refresh Usage: \(Self.issueText(for: error))")
+        }
+    }
+
+    func refreshDecisionAcceleration(reloadKey: Bool = false) async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        do {
+            let status: DecisionAccelerationEnvelope = try await fetch(
+                base.appendingPathComponent("dashboard/api/decision-acceleration"),
+                query: reloadKey ? ["reload": "1"] : [:],
+                timeout: 8.0
+            )
+            setIfChanged(\.decisionAcceleration, status)
+            setIfChanged(\.decisionIssue, nil)
+        } catch {
+            setIfChanged(\.decisionIssue, "Could not read Decision status: \(Self.issueText(for: error))")
+        }
+    }
+
+    func verifyDecisionsKey() async {
+        guard !decisionVerifying,
+              let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        setIfChanged(\.decisionVerifying, true)
+        defer { setIfChanged(\.decisionVerifying, false) }
+        do {
+            let result: DecisionAccelerationEnvelope = try await post(
+                base.appendingPathComponent("dashboard/api/decision-acceleration/verify"),
+                body: [:],
+                timeout: 20.0
+            )
+            setIfChanged(\.decisionAcceleration, result)
+            setIfChanged(\.decisionIssue, nil)
+        } catch {
+            setIfChanged(\.decisionIssue, "Could not verify the key: \(Self.issueText(for: error))")
         }
     }
 
@@ -3001,11 +3052,11 @@ final class AppState: ObservableObject {
         return try JSONDecoder().decode(SteeringSendEnvelope.self, from: data)
     }
 
-    private func post<T: Decodable>(_ url: URL, body: [String: Any]) async throws -> T {
+    private func post<T: Decodable>(_ url: URL, body: [String: Any], timeout: TimeInterval = 2.0) async throws -> T {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        request.timeoutInterval = 2.0
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         authorizeDashboardRequest(&request)
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
