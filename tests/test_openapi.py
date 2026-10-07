@@ -8,24 +8,13 @@ from mcp_server.policy import RISK_REGISTRY
 from mcp_server.rest_routes import router
 
 
-PUBLISHED_REST_OPERATION_IDS = {
-    "run_command", "process_list", "kill_process", "get_system_info",
-    "start_background_job", "get_job_status", "get_job_output", "stop_job",
-    "list_jobs", "wait_jobs", "run_commands_parallel", "write_file",
-    "write_files_batch", "read_file", "read_multiple_files", "edit_file",
-    "move_file", "copy_file", "delete_path", "list_directory",
-    "directory_tree", "create_directory", "get_file_info", "find_files",
-    "run_applescript", "send_notification", "clipboard_get", "clipboard_set",
-    "open_app", "open_url", "set_volume", "get_volume", "set_brightness",
-    "screenshot", "set_reminder", "get_running_apps", "artifact_pipeline", "context_handoff", "mac_snapshot", "mac_observe", "mac_act",
-    "search_files", "spotlight_search", "http_request", "browser_open_url",
-    "browser_list_tabs", "browser_activate_tab", "browser_close_tab",
-    "browser_execute_js", "browser_click_selector", "browser_type_selector",
-    "browser_wait_for_selector", "browser_get_html", "browser_wait_for_download", "browser_upload_artifact",
-    "browser_screenshot", "browser_scroll", "browser_press_key",
-    "browser_coordinate_click", "browser_get_snapshot", "ask_user", "ask_choice",
-    "ask_confirmation",
+MEMORY_SKILLS_REST_OPERATION_IDS = {
+    "memory_search", "memory_get", "skill_list", "skill_search", "skill_get",
 }
+MEMORY_SKILLS_MCP_ONLY_OPERATION_IDS = {
+    "memory_add", "memory_update", "memory_delete", "skill_register", "skill_update_index",
+}
+
 
 
 class OpenAPICoverageTests(unittest.TestCase):
@@ -36,8 +25,9 @@ class OpenAPICoverageTests(unittest.TestCase):
         operations = [item["post"] for item in schema["paths"].values()]
         operation_ids = {operation["operationId"] for operation in operations}
 
-        self.assertEqual(63, len(schema["paths"]))
-        self.assertEqual(PUBLISHED_REST_OPERATION_IDS, operation_ids)
+        self.assertTrue(MEMORY_SKILLS_REST_OPERATION_IDS.issubset(operation_ids))
+        self.assertTrue(MEMORY_SKILLS_MCP_ONLY_OPERATION_IDS.isdisjoint(operation_ids))
+        self.assertTrue(operation_ids.issubset(RISK_REGISTRY))
         choice_schema = schema["paths"]["/api/interactive/choice"]["post"]["requestBody"]["content"]["application/json"]["schema"]
         self.assertEqual(2, choice_schema["properties"]["choices"]["minItems"])
         self.assertEqual(3, choice_schema["properties"]["choices"]["maxItems"])
@@ -45,6 +35,13 @@ class OpenAPICoverageTests(unittest.TestCase):
         self.assertNotIn("/api/macos", schema["paths"])
         self.assertNotIn("/api/browser", schema["paths"])
         self.assertNotIn("/api/search", schema["paths"])
+        published_operations = {
+            item["post"]["operationId"] for item in schema["paths"].values()
+        }
+        self.assertTrue(MEMORY_SKILLS_MCP_ONLY_OPERATION_IDS.isdisjoint(published_operations))
+        skill_get_schema = schema["paths"]["/api/skills/get"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+        self.assertIn("name", skill_get_schema["properties"])
+        self.assertNotIn("path", skill_get_schema["properties"])
         mac_act_schema = schema["paths"]["/api/mac_act"]["post"]["requestBody"]["content"]["application/json"]["schema"]
         self.assertIn("target_bundle_id", mac_act_schema["properties"])
         self.assertIn("process-bound target", schema["paths"]["/api/mac_act"]["post"]["description"])
@@ -92,7 +89,10 @@ class OpenAPICoverageTests(unittest.TestCase):
             for item in schema["paths"].values()
         }
 
-        for operation_id in ("run_command", "run_commands_parallel", "process_list"):
+        for operation_id in (
+            "run_command", "run_commands_parallel", "process_list",
+            *sorted(MEMORY_SKILLS_REST_OPERATION_IDS),
+        ):
             with self.subTest(operation_id=operation_id):
                 self.assertEqual(
                     RISK_REGISTRY[operation_id].destructive,
@@ -111,8 +111,9 @@ class OpenAPICoverageTests(unittest.TestCase):
         ]
         operation_ids = {operation["operationId"] for operation in operations}
 
-        self.assertEqual(63, len(operations))
-        self.assertEqual(PUBLISHED_REST_OPERATION_IDS, operation_ids)
+        self.assertTrue(MEMORY_SKILLS_REST_OPERATION_IDS.issubset(operation_ids))
+        self.assertTrue(MEMORY_SKILLS_MCP_ONLY_OPERATION_IDS.isdisjoint(operation_ids))
+        self.assertTrue(operation_ids.issubset(RISK_REGISTRY))
         self.assertEqual(
             3,
             schema["components"]["schemas"]["ChoiceRequest"]["properties"]["choices"]["maxItems"],

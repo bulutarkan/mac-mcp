@@ -446,6 +446,12 @@ Normalized work outcomes are `running`, `completed`, `partial_failure`, `failed`
 
 `max_team_retries` is a separate shared retry budget. Automatic retries are classified before replay: rate limits, timeouts/stalls, provider overload and transient transport failures may retry; authentication, permission, quota, invalid-model/request and unknown provider failures fail fast. Durable side-effect/checkpoint safety takes precedence over error classification, and every team retry slot is reserved atomically with bounded start spacing so concurrent failures cannot create a retry storm. `admission_token_budget` is accepted only for providers that expose reliable usage; ChatGPT Web currently rejects that option rather than pretending unreported usage is zero.
 
+## Memory and Agent Skills API surface
+
+The native MCP endpoint remains the full Memory and Agent Skills surface. REST/OpenAPI intentionally exposes only the read-oriented compatibility subset: `memory_search`, `memory_get`, `skill_list`, `skill_search`, and name-based `skill_get`. These routes use the same server authentication, permission profile, scoped tool-family authorization, and security-context gate as the rest of the published REST surface.
+
+Memory mutation (`memory_add`, `memory_update`, `memory_delete`) and Agent Skill registration/index mutation (`skill_register`, `skill_update_index`) remain **MCP-only**. REST `skill_get` accepts an exact skill name but deliberately does not accept a `SKILL.md` path because MCP path lookup may register an external skill. Public REST responses also omit local-only filesystem/index metadata such as memory file paths, skill roots/directories/absolute resource paths, and index-sync diagnostics.
+
 ## Role learning for delegated agents
 
 Mac MCP keeps **workflow lessons** separate from generic factual memory. Delegated agents can opt into a role with `role="coder"`, `role="reviewer"`, or `role="orchestrator"`. At spawn time, only a small top-k set of **approved, relevant** lessons for that role is injected; current task instructions always take priority. Unrelated tasks receive no lesson context.

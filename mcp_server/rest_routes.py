@@ -1,6 +1,6 @@
 """
 REST API routes for Custom GPT / OpenAPI access.
-Mirrors the MCP tools as plain HTTP POST endpoints.
+Publishes a selected compatibility subset of the full MCP tool surface.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import os
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .security import Settings, load_settings
 from .security_context import SecurityContextManager
@@ -50,6 +50,8 @@ from .tools_browser import (
     browser_coordinate_click, browser_get_snapshot,
 )
 from .tools_interactive import ask_choice, ask_confirmation, ask_user
+from .tools_memory import memory_get, memory_search
+from .tools_skills import skill_get, skill_list, skill_search
 from .tools_ui import act_ui, observe_ui
 from .tools_snapshot import unified_read_snapshot
 from .artifact_pipeline import artifact_pipeline
@@ -240,9 +242,48 @@ def _authorize_rest_tool(request: Request, tool: str, arguments: Dict[str, Any])
     _rest_security_gate(request, tool, arguments, effective)
 
 
+def _filter_rest_public_result(tool: str, result: Any) -> Any:
+    """Remove local-only filesystem/index metadata from public REST responses."""
+    if not isinstance(result, dict):
+        return result
+    cleaned = dict(result)
+    if tool in {"memory_search", "memory_get"}:
+        cleaned.pop("index_sync", None)
+        cleaned.pop("file_path", None)
+        rows = cleaned.get("results")
+        if isinstance(rows, list):
+            cleaned["results"] = [
+                {key: value for key, value in row.items() if key != "file_path"}
+                if isinstance(row, dict) else row
+                for row in rows
+            ]
+    if tool in {"skill_list", "skill_search", "skill_get"}:
+        for key in ("skills_root", "index_sync", "location", "directory"):
+            cleaned.pop(key, None)
+        for list_key in ("skills", "results"):
+            rows = cleaned.get(list_key)
+            if isinstance(rows, list):
+                cleaned[list_key] = [
+                    {key: value for key, value in row.items() if key not in {"location", "directory"}}
+                    if isinstance(row, dict) else row
+                    for row in rows
+                ]
+        resources = cleaned.get("resources")
+        if isinstance(resources, list):
+            cleaned["resources"] = [
+                {key: value for key, value in row.items() if key != "absolute_path"}
+                if isinstance(row, dict) else row
+                for row in resources
+            ]
+        if tool == "skill_get" and "usage_note" in cleaned:
+            cleaned["usage_note"] = "Resource paths are relative to the selected skill."
+    return cleaned
+
+
 def _filter_rest_result(request: Request, tool: str, result: Any) -> Any:
     context = getattr(request.state, "policy_context", None)
     filtered = filter_scoped_result(context.scope if context is not None else None, tool, result)
+    filtered = _filter_rest_public_result(tool, filtered)
     if _rest_security_context is not None:
         key = getattr(request.state, "security_key", None)
         session_id = getattr(request.state, "security_session_id", None)
@@ -433,6 +474,45 @@ class RunParallelRequest(BaseModel):
     return_output: Optional[bool] = True
 
 
+class MemorySearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: Optional[str] = None
+    date: Optional[str] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    tags: Optional[List[str]] = None
+    importance: Optional[str] = None
+    sort: str = "relevance"
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class MemoryGetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    memory_id: str
+
+
+class SkillListRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    limit: int = Field(default=100, ge=1, le=500)
+
+
+class SkillSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class SkillGetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    resource_limit: int = Field(default=200, ge=1, le=1000)
+
+
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
@@ -517,6 +597,51 @@ def api_run_parallel(req: RunParallelRequest, request: Request, settings: Settin
         return_output=req.return_output if req.return_output is not None else True,
     )
     return _filter_rest_result(request, "run_commands_parallel", result)
+
+
+@router.post("/memory/search", operation_id="memory_search")
+def api_memory_search(req: MemorySearchRequest, request: Request) -> Dict[str, Any]:
+    result = memory_search(
+        query=req.query,
+        date=req.date,
+        date_from=req.date_from,
+        date_to=req.date_to,
+        tags=req.tags,
+        importance=req.importance,
+        sort=req.sort,
+        limit=req.limit,
+    )
+    return _filter_rest_result(request, "memory_search", result)
+
+
+@router.post("/memory/get", operation_id="memory_get")
+def api_memory_get(req: MemoryGetRequest, request: Request) -> Dict[str, Any]:
+    return _filter_rest_result(request, "memory_get", memory_get(req.memory_id))
+
+
+@router.post("/skills/list", operation_id="skill_list")
+def api_skill_list(req: SkillListRequest, request: Request) -> Dict[str, Any]:
+    return _filter_rest_result(request, "skill_list", skill_list(limit=req.limit))
+
+
+@router.post("/skills/search", operation_id="skill_search")
+def api_skill_search(req: SkillSearchRequest, request: Request) -> Dict[str, Any]:
+    return _filter_rest_result(
+        request,
+        "skill_search",
+        skill_search(query=req.query, limit=req.limit),
+    )
+
+
+@router.post("/skills/get", operation_id="skill_get")
+def api_skill_get(req: SkillGetRequest, request: Request) -> Dict[str, Any]:
+    # REST intentionally exposes name-based lookup only. MCP skill_get(path=...)
+    # may register an external skill path and is therefore not a read-only surface.
+    return _filter_rest_result(
+        request,
+        "skill_get",
+        skill_get(name=req.name, resource_limit=req.resource_limit),
+    )
 
 
 @router.post("/files", include_in_schema=False)

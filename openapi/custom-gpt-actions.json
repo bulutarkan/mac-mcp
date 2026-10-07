@@ -3,7 +3,7 @@
   "info": {
     "title": "Mac MCP Server",
     "version": "1.1.1",
-    "description": "OpenAPI schema for connecting Mac MCP Server to Custom GPT Actions. It exposes selected MCP tools through a stable REST-compatible operation surface; other capabilities intentionally remain MCP-only. Legacy grouped REST endpoints remain available for compatibility but are intentionally omitted from this published schema."
+    "description": "OpenAPI schema for connecting Mac MCP Server to Custom GPT Actions. It exposes selected MCP tools through a stable REST-compatible operation surface; other capabilities intentionally remain MCP-only. Legacy grouped REST endpoints remain available for compatibility but are intentionally omitted from this published schema. Read-only persistent-memory lookup and Agent Skills discovery/read are available through REST/OpenAPI; memory mutation and Agent Skill registration/index mutation remain MCP-only."
   },
   "servers": [
     {
@@ -3348,6 +3348,275 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AskConfirmationResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/memory/search": {
+      "post": {
+        "operationId": "memory_search",
+        "x-openai-isConsequential": false,
+        "summary": "Search persistent memory",
+        "description": "Read-only search/list access to Mac MCP persistent memory. Local memory file paths and index-maintenance metadata are omitted from REST responses.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Optional semantic/lexical memory query. Omit to list memories."
+                  },
+                  "date": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Optional exact date in YYYY-MM-DD form."
+                  },
+                  "date_from": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Optional inclusive start date in YYYY-MM-DD form."
+                  },
+                  "date_to": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Optional inclusive end date in YYYY-MM-DD form."
+                  },
+                  "tags": {
+                    "type": [
+                      "array",
+                      "null"
+                    ],
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Optional tags; all supplied tags must match."
+                  },
+                  "importance": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "Optional importance filter: low, normal, high, or critical."
+                  },
+                  "sort": {
+                    "type": "string",
+                    "enum": [
+                      "relevance",
+                      "newest",
+                      "oldest"
+                    ],
+                    "default": "relevance",
+                    "description": "Result ordering."
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 20,
+                    "description": "Maximum number of memories to return."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/memory/get": {
+      "post": {
+        "operationId": "memory_get",
+        "x-openai-isConsequential": false,
+        "summary": "Get one persistent memory",
+        "description": "Read one exact Mac MCP memory by memory_id. Local memory file paths are omitted from REST responses.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "memory_id": {
+                    "type": "string",
+                    "description": "Stable memory identifier returned by memory_search."
+                  }
+                },
+                "required": [
+                  "memory_id"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/skills/list": {
+      "post": {
+        "operationId": "skill_list",
+        "x-openai-isConsequential": false,
+        "summary": "List Agent Skills",
+        "description": "List read-only Agent Skill metadata. Local skill root, directory, location, and index-maintenance metadata are omitted from REST responses.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500,
+                    "default": 100,
+                    "description": "Maximum number of skill metadata entries to return."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/skills/search": {
+      "post": {
+        "operationId": "skill_search",
+        "x-openai-isConsequential": false,
+        "summary": "Search Agent Skills",
+        "description": "Search Agent Skills by query. Local directory/location and index-maintenance metadata are omitted from REST responses.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "query": {
+                    "type": "string",
+                    "description": "Skill search query."
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "default": 10,
+                    "description": "Maximum number of matching skills to return."
+                  }
+                },
+                "required": [
+                  "query"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/skills/get": {
+      "post": {
+        "operationId": "skill_get",
+        "x-openai-isConsequential": false,
+        "summary": "Get one Agent Skill by name",
+        "description": "Load one Agent Skill by exact name. REST intentionally does not accept SKILL.md paths because path lookup can register external skills; registration remains MCP-only. Absolute local resource paths are omitted.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Exact Agent Skill name returned by skill_list or skill_search."
+                  },
+                  "resource_limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "default": 200,
+                    "description": "Maximum number of relative bundled resource entries to return."
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result returned as JSON.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
                 }
               }
             }
