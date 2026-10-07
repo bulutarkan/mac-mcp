@@ -30,7 +30,14 @@ from .file_transactions import (
 )
 from .observability import TelemetryManager, sanitize_value
 from .provider_usage import summary as provider_usage_summary
-from .policy import GLOBAL_PROFILE_NAMES, RISK_REGISTRY, is_global_permission_profile, permission_semantics
+from .policy import (
+    GLOBAL_PROFILE_NAMES,
+    RISK_REGISTRY,
+    SERVER_APPROVAL_PROFILE_NAMES,
+    is_global_permission_profile,
+    permission_semantics,
+)
+from .runtime_settings import update_runtime_setting
 from .security import Settings, dashboard_authorized
 from .security_context import SecurityContextManager
 from .steering import (
@@ -313,7 +320,8 @@ def create_dashboard_routes(
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
             return denied
-        return JSONResponse(permission_semantics())
+        server_profile = security_context.server_approval_profile if security_context is not None else "off"
+        return JSONResponse(permission_semantics(server_approval_profile=server_profile))
 
     async def set_security_profile(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
@@ -340,12 +348,46 @@ def create_dashboard_routes(
         except OSError:
             return JSONResponse({"ok": False, "error": "permission_profile_persist_failed"}, status_code=500)
         os.environ["MAC_MCP_PERMISSION_PROFILE"] = profile
-        payload = permission_semantics(profile)
+        server_profile = security_context.server_approval_profile if security_context is not None else "off"
+        payload = permission_semantics(profile, server_approval_profile=server_profile)
         payload.update({
             "ok": True,
             "restart_required": False,
             "existing_scoped_agents_retain_profile": True,
         })
+        return JSONResponse(payload)
+
+    async def set_server_approval_profile(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        if security_context is None:
+            return JSONResponse({"ok": False, "error": "security_context_unavailable"}, status_code=503)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        profile = str(body.get("profile") or "").strip().lower()
+        if profile not in SERVER_APPROVAL_PROFILE_NAMES:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "invalid_server_approval_profile",
+                    "allowed_profiles": list(SERVER_APPROVAL_PROFILE_NAMES),
+                },
+                status_code=400,
+            )
+        try:
+            update_runtime_setting("security", "server_approval_profile", profile)
+        except (OSError, RuntimeError, ValueError):
+            return JSONResponse(
+                {"ok": False, "error": "server_approval_profile_persist_failed"},
+                status_code=500,
+            )
+        payload = permission_semantics(server_approval_profile=profile)
+        payload.update({"ok": True, "restart_required": False})
         return JSONResponse(payload)
 
     async def security_events(request: Request) -> Response:
@@ -808,6 +850,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/diagnostics/runtime", runtime_diagnostics, methods=["GET"]),
         Route("/dashboard/api/security/semantics", security_semantics, methods=["GET"]),
         Route("/dashboard/api/security/profile", set_security_profile, methods=["POST"]),
+        Route("/dashboard/api/security/server-approval", set_server_approval_profile, methods=["POST"]),
         Route("/dashboard/api/security/events", security_events, methods=["GET"]),
         Route("/dashboard/api/security/escalate", security_escalate, methods=["POST"]),
         Route("/dashboard/api/events", events, methods=["GET"]),

@@ -119,9 +119,18 @@ def _rest_security_gate(request: Request, tool: str, arguments: Dict[str, Any], 
         profile=getattr(context, "profile", "standard"),
     )
     if (not gate.allowed and gate.approval_required and gate.request_id and _rest_security_approval_provider is not None):
+        attempt_event_type = (
+            "SECRET_EGRESS_ATTEMPT"
+            if gate.code.startswith("secret_egress")
+            else (
+                "SERVER_RISK_ATTEMPT"
+                if gate.code == "server_risk_approval_required"
+                else "WEB_TO_HOST_ATTEMPT"
+            )
+        )
         _record_rest_security_event(
             request,
-            event_type="SECRET_EGRESS_ATTEMPT" if gate.code.startswith("secret_egress") else "WEB_TO_HOST_ATTEMPT",
+            event_type=attempt_event_type,
             tool=tool, risk=effective, decision="approval_required", reason_code=gate.code,
             origin=gate.origin, target_summary=gate.target_summary,
         )
@@ -132,13 +141,23 @@ def _rest_security_gate(request: Request, tool: str, arguments: Dict[str, Any], 
                 approval = _rest_security_approval_provider(payload)
             except Exception:
                 approval = {"confirmed": False, "decision": "unavailable"}
+        approval_reason = str((payload or {}).get("reason_code") or "")
+        approval_event_type = (
+            "SECRET_EGRESS_APPROVAL"
+            if approval_reason == "secret_egress"
+            else (
+                "SERVER_RISK_APPROVAL"
+                if approval_reason == "server_risk_profile"
+                else "WEB_TO_HOST_APPROVAL"
+            )
+        )
         if bool(approval.get("confirmed")) and payload is not None:
             _rest_security_context.grant_escalation(
                 session_id, tool, request_id=gate.request_id, ttl_s=120,
             )
             _record_rest_security_event(
                 request,
-                event_type="SECRET_EGRESS_APPROVAL" if payload.get("reason_code") == "secret_egress" else "WEB_TO_HOST_APPROVAL",
+                event_type=approval_event_type,
                 tool=tool, risk=effective, decision="grant", reason_code="local_user_allow_once",
                 origin=gate.origin, target_summary=gate.target_summary,
             )
@@ -146,7 +165,7 @@ def _rest_security_gate(request: Request, tool: str, arguments: Dict[str, Any], 
             _rest_security_context.reject_escalation(gate.request_id)
             _record_rest_security_event(
                 request,
-                event_type="SECRET_EGRESS_APPROVAL" if (payload or {}).get("reason_code") == "secret_egress" else "WEB_TO_HOST_APPROVAL",
+                event_type=approval_event_type,
                 tool=tool, risk=effective, decision="deny", reason_code=str(approval.get("decision") or "user_denied"),
                 origin=gate.origin, target_summary=gate.target_summary,
             )
@@ -161,6 +180,8 @@ def _rest_security_gate(request: Request, tool: str, arguments: Dict[str, Any], 
             event_type = "SECURITY_APPROVAL_REJECTED"
         elif gate.code == "browser_no_progress":
             event_type = "NO_PROGRESS"
+        elif gate.code in {"server_risk_approval_required", "server_approval_config_invalid"}:
+            event_type = "SERVER_RISK_BLOCK"
         else:
             event_type = "HOST_TOOL_BREACH"
         _record_rest_security_event(
@@ -176,9 +197,18 @@ def _rest_security_gate(request: Request, tool: str, arguments: Dict[str, Any], 
             },
         )
     if gate.escalated:
+        escalation_event = (
+            "SECRET_EGRESS_ESCALATION"
+            if gate.code.startswith("secret_egress")
+            else (
+                "SERVER_RISK_ESCALATION"
+                if gate.code == "server_risk_escalated"
+                else "WEB_TO_HOST_ESCALATION"
+            )
+        )
         _record_rest_security_event(
             request,
-            event_type="SECRET_EGRESS_ESCALATION" if gate.code.startswith("secret_egress") else "WEB_TO_HOST_ESCALATION",
+            event_type=escalation_event,
             tool=tool, risk=effective, decision="allow", reason_code=gate.code,
             origin=gate.origin, target_summary=gate.target_summary,
         )

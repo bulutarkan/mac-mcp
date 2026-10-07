@@ -1315,8 +1315,17 @@ class ObservedFastMCP(FastMCP):
                 not gate.allowed and gate.approval_required and gate.request_id
                 and self._security_approval_provider is not None
             ):
+                attempt_event_type = (
+                    "SECRET_EGRESS_ATTEMPT"
+                    if gate.code.startswith("secret_egress")
+                    else (
+                        "SERVER_RISK_ATTEMPT"
+                        if gate.code == "server_risk_approval_required"
+                        else "WEB_TO_HOST_ATTEMPT"
+                    )
+                )
                 security_event(
-                    "SECRET_EGRESS_ATTEMPT" if gate.code.startswith("secret_egress") else "WEB_TO_HOST_ATTEMPT",
+                    attempt_event_type,
                     "approval_required", gate.code, origin=gate.origin, target_summary=gate.target_summary,
                 )
                 approval_payload = self.security_context.pending_request(gate.request_id)
@@ -1326,19 +1335,29 @@ class ObservedFastMCP(FastMCP):
                         approval_result = await asyncio.to_thread(self._security_approval_provider, approval_payload)
                     except Exception:
                         approval_result = {"confirmed": False, "decision": "unavailable"}
+                approval_reason = str((approval_payload or {}).get("reason_code") or "")
+                approval_event_type = (
+                    "SECRET_EGRESS_APPROVAL"
+                    if approval_reason == "secret_egress"
+                    else (
+                        "SERVER_RISK_APPROVAL"
+                        if approval_reason == "server_risk_profile"
+                        else "WEB_TO_HOST_APPROVAL"
+                    )
+                )
                 if bool(approval_result.get("confirmed")) and approval_payload is not None:
                     self.security_context.grant_escalation(
                         public_session_id, name, request_id=gate.request_id, ttl_s=120
                     )
                     security_event(
-                        "SECRET_EGRESS_APPROVAL" if approval_payload.get("reason_code") == "secret_egress" else "WEB_TO_HOST_APPROVAL",
+                        approval_event_type,
                         "grant", "local_user_allow_once", origin=gate.origin,
                         target_summary=gate.target_summary,
                     )
                 else:
                     self.security_context.reject_escalation(gate.request_id)
                     security_event(
-                        "SECRET_EGRESS_APPROVAL" if (approval_payload or {}).get("reason_code") == "secret_egress" else "WEB_TO_HOST_APPROVAL",
+                        approval_event_type,
                         "deny", str(approval_result.get("decision") or "user_denied"),
                         origin=gate.origin, target_summary=gate.target_summary,
                     )
@@ -1369,6 +1388,8 @@ class ObservedFastMCP(FastMCP):
                     event_type = "SECURITY_APPROVAL_REJECTED"
                 elif gate.code == "browser_no_progress":
                     event_type = "NO_PROGRESS"
+                elif gate.code in {"server_risk_approval_required", "server_approval_config_invalid"}:
+                    event_type = "SERVER_RISK_BLOCK"
                 else:
                     event_type = "HOST_TOOL_BREACH"
                 security_event(
@@ -1382,13 +1403,26 @@ class ObservedFastMCP(FastMCP):
                         f"{gate.code}: tool={name}; target={gate.target_summary or name}; "
                         "retry chain stopped; wait for page progress or use a different action/steering instruction"
                     )
+                if gate.code == "server_approval_config_invalid":
+                    raise ToolError(
+                        f"{gate.code}: tool={name}; high-risk action blocked because the Server Approval profile is invalid"
+                    )
                 raise ToolError(
                     f"{gate.code}: tool={name}; origin={gate.origin or 'unknown'}; "
                     f"target={gate.target_summary or name}; local Allow Once approval required"
                 )
             if gate.escalated:
+                escalation_event = (
+                    "SECRET_EGRESS_ESCALATION"
+                    if gate.code.startswith("secret_egress")
+                    else (
+                        "SERVER_RISK_ESCALATION"
+                        if gate.code == "server_risk_escalated"
+                        else "WEB_TO_HOST_ESCALATION"
+                    )
+                )
                 security_event(
-                    "SECRET_EGRESS_ESCALATION" if gate.code.startswith("secret_egress") else "WEB_TO_HOST_ESCALATION",
+                    escalation_event,
                     "allow", gate.code, origin=gate.origin, target_summary=gate.target_summary,
                 )
 

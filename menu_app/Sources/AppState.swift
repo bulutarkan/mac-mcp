@@ -300,6 +300,51 @@ struct ApprovalBehaviorInfo: Decodable, Equatable {
     }
 }
 
+struct ServerApprovalProfileInfo: Decodable, Identifiable, Equatable {
+    let name: String
+    let summary: String
+    var id: String { name }
+}
+
+struct ServerApprovalInfo: Decodable, Equatable {
+    let configuredProfile: String
+    let activeProfile: String
+    let configValid: Bool
+    let enabled: Bool
+    let source: String
+    let availableProfiles: [ServerApprovalProfileInfo]
+    let headlessBehavior: String
+    let timeoutBehavior: String
+    let approvalTimeoutS: Int
+    let remoteSessionBehavior: String
+    let grantScope: String
+    let clientAttestationAccepted: Bool
+    let clientPromptDeduplication: String
+    let concurrentBehavior: String
+    let sameCallDeduplication: String
+    let doublePromptGuidance: String
+    let precedence: [String]
+    let summary: String?
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, source, precedence, summary
+        case configuredProfile = "configured_profile"
+        case activeProfile = "active_profile"
+        case configValid = "config_valid"
+        case availableProfiles = "available_profiles"
+        case headlessBehavior = "headless_behavior"
+        case timeoutBehavior = "timeout_behavior"
+        case approvalTimeoutS = "approval_timeout_s"
+        case remoteSessionBehavior = "remote_session_behavior"
+        case grantScope = "grant_scope"
+        case clientAttestationAccepted = "client_attestation_accepted"
+        case clientPromptDeduplication = "client_prompt_deduplication"
+        case concurrentBehavior = "concurrent_behavior"
+        case sameCallDeduplication = "same_call_deduplication"
+        case doublePromptGuidance = "double_prompt_guidance"
+    }
+}
+
 struct PermissionProfileInfo: Decodable, Identifiable, Equatable {
     let name: String
     let active: Bool
@@ -335,6 +380,7 @@ struct SecuritySemanticsEnvelope: Decodable, Equatable {
     let approvalContract: String
     let askConfirmationIsAutomaticGate: Bool
     let supportedApprovalSources: [String]
+    let serverApproval: ServerApprovalInfo?
     let profiles: [PermissionProfileInfo]
 
     enum CodingKeys: String, CodingKey {
@@ -351,6 +397,7 @@ struct SecuritySemanticsEnvelope: Decodable, Equatable {
         case approvalContract = "approval_contract"
         case askConfirmationIsAutomaticGate = "ask_confirmation_is_automatic_gate"
         case supportedApprovalSources = "supported_approval_sources"
+        case serverApproval = "server_approval"
     }
 }
 
@@ -1315,6 +1362,7 @@ final class AppState: ObservableObject {
     @Published var browserActionStatus = ""
     @Published var securitySemantics: SecuritySemanticsEnvelope?
     @Published var permissionProfileChanging = false
+    @Published var serverApprovalProfileChanging = false
     @Published var agents: [AgentInfo] = []
     @Published var providerStatuses: [ProviderInfo] = []
     @Published var providerCatalogs: [String: ProviderCatalogInfo] = [:]
@@ -2014,6 +2062,31 @@ final class AppState: ObservableObject {
                 await refresh()
             } catch {
                 let message = "Couldn’t change the permission profile. Refresh and try again."
+                setIfChanged(\.permissionActionIssue, message)
+                await refresh()
+            }
+        }
+    }
+
+    func setServerApprovalProfile(_ profile: String) {
+        guard !serverApprovalProfileChanging else { return }
+        guard securitySemantics?.serverApproval?.activeProfile != profile else { return }
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        serverApprovalProfileChanging = true
+        setIfChanged(\.permissionActionIssue, nil)
+        Task {
+            defer { serverApprovalProfileChanging = false }
+            do {
+                let response: SecuritySemanticsEnvelope = try await post(
+                    base.appendingPathComponent("dashboard/api/security/server-approval"),
+                    body: ["profile": profile]
+                )
+                setIfChanged(\.securitySemantics, response)
+                setIfChanged(\.permissionsSettingsState, .fresh())
+                setIfChanged(\.permissionActionIssue, nil)
+                await refresh()
+            } catch {
+                let message = "Couldn’t change Server Approval. Refresh and try again."
                 setIfChanged(\.permissionActionIssue, message)
                 await refresh()
             }

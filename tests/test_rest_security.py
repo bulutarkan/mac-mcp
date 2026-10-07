@@ -89,6 +89,24 @@ class RestSecurityBoundaryTests(unittest.TestCase):
         run.assert_called_once()
         self.assertEqual([], self.approvals)
 
+    def test_rest_critical_server_approval_blocks_trusted_raw_execution(self) -> None:
+        self.security.set_server_approval_profile("critical")
+        with patch.dict("os.environ", {"MAC_MCP_PERMISSION_PROFILE": "trusted"}, clear=False):
+            with patch.object(rest_routes, "run_command") as run:
+                run.return_value = {"ok": True, "stdout": "unexpected"}
+                response = self.client.post("/run", json={"command": "printf server-risk"})
+        self.assertEqual(403, response.status_code, response.text)
+        run.assert_not_called()
+        self.assertEqual(1, len(self.approvals))
+        self.assertEqual("server_risk_profile", self.approvals[0]["reason_code"])
+        events = self.telemetry.query_security_events(limit=20)
+        self.assertTrue(any(event["event_type"] == "SERVER_RISK_ATTEMPT" for event in events))
+        self.assertTrue(any(
+            event["event_type"] == "SERVER_RISK_APPROVAL" and event["decision"] == "deny"
+            for event in events
+        ))
+        self.assertTrue(any(event["event_type"] == "SECURITY_APPROVAL_REJECTED" for event in events))
+
     def test_rest_sensitive_read_cannot_be_typed_to_untrusted_browser(self) -> None:
         secret = "sk-restSecretValue123456789012"
         with patch.object(rest_routes, "read_file", return_value={

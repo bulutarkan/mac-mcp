@@ -1181,6 +1181,86 @@ struct SettingsView: View {
                             .padding(.top, 5)
                         }
 
+                        if let serverApproval = semantics.serverApproval {
+                            GroupBox("Server Approval") {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    HStack {
+                                        Text("Risk profile").font(.caption).foregroundStyle(.secondary)
+                                        Spacer()
+                                        Text(profileDisplayName(serverApproval.activeProfile))
+                                            .font(.caption.weight(.semibold))
+                                    }
+                                    HStack {
+                                        Text("Approval source").font(.caption).foregroundStyle(.secondary)
+                                        Spacer()
+                                        Text(approvalSourceDisplayName(serverApproval.source))
+                                            .font(.caption.weight(.medium))
+                                    }
+                                    HStack {
+                                        Text("Headless behavior").font(.caption).foregroundStyle(.secondary)
+                                        Spacer()
+                                        Text(serverApproval.headlessBehavior.capitalized)
+                                            .font(.caption.weight(.medium))
+                                    }
+                                    HStack {
+                                        Text("Timeout").font(.caption).foregroundStyle(.secondary)
+                                        Spacer()
+                                        Text("\(serverApproval.approvalTimeoutS)s · \(serverApproval.timeoutBehavior.capitalized)")
+                                            .font(.caption.weight(.medium))
+                                    }
+                                    HStack {
+                                        Text("Remote sessions").font(.caption).foregroundStyle(.secondary)
+                                        Spacer()
+                                        Text("Approve on this Mac")
+                                            .font(.caption.weight(.medium))
+                                    }
+                                    Text(serverApproval.summary ?? "Risk-based server approval status unavailable.")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+
+                                    if !serverApproval.configValid {
+                                        Label(
+                                            "Invalid Server Approval configuration. High-risk calls fail closed until repaired.",
+                                            systemImage: "exclamationmark.shield"
+                                        )
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(.orange)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    }
+
+                                    Divider()
+
+                                    ForEach(serverApproval.availableProfiles) { item in
+                                        Button { state.setServerApprovalProfile(item.name) } label: {
+                                            HStack(alignment: .top, spacing: 8) {
+                                                Image(systemName: item.name == serverApproval.activeProfile ? "checkmark.circle.fill" : "circle")
+                                                    .foregroundStyle(item.name == serverApproval.activeProfile ? Color.accentColor : Color.secondary)
+                                                VStack(alignment: .leading, spacing: 2) {
+                                                    Text(profileDisplayName(item.name))
+                                                        .font(.caption.weight(.semibold))
+                                                    Text(item.summary)
+                                                        .font(.caption2)
+                                                        .foregroundStyle(.secondary)
+                                                        .fixedSize(horizontal: false, vertical: true)
+                                                }
+                                                Spacer(minLength: 8)
+                                            }
+                                            .padding(.vertical, 3)
+                                            .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+                                        .disabled(state.serverApprovalProfileChanging)
+                                    }
+
+                                    Text("Client and external approval flows remain separate. Mac MCP does not trust client-supplied “already approved” claims to bypass this server gate.")
+                                        .font(.caption2.weight(.medium))
+                                        .foregroundStyle(.orange)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .padding(.top, 5)
+                            }
+                        }
+
                         if semantics.profileWasNormalized == true,
                            let configured = semantics.normalizedFromProfile ?? semantics.configuredProfile {
                             Label(

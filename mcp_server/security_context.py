@@ -13,12 +13,20 @@ from urllib.parse import urlsplit
 from .data_guard import (
     action_fingerprint,
     contains_direct_secret,
+    safe_server_approval_target_summary,
     safe_target_summary,
     scan_sensitive_egress,
     scan_sensitive_source,
     secret_fingerprints,
 )
-from .policy import Capability, PolicyContext, RiskAssessment
+from .policy import (
+    Capability,
+    PolicyContext,
+    RiskAssessment,
+    SERVER_APPROVAL_PROFILE_NAMES,
+    server_approval_requirement,
+)
+from .runtime_settings import server_approval_profile_setting
 
 UNTRUSTED_BROWSER_CONTENT_TOOLS = frozenset({
     "browser_observe", "browser_find", "browser_do", "browser_get_html",
@@ -118,6 +126,7 @@ class SecurityContextManager:
         pending_ttl_s: int = 120, rejection_cooldown_s: int = 120,
         max_secret_fingerprints: int = 256,
         no_progress_threshold: Optional[int] = None,
+        server_approval_profile: Optional[str] = None,
     ) -> None:
         self.state_ttl_s = max(60, int(state_ttl_s))
         self.max_states = max(32, int(max_states))
@@ -130,12 +139,31 @@ class SecurityContextManager:
             except ValueError:
                 no_progress_threshold = 4
         self.no_progress_threshold = max(2, min(int(no_progress_threshold), 10))
+        self._server_approval_profile_override = (
+            None
+            if server_approval_profile is None
+            else (str(server_approval_profile or "off").strip().lower() or "off")
+        )
         self._lock = threading.RLock()
         self._states: dict[str, ExecutionSecurityState] = {}
         self._public_to_key: dict[str, str] = {}
         self._grants: dict[tuple[str, str], EscalationGrant] = {}
         self._pending: dict[str, PendingEscalation] = {}
         self._rejections: dict[tuple[str, str], float] = {}
+
+    @property
+    def server_approval_profile(self) -> str:
+        with self._lock:
+            override = self._server_approval_profile_override
+        return override if override is not None else server_approval_profile_setting()
+
+    def set_server_approval_profile(self, profile: str) -> str:
+        clean = str(profile or "").strip().lower()
+        if clean not in SERVER_APPROVAL_PROFILE_NAMES:
+            raise ValueError("invalid_server_approval_profile")
+        with self._lock:
+            self._server_approval_profile_override = clean
+        return clean
 
     @staticmethod
     def identity_key(policy_context: PolicyContext, steering_key: Optional[str]) -> str:
@@ -674,6 +702,22 @@ class SecurityContextManager:
             current_target_origin = argument_origin or state.current_origin
             source_origin = state.provenance_origin or current_target_origin
             current_origin_is_untrusted = self._trust_for_origin(current_target_origin) == "untrusted_web"
+            server_approval = server_approval_requirement(
+                self.server_approval_profile,
+                risk,
+            )
+            if server_approval.blocked:
+                return ContextGateDecision(
+                    False,
+                    "server_approval_config_invalid",
+                    "invalid_server_approval_profile_blocks_high_risk_action",
+                    public_session_id,
+                    source_origin,
+                    state.trust_level,
+                    target_summary=safe_target_summary(tool, arguments),
+                    tab_handle=state.provenance_tab_handle or state.tab_handle,
+                    tab_title=state.provenance_tab_title or state.tab_title,
+                )
 
             if current_origin_is_untrusted:
                 egress = scan_sensitive_egress(
@@ -713,24 +757,81 @@ class SecurityContextManager:
                         target_summary=pending.target_summary, tab_handle=pending.tab_handle, tab_title=pending.tab_title,
                     )
 
-            if not state.web_scoped or state.trust_level != "untrusted_web":
-                return ContextGateDecision(
-                    True, "context_allowed", "no_untrusted_web_context",
-                    public_session_id, state.current_origin, state.trust_level,
+            web_host_privileged = (
+                state.web_scoped
+                and state.trust_level == "untrusted_web"
+                and self._privileged_host_action(tool, risk, arguments)
+            )
+
+            # Existing trust-boundary approval remains stronger than the optional
+            # risk profile. A successful one-shot web→host grant completes this
+            # action, so the same call never receives a second Mac MCP prompt.
+            if web_host_privileged and profile_name != "trusted":
+                grant = self._consume_grant_locked(state, tool, fingerprint)
+                if grant is not None:
+                    return ContextGateDecision(
+                        True, "web_host_escalated", "local_user_one_shot_grant",
+                        public_session_id, source_origin, state.trust_level, True,
+                        request_id=grant.request_id,
+                        target_summary=safe_target_summary(tool, arguments),
+                        tab_handle=state.provenance_tab_handle or state.tab_handle,
+                        tab_title=state.provenance_tab_title or state.tab_title,
+                    )
+                rejection_key = (public_session_id, fingerprint)
+                if self._rejections.get(rejection_key, 0) > time.time():
+                    return ContextGateDecision(
+                        False, "security_approval_rejected", "recent_user_rejection",
+                        public_session_id, source_origin, state.trust_level,
+                        target_summary=safe_target_summary(tool, arguments),
+                        tab_handle=state.provenance_tab_handle or state.tab_handle,
+                        tab_title=state.provenance_tab_title or state.tab_title,
+                    )
+                pending = self._pending_for_locked(
+                    state, tool, fingerprint, "web_host_boundary",
+                    safe_target_summary(tool, arguments),
                 )
-            if not self._privileged_host_action(tool, risk, arguments):
                 return ContextGateDecision(
-                    True, "context_allowed", "non_privileged_or_browser_action",
+                    False, "web_host_boundary_approval_required",
+                    "untrusted_web_context_requires_local_escalation",
                     public_session_id, source_origin, state.trust_level,
+                    approval_required=True, request_id=pending.request_id,
+                    target_summary=pending.target_summary, tab_handle=pending.tab_handle, tab_title=pending.tab_title,
                 )
 
-            # The global Trusted profile is an explicit user opt-in to unrestricted
-            # host capabilities. Preserve sticky web provenance for audit/egress
-            # decisions, but do not interrupt every normal web→host transition with
-            # an Allow Once dialog. Secret egress is evaluated above and remains
-            # approval-gated even for Trusted sessions. Scoped delegated profiles
-            # (for example developer/browser_only) do not receive this bypass.
-            if profile_name == "trusted":
+            if server_approval.required:
+                grant = self._consume_grant_locked(state, tool, fingerprint)
+                if grant is not None:
+                    return ContextGateDecision(
+                        True, "server_risk_escalated", "local_user_one_shot_grant",
+                        public_session_id, source_origin, state.trust_level, True,
+                        request_id=grant.request_id,
+                        target_summary=safe_target_summary(tool, arguments),
+                        tab_handle=state.provenance_tab_handle or state.tab_handle,
+                        tab_title=state.provenance_tab_title or state.tab_title,
+                    )
+                rejection_key = (public_session_id, fingerprint)
+                if self._rejections.get(rejection_key, 0) > time.time():
+                    return ContextGateDecision(
+                        False, "security_approval_rejected", "recent_user_rejection",
+                        public_session_id, source_origin, state.trust_level,
+                        target_summary=safe_target_summary(tool, arguments),
+                        tab_handle=state.provenance_tab_handle or state.tab_handle,
+                        tab_title=state.provenance_tab_title or state.tab_title,
+                    )
+                pending = self._pending_for_locked(
+                    state, tool, fingerprint, "server_risk_profile",
+                    safe_server_approval_target_summary(tool, arguments),
+                )
+                return ContextGateDecision(
+                    False, "server_risk_approval_required",
+                    "risk_profile_requires_local_approval:"
+                    + ",".join(server_approval.matched_reasons),
+                    public_session_id, source_origin, state.trust_level,
+                    approval_required=True, request_id=pending.request_id,
+                    target_summary=pending.target_summary, tab_handle=pending.tab_handle, tab_title=pending.tab_title,
+                )
+
+            if web_host_privileged and profile_name == "trusted":
                 return ContextGateDecision(
                     True, "trusted_profile_web_host_allowed",
                     "trusted_profile_skips_web_host_confirmation",
@@ -740,35 +841,17 @@ class SecurityContextManager:
                     tab_title=state.provenance_tab_title or state.tab_title,
                 )
 
-            grant = self._consume_grant_locked(state, tool, fingerprint)
-            if grant is not None:
-                return ContextGateDecision(
-                    True, "web_host_escalated", "local_user_one_shot_grant",
-                    public_session_id, source_origin, state.trust_level, True,
-                    request_id=grant.request_id,
-                    target_summary=safe_target_summary(tool, arguments),
-                    tab_handle=state.provenance_tab_handle or state.tab_handle,
-                    tab_title=state.provenance_tab_title or state.tab_title,
-                )
-            rejection_key = (public_session_id, fingerprint)
-            if self._rejections.get(rejection_key, 0) > time.time():
-                return ContextGateDecision(
-                    False, "security_approval_rejected", "recent_user_rejection",
-                    public_session_id, source_origin, state.trust_level,
-                    target_summary=safe_target_summary(tool, arguments),
-                    tab_handle=state.provenance_tab_handle or state.tab_handle,
-                    tab_title=state.provenance_tab_title or state.tab_title,
-                )
-            pending = self._pending_for_locked(
-                state, tool, fingerprint, "web_host_boundary",
-                safe_target_summary(tool, arguments),
-            )
             return ContextGateDecision(
-                False, "web_host_boundary_approval_required",
-                "untrusted_web_context_requires_local_escalation",
-                public_session_id, source_origin, state.trust_level,
-                approval_required=True, request_id=pending.request_id,
-                target_summary=pending.target_summary, tab_handle=pending.tab_handle, tab_title=pending.tab_title,
+                True,
+                "context_allowed",
+                (
+                    "non_privileged_or_browser_action"
+                    if state.web_scoped and state.trust_level == "untrusted_web"
+                    else "no_untrusted_web_context"
+                ),
+                public_session_id,
+                source_origin if state.web_scoped else state.current_origin,
+                state.trust_level,
             )
 
     def pending_request(self, request_id: str) -> Optional[dict[str, Any]]:

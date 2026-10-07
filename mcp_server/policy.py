@@ -79,6 +79,145 @@ class ApprovalSource(str, Enum):
     NONE = "none"
 
 
+SERVER_APPROVAL_PROFILE_NAMES = ("off", "critical", "high_risk")
+
+
+@dataclass(frozen=True)
+class ServerApprovalRequirement:
+    configured_profile: str
+    active_profile: str
+    config_valid: bool
+    required: bool
+    blocked: bool
+    reason_code: Optional[str]
+    matched_reasons: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "configured_profile": self.configured_profile,
+            "active_profile": self.active_profile,
+            "config_valid": self.config_valid,
+            "required": self.required,
+            "blocked": self.blocked,
+            "reason_code": self.reason_code,
+            "matched_reasons": list(self.matched_reasons),
+        }
+
+
+def _critical_server_approval_reasons(risk: RiskAssessment) -> tuple[str, ...]:
+    reasons: list[str] = []
+    if Capability.RAW_EXECUTION in risk.capabilities:
+        reasons.append("raw_execution")
+    if Capability.UPDATE_CONTROL in risk.capabilities:
+        reasons.append("update_control")
+    if risk.destructive and Capability.PROCESS_CONTROL in risk.capabilities:
+        reasons.append("destructive_process_control")
+    return tuple(dict.fromkeys(reasons))
+
+
+def _high_risk_server_approval_reasons(risk: RiskAssessment) -> tuple[str, ...]:
+    reasons = list(_critical_server_approval_reasons(risk))
+    if risk.destructive and Capability.EXTERNAL_SIDE_EFFECT in risk.capabilities:
+        reasons.append("destructive_external_side_effect")
+    if risk.destructive and risk.family in {"browser", "accessibility"}:
+        reasons.append(f"destructive_{risk.family}")
+    return tuple(dict.fromkeys(reasons))
+
+
+def server_approval_requirement(
+    configured_profile: Optional[str],
+    risk: RiskAssessment,
+) -> ServerApprovalRequirement:
+    raw = str(configured_profile or "off").strip().lower() or "off"
+    valid = raw in SERVER_APPROVAL_PROFILE_NAMES
+    high_reasons = _high_risk_server_approval_reasons(risk)
+    if not valid:
+        return ServerApprovalRequirement(
+            configured_profile=raw,
+            active_profile="invalid",
+            config_valid=False,
+            required=False,
+            blocked=bool(high_reasons),
+            reason_code="server_approval_config_invalid" if high_reasons else None,
+            matched_reasons=high_reasons,
+        )
+    if raw == "off":
+        return ServerApprovalRequirement(
+            configured_profile=raw,
+            active_profile=raw,
+            config_valid=True,
+            required=False,
+            blocked=False,
+            reason_code=None,
+            matched_reasons=(),
+        )
+    reasons = (
+        _critical_server_approval_reasons(risk)
+        if raw == "critical"
+        else high_reasons
+    )
+    return ServerApprovalRequirement(
+        configured_profile=raw,
+        active_profile=raw,
+        config_valid=True,
+        required=bool(reasons),
+        blocked=False,
+        reason_code="server_risk_approval_required" if reasons else None,
+        matched_reasons=reasons,
+    )
+
+
+def server_approval_semantics(configured_profile: Optional[str]) -> dict[str, Any]:
+    raw = str(configured_profile or "off").strip().lower() or "off"
+    valid = raw in SERVER_APPROVAL_PROFILE_NAMES
+    active = raw if valid else "invalid"
+    enabled = valid and raw != "off"
+    summaries = {
+        "off": "No routine risk-based Mac MCP server prompt. Existing trust-boundary approvals remain enforced.",
+        "critical": "Require Mac MCP Allow Once approval for raw execution, update control, and destructive process-control calls.",
+        "high_risk": "Require Mac MCP Allow Once approval for Critical calls plus destructive external/browser/native actions.",
+    }
+    return {
+        "configured_profile": raw,
+        "active_profile": active,
+        "config_valid": valid,
+        "enabled": enabled,
+        "source": (
+            ApprovalSource.SERVER.value
+            if enabled or not valid
+            else ApprovalSource.NONE.value
+        ),
+        "available_profiles": [
+            {"name": name, "summary": summaries[name]}
+            for name in SERVER_APPROVAL_PROFILE_NAMES
+        ],
+        "headless_behavior": "deny",
+        "timeout_behavior": "deny",
+        "approval_timeout_s": 60,
+        "remote_session_behavior": "approval_must_be_granted_on_server_mac",
+        "grant_scope": "exact_action_single_use",
+        "client_attestation_accepted": False,
+        "client_prompt_deduplication": "not_available_without_trusted_attestation",
+        "concurrent_behavior": "native_dialogs_serialized_each_side_effect_requires_own_single_use_grant",
+        "same_call_deduplication": "mandatory_trust_boundary_approval_satisfies_optional_server_risk_gate_for_that_call",
+        "double_prompt_guidance": (
+            "If the MCP client already provides its own high-risk confirmation, keep Server Approval Off "
+            "unless an independent local Mac approval is intentionally required."
+        ),
+        "precedence": [
+            "capability_enforcement",
+            "mandatory_trust_boundary_approval",
+            "optional_server_risk_approval",
+            "client_or_external_approval_may_also_apply",
+        ],
+        "summary": (
+            summaries.get(raw)
+            if valid
+            else "Server approval configuration is invalid; high-risk calls fail closed until repaired."
+        ),
+    }
+
+
 @dataclass(frozen=True)
 class ApprovalBehavior:
     source: ApprovalSource
@@ -692,14 +831,12 @@ def permission_profile_name() -> str:
     return configured if configured in GLOBAL_PROFILE_NAMES else "standard"
 
 
-def permission_semantics(profile_name: Optional[str] = None) -> dict[str, Any]:
-    """Describe capability enforcement and human-approval behavior separately.
-
-    This is intentionally descriptive: it must never imply that an allowed tool
-    call will produce a confirmation prompt. Approval sources are modeled now so
-    a future client/server/external guard can be represented without changing the
-    capability contract.
-    """
+def permission_semantics(
+    profile_name: Optional[str] = None,
+    *,
+    server_approval_profile: Optional[str] = "off",
+) -> dict[str, Any]:
+    """Describe capability enforcement and human-approval behavior separately."""
     configured_name = (
         str(profile_name).strip().lower() if profile_name is not None
         else configured_permission_profile_name()
@@ -707,11 +844,29 @@ def permission_semantics(profile_name: Optional[str] = None) -> dict[str, Any]:
     configured_scope = permission_profile_scope(configured_name)
     active_name = configured_name if configured_name in GLOBAL_PROFILE_NAMES else "standard"
     all_capabilities = frozenset(Capability)
+    server_approval = server_approval_semantics(server_approval_profile)
     profiles: list[dict[str, Any]] = []
     for name in GLOBAL_PROFILE_NAMES:
         profile = PROFILES[name]
         allowed = all_capabilities if profile.allowed_capabilities is None else profile.allowed_capabilities
         denied = all_capabilities.difference(allowed)
+        if not server_approval["config_valid"]:
+            approval_behavior = ApprovalBehavior(
+                source=ApprovalSource.SERVER,
+                automatic_confirmation=False,
+                summary="Server approval configuration is invalid; matching high-risk calls fail closed until repaired.",
+            ).to_dict()
+        elif server_approval["enabled"]:
+            approval_behavior = ApprovalBehavior(
+                source=ApprovalSource.SERVER,
+                automatic_confirmation=True,
+                summary=(
+                    f"If this capability profile allows the call, {server_approval['summary']} "
+                    "Client or external approval may still apply independently."
+                ),
+            ).to_dict()
+        else:
+            approval_behavior = profile.approval.to_dict()
         profiles.append({
             "name": name,
             "active": name == active_name,
@@ -723,7 +878,7 @@ def permission_semantics(profile_name: Optional[str] = None) -> dict[str, Any]:
                 else sorted(profile.allow_destructive_families)
             ),
             "access_mode_ceiling": profile.access_mode_ceiling.value,
-            "approval_behavior": profile.approval.to_dict(),
+            "approval_behavior": approval_behavior,
         })
     return {
         "active_profile": active_name,
@@ -739,6 +894,7 @@ def permission_semantics(profile_name: Optional[str] = None) -> dict[str, Any]:
         "approval_contract": "separate_from_capability_enforcement",
         "ask_confirmation_is_automatic_gate": False,
         "supported_approval_sources": [source.value for source in ApprovalSource],
+        "server_approval": server_approval,
         "profiles": profiles,
     }
 

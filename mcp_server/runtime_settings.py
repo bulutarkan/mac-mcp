@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -102,6 +103,77 @@ def tool_activity_setting(name: str, default: Any = None) -> Any:
     if not isinstance(activity, dict):
         return default
     return activity.get(name, default)
+
+
+def security_setting(name: str, default: Any = None) -> Any:
+    security = load_runtime_settings().get("security", {})
+    if not isinstance(security, dict):
+        return default
+    return security.get(name, default)
+
+
+def server_approval_profile_setting() -> str:
+    state = load_runtime_settings_state()
+    if state.status == "missing":
+        return "off"
+    if not state.ok:
+        return "__invalid__"
+    security = state.data.get("security")
+    if security is None:
+        return "off"
+    if not isinstance(security, dict):
+        return "__invalid__"
+    value = security.get("server_approval_profile")
+    if value is None:
+        return "off"
+    if not isinstance(value, str):
+        return "__invalid__"
+    return value.strip().lower() or "off"
+
+
+def update_runtime_setting(
+    section: str,
+    name: str,
+    value: Any,
+    *,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    target = path or settings_path()
+    if target.is_symlink():
+        raise RuntimeError("settings path must not be a symlink")
+    state = load_runtime_settings_state(target)
+    if state.status not in {"ok", "missing"}:
+        raise RuntimeError(f"settings file is {state.status}")
+    payload = dict(state.data)
+    current = payload.get(section, {})
+    if current is None:
+        current = {}
+    if not isinstance(current, dict):
+        raise RuntimeError(f"settings section {section!r} must be an object")
+    updated = dict(current)
+    updated[str(name)] = value
+    payload[str(section)] = updated
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".mac-mcp-settings-",
+        dir=str(target.parent),
+        text=True,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.chmod(tmp_name, 0o600)
+        os.replace(tmp_name, target)
+        os.chmod(target, 0o600)
+    finally:
+        try:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        except OSError:
+            pass
+    return payload
 
 
 def subagent_default_preset() -> dict[str, Any] | None:

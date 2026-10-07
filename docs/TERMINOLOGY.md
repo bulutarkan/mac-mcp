@@ -12,7 +12,7 @@ A **capability** is a tool or risk class that the Mac MCP server policy allows f
 
 ## Approval
 
-**Approval** is a human-confirmation mechanism that runs before an action and has an explicit source: client, Mac MCP server, external guard, or none. Current built-in Mac MCP profiles report approval source `none`; client-side approval may still exist independently.
+**Approval** is a human-confirmation mechanism that runs before an action and has an explicit source: client, Mac MCP server, external guard, or none. The capability profiles report approval source `none` when the optional Server Approval overlay is `Off` (the default). Enabling `Critical` or `High Risk` makes Mac MCP server approval an additional exact-action gate for matching risks; client/external approval remains independent and cannot self-attest a bypass.
 
 ## Localhost / loopback
 
@@ -33,5 +33,5 @@ Use **sandbox** only for a real OS/provider enforcement boundary. Do not use the
 ## Three quick checks
 
 - **Is background browser work visible?** Yes. It uses a normal visible browser tab while avoiding focus stealing.
-- **Does an allowed write always prompt the user?** No. Capability and approval are separate; current built-in profiles do not add an automatic Mac MCP confirmation prompt.
+- **Does an allowed write always prompt the user?** No. Capability and approval are separate. With Server Approval `Off`, the capability profile adds no routine risk prompt; with `Critical` or `High Risk`, only matching risk classes receive a Mac MCP Allow Once / Block gate.
 - **Does localhost mean only the same macOS user can access it?** No. It means machine-local transport, not same-user isolation.

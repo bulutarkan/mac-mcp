@@ -357,6 +357,26 @@ def safe_target_summary(tool: str, arguments: Mapping[str, Any], *, secret_egres
     return name.replace("_", " ")
 
 
+def safe_server_approval_target_summary(tool: str, arguments: Mapping[str, Any]) -> str:
+    name = str(tool or "tool")
+    args = arguments or {}
+    if name in {"run_command", "start_job", "start_background_job"}:
+        return "local shell command"
+    if name == "run_commands_parallel":
+        return f"{len(args.get('commands') or [])} local shell commands"
+    if name == "mac_mcp_update":
+        return "Mac MCP update operation"
+    if name.startswith("browser_"):
+        return name.replace("_", " ")
+    if name.startswith("mac_") or name in {"click", "type_text", "press_key"}:
+        return "native Mac interaction"
+    if name == "http_request":
+        return "outbound HTTP request"
+    if name in {"delete_path", "move_file", "copy_file", "write_file", "edit_file", "write_files_batch"}:
+        return name.replace("_", " ")
+    return name.replace("_", " ")
+
+
 def format_security_approval_question(payload: Mapping[str, Any]) -> str:
     origin = redact_sensitive_text(str(payload.get("origin") or "unknown origin"))[:180]
     title = " ".join(redact_sensitive_text(str(payload.get("tab_title") or "unknown")).split())[:140]
@@ -364,6 +384,14 @@ def format_security_approval_question(payload: Mapping[str, Any]) -> str:
     tool = redact_sensitive_text(str(payload.get("tool") or "unknown"))[:100]
     target = redact_sensitive_text(str(payload.get("target_summary") or tool or "host action"))[:220]
     reason = redact_sensitive_text(str(payload.get("reason_code") or "web_host_boundary"))[:100]
+    if reason == "server_risk_profile":
+        return (
+            "Mac MCP's Server Approval profile requires confirmation for this high-risk action.\n\n"
+            f"Requested action: {tool}\n"
+            f"Target: {target}\n"
+            "Approval source: Mac MCP server\n\n"
+            "Allow this exact action once? A different command, target, or action will require a new approval."
+        )
     return (
         "A web-scoped session is requesting a protected action.\n\n"
         f"Source origin: {origin}\n"
