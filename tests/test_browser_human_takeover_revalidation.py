@@ -173,7 +173,15 @@ class BrowserMutationRevalidationTests(unittest.TestCase):
         run_js.assert_not_called()
 
     def test_no_takeover_allows_multiple_mutations(self) -> None:
-        js_types = iter(("click", "type"))
+        type_result = self._batch_result("type")
+        type_result["actions"][0]["_input_expected"] = "agent text"
+        # Two read-only polls verify typing without acquiring another mutation
+        # lease. The click and type still each revalidate immediately before input.
+        js_results = iter((
+            self._batch_result("click"), type_result,
+            {"connected": True, "matches": True, "value": "agent text"},
+            {"connected": True, "matches": True, "value": "agent text"},
+        ))
         with patch(
             "mcp_server.tools_browser_agent.delegated_agent_identity",
             return_value={"agent_id": "agt_ok", "team_id": "team_one", "actor": "agent:agt_ok"},
@@ -188,7 +196,7 @@ class BrowserMutationRevalidationTests(unittest.TestCase):
             return_value=(_target("tab-ok", 2), None),
         ) as revalidate, patch(
             "mcp_server.tools_browser_agent._run_json_js",
-            side_effect=lambda *args, **kwargs: self._batch_result(next(js_types)),
+            side_effect=lambda *args, **kwargs: next(js_results),
         ) as run_js:
             result = _browser_act_locked(
                 load_settings(),
@@ -206,7 +214,7 @@ class BrowserMutationRevalidationTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(2, revalidate.call_count)
-        self.assertEqual(2, run_js.call_count)
+        self.assertEqual(4, run_js.call_count)
 
     def test_custom_select_revalidates_again_before_option_click(self) -> None:
         revalidation = [

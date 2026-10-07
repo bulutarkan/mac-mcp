@@ -1475,7 +1475,7 @@ def create_app():
                                                    tab_handle=tab_handle))
 
     @mcp.tool(name="browser_type_selector",
-              description="Type text into an element by CSS selector. clear=true clears first.")
+              description="Type plain text into one editable element by CSS selector, including rich-text editors through their paste handler. clear=true replaces; false appends. Success requires delayed DOM readback; it does not verify application autosave or persistence. Returns ok=false if input is rejected or unchanged.")
     def _browser_type_selector(browser: str, css_selector: str, text: str, clear: bool = True,
                                 window_index: int = 1, tab_index: Optional[int] = None,
                                 tab_handle: Optional[str] = None) -> Dict[str, Any]:
