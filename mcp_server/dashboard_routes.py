@@ -16,6 +16,18 @@ from starlette.routing import Route
 
 from .chrome_background_bridge import chrome_background_bridge
 from .foreground_guard import foreground_authorization
+from .file_transactions import (
+    FileTransactionError,
+    TransactionConflict,
+    TransactionExpired,
+    TransactionIrreversible,
+    TransactionNotFound,
+    TransactionRestoreFailed,
+    get_transaction,
+    recent_transactions,
+    transaction_history_item,
+    undo_transaction,
+)
 from .observability import TelemetryManager, sanitize_value
 from .provider_usage import summary as provider_usage_summary
 from .policy import GLOBAL_PROFILE_NAMES, RISK_REGISTRY, is_global_permission_profile, permission_semantics
@@ -399,6 +411,101 @@ def create_dashboard_routes(
         )
         return JSONResponse({"ok": True, "change_sets": sets})
 
+    async def transactions(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        limit = max(1, min(_int_query(request, "limit", 10), 50))
+        offset = max(0, min(_int_query(request, "offset", 0), 500))
+        payload = recent_transactions(limit=limit, offset=offset)
+        return JSONResponse({"ok": True, **payload})
+
+    async def undo_transaction_route(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        transaction_id = str(body.get("transaction_id") or "").strip()
+        if not transaction_id:
+            return JSONResponse(
+                {"ok": False, "error": "transaction_id_required"},
+                status_code=400,
+            )
+        if body.get("confirm") is not True:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "undo_confirmation_required",
+                    "transaction_id": transaction_id,
+                },
+                status_code=400,
+            )
+        event_id = telemetry.start_call(
+            "dashboard",
+            "file_transaction_undo",
+            {"transaction_id": transaction_id, "force": False},
+            metadata={"actor": "dashboard-local-user"},
+        )
+        try:
+            undo_transaction(transaction_id, force=False)
+            item = transaction_history_item(get_transaction(transaction_id))
+        except TransactionNotFound as exc:
+            telemetry.finish_call(event_id, error=exc)
+            return JSONResponse(
+                {"ok": False, "error": "transaction_not_found"},
+                status_code=404,
+            )
+        except TransactionExpired as exc:
+            telemetry.finish_call(event_id, error=exc)
+            return JSONResponse(
+                {"ok": False, "error": "transaction_expired"},
+                status_code=409,
+            )
+        except TransactionIrreversible as exc:
+            telemetry.finish_call(event_id, error=exc)
+            return JSONResponse(
+                {"ok": False, "error": "transaction_irreversible"},
+                status_code=409,
+            )
+        except TransactionConflict as exc:
+            telemetry.finish_call(event_id, error=exc)
+            return JSONResponse(
+                {"ok": False, "error": "transaction_conflict"},
+                status_code=409,
+            )
+        except TransactionRestoreFailed as exc:
+            telemetry.finish_call(event_id, error=exc)
+            return JSONResponse(
+                {"ok": False, "error": "transaction_restore_failed"},
+                status_code=500,
+            )
+        except FileTransactionError as exc:
+            telemetry.finish_call(event_id, error=exc)
+            return JSONResponse(
+                {"ok": False, "error": "transaction_undo_failed"},
+                status_code=409,
+            )
+        telemetry.finish_call(
+            event_id,
+            result={
+                "ok": True,
+                "transaction_id": transaction_id,
+                "transaction_state": "undone",
+            },
+        )
+        return JSONResponse(
+            {
+                "ok": True,
+                "transaction_id": transaction_id,
+                "transaction": item,
+            }
+        )
+
     async def usage(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -707,6 +814,8 @@ def create_dashboard_routes(
         Route("/dashboard/api/usage", usage, methods=["GET"]),
         Route("/dashboard/api/provider-usage", provider_usage, methods=["GET"]),
         Route("/dashboard/api/changes", changes, methods=["GET"]),
+        Route("/dashboard/api/transactions", transactions, methods=["GET"]),
+        Route("/dashboard/api/transactions/undo", undo_transaction_route, methods=["POST"]),
         Route("/dashboard/api/browser/show-tab", show_browser_tab, methods=["POST"]),
         Route("/dashboard/api/providers", providers, methods=["GET"]),
         Route("/dashboard/api/agent-catalog", agent_catalog_data, methods=["GET"]),

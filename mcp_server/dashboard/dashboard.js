@@ -19,6 +19,13 @@
     changeSets: [],
     selectedChangeSet: 0,
     changesRefreshTimer: null,
+    transactions: [],
+    transactionOffset: 0,
+    transactionLimit: 5,
+    transactionTotal: 0,
+    pendingUndo: null,
+    transactionMessage: "",
+    transactionRefreshTimer: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -28,6 +35,8 @@
     calls: $("metricCalls"), success: $("metricSuccess"), errors: $("metricErrors"), average: $("metricAverage"), p95: $("metricP95"), window: $("metricWindow"),
     rows: $("eventRows"), empty: $("emptyState"), activeStrip: $("activeStrip"), activeStripCount: $("activeStripCount"), topTools: $("topTools"), sourceMix: $("sourceMix"), agentCount: $("agentCount"), agentList: $("agentList"),
     changeCount: $("changeCount"), changeTaskSwitch: $("changeTaskSwitch"), changeHeadline: $("changeHeadline"), changeList: $("changeList"),
+    transactionCount: $("transactionCount"), transactionMessage: $("transactionMessage"), transactionList: $("transactionList"),
+    transactionNewer: $("transactionNewer"), transactionOlder: $("transactionOlder"), transactionPage: $("transactionPage"),
     toolFilter: $("toolFilter"), sourceFilter: $("sourceFilter"), statusFilter: $("statusFilter"),
     drawer: $("detailDrawer"), backdrop: $("drawerBackdrop"), drawerClose: $("drawerClose"), drawerStatus: $("drawerStatus"), drawerTitle: $("drawerTitle"), drawerMeta: $("drawerMeta"),
     drawerRequest: $("drawerRequest"), drawerResult: $("drawerResult"), drawerError: $("drawerError"), resultSize: $("resultSize"), resultSection: $("resultSection"), errorSection: $("errorSection"),
@@ -87,6 +96,24 @@
     if (response.status === 401) { markAuthRequired(); throw new Error("401 Unauthorized"); }
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
     return response.json();
+  }
+
+  async function postJSON(url, payload) {
+    const response = await fetch(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: {...authHeaders(), "Content-Type": "application/json"},
+      body: JSON.stringify(payload),
+    });
+    if (response.status === 401) { markAuthRequired(); throw new Error("401 Unauthorized"); }
+    let data = {};
+    try { data = await response.json(); } catch {}
+    if (!response.ok) {
+      const error = new Error(String(data.error || (response.status + " " + response.statusText)));
+      error.code = data.error || "request_failed";
+      throw error;
+    }
+    return data;
   }
 
   async function refreshSummary() {
@@ -202,6 +229,187 @@
   function scheduleChangesRefresh() {
     window.clearTimeout(state.changesRefreshTimer);
     state.changesRefreshTimer = window.setTimeout(refreshChanges, 220);
+  }
+
+  function transactionOperationLabel(item) {
+    const labels = {
+      write_file: "Write file",
+      write_files_batch: "Write files",
+      edit_file: "Edit file",
+      move_file: "Move file",
+      copy_file: "Copy file",
+      delete_path: "Delete path",
+      create_directory: "Create directory",
+      file_transaction_batch: "File batch",
+      run_command: "Shell run",
+      run_commands_parallel: "Parallel shell run",
+      start_job: "Background job",
+    };
+    if (item.operation_class === "compound") return labels[item.operation] || "Compound change";
+    return labels[item.operation] || (item.operation_class === "shell_capture" ? "Shell capture" : "Filesystem change");
+  }
+
+  function transactionStateLabel(item) {
+    if (item.state === "undone") return "Undone";
+    if (item.state === "rolled_back") return "Rolled back";
+    if (item.state === "rollback_failed") return "Needs attention";
+    if (item.reversibility === "partial") return "Partial";
+    if (!item.undoable) return "Not reversible";
+    if (item.can_undo) return "Undo available";
+    return "Protected";
+  }
+
+  function undoBlockedLabel(reason) {
+    return ({
+      newer_change_conflict: "Changed later",
+      already_undone: "Already undone",
+      rolled_back: "Rolled back",
+      rollback_failed: "Needs attention",
+      expired: "Expired",
+      irreversible: "Not reversible",
+      not_committed: "Incomplete",
+      preflight_failed: "Unavailable",
+    })[reason] || "Undo unavailable";
+  }
+
+  function renderTransactions() {
+    const items = state.transactions || [];
+    els.transactionCount.textContent = number(state.transactionTotal || 0);
+    els.transactionMessage.textContent = state.transactionMessage || "";
+    const pageNumber = state.transactionTotal
+      ? Math.floor(state.transactionOffset / state.transactionLimit) + 1
+      : 0;
+    const pageCount = state.transactionTotal
+      ? Math.ceil(state.transactionTotal / state.transactionLimit)
+      : 0;
+    els.transactionPage.textContent = pageCount ? ("Page " + pageNumber + " / " + pageCount) : "—";
+    els.transactionNewer.disabled = state.transactionOffset <= 0;
+    els.transactionOlder.disabled = state.transactionOffset + items.length >= state.transactionTotal;
+
+    if (!items.length) {
+      els.transactionList.innerHTML = '<div class="no-agents">No transaction receipts in this page.</div>';
+      return;
+    }
+
+    els.transactionList.innerHTML = items.map((item) => {
+      const transactionId = String(item.transaction_id || "");
+      const shortId = transactionId.startsWith("ftx_") ? transactionId.slice(0, 12) : transactionId.slice(0, 12);
+      const status = transactionStateLabel(item);
+      const reversibility = item.reversibility === "partial" ? "Partial undo coverage" : (item.undoable ? "Full undo coverage" : "No undo coverage");
+      const unsupported = Number(item.unsupported_count || 0);
+      let action = "";
+      if (item.can_undo) {
+        if (state.pendingUndo === transactionId) {
+          action =
+            '<div class="transaction-confirm">' +
+              '<button class="transaction-btn is-confirm" type="button" data-confirm-undo="' + esc(transactionId) + '">Confirm</button>' +
+              '<button class="transaction-btn" type="button" data-cancel-undo="' + esc(transactionId) + '">Cancel</button>' +
+            '</div>';
+        } else {
+          action = '<button class="transaction-btn" type="button" data-undo-id="' + esc(transactionId) + '">' + (item.reversibility === "partial" ? "Undo files" : "Undo") + '</button>';
+        }
+      } else {
+        action = '<span class="transaction-blocked">' + esc(undoBlockedLabel(item.undo_blocked_reason)) + '</span>';
+      }
+      return (
+        '<div class="transaction-row" data-state="' + esc(item.state || "unknown") + '">' +
+          '<div class="transaction-row-main">' +
+            '<div class="transaction-row-title">' +
+              '<strong>' + esc(transactionOperationLabel(item)) + '</strong>' +
+              '<span class="transaction-time">' + esc(clock(item.committed_at || item.created_at)) + '</span>' +
+            '</div>' +
+            '<div class="transaction-meta">' +
+              '<span>' + esc(item.target_summary || "Filesystem targets") + '</span>' +
+              '<span>' + esc(reversibility) + '</span>' +
+              (unsupported ? '<span>' + esc(unsupported + (unsupported === 1 ? " unsupported effect" : " unsupported effects")) + '</span>' : '') +
+              '<span class="transaction-id">' + esc(shortId) + '</span>' +
+            '</div>' +
+          '</div>' +
+          '<div class="transaction-row-action">' +
+            '<span class="transaction-state">' + esc(status) + '</span>' +
+            action +
+          '</div>' +
+        '</div>'
+      );
+    }).join("");
+
+    els.transactionList.querySelectorAll("[data-undo-id]").forEach((button) => button.addEventListener("click", () => {
+      state.pendingUndo = button.dataset.undoId;
+      const selected = state.transactions.find((item) => item.transaction_id === state.pendingUndo);
+      state.transactionMessage = selected?.reversibility === "partial"
+        ? "Confirm Undo files: recorded filesystem changes will be restored; unsupported effects will remain."
+        : "Confirm Undo to restore the recorded pre-change filesystem state.";
+      renderTransactions();
+    }));
+    els.transactionList.querySelectorAll("[data-cancel-undo]").forEach((button) => button.addEventListener("click", () => {
+      state.pendingUndo = null;
+      state.transactionMessage = "";
+      renderTransactions();
+    }));
+    els.transactionList.querySelectorAll("[data-confirm-undo]").forEach((button) => button.addEventListener("click", async () => {
+      await performTransactionUndo(button.dataset.confirmUndo);
+    }));
+  }
+
+  async function refreshTransactions() {
+    try {
+      const url = "/dashboard/api/transactions?limit=" + encodeURIComponent(state.transactionLimit) + "&offset=" + encodeURIComponent(state.transactionOffset);
+      const data = await fetchJSON(url);
+      state.transactionTotal = Number(data.total || 0);
+      state.transactions = data.transactions || [];
+      if (!state.transactions.length && state.transactionOffset > 0 && state.transactionTotal < state.transactionOffset) {
+        state.transactionOffset = Math.max(0, Math.floor(Math.max(0, state.transactionTotal - 1) / state.transactionLimit) * state.transactionLimit);
+        return refreshTransactions();
+      }
+      if (state.pendingUndo && !state.transactions.some((item) => item.transaction_id === state.pendingUndo && item.can_undo)) {
+        state.pendingUndo = null;
+      }
+      renderTransactions();
+    } catch {
+      state.transactions = [];
+      state.transactionMessage = "Transaction history is temporarily unavailable.";
+      renderTransactions();
+    }
+  }
+
+  function scheduleTransactionRefresh() {
+    window.clearTimeout(state.transactionRefreshTimer);
+    state.transactionRefreshTimer = window.setTimeout(refreshTransactions, 280);
+  }
+
+  function transactionJournalMayChange(tool) {
+    return new Set([
+      "write_file", "write_files_batch", "edit_file", "move_file", "copy_file",
+      "delete_path", "create_directory", "file_transaction_batch", "file_transaction_undo",
+      "run_command", "run_commands_parallel", "start_job", "get_job_status",
+    ]).has(String(tool || ""));
+  }
+
+  async function performTransactionUndo(transactionId) {
+    state.transactionMessage = "Undoing recorded filesystem changes…";
+    renderTransactions();
+    try {
+      await postJSON("/dashboard/api/transactions/undo", {
+        transaction_id: transactionId,
+        confirm: true,
+      });
+      state.pendingUndo = null;
+      await Promise.all([refreshTransactions(), refreshChanges()]);
+      state.transactionMessage = "Undo completed safely.";
+      renderTransactions();
+    } catch (error) {
+      state.pendingUndo = null;
+      const messages = {
+        transaction_conflict: "Undo blocked because the filesystem changed after this transaction.",
+        transaction_expired: "Undo window expired.",
+        transaction_irreversible: "This transaction is not reversible.",
+        transaction_restore_failed: "Undo could not be completed. The transaction needs attention.",
+        transaction_not_found: "Transaction receipt is no longer available.",
+      };
+      state.transactionMessage = messages[error.code] || "Undo could not be completed safely.";
+      await refreshTransactions();
+      renderTransactions();
+    }
   }
 
   function renderTopTools(tools) {
@@ -406,6 +614,7 @@
       renderActiveCount();
       refreshSummary();
       scheduleChangesRefresh();
+      if (transactionJournalMayChange(event.tool)) scheduleTransactionRefresh();
     }
   }
 
@@ -492,6 +701,19 @@
     window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(() => { state.tool = els.toolFilter.value.trim(); refreshEvents(); }, 180);
   });
+  els.transactionNewer.addEventListener("click", () => {
+    state.transactionOffset = Math.max(0, state.transactionOffset - state.transactionLimit);
+    state.pendingUndo = null;
+    state.transactionMessage = "";
+    refreshTransactions();
+  });
+  els.transactionOlder.addEventListener("click", () => {
+    if (state.transactionOffset + state.transactions.length >= state.transactionTotal) return;
+    state.transactionOffset += state.transactionLimit;
+    state.pendingUndo = null;
+    state.transactionMessage = "";
+    refreshTransactions();
+  });
   els.drawerClose.addEventListener("click", closeDrawer);
   els.backdrop.addEventListener("click", closeDrawer);
   document.addEventListener("keydown", (event) => {
@@ -505,10 +727,11 @@
     }
   });
 
-  Promise.all([refreshSummary(), refreshEvents(), refreshAgents(), refreshChanges()]).finally(connectStream);
+  Promise.all([refreshSummary(), refreshEvents(), refreshAgents(), refreshChanges(), refreshTransactions()]).finally(connectStream);
   window.setInterval(refreshSummary, 5000);
   window.setInterval(refreshAgents, 2200);
   window.setInterval(() => { if (!document.hidden) refreshChanges(); }, 10000);
+  window.setInterval(() => { if (!document.hidden) refreshTransactions(); }, 10000);
   window.setInterval(() => { if (state.active.size) renderActiveStrip(); }, 1000);
   window.setInterval(() => { if (!document.hidden) refreshEvents(); }, 20000);
 })();

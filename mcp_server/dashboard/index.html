@@ -175,6 +175,24 @@
             <div id="changeList" class="change-list">
               <div class="no-agents">File, app, browser, command and external changes will appear here.</div>
             </div>
+
+            <div class="transaction-divider" aria-hidden="true"></div>
+            <div class="transaction-head">
+              <div>
+                <h3>Transaction history</h3>
+                <p>Reversible filesystem receipts only. Paths and file contents stay private.</p>
+              </div>
+              <span id="transactionCount">0</span>
+            </div>
+            <div id="transactionMessage" class="transaction-message" role="status" aria-live="polite"></div>
+            <div id="transactionList" class="transaction-list">
+              <div class="no-agents">No reversible transaction receipts yet.</div>
+            </div>
+            <div class="transaction-pager" aria-label="Transaction history pagination">
+              <button id="transactionNewer" type="button" disabled>Newer</button>
+              <span id="transactionPage">—</span>
+              <button id="transactionOlder" type="button" disabled>Older</button>
+            </div>
           </section>
 
           <section class="rail-card hot-tools-card surface-card">

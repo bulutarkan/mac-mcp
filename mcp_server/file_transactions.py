@@ -1050,6 +1050,153 @@ def get_transaction(transaction_id: str) -> Dict[str, Any]:
         return _read_manifest(transaction_id)
 
 
+def _undo_eligibility_locked(
+    manifest: Mapping[str, Any],
+    *,
+    scope: Optional[ResourceScope] = None,
+) -> Dict[str, Any]:
+    state = str(manifest.get("state") or "")
+    if state != "committed":
+        reason = "already_undone" if state == "undone" else (
+            "rolled_back" if state == "rolled_back" else (
+                "rollback_failed" if state == "rollback_failed" else "not_committed"
+            )
+        )
+        return {"can_undo": False, "undo_blocked_reason": reason}
+    if float(manifest.get("expires_at") or 0.0) <= _now():
+        return {"can_undo": False, "undo_blocked_reason": "expired"}
+    if not manifest.get("undoable"):
+        return {"can_undo": False, "undo_blocked_reason": "irreversible"}
+    try:
+        if manifest.get("kind") == "compound":
+            _preflight_compound_locked(manifest, scope=scope)
+        else:
+            for item in manifest.get("snapshots") or []:
+                expected = str(item.get("post_fingerprint") or "")
+                current = _fingerprint_for(Path(str(item.get("path") or "")), scope)
+                if not expected or current != expected:
+                    raise TransactionConflict(
+                        "filesystem changed after this transaction; refusing to overwrite newer changes"
+                    )
+    except TransactionConflict:
+        return {"can_undo": False, "undo_blocked_reason": "newer_change_conflict"}
+    except FileTransactionError:
+        return {"can_undo": False, "undo_blocked_reason": "preflight_failed"}
+    return {"can_undo": True, "undo_blocked_reason": None}
+
+
+def _operation_class(manifest: Mapping[str, Any]) -> str:
+    kind = str(manifest.get("kind") or "filesystem")
+    operation = str(manifest.get("operation") or "")
+    if kind == "compound":
+        return "compound"
+    if kind == "capture" or operation in {"run_command", "run_commands_parallel", "start_job"}:
+        return "shell_capture"
+    return "filesystem"
+
+
+def transaction_history_item(
+    manifest: Mapping[str, Any],
+    *,
+    scope: Optional[ResourceScope] = None,
+) -> Dict[str, Any]:
+    receipt = transaction_receipt(manifest)
+    eligibility = _undo_eligibility_locked(manifest, scope=scope)
+    path_count = int(receipt.get("path_count") or 0)
+    target_summary = (
+        f"{path_count} filesystem target" if path_count == 1
+        else f"{path_count} filesystem targets"
+    )
+    unsupported_count = len(list(manifest.get("unsupported") or []))
+    return {
+        "transaction_id": str(receipt.get("transaction_id") or ""),
+        "created_at": float(manifest.get("created_at") or 0.0),
+        "committed_at": (
+            float(manifest.get("committed_at"))
+            if manifest.get("committed_at") is not None else None
+        ),
+        "undone_at": (
+            float(manifest.get("undone_at"))
+            if manifest.get("undone_at") is not None else None
+        ),
+        "operation": str(receipt.get("operation") or "filesystem_change")[:80],
+        "operation_class": _operation_class(manifest),
+        "state": str(receipt.get("transaction_state") or "unknown"),
+        "reversibility": str(receipt.get("reversibility") or "none"),
+        "undoable": bool(receipt.get("undoable")),
+        "undo_expires_at": receipt.get("undo_expires_at"),
+        "path_count": path_count,
+        "target_summary": target_summary,
+        "unsupported_count": unsupported_count,
+        "child_count": len(list(receipt.get("child_transaction_ids") or [])),
+        **eligibility,
+    }
+
+
+def recent_transactions(
+    *,
+    limit: int = 20,
+    offset: int = 0,
+    scope: Optional[ResourceScope] = None,
+) -> Dict[str, Any]:
+    bounded_limit = max(1, min(int(limit), 50))
+    bounded_offset = max(0, min(int(offset), 500))
+    with _journal_lock():
+        root = journal_root()
+        if not root.exists():
+            return {
+                "transactions": [],
+                "limit": bounded_limit,
+                "offset": bounded_offset,
+                "next_offset": None,
+                "total": 0,
+            }
+        _prune_locked()
+        manifests: list[Dict[str, Any]] = []
+        for directory in _transaction_dirs(root):
+            try:
+                manifests.append(_read_manifest(directory.name))
+            except FileTransactionError:
+                continue
+
+        child_ids: set[str] = set()
+        for manifest in manifests:
+            if manifest.get("kind") == "compound":
+                child_ids.update(
+                    str(value)
+                    for value in manifest.get("child_transaction_ids") or []
+                    if value
+                )
+        top_level = [
+            manifest
+            for manifest in manifests
+            if str(manifest.get("transaction_id") or "") not in child_ids
+        ]
+        top_level.sort(
+            key=lambda value: float(
+                value.get("committed_at")
+                or value.get("created_at")
+                or 0.0
+            ),
+            reverse=True,
+        )
+        total = len(top_level)
+        page = top_level[bounded_offset: bounded_offset + bounded_limit]
+        items = [transaction_history_item(item, scope=scope) for item in page]
+        next_offset = (
+            bounded_offset + bounded_limit
+            if bounded_offset + bounded_limit < total
+            else None
+        )
+        return {
+            "transactions": items,
+            "limit": bounded_limit,
+            "offset": bounded_offset,
+            "next_offset": next_offset,
+            "total": total,
+        }
+
+
 def transaction_receipt(manifest: Mapping[str, Any]) -> Dict[str, Any]:
     if manifest.get("kind") == "compound":
         try:
