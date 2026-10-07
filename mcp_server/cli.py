@@ -51,6 +51,14 @@ from .update_helper import (
 )
 from .tools_update import launch_detached_update
 from .version import __version__
+from .connection_config import (
+    ConnectionConfigError,
+    DEFAULT_AUTH_ENV,
+    DEFAULT_SERVER_NAME,
+    SUPPORTED_CLIENTS,
+    SUPPORTED_ENDPOINTS,
+    render_connection_config,
+)
 
 APP_MODULE = "mcp_server.main:app"
 DEFAULT_HOST = "127.0.0.1"
@@ -1036,6 +1044,65 @@ def stop(args: argparse.Namespace) -> int:
     return 0 if server_ok and ngrok_ok and cloudflare_ok else 1
 
 
+def _connect_config_endpoint(client: str, selection: str) -> tuple[str, str]:
+    local_endpoint = f"http://127.0.0.1:{_default_port()}/mcp"
+    if selection == "local":
+        return local_endpoint, "local"
+
+    should_use_public = selection == "public" or (selection == "auto" and client == "chatgpt")
+    if not should_use_public:
+        return local_endpoint, "local"
+
+    public = resolve_public_endpoint()
+    if not public.endpoint_url:
+        raise ConnectionConfigError(
+            "no public MCP endpoint is configured; choose --endpoint local or configure "
+            "Cloudflare, ngrok, or a custom HTTPS endpoint"
+        )
+    return public.endpoint_url, "public"
+
+
+def connect_config(args: argparse.Namespace) -> int:
+    try:
+        endpoint_url, endpoint_kind = _connect_config_endpoint(args.client, args.endpoint)
+        settings = load_settings()
+        auth_required = not settings.allow_no_auth
+        if auth_required and not settings.api_key:
+            raise ConnectionConfigError(
+                "authentication is required but MCP_API_KEY is not configured"
+            )
+        rendered = render_connection_config(
+            client=args.client,
+            endpoint_url=endpoint_url,
+            auth_required=auth_required,
+            server_name=args.name,
+            auth_env=args.auth_env,
+        )
+    except (ConnectionConfigError, PublicEndpointError) as exc:
+        print(f"mac-mcp connect-config: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Client: {rendered.client}")
+    print(f"Target: {rendered.target}")
+    print(f"Endpoint: {endpoint_kind} ({endpoint_url})")
+    print(
+        "Authentication: "
+        + ("Bearer/API-key required; secret value not printed" if auth_required else "disabled")
+    )
+    print()
+    print(rendered.snippet)
+    if rendered.secret_instruction:
+        print()
+        print("Secret setup:")
+        print(rendered.secret_instruction)
+    if rendered.client == "chatgpt" and auth_required:
+        print(
+            "Use the query-key URL only because this ChatGPT connection path is "
+            "header-limited; upstream proxies/tunnels may observe query strings."
+        )
+    return 0
+
+
 def status(args: argparse.Namespace) -> int:
     _load_env()
     port = _default_port()
@@ -1656,6 +1723,29 @@ def main(argv: list[str] | None = None) -> int:
 
     p_status = sub.add_parser("status", help="Show server and public endpoint status.")
     p_status.set_defaults(func=status)
+
+    p_connect = sub.add_parser(
+        "connect-config",
+        help="Generate a secret-safe MCP connection snippet for a supported client.",
+    )
+    p_connect.add_argument("--client", required=True, choices=SUPPORTED_CLIENTS)
+    p_connect.add_argument(
+        "--endpoint",
+        choices=SUPPORTED_ENDPOINTS,
+        default="auto",
+        help="Endpoint choice. auto uses public for ChatGPT and local for Codex/OpenCode.",
+    )
+    p_connect.add_argument(
+        "--name",
+        default=DEFAULT_SERVER_NAME,
+        help="Client-side MCP server name (letters, numbers, underscores, hyphens).",
+    )
+    p_connect.add_argument(
+        "--auth-env",
+        default=DEFAULT_AUTH_ENV,
+        help="Client environment variable that will hold the API key; its value is never printed.",
+    )
+    p_connect.set_defaults(func=connect_config)
 
     p_dashboard = sub.add_parser("dashboard", help="Open the local Mac MCP operations dashboard.")
     p_dashboard.set_defaults(func=dashboard)

@@ -185,6 +185,22 @@ For MCP clients/connectors that cannot set an `Authorization` header, Mac MCP al
 https://your-domain.example/mcp?ApiKey=<MCP_API_KEY>
 ```
 
+### Generate a client connection config
+
+Use the CLI to generate a connection snippet from the Mac MCP endpoint and authentication state that are actually configured on this Mac:
+
+```bash
+mac-mcp connect-config --client chatgpt
+mac-mcp connect-config --client codex
+mac-mcp connect-config --client opencode
+```
+
+The command never prints the configured API-key value. Codex and OpenCode snippets reference a client-side environment variable (`MAC_MCP_API_KEY` by default); set that variable in the client process to the same secret value configured as Mac MCP's `MCP_API_KEY`. ChatGPT uses the existing header-limited query-key compatibility form and prints only `?ApiKey=<API_KEY>` as a placeholder.
+
+`--endpoint auto` is the default: it uses the configured public HTTPS endpoint for ChatGPT and loopback for local Codex/OpenCode. Use `--endpoint public` when Codex/OpenCode run elsewhere, or `--endpoint local` to force loopback where supported. `--name` changes the client-side server ID, and `--auth-env` changes the client environment-variable name without exposing its value.
+
+Client config formats evolve. The generated output labels the target format it assumes; prefer regenerating the snippet with your installed Mac MCP instead of copying an old README fragment.
+
 ### Public endpoint modes
 
 Mac MCP treats the local server and its public transport as separate layers. **Local only** exposes no managed public endpoint. **ngrok** runs a managed ngrok process and uses `NGROK_DOMAIN`. **Cloudflare Tunnel** runs `cloudflared` directly on the Mac and connects the selected named tunnel (or an owner-controlled token file) to `127.0.0.1:<port>`; no VPS, reverse proxy, inbound port-forward, or public Mac IP is required. **Custom HTTPS** records an externally managed HTTPS MCP endpoint and does not start a tunnel provider.
