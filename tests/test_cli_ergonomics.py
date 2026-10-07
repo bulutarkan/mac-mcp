@@ -11,7 +11,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from mcp_server import cli, diagnostics
+from mcp_server import cli, diagnostics, update_helper
 from mcp_server.cli_bootstrap import ensure_cli_launcher, launcher_kind
 
 
@@ -64,6 +64,48 @@ class CliErgonomicsTests(unittest.TestCase):
             cli.main(["--version"])
         self.assertEqual(0, ctx.exception.code)
         self.assertEqual("mac-mcp 2.1.8", out.getvalue().strip())
+
+    def test_update_wording_matches_verified_stable_checkpoint_model(self) -> None:
+        out = io.StringIO()
+        with redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
+            cli.main(["--help"])
+        self.assertEqual(0, ctx.exception.code)
+        top_help = " ".join(out.getvalue().split())
+        self.assertIn(
+            "Update Mac MCP to the latest verified stable release checkpoint.",
+            top_help,
+        )
+        self.assertNotIn("latest commit on a Git branch", top_help)
+
+        helper_help = " ".join(update_helper._build_parser().format_help().split())
+        self.assertIn(
+            "Update Mac MCP to the latest verified stable release checkpoint.",
+            helper_help,
+        )
+        self.assertNotIn("latest commit on a Git branch", helper_help)
+
+        info = update_helper.UpdateInfo(
+            repo="/tmp/repo",
+            runtime="/tmp/runtime",
+            branch="main",
+            remote="origin",
+            deployed_commit="a" * 40,
+            repo_commit="b" * 40,
+            target_commit="c" * 40,
+            behind_by=2,
+            update_available=True,
+            dirty=False,
+            release_verified=True,
+            release_id="stable-test",
+            release_version="2.1.8",
+        )
+        status_text = update_helper.format_check(info)
+        self.assertIn("Verified stable commit: cccccccc", status_text)
+        self.assertNotIn("Latest commit:", status_text)
+
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+        self.assertIn("newest cryptographically verified stable release checkpoint", readme)
+        self.assertIn("not arbitrary repository HEAD", readme)
 
     def test_doctor_reports_absolute_invocation_when_cli_not_on_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mac-mcp-cli-doctor-") as td:

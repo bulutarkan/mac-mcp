@@ -320,7 +320,7 @@ def format_check(info: UpdateInfo) -> str:
         f"Runtime: {info.runtime}",
         f"Branch: {info.remote}/{info.branch}",
         f"Installed commit: {_short(info.deployed_commit)}",
-        f"Latest commit: {_short(info.target_commit)}",
+        f"Verified stable commit: {_short(info.target_commit)}",
     ]
     if info.dirty:
         lines.append("Status: Update blocked because the repository has local changes.")
@@ -1479,7 +1479,7 @@ def apply_update(
     print("[mac-mcp update] Checking repository...", flush=True)
     info = check_update(repo_path, runtime_path, branch=branch, remote=remote, fetch=True)
     print(f"[mac-mcp update] Current deployed commit: {_short(info.deployed_commit)}", flush=True)
-    print(f"[mac-mcp update] Latest {remote}/{branch}: {_short(info.target_commit)}", flush=True)
+    print(f"[mac-mcp update] Verified stable checkpoint: {_short(info.target_commit)}", flush=True)
     if info.dirty:
         raise UpdateError("Repository has local changes. Commit or stash them before updating.")
     if not info.update_available:
@@ -1926,7 +1926,7 @@ def apply_update(
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Update Mac MCP from the latest commit on a Git branch.")
+    p = argparse.ArgumentParser(description="Update Mac MCP to the latest verified stable release checkpoint.")
     p.add_argument("--repo", default=None, help="Git repository path. Defaults to ~/Projects/mac-mcp.")
     p.add_argument("--runtime", default=None, help="Runtime path. Defaults to ~/mac-mcp.")
     p.add_argument("--branch", default=DEFAULT_BRANCH)

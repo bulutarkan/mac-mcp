@@ -1675,7 +1675,7 @@ def main(argv: list[str] | None = None) -> int:
     p_conformance.add_argument("--live", action="store_true", help="Also include read-only live Mac/companion health checks.")
     p_conformance.set_defaults(func=conformance)
 
-    p_update = sub.add_parser("update", help="Update Mac MCP from the latest commit on a Git branch.")
+    p_update = sub.add_parser("update", help="Update Mac MCP to the latest verified stable release checkpoint.")
     p_update.add_argument("--check", action="store_true", help="Check for updates without changing files.")
     p_update.add_argument("--json", action="store_true", help="Print the update check as JSON (requires --check).")
     p_update.add_argument("--repo", default=None, help="Git repository path. Defaults to ~/Projects/mac-mcp.")
