@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "af5615ba34e65e15f1e6a623e808267b8ee0d7cd",
+  "base_commit": "7506dae031fb5c691511ce55da8c171a3fa6ad38",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -751,7 +751,7 @@
     {
       "mode": "100644",
       "path": "menu_app/Info.plist",
-      "sha256": "88026fff41f33f4e2fa1549fe9ac385212a797dbf51fc92bf5906f518ccd95a4",
+      "sha256": "b1a006fab6abfc99bcbbe3c84f1d08d81cc3d884b4e03414fbff3fc44cdabeeb",
       "size": 703
     },
     {
@@ -763,7 +763,7 @@
     {
       "mode": "100644",
       "path": "menu_app/SafariExtension/Info.plist",
-      "sha256": "c4e3806fb21d1abec4f51488cae2ddce391b8ee9098f665f461a06307cf22ede",
+      "sha256": "923593e9b8c97e44c0209211ce1ee324222f5520e4a36a49c87fd7e82c4f3433",
       "size": 985
     },
     {
@@ -1278,6 +1278,12 @@
     },
     {
       "mode": "100644",
+      "path": "tests/test_native_release_version.py",
+      "sha256": "1f6132cbc289cc52c381171be22f560e356da48b26730c5cab0e11f951af4e4d",
+      "size": 1302
+    },
+    {
+      "mode": "100644",
       "path": "tests/test_native_semantic_input.py",
       "sha256": "2e39fb1bf57262c220994f77fb5d9e92560692bd6ea95d41b8bacf34781d3803",
       "size": 8728
@@ -1577,10 +1583,10 @@
       "size": 3924
     }
   ],
-  "generated_at": "2026-10-07T12:39:40Z",
-  "payload_sha256": "b65599eaf37a3cf2799658cd36c84d8ca2fd820dcdfe19e3dc51212c70dd040b",
+  "generated_at": "2026-10-07T13:12:48Z",
+  "payload_sha256": "56806dd85e8e86c19527177d822c35702c9e879ef95f17fc6c3108ff53a0a9ff",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.8-r7",
+  "release_id": "stable-2.1.8-r8",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",
