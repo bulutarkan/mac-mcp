@@ -571,6 +571,17 @@ def _team_usage_snapshot(team: Dict[str, Any]) -> Dict[str, int]:
     }
 
 
+def _team_admission_limit(
+    team: Dict[str, Any],
+    preferred_key: str,
+    legacy_key: str,
+) -> Optional[int]:
+    value = team.get(preferred_key)
+    if value is None:
+        value = team.get(legacy_key)
+    return int(value) if value is not None else None
+
+
 def _team_budget_snapshot(team: Dict[str, Any], *, now: Optional[float] = None) -> Dict[str, Any]:
     current = float(_now() if now is None else now)
     created = float(team.get("created_at") or current)
@@ -585,13 +596,17 @@ def _team_budget_snapshot(team: Dict[str, Any], *, now: Optional[float] = None) 
     retries_used = max(0, int(team.get("team_retry_count") or 0))
     retries_remaining = max(0, retry_limit - retries_used) if retry_limit is not None else None
 
-    tool_limit = team.get("max_total_tool_calls")
-    tool_limit = int(tool_limit) if tool_limit is not None else None
+    tool_limit = _team_admission_limit(
+        team, "admission_tool_call_budget", "max_total_tool_calls",
+    )
     tools_remaining = max(0, tool_limit - usage["tool_calls"]) if tool_limit is not None else None
+    tool_overshoot = max(0, usage["tool_calls"] - tool_limit) if tool_limit is not None else 0
 
-    token_limit = team.get("max_total_tokens")
-    token_limit = int(token_limit) if token_limit is not None else None
+    token_limit = _team_admission_limit(
+        team, "admission_token_budget", "max_total_tokens",
+    )
     tokens_remaining = max(0, token_limit - usage["total_tokens"]) if token_limit is not None else None
+    token_overshoot = max(0, usage["total_tokens"] - token_limit) if token_limit is not None else 0
 
     admission_reason: Optional[str] = None
     if deadline_at is not None and current >= deadline_at:
@@ -605,8 +620,14 @@ def _team_budget_snapshot(team: Dict[str, Any], *, now: Optional[float] = None) 
     retry_blocked = retry_limit_reached and str(team.get("last_retry_block_reason") or "") == "retry_budget"
     exhausted_reason = admission_reason or ("retry_budget" if retry_blocked else None)
     active_tasks = sum(1 for task in list(team.get("tasks") or []) if task.get("state") in {"spawning", "running"})
+    active_at_limit_count = active_tasks if admission_reason is not None else 0
     max_parallel = min(max(1, int(team.get("max_parallel") or 1)), MAX_TEAM_SIZE)
     return {
+        "budget_contract": "admission_threshold",
+        "budget_enforcement": "new_admissions_and_retries_only",
+        "hard_cap": False,
+        "already_running_policy": "allow_to_finish",
+        "running_work_may_overshoot": bool(tool_limit is not None or token_limit is not None),
         "team_timeout_s": timeout_s,
         "deadline_at": deadline_at,
         "elapsed_s": round(elapsed_s, 3),
@@ -617,12 +638,22 @@ def _team_budget_snapshot(team: Dict[str, Any], *, now: Optional[float] = None) 
         "max_team_retries": retry_limit,
         "retries_used": retries_used,
         "retries_remaining": retries_remaining,
-        "max_total_tool_calls": tool_limit,
+        "admission_tool_call_budget": tool_limit,
         "tool_calls_used": usage["tool_calls"],
         "tool_calls_remaining": tools_remaining,
-        "max_total_tokens": token_limit,
+        "tool_calls_overshoot": tool_overshoot,
+        "admission_token_budget": token_limit,
         "total_tokens_used": usage["total_tokens"],
         "total_tokens_remaining": tokens_remaining,
+        "total_tokens_overshoot": token_overshoot,
+        "active_at_limit": active_at_limit_count > 0,
+        "active_at_limit_count": active_at_limit_count,
+        "deprecated_aliases": {
+            "max_total_tool_calls": "admission_tool_call_budget",
+            "max_total_tokens": "admission_token_budget",
+        },
+        "max_total_tool_calls": tool_limit,
+        "max_total_tokens": token_limit,
         "admission_open": admission_reason is None,
         "retry_open": not retry_limit_reached and admission_reason is None,
         "exhausted": exhausted_reason is not None,
@@ -4274,6 +4305,39 @@ def spawn_agent(
     )
 
 
+def _resolve_team_admission_budget(
+    preferred_value: Optional[int],
+    legacy_value: Optional[int],
+    *,
+    preferred_name: str,
+    legacy_name: str,
+    maximum: int,
+) -> Optional[int]:
+    try:
+        preferred = int(preferred_value) if preferred_value is not None else None
+        legacy = int(legacy_value) if legacy_value is not None else None
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"{preferred_name} must be an integer when provided.",
+        ) from exc
+    if preferred is not None and legacy is not None and preferred != legacy:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            (
+                f"{legacy_name} is a deprecated alias for {preferred_name}; "
+                "when both are provided they must match."
+            ),
+        )
+    value = preferred if preferred is not None else legacy
+    if value is not None and (value < 1 or value > maximum):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"{preferred_name} must be between 1 and {maximum} when provided.",
+        )
+    return value
+
+
 def spawn_agents(
     settings: Settings,
     tasks: List[Dict[str, Any]],
@@ -4299,6 +4363,8 @@ def spawn_agents(
     max_revisions: int = 1,
     team_timeout_s: Optional[int] = None,
     max_team_retries: Optional[int] = None,
+    admission_tool_call_budget: Optional[int] = None,
+    admission_token_budget: Optional[int] = None,
     max_total_tool_calls: Optional[int] = None,
     max_total_tokens: Optional[int] = None,
     git_isolation: str = "auto",
@@ -4347,22 +4413,27 @@ def spawn_agents(
             status.HTTP_400_BAD_REQUEST,
             f"max_team_retries must be between 0 and {MAX_TEAM_RETRY_BUDGET}.",
         )
-    effective_tool_budget = None if max_total_tool_calls is None else int(max_total_tool_calls)
-    if effective_tool_budget is not None and (effective_tool_budget < 1 or effective_tool_budget > MAX_TEAM_TOOL_BUDGET):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"max_total_tool_calls must be between 1 and {MAX_TEAM_TOOL_BUDGET} when provided.",
-        )
-    effective_token_budget = None if max_total_tokens is None else int(max_total_tokens)
-    if effective_token_budget is not None and (effective_token_budget < 1 or effective_token_budget > MAX_TEAM_TOKEN_BUDGET):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"max_total_tokens must be between 1 and {MAX_TEAM_TOKEN_BUDGET} when provided.",
-        )
+    effective_tool_budget = _resolve_team_admission_budget(
+        admission_tool_call_budget,
+        max_total_tool_calls,
+        preferred_name="admission_tool_call_budget",
+        legacy_name="max_total_tool_calls",
+        maximum=MAX_TEAM_TOOL_BUDGET,
+    )
+    effective_token_budget = _resolve_team_admission_budget(
+        admission_token_budget,
+        max_total_tokens,
+        preferred_name="admission_token_budget",
+        legacy_name="max_total_tokens",
+        maximum=MAX_TEAM_TOKEN_BUDGET,
+    )
     if provider == "chatgpt" and effective_token_budget is not None:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "max_total_tokens is unavailable for provider=chatgpt because ChatGPT Web does not expose reliable token usage.",
+            (
+                "admission_token_budget is unavailable for provider=chatgpt because "
+                "ChatGPT Web does not expose reliable token usage."
+            ),
         )
 
     forbidden = {"provider", "model", "reasoning", "access_mode", "result_style"}
@@ -4536,6 +4607,10 @@ def spawn_agents(
         "max_team_retries": effective_team_retries,
         "team_retry_count": 0,
         "next_retry_at": None,
+        "budget_contract": "admission_threshold",
+        "admission_tool_call_budget": effective_tool_budget,
+        "admission_token_budget": effective_token_budget,
+        # Persist deprecated aliases for older runtime/readers. They are not hard caps.
         "max_total_tool_calls": effective_tool_budget,
         "max_total_tokens": effective_token_budget,
         "budget_exhausted_reason": None,
@@ -5354,8 +5429,12 @@ def agent_action(
                 max_revisions=int(team.get("max_revisions") or 0),
                 team_timeout_s=team.get("team_timeout_s"),
                 max_team_retries=team.get("max_team_retries"),
-                max_total_tool_calls=team.get("max_total_tool_calls"),
-                max_total_tokens=team.get("max_total_tokens"),
+                admission_tool_call_budget=_team_admission_limit(
+                    team, "admission_tool_call_budget", "max_total_tool_calls",
+                ),
+                admission_token_budget=_team_admission_limit(
+                    team, "admission_token_budget", "max_total_tokens",
+                ),
                 git_isolation=str(team.get("git_isolation") or "auto"),
             )
         tasks = []

@@ -573,7 +573,10 @@ def create_app():
             "saved model/reasoning never cross provider boundaries. Optional task.id + depends_on create a bounded DAG; "
             "max_parallel limits concurrent nodes. A reviewer task may set review_of=<task id> and must end with "
             "QUALITY_GATE: PASS or FAIL; FAIL can trigger up to max_revisions bounded revisions. Team-level admission controls include "
-            "team_timeout_s, max_team_retries, max_total_tool_calls and max_total_tokens; max_parallel is the concurrency budget. "
+            "team_timeout_s, max_team_retries, admission_tool_call_budget and admission_token_budget; max_parallel is the concurrency budget. "
+            "These usage budgets are admission thresholds, not hard runtime caps: once observed usage reaches a threshold, no new DAG node "
+            "or retry is admitted, while already-running agents may finish and overshoot. max_total_tool_calls/max_total_tokens remain deprecated "
+            "aliases for compatibility and have the same admission-only semantics. "
             "Retries are adaptive and only transient/retry-safe failures are replayed. All children inherit provider, model, reasoning, "
             "access_mode and git_isolation. workspace_write Git children default to separate ephemeral worktrees; task revisions reuse the "
             "same isolated worktree while sibling tasks remain separated. A task may add resources=[{kind,id,mode,expected_revision?}] "
@@ -596,6 +599,8 @@ def create_app():
                       project: Optional[str] = None, role: Optional[str] = None,
                       max_parallel: Optional[int] = None, max_revisions: int = 1,
                       team_timeout_s: Optional[int] = None, max_team_retries: Optional[int] = None,
+                      admission_tool_call_budget: Optional[int] = None,
+                      admission_token_budget: Optional[int] = None,
                       max_total_tool_calls: Optional[int] = None, max_total_tokens: Optional[int] = None,
                       git_isolation: str = "auto") -> Dict[str, Any]:
         context = current_policy_context()
@@ -608,7 +613,10 @@ def create_app():
                                          capability_profile=capability_profile, project=project, role=role,
                                          provenance_class=current_provenance_class(), max_parallel=max_parallel,
                                          max_revisions=max_revisions, team_timeout_s=team_timeout_s,
-                                         max_team_retries=max_team_retries, max_total_tool_calls=max_total_tool_calls,
+                                         max_team_retries=max_team_retries,
+                                         admission_tool_call_budget=admission_tool_call_budget,
+                                         admission_token_budget=admission_token_budget,
+                                         max_total_tool_calls=max_total_tool_calls,
                                          max_total_tokens=max_total_tokens, git_isolation=git_isolation))
 
     @mcp.tool(

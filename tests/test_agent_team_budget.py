@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import tempfile
@@ -101,11 +102,133 @@ class TeamBudgetSchedulerTests(unittest.TestCase):
         self.assertFalse(summary["budget"]["admission_open"])
         self.assertEqual(0, summary["budget"]["tool_calls_remaining"])
 
+    def test_preferred_admission_budget_name_blocks_new_child(self) -> None:
+        team = self.spawn_team([
+            {"id": "first", "prompt": "one"},
+            {"id": "second", "prompt": "two", "depends_on": ["first"]},
+        ], max_parallel=1, admission_tool_call_budget=2)
+        team_id = team["team_id"]
+        persisted = agents._read_team(team_id)
+        self.assertEqual("admission_threshold", persisted["budget_contract"])
+        self.assertEqual(2, persisted["admission_tool_call_budget"])
+        self.assertEqual(2, persisted["max_total_tool_calls"])
+
+        self.complete(self.spawned[0]["agent_id"], tool_calls=2)
+        agents._team_tick(team_id)
+        second = self.task(team_id, "second")
+        self.assertEqual("skipped", second["state"])
+        self.assertEqual("budget_exhausted:tool_call_budget", second["failure_reason"])
+        budget = agents._team_summary(team_id)["budget"]
+        self.assertEqual("admission_threshold", budget["budget_contract"])
+        self.assertEqual("new_admissions_and_retries_only", budget["budget_enforcement"])
+        self.assertFalse(budget["hard_cap"])
+        self.assertEqual("allow_to_finish", budget["already_running_policy"])
+        self.assertTrue(budget["running_work_may_overshoot"])
+        self.assertEqual(2, budget["admission_tool_call_budget"])
+        self.assertEqual(
+            "admission_tool_call_budget",
+            budget["deprecated_aliases"]["max_total_tool_calls"],
+        )
+
+    def test_running_agents_can_overshoot_admission_threshold_but_new_work_stops(self) -> None:
+        team = self.spawn_team([
+            {"id": "first", "prompt": "one"},
+            {"id": "second", "prompt": "two"},
+            {"id": "third", "prompt": "three", "depends_on": ["first"]},
+        ], max_parallel=2, admission_tool_call_budget=2)
+        team_id = team["team_id"]
+        self.assertEqual(
+            ["first", "second"],
+            [item["task_id"] for item in self.spawned],
+        )
+        first_id = self.spawned[0]["agent_id"]
+        second_id = self.spawned[1]["agent_id"]
+        self.complete(first_id, tool_calls=2)
+
+        def keep_running_over_budget(meta):
+            meta["status"] = "running"
+            meta["phase"] = "running"
+            meta["tool_call_count"] = 3
+            meta["updated_at"] = time.time()
+
+        agents._update_meta(second_id, keep_running_over_budget)
+        agents._team_tick(team_id)
+
+        self.assertEqual("running", agents._read_meta(second_id)["status"])
+        self.assertEqual("skipped", self.task(team_id, "third")["state"])
+        self.assertEqual(
+            "budget_exhausted:tool_call_budget",
+            self.task(team_id, "third")["failure_reason"],
+        )
+        summary = agents._team_summary(team_id)
+        self.assertEqual("running", summary["status"])
+        budget = summary["budget"]
+        self.assertFalse(budget["admission_open"])
+        self.assertTrue(budget["active_at_limit"])
+        self.assertEqual(1, budget["active_at_limit_count"])
+        self.assertEqual(5, budget["tool_calls_used"])
+        self.assertEqual(0, budget["tool_calls_remaining"])
+        self.assertEqual(3, budget["tool_calls_overshoot"])
+        self.assertFalse(budget["hard_cap"])
+
+    def test_conflicting_legacy_and_preferred_budget_aliases_fail_closed(self) -> None:
+        with self.assertRaises(HTTPException) as ctx:
+            self.spawn_team(
+                [{"id": "one", "prompt": "one"}],
+                admission_tool_call_budget=10,
+                max_total_tool_calls=11,
+            )
+        self.assertEqual(400, ctx.exception.status_code)
+        self.assertIn("deprecated alias", str(ctx.exception.detail))
+
+        matching = self.spawn_team(
+            [{"id": "two", "prompt": "two"}],
+            admission_tool_call_budget=12,
+            max_total_tool_calls=12,
+        )
+        self.assertEqual(12, matching["budget"]["admission_tool_call_budget"])
+
+    def test_running_agents_can_overshoot_token_threshold_but_new_work_stops(self) -> None:
+        team = self.spawn_team([
+            {"id": "first", "prompt": "one"},
+            {"id": "second", "prompt": "two"},
+            {"id": "third", "prompt": "three", "depends_on": ["first"]},
+        ], max_parallel=2, admission_token_budget=100)
+        team_id = team["team_id"]
+        first_id = self.spawned[0]["agent_id"]
+        second_id = self.spawned[1]["agent_id"]
+        self.complete(first_id, tokens=60)
+
+        def keep_running_over_budget(meta):
+            meta["status"] = "running"
+            meta["phase"] = "running"
+            meta["usage"] = {"total": 70}
+            meta["updated_at"] = time.time()
+
+        agents._update_meta(second_id, keep_running_over_budget)
+        agents._team_tick(team_id)
+
+        self.assertEqual("running", agents._read_meta(second_id)["status"])
+        self.assertEqual("skipped", self.task(team_id, "third")["state"])
+        budget = agents._team_summary(team_id)["budget"]
+        self.assertEqual(130, budget["total_tokens_used"])
+        self.assertEqual(30, budget["total_tokens_overshoot"])
+        self.assertEqual(0, budget["total_tokens_remaining"])
+        self.assertTrue(budget["active_at_limit"])
+        self.assertEqual(1, budget["active_at_limit_count"])
+
+    def test_spawn_agents_signature_keeps_preferred_and_legacy_budget_names(self) -> None:
+        params = inspect.signature(agents.spawn_agents).parameters
+        self.assertIn("admission_tool_call_budget", params)
+        self.assertIn("admission_token_budget", params)
+        self.assertIn("max_total_tool_calls", params)
+        self.assertIn("max_total_tokens", params)
+
     def test_token_budget_blocks_new_child(self) -> None:
         team = self.spawn_team([
             {"id": "first", "prompt": "one"},
             {"id": "second", "prompt": "two", "depends_on": ["first"]},
-        ], max_parallel=1, max_total_tokens=100)
+        ], max_parallel=1, admission_token_budget=100)
         team_id = team["team_id"]
         self.complete(self.spawned[0]["agent_id"], tokens=100)
         agents._team_tick(team_id)
@@ -163,7 +286,7 @@ class TeamBudgetSchedulerTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as ctx:
                 agents.spawn_agents(
                     settings=None, tasks=[{"prompt": "x"}], provider="chatgpt", cwd=str(self.root),
-                    access_mode="read_only", max_total_tokens=1000,
+                    access_mode="read_only", admission_token_budget=1000,
                 )
         self.assertEqual(400, ctx.exception.status_code)
         self.assertIn("does not expose reliable token usage", str(ctx.exception.detail))
@@ -298,8 +421,10 @@ class TeamBudgetRetryPropagationTests(unittest.TestCase):
             self.assertEqual(1, kwargs["max_revisions"])
             self.assertEqual(5400, kwargs["team_timeout_s"])
             self.assertEqual(3, kwargs["max_team_retries"])
-            self.assertEqual(40, kwargs["max_total_tool_calls"])
-            self.assertEqual(50000, kwargs["max_total_tokens"])
+            self.assertEqual(40, kwargs["admission_tool_call_budget"])
+            self.assertEqual(50000, kwargs["admission_token_budget"])
+            self.assertNotIn("max_total_tool_calls", kwargs)
+            self.assertNotIn("max_total_tokens", kwargs)
 
 
 class AdaptiveRetryClassifierTests(unittest.TestCase):
