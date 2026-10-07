@@ -96,6 +96,9 @@ _ELEMENT_READINESS_POLL_S = 0.06
 _ELEMENT_READINESS_STABLE_MS = 300
 _ACTION_VERIFY_TIMEOUT_S = 0.55
 _ACTION_VERIFY_POLL_S = 0.07
+# A DOM mutation after a click counts as its effect only when the page was quiet
+# this long before the click, so background animation cannot fake an effect.
+_DOM_EFFECT_QUIET_MS = 250
 _GENERIC_QUERY_WORDS = {
     "button", "link", "input", "field", "select", "dropdown", "combobox", "option",
     "filter", "control", "element", "box", "menu", "tab", "checkbox", "radio",
@@ -668,6 +671,13 @@ def _b64_return(expression: str) -> str:
 def _browser_state_bootstrap() -> str:
     return r'''
 function __mcpInternalHost(el){try{return !!el&&el.id==='mac-mcp-visual-companion-root';}catch(e){return false;}}
+function __mcpInternalMutation(rec){
+  if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')return true;
+  if(__mcpInternalHost(rec.target))return true;
+  if(rec.type!=='childList')return false;
+  var nodes=Array.prototype.concat.call([],Array.prototype.slice.call(rec.addedNodes||[]),Array.prototype.slice.call(rec.removedNodes||[]));
+  return nodes.length>0&&nodes.every(function(n){return __mcpInternalHost(n);});
+}
 function __mcpRoots(){
   var roots=[],seen=new Set();
   function visit(root,depth){
@@ -704,7 +714,7 @@ function __mcpStopMutationWatch(s){
 }
 function __mcpStartMutationWatch(s,ttl){
   __mcpStopMutationWatch(s);var roots=__mcpRoots(),bump=function(records){
-    for(var j=0;j<records.length;j++){var rec=records[j];if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')continue;s.mutationRevision+=1;s.lastMutationAt=Date.now();break;}
+    for(var j=0;j<records.length;j++){var rec=records[j];if(__mcpInternalMutation(rec))continue;s.mutationRevision+=1;s.lastMutationAt=Date.now();break;}
   };
   for(var i=0;i<roots.length;i++){try{var ob=new MutationObserver(bump);ob.observe(roots[i],{subtree:true,childList:true,attributes:true,characterData:true});s.rootObservers.push(ob);}catch(e){}}
   s.observerTimer=setTimeout(function(){__mcpStopMutationWatch(s);},Math.max(500,Math.min(Number(ttl||3000),8000)));
@@ -991,7 +1001,7 @@ function __mcpFlushMutations(s){
   var changed=false,obs=s.rootObservers||[];
   for(var i=0;i<obs.length;i++){
     var records=[];try{records=obs[i].takeRecords();}catch(e){}
-    for(var j=0;j<records.length;j++){var rec=records[j];if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')continue;changed=true;break;}
+    for(var j=0;j<records.length;j++){var rec=records[j];if(__mcpInternalMutation(rec))continue;changed=true;break;}
   }
   if(changed){s.mutationRevision+=1;s.lastMutationAt=Date.now();}return changed;
 }
@@ -1791,6 +1801,7 @@ for(var i=0;i<actions.length;i++){
       var tag=(el.tagName||'').toLowerCase(),href=String(el.getAttribute('href')||''),inputType=String(el.getAttribute('type')||'').toLowerCase();
       var mayNavigate=(tag==='a'&&href&&href!=='#'&&!href.endsWith('#'))||((tag==='button'||tag==='input')&&inputType==='submit');
       var shouldDefer=(type==='click'&&i===actions.length-1&&mayNavigate),activated=el,effectObserved=false,verification='no_immediate_effect';
+      var beforeQuietMs=Math.max(0,Date.now()-Number(s.lastMutationAt||0));
       if(type==='double_click') activated=__mcpDoubleActivate(el);
       else if(shouldDefer) setTimeout(function(node){return function(){try{__mcpActivate(node);}catch(e){}};}(el),0);
       else activated=__mcpActivate(el);
@@ -1798,8 +1809,9 @@ for(var i=0;i<actions.length;i++){
       else{
         effectObserved=pageEffect(beforeRevision,beforeUrl,beforeTitle,beforeState,activated||el);
         if(effectObserved) verification='state_changed';
+        else if(beforeQuietMs>=__QUIET_MS__&&s.mutationRevision!==beforeRevision){effectObserved=true;verification='dom_mutated';}
       }
-      var clickResult={index:i,type:type,element_id:a.element_id,ok:true,deferred:shouldDefer,activation_target:activated?__mcpId(activated,s):a.element_id,effect_observed:effectObserved,verification:verification,activation_trace:s.lastActivationTrace||null,_verify_revision:beforeRevision,_verify_url:beforeUrl,_verify_title:beforeTitle,_verify_state:beforeState};
+      var clickResult={index:i,type:type,element_id:a.element_id,ok:true,deferred:shouldDefer,activation_target:activated?__mcpId(activated,s):a.element_id,effect_observed:effectObserved,verification:verification,activation_trace:s.lastActivationTrace||null,_verify_revision:beforeRevision,_verify_url:beforeUrl,_verify_title:beforeTitle,_verify_state:beforeState,_verify_quiet_ms:beforeQuietMs};
       if(!effectObserved)clickResult.observe_again=true;
       results.push(clickResult);
     } else if(type==='type'||type==='type_text'||type==='paste'){
@@ -1838,7 +1850,12 @@ var active=document.activeElement;
 var compact={ok:true,url:location.href,title:document.title,scroll:{x:scrollX,y:scrollY},dom_revision:s.mutationRevision,active_element:active&&active.nodeType===1?__mcpDescribe(active,s):null};
 return __mcpB64({ok:results.every(function(r){return r.ok;}),actions:results,dom_changed_since_observe:changed,dom_revision:s.mutationRevision,url:location.href,title:document.title,scroll:{x:scrollX,y:scrollY},state:compact});
 })()'''
-    return template.replace('__BOOTSTRAP__', _browser_state_bootstrap()).replace('__OBS__', obs_json).replace('__ACTIONS__', actions_json)
+    return (
+        template.replace('__BOOTSTRAP__', _browser_state_bootstrap())
+        .replace('__QUIET_MS__', str(_DOM_EFFECT_QUIET_MS))
+        .replace('__OBS__', obs_json)
+        .replace('__ACTIONS__', actions_json)
+    )
 
 
 def _select_prepare_js(element_id: str, observation_id: Optional[str], option: Any) -> str:
@@ -2504,6 +2521,8 @@ def _verified_dom_action(
     before_url = result.pop("_verify_url", None)
     before_title = result.pop("_verify_title", None)
     before_state = result.pop("_verify_state", None)
+    before_quiet_ms = result.pop("_verify_quiet_ms", None)
+    page_was_quiet = before_quiet_ms is not None and float(before_quiet_ms) >= _DOM_EFFECT_QUIET_MS
     normalized_before_state: Dict[str, Any] = {
         "url": before_url,
         "title": before_title,
@@ -2557,9 +2576,16 @@ def _verified_dom_action(
                     or (before_url is not None and post.get("url") != before_url)
                     or (before_title is not None and post.get("title") != before_title)
                 )
-                if progressed:
+                dom_progressed = (
+                    page_was_quiet and before_revision is not None
+                    and post.get("dom_revision") is not None and post.get("dom_revision") != before_revision
+                )
+                if progressed or dom_progressed:
                     result["effect_observed"] = True
-                    result["verification"] = "async_network_activity" if network_progressed else "async_state_changed"
+                    result["verification"] = (
+                        "async_network_activity" if network_progressed
+                        else "async_state_changed" if progressed else "async_dom_mutated"
+                    )
                     result.pop("observe_again", None)
                     compact_state = post
                     break
@@ -2713,7 +2739,7 @@ for(var ri=0;ri<roots.length;ri++){
       var meaningful=false;
       for(var j=0;j<records.length;j++){
         var rec=records[j];
-        if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')continue;
+        if(__mcpInternalMutation(rec))continue;
         meaningful=true;break;
       }
       if(meaningful){s.mutationRevision+=1;s.lastMutationAt=Date.now();signal('mutation');}
