@@ -75,6 +75,44 @@ from .data_guard import format_security_approval_question
 from .agent_admission import AdmissionError, normalize_claims as normalize_admission_claims
 
 
+MCP_AGENT_INSTRUCTIONS = (
+    "You are connected to the user's local Mac through Mac MCP. "
+    "Default home directory is the current user's home. "
+    "Routing order: dedicated semantic tool first, then shell/file API, then browser DOM, with native UI only as a fallback. "
+    "Use open_app to launch apps, run_command for shell work, and file tools for filesystem work. "
+    "If a dedicated capability is unavailable or policy-denied, do not reproduce the same side effect through Terminal, AppleScript, or generic UI; policy denial is not a fallback reason. "
+    "Perception ladder: start with mac_snapshot or semantic browser/native observation; reuse previous_observation_id "
+    "for delta/not_modified reads; escalate to targeted element/window visual only when semantic state is insufficient; "
+    "use OCR or full-page/full-screen visual last. For browser visual grounding, prefer visual='element' or 'viewport' "
+    "before visual='full_page'. All visual paths can target background resources without focusing them. "
+    "For form filling and repetitive browser interactions, batch independent actions; never field-by-field unless dependencies require it. "
+    "Split browser action groups when an earlier action materially changes later controls, stale-target or human-takeover risk requires re-observation, "
+    "or a consequential step needs a separate verification boundary. "
+    "Prefer the smallest number of tool calls and smallest bounded context that safely completes and verifies the task."
+)
+
+BROWSER_OBSERVE_DESCRIPTION = (
+    "High-level browser observation. Returns compact DOM with stable e1/e2 IDs; optional JPEG visuals keep the DOM list in the same response. "
+    "BATCH-FIRST HINT: when multiple independent actionable form controls are present or discoverable, follow this observation with one browser_act "
+    "containing all independent interactions instead of repeated field-by-field observe/action calls. Re-observe between action groups only when an "
+    "earlier action materially changes later controls, stale-target/takeover risk requires it, or a consequential step needs separate verification. "
+    "scope: interactive, visible, content, or leaf; visual: none, viewport, element, or full_page. "
+    "Start semantic-only (visual='none'); pass previous_observation_id on repeated reads so unchanged DOM returns compact not_modified instead of resending the element list. "
+    "Escalate to visual='element' or 'viewport' only when semantic state is insufficient; reserve full_page for true full-page grounding. Visual capture is rendered "
+    "inside the target tab DOM and returned as MCP image content without activating Safari/Chrome, switching tabs, scrolling the page, or leaving screenshot files on disk."
+)
+
+BROWSER_ACT_DESCRIPTION = (
+    "BATCH-FIRST: for forms and repetitive browser interactions, prefer one browser_act call containing all independent actions instead of one call per field. "
+    "Recommended workflow: one browser_observe -> one batched browser_act -> one browser_observe verification. "
+    "Combine independent type/select/click/scroll actions in the same actions list; custom dropdowns can use select. "
+    "Targets may use stable element_id or semantic query/role/text_match, so element IDs are not always required. "
+    "Split into separate action groups only when an earlier action materially changes later controls, stale-target or human-takeover risk requires re-observation, "
+    "or a consequential step needs separate verification. Perform up to 20 browser actions in one MCP call. Supports click, type, async custom select, scroll, key and waits. "
+    "Click actions default to background-safe synthetic DOM input; input_mode='trusted' is an explicit Chrome Background Companion-only pointer path and fails closed on Safari "
+    "without foreground/coordinate fallback. No-effect mutations are never automatically replayed. return_state: none, compact, or full."
+)
+
 _BROWSER_DO_OUTPUT_BUDGET_BYTES = 8_192
 
 
@@ -265,18 +303,7 @@ def create_app():
     mcp = ObservedFastMCP(
         telemetry=telemetry,
         name="mac-mcp",
-        instructions=(
-            "You are connected to the user's local Mac through Mac MCP. "
-            "Default home directory is the current user's home. "
-            "Routing order: dedicated semantic tool first, then shell/file API, then browser DOM, with native UI only as a fallback. "
-            "Use open_app to launch apps, run_command for shell work, and file tools for filesystem work. "
-            "If a dedicated capability is unavailable or policy-denied, do not reproduce the same side effect through Terminal, AppleScript, or generic UI; policy denial is not a fallback reason. "
-            "Perception ladder: start with mac_snapshot or semantic browser/native observation; reuse previous_observation_id "
-            "for delta/not_modified reads; escalate to targeted element/window visual only when semantic state is insufficient; "
-            "use OCR or full-page/full-screen visual last. For browser visual grounding, prefer visual='element' or 'viewport' "
-            "before visual='full_page'. All visual paths can target background resources without focusing them. "
-            "Prefer the smallest number of tool calls and smallest bounded context that safely completes and verifies the task."
-        ),
+        instructions=MCP_AGENT_INSTRUCTIONS,
         streamable_http_path="/mcp",
         stateless_http=False,
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
@@ -1254,15 +1281,7 @@ def create_app():
     @mcp.tool(
         name="browser_observe",
         title="Observe browser tab",
-        description=(
-            "High-level browser observation. Returns compact DOM with stable e1/e2 IDs; optional JPEG visuals keep the DOM list in the same response. "
-            "scope: interactive, visible, content, or leaf; visual: none, viewport, element, or full_page. "
-            "Start semantic-only (visual='none'); pass previous_observation_id on repeated reads so unchanged DOM returns "
-            "compact not_modified instead of resending the element list. Escalate to visual='element' or 'viewport' only "
-            "when semantic state is insufficient; reserve full_page for true full-page grounding. Visual capture is rendered "
-            "inside the target tab DOM and returned as MCP image content without activating Safari/Chrome, switching tabs, "
-            "scrolling the page, or leaving screenshot files on disk."
-        ),
+        description=BROWSER_OBSERVE_DESCRIPTION,
         annotations=ToolAnnotations(
             readOnlyHint=True,
             destructiveHint=False,
@@ -1310,13 +1329,7 @@ def create_app():
 
     @mcp.tool(
         name="browser_act",
-        description=(
-            "Perform up to 20 browser actions in one MCP call. Actions can target stable element_id or semantic "
-            "query/text_match/role. Supports click, type, async custom select, scroll, key and waits. Click actions default "
-            "to background-safe synthetic DOM input; input_mode='trusted' is an explicit Chrome Background Companion-only "
-            "pointer path and fails closed on Safari without foreground/coordinate fallback. No-effect mutations are never "
-            "automatically replayed. return_state: none, compact, or full."
-        ),
+        description=BROWSER_ACT_DESCRIPTION,
     )
     async def _browser_act(browser: str, actions: List[Dict[str, Any]],
                            observation_id: Optional[str] = None, window_index: int = 1,
