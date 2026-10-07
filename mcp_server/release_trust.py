@@ -19,6 +19,7 @@ SIGNATURE_NAMESPACE = "mac-mcp-release"
 MANIFEST_RELPATH = "release/stable-manifest.json"
 SIGNATURE_RELPATH = "release/stable-manifest.json.sig"
 TRUSTED_SIGNERS_FILENAME = "release_trusted_signers.txt"
+MAX_TRUSTED_RELEASE_SIGNERS = 2
 EXCLUDED_PAYLOAD_PATHS = frozenset({MANIFEST_RELPATH, SIGNATURE_RELPATH})
 
 _HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -94,6 +95,43 @@ def trusted_signers_path() -> Path:
     if override:
         return Path(override).expanduser().resolve()
     return Path(__file__).resolve().with_name(TRUSTED_SIGNERS_FILENAME)
+
+
+def _validate_trusted_signers_file(path: Path) -> None:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ReleaseVerificationError(f"Could not read trusted release signer file: {path}") from exc
+
+    seen: set[tuple[str, str]] = set()
+    count = 0
+    for raw in lines:
+        line = raw.strip()
+        if not line:
+            continue
+        parts = line.split()
+        if (
+            len(parts) != 3
+            or parts[0] != SIGNER_IDENTITY
+            or parts[1] != "ssh-ed25519"
+        ):
+            raise ReleaseVerificationError(
+                "Trusted release signer set must contain only exact "
+                "mac-mcp-release ssh-ed25519 entries."
+            )
+        key = (parts[1], parts[2])
+        if key in seen:
+            raise ReleaseVerificationError("Trusted release signer set contains a duplicate key.")
+        seen.add(key)
+        count += 1
+        if count > MAX_TRUSTED_RELEASE_SIGNERS:
+            raise ReleaseVerificationError(
+                f"Trusted release signer set exceeds bounded overlap limit "
+                f"({MAX_TRUSTED_RELEASE_SIGNERS})."
+            )
+
+    if count < 1:
+        raise ReleaseVerificationError("Trusted release signer set is empty.")
 
 
 def _safe_release_path(value: Any) -> str:
@@ -254,6 +292,7 @@ def verify_manifest_signature(
     trusted = Path(signers_path).expanduser().resolve() if signers_path else trusted_signers_path()
     if not trusted.is_file():
         raise ReleaseVerificationError(f"Trusted release signer file is missing: {trusted}")
+    _validate_trusted_signers_file(trusted)
     ssh_keygen = Path("/usr/bin/ssh-keygen")
     if not ssh_keygen.is_file():
         raise ReleaseVerificationError("ssh-keygen is required for verified releases but was not found.")

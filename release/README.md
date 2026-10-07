@@ -40,17 +40,49 @@ The signing script hashes the Git index rather than arbitrary working-tree bytes
 
 Optional external distribution artifacts can be bound into the signed manifest with repeated `--artifact NAME=PATH` arguments. Their SHA-256 and size are then part of the signed provenance record.
 
-## Key rotation
+## Trust roots and key rotation
 
-Rotation is intentionally two-phase so a target release cannot introduce and trust its own key.
+There are two release trust roots and one pinned bootstrap verifier:
 
-1. While the old key is still trusted, add the new public key to `mcp_server/release_trusted_signers.txt`.
-2. Publish that trust-store change in a release signed by the old key.
-3. After installed clients have received the expanded trust store, future releases may be signed by the new key.
-4. Publish a later release, signed by a still-trusted key, that removes the old public key after the migration window.
-5. Keep revoked/retired private keys offline and never reintroduce them to CI.
+- `install.sh:RELEASE_TRUSTED_SIGNERS` is the fresh-install bootstrap signer set. It is embedded in the installer, is not environment-overridable, and is restricted to the `mac-mcp-release` identity with `ssh-ed25519` keys.
+- `mcp_server/release_trusted_signers.txt` is the runtime/updater signer set. The release signing helper also refuses to sign with a key that is absent from this file.
+- Both trust stores are deliberately bounded to at most two unique release keys: the old and new signer during an overlap. Wildcard identities, duplicate keys, other key algorithms, or a third signer fail closed.
+- `install.sh:RELEASE_BOOTSTRAP_VERIFIER_SHA256` pins `scripts/installer_release_verify.py`. The installer verifies that small verifier before allowing it to validate a release manifest.
 
-If the active private key is suspected compromised, stop publishing updates until a trust-root recovery path has been established. Do not silently replace the pinned signer in an unsigned commit.
+Normal signing-key rotation uses a bounded overlap. A release must never introduce a key and rely on that same release being trusted by the new key.
+
+### Normal rotation runbook
+
+1. Generate the new Ed25519 private key outside the repository, keep it owner-only, and record its public fingerprint through an independent trusted channel.
+2. Prepare an **overlap release** that adds the new public key to both `install.sh:RELEASE_TRUSTED_SIGNERS` and `mcp_server/release_trusted_signers.txt` while retaining the old key in both places.
+3. Do **not** change `scripts/installer_release_verify.py` in this overlap release. An older installer pins the old verifier hash and must be able to verify the overlap release before it can obtain a newer installer. If the verifier itself needs rotation, first publish a separate old-key-signed bridge release that keeps the old verifier bytes but updates the installer for the later verifier transition.
+4. Sign and publish the overlap release with the **old** key. Verify that an old-only installer accepts this release and that the installed runtime contains both trusted signers.
+5. Allow a migration window for installed clients to receive the overlap release. Do not publish a new-key-only stable release before this window: lagging clients correctly fail closed on an unknown newest signer rather than falling back to an older stable release.
+6. Publish the cutover release with the **new** key while both signer sets still contain old + new. Updated runtimes and the overlap installer must both accept it.
+7. After the migration window, publish a release signed by the **new** key that removes the old public key from both `install.sh:RELEASE_TRUSTED_SIGNERS` and `mcp_server/release_trusted_signers.txt`.
+8. Confirm that a release signed with the retired old key is rejected. Keep retired private keys offline and never reintroduce them to CI, runtime config, or release artifacts.
+
+An installer copy from before the overlap intentionally cannot install a new-key-only release after cutover. It must first consume the old-key-signed overlap release or be replaced through an independently authenticated bootstrap path. This is fail-closed behavior, not a reason to fall back to an older release or weaken signature verification.
+
+### Emergency compromise
+
+If the old key is suspected compromised **before** a trustworthy overlap release has propagated, stop the stable channel. Repository history alone cannot safely bootstrap a replacement key because the compromised key could authorize the transition. Recover with an independently authenticated installer/public-key distribution path and publish the new fingerprint out of band. Never disable manifest verification, silently replace the embedded signer, or add an unbounded fallback signer.
+
+If compromise is discovered **after** the overlap release has propagated and the new key is already trusted, publish an emergency release signed by the new key that removes the compromised key from both bootstrap and runtime signer sets. Clients that missed the overlap still require the independently authenticated bootstrap path.
+
+### Rotation release checks
+
+For every overlap, cutover, or retirement release:
+
+```bash
+git status --short --branch
+/bin/bash -n install.sh
+python3 -m unittest tests.test_installer_release_channel tests.test_release_trust -v
+git diff --check
+python3 scripts/verify_release_manifest.py --commit HEAD --branch main
+```
+
+Before signing, confirm the installer signer set and `mcp_server/release_trusted_signers.txt` contain exactly the intended bounded overlap. After retirement, confirm the old key is absent from both. Keep the private keys outside the repository throughout the procedure.
 
 ## Installer and updater behavior
 

@@ -14,7 +14,9 @@ BIN_DIR="${MAC_MCP_BIN_DIR:-$HOME/.local/bin}"
 CLI_PATH="$BIN_DIR/mac-mcp"
 APP_PATH="${MAC_MCP_APP_PATH:-$HOME/Applications/Mac MCP.app}"
 STATE_DIR="${MAC_MCP_STATE_DIR:-$HOME/.mac-mcp}"
-RELEASE_TRUSTED_SIGNER='mac-mcp-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMllSlrqFdnIb1ggvo72blY/JEQkOELwqwtvB7qCY8S2'
+# Bootstrap trust roots are intentionally embedded and never environment-overridden.
+# Key rotation uses a bounded overlap release that temporarily lists old + new keys.
+RELEASE_TRUSTED_SIGNERS='mac-mcp-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMllSlrqFdnIb1ggvo72blY/JEQkOELwqwtvB7qCY8S2'
 RELEASE_SIGNATURE_IDENTITY="mac-mcp-release"
 RELEASE_SIGNATURE_NAMESPACE="mac-mcp-release"
 RELEASE_BOOTSTRAP_VERIFIER_PATH="scripts/installer_release_verify.py"
@@ -754,7 +756,21 @@ verify_release_checkout() {
 
   [[ -x /usr/bin/ssh-keygen ]] || fail "ssh-keygen is required to verify Mac MCP releases."
   [[ -x /usr/bin/shasum ]] || fail "shasum is required to verify Mac MCP releases."
-  printf '%s\n' "$RELEASE_TRUSTED_SIGNER" > "$allowed_signers"
+  printf '%s\n' "$RELEASE_TRUSTED_SIGNERS" | /usr/bin/awk '
+    NF {
+      if (NF != 3 || $1 != "mac-mcp-release" || $2 != "ssh-ed25519") exit 1
+      key = $2 " " $3
+      if (seen[key]++) exit 1
+      count++
+      if (count > 2) exit 1
+      print
+    }
+    END {
+      if (count < 1) exit 1
+    }
+  ' > "$allowed_signers" \
+    || fail "Embedded release trust roots are malformed."
+  [[ -s "$allowed_signers" ]] || fail "Embedded release trust roots are empty."
   /bin/chmod 600 "$allowed_signers" || fail "Could not secure the release trust file."
 
   "$GIT_BIN" -C "$checkout" show "$commit:$RELEASE_BOOTSTRAP_VERIFIER_PATH" > "$verifier_file" 2>/dev/null \

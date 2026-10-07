@@ -24,18 +24,23 @@ class VerifiedReleaseChannelTests(unittest.TestCase):
         self.update_dir = self.root / "update-state"
         self.update_dir.mkdir()
         self.signing_key = self.root / "release-key"
-        subprocess.check_call(
-            [
-                "/usr/bin/ssh-keygen", "-q", "-t", "ed25519",
-                "-N", "", "-C", "release-channel-test", "-f", str(self.signing_key),
-            ]
-        )
+        self.rotated_signing_key = self.root / "release-key-next"
+        for key, comment in (
+            (self.signing_key, "release-channel-test"),
+            (self.rotated_signing_key, "release-channel-test-next"),
+        ):
+            subprocess.check_call(
+                [
+                    "/usr/bin/ssh-keygen", "-q", "-t", "ed25519",
+                    "-N", "", "-C", comment, "-f", str(key),
+                ]
+            )
         pub = self.signing_key.with_suffix(".pub").read_text(encoding="utf-8").split()
+        next_pub = self.rotated_signing_key.with_suffix(".pub").read_text(encoding="utf-8").split()
+        self.signer_line = f"{release_trust.SIGNER_IDENTITY} {pub[0]} {pub[1]}"
+        self.rotated_signer_line = f"{release_trust.SIGNER_IDENTITY} {next_pub[0]} {next_pub[1]}"
         self.trusted_signers = self.root / "trusted-signers"
-        self.trusted_signers.write_text(
-            f"{release_trust.SIGNER_IDENTITY} {pub[0]} {pub[1]}\n",
-            encoding="utf-8",
-        )
+        self.trusted_signers.write_text(self.signer_line + "\n", encoding="utf-8")
         self.env = patch.dict(
             os.environ,
             {
@@ -55,6 +60,10 @@ class VerifiedReleaseChannelTests(unittest.TestCase):
         (repo / "mcp_server").mkdir()
         (repo / "mcp_server/main.py").write_text("VALUE = 'old'\n", encoding="utf-8")
         (repo / "mcp_server/requirements.txt").write_text("", encoding="utf-8")
+        (repo / "mcp_server/release_trusted_signers.txt").write_text(
+            self.signer_line + "\n",
+            encoding="utf-8",
+        )
         (repo / "pyproject.toml").write_text(
             '[project]\nname = "mac-mcp-test"\nversion = "9.9.9"\n',
             encoding="utf-8",
@@ -63,7 +72,13 @@ class VerifiedReleaseChannelTests(unittest.TestCase):
         run("git", "commit", "-q", "-m", "base", cwd=repo)
         return repo, run("git", "rev-parse", "HEAD", cwd=repo)
 
-    def sign_index(self, repo: Path, release_id: str = "stable-test") -> None:
+    def sign_index(
+        self,
+        repo: Path,
+        release_id: str = "stable-test",
+        *,
+        key: Path | None = None,
+    ) -> None:
         manifest = release_trust.build_manifest_from_index(
             repo,
             release_id=release_id,
@@ -78,7 +93,7 @@ class VerifiedReleaseChannelTests(unittest.TestCase):
         subprocess.check_call(
             [
                 "/usr/bin/ssh-keygen", "-Y", "sign",
-                "-f", str(self.signing_key),
+                "-f", str(key or self.signing_key),
                 "-n", release_trust.SIGNATURE_NAMESPACE,
                 str(manifest_path),
             ],
@@ -87,9 +102,15 @@ class VerifiedReleaseChannelTests(unittest.TestCase):
         )
         run("git", "add", release_trust.MANIFEST_RELPATH, release_trust.SIGNATURE_RELPATH, cwd=repo)
 
-    def commit_signed_release(self, repo: Path, *, release_id: str = "stable-test") -> str:
+    def commit_signed_release(
+        self,
+        repo: Path,
+        *,
+        release_id: str = "stable-test",
+        key: Path | None = None,
+    ) -> str:
         run("git", "add", ".", cwd=repo)
-        self.sign_index(repo, release_id)
+        self.sign_index(repo, release_id, key=key)
         run("git", "commit", "-q", "-m", f"signed release {release_id}", cwd=repo)
         return run("git", "rev-parse", "HEAD", cwd=repo)
 
@@ -144,6 +165,113 @@ class VerifiedReleaseChannelTests(unittest.TestCase):
         self.assertTrue(result["release_verified"])
         self.assertEqual(target, run("git", "rev-parse", "HEAD", cwd=repo))
         self.assertEqual(b"VALUE = 'verified'\n", (runtime / "mcp_server/main.py").read_bytes())
+
+    def test_updater_rotation_requires_overlap_then_revokes_old_key(self) -> None:
+        source, base = self.init_repo()
+        signer_file = source / "mcp_server/release_trusted_signers.txt"
+
+        signer_file.write_text(
+            self.signer_line + "\n" + self.rotated_signer_line + "\n",
+            encoding="utf-8",
+        )
+        (source / "mcp_server/main.py").write_text("VALUE = 'overlap'\n", encoding="utf-8")
+        overlap = self.commit_signed_release(source, release_id="rotation-overlap")
+
+        repo, runtime = self.make_updater_fixture(overlap, base, source)
+        runtime_signers = runtime / "mcp_server/release_trusted_signers.txt"
+        remote = self.root / "remote.git"
+
+        with patch.dict(
+            os.environ,
+            {"MAC_MCP_RELEASE_TRUSTED_SIGNERS": str(runtime_signers)},
+            clear=False,
+        ):
+            info = check_update(repo, runtime)
+            self.assertEqual("rotation-overlap", info.release_id)
+            first = apply_update(repo, runtime, skip_restart=True, skip_deps=True)
+            self.assertTrue(first["updated"])
+            self.assertEqual(
+                [self.signer_line, self.rotated_signer_line],
+                runtime_signers.read_text(encoding="utf-8").splitlines(),
+            )
+
+            (source / "mcp_server/main.py").write_text("VALUE = 'new-signer'\n", encoding="utf-8")
+            cutover = self.commit_signed_release(
+                source,
+                release_id="rotation-cutover",
+                key=self.rotated_signing_key,
+            )
+            run("git", "push", "-q", str(remote), "main", cwd=source)
+            info = check_update(repo, runtime)
+            self.assertEqual("rotation-cutover", info.release_id)
+            second = apply_update(repo, runtime, skip_restart=True, skip_deps=True)
+            self.assertTrue(second["updated"])
+            self.assertEqual(cutover, run("git", "rev-parse", "HEAD", cwd=repo))
+
+            signer_file.write_text(self.rotated_signer_line + "\n", encoding="utf-8")
+            (source / "mcp_server/main.py").write_text("VALUE = 'retired-old'\n", encoding="utf-8")
+            retired = self.commit_signed_release(
+                source,
+                release_id="rotation-retire-old",
+                key=self.rotated_signing_key,
+            )
+            run("git", "push", "-q", str(remote), "main", cwd=source)
+            third = apply_update(repo, runtime, skip_restart=True, skip_deps=True)
+            self.assertTrue(third["updated"])
+            self.assertEqual(retired, run("git", "rev-parse", "HEAD", cwd=repo))
+            self.assertEqual(
+                [self.rotated_signer_line],
+                runtime_signers.read_text(encoding="utf-8").splitlines(),
+            )
+
+            before_repo = run("git", "rev-parse", "HEAD", cwd=repo)
+            before_runtime = (runtime / "mcp_server/main.py").read_bytes()
+            (source / "mcp_server/main.py").write_text("VALUE = 'retired-key-reuse'\n", encoding="utf-8")
+            self.commit_signed_release(
+                source,
+                release_id="rotation-retired-key-reuse",
+                key=self.signing_key,
+            )
+            run("git", "push", "-q", str(remote), "main", cwd=source)
+
+            with self.assertRaisesRegex(UpdateError, "signature is invalid"):
+                check_update(repo, runtime)
+            self.assertEqual(before_repo, run("git", "rev-parse", "HEAD", cwd=repo))
+            self.assertEqual(before_runtime, (runtime / "mcp_server/main.py").read_bytes())
+
+    def test_runtime_trust_store_rejects_wildcard_duplicate_and_three_key_sets(self) -> None:
+        bad_sets = [
+            (
+                "wildcard",
+                f"* ssh-ed25519 {self.signer_line.split()[2]}\n",
+                "exact mac-mcp-release",
+            ),
+            (
+                "duplicate",
+                self.signer_line + "\n" + self.signer_line + "\n",
+                "duplicate key",
+            ),
+            (
+                "three-key",
+                (
+                    self.signer_line
+                    + "\n"
+                    + self.rotated_signer_line
+                    + "\n"
+                    + f"{release_trust.SIGNER_IDENTITY} ssh-ed25519 AAAA\n"
+                ),
+                "bounded overlap limit",
+            ),
+        ]
+        for name, contents, pattern in bad_sets:
+            with self.subTest(name=name):
+                path = self.root / f"trusted-{name}"
+                path.write_text(contents, encoding="utf-8")
+                with self.assertRaisesRegex(
+                    release_trust.ReleaseVerificationError,
+                    pattern,
+                ):
+                    release_trust._validate_trusted_signers_file(path)
 
     def test_unsigned_manifest_is_blocked_before_repo_or_runtime_change(self) -> None:
         source, base = self.init_repo()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -25,17 +26,30 @@ class InstallerReleaseChannelTests(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp(prefix="mac-mcp-installer-release-test-"))
         self.addCleanup(shutil.rmtree, self.root, True)
         self.signing_key = self.root / "release-key"
-        subprocess.check_call(
-            [
-                "/usr/bin/ssh-keygen", "-q", "-t", "ed25519",
-                "-N", "", "-C", "installer-release-test", "-f", str(self.signing_key),
-            ]
-        )
+        self.rotated_signing_key = self.root / "release-key-next"
+        for key, comment in (
+            (self.signing_key, "installer-release-test"),
+            (self.rotated_signing_key, "installer-release-test-next"),
+        ):
+            subprocess.check_call(
+                [
+                    "/usr/bin/ssh-keygen", "-q", "-t", "ed25519",
+                    "-N", "", "-C", comment, "-f", str(key),
+                ]
+            )
         pub = self.signing_key.with_suffix(".pub").read_text(encoding="utf-8").split()
+        next_pub = self.rotated_signing_key.with_suffix(".pub").read_text(encoding="utf-8").split()
         self.signer_line = f"{release_trust.SIGNER_IDENTITY} {pub[0]} {pub[1]}"
+        self.rotated_signer_line = f"{release_trust.SIGNER_IDENTITY} {next_pub[0]} {next_pub[1]}"
         self.verifier_sha = hashlib.sha256(BOOTSTRAP_VERIFIER.read_bytes()).hexdigest()
 
-    def sign_index(self, repo: Path, release_id: str = "installer-stable") -> None:
+    def sign_index(
+        self,
+        repo: Path,
+        release_id: str = "installer-stable",
+        *,
+        key: Path | None = None,
+    ) -> None:
         manifest = release_trust.build_manifest_from_index(
             repo,
             release_id=release_id,
@@ -50,7 +64,7 @@ class InstallerReleaseChannelTests(unittest.TestCase):
         subprocess.check_call(
             [
                 "/usr/bin/ssh-keygen", "-Y", "sign",
-                "-f", str(self.signing_key),
+                "-f", str(key or self.signing_key),
                 "-n", release_trust.SIGNATURE_NAMESPACE,
                 str(manifest_path),
             ],
@@ -64,6 +78,7 @@ class InstallerReleaseChannelTests(unittest.TestCase):
         *,
         dev_after_release: bool = False,
         corrupt_signature: bool = False,
+        signing_key: Path | None = None,
     ) -> tuple[Path, str, str]:
         repo = self.root / "source"
         repo.mkdir()
@@ -83,7 +98,7 @@ class InstallerReleaseChannelTests(unittest.TestCase):
 
         (repo / "mcp_server/main.py").write_text("VALUE = 'signed-release'\n", encoding="utf-8")
         run("git", "add", ".", cwd=repo)
-        self.sign_index(repo)
+        self.sign_index(repo, key=signing_key)
         if corrupt_signature:
             sig = repo / release_trust.SIGNATURE_RELPATH
             data = bytearray(sig.read_bytes())
@@ -100,14 +115,20 @@ class InstallerReleaseChannelTests(unittest.TestCase):
         tip = run("git", "rev-parse", "HEAD", cwd=repo)
         return repo, signed, tip
 
-    def bash(self, body: str) -> subprocess.CompletedProcess[str]:
+    def bash(
+        self,
+        body: str,
+        *,
+        trusted_signers: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         install_tmp = self.root / "install-tmp"
         install_tmp.mkdir(exist_ok=True)
+        signer_set = trusted_signers if trusted_signers is not None else self.signer_line
         prefix = (
             f'export MAC_MCP_INSTALLER_LIBRARY_ONLY=1; source "{INSTALLER}"; '
             f'INSTALL_TMP="{install_tmp}"; '
             f'GIT_BIN="$(command -v git)"; PYTHON_BIN="{sys.executable}"; BRANCH=main; '
-            f'RELEASE_TRUSTED_SIGNER="{self.signer_line}"; '
+            f'RELEASE_TRUSTED_SIGNERS={shlex.quote(signer_set)}; '
             f'RELEASE_BOOTSTRAP_VERIFIER_SHA256="{self.verifier_sha}"; '
         )
         return subprocess.run(
@@ -116,6 +137,52 @@ class InstallerReleaseChannelTests(unittest.TestCase):
             capture_output=True,
             check=False,
         )
+
+    def test_current_bootstrap_signers_match_runtime_trust_store(self) -> None:
+        proc = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                (
+                    f'export MAC_MCP_INSTALLER_LIBRARY_ONLY=1; source "{INSTALLER}"; '
+                    'printf "%s\n" "$RELEASE_TRUSTED_SIGNERS"'
+                ),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        installer_signers = [
+            line.strip()
+            for line in proc.stdout.splitlines()
+            if line.strip()
+        ]
+        runtime_signers = [
+            line.strip()
+            for line in (ROOT / "mcp_server/release_trusted_signers.txt").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if line.strip()
+        ]
+        self.assertEqual(runtime_signers, installer_signers)
+
+    def test_current_bootstrap_verifier_hash_matches_pinned_value(self) -> None:
+        proc = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                (
+                    f'export MAC_MCP_INSTALLER_LIBRARY_ONLY=1; source "{INSTALLER}"; '
+                    'printf "%s\n" "$RELEASE_BOOTSTRAP_VERIFIER_SHA256"'
+                ),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertEqual(self.verifier_sha, proc.stdout.strip())
 
     def test_selects_signed_release_beneath_unsigned_development_tip(self) -> None:
         repo, signed, tip = self.make_repo(dev_after_release=True)
@@ -127,6 +194,47 @@ class InstallerReleaseChannelTests(unittest.TestCase):
         self.assertEqual(0, proc.returncode, proc.stderr)
         result = next(line for line in proc.stdout.splitlines() if line.startswith("RESULT="))
         self.assertEqual(f"RESULT={signed}|installer-stable|3.0.0", result)
+
+    def test_bootstrap_overlap_accepts_release_signed_by_rotated_key(self) -> None:
+        repo, signed, tip = self.make_repo(signing_key=self.rotated_signing_key)
+        proc = self.bash(
+            f'select_verified_release_commit "{repo}" "{tip}"; '
+            'printf "\nRESULT=%s\n" "$VERIFIED_RELEASE_COMMIT"',
+            trusted_signers=f"{self.signer_line}\n{self.rotated_signer_line}",
+        )
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertIn(f"RESULT={signed}", proc.stdout)
+
+    def test_old_only_bootstrap_rejects_new_key_release_after_cutover(self) -> None:
+        repo, _signed, tip = self.make_repo(signing_key=self.rotated_signing_key)
+        proc = self.bash(
+            f'select_verified_release_commit "{repo}" "{tip}"',
+            trusted_signers=self.signer_line,
+        )
+        self.assertNotEqual(0, proc.returncode)
+        self.assertIn("signed release verification failed", (proc.stdout + proc.stderr).lower())
+
+    def test_malformed_bootstrap_signer_set_fails_closed(self) -> None:
+        repo, _signed, tip = self.make_repo()
+        malformed = f"{self.signer_line}\n* ssh-ed25519 AAAAB3NzaC1yc2EAAAADAQABAAABAQ"
+        proc = self.bash(
+            f'select_verified_release_commit "{repo}" "{tip}"',
+            trusted_signers=malformed,
+        )
+        self.assertNotEqual(0, proc.returncode)
+        self.assertIn("embedded release trust roots are malformed", (proc.stdout + proc.stderr).lower())
+
+    def test_bootstrap_rejects_unbounded_three_key_overlap(self) -> None:
+        repo, _signed, tip = self.make_repo()
+        third = f"{release_trust.SIGNER_IDENTITY} ssh-ed25519 AAAA"
+        proc = self.bash(
+            f'select_verified_release_commit "{repo}" "{tip}"',
+            trusted_signers=(
+                f"{self.signer_line}\n{self.rotated_signer_line}\n{third}"
+            ),
+        )
+        self.assertNotEqual(0, proc.returncode)
+        self.assertIn("embedded release trust roots are malformed", (proc.stdout + proc.stderr).lower())
 
     def test_tampered_signature_blocks_selection(self) -> None:
         repo, _signed, tip = self.make_repo(corrupt_signature=True)
