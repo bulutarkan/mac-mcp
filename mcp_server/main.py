@@ -114,6 +114,9 @@ BROWSER_ACT_DESCRIPTION = (
     "Targets may use stable element_id or semantic query/role/text_match, so element IDs are not always required. "
     "Split into separate action groups only when an earlier action materially changes later controls, stale-target or human-takeover risk requires re-observation, "
     "or a consequential step needs separate verification. Perform up to 20 browser actions in one MCP call. Supports click, type, async custom select, scroll, key and waits. "
+    "Key actions (Enter, Escape, Tab, arrows, characters) run as background DOM keyboard events by default and Enter submits the input's form, "
+    "so type then key Enter commits search boxes and date fields in the same batch. After an earlier action changes the page, a missing target is awaited "
+    "briefly (set wait_s per action to change it), so picker confirm buttons and autocomplete options can follow in the same batch. "
     "Click actions default to background-safe synthetic DOM input; input_mode='trusted' is an explicit Chrome Background Companion-only pointer path and fails closed on Safari "
     "without foreground/coordinate fallback. No-effect mutations are never automatically replayed. return_state: none, compact, or full."
 )

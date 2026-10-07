@@ -2128,6 +2128,171 @@ fire('keydown');fire('keypress');fire('keyup');return __mcpB64({{ok:true,key:key
 }})()'''
 
 
+_DOM_KEYS: Dict[str, Tuple[str, str, int]] = {
+    "enter": ("Enter", "Enter", 13), "return": ("Enter", "Enter", 13),
+    "escape": ("Escape", "Escape", 27), "esc": ("Escape", "Escape", 27),
+    "tab": ("Tab", "Tab", 9), "space": (" ", "Space", 32),
+    "backspace": ("Backspace", "Backspace", 8), "delete": ("Delete", "Delete", 46),
+    "arrowup": ("ArrowUp", "ArrowUp", 38), "up": ("ArrowUp", "ArrowUp", 38),
+    "arrowdown": ("ArrowDown", "ArrowDown", 40), "down": ("ArrowDown", "ArrowDown", 40),
+    "arrowleft": ("ArrowLeft", "ArrowLeft", 37), "left": ("ArrowLeft", "ArrowLeft", 37),
+    "arrowright": ("ArrowRight", "ArrowRight", 39), "right": ("ArrowRight", "ArrowRight", 39),
+    "home": ("Home", "Home", 36), "end": ("End", "End", 35),
+    "pageup": ("PageUp", "PageUp", 33), "pagedown": ("PageDown", "PageDown", 34),
+}
+_DOM_KEY_MODIFIERS = {
+    "ctrl": "ctrlKey", "control": "ctrlKey", "shift": "shiftKey", "alt": "altKey",
+    "option": "altKey", "meta": "metaKey", "cmd": "metaKey", "command": "metaKey",
+}
+
+
+def _dom_key_spec(key: str) -> Optional[Tuple[str, str, int]]:
+    raw = str(key or "")
+    normalized = raw.strip().lower().replace("_", "").replace("-", "")
+    if normalized in _DOM_KEYS:
+        return _DOM_KEYS[normalized]
+    if len(raw) == 1 and raw.isprintable():
+        upper = raw.upper()
+        if upper.isalpha() and upper.isascii():
+            return raw, f"Key{upper}", ord(upper)
+        if raw.isdigit():
+            return raw, f"Digit{raw}", ord(raw)
+        return raw, "", ord(raw)
+    return None
+
+
+def _dom_key_js(element_id: Optional[str], key: Tuple[str, str, int], modifiers: List[str]) -> str:
+    """Dispatch an untrusted keyboard sequence without changing app focus.
+
+    Untrusted Enter never triggers a browser's implicit form submission, so it
+    is emulated with requestSubmit() when the page did not handle the keydown.
+    """
+    eid = json.dumps(str(element_id or ""))
+    key_name, code, key_code = key
+    flags = {name: False for name in ("ctrlKey", "shiftKey", "altKey", "metaKey")}
+    for modifier in modifiers or []:
+        mapped = _DOM_KEY_MODIFIERS.get(str(modifier or "").strip().lower())
+        if mapped:
+            flags[mapped] = True
+    spec = json.dumps({"key": key_name, "code": code, "keyCode": key_code, **flags})
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var s=__mcpState(),spec={spec},eid={eid},el=null;
+if(eid){{el=__mcpRecoverElement(eid,s);if(!el)return __mcpB64({{ok:false,error:'stale_element',reason_code:'ELEMENT_DETACHED',observe_again:true}});}}
+else{{el=document.activeElement;while(el&&el.shadowRoot&&el.shadowRoot.activeElement)el=el.shadowRoot.activeElement;}}
+if(!el||el===document.body||el===document.documentElement)return __mcpB64({{ok:false,error:'no_focused_element',reason_code:'DOM_KEY_TARGET_REQUIRED',observe_again:true}});
+__mcpFlushMutations(s);__mcpStartMutationWatch(s,3000);
+var before=__mcpEffectState(el),revision=s.mutationRevision,url=location.href,title=document.title;
+try{{if(el.ownerDocument.activeElement!==el)el.focus({{preventScroll:true}});}}catch(e){{}}
+var win=__mcpOwnerWindow(el);
+function make(type){{
+  var code=type==='keypress'?(spec.key.length===1?spec.key.charCodeAt(0):spec.keyCode):spec.keyCode;
+  var ev=new win.KeyboardEvent(type,{{bubbles:true,cancelable:true,composed:true,key:spec.key,code:spec.code,ctrlKey:spec.ctrlKey,shiftKey:spec.shiftKey,altKey:spec.altKey,metaKey:spec.metaKey}});
+  try{{Object.defineProperty(ev,'keyCode',{{get:function(){{return code;}}}});Object.defineProperty(ev,'which',{{get:function(){{return code;}}}});Object.defineProperty(ev,'charCode',{{get:function(){{return type==='keypress'?code:0;}}}});}}catch(e){{}}
+  return ev;
+}}
+var downAllowed=el.dispatchEvent(make('keydown')),pressAllowed=true;
+if(downAllowed&&(spec.key.length===1||spec.key==='Enter'))pressAllowed=el.dispatchEvent(make('keypress'));
+el.dispatchEvent(make('keyup'));
+var submitted=false,tag=String(el.tagName||'').toLowerCase(),itype=String(el.type||'').toLowerCase();
+var plain=!spec.ctrlKey&&!spec.altKey&&!spec.metaKey;
+if(spec.key==='Enter'&&plain&&downAllowed&&pressAllowed&&tag==='input'&&el.form&&['button','submit','reset','checkbox','radio','file','image','hidden'].indexOf(itype)<0){{
+  var form=el.form,hasSubmit=!!form.querySelector('button:not([type]),button[type=submit],input[type=submit],input[type=image]');
+  var blocking=Array.prototype.filter.call(form.elements||[],function(f){{var t=String(f.type||'').toLowerCase();return String(f.tagName||'').toLowerCase()==='input'&&['text','search','url','tel','email','password','date','datetime-local','month','week','time','number'].indexOf(t)>=0;}}).length;
+  if(hasSubmit||blocking===1){{try{{if(typeof form.requestSubmit==='function')form.requestSubmit();else form.submit();submitted=true;}}catch(e){{}}}}
+}}
+return __mcpB64({{ok:true,element_id:__mcpId(el,s),key:spec.key,keydown_handled:!downAllowed,form_submitted:submitted,_verify_revision:revision,_verify_url:url,_verify_title:title,_verify_state:before}});
+}})()'''
+
+
+def _dom_key_action(
+    settings: Settings,
+    browser: str,
+    action: Dict[str, Any],
+    element_id: Optional[str],
+    window_index: int,
+    tab_index: Optional[int],
+    tab_handle: Optional[str],
+    *,
+    prevalidated_target: Any = None,
+) -> Dict[str, Any]:
+    """Background-safe key press: DOM events plus bounded, read-only effect check."""
+    key_label = str(action.get("key") or "")
+    spec = _dom_key_spec(key_label)
+    base = {"type": "key", "key": key_label, "input_mode": "dom", "input_trust": "untrusted"}
+    if spec is None:
+        return {
+            **base, "ok": False, "error": "unsupported_dom_key", "reason_code": "UNSUPPORTED_DOM_KEY",
+            "reason": "This key has no DOM equivalent. Use a single character or a named key such as Enter, Escape, Tab or ArrowDown.",
+            "_js_calls": 0,
+        }
+    out = _run_json_js(
+        settings, browser, _dom_key_js(element_id, spec, list(action.get("modifiers") or [])),
+        window_index, tab_index, tab_handle, prevalidated_target=prevalidated_target,
+    )
+    js_calls = 1
+    if not out.get("ok"):
+        return {**base, **{k: v for k, v in out.items() if not k.startswith("_")}, "ok": False, "_js_calls": js_calls}
+    target_id = str(out.get("element_id") or element_id or "")
+    result: Dict[str, Any] = {
+        **base, "ok": True, "element_id": target_id or None,
+        "keydown_handled": bool(out.get("keydown_handled")), "form_submitted": bool(out.get("form_submitted")),
+        "effect_observed": False,
+    }
+    before_state = out.get("_verify_state") if isinstance(out.get("_verify_state"), dict) else {}
+    before = {
+        "url": out.get("_verify_url"), "title": out.get("_verify_title"),
+        "connected": before_state.get("connected", True), "value": before_state.get("value"),
+        "text": before_state.get("text"), "checked": before_state.get("checked"),
+        "aria_expanded": before_state.get("expanded"), "aria_selected": before_state.get("selected"),
+        "aria_pressed": before_state.get("pressed"), "aria_checked": before_state.get("ariaChecked"),
+        "class_name": before_state.get("cls"), "modal_fingerprint": before_state.get("modalFingerprint"),
+        "activation_network_count": before_state.get("activationNetworkCount", 0),
+    }
+    before_revision = out.get("_verify_revision")
+    compact_state: Optional[Dict[str, Any]] = None
+    deadline = time.perf_counter() + max(
+        0.1, min(float(action.get("verify_timeout_s", _ACTION_VERIFY_TIMEOUT_S)), 2.0),
+    )
+    while time.perf_counter() < deadline:
+        cancellable_sleep(_ACTION_VERIFY_POLL_S)
+        try:
+            post = _run_json_js(
+                settings, browser, _element_effect_state_js(target_id),
+                window_index, tab_index, tab_handle,
+            )
+            js_calls += 1
+        except HTTPException:
+            result.update({"effect_observed": True, "verification": "async_navigation"})
+            break
+        if _effect_changed(before, post):
+            result.update({"effect_observed": True, "verification": "state_changed"})
+        elif before_revision is not None and post.get("dom_revision") != before_revision:
+            result.update({"effect_observed": True, "verification": "dom_mutated"})
+        if result["effect_observed"]:
+            compact_state = post
+            break
+    if not result["effect_observed"] and (result["keydown_handled"] or result["form_submitted"]):
+        result.update({
+            "effect_observed": True,
+            "verification": "form_submitted" if result["form_submitted"] else "keydown_handled_by_page",
+        })
+    if not result["effect_observed"]:
+        result.update({
+            "ok": False, "error": "action_no_effect", "reason_code": "ACTION_NO_EFFECT",
+            "verification": "no_effect_after_bounded_wait", "observe_again": True, "automatic_retry": False,
+            "reason": (
+                "The page did not react to the DOM key event. Some pages ignore untrusted keyboard input; "
+                "click the confirming control instead. Native keys need user-granted foreground authorization."
+            ),
+        })
+    result["_js_calls"] = js_calls
+    if compact_state is not None:
+        result["_compact_state"] = compact_state
+    return result
+
+
 def _effect_changed(before: Dict[str, Any], after: Dict[str, Any]) -> bool:
     if not before or not after:
         return False
@@ -3059,6 +3224,24 @@ def _wait_action(
 
 
 _TARGET_CANDIDATE_LIMIT = 8
+_LATE_TARGET_WAIT_S = 2.5
+_LATE_TARGET_MAX_WAIT_S = 10.0
+_MUTATING_RESULT_TYPES = {"click", "double_click", "type", "type_text", "paste", "select", "key"}
+
+
+def _late_target_wait_s(action: Dict[str, Any], results: List[Dict[str, Any]]) -> float:
+    """How long to wait for a missing target: explicit wait_s, else a short wait after a mutation."""
+    explicit = action.get("wait_s")
+    if explicit is not None:
+        try:
+            return max(0.0, min(float(explicit), _LATE_TARGET_MAX_WAIT_S))
+        except (TypeError, ValueError):
+            return 0.0
+    mutated = any(
+        isinstance(item, dict) and item.get("ok") and str(item.get("type") or "") in _MUTATING_RESULT_TYPES
+        for item in results
+    )
+    return _LATE_TARGET_WAIT_S if mutated else 0.0
 
 
 def _decide_browser_target(
@@ -3231,10 +3414,26 @@ def _browser_act_locked(
         )
         internal_js_calls += 1
         best = found.get("best_match")
+        waited_s = 0.0
+        if not best:
+            wait_s = _late_target_wait_s(action, results)
+            if wait_s > 0:
+                # A control revealed by an earlier step in this batch (picker confirm,
+                # autocomplete option) may render a moment later; wait for it here
+                # instead of failing back to the outer agent for another observe.
+                found = browser_find(
+                    settings, browser, query=query, role=role, text=match_text,
+                    window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
+                    max_results=_TARGET_CANDIDATE_LIMIT, wait_timeout_s=wait_s,
+                )
+                internal_js_calls += 1
+                best = found.get("best_match")
+                waited_s = wait_s
         if not best:
             return dict(action), {
                 "ok": False, "error": "target_not_found", "query": query,
                 "role": role, "text": match_text,
+                **({"waited_s": waited_s} if waited_s else {}),
             }
         matches = [item for item in (found.get("matches") or []) if isinstance(item, dict)] or [best]
         chosen = _decide_browser_target(action, query, role, match_text, matches)
@@ -3364,6 +3563,31 @@ def _browser_act_locked(
                         results.append({"type": "key", **resolved_target})
                         break
                 eid = key_action.get("element_id")
+                key_mode = str(action.get("input_mode") or "auto").strip().lower()
+                if key_mode == "dom" or (key_mode == "auto" and not allow_foreground):
+                    # Background-safe default: DOM key events never change app focus.
+                    mutation_target, blocked = revalidate_mutation("key")
+                    if blocked is not None:
+                        results.append(blocked)
+                        break
+                    key_result = _dom_key_action(
+                        settings, browser, action, eid, window_index, tab_index, tab_handle,
+                        prevalidated_target=mutation_target,
+                    )
+                    internal_js_calls += int(key_result.pop("_js_calls", 0))
+                    key_compact_state = key_result.pop("_compact_state", None)
+                    if key_compact_state is not None:
+                        compact_state_candidate = key_compact_state
+                    if resolved_target:
+                        key_result["resolved_target"] = {
+                            k: resolved_target.get(k)
+                            for k in ("element_id", "text", "role", "tag", "confidence")
+                        }
+                    results.append(key_result)
+                    if not key_result.get("ok"):
+                        break
+                    current_observation_id = None
+                    continue
                 if eid:
                     mutation_target, blocked = revalidate_mutation("key")
                     if blocked is not None:
