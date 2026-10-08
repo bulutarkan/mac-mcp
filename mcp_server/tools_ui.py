@@ -1679,7 +1679,9 @@ def _resolve_registered_native_target(
 
 
 def _format_result(payload: Dict[str, Any], image_data: Optional[bytes] = None) -> Any:
-    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    # Compact separators match perception.json_bytes, so payload_bytes is the
+    # size of the text actually returned.
+    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     if image_data:
         return [text, Image(data=image_data, format=_SCREENSHOT_FORMAT)]
     return text

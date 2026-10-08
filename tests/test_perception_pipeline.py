@@ -328,6 +328,66 @@ class BrowserConditionalObserveTests(unittest.TestCase):
         self.assertEqual({"width": 120, "height": 30}, telemetry["visual_dimensions"])
 
 
+class CompactObservationOutputTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.settings = load_settings()
+        reset_computer_use_samples()
+
+    def _full_scan(self, count: int) -> dict:
+        return {
+            "ok": True,
+            "observation_id": "bobs_compact",
+            "dom_revision": 3,
+            "url": "https://example.test/form",
+            "title": "Form",
+            "scope": "interactive",
+            "element_count": count,
+            "elements": [
+                {
+                    "element_id": f"e_{index}", "tag": "button", "role": "button",
+                    "text": f"Action {index}", "actionable": True, "enabled": True,
+                    "viewport_rect": {"x": 10, "y": 20 * index, "w": 120, "h": 32},
+                }
+                for index in range(count)
+            ],
+            "viewport": {"w": 1280, "h": 800},
+            "scroll": {"x": 0, "y": 0},
+            "_remote_js_calls": 1,
+        }
+
+    def test_browser_observation_is_compact_sized_exactly_and_serialized_at_most_four_times(self) -> None:
+        from mcp_server import perception
+
+        calls = []
+        real = perception.json_bytes
+
+        def counting(value):
+            calls.append(1)
+            return real(value)
+
+        with patch.object(tools_browser_agent, "_resolve_tab_target", return_value=(1, 1)), \
+             patch.object(tools_browser_agent, "_observe_payload", return_value=self._full_scan(40)), \
+             patch.object(perception, "json_bytes", side_effect=counting), \
+             patch.object(tools_browser_agent, "json_bytes", side_effect=counting):
+            raw = tools_browser_agent._browser_observe_locked(self.settings, "Safari", tab_handle="tab-a")
+
+        self.assertLessEqual(len(calls), 4)
+        self.assertNotIn("\n", raw)
+        payload = json.loads(raw)
+        self.assertEqual(len(raw.encode("utf-8")), payload["telemetry"]["payload_bytes"])
+        self.assertIn("benchmark", payload["telemetry"])
+        self.assertEqual(40, len(payload["elements"]))
+        pretty = json.dumps(payload, ensure_ascii=False, indent=2)
+        self.assertLessEqual(len(raw.encode("utf-8")), 0.9 * len(pretty.encode("utf-8")))
+
+    def test_native_result_text_is_compact_and_matches_reported_size(self) -> None:
+        payload = {"ok": True, "nodes": [{"role": "AXButton", "title": f"Item {i}"} for i in range(500)]}
+        finalize_perception_telemetry(payload, stage="semantic", state_mode="full", node_count=500)
+        text = tools_ui._format_result(payload)
+        self.assertNotIn("\n", text)
+        self.assertEqual(len(text.encode("utf-8")), json.loads(text)["telemetry"]["payload_bytes"])
+
+
 class NativePerceptionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.settings = load_settings()

@@ -45,6 +45,7 @@ def finalize_perception_telemetry(
     context_budget_bytes: int = DEFAULT_CONTEXT_BUDGET_BYTES,
     context_truncated: bool = False,
     expand_hint: Optional[str] = None,
+    measure: bool = True,
 ) -> Dict[str, Any]:
     telemetry = payload.setdefault("telemetry", {})
     telemetry["perception_stage"] = str(stage)
@@ -69,7 +70,10 @@ def finalize_perception_telemetry(
         context["expand_hint"] = str(expand_hint)
     telemetry["context_budget"] = context
 
-    refresh_perception_size(payload)
+    # Callers that attach more telemetry afterwards pass measure=False and call
+    # refresh_perception_size once at the end instead of sizing twice.
+    if measure:
+        refresh_perception_size(payload)
     return payload
 
 
@@ -83,8 +87,10 @@ def refresh_perception_size(payload: Dict[str, Any]) -> Dict[str, Any]:
         4_096,
         min(int(context.get("limit_bytes") or DEFAULT_CONTEXT_BUDGET_BYTES), 256_000),
     )
+    # payload_bytes is self-referential, so iterate to a fixed point, reusing
+    # each measurement instead of serializing twice per round.
+    measured = json_bytes(payload)
     for _ in range(6):
-        measured = json_bytes(payload)
         telemetry["payload_bytes"] = measured
         telemetry["payload_tokens_estimate"] = estimate_payload_tokens(measured)
         within_budget = measured <= budget
@@ -100,6 +106,7 @@ def refresh_perception_size(payload: Dict[str, Any]) -> Dict[str, Any]:
         next_measured = json_bytes(payload)
         if next_measured == measured:
             break
+        measured = next_measured
     return payload
 
 

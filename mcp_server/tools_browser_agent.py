@@ -20,7 +20,7 @@ from .security import Settings, truncate
 from .computer_use_perf import record_computer_use_sample
 from . import decision_engine
 from .data_guard import redact_sensitive_text
-from .perception import finalize_perception_telemetry, refresh_perception_size
+from .perception import estimate_payload_tokens, finalize_perception_telemetry, json_bytes, refresh_perception_size
 from . import browser_tabs
 from .chrome_background_bridge import chrome_background_bridge
 from .tool_cancellation import cancellable_sleep, cancellation_checkpoint
@@ -1323,7 +1323,7 @@ def _format_observation(payload: Dict[str, Any], image_data: Optional[bytes]) ->
         }
         text = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
         return [text, Image(data=image_data, format="jpeg")]
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def browser_observe(
@@ -1373,7 +1373,7 @@ def browser_observe(
                 payload.update(lease_meta)
                 if isinstance(payload.get("telemetry"), dict):
                     refresh_perception_size(payload)
-                return json.dumps(payload, ensure_ascii=False, indent=2)
+                return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         if isinstance(observed, list) and observed and isinstance(observed[0], str):
             try:
                 payload = json.loads(observed[0])
@@ -1455,27 +1455,22 @@ def _browser_observe_locked(
                 node_count=0,
                 duration_ms=int(out["duration_ms"]),
                 context_budget_bytes=64_000,
+                measure=False,
             )
             metrics = out["telemetry"]
+            sample_bytes = json_bytes(out)
             metrics["benchmark"] = record_computer_use_sample(
                 "browser_observe",
                 duration_ms=int(metrics.get("duration_ms") or 0),
-                payload_bytes=int(metrics.get("payload_bytes") or 0),
-                payload_tokens_estimate=int(metrics.get("payload_tokens_estimate") or 0),
+                payload_bytes=sample_bytes,
+                payload_tokens_estimate=estimate_payload_tokens(sample_bytes),
                 remote_js_calls=1,
                 ax_traversals=0,
                 visual_bytes=0,
                 node_count=0,
                 state_mode="not_modified",
             )
-            finalize_perception_telemetry(
-                out,
-                stage="conditional",
-                state_mode="not_modified",
-                node_count=0,
-                duration_ms=int(out["duration_ms"]),
-                context_budget_bytes=64_000,
-            )
+            refresh_perception_size(out)
             return _format_observation(out, None)
 
     payload = _observe_payload(
@@ -1563,36 +1558,25 @@ def _browser_observe_locked(
         context_budget_bytes=64_000,
         context_truncated=context_truncated,
         expand_hint=expand_hint,
+        measure=False,
     )
     metrics = payload["telemetry"]
     metrics["remote_js_calls"] = remote_js_calls
     if visual_meta.get("elapsed_ms") is not None:
         metrics["capture_duration_ms"] = int(visual_meta.get("elapsed_ms") or 0)
+    sample_bytes = json_bytes(payload)
     metrics["benchmark"] = record_computer_use_sample(
         "browser_observe",
         duration_ms=int(metrics.get("duration_ms") or 0),
-        payload_bytes=int(metrics.get("payload_bytes") or 0),
-        payload_tokens_estimate=int(metrics.get("payload_tokens_estimate") or 0),
+        payload_bytes=sample_bytes,
+        payload_tokens_estimate=estimate_payload_tokens(sample_bytes),
         remote_js_calls=remote_js_calls,
         ax_traversals=0,
         visual_bytes=visual_bytes,
         node_count=int(metrics.get("node_count") or 0),
         state_mode="full",
     )
-    finalize_perception_telemetry(
-        payload,
-        stage="targeted_visual" if visual != "none" else "semantic",
-        state_mode="full",
-        node_count=int(payload.get("element_count") or len(payload.get("elements") or [])),
-        duration_ms=int(payload.get("duration_ms") or 0),
-        visual_bytes=visual_bytes,
-        visual_width=(visual_meta or {}).get("output_width"),
-        visual_height=(visual_meta or {}).get("output_height"),
-        ocr_used=False,
-        context_budget_bytes=64_000,
-        context_truncated=context_truncated,
-        expand_hint=expand_hint,
-    )
+    refresh_perception_size(payload)
     return _format_observation(payload, image_data)
 
 
@@ -3610,6 +3594,9 @@ def _browser_act_locked(
     pending: List[Dict[str, Any]] = []
     in_flight: List[str] = []
     compact_state_candidate: Optional[Dict[str, Any]] = None
+    # The result dict whose action produced the candidate; progress reuses the
+    # candidate only while that action is still the last one in results.
+    compact_state_source: Optional[Dict[str, Any]] = None
 
     def note_possible_navigation() -> None:
         # Marked before dispatch: a click, key or select may start a cross-site
@@ -3727,6 +3714,7 @@ def _browser_act_locked(
                     action_compact_state = action_result.pop("_compact_state", None)
                     if action_compact_state is not None:
                         compact_state_candidate = action_compact_state
+                        compact_state_source = action_result
                     if resolved_target:
                         action_result["resolved_target"] = {
                             k: resolved_target.get(k)
@@ -3781,6 +3769,7 @@ def _browser_act_locked(
                         tab_handle,
                     )
                     compact_state_candidate = wait_result.pop("_compact_state", None)
+                    compact_state_source = wait_result
                     internal_js_calls += int(wait_result.pop("_js_calls", 0))
                     results.append(wait_result)
                     if not wait_result.get("matched") and action.get("required", True):
@@ -3809,6 +3798,7 @@ def _browser_act_locked(
                         key_compact_state = key_result.pop("_compact_state", None)
                         if key_compact_state is not None:
                             compact_state_candidate = key_compact_state
+                            compact_state_source = key_result
                         if resolved_target:
                             key_result["resolved_target"] = {
                                 k: resolved_target.get(k)
@@ -3940,14 +3930,22 @@ def _browser_act_locked(
                 response["full_state_error"] = "payload_too_large"
                 response["internal_js_calls"] += 1
         if return_state == "none":
-            progress = _run_json_js(
-                settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+            reusable = (
+                compact_state_candidate is not None
+                and results and results[-1] is compact_state_source
+                and all(compact_state_candidate.get(key) is not None for key in ("url", "title", "dom_revision"))
             )
+            if reusable:
+                progress = compact_state_candidate
+            else:
+                progress = _run_json_js(
+                    settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+                )
+                response["internal_js_calls"] += 1
             response["progress"] = {
                 key: progress.get(key) for key in ("url", "title", "dom_revision")
                 if progress.get(key) is not None
             }
-            response["internal_js_calls"] += 1
     except HTTPException as exc:
         state_lost = _tab_loss_detail(exc)
         if state_lost is None:
