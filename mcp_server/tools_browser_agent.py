@@ -810,6 +810,7 @@ function __mcpState(){
   var s=window.__macMcpBrowserAgent;
   if(!s){var stableAt=Date.now();try{var nav=performance.getEntriesByType&&performance.getEntriesByType('navigation')[0];if(document.readyState==='complete'&&nav&&nav.loadEventEnd>0&&performance.now()-nav.loadEventEnd>=300)stableAt=Date.now()-1000;}catch(e){}s=window.__macMcpBrowserAgent={counter:0,ids:new WeakMap(),elements:Object.create(null),pageToken:Math.random().toString(36).slice(2,10),mutationRevision:0,lastMutationAt:stableAt,observations:Object.create(null),observationMeta:Object.create(null),rootObservers:[],observerTimer:null};}
 if(!s.observationMeta)s.observationMeta=Object.create(null);
+if(!s.targetFp)s.targetFp=Object.create(null);
   return s;
 }
 function __mcpVisualTarget(el){
@@ -828,6 +829,15 @@ function __mcpVisual(action,el,effect,ttl,detail){
     var raw=btoa(unescape(encodeURIComponent(JSON.stringify(payload))));(document.documentElement||document.body).setAttribute('data-mac-mcp-visual-event',raw);try{window.dispatchEvent(new Event('mac-mcp-visual'));}catch(e){}
   }catch(e){}}
 function __mcpId(el,s){var id=s.ids.get(el);if(!id){id='e_'+s.pageToken+'_'+(++s.counter);s.ids.set(el,id);}s.elements[id]=el;return id;}
+function __mcpRoute(){var h=String(location.hash||'');return String(location.pathname||'')+String(location.search||'')+((h.indexOf('#/')===0||h.indexOf('#!')===0)?h:'');}
+function __mcpTargetFp(el){
+  var role=String(__mcpRole(el)||''),tag=String(el.tagName||'').toLowerCase();
+  var editable=!!el.isContentEditable||['input','textarea','select'].indexOf(tag)>=0||['textbox','searchbox','combobox'].indexOf(role)>=0;
+  var attr=function(n){try{return String(el.getAttribute(n)||'');}catch(e){return '';}};
+  var label=attr('aria-label')||attr('name')||attr('placeholder')||attr('title')||(editable?'':__mcpText(el));
+  return {route:__mcpRoute(),role:role,tag:tag,name:__mcpNorm(label).replace(/[0-9]+/g,'#').slice(0,120)};
+}
+function __mcpRememberTarget(el,id,s){if(!el||!id)return;try{s.targetFp[id]=__mcpTargetFp(el);}catch(e){}}
 function __mcpVisible(el){if(!el||el.nodeType!==1)return false;var st=__mcpStyle(el);if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0)return false;var r=__mcpTopRect(el);if(r.width<1||r.height<1)return false;return r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}
 function __mcpActionable(el){
   var tag=(el.tagName||'').toLowerCase(),role=(el.getAttribute('role')||'').toLowerCase();
@@ -1150,7 +1160,7 @@ function __mcpContentCandidate(el,actionable){{
 var s=__mcpState();
 __mcpStartMutationWatch(s,5000);
 __mcpVisual('Inspecting',null,'',1800);
-Object.keys(s.elements).forEach(function(k){{var e=s.elements[k];if(!e||!e.isConnected)delete s.elements[k];}});
+Object.keys(s.elements).forEach(function(k){{var e=s.elements[k];if(!e||!e.isConnected){{delete s.elements[k];delete s.targetFp[k];}}}});
 var scope={scope_js};
 var all=__mcpQueryAll('*');
 var elements=[];
@@ -1166,6 +1176,7 @@ for(var i=0;i<all.length && elements.length<{max_elements};i++){{
   }}
   if((scope==='content'||scope==='leaf') && !__mcpContentCandidate(el,actionable)) continue;
   var desc=__mcpDescribe(el,s);
+  __mcpRememberTarget(el,desc.element_id,s);
   if((scope==='content'||scope==='leaf') && !actionable){{
     var own=__mcpOwnText(el);
     if(own) desc.text=own;
@@ -1829,6 +1840,7 @@ function contains(a,b){{try{{if(a.contains(b))return true;}}catch(e){{}}return _
 var withinInfo=null;
 {within_block}
 if(out.length>{max_candidates}){{out=out.slice(0,{max_candidates});els=els.slice(0,{max_candidates});}}
+for(var fi=0;fi<els.length;fi++)__mcpRememberTarget(els[fi],out[fi].element_id,s);
 for(var ci=0;ci<els.length;ci++){{
   var nested=[];
   for(var cj=0;cj<els.length&&nested.length<12;cj++){{if(ci!==cj&&els[ci]!==els[cj]&&contains(els[ci],els[cj]))nested.push(out[cj].element_id);}}
@@ -2006,8 +2018,13 @@ function pageEffect(beforeRevision,beforeUrl,beforeTitle,beforeState,el){
 }
 for(var i=0;i<actions.length;i++){
   var a=actions[i]||{}, type=String(a.type||'').toLowerCase().replace(/-/g,'_');
+  // A remembered target that moved to another route or now means something else
+  // must not be acted on; nothing has run for this action yet.
+  var fpWas=(a.element_id&&type!=='scroll'&&s.targetFp)?s.targetFp[a.element_id]:null;
+  if(fpWas&&fpWas.route!==__mcpRoute()){results.push({index:i,type:type,element_id:a.element_id,ok:false,error:'stale_target',reason_code:'ROUTE_CHANGED',observe_again:true,no_side_effect:true});break;}
   var el=a.element_id?target(a):null;
   if(a.element_id && !el){results.push({index:i,type:type,element_id:a.element_id,ok:false,error:'stale_element',observe_again:true});break;}
+  if(fpWas&&el){var fpNow=__mcpTargetFp(el);if(fpNow.role!==fpWas.role||fpNow.tag!==fpWas.tag||fpNow.name!==fpWas.name){results.push({index:i,type:type,element_id:a.element_id,ok:false,error:'stale_target',reason_code:'TARGET_CHANGED',observe_again:true,no_side_effect:true});break;}}
   var visualLabel=type==='click'||type==='double_click'?'Clicking':(type==='type'||type==='type_text'||type==='paste'?'Typing':(type==='scroll'?'Scrolling':(type==='focus'?'Focusing':(type==='select'?'Selecting':'Working'))));
   var visualDetail=type==='scroll'?(el?'Into view':(Number(a.dy||300)<0?'Up':'Down')):'';
   __mcpVisual(visualLabel,el,(type==='click'||type==='double_click')?'click':'',2200,visualDetail);
@@ -2088,8 +2105,11 @@ function norm(v){{return String(v||'').normalize('NFKD').toLowerCase().replace(/
 var s=__mcpState(), expected={obs}, eid={eid}, wanted=norm({wanted});
 __mcpStartMutationWatch(s,3000);
 if(expected && !(expected in s.observations)) return __mcpB64({{ok:false,error:'stale_observation',observe_again:true}});
+var fpWas=s.targetFp?s.targetFp[eid]:null;
+if(fpWas&&fpWas.route!==__mcpRoute()) return __mcpB64({{ok:false,error:'stale_target',reason_code:'ROUTE_CHANGED',observe_again:true,no_side_effect:true,element_id:eid}});
 var el=s.elements[eid];
 if(!el||!el.isConnected) return __mcpB64({{ok:false,error:'stale_element',observe_again:true,element_id:eid}});
+if(fpWas){{var fpNow=__mcpTargetFp(el);if(fpNow.role!==fpWas.role||fpNow.tag!==fpWas.tag||fpNow.name!==fpWas.name)return __mcpB64({{ok:false,error:'stale_target',reason_code:'TARGET_CHANGED',observe_again:true,no_side_effect:true,element_id:eid}});}}
 __mcpVisual('Selecting',el,'',2200);
 if((el.tagName||'').toLowerCase()==='select'){{
   var opts=Array.from(el.options||[]);
@@ -3566,6 +3586,11 @@ def _decide_browser_target(
 
 
 _NON_MUTATING_ACT_TYPES = {"wait", "extract"}
+_LOCATOR_KEYS = ("query", "target", "role", "text_match", "target_text")
+
+
+def _has_locator(action: Dict[str, Any]) -> bool:
+    return any(action.get(key) for key in _LOCATOR_KEYS)
 _ACT_TYPES = (
     "click", "double_click", "type", "type_text", "paste", "select", "scroll", "focus",
     "wait", "key", "keyboard", "shortcut", "extract",
@@ -3884,6 +3909,7 @@ def _browser_act_locked(
                 if typ in {"click", "double_click", "type", "type_text", "paste"}:
                     if typ in {"click", "double_click"}:
                         note_possible_navigation()
+                    dispatched_before = mutation_dispatched
                     mutation_dispatched = True
                     action_result = _verified_dom_action(
                         settings, browser, work_action, current_observation_id,
@@ -3891,6 +3917,33 @@ def _browser_act_locked(
                         mutation_revalidator=revalidate_mutation,
                     )
                     internal_js_calls += int(action_result.pop("_js_calls", 0))
+                    if action_result.get("no_side_effect"):
+                        # The page refused the remembered target before acting on it.
+                        mutation_dispatched = dispatched_before
+                        if resolved_target is None and _has_locator(action):
+                            # The caller also described the target, so look it up again
+                            # on the current page once instead of acting on the old id.
+                            relocated = {k: v for k, v in action.items() if k != "element_id"}
+                            retry_action, retry_target = resolve_target(relocated)
+                            if isinstance(retry_target, dict) and retry_target.get("ok") is False:
+                                results.append({"type": typ, **retry_target, "stale_element_id": action.get("element_id")})
+                                break
+                            current_observation_id = None
+                            mutation_dispatched = True
+                            stale_result = action_result
+                            work_action, resolved_target = retry_action, retry_target
+                            action_result = _verified_dom_action(
+                                settings, browser, work_action, None,
+                                window_index, tab_index, tab_handle,
+                                mutation_revalidator=revalidate_mutation,
+                            )
+                            internal_js_calls += int(action_result.pop("_js_calls", 0))
+                            if action_result.get("no_side_effect"):
+                                mutation_dispatched = dispatched_before
+                            action_result["re_resolved"] = {
+                                "stale_element_id": action.get("element_id"),
+                                "reason_code": stale_result.get("reason_code"),
+                            }
                     action_compact_state = action_result.pop("_compact_state", None)
                     if action_compact_state is not None:
                         compact_state_candidate = action_compact_state
@@ -3916,6 +3969,7 @@ def _browser_act_locked(
                         break
                 elif typ == "select":
                     note_possible_navigation()
+                    dispatched_before = mutation_dispatched
                     mutation_dispatched = True
                     select_result = _select_action(
                         settings,
@@ -3928,6 +3982,8 @@ def _browser_act_locked(
                         mutation_revalidator=revalidate_mutation,
                     )
                     internal_js_calls += int(select_result.pop("_js_calls", 0))
+                    if select_result.get("no_side_effect"):
+                        mutation_dispatched = dispatched_before
                     if resolved_target:
                         select_result["resolved_target"] = {
                             k: resolved_target.get(k)
