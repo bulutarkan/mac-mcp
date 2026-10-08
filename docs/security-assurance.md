@@ -31,7 +31,7 @@ The matrix is evidence, not a claim that software is risk-free. Entries intentio
 - **Introduced / fixed release:** 2.0.3
 - **Control:** Tool risk classification and permission profiles are centralized and deterministic; delegated resource scopes and capability presets can narrow but cannot widen their parent authorization boundary, and dynamic tool invocation inherits the target tool's effective risk.
 - **Control paths:** `mcp_server/policy.py`, `mcp_server/policy_scope.py`, `mcp_server/tools_agents.py`, `mcp_server/observability.py`
-- **Regression tests:** `tests/test_hardening_203.py::RiskAndScopeTests.test_registry_covers_current_99_tool_surface`, `tests/test_hardening_203.py::RiskAndScopeTests.test_profiles_are_deterministic`, `tests/test_hardening_203.py::RiskAndScopeTests.test_child_scope_can_only_narrow_parent`, `tests/test_security_boundaries.py::DelegatedCapabilityProfileTests.test_browser_only_child_cannot_spawn_full_child`
+- **Regression tests:** `tests/test_hardening_203.py::RiskAndScopeTests.test_registry_covers_current_101_tool_surface`, `tests/test_hardening_203.py::RiskAndScopeTests.test_profiles_are_deterministic`, `tests/test_hardening_203.py::RiskAndScopeTests.test_child_scope_can_only_narrow_parent`, `tests/test_security_boundaries.py::DelegatedCapabilityProfileTests.test_browser_only_child_cannot_spawn_full_child`
 
 ## SEC-UPD-001 — Failed-update rollback integrity
 
