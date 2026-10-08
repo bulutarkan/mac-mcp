@@ -230,8 +230,10 @@ def _stop_pid(
             print(f"{name} stopped; PID {pid} was reused by another process.")
             return True
         if current.status == "unverifiable":
-            print(f"Refusing further signals to {name}: process identity became unverifiable.")
-            return False
+            # An exiting process briefly stays alive with no readable metadata. Never
+            # signal it again, but keep waiting for it to disappear.
+            time.sleep(0.2)
+            continue
         time.sleep(0.2)
 
     if force:
