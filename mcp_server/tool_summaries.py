@@ -66,12 +66,12 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "dependency/rerender, stale/takeover risk, or consequential verification. Returns DOM element IDs."
     ),
     "browser_find": (
-        "Find one rendered browser element by query/role/text with exact-first ranking; within='text in one item' limits it "
-        "to that item, nearest first. wait_timeout_s>0 waits for it. Act on it with browser_act."
+        "Read-only: find a rendered element by query/role/text; within='text in one item' limits it to that item. "
+        "Not needed before acting: browser_act takes the same query/role/within and resolves the target itself."
     ),
     "browser_act": (
         "BATCH-FIRST: forms observe once -> one browser_act with type/select/click/scroll -> observe verify. "
-        "Custom dropdowns: select. Targets: element_id or query/role/text_match +intent/within. Split only for dependencies."
+        "Custom dropdowns: select. Targets: query/role/text_match +intent/within, no find first. Split only for dependencies."
     ),
     "browser_do": (
         "Preferred one-call browser transaction: open/act/extract in one call, e.g. extract=['price','rating'] for compact reads. "

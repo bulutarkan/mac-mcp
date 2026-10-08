@@ -18,6 +18,7 @@ from starlette.routing import Route, Mount
 
 from mcp.server.transport_security import TransportSecuritySettings
 from .request_client import client_address
+from .workflow_checkpoints import clear_not_executed
 from .security import AuthFailureLimiter, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
 from .observability import ObservedFastMCP, TelemetryManager, current_security_session
 from .policy import PROFILES, current_policy_context, declared_risk, reset_policy_context, set_policy_context
@@ -94,6 +95,8 @@ MCP_AGENT_INSTRUCTIONS = (
     "For form filling and repetitive browser interactions, batch independent actions; never field-by-field unless dependencies require it. "
     "Split browser action groups when an earlier action materially changes later controls, stale-target or human-takeover risk requires re-observation, "
     "or a consequential step needs a separate verification boundary. "
+    "Browser tabs: pass the tab_handle from browser_list_tabs or browser_do on every browser call. "
+    "browser_act and browser_do resolve query/role/within targets themselves; use browser_find only to read, never as a step before acting. "
     "When every item repeats the same controls (a Reply under each comment, a button on each card), do not browser_find each control: "
     "send one browser_act whose actions all carry within='a phrase that appears only in that item', e.g. click Reply -> type into role=textbox "
     "-> click the submit control with role=button -> wait for:text with the posted text. "
@@ -1346,7 +1349,8 @@ def create_app():
         name="browser_find",
         description=(
             "Find a rendered browser element with exact-first ranking and hard role/text constraints. Queries also match input values; role-only lookup is supported. "
-            "Set actionable_only=false to include labels/cards; use best_match with browser_act. "
+            "Use it to read or inspect a page. To act, do not find first: pass the same query/role/within straight to browser_act, "
+            "which resolves the target itself. Set actionable_only=false to include labels/cards. "
             "wait_timeout_s>0 uses the event-driven DOM waiter before the final targeted scan. "
             "within='text unique to one item' (or within_element_id) limits matches to that item, e.g. one comment, "
             "nearest first; within_levels (default 6) sets how far above the anchor the item may extend."
@@ -1440,11 +1444,17 @@ def create_app():
                     ],
                     "max_chars": 3000,
                 })
-            result = browser_act(
-                settings, browser=browser, actions=work_actions, window_index=window_index,
-                tab_index=tab_index, tab_handle=handle, return_state=return_state,
-                allow_foreground=allow_foreground,
-            )
+            try:
+                result = browser_act(
+                    settings, browser=browser, actions=work_actions, window_index=window_index,
+                    tab_index=tab_index, tab_handle=handle, return_state=return_state,
+                    allow_foreground=allow_foreground,
+                )
+            except HTTPException as exc:
+                if opened:
+                    # The tab was already opened or navigated, so this call did act.
+                    clear_not_executed(exc)
+                raise
             if opened:
                 result["opened"] = {k: opened.get(k) for k in ("url", "window_index", "tab_index", "tab_handle", "background") if k in opened}
             closed = False
@@ -1479,6 +1489,7 @@ def create_app():
                 "internal_js_calls": result.get("internal_js_calls"),
                 "duration_ms": result.get("duration_ms"),
                 "closed": closed,
+                "mutation_dispatched": bool(result.get("mutation_dispatched") or opened),
             }
             if progress:
                 compact["progress"] = progress

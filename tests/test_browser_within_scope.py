@@ -42,6 +42,16 @@ class WithinGuidanceTests(unittest.TestCase):
             self.assertIn("role=button", text)
             self.assertIn("role=textbox", text)
         self.assertIn("do not browser_find each control", MCP_AGENT_INSTRUCTIONS)
+        self.assertIn("pass the tab_handle from browser_list_tabs", MCP_AGENT_INSTRUCTIONS)
+        self.assertIn("never as a step before acting", MCP_AGENT_INSTRUCTIONS)
+        self.assertIn("no find first", CORE_TOOL_SUMMARIES["browser_act"])
+        self.assertIn("Not needed before acting", CORE_TOOL_SUMMARIES["browser_find"])
+        import inspect
+
+        from mcp_server import main as main_module
+        source = inspect.getsource(main_module.create_app)
+        self.assertNotIn("use best_match with browser_act", source)
+        self.assertIn("To act, do not find first", source)
         self.assertIn("within", CORE_TOOL_SUMMARIES["browser_act"])
         self.assertIn("within=", CORE_TOOL_SUMMARIES["browser_find"])
 
@@ -69,6 +79,7 @@ class WithinResolutionTests(unittest.TestCase):
             [_found("anchor_ambiguous")],
         )
         self.assertFalse(result["ok"])
+        self.assertFalse(result["mutation_dispatched"])
         self.assertEqual("WITHIN_ANCHOR_AMBIGUOUS", result["actions"][0]["reason_code"])
         self.assertEqual(1, find.call_count)
         self.assertEqual([], verified)
@@ -86,10 +97,41 @@ class WithinResolutionTests(unittest.TestCase):
             [_found("ok", [near, far]), _found("ok", []), _found("ok", []), _found("ok", [box])],
         )
         self.assertTrue(result["ok"], result)
+        self.assertTrue(result["mutation_dispatched"])
         self.assertEqual(["e_near", "e_box"], verified)
         self.assertEqual(4, find.call_count)
         self.assertTrue(all(call.kwargs.get("within") == "teach it" for call in find.call_args_list))
         self.assertTrue(all("wait_timeout_s" not in call.kwargs for call in find.call_args_list))
+
+
+class BrowserActNotExecutedTests(unittest.TestCase):
+    def test_refusal_before_actions_is_tagged_not_executed(self) -> None:
+        from fastapi import HTTPException
+
+        from mcp_server.workflow_checkpoints import exception_not_executed
+
+        refusal = HTTPException(409, {"error": "stable_tab_handle_required"})
+        with patch.object(agent, "_require_stable_handle_for_mutation", side_effect=refusal):
+            with self.assertRaises(HTTPException) as ctx:
+                agent.browser_act(MagicMock(), "Safari", [{"type": "click", "query": "Reply"}])
+        self.assertTrue(exception_not_executed(ctx.exception))
+
+    def test_failure_after_actions_started_is_not_tagged(self) -> None:
+        from contextlib import nullcontext
+        from types import SimpleNamespace
+
+        from fastapi import HTTPException
+
+        from mcp_server.workflow_checkpoints import exception_not_executed
+
+        target = SimpleNamespace(browser="Safari", window_index=1, tab_index=1, tab_handle="tab", lease_generation=1)
+        with patch.object(agent, "_require_stable_handle_for_mutation"), \
+             patch.object(agent, "_ensure_visual_companion"), \
+             patch.object(agent, "_tab_lease", return_value=nullcontext(target)), \
+             patch.object(agent, "_browser_act_locked", side_effect=HTTPException(409, "tab closed mid-batch")):
+            with self.assertRaises(HTTPException) as ctx:
+                agent.browser_act(MagicMock(), "Safari", [{"type": "click", "query": "Reply"}], tab_handle="tab")
+        self.assertFalse(exception_not_executed(ctx.exception))
 
 
 if __name__ == "__main__":

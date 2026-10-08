@@ -25,6 +25,7 @@ from . import browser_tabs
 from .chrome_background_bridge import chrome_background_bridge
 from .tool_cancellation import cancellable_sleep, cancellation_checkpoint
 from .workspace_arbitration import delegated_agent_identity
+from .workflow_checkpoints import mark_not_executed
 from .tools_browser import (
     _execute_js_for_target,
     _norm_browser,
@@ -1972,6 +1973,8 @@ def browser_find(
             "benchmark": ((wait_meta or {}).get("telemetry") or {}).get("benchmark") if wait_meta is not None else None,
         },
         **({"within": payload.get("within")} if scoped else {}),
+        # Tool output is what the model reads most closely; point at the shortcut.
+        "to_act": "Pass the same query/role/within to browser_act directly; it resolves the target, no element_id needed.",
         "best_match": matches[0] if matches else None,
         "matches": matches,
         "duration_ms": int((time.perf_counter() - started) * 1000),
@@ -3602,29 +3605,38 @@ def browser_act(
 ) -> Dict[str, Any]:
     """Perform one serialized action transaction against a single logical tab."""
     cancellation_checkpoint()
-    if not isinstance(actions, list) or not actions:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "actions must be a non-empty list.")
-    if len(actions) > _MAX_ACTIONS:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"actions may contain at most {_MAX_ACTIONS} items.")
-    normalized_return_state = str(return_state or "compact").lower().strip()
-    if normalized_return_state not in _RETURN_STATE_MODES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")
-    b = _norm_browser(browser)
-    _require_stable_handle_for_mutation(b, tab_handle, window_index, "browser_act")
-    _ensure_visual_companion(settings, b, window_index, tab_index, tab_handle)
-    with _tab_lease(b, tab_handle, window_index, tab_index, mutation=True) as target:
-        return _browser_act_locked(
-            settings=settings,
-            browser=target.browser,
-            actions=actions,
-            observation_id=observation_id,
-            window_index=target.window_index,
-            tab_index=target.tab_index,
-            tab_handle=target.tab_handle,
-            lease_generation=int(getattr(target, "lease_generation", 0) or 0),
-            return_state=normalized_return_state,
-            allow_foreground=allow_foreground,
-        )
+    started = False
+    try:
+        if not isinstance(actions, list) or not actions:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "actions must be a non-empty list.")
+        if len(actions) > _MAX_ACTIONS:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"actions may contain at most {_MAX_ACTIONS} items.")
+        normalized_return_state = str(return_state or "compact").lower().strip()
+        if normalized_return_state not in _RETURN_STATE_MODES:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")
+        b = _norm_browser(browser)
+        _require_stable_handle_for_mutation(b, tab_handle, window_index, "browser_act")
+        _ensure_visual_companion(settings, b, window_index, tab_index, tab_handle)
+        with _tab_lease(b, tab_handle, window_index, tab_index, mutation=True) as target:
+            started = True
+            return _browser_act_locked(
+                settings=settings,
+                browser=target.browser,
+                actions=actions,
+                observation_id=observation_id,
+                window_index=target.window_index,
+                tab_index=target.tab_index,
+                tab_handle=target.tab_handle,
+                lease_generation=int(getattr(target, "lease_generation", 0) or 0),
+                return_state=normalized_return_state,
+                allow_foreground=allow_foreground,
+            )
+    except HTTPException as exc:
+        # Validation, tab-handle and lease refusals happen before any action runs;
+        # tag them so a delegated agent's checkpoint is not made unknown.
+        if not started:
+            mark_not_executed(exc)
+        raise
 
 
 def _browser_act_locked(
@@ -3693,6 +3705,9 @@ def _browser_act_locked(
     # The result dict whose action produced the candidate; progress reuses the
     # candidate only while that action is still the last one in results.
     compact_state_source: Optional[Dict[str, Any]] = None
+    # Set just before any page-changing step runs; a result that fails without
+    # it proves nothing was done, which lets a delegated agent keep working.
+    mutation_dispatched = False
 
     def note_possible_navigation() -> None:
         # Marked before dispatch: a click, key or select may start a cross-site
@@ -3776,7 +3791,7 @@ def _browser_act_locked(
         return resolved, chosen
 
     def flush_pending() -> bool:
-        nonlocal pending, internal_js_calls, current_observation_id, in_flight
+        nonlocal pending, internal_js_calls, current_observation_id, in_flight, mutation_dispatched
         if not pending:
             return True
         mutation_target, blocked = revalidate_mutation(
@@ -3788,6 +3803,7 @@ def _browser_act_locked(
             pending = []
             return False
         in_flight = [str(item.get("type") or "") for item in pending]
+        mutation_dispatched = True
         out = _run_json_js(
             settings,
             browser,
@@ -3832,6 +3848,7 @@ def _browser_act_locked(
                 if typ in {"click", "double_click", "type", "type_text", "paste"}:
                     if typ in {"click", "double_click"}:
                         note_possible_navigation()
+                    mutation_dispatched = True
                     action_result = _verified_dom_action(
                         settings, browser, work_action, current_observation_id,
                         window_index, tab_index, tab_handle,
@@ -3863,6 +3880,7 @@ def _browser_act_locked(
                         break
                 elif typ == "select":
                     note_possible_navigation()
+                    mutation_dispatched = True
                     select_result = _select_action(
                         settings,
                         browser,
@@ -3917,6 +3935,7 @@ def _browser_act_locked(
                             results.append(blocked)
                             break
                         note_possible_navigation()
+                        mutation_dispatched = True
                         key_result = _dom_key_action(
                             settings, browser, action, eid, window_index, tab_index, tab_handle,
                             prevalidated_target=mutation_target,
@@ -3941,6 +3960,7 @@ def _browser_act_locked(
                         if blocked is not None:
                             results.append(blocked)
                             break
+                        mutation_dispatched = True
                         focus_result = _run_json_js(
                             settings, browser, _batch_js([{"type": "focus", "element_id": eid}], current_observation_id),
                             window_index, tab_index, tab_handle,
@@ -3952,6 +3972,7 @@ def _browser_act_locked(
                             break
                         current_observation_id = None
                     note_possible_navigation()
+                    mutation_dispatched = True
                     key_result = browser_press_key(
                         settings, browser=browser, key=str(action.get("key") or ""),
                         modifiers=action.get("modifiers") or [], window_index=window_index,
@@ -4003,6 +4024,7 @@ def _browser_act_locked(
         "action_count": len(actions),
         "internal_js_calls": internal_js_calls,
         "duration_ms": int((time.perf_counter() - started) * 1000),
+        "mutation_dispatched": mutation_dispatched,
     }
     if not ok:
         failed = next(
