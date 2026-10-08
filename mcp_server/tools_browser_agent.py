@@ -81,6 +81,9 @@ def _browser_observation_owned_by_current(observation_id: Optional[str]) -> bool
     with _BROWSER_OBSERVATION_OWNER_LOCK:
         return _BROWSER_OBSERVATION_OWNERS.get(key) == _perception_owner_key()
 _VISUAL_ENSURE_CACHE: Dict[Tuple[str, str, str], float] = {}
+# Guards cache metadata only; browser I/O runs outside it. Injection into one
+# tab is already single-flight because _tab_lease is exclusive per tab.
+_VISUAL_ENSURE_LOCK = threading.Lock()
 _VISUAL_ENSURE_TTL_S = 12.0
 _DOM_RASTERIZER_PATH = Path(__file__).resolve().parent / "vendor" / "html2canvas.min.js"
 _DOM_CAPTURE_STATE_PREFIX = "__macMcpVisualCapture"
@@ -262,7 +265,8 @@ def _ensure_visual_companion(
         with _tab_lease(b, tab_handle, window_index, tab_index, allow_rebind=True) as target:
             key = (b, str(target.native_id or target.tab_handle), str(target.url or ""))
             now = time.monotonic()
-            last = _VISUAL_ENSURE_CACHE.get(key, 0.0)
+            with _VISUAL_ENSURE_LOCK:
+                last = _VISUAL_ENSURE_CACHE.get(key, 0.0)
             if last and now - last < _VISUAL_ENSURE_TTL_S:
                 return True
             probe = _execute_js_for_target(
@@ -275,11 +279,12 @@ def _ensure_visual_companion(
                 )
             ok = str(probe or "").strip() == "1"
             if ok:
-                _VISUAL_ENSURE_CACHE[key] = now
-                # Drop old cache entries for the same native tab after navigation/reload.
-                for old_key in list(_VISUAL_ENSURE_CACHE):
-                    if old_key != key and old_key[:2] == key[:2]:
-                        _VISUAL_ENSURE_CACHE.pop(old_key, None)
+                with _VISUAL_ENSURE_LOCK:
+                    _VISUAL_ENSURE_CACHE[key] = now
+                    # Drop old cache entries for the same native tab after navigation/reload.
+                    for old_key in list(_VISUAL_ENSURE_CACHE):
+                        if old_key != key and old_key[:2] == key[:2]:
+                            _VISUAL_ENSURE_CACHE.pop(old_key, None)
             return ok
     except Exception:
         # Companion is UX only. Browser automation must continue even if browser policy
