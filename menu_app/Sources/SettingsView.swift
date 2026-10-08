@@ -40,22 +40,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     }
 
     var searchTerms: String {
-        switch self {
-        case .general:
-            return "general overview update version status notifications alerts completion agents"
-        case .agents:
-            return "agents subagents provider codex opencode chatgpt model reasoning thinking default agent"
-        case .usage:
-            return "usage tokens payload calls errors latency heatmap activity input output top tools"
-        case .permissions:
-            return "permissions safety approvals security profile read only trusted access"
-        case .connections:
-            return "connections browser safari chrome mobile iphone ipad pairing public endpoint ngrok cloudflare tunnel"
-        case .voice:
-            return "voice audio microphone speaker groq language"
-        case .advanced:
-            return "advanced developer runtime server port cli command decision acceleration openai decisions api key ambiguity"
-        }
+        SettingsSearchIndex.terms[rawValue] ?? ""
     }
 }
 
@@ -183,11 +168,13 @@ struct SettingsView: View {
     }
 
     private var filteredSections: [SettingsSection] {
-        let query = settingsSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return SettingsSection.allCases }
-        return SettingsSection.allCases.filter {
-            $0.title.lowercased().contains(query) || $0.searchTerms.contains(query)
+        SettingsSection.allCases.filter {
+            SettingsSearchIndex.matches(query: settingsSearch, title: $0.title, terms: $0.searchTerms)
         }
+    }
+
+    private var trimmedSettingsSearch: String {
+        settingsSearch.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var generalPane: some View {
@@ -439,6 +426,26 @@ struct SettingsView: View {
                 .font(.caption)
                 .padding(.horizontal, 10)
                 .padding(.bottom, 5)
+                .onChange(of: settingsSearch) { _ in
+                    // Never leave a pane on screen that the search no longer lists.
+                    let matches = filteredSections
+                    if !matches.contains(selection), let first = matches.first {
+                        selection = first
+                    }
+                }
+
+            if filteredSections.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("No settings found for “\(trimmedSettingsSearch)”")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Clear Search") { settingsSearch = "" }
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 4)
+            }
 
             ForEach(filteredSections) { item in
                 Button {
@@ -480,6 +487,26 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var detail: some View {
+        if filteredSections.isEmpty {
+            VStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.secondary)
+                Text("No settings found for “\(trimmedSettingsSearch)”")
+                    .font(.headline)
+                Text("Try a shorter or different word, such as port, tunnel or notifications.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Clear Search") { settingsSearch = "" }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            selectedPane
+        }
+    }
+
+    @ViewBuilder
+    private var selectedPane: some View {
         switch selection {
         case .general: generalPane
         case .agents: subagentsPane
