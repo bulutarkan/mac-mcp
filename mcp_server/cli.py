@@ -1232,7 +1232,18 @@ def status(args: argparse.Namespace) -> int:
             "the selected public endpoint mode."
         )
 
-    return 0 if server_running else 1
+    if not server_running:
+        return 1
+    tunnel_missing = public is not None and (
+        (public.mode == "cloudflare" and not cloudflare_running)
+        or (public.mode == "ngrok" and not ngrok_running)
+    )
+    if public is None or tunnel_missing:
+        print("overall: degraded (local server running; selected public endpoint unavailable)")
+        # Exit 2 keeps scripts from reading a missing tunnel as healthy;
+        # --local-only restores the local-server-only verdict.
+        return 0 if getattr(args, "local_only", False) else 2
+    return 0
 
 
 def _restart_status_path() -> Path:
@@ -1622,6 +1633,8 @@ def doctor(args: argparse.Namespace) -> int:
         print(format_report(report))
         if support_path is not None:
             print(f"Support bundle: {support_path}")
+    if getattr(args, "local_only", False):
+        return 0 if report.get("local_ok", report.get("ok")) else 1
     return 0 if report.get("ok") else 1
 
 
@@ -1723,7 +1736,8 @@ def main(argv: list[str] | None = None) -> int:
     p_restart.add_argument("--timeout", type=float, default=5)
     p_restart.set_defaults(func=restart)
 
-    p_status = sub.add_parser("status", help="Show server and public endpoint status.")
+    p_status = sub.add_parser("status", help="Show server and public endpoint status. Exits 0 healthy, 1 server down, 2 selected public endpoint unavailable.")
+    p_status.add_argument("--local-only", action="store_true", help="Exit 0 whenever the local server is running, ignoring the public endpoint.")
     p_status.set_defaults(func=status)
 
     p_connect = sub.add_parser(
@@ -1760,6 +1774,7 @@ def main(argv: list[str] | None = None) -> int:
     p_doctor = sub.add_parser("doctor", help="Diagnose local Mac MCP runtime, permissions, dependencies, and companions.")
     p_doctor.add_argument("--json", action="store_true", help="Print the diagnostic report as JSON.")
     p_doctor.add_argument("--support-bundle", nargs="?", const="", default=None, metavar="PATH", help="Write an owner-only redacted support bundle. Optional PATH overrides the default location.")
+    p_doctor.add_argument("--local-only", action="store_true", help="Exit 0 when the local runtime is healthy even if the selected public endpoint is unreachable.")
     p_doctor.set_defaults(func=doctor)
 
     p_conformance = sub.add_parser("conformance", help="Run deterministic Computer Use contract/regression checks.")

@@ -277,6 +277,30 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual("warn", row["status"])
         self.assertEqual("UPDATE_LAST_RUN_FAILED", row["reason_code"])
 
+    def test_unreachable_public_endpoint_degrades_doctor_but_not_local_verdict(self) -> None:
+        local = diagnostics.result("fixture", "test", "pass", "FIXTURE_OK", "Fixture passed.")
+        down = diagnostics.result(
+            "public.endpoint", "network", "warn", "PUBLIC_ENDPOINT_UNREACHABLE", "Unreachable.",
+        )
+        report = diagnostics.build_report([local, down])
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["local_ok"])
+        self.assertEqual("degraded", report["health"])
+        self.assertEqual("unavailable", report["public_endpoint"])
+        self.assertIn("DEGRADED", diagnostics.format_report(report))
+
+        for argv, expected in ((["doctor", "--json"], 1), (["doctor", "--json", "--local-only"], 0)):
+            with self.subTest(argv=argv), patch("mcp_server.diagnostics.run_doctor", return_value=report), \
+                 redirect_stdout(io.StringIO()):
+                self.assertEqual(expected, cli.main(argv))
+
+        local_only = diagnostics.build_report([local, diagnostics.result(
+            "public.endpoint", "network", "info", "PUBLIC_ENDPOINT_LOCAL_ONLY", "Local only.",
+        )])
+        self.assertTrue(local_only["ok"])
+        self.assertEqual("healthy", local_only["health"])
+        self.assertEqual("local_only", local_only["public_endpoint"])
+
     def test_doctor_cli_json_is_machine_readable(self) -> None:
         fake = diagnostics.build_report([
             diagnostics.result("fixture", "test", "pass", "FIXTURE_OK", "Fixture passed.")
