@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import time
 from datetime import datetime, timedelta, timezone
@@ -16,6 +15,7 @@ from starlette.routing import Route
 from .mobile_auth import DEFAULT_SESSION_TTL_S, PAIR_PREFIX, SESSION_PREFIX, MobileAuthStore
 from .observability import TelemetryManager
 from .public_endpoint import PublicEndpointError, resolve_public_endpoint
+from .request_client import client_address as _client_address, is_direct_local_request
 from .security import Settings, dashboard_authorized
 from .steering import STEERING_SCHEMA_VERSION, SteeringManager
 from .tools_agents import list_agents
@@ -25,25 +25,8 @@ MOBILE_DIR = Path(__file__).resolve().parent / "mobile"
 MOBILE_COOKIE = "mac_mcp_mobile"
 
 
-def _client_address(request: Request) -> str:
-    for header in ("cf-connecting-ip", "x-forwarded-for", "x-real-ip"):
-        raw = request.headers.get(header)
-        if raw:
-            return raw.split(",", 1)[0].strip()
-    return request.client.host if request.client else "unknown"
-
-
-def _is_loopback(address: str) -> bool:
-    if address in {"localhost", "testclient"}:
-        return True
-    try:
-        return ipaddress.ip_address(address).is_loopback
-    except ValueError:
-        return False
-
-
 def _management_guard(request: Request, dashboard_token: str) -> Optional[Response]:
-    if not _is_loopback(_client_address(request)):
+    if not is_direct_local_request(request):
         return JSONResponse(
             {"detail": "Mobile pairing management is available on localhost only."},
             status_code=403,

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import os
 import tempfile
@@ -39,6 +38,7 @@ from .policy import (
     permission_semantics,
 )
 from .runtime_settings import update_runtime_setting
+from .request_client import client_address as _client_address, is_direct_local_request, is_loopback as _is_loopback
 from .security import Settings, dashboard_authorized
 from .security_context import SecurityContextManager
 from .steering import (
@@ -156,27 +156,8 @@ REST_TOOL_ALIASES = {
 }
 
 
-def _client_address(request: Request) -> str:
-    # A tunnel/proxy must not be able to make a remote client look local. If a
-    # forwarding header exists, the original first-hop address is authoritative.
-    for header in ("cf-connecting-ip", "x-forwarded-for", "x-real-ip"):
-        raw = request.headers.get(header)
-        if raw:
-            return raw.split(",", 1)[0].strip()
-    return request.client.host if request.client else "unknown"
-
-
-def _is_loopback(address: str) -> bool:
-    if address in {"localhost", "testclient"}:
-        return True
-    try:
-        return ipaddress.ip_address(address).is_loopback
-    except ValueError:
-        return False
-
-
 def _local_only(request: Request) -> Optional[Response]:
-    if _is_loopback(_client_address(request)):
+    if is_direct_local_request(request):
         return None
     if request.url.path.startswith("/dashboard/api/") or request.url.path == "/dashboard/events":
         return JSONResponse({"detail": "The Mac MCP dashboard is available on localhost only."}, status_code=403)
