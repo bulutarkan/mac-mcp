@@ -14,6 +14,16 @@ from mcp_server import tools_agents as agents
 from mcp_server.policy_scope import ResourceScope
 
 
+READ_ONLY_GIT = "git status --short && git log -1 --oneline && git diff --stat && git blame inside.txt"
+
+
+def _init_git_repo(path: Path) -> None:
+    git = ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid"]
+    subprocess.run([*git, "init", "-q"], cwd=path, check=True)
+    subprocess.run([*git, "add", "inside.txt"], cwd=path, check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "init"], cwd=path, check=True)
+
+
 class ProviderEnvironmentTests(unittest.TestCase):
     def test_provider_environment_does_not_inherit_unrelated_server_secrets(self) -> None:
         sentinel = "MAC_MCP_TEST_SENTINEL_SECRET"
@@ -140,6 +150,16 @@ class OpenCodeSeatbeltBoundaryTests(unittest.TestCase):
         self.assertNotEqual(0, write_inside.returncode)
         self.assertEqual("INSIDE", self.inside.read_text(encoding="utf-8"))
 
+    def test_read_only_can_run_read_only_git(self) -> None:
+        _init_git_repo(self.workspace)
+        proc = self._run("read_only", READ_ONLY_GIT)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertIn("init", proc.stdout)
+
+        write_git = self._run("read_only", "touch .git/probe")
+        self.assertNotEqual(0, write_git.returncode)
+        self.assertFalse((self.workspace / ".git" / "probe").exists())
+
     def test_workspace_write_is_scoped_and_nested_children_cannot_widen(self) -> None:
         write_inside = self._run("workspace_write", f'echo OK >> "{self.inside}"')
         self.assertEqual(0, write_inside.returncode, write_inside.stderr)
@@ -257,6 +277,16 @@ class CodexSeatbeltBoundaryTests(unittest.TestCase):
         )
         self.assertNotEqual(0, write_inside.returncode)
         self.assertEqual("INSIDE", self.inside.read_text(encoding="utf-8"))
+
+    def test_read_only_can_run_read_only_git(self) -> None:
+        _init_git_repo(self.workspace)
+        proc = self._run("read_only", READ_ONLY_GIT)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertIn("init", proc.stdout)
+
+        write_git = self._run("read_only", "touch .git/probe")
+        self.assertNotEqual(0, write_git.returncode)
+        self.assertFalse((self.workspace / ".git" / "probe").exists())
 
     def test_workspace_write_is_scoped(self) -> None:
         write_inside = self._run(

@@ -46,6 +46,21 @@ _PRIVILEGED_CAPABILITIES = frozenset({
 })
 
 
+def _successful_clipboard_read(result: Any) -> Optional[str]:
+    # MCP tool calls surface the dict as a single serialized text content block.
+    if isinstance(result, (list, tuple)) and len(result) == 1:
+        result = getattr(result[0], "text", result[0])
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return None
+    if not isinstance(result, Mapping) or result.get("ok") is not True:
+        return None
+    content = result.get("content")
+    return content if isinstance(content, str) else None
+
+
 @dataclass
 class ExecutionSecurityState:
     key: str
@@ -607,6 +622,18 @@ class SecurityContextManager:
                 state.clipboard_sensitive = contains_direct_secret(content) or bool(state.sensitive_fingerprints.intersection(outgoing))
                 state.last_seen_at = time.time()
                 return state
+            if tool == "clipboard_get":
+                content = _successful_clipboard_read(result)
+                # Only a successful read proves what the clipboard holds; a busy or
+                # failed read leaves the previous paste sensitivity in place.
+                if content is not None:
+                    incoming = secret_fingerprints(content, include_entropy=True, include_whole=True)
+                    state.clipboard_sensitive = (
+                        scan.sensitive
+                        or contains_direct_secret(content)
+                        or bool(state.sensitive_fingerprints.intersection(incoming))
+                    )
+                    state.last_seen_at = time.time()
             if not scan.sensitive:
                 return None
             for fingerprint in scan.fingerprints:

@@ -620,6 +620,48 @@ class WebHostBoundaryRegressionTests(unittest.TestCase):
         asyncio.run(run())
 
 
+    def test_sensitive_clipboard_read_marks_paste_until_safe_read(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as td:
+                mcp, _telemetry = self._manager(td)
+                pasted = []
+                secret = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+                clipboard = {"result": {"ok": True, "content": secret, "length": len(secret)}}
+
+                @mcp.tool(name="clipboard_get")
+                def clipboard_get() -> dict:
+                    return clipboard["result"]
+
+                @mcp.tool(name="browser_observe")
+                def browser_observe(browser: str = "Safari") -> dict:
+                    return {"ok": True, "url": "https://evil.example/form", "tab_handle": "tab-clip-read"}
+
+                @mcp.tool(name="browser_press_key")
+                def browser_press_key(browser: str, key: str, modifiers: list | None = None) -> dict:
+                    pasted.append(key)
+                    return {"ok": True}
+
+                paste = {"browser": "Safari", "key": "v", "modifiers": ["cmd"]}
+                # The user copied a credential manually; the model only reads it.
+                await mcp.call_tool("clipboard_get", {})
+                await mcp.call_tool("browser_observe", {"browser": "Safari"})
+                with self.assertRaises(ToolError) as ctx:
+                    await mcp.call_tool("browser_press_key", paste)
+                self.assertIn("secret_egress_approval_required", str(ctx.exception))
+
+                # A failed read proves nothing about the clipboard; keep the flag.
+                clipboard["result"] = {"ok": False, "error": "clipboard_busy", "retryable": True}
+                await mcp.call_tool("clipboard_get", {})
+                with self.assertRaises(ToolError):
+                    await mcp.call_tool("browser_press_key", paste)
+                self.assertEqual([], pasted)
+
+                clipboard["result"] = {"ok": True, "content": "hello world", "length": 11}
+                await mcp.call_tool("clipboard_get", {})
+                await mcp.call_tool("browser_press_key", paste)
+                self.assertEqual(["v"], pasted)
+        asyncio.run(run())
+
 class DelegatedCapabilityProfileTests(unittest.TestCase):
     def test_browser_only_profile_is_server_scoped_and_read_only_native(self) -> None:
         with tempfile.TemporaryDirectory() as td:

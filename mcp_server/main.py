@@ -689,13 +689,15 @@ def create_app():
 
     @mcp.tool(
         name="get_agent",
-        description="Get one delegated agent status and typed final result envelope. The compatibility result field is the structured summary, not raw provider output; bounded envelopes expose truncation.omitted explicitly. Delegated callers may access only themselves or descendants in their persisted lineage; include_logs=true follows the same boundary.",
+        description="Get one delegated agent status and typed final result envelope. result_mode='full' pages the complete final report via result_full (result_offset/result_limit). The compatibility result field is the structured summary, not raw provider output; bounded envelopes expose truncation.omitted explicitly. Delegated callers may access only themselves or descendants in their persisted lineage; include_logs=true follows the same boundary.",
     )
     def _get_agent(agent_id: str, include_logs: bool = False,
-                   tail_lines: int = 40) -> Dict[str, Any]:
+                   tail_lines: int = 40, result_mode: str = "summary",
+                   result_offset: int = 0, result_limit: int = 20000) -> Dict[str, Any]:
         return _log(audit_logger, "get_agent",
                     lambda: get_agent(settings, agent_id=agent_id, include_logs=include_logs,
-                                      tail_lines=tail_lines))
+                                      tail_lines=tail_lines, result_mode=result_mode,
+                                      result_offset=result_offset, result_limit=result_limit))
 
     @mcp.tool(
         name="agent_action",

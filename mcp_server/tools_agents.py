@@ -69,6 +69,10 @@ DEFAULT_AGENT_TIMEOUT_S = 1800
 MAX_AGENT_TIMEOUT_S = 7200
 DEFAULT_RESULT_LIMIT = 6000
 DETAILED_RESULT_LIMIT = 20000
+# The bounded result.txt preview stays small; the complete final report is kept
+# separately so a parent can page through it with get_agent(result_mode="full").
+FULL_RESULT_LIMIT = 512_000
+MAX_RESULT_PAGE_CHARS = 100_000
 TEAM_RESULT_LIMIT = 2000
 DEFAULT_WAIT_TIMEOUT_S = 30
 MAX_WAIT_TIMEOUT_S = 300
@@ -1005,6 +1009,36 @@ def _team_dependency_satisfied(
 
 def _result_envelope_path(agent_id: str) -> Path:
     return _agent_dir(str(agent_id)) / _RESULT_ENVELOPE_FILENAME
+
+
+def _full_result_path(agent_id: str) -> Path:
+    return _agent_dir(agent_id) / "result.full.txt"
+
+
+def _write_full_result(agent_id: str, text: str) -> None:
+    path = _full_result_path(agent_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".result-full.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _read_full_result(agent_id: str) -> Optional[str]:
+    for path in (_full_result_path(agent_id), _agent_dir(agent_id) / "result.txt"):
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+    return None
 
 
 def _write_result_envelope(agent_id: str, envelope: Dict[str, Any]) -> None:
@@ -2004,6 +2038,9 @@ _OPENCODE_MODEL_ENV: Dict[str, Tuple[str, ...]] = {
 }
 _SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
 _RESTRICTED_READ_DENY_ROOTS = ("/Users", "/private/tmp", "/private/var/tmp", "/private/var/folders", "/Volumes", "/Network")
+# Git and other CLIs open /dev/null read-write; writing to it grants no
+# filesystem power, so read-only children can still run `git status`.
+_DEV_NULL_WRITE = '(allow file-write-data (literal "/dev/null"))'
 _RESTRICTED_ESCAPE_EXECUTABLES = (
     "/usr/bin/security", "/usr/bin/osascript", "/usr/bin/open", "/usr/bin/shortcuts",
     "/bin/launchctl", "/usr/bin/sudo", "/usr/bin/su",
@@ -2247,6 +2284,7 @@ def _codex_sandbox_profile(agent_id: str, meta: Dict[str, Any]) -> Path:
         f'(allow file-read* (literal "{_sbpl_quote(secret_auth)}")))\n'
         "(deny file-write*)\n"
         f"(allow file-write* {write_specs})\n"
+        f"{_DEV_NULL_WRITE}\n"
         f'(allow file-write* (literal "{_sbpl_quote(result_path)}"))\n'
         f'(allow file-read* (literal "{_sbpl_quote(result_path)}"))\n'
         f"{exec_denies}\n",
@@ -2291,6 +2329,7 @@ def _opencode_sandbox_profile(agent_id: str, meta: Dict[str, Any]) -> Path:
         f"(allow file-read* {read_specs})\n"
         "(deny file-write*)\n"
         f"(allow file-write* {write_specs})\n"
+        f"{_DEV_NULL_WRITE}\n"
         f"{exec_denies}\n",
         encoding="utf-8",
     )
@@ -3783,7 +3822,10 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "result_contract_error": meta.get("result_contract_error"),
         "result_truncated": bool(meta.get("result_truncated")),
         "result_chars": meta.get("result_chars"),
+        "result_original_chars": meta.get("result_original_chars"),
+        "result_full_chars": meta.get("result_full_chars"),
         "result_envelope_chars": meta.get("result_envelope_chars"),
+        "result_contract_salvaged": bool(meta.get("result_contract_salvaged")),
     }
     public.update(workflow_public_state(agent_id))
     return public
@@ -4922,6 +4964,11 @@ def wait_agents(
                     "status": bounded_envelope.get("contract_status"),
                     "valid": bounded_envelope.get("contract_status") != "invalid",
                 }
+                if item.get("result_truncated") or bounded_envelope.get("truncation", {}).get("truncated"):
+                    row["full_result"] = {
+                        "total_chars": item.get("result_full_chars") or item.get("result_original_chars"),
+                        "retrieve": "get_agent(agent_id, result_mode='full', result_offset=0)",
+                    }
         compact.append(row)
     successful_count = int(wait_state.get("successful_count") or 0)
     failure_count = int(wait_state.get("failure_count") or 0)
@@ -4958,15 +5005,40 @@ def wait_agents(
         response["team"] = team_summary or _team_summary(str(team_id))
     return response
 
+def _full_result_page(agent_id: str, offset: int, limit: int) -> Dict[str, Any]:
+    text = _read_full_result(agent_id) or ""
+    total = len(text)
+    start = min(max(0, int(offset)), total)
+    size = min(max(1, int(limit)), MAX_RESULT_PAGE_CHARS)
+    chunk = text[start:start + size]
+    end = start + len(chunk)
+    return {
+        "text": chunk,
+        "offset": start,
+        "returned_chars": len(chunk),
+        "total_chars": total,
+        "has_more": end < total,
+        "next_offset": end if end < total else None,
+    }
+
+
 def get_agent(
     settings: Settings,
     agent_id: str,
     include_logs: bool = False,
     tail_lines: int = 40,
+    result_mode: str = "summary",
+    result_offset: int = 0,
+    result_limit: int = DETAILED_RESULT_LIMIT,
 ) -> Dict[str, Any]:
+    result_mode = str(result_mode or "summary").strip().lower()
+    if result_mode not in {"summary", "full"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "result_mode must be summary or full.")
     meta = _authorize_agent_control(agent_id, "get_agent")
     meta = _normalize(agent_id, meta)
     result: Dict[str, Any] = {"ok": True, **_public_meta(agent_id, meta)}
+    if meta.get("status") in TERMINAL_STATUSES and result_mode == "full":
+        result["result_full"] = _full_result_page(agent_id, result_offset, result_limit)
     if meta.get("status") in TERMINAL_STATUSES:
         limit = DETAILED_RESULT_LIMIT if meta.get("result_style") == "detailed" else DEFAULT_RESULT_LIMIT
         envelope = _public_result_envelope(agent_id, meta, char_limit=limit)
@@ -6090,6 +6162,7 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
     stdout_path = path / "stdout.log"
     stderr_path = path / "stderr.log"
     result_path = path / "result.txt"
+    _full_result_path(agent_id).unlink(missing_ok=True)
     if meta.get("provider") == "codex":
         result_path.write_text("", encoding="utf-8")
     marker = f"\n--- provider attempt {attempt_index + 1} ---\n"
@@ -6443,6 +6516,8 @@ def _worker(agent_id: str) -> int:
 
     legacy_gate = _legacy_gate_from_text(result)
     contract_error: Optional[Dict[str, str]] = None
+    contract_salvaged = False
+    report_text = ""
     try:
         envelope, contract_meta = parse_provider_result(
             result,
@@ -6463,17 +6538,43 @@ def _worker(agent_id: str) -> int:
                 )
     except ResultContractError as exc:
         contract_error = {"code": exc.code, "message": str(exc)}
+        report_text = result[: result.rfind(RESULT_ENVELOPE_MARKER)].strip() if RESULT_ENVELOPE_MARKER in result else ""
+        # A read-only report is still useful when only its trailing typed block is
+        # malformed. Quality gates and write tasks stay fail-closed, and no
+        # structured claims flow downstream: only the human-readable text is kept.
+        contract_salvaged = bool(
+            report_text
+            and legacy_gate is None
+            and str(meta.get("access_mode") or "workspace_write") == "read_only"
+            and str(meta.get("role") or "").strip().lower() != "reviewer"
+        )
+    if contract_error is not None and contract_salvaged:
+        envelope = legacy_result_envelope(
+            report_text, provenance=_result_provenance(agent_id, meta, session_id=session_id),
+        )
+        envelope["contract_status"] = "invalid"
+        envelope["warnings"] = [
+            f"Typed result envelope was malformed ({contract_error['code']}); kept the human-readable report only. "
+            "Structured claims and evidence were discarded."
+        ]
+        contract_meta = {
+            "valid": False,
+            "contract_status": "invalid",
+            "marker_present": True,
+            "error": contract_error,
+        }
+    elif contract_error is not None:
         envelope = normalize_result_envelope(
             {
                 "schema_version": RESULT_ENVELOPE_VERSION,
                 "outcome": "failure",
-                "summary": f"Invalid result contract: {exc.code}",
+                "summary": f"Invalid result contract: {contract_error['code']}",
                 "claims": [],
                 "evidence": [],
                 "artifacts": [],
                 "warnings": [],
                 "confidence": 0.0,
-                "errors": [{"code": exc.code, "message": str(exc)}],
+                "errors": [dict(contract_error)],
                 "provenance": {},
             },
             provenance=_result_provenance(agent_id, meta, session_id=session_id),
@@ -6487,6 +6588,8 @@ def _worker(agent_id: str) -> int:
         }
 
     original_result_chars = len(result)
+    full_result, full_result_truncated = truncate(result, FULL_RESULT_LIMIT)
+    _write_full_result(agent_id, full_result)
     limit = DETAILED_RESULT_LIMIT if meta.get("result_style") == "detailed" else DEFAULT_RESULT_LIMIT
     result, was_truncated = truncate(result, limit)
     result_path.write_text(result, encoding="utf-8")
@@ -6496,7 +6599,7 @@ def _worker(agent_id: str) -> int:
         final_status = "stalled"
     else:
         final_status = "completed" if exit_code == 0 else "failed"
-    if final_status == "completed" and contract_error is not None:
+    if final_status == "completed" and contract_error is not None and not contract_salvaged:
         final_status = "failed"
         final_reason = "invalid_result_contract"
     elif final_status == "completed" and envelope.get("outcome") == "failure":
@@ -6520,6 +6623,9 @@ def _worker(agent_id: str) -> int:
             "session_id": session_id or current.get("resume_session_id"), "usage": usage,
             "result_truncated": was_truncated, "result_chars": len(result),
             "result_original_chars": original_result_chars,
+            "result_full_chars": len(full_result),
+            "result_full_truncated": full_result_truncated,
+            "result_contract_salvaged": contract_salvaged,
             "result_envelope_chars": envelope_chars,
             "result_contract_version": RESULT_ENVELOPE_VERSION,
             "result_contract_status": str(envelope.get("contract_status") or contract_meta.get("contract_status") or "unknown"),
@@ -6531,6 +6637,11 @@ def _worker(agent_id: str) -> int:
             "provider_pid": None,
             "lesson_candidate_ids": lesson_candidate_ids, "lesson_candidate_error": lesson_candidate_error,
         })
+        if final_status == "completed" and contract_salvaged:
+            current["note"] = (
+                f"Typed result envelope was malformed ({(contract_error or {}).get('code') or 'unknown'}); "
+                "kept the human-readable report with a warning."
+            )
         if final_status != "completed":
             if final_reason == "rate_limited":
                 current["note"] = f"ChatGPT remained rate-limited after bounded retries; last provider code {exit_code}."
