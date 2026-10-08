@@ -224,3 +224,44 @@ class InstallerPublicEndpointTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstallerTargetPreflightTests(unittest.TestCase):
+    def test_existing_install_targets_fail_before_optional_prompts(self) -> None:
+        stubs = "; ".join(
+            f'{name}() {{ echo "CALLED {name}"; }}'
+            for name in (
+                "print_header", "ensure_required_tools", "choose_public_endpoint_mode",
+                "install_selected_public_provider", "handle_optional_helpers", "handle_optional_chatgpt_cli",
+                "clone_source_and_runtime",
+            )
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cases = {
+                "source": {"MAC_MCP_SOURCE_DIR": str(root)},
+                "runtime": {"MAC_MCP_RUNTIME_DIR": str(root)},
+                "cli": {"MAC_MCP_BIN_DIR": str(root)},
+            }
+            (root / "mac-mcp").write_text("#!/bin/sh\n", encoding="utf-8")
+            for name, overrides in cases.items():
+                env = os.environ.copy()
+                env.update({
+                    "MAC_MCP_INSTALLER_LIBRARY_ONLY": "1",
+                    "MAC_MCP_SOURCE_DIR": str(root / "fresh-source"),
+                    "MAC_MCP_RUNTIME_DIR": str(root / "fresh-runtime"),
+                    "MAC_MCP_BIN_DIR": str(root / "fresh-bin"),
+                    **overrides,
+                })
+                with self.subTest(collision=name):
+                    proc = subprocess.run(
+                        ["/bin/bash", "-c", f'source "{INSTALLER}"; {stubs}; main'],
+                        text=True, capture_output=True, env=env, check=False,
+                    )
+                    output = proc.stdout + proc.stderr
+                    self.assertNotEqual(0, proc.returncode)
+                    self.assertIn("CALLED ensure_required_tools", output)
+                    self.assertIn("already exists", output)
+                    for later in ("choose_public_endpoint_mode", "install_selected_public_provider",
+                                  "handle_optional_helpers", "handle_optional_chatgpt_cli", "clone_source_and_runtime"):
+                        self.assertNotIn(f"CALLED {later}", output)

@@ -1472,10 +1472,12 @@ main() {
   INSTALL_TMP="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mac-mcp-install.XXXXXX")"
   print_header
   ensure_required_tools
+  # Read-only preflight: refuse an existing install before any optional
+  # provider/helper prompt can install packages.
+  check_install_targets
   choose_public_endpoint_mode
   install_selected_public_provider
   handle_optional_helpers
-  check_install_targets
   handle_optional_chatgpt_cli
   clone_source_and_runtime
   configure_runtime
