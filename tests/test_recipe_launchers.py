@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -116,6 +117,15 @@ class RecipeCliTests(unittest.TestCase):
         self.assertEqual(1, self.run_cli(["recipe", "run", "rcp_0123456789ab"], (0, {"ok": False, "status": "failed"}))[0])
         self.assertEqual(3, self.run_cli(["recipe", "run", "rcp_0123456789ab"], (3, {"error": "server_unreachable", "message": "down"}))[0])
         self.assertEqual(1, self.run_cli(["recipe", "run", "rcp_0123456789ab", "--param", "oops"], (0, {}))[0])
+
+    def test_json_output_stays_json_when_the_server_is_down(self) -> None:
+        down = (3, {"error": "server_unreachable", "message": "down"})
+        for argv in (["recipe", "list", "--json"], ["recipe", "run", "rcp_0123456789ab", "--json"]):
+            with self.subTest(argv=argv):
+                code, out, err, _ = self.run_cli(argv, down)
+                self.assertEqual(3, code)
+                self.assertEqual("server_unreachable", json.loads(out)["error"])
+                self.assertEqual("", err)
 
     def test_unreachable_server_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as td:

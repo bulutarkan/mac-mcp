@@ -1742,12 +1742,12 @@ def recipe(args: argparse.Namespace) -> int:
     _load_env()
     if args.recipe_command == "list":
         code, body = _recipe_request("GET", "/dashboard/api/recipes")
+        if args.json:
+            print(json.dumps(body, ensure_ascii=False, indent=2))
+            return code
         if code:
             print(body.get("message") or body.get("error"), file=sys.stderr)
             return code
-        if args.json:
-            print(json.dumps(body, ensure_ascii=False, indent=2))
-            return 0
         items = body.get("recipes") or []
         if not items:
             print("No active recipes. Save one with computer_plan(save_as_recipe=...) and activate it.")
