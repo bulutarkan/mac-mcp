@@ -1517,6 +1517,7 @@ final class AppState: ObservableObject {
                 }
             }
             startTasks()
+            observeReduceMotion()
             Task { [weak self] in
                 await self?.refreshAgentNotificationAuthorization(reconcilePreference: true)
             }
@@ -1528,6 +1529,9 @@ final class AppState: ObservableObject {
         pulseTask?.cancel()
         noticeTask?.cancel()
         updateStatePollTask?.cancel()
+        if let reduceMotionObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(reduceMotionObserver)
+        }
     }
 
     func refreshAgentNotificationAuthorization(reconcilePreference: Bool = false) async {
@@ -1749,8 +1753,28 @@ final class AppState: ObservableObject {
         hasActiveWork ? Self.activePollIntervalSeconds : Self.idlePollIntervalSeconds
     }
 
+    /// Mirrors System Settings > Accessibility > Display > Reduce motion.
+    @Published private(set) var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    private var reduceMotionObserver: NSObjectProtocol?
+
     private var shouldPulse: Bool {
-        activeAgents > 0
+        // With Reduce Motion the menu bar keeps the static active symbol instead of blinking.
+        activeAgents > 0 && !reduceMotion
+    }
+
+    private func observeReduceMotion() {
+        guard reduceMotionObserver == nil else { return }
+        reduceMotionObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.setIfChanged(\.reduceMotion, NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+                self.updatePulseTask()
+            }
+        }
     }
 
     private func refreshNgrokStateIfNeeded(now: Double = ProcessInfo.processInfo.systemUptime) {
