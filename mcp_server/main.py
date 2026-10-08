@@ -736,7 +736,7 @@ def create_app():
                     lambda: read_file(settings, path=path, offset=offset, length=length))
 
     @mcp.tool(name="read_multiple_files",
-              description="Read multiple files in one call. Returns contents keyed by path.")
+              description="Read several text files in one call. Returns files: a list of {path, status, content, truncated} records in request order (50,000 chars max each); a missing file yields status=error without failing the rest.")
     def _read_multiple_files(paths: List[str]) -> Dict[str, Any]:
         return _log(audit_logger, "read_multiple_files",
                     lambda: read_multiple_files(settings, paths=paths))
@@ -2074,7 +2074,9 @@ def create_app():
     from fastapi import FastAPI
     from .rest_routes import configure_rest_security, router as rest_router
     configure_rest_security(mcp.security_context, telemetry, security_approval)
-    rest_app = FastAPI()
+    # Runtime API docs would let anyone on the public tunnel enumerate routes
+    # unauthenticated; the integration schema ships as openapi/custom-gpt-actions.json.
+    rest_app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
 
     @rest_app.middleware("http")
     async def _capture_rest_telemetry(request: Request, call_next):

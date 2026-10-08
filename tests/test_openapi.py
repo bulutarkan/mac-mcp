@@ -135,3 +135,17 @@ class OpenAPICoverageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublicDocsExposureTests(unittest.TestCase):
+    def test_runtime_api_docs_are_not_served(self):
+        from starlette.testclient import TestClient
+
+        from mcp_server.main import create_app
+
+        client = TestClient(create_app())
+        for path in ("/api/openapi.json", "/api/docs", "/api/redoc", "/openapi.json", "/docs", "/redoc"):
+            with self.subTest(path=path):
+                response = client.get(path)
+                self.assertIn(response.status_code, {401, 403, 404}, response.text[:200])
+                self.assertNotIn("operationId", response.text)
