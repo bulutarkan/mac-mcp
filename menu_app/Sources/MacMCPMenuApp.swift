@@ -2,7 +2,21 @@ import SwiftUI
 
 @main
 struct MacMCPMenuApp: App {
-    @StateObject private var state = AppState()
+    @NSApplicationDelegateAdaptor(MenuAppDelegate.self) private var appDelegate
+    @StateObject private var state: AppState
+
+    init() {
+        let appState = AppState()
+        _state = StateObject(wrappedValue: appState)
+        // macmcp://recipe/run links reach the running server with the dashboard token.
+        RecipeLauncher.shared.configure(
+            baseURL: { [weak appState] in
+                guard let appState else { return nil }
+                return URL(string: "http://127.0.0.1:\(appState.settings.serverPort)")
+            },
+            authorize: { [weak appState] request in appState?.authorizeDashboardRequest(&request) }
+        )
+    }
 
     var body: some Scene {
         MenuBarExtra {

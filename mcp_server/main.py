@@ -24,7 +24,11 @@ from .log_retention import start_log_rotation
 from . import recipes
 from .security import BASE_DIR, AuthFailureLimiter, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
 from .observability import ObservedFastMCP, TelemetryManager, current_security_session
-from .policy import PROFILES, current_policy_context, declared_risk, reset_policy_context, set_policy_context
+from mcp.server.fastmcp.exceptions import ToolError
+from .policy import (
+    PROFILES, current_policy_context, declared_risk, environment_policy_context, reset_policy_context,
+    set_policy_context,
+)
 from .policy_scope import ScopeRequest, evaluate_scope
 from .scoped_auth import resolve_request_identity
 from .dashboard_routes import create_dashboard_routes, rest_telemetry_middleware
@@ -55,7 +59,7 @@ from .tools_ui import observe_ui, act_ui
 from .artifact_pipeline import artifact_pipeline
 from .context_handoff import context_handoff
 from .tools_snapshot import unified_read_snapshot
-from .computer_plan import ComputerPlanError, derive_computer_plan_resources, execute_computer_plan
+from .computer_plan import ComputerPlanError, _unwrap_tool_result, derive_computer_plan_resources, execute_computer_plan
 from .app_adapters import mac_app
 from .tools_search import search_files, spotlight_search
 from .tools_http import http_request
@@ -2265,7 +2269,32 @@ def create_app():
 
     app.router.routes.append(Route("/health", health, methods=["GET"]))
     app.router.routes.extend(create_chrome_background_bridge_routes())
-    app.router.routes.extend(create_dashboard_routes(telemetry, settings, dashboard_token, mcp.steering, mcp.security_context))
+    async def run_recipe_for_launcher(recipe_id: str, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Run one saved recipe for Shortcuts, Raycast or the CLI.
+
+        It goes through the normal MCP tool path as the local launcher, so profile,
+        scopes and approval rules apply exactly as they would for an agent.
+        """
+        token = set_policy_context(environment_policy_context(actor="local_launcher"))
+        try:
+            arguments: Dict[str, Any] = {"action": "run", "recipe_id": recipe_id, "values": values}
+            if mcp.intent_descriptions_enabled():
+                arguments["description"] = "Run a saved recipe from a launcher"
+            raw = await mcp.call_tool("recipe", arguments)
+        except ToolError as exc:
+            text = str(exc)
+            needs_approval = "approval_required" in text or "approval" in text.lower()
+            return {"ok": False, "status": "approval_required" if needs_approval else "refused",
+                    "reason_code": "APPROVAL_REQUIRED" if needs_approval else "TOOL_REFUSED", "message": text[:500]}
+        finally:
+            reset_policy_context(token)
+        result = _unwrap_tool_result(raw)
+        return result if isinstance(result, dict) else {"ok": False, "status": "failed", "message": str(result)[:500]}
+
+    app.router.routes.extend(create_dashboard_routes(
+        telemetry, settings, dashboard_token, mcp.steering, mcp.security_context,
+        recipe_runner=run_recipe_for_launcher,
+    ))
     app.router.routes.extend(create_mobile_routes(telemetry, settings, dashboard_token, mcp.steering))
 
     # REST API — FastAPI sub-app mounted at /api

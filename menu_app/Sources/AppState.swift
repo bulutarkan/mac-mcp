@@ -3164,7 +3164,7 @@ final class AppState: ObservableObject {
         return value
     }
 
-    private func authorizeDashboardRequest(_ request: inout URLRequest) {
+    func authorizeDashboardRequest(_ request: inout URLRequest) {
         if let token = dashboardToken() {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }

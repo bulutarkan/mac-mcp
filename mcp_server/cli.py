@@ -1709,6 +1709,77 @@ def update(args: argparse.Namespace) -> int:
         return 1
 
 
+def _recipe_request(method: str, path: str, payload: dict | None = None) -> tuple[int, dict]:
+    """Call the local recipe launcher API with the dashboard token."""
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request as UrlRequest
+
+    port = _default_port()
+    try:
+        token = dashboard_token_path().read_text(encoding="utf-8").strip()
+    except OSError:
+        return 3, {"error": "dashboard_token_missing", "message": "Mac MCP has not been started on this Mac yet."}
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = UrlRequest(
+        f"http://127.0.0.1:{port}{path}", data=data, method=method,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    try:
+        with urlopen(request, timeout=90) as response:  # noqa: S310 - fixed loopback URL
+            return 0, json.loads(response.read().decode("utf-8") or "{}")
+    except HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8") or "{}")
+        except (ValueError, OSError):
+            body = {}
+        return 1, {"error": body.get("error") or f"http_{exc.code}", **body}
+    except (URLError, OSError) as exc:
+        return 3, {"error": "server_unreachable", "message": f"Mac MCP is not running ({exc}). Start it with: mac-mcp start"}
+
+
+def recipe(args: argparse.Namespace) -> int:
+    """List or run saved recipes for Shortcuts, Raycast and scripts."""
+    _load_env()
+    if args.recipe_command == "list":
+        code, body = _recipe_request("GET", "/dashboard/api/recipes")
+        if code:
+            print(body.get("message") or body.get("error"), file=sys.stderr)
+            return code
+        if args.json:
+            print(json.dumps(body, ensure_ascii=False, indent=2))
+            return 0
+        items = body.get("recipes") or []
+        if not items:
+            print("No active recipes. Save one with computer_plan(save_as_recipe=...) and activate it.")
+        for item in items:
+            params = ", ".join(
+                f"{name}:{spec.get('type')}{'' if spec.get('required') and 'default' not in spec else '?'}"
+                for name, spec in (item.get("parameters") or {}).items()
+            )
+            print(f"{item['recipe_id']}  [{item.get('status')}]  {item.get('name')}" + (f"  ({params})" if params else ""))
+        return 0
+    values: dict = {}
+    for pair in args.param or []:
+        if "=" not in pair:
+            print(f"--param must be name=value: {pair}", file=sys.stderr)
+            return 1
+        key, value = pair.split("=", 1)
+        values[key.strip()] = value
+    code, body = _recipe_request("POST", "/dashboard/api/recipes/run", {"recipe_id": args.recipe_id, "values": values})
+    if args.json:
+        print(json.dumps(body, ensure_ascii=False, indent=2))
+    elif code == 0 and body.get("ok"):
+        print(f"Recipe {body.get('name') or args.recipe_id} completed ({body.get('steps_executed')} steps).")
+    else:
+        print(f"Recipe did not complete: {body.get('status') or body.get('error')}: {body.get('message') or ''}".rstrip(": "),
+              file=sys.stderr)
+    if code:
+        return code
+    if body.get("ok"):
+        return 0
+    return 2 if body.get("status") == "approval_required" else 1
+
+
 def logs(args: argparse.Namespace) -> int:
     """Print recent, redacted lines from one Mac MCP log."""
     from .security import BASE_DIR
@@ -1817,6 +1888,16 @@ def main(argv: list[str] | None = None) -> int:
     p_conformance.add_argument("--json", action="store_true", help="Print the conformance report as JSON.")
     p_conformance.add_argument("--live", action="store_true", help="Also include read-only live Mac/companion health checks.")
     p_conformance.set_defaults(func=conformance)
+
+    p_recipe = sub.add_parser("recipe", help="List or run saved, activated recipes (for Shortcuts, Raycast and scripts).")
+    recipe_sub = p_recipe.add_subparsers(dest="recipe_command", required=True)
+    p_recipe_list = recipe_sub.add_parser("list", help="List active and paused recipes with their parameters.")
+    p_recipe_list.add_argument("--json", action="store_true")
+    p_recipe_run = recipe_sub.add_parser("run", help="Run a recipe. Exit 0 done, 1 failed, 2 needs approval, 3 server not running.")
+    p_recipe_run.add_argument("recipe_id")
+    p_recipe_run.add_argument("--param", action="append", metavar="NAME=VALUE", help="Recipe parameter; repeat for each.")
+    p_recipe_run.add_argument("--json", action="store_true")
+    p_recipe.set_defaults(func=recipe)
 
     p_logs = sub.add_parser("logs", help="Show recent, redacted lines from a Mac MCP log, or --list sizes and bounds.")
     p_logs.add_argument("component", nargs="?", default="server", choices=("server", "cloudflared", "ngrok", "audit", "update"))

@@ -4,10 +4,11 @@ import asyncio
 import json
 import sqlite3
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 from urllib.parse import urlsplit
 
 from starlette.requests import Request
@@ -40,6 +41,7 @@ from .policy import (
 )
 from .runtime_settings import USAGE_RETENTION_CHOICES, update_runtime_setting, usage_privacy
 from .usage_metering import clear_usage
+from . import recipes
 from .request_client import client_address as _client_address, is_direct_local_request, is_loopback as _is_loopback
 from .security import Settings, dashboard_authorized
 from .security_context import SecurityContextManager
@@ -230,6 +232,7 @@ def _persist_permission_profile(profile: str, env_file: Path = PERMISSION_ENV_FI
 def create_dashboard_routes(
     telemetry: TelemetryManager, settings: Settings, dashboard_token: str,
     steering: Optional[SteeringManager] = None, security_context: Optional[SecurityContextManager] = None,
+    recipe_runner: Optional[Callable[[str, Dict[str, Any]], Awaitable[Dict[str, Any]]]] = None,
 ) -> list[Route]:
     agent_cache: Dict[str, Any] = {"at": 0.0, "limit": 0, "data": None}
     team_summary_cache: Dict[str, Dict[str, Any]] = {}
@@ -638,6 +641,55 @@ def create_dashboard_routes(
             return JSONResponse({"ok": False, "error": str(sanitize_value(exc))}, status_code=500)
         return JSONResponse({"ok": True, "tool_usage_rows": tool_rows, "provider_usage_rows": provider_rows})
 
+    async def launcher_recipes(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        listing = recipes.list_recipes(include_drafts=False)
+        return JSONResponse({"ok": True, "recipes": [
+            {key: item.get(key) for key in ("recipe_id", "name", "description", "status", "parameters",
+                                            "consequential", "run_count", "last_run")}
+            for item in listing["recipes"]
+        ]})
+
+    async def launcher_run_recipe(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        if recipe_runner is None:
+            return JSONResponse({"ok": False, "error": "recipe_runner_unavailable"}, status_code=503)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=400)
+        recipe_id = str(body.get("recipe_id") or "")
+        values = body.get("values") or {}
+        # Launchers only name an installed recipe and pass plain values; nothing else
+        # (tool names, steps, commands) is accepted here.
+        if not re.fullmatch(r"rcp_[0-9a-f]{12}", recipe_id):
+            return JSONResponse({"ok": False, "error": "invalid_recipe_id"}, status_code=400)
+        if not isinstance(values, dict) or len(values) > 20 or not all(
+            isinstance(key, str) and (value is None or isinstance(value, (str, int, float, bool)))
+            for key, value in values.items()
+        ):
+            return JSONResponse({"ok": False, "error": "invalid_values",
+                                 "message": "values must be an object of up to 20 plain values."}, status_code=400)
+        result = await recipe_runner(recipe_id, values)
+        status_value = result.get("status") or ("completed" if result.get("ok") else "failed")
+        recipe_info = result.get("recipe") if isinstance(result.get("recipe"), dict) else {}
+        return JSONResponse({
+            "ok": bool(result.get("ok")),
+            "status": status_value,
+            "recipe_id": recipe_id,
+            "name": recipe_info.get("name"),
+            "reason_code": result.get("reason_code"),
+            "message": result.get("message") or result.get("error"),
+            "failed_step": result.get("step_id"),
+            "steps_executed": (result.get("plan_stats") or {}).get("steps_executed"),
+        })
+
     async def provider_usage(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -962,6 +1014,8 @@ def create_dashboard_routes(
         Route("/dashboard/api/usage", usage, methods=["GET"]),
         Route("/dashboard/api/usage/settings", usage_settings, methods=["POST"]),
         Route("/dashboard/api/usage/clear", usage_clear, methods=["POST"]),
+        Route("/dashboard/api/recipes", launcher_recipes, methods=["GET"]),
+        Route("/dashboard/api/recipes/run", launcher_run_recipe, methods=["POST"]),
         Route("/dashboard/api/provider-usage", provider_usage, methods=["GET"]),
         Route("/dashboard/api/changes", changes, methods=["GET"]),
         Route("/dashboard/api/transactions", transactions, methods=["GET"]),
