@@ -1713,7 +1713,67 @@ def _demote_redundant_candidates(
     ]
 
 
-def _find_candidates_js(query: str, role: Optional[str], text: Optional[str], max_candidates: int = 80, actionable_only: bool = False) -> str:
+_WITHIN_DEFAULT_LEVELS = 6
+_WITHIN_MAX_LEVELS = 30
+_WITHIN_SCAN_LIMIT = 3000
+
+
+def _within_scope_js(within: Optional[str], within_element_id: Optional[str], within_levels: int) -> str:
+    """JS that scopes collected candidates to the item around an anchor.
+
+    The anchor is the element holding the `within` text (or within_element_id).
+    A candidate stays in scope when its nearest common ancestor with the anchor
+    is at most `levels` steps above the anchor, so the Reply link of a comment
+    matches while the Reply links of parent comments and the page-level comment
+    box do not. Candidates are ordered nearest first. A `within` text found in
+    several places is reported as ambiguous instead of guessed.
+    """
+    within_js = json.dumps(str(within or ""))
+    within_id_js = json.dumps(str(within_element_id or ""))
+    levels = max(1, min(int(within_levels or _WITHIN_DEFAULT_LEVELS), _WITHIN_MAX_LEVELS))
+    return f'''
+var withinRaw={within_js}, withinId={within_id_js}, withinLevels={levels};
+if(withinRaw||withinId){{
+  function cparent(n){{return n.parentNode||(n.host||null);}}
+  function chain(n){{var a=[];while(n){{a.push(n);n=cparent(n);}}return a;}}
+  var anchors=[];
+  if(withinId){{var ae=__mcpRecoverElement(withinId,s);if(ae)anchors.push(ae);}}
+  else{{
+    var w=norm(withinRaw);
+    if(w){{
+      var tw=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT),tn;
+      while((tn=tw.nextNode())){{var pe=tn.parentElement;if(pe&&rendered(pe)&&norm(tn.data).indexOf(w)>=0&&anchors.indexOf(pe)<0)anchors.push(pe);}}
+      if(!anchors.length){{
+        var every=__mcpQueryAll('*');
+        for(var wi=0;wi<every.length;wi++){{var we=every[wi];if(!rendered(we))continue;var lab=norm([we.getAttribute('aria-label'),we.getAttribute('title'),(we.textContent||'').length<3000?we.textContent:''].join(' '));if(lab.indexOf(w)>=0)anchors.push(we);}}
+      }}
+      // Keep the innermost matches: an ancestor of another match is the same anchor.
+      anchors=anchors.filter(function(a){{return !anchors.some(function(b){{return b!==a&&contains(a,b);}});}});
+    }}
+  }}
+  withinInfo={{levels:withinLevels,anchor_count:anchors.length,anchors:anchors.slice(0,5).map(function(a){{return __mcpText(a).slice(0,100);}})}};
+  if(!anchors.length){{withinInfo.status='anchor_not_found';out=[];els=[];}}
+  else if(anchors.length>1){{withinInfo.status='anchor_ambiguous';out=[];els=[];}}
+  else{{
+    var anchorChain=chain(anchors[0]);withinInfo.status='ok';withinInfo.anchor_element_id=__mcpId(anchors[0],s);
+    var scoped=[];
+    for(var si=0;si<els.length;si++){{
+      var cc=chain(els[si]),up=-1,down=-1;
+      for(var ai=0;ai<anchorChain.length;ai++){{var k=cc.indexOf(anchorChain[ai]);if(k>=0){{up=ai;down=k;break;}}}}
+      if(up<0||up>withinLevels)continue;
+      out[si].within_up=up;out[si].within_down=down;scoped.push([up,down,out[si],els[si]]);
+    }}
+    scoped.sort(function(a,b){{return a[0]-b[0]||a[1]-b[1];}});
+    out=scoped.map(function(r){{return r[2];}});els=scoped.map(function(r){{return r[3];}});
+  }}
+}}
+'''
+
+
+def _find_candidates_js(
+    query: str, role: Optional[str], text: Optional[str], max_candidates: int = 80, actionable_only: bool = False,
+    within: Optional[str] = None, within_element_id: Optional[str] = None, within_levels: int = _WITHIN_DEFAULT_LEVELS,
+) -> str:
     q_raw = _normalize_text(query)
     q_tokens = [token for token in q_raw.split() if token not in _GENERIC_QUERY_WORDS]
     q = " ".join(q_tokens) if q_tokens else q_raw
@@ -1721,6 +1781,11 @@ def _find_candidates_js(query: str, role: Optional[str], text: Optional[str], ma
     role_js = json.dumps(_normalize_text(role) if role else "")
     text_js = json.dumps(_normalize_text(text) if text else "")
     actionable_js = "true" if actionable_only else "false"
+    scoped = bool(within or within_element_id)
+    # A scoped search must see every match before choosing the nearest one,
+    # so collection is capped by the scan limit and trimmed after scoping.
+    collect_limit = _WITHIN_SCAN_LIMIT if scoped else max_candidates
+    within_block = _within_scope_js(within, within_element_id, within_levels) if scoped else ""
     return f'''(function(){{
 {_browser_state_bootstrap()}
 function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
@@ -1741,7 +1806,7 @@ var s=__mcpState(), q={q_js}, wantedRole={role_js}, wantedText={text_js}, action
 __mcpVisual('Finding',null,'',1600);
 var out=[],els=[],modal=__mcpTopBlockingModal();
 var all=__mcpQueryAll('*');
-for(var i=0;i<all.length&&out.length<{max_candidates};i++){{
+for(var i=0;i<all.length&&out.length<{collect_limit};i++){{
   var el=all[i]; if(!rendered(el))continue;
   if(modal&&el!==modal&&!__mcpComposedContains(modal,el))continue;
   var d=__mcpDescribe(el,s); d.actionable=__mcpActionable(el);
@@ -1758,13 +1823,16 @@ for(var i=0;i<all.length&&out.length<{max_candidates};i++){{
   out.push(d);els.push(el);
 }}
 function contains(a,b){{try{{if(a.contains(b))return true;}}catch(e){{}}return __mcpComposedContains(a,b);}}
+var withinInfo=null;
+{within_block}
+if(out.length>{max_candidates}){{out=out.slice(0,{max_candidates});els=els.slice(0,{max_candidates});}}
 for(var ci=0;ci<els.length;ci++){{
   var nested=[];
   for(var cj=0;cj<els.length&&nested.length<12;cj++){{if(ci!==cj&&els[ci]!==els[cj]&&contains(els[ci],els[cj]))nested.push(out[cj].element_id);}}
   if(nested.length)out[ci].nested_match_ids=nested;
 }}
 var obs='bobs_'+s.pageToken+'_'+Date.now().toString(36);s.observations[obs]=s.mutationRevision;
-return __mcpB64({{ok:true,observation_id:obs,dom_revision:s.mutationRevision,url:location.href,title:document.title,modal_scope:modal?{{active:true,element_id:__mcpId(modal,s),role:__mcpRole(modal),text:__mcpText(modal).slice(0,120)}}:{{active:false}},elements:out}});
+return __mcpB64({{ok:true,observation_id:obs,dom_revision:s.mutationRevision,url:location.href,title:document.title,modal_scope:modal?{{active:true,element_id:__mcpId(modal,s),role:__mcpRole(modal),text:__mcpText(modal).slice(0,120)}}:{{active:false}},within:withinInfo,elements:out}});
 }})()'''
 
 
@@ -1780,8 +1848,15 @@ def browser_find(
     max_results: int = 5,
     actionable_only: bool = False,
     wait_timeout_s: float = 0.0,
+    within: Optional[str] = None,
+    within_element_id: Optional[str] = None,
+    within_levels: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Find a rendered DOM target with exact-first ranking and hard role/text constraints."""
+    """Find a rendered DOM target with exact-first ranking and hard role/text constraints.
+
+    within/within_element_id limit matches to the item around an anchor (for
+    example one comment) and rank them nearest first.
+    """
     window_index, tab_index = _resolve_tab_target(browser, tab_handle, window_index, tab_index)
     _ensure_visual_companion(settings, browser, window_index, tab_index, tab_handle)
     if not str(query or "").strip() and not text and not role:
@@ -1813,7 +1888,9 @@ def browser_find(
         try:
             payload = _run_json_js(
                 settings, browser, _find_candidates_js(
-                    str(query or ""), role, text, candidate_limit, actionable_only=actionable_only
+                    str(query or ""), role, text, candidate_limit, actionable_only=actionable_only,
+                    within=within, within_element_id=within_element_id,
+                    within_levels=int(within_levels or _WITHIN_DEFAULT_LEVELS),
                 ),
                 window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
             )
@@ -1840,10 +1917,22 @@ def browser_find(
             return 2
         return 1
 
-    scored.sort(
-        key=lambda item: (item[0], control_priority(item[1]), -len(str(item[1].get("text") or ""))),
-        reverse=True,
-    )
+    scoped = bool(within or within_element_id)
+    if scoped:
+        # Locality decides among equally good text matches: the nearest common
+        # ancestor with the anchor first, then the shortest path below it.
+        scored.sort(
+            key=lambda item: (
+                round(item[0], 1), -int(item[1].get("within_up") or 0), -int(item[1].get("within_down") or 0),
+                control_priority(item[1]), -len(str(item[1].get("text") or "")),
+            ),
+            reverse=True,
+        )
+    else:
+        scored.sort(
+            key=lambda item: (item[0], control_priority(item[1]), -len(str(item[1].get("text") or ""))),
+            reverse=True,
+        )
     matches = []
     for score, element in scored[:max_results]:
         matches.append({
@@ -1859,6 +1948,7 @@ def browser_find(
             "modal_scope": element.get("modal_scope"), "association_text": element.get("association_text"),
             "associated_control": element.get("associated_control"), "associated_label": element.get("associated_label"),
             "association_ambiguous": element.get("association_ambiguous"), "hit_target": element.get("hit_target"),
+            **({"within_up": element.get("within_up"), "within_down": element.get("within_down")} if scoped else {}),
         })
     return {
         "ok": True,
@@ -1881,6 +1971,7 @@ def browser_find(
             "fallback_polls": int(((wait_meta or {}).get("telemetry") or {}).get("fallback_polls") or 0) if wait_meta is not None else 0,
             "benchmark": ((wait_meta or {}).get("telemetry") or {}).get("benchmark") if wait_meta is not None else None,
         },
+        **({"within": payload.get("within")} if scoped else {}),
         "best_match": matches[0] if matches else None,
         "matches": matches,
         "duration_ms": int((time.perf_counter() - started) * 1000),
@@ -3617,27 +3708,52 @@ def _browser_act_locked(
         query = str(action.get("query") or action.get("target") or "").strip()
         role = action.get("role")
         match_text = action.get("text_match") or action.get("target_text")
+        within = str(action.get("within") or "").strip() or None
+        within_element_id = str(action.get("within_element_id") or "").strip() or None
+        within_levels = action.get("within_levels")
         if not query and not role and not match_text:
             return dict(action), None
-        found = browser_find(
-            settings, browser, query=query, role=role, text=match_text,
+        find_args = dict(
+            query=query, role=role, text=match_text,
             window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
             max_results=_TARGET_CANDIDATE_LIMIT,
+            within=within, within_element_id=within_element_id, within_levels=within_levels,
         )
+        found = browser_find(settings, browser, **find_args)
         internal_js_calls += 1
         best = found.get("best_match")
         waited_s = 0.0
+        scope = found.get("within") if isinstance(found.get("within"), dict) else None
+        if scope is not None and scope.get("status") in {"anchor_not_found", "anchor_ambiguous"}:
+            ambiguous = scope.get("status") == "anchor_ambiguous"
+            return dict(action), {
+                "ok": False,
+                "error": "within_anchor_ambiguous" if ambiguous else "within_anchor_not_found",
+                "reason_code": "WITHIN_ANCHOR_AMBIGUOUS" if ambiguous else "WITHIN_ANCHOR_NOT_FOUND",
+                "within": within or within_element_id, "anchor_count": scope.get("anchor_count"),
+                "anchors": scope.get("anchors"), "observe_again": False, "automatic_retry": False,
+                "hint": (
+                    "Use a longer phrase that appears only in the intended item, or pass within_element_id."
+                    if ambiguous else "The within text is not on the page; check the anchor text."
+                ),
+            }
         if not best:
             wait_s = _late_target_wait_s(action, results)
-            if wait_s > 0:
+            if wait_s > 0 and scope is not None:
+                # The generic DOM waiter does not know the scope and would return
+                # as soon as any match exists elsewhere, so poll the scoped search.
+                deadline = time.monotonic() + wait_s
+                while not best and time.monotonic() < deadline:
+                    time.sleep(0.25)
+                    found = browser_find(settings, browser, **find_args)
+                    internal_js_calls += 1
+                    best = found.get("best_match")
+                waited_s = wait_s
+            elif wait_s > 0:
                 # A control revealed by an earlier step in this batch (picker confirm,
                 # autocomplete option) may render a moment later; wait for it here
                 # instead of failing back to the outer agent for another observe.
-                found = browser_find(
-                    settings, browser, query=query, role=role, text=match_text,
-                    window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
-                    max_results=_TARGET_CANDIDATE_LIMIT, wait_timeout_s=wait_s,
-                )
+                found = browser_find(settings, browser, wait_timeout_s=wait_s, **find_args)
                 internal_js_calls += 1
                 best = found.get("best_match")
                 waited_s = wait_s
@@ -3645,9 +3761,15 @@ def _browser_act_locked(
             return dict(action), {
                 "ok": False, "error": "target_not_found", "query": query,
                 "role": role, "text": match_text,
+                **({"within": within or within_element_id, "within_levels": (scope or {}).get("levels")} if scope else {}),
                 **({"waited_s": waited_s} if waited_s else {}),
             }
         matches = [item for item in (found.get("matches") or []) if isinstance(item, dict)] or [best]
+        if scope is not None:
+            # Inside a scope the nearest match is the answer; only exact
+            # locality ties go to the general look-alike tie-breaker.
+            nearest = (best.get("within_up"), best.get("within_down"))
+            matches = [item for item in matches if (item.get("within_up"), item.get("within_down")) == nearest] or [best]
         chosen = _decide_browser_target(action, query, role, match_text, matches)
         resolved = dict(action)
         resolved["element_id"] = chosen.get("element_id")
@@ -3723,7 +3845,7 @@ def _browser_act_locked(
                     if resolved_target:
                         action_result["resolved_target"] = {
                             k: resolved_target.get(k)
-                            for k in ("element_id", "text", "role", "tag", "confidence")
+                            for k in ("element_id", "text", "role", "tag", "confidence", "within_up")
                         }
                         if resolved_target.get("decision"):
                             action_result["resolved_target"]["decision"] = resolved_target["decision"]
@@ -3755,7 +3877,7 @@ def _browser_act_locked(
                     if resolved_target:
                         select_result["resolved_target"] = {
                             k: resolved_target.get(k)
-                            for k in ("element_id", "text", "role", "tag", "confidence")
+                            for k in ("element_id", "text", "role", "tag", "confidence", "within_up")
                         }
                         if resolved_target.get("decision"):
                             select_result["resolved_target"]["decision"] = resolved_target["decision"]
@@ -3807,7 +3929,7 @@ def _browser_act_locked(
                         if resolved_target:
                             key_result["resolved_target"] = {
                                 k: resolved_target.get(k)
-                                for k in ("element_id", "text", "role", "tag", "confidence")
+                                for k in ("element_id", "text", "role", "tag", "confidence", "within_up")
                             }
                         results.append(key_result)
                         if not key_result.get("ok"):

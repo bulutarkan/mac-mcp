@@ -94,6 +94,9 @@ MCP_AGENT_INSTRUCTIONS = (
     "For form filling and repetitive browser interactions, batch independent actions; never field-by-field unless dependencies require it. "
     "Split browser action groups when an earlier action materially changes later controls, stale-target or human-takeover risk requires re-observation, "
     "or a consequential step needs a separate verification boundary. "
+    "When every item repeats the same controls (a Reply under each comment, a button on each card), do not browser_find each control: "
+    "send one browser_act whose actions all carry within='a phrase that appears only in that item', e.g. click Reply -> type into role=textbox "
+    "-> click the submit control with role=button -> wait for:text with the posted text. "
     "Prefer the smallest number of tool calls and smallest bounded context that safely completes and verifies the task."
 )
 
@@ -125,7 +128,11 @@ BROWSER_ACT_DESCRIPTION = (
     "Click actions default to background-safe synthetic DOM input; input_mode='trusted' is an explicit Chrome Background Companion-only pointer path and fails closed on Safari "
     "without foreground/coordinate fallback. No-effect mutations are never automatically replayed. return_state: none, compact, or full. "
     "When labels repeat (two Continue buttons), add an optional per-action intent such as 'Continue in the Billing section'; "
-    "it is used only to break such ties and never carries typed values."
+    "it is used only to break such ties and never carries typed values. "
+    "When every item repeats the same controls (a Reply under each comment), give each action within='a phrase unique to that item' "
+    "(or within_element_id): matches are limited to that item, nearest first, and a phrase found in several items fails as "
+    "WITHIN_ANCHOR_AMBIGUOUS instead of guessing. Reply flows fit one call: click Reply within X -> type into role=textbox within X "
+    "-> click the submit control within X with role=button (a same-named link may be a bookmark) -> wait for the posted text."
 )
 
 _BROWSER_DO_OUTPUT_BUDGET_BYTES = 8_192
@@ -1340,7 +1347,9 @@ def create_app():
         description=(
             "Find a rendered browser element with exact-first ranking and hard role/text constraints. Queries also match input values; role-only lookup is supported. "
             "Set actionable_only=false to include labels/cards; use best_match with browser_act. "
-            "wait_timeout_s>0 uses the event-driven DOM waiter before the final targeted scan."
+            "wait_timeout_s>0 uses the event-driven DOM waiter before the final targeted scan. "
+            "within='text unique to one item' (or within_element_id) limits matches to that item, e.g. one comment, "
+            "nearest first; within_levels (default 6) sets how far above the anchor the item may extend."
         ),
     )
     async def _browser_find(browser: str, query: str = "", role: Optional[str] = None,
@@ -1348,14 +1357,19 @@ def create_app():
                             tab_index: Optional[int] = None, tab_handle: Optional[str] = None,
                             max_results: int = 5,
                             actionable_only: bool = False,
-                            wait_timeout_s: float = 0.0) -> Dict[str, Any]:
+                            wait_timeout_s: float = 0.0,
+                            within: Optional[str] = None,
+                            within_element_id: Optional[str] = None,
+                            within_levels: Optional[int] = None) -> Dict[str, Any]:
         return await asyncio.to_thread(
             _log, audit_logger, "browser_find",
             lambda: browser_find(settings, browser=browser, query=query, role=role, text=text,
                                   window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
                                   max_results=max_results,
                                   actionable_only=actionable_only,
-                                  wait_timeout_s=wait_timeout_s),
+                                  wait_timeout_s=wait_timeout_s,
+                                  within=within, within_element_id=within_element_id,
+                                  within_levels=within_levels),
         )
 
     @mcp.tool(

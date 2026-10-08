@@ -66,12 +66,12 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "dependency/rerender, stale/takeover risk, or consequential verification. Returns DOM element IDs."
     ),
     "browser_find": (
-        "Find one rendered browser element by query/role/text with exact-first ranking; input values match too. "
-        "actionable_only=false includes labels/cards; wait_timeout_s>0 waits for it. Act on it with browser_act."
+        "Find one rendered browser element by query/role/text with exact-first ranking; within='text in one item' limits it "
+        "to that item, nearest first. wait_timeout_s>0 waits for it. Act on it with browser_act."
     ),
     "browser_act": (
-        "BATCH-FIRST: forms observe once -> one browser_act with independent type/select/click/scroll -> observe verify. "
-        "Custom dropdowns: select. Targets: element_id or query/role/text_match +intent. Split only for dependencies."
+        "BATCH-FIRST: forms observe once -> one browser_act with type/select/click/scroll -> observe verify. "
+        "Custom dropdowns: select. Targets: element_id or query/role/text_match +intent/within. Split only for dependencies."
     ),
     "browser_do": (
         "Preferred one-call browser transaction: open/act/extract in one call, e.g. extract=['price','rating'] for compact reads. "
