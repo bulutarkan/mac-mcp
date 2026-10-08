@@ -65,6 +65,20 @@ Mac MCP can inspect and interact with Safari and Chrome tabs in the background w
 
 This is designed for workflows where an AI agent keeps working in one or more background browser tabs while the Mac remains usable normally.
 
+### Faster decisions on look-alike targets with the OpenAI Decisions API
+
+Real pages are full of near-duplicates: a **Continue** button under both Shipping and Billing, **Reply** next to **Reply all**, two **25** cells in a two-month date picker. A typical agent stops there, observes the page again and spends another model round trip choosing. Mac MCP can settle it inside the same `browser_act` call instead.
+
+When Decision Acceleration is on, Mac MCP sends the already-ranked candidates to the [OpenAI Decisions API](https://developers.openai.com/api/docs/guides/decisions), OpenAI's typed-answer endpoint for fast classification and routing (OpenAI describes it as about 10x faster than the Responses API). Mac MCP gives each call a 600 ms budget; a warm call measured under ~330 ms. The agent can add a one-line `intent` hint, such as "the Billing step", and that hint decided our calibration cases:
+
+| Ambiguous target | Without hint | With `intent` |
+|---|---|---|
+| Shipping vs Billing **Continue** | 0.16, kept the first match | Billing, 0.83 |
+| **Reply** vs **Reply all** | Reply | Reply all, 0.93 |
+| Two **25** calendar cells | no answer, 0.28 | November 25, 0.82 |
+
+The layer can only pick from candidates Mac MCP already found, never chooses a risky action such as delete, send or pay over the deterministic match, and falls back to the normal path on any timeout, error or low confidence. It is off by default, uses your own OpenAI key from Keychain, and sends only short redacted labels: no typed values, URLs or page content. Setup and thresholds are under [Optional Decision Acceleration](#optional-decision-acceleration-experimental).
+
 ### Browser Visual Companion (Safari + Chrome)
 
 `Mac MCP.app` uses one shared WebExtension source for Safari and Chrome to make active Mac MCP browser work visible inside the exact page being automated. The extension is display-only: it renders a subtle pulsing page frame, a small `Mac MCP · …` activity badge, a synthetic cursor, and click feedback for high-level browser actions. Visual events contain only bounded action labels and viewport coordinates; typed text, selectors, URLs, page titles, DOM content, and secrets are not copied into the extension event. The overlay is activity feedback only and must not be treated as a security or trust indicator.
@@ -383,6 +397,7 @@ When the switch is off, the key is missing, or OpenAI rejected the key, behavior
 
 - `browser_act` asks Decisions only when the deterministic ranking finds two or more near-equal targets (top scores ≥ 0.60 and within 0.10). Unique targets never trigger a call.
 - `computer_plan` recovery asks Decisions only for an ambiguous browser/native rebind that would otherwise fail closed with `RECOVERY_AMBIGUOUS_TARGET`.
+- `browser_act` actions accept an optional `intent` string (for example "the Billing step") that is added to the Decisions input only when the ranking is ambiguous. It is capped at 120 characters and secrets are redacted; without it the request is unchanged.
 - Decisions may only pick one of the already-ranked candidate IDs. A choice is accepted at confidence ≥ 0.80, or at ≥ 0.65 when it agrees with the deterministic top match. A `none` answer, for example on a true tie, keeps the deterministic choice.
 - A risky alternative (delete, send, pay, …) is never chosen over the deterministic match.
 - Timeouts (600 ms default), errors, rate limits, invalid keys and low confidence all fall back to the existing deterministic path.
