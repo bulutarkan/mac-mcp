@@ -547,6 +547,10 @@ def _r(
 
 
 RISK_REGISTRY: dict[str, RiskEntry] = {
+    # OpenAI MCP Apps control center: read-only status, and one validated UI preference.
+    "open_mac_mcp_panel": _r("open_mac_mcp_panel", "control_panel", _caps(Capability.READ), sensitive=True),
+    "mac_mcp_panel_state": _r("mac_mcp_panel_state", "control_panel", _caps(Capability.READ), sensitive=True),
+    "mac_mcp_panel_setting": _r("mac_mcp_panel_setting", "control_panel", _caps(Capability.LOCAL_WRITE), sensitive=True),
     # Terminal and background processes
     "run_command": _r("run_command", "terminal", _caps(Capability.READ, Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.EXTERNAL_SIDE_EFFECT, Capability.NETWORK_ACCESS, Capability.RAW_EXECUTION), destructive=True, sensitive=True),
     "process_list": _r("process_list", "terminal", _caps(Capability.READ), sensitive=True),

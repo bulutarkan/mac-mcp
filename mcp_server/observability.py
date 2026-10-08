@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -15,9 +16,13 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.fastmcp.exceptions import ResourceError, ToolError
 
 from .fastmcp_compat import ensure_fastmcp_settings_model_complete
+from .chatgpt_client_gate import (
+    CHATGPT_PANEL_LEGACY_URIS, CHATGPT_PANEL_RESOURCE_URIS, CHATGPT_PANEL_TOOLS,
+    is_chatgpt_client,
+)
 
 ensure_fastmcp_settings_model_complete()
 
@@ -927,6 +932,7 @@ def current_security_session() -> Optional[tuple[str, str]]:
 
 
 _CORE_TOOL_NAMES = {
+    "open_mac_mcp_panel", "mac_mcp_panel_state", "mac_mcp_panel_setting",
     "run_command", "run_commands_parallel",
     "read_file", "write_file", "edit_file", "file_transaction_undo", "artifact_pipeline", "context_handoff", "search_files", "http_request",
     "mac_snapshot", "mac_observe", "mac_act", "mac_app", "computer_plan",
@@ -996,6 +1002,9 @@ class ObservedFastMCP(FastMCP):
 
     @staticmethod
     def _with_intent_schema(tool: Any) -> Any:
+        if tool.name == "open_mac_mcp_panel":
+            # ChatGPT opens the zero-argument read-only sidebar entrypoint itself.
+            return tool
         schema = dict(getattr(tool, "inputSchema", None) or {})
         properties = dict(schema.get("properties") or {})
         if "description" in properties:
@@ -1014,6 +1023,8 @@ class ObservedFastMCP(FastMCP):
 
     async def list_available_tools(self, *, compact: bool = True):
         tools = await super().list_tools()
+        if not is_chatgpt_client(self):
+            tools = [tool for tool in tools if tool.name not in CHATGPT_PANEL_TOOLS]
         tools = [
             tool for tool in tools
             if self.effective_tool_availability(tool.name).get("available") is True
@@ -1039,6 +1050,43 @@ class ObservedFastMCP(FastMCP):
 
     async def list_tools(self):
         return await self.list_available_tools(compact=True)
+
+    async def list_resources(self):
+        resources = await super().list_resources()
+        hidden = CHATGPT_PANEL_LEGACY_URIS if is_chatgpt_client(self) else CHATGPT_PANEL_RESOURCE_URIS
+        return [r for r in resources if str(r.uri) not in hidden]
+
+    async def read_resource(self, uri):
+        if str(uri) in CHATGPT_PANEL_RESOURCE_URIS:
+            allowed = is_chatgpt_client(self)
+            try:
+                params = self.get_context().request_context.session.client_params
+                client_name = str(params.clientInfo.name).strip().lower()
+                # Self-declared protocol label, not a secret; bounded for log hygiene.
+                client_name = re.sub(r"[^a-z0-9._ ()-]", "?", client_name[:48])
+                if not allowed:
+                    client_name = "other:" + client_name
+                caps = params.capabilities.model_extra or {}
+                has_ui = "io.modelcontextprotocol/ui" in (caps.get("extensions") or {})
+            except (AttributeError, LookupError, TypeError):
+                client_name, has_ui = "unavailable", False
+            logging.getLogger(__name__).warning(
+                "mac_mcp_ui_read: allowed=%s client=%s mcp_apps=%s uri=%s",
+                allowed, client_name, has_ui, uri,
+            )
+            if not allowed:
+                raise ResourceError("ChatGPT-only UI resource unavailable for this client")
+        contents = await super().read_resource(uri)
+        if str(uri) in CHATGPT_PANEL_RESOURCE_URIS:
+            items = list(contents)
+            logging.getLogger(__name__).warning(
+                "mac_mcp_ui_served: count=%s mime=%s bytes=%s",
+                len(items),
+                getattr(items[0], "mime_type", "none") if items else "none",
+                len(getattr(items[0], "content", "")) if items else 0,
+            )
+            return items
+        return contents
 
     def tool(
         self,
@@ -1129,9 +1177,15 @@ class ObservedFastMCP(FastMCP):
             raise
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):
+        if name in CHATGPT_PANEL_TOOLS and not is_chatgpt_client(self):
+            raise ToolError("ChatGPT-only UI tool unavailable for this client")
         incoming_arguments = dict(arguments or {})
         top_level_request = _STEERING_PARENT_EVENT.get() is None
-        require_intent_description = self.intent_descriptions_enabled() and top_level_request
+        require_intent_description = (
+            self.intent_descriptions_enabled()
+            and top_level_request
+            and name != "open_mac_mcp_panel"
+        )
         intent_description: Optional[str] = None
 
         if require_intent_description:
@@ -1155,7 +1209,10 @@ class ObservedFastMCP(FastMCP):
                 raise ToolError(f"intent_description_sensitive: tool={name}")
             incoming_arguments["description"] = intent_description
 
-        if require_intent_description:
+        if require_intent_description or (name in CHATGPT_PANEL_TOOLS and "description" in incoming_arguments):
+            # The embedded ChatGPT UI always supplies an intent description.
+            # Accept it even when the user's optional description setting is off;
+            # the registered handler does not consume this transport-only hint.
             execution_arguments = dict(incoming_arguments)
             execution_arguments.pop("description", None)
             arguments = execution_arguments

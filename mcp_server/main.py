@@ -24,6 +24,7 @@ from .policy_scope import ScopeRequest, evaluate_scope
 from .scoped_auth import resolve_request_identity
 from .dashboard_routes import create_dashboard_routes, rest_telemetry_middleware
 from .mobile_routes import create_mobile_routes
+from .chatgpt_panel import register_chatgpt_panel
 from .chrome_background_bridge import create_chrome_background_bridge_routes
 from .tools_terminal import run_command, process_list, kill_process, get_system_info
 from .tools_jobs import (
@@ -2023,6 +2024,8 @@ def create_app():
     )
     async def _tool_invoke(tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return await _invoke_registered_tool(mcp, tool_name, arguments)
+
+    register_chatgpt_panel(mcp, telemetry, settings)
 
     # ── App setup ────────────────────────────────────────────────────────────
     app = mcp.streamable_http_app()

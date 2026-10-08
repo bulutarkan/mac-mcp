@@ -43,9 +43,9 @@ import mcp_server.tools_agents as agents
 
 class RiskAndScopeTests(unittest.TestCase):
     # ASSURANCE: SEC-AUTHZ-001
-    def test_registry_covers_current_96_tool_surface(self) -> None:
-        self.assertEqual(96, len(RISK_REGISTRY))
-        for required in ("run_command", "browser_observe", "browser_do", "computer_plan", "mac_app", "tool_discover", "tool_invoke", "spawn_agent", "mac_snapshot", "mac_act", "artifact_pipeline", "context_handoff", "browser_upload_artifact", "read_file", "lesson_search", "lesson_record", "lesson_feedback", "lesson_consolidate"):
+    def test_registry_covers_current_99_tool_surface(self) -> None:
+        self.assertEqual(99, len(RISK_REGISTRY))
+        for required in ("run_command", "browser_observe", "browser_do", "computer_plan", "mac_app", "tool_discover", "tool_invoke", "spawn_agent", "mac_snapshot", "mac_act", "artifact_pipeline", "context_handoff", "browser_upload_artifact", "read_file", "lesson_search", "lesson_record", "lesson_feedback", "lesson_consolidate", "open_mac_mcp_panel", "mac_mcp_panel_state", "mac_mcp_panel_setting"):
             self.assertIn(required, RISK_REGISTRY)
 
     def test_tool_invoke_inherits_target_risk(self) -> None:

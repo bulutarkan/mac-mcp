@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "7506dae031fb5c691511ce55da8c171a3fa6ad38",
+  "base_commit": "c3990c2697759e0338528d8492171fbcfcfd44af",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -61,14 +61,14 @@
     {
       "mode": "100644",
       "path": ".gitignore",
-      "sha256": "855c89025ddc98c597343b1f149521a41130826f836d86b76381957362d61181",
-      "size": 309
+      "sha256": "6b2f400744311337da4ff1bfa572e9dfe271bec2eecf62b54c7baae2ed50ec22",
+      "size": 357
     },
     {
       "mode": "100644",
       "path": "CHANGELOG.md",
-      "sha256": "de1519e3c4abc08a9aea6231a22ccd989281fa75ce9ebf4df06e6b9c54476160",
-      "size": 43710
+      "sha256": "3187b4671c4888ac1d45ba2911f8e3fa0d7eb701c37b68d2f277895270bf3483",
+      "size": 50954
     },
     {
       "mode": "100644",
@@ -91,8 +91,8 @@
     {
       "mode": "100644",
       "path": "README.md",
-      "sha256": "192fc7d961c51bf5d3188180e6b976b3960d4d115111627536b455b15fa2b92a",
-      "size": 66352
+      "sha256": "914df157a57cb67668dea4cb785626a97e439df8e563b220df037b6ef11bf88c",
+      "size": 70841
     },
     {
       "mode": "100644",
@@ -126,6 +126,60 @@
     },
     {
       "mode": "100644",
+      "path": "chatgpt_ui/.gitignore",
+      "sha256": "4d56952b0fb13bf8f9b6c13a6d4c34a075bac3af447636a1df4335d7576e2f97",
+      "size": 14
+    },
+    {
+      "mode": "100644",
+      "path": "chatgpt_ui/build.mjs",
+      "sha256": "9542c7cce5287df02fd8c769bdea4f4782881993272c9c6b1a2f47967e404f54",
+      "size": 937
+    },
+    {
+      "mode": "100644",
+      "path": "chatgpt_ui/package-lock.json",
+      "sha256": "18d2cd985a450a81c83a0ef0440f5e1d27a2f5c4bf0daf9e36680560169453b8",
+      "size": 21487
+    },
+    {
+      "mode": "100644",
+      "path": "chatgpt_ui/package.json",
+      "sha256": "6f503c73b1522765c0e8904ac42847065682f9643ecfcbfbce684bb57eefe269",
+      "size": 246
+    },
+    {
+      "mode": "100644",
+      "path": "chatgpt_ui/src/app.js",
+      "sha256": "4c29d30f45fab6261bcc1387c06b3cd958820fcdef4ca89ed10073f2660a109d",
+      "size": 13931
+    },
+    {
+      "mode": "100644",
+      "path": "chatgpt_ui/src/bridge.js",
+      "sha256": "d72c9a6b20a99337bf38646b55fc4730e0acf8669a181c8266e73a7a5d9b8f71",
+      "size": 1854
+    },
+    {
+      "mode": "100644",
+      "path": "chatgpt_ui/src/index.html",
+      "sha256": "daa1638589a76b4db3831331dc649bf7c0fb87030fa13ddc68528ea6e32c4a47",
+      "size": 7247
+    },
+    {
+      "mode": "100644",
+      "path": "chatgpt_ui/src/style.css",
+      "sha256": "b938faae69f098b1667ba42e00e6370c4ae65a2391e86ef5a595593b14f29e91",
+      "size": 9486
+    },
+    {
+      "mode": "100644",
+      "path": "chatgpt_ui/test_bridge.mjs",
+      "sha256": "9059ad386463c882e2f79a5db3318eb27cb9c23ba63d2eb5699919f271ddf5f8",
+      "size": 1753
+    },
+    {
+      "mode": "100644",
       "path": "docs/HARDENED_DEDICATED_USER.md",
       "sha256": "370c09cc50c5a14b61ae1a9e3187e1dbe84ecbec21672517beaf62c166ed4271",
       "size": 13288
@@ -144,8 +198,14 @@
     },
     {
       "mode": "100644",
+      "path": "docs/chatgpt-control-center.md",
+      "sha256": "133a5505831739ecb40c0a8fedba8ec045e0c8a02481cf0385facbf27ae7fb0d",
+      "size": 5874
+    },
+    {
+      "mode": "100644",
       "path": "docs/security-assurance.md",
-      "sha256": "16b6546325b1b09ccf78cec7f4ed4e10000d1019119cfbeb1014b63b9c5a2e70",
+      "sha256": "0581ac7ed9451b9b95c4b7f2820508e6c2d1f921e9c35428a9032b64135147d7",
       "size": 16804
     },
     {
@@ -205,14 +265,32 @@
     {
       "mode": "100644",
       "path": "mcp_server/browser_tabs.py",
-      "sha256": "c003e30746fb01d74cdbb151db82861f2f686a078f7fd1f94c3c7d380cd92fc7",
-      "size": 28567
+      "sha256": "d9c4cdefa45fcaaa5dedc4c98703a427d942fb1d88013f5ce7a2eb368e15ee3f",
+      "size": 32646
     },
     {
       "mode": "100644",
       "path": "mcp_server/change_summary.py",
       "sha256": "a0d8f916f49a3a18be24bbfb7280c9cc223749a4062684b58369d35422a54ff6",
       "size": 14352
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/chatgpt_client_gate.py",
+      "sha256": "9d7288d0ee7b477d70ac0d61757a9895d9036235727740e2c1f6b13f83296385",
+      "size": 2948
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/chatgpt_panel.py",
+      "sha256": "8fb752bc5c03479b4c4a8e3ee1281716c7fa8d1c4bfeef7df0296af52e1d53b7",
+      "size": 10678
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/chatgpt_ui/control-center.html",
+      "sha256": "2c76bf7a75dca9c185ab0db36d52363751d9f34259dc456ec0e9d7fa02410721",
+      "size": 27015
     },
     {
       "mode": "100644",
@@ -223,8 +301,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/cli.py",
-      "sha256": "2476231cebeb32f176be53b28d5e5966493192fc6969fe360723c5893128a215",
-      "size": 65118
+      "sha256": "c88ed66452a93c11f36d77385d8e7a619269d9d6305005b63911a4234bf430df",
+      "size": 65201
     },
     {
       "mode": "100644",
@@ -241,8 +319,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/computer_plan.py",
-      "sha256": "e368bcfe5a2561c4da4b46c91c9d0f41069a6d7287340bff9785aae8fc9d6129",
-      "size": 64757
+      "sha256": "d9d68b48366098cc833506c17976735169639574df11b31ccc3b9737ca2fa3ae",
+      "size": 68439
     },
     {
       "mode": "100644",
@@ -289,14 +367,20 @@
     {
       "mode": "100644",
       "path": "mcp_server/dashboard_routes.py",
-      "sha256": "dd733075e7295739dc85b65f09bf7ae83dc90cc816c049b68112d433664244f6",
-      "size": 41386
+      "sha256": "f409d3a28c36d087164c5e156b608a862eeb2a1a1a1c86db24ef7bacfde128bd",
+      "size": 42365
     },
     {
       "mode": "100644",
       "path": "mcp_server/data_guard.py",
       "sha256": "dafb5501724feba838f739599eb96838914ce29dcf9da0d470dd274cf92a8ff1",
       "size": 23199
+    },
+    {
+      "mode": "100644",
+      "path": "mcp_server/decision_engine.py",
+      "sha256": "27be864cc8811f5d3d43f5a5e1c89d6d9d13dc5028d352d9ff78a2010eeac6ba",
+      "size": 18440
     },
     {
       "mode": "100644",
@@ -337,8 +421,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/main.py",
-      "sha256": "34d3b9c3baffecbffdcbd62296efb6887de20786620f014e5d4019699bbd479c",
-      "size": 116172
+      "sha256": "94e75fcc4e2311792a1c99829149db33bf0aa6e70dccb2f360fb4d9ffe1240c0",
+      "size": 116912
     },
     {
       "mode": "100644",
@@ -421,8 +505,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/observability.py",
-      "sha256": "20dcdd93aaa481df85ecb6ffc2b422f33f738d0235fd565628b57c5a86069928",
-      "size": 71169
+      "sha256": "39a07ea6e5962651086bf0436fe380cfe334f125549de2f4281ffea5f52b0998",
+      "size": 74132
     },
     {
       "mode": "100644",
@@ -433,8 +517,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/policy.py",
-      "sha256": "6afa6a67020a894c701e076d08d760f1b97e4a790e210d34d5c02a2386142a08",
-      "size": 56028
+      "sha256": "42dc209869dee6a863530b6583d5eeb4a65b0c15d82eda47f970fa8acfa040cd",
+      "size": 56459
     },
     {
       "mode": "100644",
@@ -493,8 +577,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/runtime_settings.py",
-      "sha256": "66e01bd57b770377f02a1626143f7b3eac550f5c42dd49c2a559f08af80cfba2",
-      "size": 7314
+      "sha256": "828265365197729b375e5653be5c34367e657ccabaf4e88a20a297438ded738b",
+      "size": 7468
     },
     {
       "mode": "100644",
@@ -547,14 +631,14 @@
     {
       "mode": "100644",
       "path": "mcp_server/tools_browser.py",
-      "sha256": "88c9d26ff0c9eed4324a6212eb0243adc289f81c32762a01137a05116efcca21",
-      "size": 92472
+      "sha256": "f2a769adb775b75de9754213a6665077da69cacea0a4b57b171f8ca99875b590",
+      "size": 94490
     },
     {
       "mode": "100644",
       "path": "mcp_server/tools_browser_agent.py",
-      "sha256": "78dcb1f1f5ed3a7ad8dce705390b5aab8ad00c529777f41af9864a550a4f8b32",
-      "size": 183156
+      "sha256": "9b8609f5ad7d5e82c4bc1902baad116703c7a8ff2c5656d4008d78412f5d2b0a",
+      "size": 212071
     },
     {
       "mode": "100644",
@@ -577,8 +661,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/tools_jobs.py",
-      "sha256": "7722354ade24d4dff70016839aaeea5591f2b77502ed8c2c86b47acce4eace95",
-      "size": 20658
+      "sha256": "e6cd42745131940ff80100354e3674df1376bae1ccbe91624d8caa8bf81a410c",
+      "size": 22574
     },
     {
       "mode": "100644",
@@ -643,8 +727,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/update_helper.py",
-      "sha256": "f170f07be05fd259c9520c63ee2b2e57a169c5d163cff1cecbe6d2e2f519a9cb",
-      "size": 82189
+      "sha256": "11bb6b0577030be9eb2a6651f8bb38c937256e9122105e10f65e2e9287ff5bfc",
+      "size": 82377
     },
     {
       "mode": "100644",
@@ -667,7 +751,7 @@
     {
       "mode": "100644",
       "path": "mcp_server/version.py",
-      "sha256": "ca71a98394cff867b405825309846def934f7ac9082e286c91614c571c720a65",
+      "sha256": "a3d45f2410461d986a13bf4cffda62cf4832f668fd900e737344174a7eaf782f",
       "size": 54
     },
     {
@@ -709,8 +793,8 @@
     {
       "mode": "100644",
       "path": "menu_app/BrowserVisualCompanion/visual.js",
-      "sha256": "b652e9f56104ad0c10a1f637d996bbeca44ab4c1c60b720738153c21f16b416f",
-      "size": 22276
+      "sha256": "6199462e14c2653d1066d61d04214adad97712463f67fd080141b94b35ebe62c",
+      "size": 25412
     },
     {
       "mode": "100644",
@@ -739,19 +823,19 @@
     {
       "mode": "100644",
       "path": "menu_app/ChromeVisualCompanion/manifest.json",
-      "sha256": "4e85ba0a74a0289df5ed804a93b27c449f6fdbb54fe7ad88ae250f9912d26b7a",
+      "sha256": "3e90b1a26f19431b54fe71789606048251debb78317ca3ddd2b18321faaf36c6",
       "size": 600
     },
     {
       "mode": "100644",
       "path": "menu_app/ChromeVisualCompanion/visual.js",
-      "sha256": "b652e9f56104ad0c10a1f637d996bbeca44ab4c1c60b720738153c21f16b416f",
-      "size": 22276
+      "sha256": "6199462e14c2653d1066d61d04214adad97712463f67fd080141b94b35ebe62c",
+      "size": 25412
     },
     {
       "mode": "100644",
       "path": "menu_app/Info.plist",
-      "sha256": "b1a006fab6abfc99bcbbe3c84f1d08d81cc3d884b4e03414fbff3fc44cdabeeb",
+      "sha256": "e7b56a0bfdab25eb7409a0382d4b3b78c7138e9163d780e75fcf00ee84e42a44",
       "size": 703
     },
     {
@@ -763,7 +847,7 @@
     {
       "mode": "100644",
       "path": "menu_app/SafariExtension/Info.plist",
-      "sha256": "923593e9b8c97e44c0209211ce1ee324222f5520e4a36a49c87fd7e82c4f3433",
+      "sha256": "c6e7f38a1919fa15bbd13175a34c069f4eb6beea320935303475b24c4b6571e1",
       "size": 985
     },
     {
@@ -781,8 +865,8 @@
     {
       "mode": "100644",
       "path": "menu_app/Sources/AppState.swift",
-      "sha256": "854906927933a1df990efa1355ea29a69124fd57298784b4ab07815609915dd5",
-      "size": 126838
+      "sha256": "1170b75cf10526f5b6d3089018dae811d50e120a4e344146457d45ccca5b4335",
+      "size": 128885
     },
     {
       "mode": "100644",
@@ -793,8 +877,8 @@
     {
       "mode": "100644",
       "path": "menu_app/Sources/KeychainStore.swift",
-      "sha256": "6e44386811112e0ca9a6012b96beeb8361bb3d38abb3b99c094ce1fe327df978",
-      "size": 2627
+      "sha256": "2b8f385aabce086cb67211e8c48fe92a932211603242eae1bdd5206949a2ff25",
+      "size": 3891
     },
     {
       "mode": "100644",
@@ -811,14 +895,14 @@
     {
       "mode": "100644",
       "path": "menu_app/Sources/SettingsStore.swift",
-      "sha256": "1eb8073fef973e5be95695bff0ff6a3cca4d3198208e735db75490ff6d38527e",
-      "size": 14167
+      "sha256": "4f071571a664ef9e2e5ce5c4403334c186792162d1f199090d2e09d34d68ade7",
+      "size": 15424
     },
     {
       "mode": "100644",
       "path": "menu_app/Sources/SettingsView.swift",
-      "sha256": "814a1928fc5c8e0f19cc75759629a9cadd7fa1d1781f073bb32eae65673b0f27",
-      "size": 122634
+      "sha256": "a4f76056ef55215b582c953a56d34f447a6a409780586b48b1a0f2e138fcb388",
+      "size": 128312
     },
     {
       "mode": "100644",
@@ -859,8 +943,8 @@
     {
       "mode": "100644",
       "path": "pyproject.toml",
-      "sha256": "fa2a758220e6df1f613d261d995ecb74e7ae6a42c187060987de5f7a84ba41da",
-      "size": 906
+      "sha256": "ddea1c69e3bf0de8f986850ad1ccec07fd44a4c19201aefa902c77283e06eb05",
+      "size": 927
     },
     {
       "mode": "100644",
@@ -1008,6 +1092,12 @@
     },
     {
       "mode": "100644",
+      "path": "tests/test_browser_background_keys.py",
+      "sha256": "0c0b9e17723a75572d142663889d2c3df62a043647783ec9b0ac4110ed7be008",
+      "size": 10114
+    },
+    {
+      "mode": "100644",
       "path": "tests/test_browser_batch_guidance.py",
       "sha256": "af223d5209797c4529b3ef163117bb17ce82c0a06c82162377474c45f5d4bf7b",
       "size": 9070
@@ -1033,14 +1123,14 @@
     {
       "mode": "100644",
       "path": "tests/test_browser_key_targeting.py",
-      "sha256": "7e299c63e213b3227d078ed6eae55bdbc45c669b4b585cdfe0db67f351c4c981",
-      "size": 6835
+      "sha256": "698060028c90906e29c5988b88b58fd13f92fecf1bbbb9cf29c20976c3ebac46",
+      "size": 6924
     },
     {
       "mode": "100644",
       "path": "tests/test_browser_multi_close.py",
-      "sha256": "6e6244a9a010bb9fd241a05e4863715bdb0040ea2f1b06c9d01623bad39073ed",
-      "size": 5179
+      "sha256": "8907c7f79c140ac998b614f6b273f5370322ccb419fe3811e6272ae85b62e490",
+      "size": 5155
     },
     {
       "mode": "100644",
@@ -1056,6 +1146,12 @@
     },
     {
       "mode": "100644",
+      "path": "tests/test_browser_tab_index_shift.py",
+      "sha256": "0dfc7a8f07c9ca3a9adece49816af48b59281ed2d1928edfe23f85b2a7458cd2",
+      "size": 9355
+    },
+    {
+      "mode": "100644",
       "path": "tests/test_browser_tabs.py",
       "sha256": "a0cc08c075fa6ba70667aa9c6714adc047f8b4a1683753b93d6ee3b6e1c1343f",
       "size": 3623
@@ -1063,14 +1159,20 @@
     {
       "mode": "100644",
       "path": "tests/test_browser_target_hardening.py",
-      "sha256": "24afaf09792d8e451e827126872fa7d091526540897c40670dd9360859ea9641",
-      "size": 12392
+      "sha256": "4c2613bca4a33b4d0084d10b39adffdaf6593c40fdc28e4349a5e551d371b827",
+      "size": 12393
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_browser_target_ranking.py",
+      "sha256": "04e2f7097f13946f4fc6e6d54bc730239f86660e412ffcc67ca04b113e34cc5c",
+      "size": 5563
     },
     {
       "mode": "100644",
       "path": "tests/test_browser_visual_companion.py",
-      "sha256": "17262330647a629e3e18b5f46d9c9a4a4b595055e8756ed25343ea8bd7c6ab9d",
-      "size": 17417
+      "sha256": "fb691d07e3807400dd8db9f4b010e9809c55e26e13ea18cdca27710f0f0ff4e3",
+      "size": 20803
     },
     {
       "mode": "100644",
@@ -1083,6 +1185,12 @@
       "path": "tests/test_chatgpt_checkpoint_integration.py",
       "sha256": "e398f055eda81c58e6c0385e341ec88aac58e4d2fb4cbc6472ace8a4e901c3d8",
       "size": 4239
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_chatgpt_panel.py",
+      "sha256": "78af38d62e8536f40ce6e64e44dd973afee5597456682f99d2d7a1bb5755cd31",
+      "size": 25118
     },
     {
       "mode": "100644",
@@ -1105,8 +1213,20 @@
     {
       "mode": "100644",
       "path": "tests/test_cli_ergonomics.py",
-      "sha256": "c0ba2e7715546c39c5bba55b99562cdb88b7cd7675424ce08d29c0efb420399f",
+      "sha256": "a530354ac35f6acc1d83992dbda67bc90852939297dbc3f63c3ab3a52f75e35c",
       "size": 8456
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_cli_stop_exiting_process.py",
+      "sha256": "728a556076c7cda08ff15c1a9f388d9aa796e59c78fe9d09126b2f7e4404fc51",
+      "size": 2038
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_click_effect_verification.py",
+      "sha256": "6b2989b732e4e6f23a98cdee57d8d338bf9b9750f1fafb34800e163abba6fd30",
+      "size": 4112
     },
     {
       "mode": "100644",
@@ -1146,6 +1266,12 @@
     },
     {
       "mode": "100644",
+      "path": "tests/test_decision_engine.py",
+      "sha256": "183d99f9fcb17bfd85fc494f4e9a450cb4c601b869b2718c6da256fd02e4c837",
+      "size": 23373
+    },
+    {
+      "mode": "100644",
       "path": "tests/test_default_agent_preset.py",
       "sha256": "1aba2c27b68af8a36068dec0e842b8d752fd9f20512e6f21c3c712624c07b528",
       "size": 11683
@@ -1155,6 +1281,12 @@
       "path": "tests/test_diagnostics.py",
       "sha256": "e3845eee727f9412768309b9a251dac1b14923a6bc989b777b006a903e083532",
       "size": 17790
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_dom_rasterizer_trusted_types.py",
+      "sha256": "371f56d8beaa44591754bfa4ddad2cc41cd67849f62dcf6e45580b2be141e2a9",
+      "size": 5604
     },
     {
       "mode": "100644",
@@ -1177,8 +1309,8 @@
     {
       "mode": "100644",
       "path": "tests/test_hardening_203.py",
-      "sha256": "a6fa8abe9883f1d07f7e4ca8029e6c35049b0982ad903fdb3faa8d9a7da7fc9b",
-      "size": 21257
+      "sha256": "867a245a94b44434c518ce294835c6ed5ed8202a74e6672c3b3d526bdf7a2e9d",
+      "size": 21327
     },
     {
       "mode": "100644",
@@ -1197,6 +1329,12 @@
       "path": "tests/test_installer_release_channel.py",
       "sha256": "3403ff894fac2e012cdac68f985a92b038f3f05cfac1ba0a3341050add873fad",
       "size": 12581
+    },
+    {
+      "mode": "100644",
+      "path": "tests/test_job_process_group.py",
+      "sha256": "18d9ce4695ffd4ca5bbaa3994b2ad47b15bd1c6bfda5c94cb7c07f01e838498d",
+      "size": 7953
     },
     {
       "mode": "100644",
@@ -1404,6 +1542,12 @@
     },
     {
       "mode": "100644",
+      "path": "tests/test_safari_navigation_rebind.py",
+      "sha256": "6042b093f1a8518f32185e7f1918b39dafed3fcce64aa5674f2b46bb1d40fd21",
+      "size": 8052
+    },
+    {
+      "mode": "100644",
       "path": "tests/test_safari_new_tab_identity.py",
       "sha256": "c9003601bf8d1989f0105d063633df12aaed3b468e2385851a6c9f73e34b72d0",
       "size": 11172
@@ -1495,7 +1639,7 @@
     {
       "mode": "100644",
       "path": "tests/test_swiftui_clt_compat.py",
-      "sha256": "2cabc37b22cf033c02f9128d344f3184e192a8b606d9a4703aa37804b9a2a584",
+      "sha256": "1ab9dab50b67f270812ceb796a537f04f89be8742386c1c8dfcf62cdefcdc3b5",
       "size": 1560
     },
     {
@@ -1555,8 +1699,8 @@
     {
       "mode": "100644",
       "path": "tests/test_update.py",
-      "sha256": "04eca6062d9904690923cf2b85cc34f915e288e1b7f559842f6d3c6251b5eaee",
-      "size": 75012
+      "sha256": "32c4714dd48f28e475526076b7ce0de802e408ae1f1886dd47abe61e32b2bed8",
+      "size": 75766
     },
     {
       "mode": "100644",
@@ -1583,15 +1727,15 @@
       "size": 3924
     }
   ],
-  "generated_at": "2026-10-07T13:12:48Z",
-  "payload_sha256": "56806dd85e8e86c19527177d822c35702c9e879ef95f17fc6c3108ff53a0a9ff",
+  "generated_at": "2026-10-08T11:02:28Z",
+  "payload_sha256": "834576d793198a4d83342e9d0f142e6acdf15aafea868fb803c3d8a5b79930a2",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.8-r8",
+  "release_id": "stable-2.1.9-r1",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",
     "identity": "mac-mcp-release",
     "namespace": "mac-mcp-release"
   },
-  "version": "2.1.8"
+  "version": "2.1.9"
 }
