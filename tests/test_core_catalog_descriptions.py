@@ -91,6 +91,12 @@ class CoreCatalogDescriptionTests(unittest.TestCase):
                 with self.subTest(tool=tool.name):
                     self.assertIn(tool.name, CORE_TOOL_SUMMARIES)
 
+    def test_shell_execution_mode_guidance_is_visible(self) -> None:
+        for phrase in ("run_command for a short command", "start_background_job", "get_job_output/wait_jobs", "stop_job",
+                       "run_commands_parallel only", "tool_discover"):
+            self.assertIn(phrase, main.MCP_AGENT_INSTRUCTIONS)
+        self.assertIn("start_background_job", CORE_TOOL_SUMMARIES["run_command"])
+
     def test_unsummarized_long_description_is_marked_as_cut(self) -> None:
         clipped = observability._clip_description("word " * 100)
         self.assertLessEqual(len(clipped), COMPACT_DESCRIPTION_LIMIT)

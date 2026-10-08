@@ -14,8 +14,8 @@ COMPACT_DESCRIPTION_LIMIT = 220
 
 CORE_TOOL_SUMMARIES: Dict[str, str] = {
     "run_command": (
-        "Run a shell command in zsh on this Mac (full access unless scoped). reversible=true captures bounded file side "
-        "effects for file_transaction_undo; unsupported paths are reported, never claimed reversible."
+        "Run a short shell command in zsh and wait for it (full access unless scoped); long builds or servers belong in "
+        "start_background_job. reversible=true records file changes for file_transaction_undo."
     ),
     "file_transaction_undo": (
         "Undo a recent reversible filesystem transaction by transaction_id (file tools, reversible shell/jobs, compound "
