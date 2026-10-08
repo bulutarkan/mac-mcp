@@ -561,6 +561,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "get_job_output": _r("get_job_output", "jobs", _caps(Capability.READ), sensitive=True),
     "stop_job": _r("stop_job", "jobs", _caps(Capability.PROCESS_CONTROL), destructive=True),
     "list_jobs": _r("list_jobs", "jobs", _caps(Capability.READ), sensitive=True),
+    "delete_job": _r("delete_job", "jobs", _caps(Capability.LOCAL_WRITE), destructive=True),
     "wait_jobs": _r("wait_jobs", "jobs", _caps(Capability.READ), sensitive=True),
     "run_commands_parallel": _r("run_commands_parallel", "jobs", _caps(Capability.READ, Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.EXTERNAL_SIDE_EFFECT, Capability.NETWORK_ACCESS, Capability.RAW_EXECUTION), destructive=True, sensitive=True),
     # Delegated agents

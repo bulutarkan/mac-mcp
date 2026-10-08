@@ -31,7 +31,7 @@ from .chrome_background_bridge import create_chrome_background_bridge_routes
 from .tools_terminal import run_command, process_list, kill_process, get_system_info
 from .tools_jobs import (
     start_background_job, get_job_status, get_job_output,
-    stop_job, list_jobs, wait_jobs, run_commands_parallel,
+    stop_job, list_jobs, delete_job, wait_jobs, run_commands_parallel,
 )
 from .tools_agents import (
     AGENTS_DIR, agent_catalog, spawn_agent, spawn_agents, wait_agents,
@@ -559,10 +559,20 @@ def create_app():
                     lambda: stop_job(settings, job_id=job_id, signal_name=signal))
 
     @mcp.tool(name="list_jobs",
-              description="List background jobs. status_filter can be running, stalled, completed, failed, timeout, killed.")
-    def _list_jobs(status_filter: Optional[str] = None) -> Dict[str, Any]:
+              description=(
+                  "List background jobs, newest first (limit, default 50; total says how many matched). "
+                  "status_filter can be running, stalled, completed, failed, timeout, killed. "
+                  "Finished jobs expire by age, count and size (see retention)."
+              ))
+    def _list_jobs(status_filter: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
         return _log(audit_logger, "list_jobs",
-                    lambda: list_jobs(settings, status_filter=status_filter))
+                    lambda: list_jobs(settings, status_filter=status_filter, limit=limit))
+
+    @mcp.tool(name="delete_job",
+              description="Delete a finished background job: its metadata and both output streams. Stop a running job first.",
+              annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False))
+    def _delete_job(job_id: str) -> Dict[str, Any]:
+        return _log(audit_logger, "delete_job", lambda: delete_job(settings, job_id=job_id))
 
     @mcp.tool(name="wait_jobs",
               description=(

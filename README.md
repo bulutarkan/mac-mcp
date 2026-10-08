@@ -557,7 +557,7 @@ Set `MAC_MCP_TOOL_PROFILE=full` to advertise every tool allowed by the active pe
 
 The capability set covers:
 
-- terminal/system and background jobs;
+- terminal/system and background jobs (each output stream keeps up to 16 MB, `get_job_output` reads only the requested slice, finished jobs expire after 7 days, 200 jobs or 1 GB, and `delete_job` removes one; override with `MAC_MCP_JOB_STREAM_MAX_BYTES`, `MAC_MCP_JOB_RETENTION_DAYS`, `MAC_MCP_JOB_RETENTION_COUNT`, `MAC_MCP_JOB_RETENTION_BYTES`);
 - delegated OpenCode/Codex agents;
 - file management;
 - macOS automation and Accessibility UI control;
