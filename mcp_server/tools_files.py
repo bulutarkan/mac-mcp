@@ -374,12 +374,12 @@ def read_multiple_files(settings: Settings, paths: List[str]) -> Dict[str, Any]:
                         raise _scoped_http_error(exc) from exc
                     results.append({"path": path, "error": "Not found", "status": "error"})
                     continue
-                bounded, _ = truncate(content, 50_000)
-                results.append({"path": path, "content": bounded, "status": "ok"})
+                bounded, was_truncated = truncate(content, 50_000)
+                results.append({"path": path, "content": bounded, "truncated": was_truncated, "status": "ok"})
             elif target.exists() and target.is_file():
                 content = target.read_text(encoding="utf-8", errors="replace")
-                bounded, _ = truncate(content, 50_000)
-                results.append({"path": path, "content": bounded, "status": "ok"})
+                bounded, was_truncated = truncate(content, 50_000)
+                results.append({"path": path, "content": bounded, "truncated": was_truncated, "status": "ok"})
             else:
                 results.append({"path": path, "error": "Not found", "status": "error"})
         except HTTPException:
