@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import HTTPException, status
 
@@ -92,47 +92,57 @@ def _is_pid_alive(pid: Optional[int]) -> bool:
         return True
 
 
-def _terminate_process(proc: subprocess.Popen[str], signal_name: int = signal.SIGTERM,
-                       grace_s: float = 1.0) -> None:
-    """Terminate a job's process group and never leave its descendants behind."""
-    if proc.poll() is not None:
+def _surviving_group(pgid: Optional[int]) -> bool:
+    """Whether a job's process group still has members after its leader is gone.
+
+    Jobs start in a new session, so the group id equals the leader's pid. Once the
+    leader is reaped, a live group with that id can only hold the job's leftover
+    descendants: a new group with the same id needs a live process with that pid,
+    and in that case the id belongs to someone else and is never claimed.
+    """
+    if not pgid or _is_pid_alive(pgid):
+        return False
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _signal_group_until_gone(pgid: int, alive: Callable[[], bool], signal_name: int, grace_s: float) -> None:
+    if not alive():
         return
     try:
-        os.killpg(proc.pid, signal_name)
+        os.killpg(pgid, signal_name)
     except ProcessLookupError:
         return
-
     if signal_name == signal.SIGKILL:
         return
 
     deadline = time.monotonic() + max(0.0, grace_s)
-    while proc.poll() is None and time.monotonic() < deadline:
+    while alive() and time.monotonic() < deadline:
         time.sleep(0.05)
-    if proc.poll() is None:
+    if alive():
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
+            os.killpg(pgid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+
+
+def _terminate_process(proc: subprocess.Popen[str], signal_name: int = signal.SIGTERM,
+                       grace_s: float = 1.0) -> None:
+    """Terminate a job's process group and never leave its descendants behind."""
+    _signal_group_until_gone(
+        proc.pid, lambda: proc.poll() is None or _surviving_group(proc.pid), signal_name, grace_s,
+    )
 
 
 def _terminate_pid_group(pid: int, signal_name: int = signal.SIGTERM,
                          grace_s: float = 1.0) -> None:
     """Best-effort cleanup for jobs created before this server process started."""
-    try:
-        os.killpg(pid, signal_name)
-    except ProcessLookupError:
-        return
-    if signal_name == signal.SIGKILL:
-        return
-
-    deadline = time.monotonic() + max(0.0, grace_s)
-    while _is_pid_alive(pid) and time.monotonic() < deadline:
-        time.sleep(0.05)
-    if _is_pid_alive(pid):
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    _signal_group_until_gone(
+        pid, lambda: _is_pid_alive(pid) or _surviving_group(pid), signal_name, grace_s,
+    )
 
 
 def _normalize_timeout(value: Optional[int], field_name: str) -> Optional[int]:
@@ -227,6 +237,24 @@ def _watch_process(job_id: str, timeout_s: Optional[int], no_output_timeout_s: O
         time.sleep(0.5)
 
     exit_code = proc.wait()
+    # The shell exiting does not end the job while descendants in its group still
+    # run (for example `server &`); keep the same timeout and stall limits on them.
+    while termination_reason is None and _surviving_group(proc.pid):
+        with _LOCK:
+            meta = _read_meta(job_id)
+            last_output_at = float(meta.get("last_output_at") or meta.get("started_at") or _now())
+            now = _now()
+            if no_output_timeout_s is not None and now - last_output_at >= no_output_timeout_s:
+                termination_reason = "stalled"
+            elif deadline is not None and now >= deadline:
+                termination_reason = "timeout"
+            if termination_reason:
+                meta.update({"status": "stopping", "stop_reason": termination_reason, "updated_at": now})
+                _write_meta(job_id, meta)
+        if termination_reason:
+            _terminate_process(proc)
+            break
+        time.sleep(0.5)
     with _LOCK:
         try:
             meta = _read_meta(job_id)
@@ -257,8 +285,12 @@ def _watch_process(job_id: str, timeout_s: Optional[int], no_output_timeout_s: O
 
 def _normalize_status(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     status_value = meta.get("status")
-    if status_value in {"running", "stalled", "stopping"}:
+    # A stopped job is "killed" before its processes are gone; finalize it once they are.
+    if status_value in {"running", "stalled", "stopping"} or (status_value == "killed" and not meta.get("ended_at")):
         proc = _PROCS.get(job_id)
+        if proc is not None and proc.poll() is not None and _surviving_group(proc.pid):
+            # The leader exited but its descendants still run; the watcher finalizes.
+            return meta
         if proc is not None and proc.poll() is not None:
             exit_code = proc.returncode
             if status_value == "stopping":
@@ -273,7 +305,7 @@ def _normalize_status(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
             _finalize_job_capture(meta)
             _write_meta(job_id, meta)
             _PROCS.pop(job_id, None)
-        elif proc is None and not _is_pid_alive(meta.get("pid")):
+        elif proc is None and not _is_pid_alive(meta.get("pid")) and not _surviving_group(meta.get("pid")):
             if meta.get("ended_at"):
                 return meta
             if status_value == "stopping":
