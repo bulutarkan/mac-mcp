@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import signal
 import tempfile
+import threading
 import time
 import unittest
 from dataclasses import replace
@@ -71,19 +72,48 @@ class JobProcessGroupTests(unittest.TestCase):
             time.sleep(0.05)
         return predicate()
 
+    # A child that runs until the test releases it, so no assertion depends on
+    # how long a fixed `sleep N` child happens to live on a loaded machine.
+    # Capped at ~30s so a failed test can never leave it running forever.
+    _HELD_CHILD = "i=0; while [ ! -f release ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done"
+
+    def _watcher_probe(self) -> threading.Event:
+        """Set once the watcher has seen the surviving child group twice."""
+        original = tools_jobs._surviving_group
+        seen = threading.Event()
+        count = [0]
+
+        def probe(pid: int):
+            alive = original(pid)
+            if alive:
+                count[0] += 1
+                if count[0] >= 2:
+                    seen.set()
+            return alive
+
+        patcher = patch.object(tools_jobs, "_surviving_group", side_effect=probe)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return seen
+
+    def _release_child(self) -> None:
+        (self.work / "release").write_text("go")
+
     def test_job_stays_running_while_child_outlives_shell(self) -> None:
+        watched = self._watcher_probe()
         job_id = self._start("sleep 30 >/dev/null 2>&1 & echo $! > child.pid")
         child = self._child_pid()
         self.assertTrue(self._wait_for(lambda: tools_jobs._PROCS.get(job_id) is None
                                        or tools_jobs._PROCS[job_id].poll() is not None))
-        time.sleep(1.0)  # past the watcher's poll interval
+        self.assertTrue(watched.wait(15), "watcher never re-checked the surviving child")
         self.assertTrue(_alive(child))
         self.assertEqual("running", self._status(job_id)["status"])
 
     def test_job_completes_once_surviving_child_exits(self) -> None:
-        job_id = self._start("sleep 1.2 >/dev/null 2>&1 & echo $! > child.pid")
+        job_id = self._start(f"( {self._HELD_CHILD} ) >/dev/null 2>&1 & echo $! > child.pid")
         child = self._child_pid()
         self.assertEqual("running", self._status(job_id)["status"])
+        self._release_child()
         self.assertTrue(self._wait_for(lambda: not _alive(child), timeout=5))
         self.assertTrue(self._wait_for(lambda: self._status(job_id)["status"] == "completed", timeout=5))
         status = self._status(job_id)
@@ -111,10 +141,12 @@ class JobProcessGroupTests(unittest.TestCase):
         self.assertEqual("hello", tools_jobs.get_job_output(self.settings, job_id)["stdout"].strip())
 
     def test_failed_leader_with_surviving_child_reports_failure_after_child(self) -> None:
-        job_id = self._start("sleep 1 >/dev/null 2>&1 & echo $! > child.pid; exit 3")
+        watched = self._watcher_probe()
+        job_id = self._start(f"( {self._HELD_CHILD} ) >/dev/null 2>&1 & echo $! > child.pid; exit 3")
         child = self._child_pid()
-        time.sleep(0.6)
+        self.assertTrue(watched.wait(15), "watcher never saw the leader exit with a surviving child")
         self.assertEqual("running", self._status(job_id)["status"])
+        self._release_child()
         self.assertTrue(self._wait_for(lambda: not _alive(child), timeout=5))
         self.assertTrue(self._wait_for(lambda: self._status(job_id)["status"] == "failed", timeout=5))
         self.assertEqual(3, self._status(job_id)["exit_code"])
