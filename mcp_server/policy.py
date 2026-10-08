@@ -325,8 +325,16 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     action = str(arguments.get("action") or "capabilities").strip().lower().replace("-", "_")
     read_actions = {
         "capabilities", "selection", "find_notes", "find_messages",
-        "find_events", "list_documents", "list_panes",
+        "find_events", "list_documents", "list_panes", "list_reminders",
     }
+    # Calendar and Reminders data changes go through the app's scripting model,
+    # not its UI: a local data write rather than a UI action.
+    if action in {"create_event", "update_event", "complete_reminder"}:
+        return RiskOverride(
+            capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE),
+            destructive=False,
+            sensitive=True,
+        )
     if action in read_actions:
         return RiskOverride(
             capabilities=_caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY),

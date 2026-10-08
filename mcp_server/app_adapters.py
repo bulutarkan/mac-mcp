@@ -31,6 +31,7 @@ _APP_ALIASES = {
     "mail": "Mail",
     "calendar": "Calendar",
     "preview": "Preview",
+    "reminders": "Reminders",
     "settings": "System Settings",
     "system settings": "System Settings",
     "system preferences": "System Settings",
@@ -40,7 +41,8 @@ _ACTIONS = {
     "Finder": ("selection", "select_file"),
     "Notes": ("find_notes", "open_note"),
     "Mail": ("find_messages", "open_message"),
-    "Calendar": ("find_events", "open_event"),
+    "Calendar": ("find_events", "open_event", "create_event", "update_event"),
+    "Reminders": ("list_reminders", "complete_reminder"),
     "Preview": ("list_documents", "open_document"),
     "System Settings": ("list_panes", "open_pane"),
 }
@@ -53,7 +55,12 @@ _READ_ACTIONS = {
     "find_events",
     "list_documents",
     "list_panes",
+    "list_reminders",
 }
+
+# Change app data through the app's own scripting model; they never drive the UI,
+# so a person using the app's window does not block them.
+_DATA_WRITE_ACTIONS = {"create_event", "update_event", "complete_reminder"}
 
 
 class AppAdapterError(RuntimeError):
@@ -134,7 +141,9 @@ def _run(script: str, *, timeout_s: float = 10.0, code: str = "APP_ADAPTER_SCRIP
     ok, stdout, stderr = _run_osascript(script, timeout_s=max(0.5, min(float(timeout_s), 30.0)))
     if not ok:
         detail = (stderr or stdout or "AppleScript failed").strip()
-        raise AppAdapterError(code, detail[:800])
+        # A compile error (-2741) means no statement ran at all.
+        compile_error = "syntax error" in detail and "(-2741)" in detail
+        raise AppAdapterError(code, detail[:800], **({"not_executed": True} if compile_error else {}))
     return (stdout or "").rstrip("\r\n")
 
 
@@ -654,7 +663,9 @@ def _parse_date_bound(value: Optional[str], *, end: bool) -> datetime:
 
 
 def _date_setup(name: str, dt: datetime) -> str:
+    # Day 1 first: setting the month while today is the 31st would roll over.
     return f'''set {name} to current date
+set day of {name} to 1
 set year of {name} to {dt.year}
 set month of {name} to {dt.month}
 set day of {name} to {dt.day}
@@ -748,6 +759,359 @@ end tell'''
     }
     result["focus"] = _focus_finish(focus, "Calendar", deadline)
     return result
+
+
+def _event_datetime(value: Optional[str], field: str) -> datetime:
+    text = str(value or "").strip()
+    if not text:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", f"{field} is required (ISO-8601 local datetime).")
+    try:
+        if len(text) == 10:
+            return datetime.strptime(text, "%Y-%m-%d")
+        return datetime.fromisoformat(text).replace(tzinfo=None)
+    except ValueError as exc:
+        raise AppAdapterError(
+            "APP_ADAPTER_ARGUMENT_INVALID",
+            f"{field} must be YYYY-MM-DD or an ISO-8601 local datetime such as 2026-10-09T14:30.",
+        ) from exc
+
+
+def _clean_field(value: Optional[str], field: str, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) > limit:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", f"{field} must be at most {limit} characters.")
+    return text
+
+
+def _event_readback(event: str, calendar: str) -> str:
+    return (
+        f"(uid of {event} as text) & us & (summary of {event} as text) & us & (name of {calendar} as text)"
+        f" & us & (start date of {event} as text) & us & (end date of {event} as text)"
+    )
+
+
+def _event_row(parts: list[str]) -> Dict[str, str]:
+    keys = ("uid", "summary", "calendar", "start", "end")
+    return dict(zip(keys, parts[: len(keys)]))
+
+
+def _calendar_lookup(title: str, start: datetime, calendar: str, timeout_s: float) -> Optional[Dict[str, str]]:
+    """Find an event by exact title and start, to settle an uncertain create."""
+    calendars = f"calendars whose name is {_apple_string(calendar)}" if calendar else "calendars"
+    script = "\n".join([
+        "set us to ASCII character 31",
+        _date_setup("startDate", start),
+        'tell application "Calendar"',
+        f"    repeat with c in ({calendars})",
+        f"        set matches to every event of c whose summary is {_apple_string(title)} and start date is startDate",
+        "        if (count of matches) > 0 then",
+        "            set e to item 1 of matches",
+        f"            return {_event_readback('e', 'c')}",
+        "        end if",
+        "    end repeat",
+        "end tell",
+        'return ""',
+    ])
+    raw = _run(script, timeout_s=timeout_s, code="CALENDAR_LOOKUP_FAILED")
+    return _event_row(raw.split(_US)) if raw else None
+
+
+_CALENDAR_ERRORS = {
+    "NO_CALENDAR": ("CALENDAR_NOT_FOUND", "No calendar has that name."),
+    "CALENDAR_NOT_UNIQUE": ("CALENDAR_NOT_UNIQUE", "More than one calendar has that name."),
+    "READ_ONLY": ("CALENDAR_READ_ONLY", "That calendar does not accept changes; nothing was changed."),
+    "NO_WRITABLE_CALENDAR": ("CALENDAR_NOT_FOUND", "No writable calendar is available."),
+}
+
+
+def _calendar_create(
+    title: Optional[str], start: Optional[str], end: Optional[str], *, calendar: Optional[str],
+    location: Optional[str], notes: Optional[str], timeout_s: float,
+) -> Dict[str, Any]:
+    summary = _clean_field(title, "title", 300)
+    if not summary:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Calendar create_event requires title.")
+    start_dt = _event_datetime(start, "start")
+    all_day = len(str(start or "").strip()) == 10
+    if end:
+        end_dt = _event_datetime(end, "end")
+    else:
+        end_dt = start_dt + (timedelta(days=1) if all_day else timedelta(hours=1))
+    if end_dt <= start_dt:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "end must be after start.")
+    cal_name = _clean_field(calendar, "calendar", 200)
+    place = _clean_field(location, "location", 500)
+    body = _clean_field(notes, "notes", 4000)
+    if cal_name:
+        choose = [
+            f"    set calendarMatches to calendars whose name is {_apple_string(cal_name)}",
+            '    if (count of calendarMatches) is 0 then return "NO_CALENDAR"',
+            '    if (count of calendarMatches) > 1 then return "CALENDAR_NOT_UNIQUE"',
+            "    set targetCal to item 1 of calendarMatches",
+            '    if not (writable of targetCal) then return "READ_ONLY"',
+        ]
+    else:
+        choose = [
+            "    set targetCal to missing value",
+            "    repeat with c in calendars",
+            "        if writable of c then",
+            "            set targetCal to c",
+            "            exit repeat",
+            "        end if",
+            "    end repeat",
+            '    if targetCal is missing value then return "NO_WRITABLE_CALENDAR"',
+        ]
+    props = (
+        f"{{summary:{_apple_string(summary)}, start date:startDate, end date:endDate, "
+        f"allday event:{'true' if all_day else 'false'}}}"
+    )
+    lines = [
+        "set us to ASCII character 31",
+        _date_setup("startDate", start_dt),
+        _date_setup("endDate", end_dt),
+        'tell application "Calendar"',
+        *choose,
+        # A replayed request finds the event it already made instead of adding a twin.
+        f"    set existing to every event of targetCal whose summary is {_apple_string(summary)} and start date is startDate",
+        "    if (count of existing) > 0 then",
+        "        set e to item 1 of existing",
+        f"        return \"DUPLICATE\" & us & {_event_readback('e', 'targetCal')}",
+        "    end if",
+        f"    set e to make new event at end of events of targetCal with properties {props}",
+    ]
+    if place:
+        lines.append(f"    set location of e to {_apple_string(place)}")
+    if body:
+        lines.append(f"    set description of e to {_apple_string(body)}")
+    lines += [
+        "    set newUid to uid of e",
+        "    set readBack to every event of targetCal whose uid is newUid",
+        '    if (count of readBack) is not 1 then return "NOT_VERIFIED" & us & newUid',
+        "    set e to item 1 of readBack",
+        f"    return \"OK\" & us & {_event_readback('e', 'targetCal')}",
+        "end tell",
+    ]
+    try:
+        raw = _run("\n".join(lines), timeout_s=timeout_s, code="CALENDAR_CREATE_FAILED")
+    except AppAdapterError as exc:
+        if exc.extra.get("not_executed"):
+            raise
+        # The event may exist even though the command failed or timed out; look
+        # once and report what is known instead of creating it again.
+        try:
+            found = _calendar_lookup(summary, start_dt, cal_name, timeout_s=min(timeout_s, 8.0))
+        except AppAdapterError:
+            found = None
+        if found:
+            return {"ok": True, "created": True, "verified": True, "verification": "lookup_after_error",
+                    "event": found, "all_day": all_day}
+        raise AppAdapterError(
+            exc.code,
+            f"{exc} The event may or may not exist; check with find_events before trying again.",
+            outcome_unknown=True, automatic_retry=False,
+        ) from exc
+    parts = raw.split(_US)
+    status = parts[0] if parts else ""
+    if status in _CALENDAR_ERRORS:
+        code, message = _CALENDAR_ERRORS[status]
+        raise AppAdapterError(code, message)
+    if status == "DUPLICATE":
+        return {
+            "ok": True, "created": False, "duplicate": True, "verified": True,
+            "verification": "existing_event_matched", "event": _event_row(parts[1:]), "all_day": all_day,
+            "message": "An event with this title and start already exists; nothing was created.",
+        }
+    if status != "OK":
+        raise AppAdapterError("CALENDAR_CREATE_NOT_VERIFIED", "Calendar did not confirm the new event.",
+                              outcome_unknown=True, automatic_retry=False)
+    return {"ok": True, "created": True, "verified": True, "verification": "read_back",
+            "event": _event_row(parts[1:]), "all_day": all_day}
+
+
+def _calendar_update(
+    item_id: Optional[str], *, title: Optional[str], start: Optional[str], end: Optional[str],
+    location: Optional[str], notes: Optional[str], timeout_s: float,
+) -> Dict[str, Any]:
+    uid = str(item_id or "").strip()
+    if not uid:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Calendar update_event requires item_id (the event uid).")
+    setup: list[str] = []
+    changes: list[str] = []
+    changed: Dict[str, Any] = {}
+    if title is not None:
+        summary = _clean_field(title, "title", 300)
+        if not summary:
+            raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "title must not be empty.")
+        changes.append(f"    set summary of e to {_apple_string(summary)}")
+        changed["title"] = summary
+    start_dt = _event_datetime(start, "start") if start is not None else None
+    end_dt = _event_datetime(end, "end") if end is not None else None
+    if start_dt is not None and end_dt is not None and end_dt <= start_dt:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "end must be after start.")
+    if start_dt is not None:
+        setup.append(_date_setup("newStart", start_dt))
+        changed["start"] = start_dt.isoformat(timespec="minutes")
+    if end_dt is not None:
+        setup.append(_date_setup("newEnd", end_dt))
+        changed["end"] = end_dt.isoformat(timespec="minutes")
+    if start_dt is not None and end_dt is not None:
+        # Calendar rejects a start after the current end, so widen first.
+        changes += ["    set end date of e to newEnd", "    set start date of e to newStart", "    set end date of e to newEnd"]
+    elif start_dt is not None:
+        changes += [
+            "    set eventLength to (end date of e) - (start date of e)",
+            "    set end date of e to newStart + eventLength",
+            "    set start date of e to newStart",
+            "    set end date of e to newStart + eventLength",
+        ]
+    elif end_dt is not None:
+        changes += ['    if newEnd is less than or equal to (start date of e) then return "BAD_RANGE"',
+                    "    set end date of e to newEnd"]
+    if location is not None:
+        changes.append(f"    set location of e to {_apple_string(_clean_field(location, 'location', 500))}")
+        changed["location"] = str(location).strip()
+    if notes is not None:
+        changes.append(f"    set description of e to {_apple_string(_clean_field(notes, 'notes', 4000))}")
+        changed["notes"] = True
+    if not changes:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID",
+                              "update_event needs at least one of title, start, end, location or notes.")
+    lines = [
+        "set us to ASCII character 31",
+        *setup,
+        'tell application "Calendar"',
+        "    set foundEvents to {}",
+        "    set foundCal to missing value",
+        "    repeat with c in calendars",
+        f"        set matches to every event of c whose uid is {_apple_string(uid)}",
+        "        repeat with m in matches",
+        "            set end of foundEvents to m",
+        "            set foundCal to c",
+        "        end repeat",
+        "    end repeat",
+        '    if (count of foundEvents) is not 1 then return "COUNT" & us & ((count of foundEvents) as text)',
+        '    if not (writable of foundCal) then return "READ_ONLY"',
+        "    set e to item 1 of foundEvents",
+        *changes,
+        f"    return \"OK\" & us & {_event_readback('e', 'foundCal')}",
+        "end tell",
+    ]
+    try:
+        raw = _run("\n".join(lines), timeout_s=timeout_s, code="CALENDAR_UPDATE_FAILED")
+    except AppAdapterError as exc:
+        if exc.extra.get("not_executed"):
+            raise
+        raise AppAdapterError(
+            exc.code, f"{exc} The event may be partly updated; read it with find_events before trying again.",
+            outcome_unknown=True, automatic_retry=False,
+        ) from exc
+    parts = raw.split(_US)
+    status = parts[0] if parts else ""
+    if status == "COUNT":
+        count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        raise AppAdapterError("CALENDAR_EVENT_NOT_UNIQUE" if count else "CALENDAR_EVENT_NOT_FOUND",
+                              "Calendar event was not uniquely identified; nothing was changed.", match_count=count)
+    if status in _CALENDAR_ERRORS:
+        code, message = _CALENDAR_ERRORS[status]
+        raise AppAdapterError(code, message)
+    if status == "BAD_RANGE":
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "end must be after the event's start; nothing was changed.")
+    if status != "OK":
+        raise AppAdapterError("CALENDAR_UPDATE_NOT_VERIFIED", "Calendar did not confirm the update.",
+                              outcome_unknown=True, automatic_retry=False)
+    return {"ok": True, "updated": True, "verified": True, "verification": "read_back",
+            "event": _event_row(parts[1:]), "changed": changed}
+
+
+_REMINDER_FIELDS = ("id", "name", "list", "due", "completed")
+
+
+def _reminders_list(
+    query: Optional[str], *, list_name: Optional[str], include_completed: bool, limit: int, timeout_s: float,
+) -> Dict[str, Any]:
+    name_filter = _clean_field(query, "query", 300)
+    chosen_list = _clean_field(list_name, "list_name", 200)
+    conditions = [] if include_completed else ["completed is false"]
+    if name_filter:
+        conditions.append(f"name contains {_apple_string(name_filter)}")
+    where = (" whose " + " and ".join(conditions)) if conditions else ""
+    lists = f"lists whose name is {_apple_string(chosen_list)}" if chosen_list else "lists"
+    script = "\n".join([
+        "set rs to ASCII character 30",
+        "set us to ASCII character 31",
+        f"set maxRows to {limit}",
+        'set outText to ""',
+        "set rowCount to 0",
+        'tell application "Reminders"',
+        f"    set chosen to {lists}",
+        '    if (count of chosen) is 0 then return "NO_LIST"',
+        "    repeat with l in chosen",
+        "        if rowCount >= maxRows then exit repeat",
+        f"        set matches to (every reminder of l{where})",
+        "        repeat with r in matches",
+        "            if rowCount >= maxRows then exit repeat",
+        '            set dueText to ""',
+        "            try",
+        "                set dueValue to due date of r",
+        "                if dueValue is not missing value then set dueText to dueValue as text",
+        "            end try",
+        "            set rowText to (id of r as text) & us & (name of r as text) & us & (name of l as text) & us & dueText & us & (completed of r as text)",
+        '            if outText is not "" then set outText to outText & rs',
+        "            set outText to outText & rowText",
+        "            set rowCount to rowCount + 1",
+        "        end repeat",
+        "    end repeat",
+        "end tell",
+        "return outText",
+    ])
+    raw = _run(script, timeout_s=timeout_s, code="REMINDERS_LIST_FAILED")
+    if raw == "NO_LIST":
+        raise AppAdapterError("REMINDERS_LIST_NOT_FOUND", "No Reminders list has that name.")
+    rows: list[Dict[str, Any]] = list(_parse_records(raw, _REMINDER_FIELDS))
+    for row in rows:
+        row["completed"] = row["completed"] == "true"
+    return {"ok": True, "count": len(rows), "reminders": rows, "truncated": len(rows) >= limit}
+
+
+def _reminders_complete(item_id: Optional[str], *, timeout_s: float) -> Dict[str, Any]:
+    rid = str(item_id or "").strip()
+    if not rid:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID",
+                              "Reminders complete_reminder requires item_id from list_reminders.")
+    script = "\n".join([
+        "set us to ASCII character 31",
+        'tell application "Reminders"',
+        f"    set matches to every reminder whose id is {_apple_string(rid)}",
+        '    if (count of matches) is not 1 then return "COUNT" & us & ((count of matches) as text)',
+        "    set r to item 1 of matches",
+        '    if completed of r then return "ALREADY" & us & (id of r as text) & us & (name of r as text)',
+        "    set completed of r to true",
+        f"    set readBack to every reminder whose id is {_apple_string(rid)}",
+        '    if (count of readBack) is not 1 then return "NOT_VERIFIED"',
+        '    return "OK" & us & (id of r as text) & us & (name of r as text) & us & ((completed of (item 1 of readBack)) as text)',
+        "end tell",
+    ])
+    try:
+        raw = _run(script, timeout_s=timeout_s, code="REMINDERS_COMPLETE_FAILED")
+    except AppAdapterError as exc:
+        if exc.extra.get("not_executed"):
+            raise
+        raise AppAdapterError(exc.code, f"{exc} Check with list_reminders before trying again.",
+                              outcome_unknown=True, automatic_retry=False) from exc
+    parts = raw.split(_US)
+    status = parts[0] if parts else ""
+    if status == "COUNT":
+        count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        raise AppAdapterError("REMINDER_NOT_UNIQUE" if count else "REMINDER_NOT_FOUND",
+                              "Reminder was not uniquely identified; nothing was changed.", match_count=count)
+    if status == "ALREADY":
+        return {"ok": True, "completed": True, "changed": False, "verified": True,
+                "verification": "already_completed", "reminder": {"id": parts[1], "name": parts[2]}}
+    if status != "OK" or parts[-1] != "true":
+        raise AppAdapterError("REMINDER_COMPLETE_NOT_VERIFIED", "Reminders did not confirm completion.",
+                              outcome_unknown=True, automatic_retry=False)
+    return {"ok": True, "completed": True, "changed": True, "verified": True, "verification": "read_back",
+            "reminder": {"id": parts[1], "name": parts[2]}}
 
 
 def _preview_list(*, limit: int, timeout_s: float) -> Dict[str, Any]:
@@ -938,6 +1302,14 @@ def mac_app(
     exact: bool = False,
     preserve_focus: bool = True,
     timeout_s: float = 10.0,
+    title: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    calendar: Optional[str] = None,
+    location: Optional[str] = None,
+    notes: Optional[str] = None,
+    list_name: Optional[str] = None,
+    include_completed: bool = False,
 ) -> Dict[str, Any]:
     canonical = normalize_app_name(app)
     normalized_action = _normalized_action(action)
@@ -962,7 +1334,7 @@ def mac_app(
             f"{canonical} adapter does not support action '{normalized_action}'.",
         )
 
-    if normalized_action not in _READ_ACTIONS:
+    if normalized_action not in _READ_ACTIONS and normalized_action not in _DATA_WRITE_ACTIONS:
         human_guard = native_app_human_takeover(canonical)
         if human_guard is not None:
             reason_code = str(
@@ -1055,13 +1427,27 @@ def mac_app(
                 else _mail_open(str(item_id or ""), mailbox=mailbox, preserve_focus=preserve_focus, timeout_s=timeout)
             )
         elif canonical == "Calendar":
-            payload = (
-                _calendar_find(
+            if normalized_action == "find_events":
+                payload = _calendar_find(
                     str(query or ""), date_from=date_from, date_to=date_to,
                     exact=exact, limit=bounded, timeout_s=timeout,
                 )
-                if normalized_action == "find_events"
-                else _calendar_open(str(item_id or ""), preserve_focus=preserve_focus, timeout_s=timeout)
+            elif normalized_action == "create_event":
+                payload = _calendar_create(
+                    title, start, end, calendar=calendar, location=location, notes=notes, timeout_s=timeout,
+                )
+            elif normalized_action == "update_event":
+                payload = _calendar_update(
+                    item_id, title=title, start=start, end=end, location=location, notes=notes, timeout_s=timeout,
+                )
+            else:
+                payload = _calendar_open(str(item_id or ""), preserve_focus=preserve_focus, timeout_s=timeout)
+        elif canonical == "Reminders":
+            payload = (
+                _reminders_list(query, list_name=list_name, include_completed=include_completed,
+                                limit=bounded, timeout_s=timeout)
+                if normalized_action == "list_reminders"
+                else _reminders_complete(item_id, timeout_s=timeout)
             )
         elif canonical == "Preview":
             payload = (

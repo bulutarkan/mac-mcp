@@ -1154,9 +1154,14 @@ def create_app():
         name="mac_app",
         title="Use semantic first-party macOS app adapter",
         description=(
-            "Use typed semantic adapters for Finder, Notes, Mail, Calendar, Preview, and System Settings. "
+            "Use typed semantic adapters for Finder, Notes, Mail, Calendar, Reminders, Preview, and System Settings. "
             "Common action=capabilities reports app-specific actions. Finder: selection|select_file. "
-            "Notes: find_notes|open_note. Mail: find_messages|open_message. Calendar: find_events|open_event. "
+            "Notes: find_notes|open_note. Mail: find_messages|open_message. "
+            "Calendar: find_events|open_event|create_event (title, start, optional end/calendar/location/notes; "
+            "start as YYYY-MM-DD makes an all-day event)|update_event (item_id uid plus fields to change). "
+            "Reminders: list_reminders (query, list_name, include_completed)|complete_reminder (item_id). "
+            "Data actions return the item's stable id and a read-back verification; a replayed create returns the "
+            "existing event instead of a duplicate, and an uncertain result says outcome_unknown and must not be retried blindly. "
             "Preview: list_documents|open_document. System Settings: list_panes|open_pane. "
             "Unsupported apps/actions return an explicit mac_observe/mac_act fallback; no generic AX action runs automatically. "
             "Mutating/open adapter actions preserve the user's current focus by default. preserve_focus=false is foreground intent only and fails closed for normal MCP/model calls; only a trusted local-user foreground capability can authorize it. "
@@ -1178,6 +1183,14 @@ def create_app():
         exact: bool = False,
         preserve_focus: bool = True,
         timeout_s: float = 10.0,
+        title: Optional[str] = None,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        calendar: Optional[str] = None,
+        location: Optional[str] = None,
+        notes: Optional[str] = None,
+        list_name: Optional[str] = None,
+        include_completed: bool = False,
     ) -> Dict[str, Any]:
         return _log(
             audit_logger,
@@ -1197,6 +1210,14 @@ def create_app():
                 exact=exact,
                 preserve_focus=preserve_focus,
                 timeout_s=timeout_s,
+                title=title,
+                start=start,
+                end=end,
+                calendar=calendar,
+                location=location,
+                notes=notes,
+                list_name=list_name,
+                include_completed=include_completed,
             ),
         )
 

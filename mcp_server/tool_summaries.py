@@ -50,8 +50,8 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "foreground-only input and risky clicks fail closed unless explicitly authorized."
     ),
     "mac_app": (
-        "Typed adapters for Finder, Notes, Mail, Calendar, Preview and System Settings; action=capabilities lists actions. "
-        "Keeps the user's focus by default; unsupported actions return a mac_observe/mac_act fallback."
+        "Typed adapters: Finder, Notes, Mail, Calendar (incl. create_event/update_event), Reminders "
+        "(list/complete), Preview, System Settings; action=capabilities lists actions. Keeps focus."
     ),
     "computer_plan": (
         "Run a bounded closed-loop macOS/browser plan in one call: waits, branches, bounded retries and target rebind. "
