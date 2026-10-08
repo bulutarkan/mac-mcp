@@ -17,7 +17,8 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, Mount
 
 from mcp.server.transport_security import TransportSecuritySettings
-from .security import RateLimiter, Settings, authenticate, client_ip, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
+from .request_client import client_address
+from .security import AuthFailureLimiter, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
 from .observability import ObservedFastMCP, TelemetryManager, current_security_session
 from .policy import PROFILES, current_policy_context, declared_risk, reset_policy_context, set_policy_context
 from .policy_scope import ScopeRequest, evaluate_scope
@@ -297,6 +298,7 @@ def create_app():
     settings = load_settings()
     validate_bootstrap_security(settings)
     limiter = RateLimiter(settings.rate_limit_per_minute)
+    auth_failures = AuthFailureLimiter()
     audit_logger = setup_audit_logger()
     telemetry = TelemetryManager()
     dashboard_token = ensure_dashboard_token()
@@ -351,6 +353,13 @@ def create_app():
                     ]
                     request.scope["query_string"] = urlencode(clean_pairs, doseq=True).encode("utf-8")
 
+                # Verified peer address: forwarding headers count only from the
+                # configured tunnel, so spoofed X-Forwarded-For cannot split buckets.
+                ip = client_address(request)
+                if auth_failures.blocked(ip):
+                    return JSONResponse(
+                        {"detail": auth_failure_response_detail()}, status_code=429, headers={"Retry-After": "60"},
+                    )
                 try:
                     authorization = request_authorization(
                         settings,
@@ -358,7 +367,11 @@ def create_app():
                         query_api_keys,
                     )
                     rate_key, policy_context = resolve_request_identity(settings, authorization)
-                    ip = client_ip(request)
+                except HTTPException as exc:
+                    if exc.status_code == 401:
+                        auth_failures.record_failure(ip)
+                    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+                try:
                     rate_limit(limiter, rate_key, ip)
                 except HTTPException as exc:
                     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
@@ -2079,7 +2092,7 @@ def create_app():
     # REST API — FastAPI sub-app mounted at /api
     from fastapi import FastAPI
     from .rest_routes import configure_rest_security, router as rest_router
-    configure_rest_security(mcp.security_context, telemetry, security_approval)
+    configure_rest_security(mcp.security_context, telemetry, security_approval, auth_failures=auth_failures)
     # Runtime API docs would let anyone on the public tunnel enumerate routes
     # unauthenticated; the integration schema ships as openapi/custom-gpt-actions.json.
     rest_app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)

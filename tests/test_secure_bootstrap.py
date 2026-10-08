@@ -51,7 +51,7 @@ class SecureBootstrapTests(unittest.TestCase):
 
     def test_explicit_authenticated_configuration_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as td, clean_env(
-            MCP_API_KEY="test-key-value",
+            MCP_API_KEY="test-key-value-0123456789abcdef0123",
             MCP_ALLOW_NO_AUTH="false",
             MCP_ALLOW_SHELL="true",
             HTTP_ALLOWLIST="*",
