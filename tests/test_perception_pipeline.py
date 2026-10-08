@@ -454,6 +454,59 @@ class NativePerceptionTests(unittest.TestCase):
         capture.assert_not_called()
         ocr.assert_not_called()
 
+    @staticmethod
+    def _node(element_id: str, role: str, **text) -> dict:
+        return {
+            "element_id": element_id, "parent_id": element_id.rsplit("/", 1)[0], "role": role, "subrole": "",
+            "title": text.get("title", ""), "description": text.get("description", ""), "value": text.get("value", ""),
+            "position": {"x": 20, "y": 20, "width": 120, "height": 20}, "enabled": True, "focused": False,
+            "actions": [], "child_count": 0,
+        }
+
+    def test_ocr_coverage_requires_text_inside_each_web_area(self) -> None:
+        toolbar = self._node("w1/1", "AXButton", title="Reload")
+        cases = {
+            "opaque_web_view": ([toolbar, self._node("w1/2", "AXWebArea", description="page")], (False, "web_content_without_text")),
+            "readable_web_view": (
+                [toolbar, self._node("w1/2", "AXWebArea"), self._node("w1/2/1", "AXStaticText", value="Order #42 shipped")],
+                (True, "semantic_text_available"),
+            ),
+            "text_in_sibling_only": (
+                [self._node("w1/2", "AXWebArea"), self._node("w1/20/1", "AXStaticText", value="Sidebar")],
+                (False, "web_content_without_text"),
+            ),
+            "label_only_window": ([toolbar], (True, "semantic_text_available")),
+            "no_text": ([self._node("w1/1", "AXImage")], (False, "no_semantic_text")),
+        }
+        for name, (nodes, expected) in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(expected, tools_ui._native_ocr_coverage(nodes))
+
+    def test_toolbar_label_does_not_suppress_ocr_for_opaque_web_content(self) -> None:
+        metadata = {
+            "active_app": "Demo", "pid": 111, "bundle_id": "com.example.demo", "frontmost": False,
+            "window_count": 1, "window_names": ["Demo"],
+            "windows": [{
+                "index": 1, "title": "Demo", "position": {"x": 10, "y": 10, "width": 500, "height": 300},
+                "window_handle": "mwin_demo", "identity_status": "stable",
+            }],
+        }
+        nodes = [self._node("w1/1", "AXButton", title="Reload"), self._node("w1/2", "AXWebArea")]
+        capture_meta = {"scope": "window", "capture_method": "cgwindow+screencapture", "encoded_bytes": 4,
+                        "output_width": 500, "output_height": 300, "capture_duration_ms": 7}
+        with patch.object(tools_ui, "_run_osascript", return_value=(True, "raw", "")), \
+             patch.object(tools_ui, "_parse_observation", return_value=(metadata, nodes)), \
+             patch.object(tools_ui, "_decorate_native_metadata", side_effect=lambda row: row), \
+             patch.object(tools_ui, "_save_observation", return_value="obs_web"), \
+             patch.object(tools_ui, "_capture_window", return_value=(b"jpeg", None, capture_meta)), \
+             patch.object(tools_ui, "_ocr_image", return_value=("Inbox 3 unread", None)) as ocr:
+            payload, _image = tools_ui._collect_observation(self.settings, "Demo", 1, 3, 20, False, True, app_pid=111)
+
+        ocr.assert_called_once()
+        self.assertFalse(payload["ocr"]["skipped"])
+        self.assertEqual("web_content_without_text", payload["ocr"]["reason"])
+        self.assertEqual("Inbox 3 unread", payload["ocr"]["text"])
+
     def test_native_conditional_probe_is_slim_and_preserves_state_fields(self) -> None:
         script = tools_ui._fingerprint_observation_script(
             "Demo", 1, 2, 24, 80, app_pid=123
