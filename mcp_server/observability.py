@@ -28,6 +28,7 @@ ensure_fastmcp_settings_model_complete()
 
 from .steering import SteeringManager, attach_steering, preemption_error, steering_identity_from_context
 from . import browser_tabs
+from .tool_summaries import COMPACT_DESCRIPTION_LIMIT, CORE_TOOL_SUMMARIES
 from .security_context import SecurityContextManager
 from .data_guard import contains_direct_secret, redact_sensitive_source_result, redact_sensitive_text, sanitize_tool_arguments
 from .workflow_checkpoints import (
@@ -931,6 +932,16 @@ def current_security_session() -> Optional[tuple[str, str]]:
     return _SECURITY_SESSION.get()
 
 
+_CLIP_MARKER = " [cut; tool_discover has the full text]"
+
+
+def _clip_description(description: str) -> str:
+    # Fallback for a long core tool without a hand-written summary: say so
+    # explicitly instead of ending in a bare ellipsis.
+    keep = COMPACT_DESCRIPTION_LIMIT - len(_CLIP_MARKER)
+    return description[:keep].rsplit(" ", 1)[0] + _CLIP_MARKER
+
+
 _CORE_TOOL_NAMES = {
     "open_mac_mcp_panel", "mac_mcp_panel_state", "mac_mcp_panel_setting",
     "run_command", "run_commands_parallel",
@@ -1042,8 +1053,8 @@ class ObservedFastMCP(FastMCP):
             if tool.name not in allowed:
                 continue
             description = tool.description or ""
-            if len(description) > 220:
-                description = description[:217].rsplit(" ", 1)[0] + "..."
+            if len(description) > COMPACT_DESCRIPTION_LIMIT:
+                description = CORE_TOOL_SUMMARIES.get(tool.name) or _clip_description(description)
                 tool = tool.model_copy(update={"description": description})
             compact_tools.append(tool)
         return compact_tools

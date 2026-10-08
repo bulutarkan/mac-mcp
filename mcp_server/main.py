@@ -624,7 +624,7 @@ def create_app():
             "path/browser claims are scope-checked and file expected_revision fails closed before provider start. ChatGPT accepts project=... "
             "as the team default and task.project overrides. Optional team role or task.role enables bounded role-learning context per child. "
             "Each child produces a versioned typed result envelope; valid structured output is preserved, plain legacy text is "
-            "adapted with explicit legacy_fallback status, and malformed marked envelopes fail closed. Dependency fan-in is deterministic, "
+            "adapted with explicit legacy_fallback status, and malformed marked envelopes fail closed (a read_only non-reviewer child keeps its plain report with contract_status=invalid and no structured claims). Dependency fan-in is deterministic, "
             "provenance-aware, deduplicates evidence/artifacts, flags keyed claim contradictions, and never injects raw provider logs. "
             "Returns immediately with parent-visible budget and global admission/queue state."
         ),
@@ -1970,7 +1970,7 @@ def create_app():
 
     @mcp.tool(
         name="tool_discover",
-        description="Find less-common Mac MCP capabilities allowed by the active permission profile and delegated scope. Returns a small schema summary.",
+        description="Find less-common Mac MCP capabilities allowed by the active permission profile and delegated scope. Returns a small schema summary; include_schema=true adds the full description and input schema.",
     )
     async def _tool_discover(query: str = "", limit: int = 8, include_schema: bool = False) -> Dict[str, Any]:
         q = str(query or "").strip().lower()
@@ -1984,12 +1984,15 @@ def create_app():
                 continue
             params = _tool_input_schema(info)
             properties = params.get("properties") or {}
+            full_description = info.description or ""
             availability = mcp.effective_tool_availability(info.name)
             risk = declared_risk(info.name)
             profile = PROFILES.get(str(availability.get("profile") or ""))
             item = {
                 "name": info.name,
-                "description": (info.description or "")[:180],
+                # include_schema asks for the whole contract, so keep the full text.
+                "description": full_description if include_schema else full_description[:180],
+                "description_truncated": not include_schema and len(full_description) > 180,
                 "required": params.get("required") or [],
                 "parameters": {
                     name: {"type": spec.get("type"), "default": spec.get("default")}
