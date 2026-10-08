@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import os
 import tempfile
 import time
@@ -29,7 +30,7 @@ from .file_transactions import (
     undo_transaction,
 )
 from .observability import TelemetryManager, sanitize_value
-from .provider_usage import summary as provider_usage_summary
+from .provider_usage import clear as provider_usage_clear, summary as provider_usage_summary
 from .policy import (
     GLOBAL_PROFILE_NAMES,
     RISK_REGISTRY,
@@ -37,7 +38,8 @@ from .policy import (
     is_global_permission_profile,
     permission_semantics,
 )
-from .runtime_settings import update_runtime_setting
+from .runtime_settings import USAGE_RETENTION_CHOICES, update_runtime_setting, usage_privacy
+from .usage_metering import clear_usage
 from .request_client import client_address as _client_address, is_direct_local_request, is_loopback as _is_loopback
 from .security import Settings, dashboard_authorized
 from .security_context import SecurityContextManager
@@ -586,6 +588,56 @@ def create_dashboard_routes(
             )
         return JSONResponse(payload)
 
+    async def usage_settings(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        updates: Dict[str, Any] = {}
+        if "metering_enabled" in body:
+            if not isinstance(body["metering_enabled"], bool):
+                return JSONResponse({"ok": False, "error": "metering_enabled_must_be_boolean"}, status_code=400)
+            updates["usage_metering"] = body["metering_enabled"]
+        if "retention_days" in body:
+            if body["retention_days"] not in USAGE_RETENTION_CHOICES:
+                return JSONResponse(
+                    {"ok": False, "error": "invalid_retention_days", "allowed": list(USAGE_RETENTION_CHOICES)},
+                    status_code=400,
+                )
+            updates["usage_retention_days"] = int(body["retention_days"])
+        try:
+            for key, value in updates.items():
+                update_runtime_setting("privacy", key, value)
+        except (OSError, RuntimeError, ValueError):
+            return JSONResponse({"ok": False, "error": "usage_settings_persist_failed"}, status_code=500)
+        return JSONResponse({"ok": True, **usage_privacy(fresh=True)})
+
+    async def usage_clear(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {}
+        if not isinstance(body, dict) or body.get("confirm") is not True:
+            return JSONResponse(
+                {"ok": False, "error": "confirmation_required",
+                 "message": "Send {\"confirm\": true} to delete all stored usage aggregates."},
+                status_code=400,
+            )
+        try:
+            tool_rows = clear_usage(telemetry.db_path)
+            provider_rows = provider_usage_clear()
+        except (OSError, sqlite3.Error) as exc:
+            return JSONResponse({"ok": False, "error": str(sanitize_value(exc))}, status_code=500)
+        return JSONResponse({"ok": True, "tool_usage_rows": tool_rows, "provider_usage_rows": provider_rows})
+
     async def provider_usage(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -904,6 +956,8 @@ def create_dashboard_routes(
         Route("/dashboard/api/security/escalate", security_escalate, methods=["POST"]),
         Route("/dashboard/api/events", events, methods=["GET"]),
         Route("/dashboard/api/usage", usage, methods=["GET"]),
+        Route("/dashboard/api/usage/settings", usage_settings, methods=["POST"]),
+        Route("/dashboard/api/usage/clear", usage_clear, methods=["POST"]),
         Route("/dashboard/api/provider-usage", provider_usage, methods=["GET"]),
         Route("/dashboard/api/changes", changes, methods=["GET"]),
         Route("/dashboard/api/transactions", transactions, methods=["GET"]),

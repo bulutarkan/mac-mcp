@@ -61,6 +61,7 @@ Mac MCP can inspect and interact with Safari and Chrome tabs in the background w
 - Foreground-only fallbacks such as native key presses, absolute coordinate clicks, foreground URL opens, and Safari's native file-picker path are **capability-gated**. A model cannot grant itself focus by sending `allow_foreground=true` or `background=false`.
 - `browser_activate_tab` is treated as user-visible foreground behavior even when it would not raise the browser app, because changing Safari's current tab or Chrome's active tab can interrupt a user already working there. Normal automation should target stable `tab_handle` values directly without activating them.
 - The native menu bar controller surfaces live browser work in **Sessions** and **Latest Tool Usage** with a privacy-minimized browser/site/action summary. URL paths, query strings, page titles, selectors, and page content are intentionally omitted from this compact view.
+- **Settings → Usage → Data & Retention** controls usage history: turn recording off, keep 30, 90 or 365 days (default 365), or clear all stored tool and provider usage. Only daily per-tool aggregates are kept, never prompts, arguments or results; a shorter period removes older days immediately.
 - **Show Tab** is the explicit local-user action: only that trusted UI path receives a short lexical foreground capability and can bring that specific real Safari/Chrome tab to the front.
 
 This is designed for workflows where an AI agent keeps working in one or more background browser tabs while the Mac remains usable normally.

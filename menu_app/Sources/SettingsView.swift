@@ -138,6 +138,7 @@ struct SettingsView: View {
     @StateObject private var audio = AudioDeviceStore()
     @MacMCPState private var selection: SettingsSection = .general
     @MacMCPState private var notice = ""
+    @MacMCPState private var confirmClearUsage = false
     @MacMCPState private var groqKey = ""
     @MacMCPState private var decisionsKey = ""
     @MacMCPState private var cloudflareToken = ""
@@ -536,13 +537,69 @@ struct SettingsView: View {
         }
     }
 
+    private var usageRetentionDays: Int {
+        state.usagePrivacy?.retentionDays ?? state.usageSummary?.retentionDays ?? 365
+    }
+
+    private var usageMeteringEnabled: Bool {
+        state.usagePrivacy?.enabled ?? state.usageSummary?.meteringEnabled ?? true
+    }
+
+    private var usageDataControls: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 16) {
+                    Toggle(
+                        "Record usage",
+                        isOn: Binding(
+                            get: { usageMeteringEnabled },
+                            set: { value in Task { await state.updateUsagePrivacy(enabled: value) } }
+                        )
+                    )
+                    Picker(
+                        "Keep for",
+                        selection: Binding(
+                            get: { usageRetentionDays },
+                            set: { value in Task { await state.updateUsagePrivacy(retentionDays: value) } }
+                        )
+                    ) {
+                        Text("30 days").tag(30)
+                        Text("90 days").tag(90)
+                        Text("365 days").tag(365)
+                    }
+                    .frame(width: 190)
+                    Spacer(minLength: 8)
+                    Button("Clear Usage Data…", role: .destructive) { confirmClearUsage = true }
+                }
+                Text("Only daily per-tool counts, sizes and latency buckets are kept, never prompts, arguments or results. Older days are removed automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let notice = state.usageDataNotice {
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } label: {
+            Label("Data & Retention", systemImage: "hand.raised")
+        }
+        .confirmationDialog("Delete all stored usage data?", isPresented: $confirmClearUsage) {
+            Button("Delete Usage Data", role: .destructive) {
+                Task { await state.clearUsage() }
+            }
+        } message: {
+            Text("This removes tool and provider usage history from this Mac. It cannot be undone.")
+        }
+    }
+
     private var usagePane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top) {
                     paneHeader(
                         "Usage",
-                        subtitle: "12 months of Mac-MCP-attributable tool payload activity. This is not provider billing or model context usage."
+                        subtitle: "Up to \(usageRetentionDays) days of Mac-MCP-attributable tool payload activity. This is not provider billing or model context usage."
                     )
                     Spacer(minLength: 12)
                     if state.usageLoading {
@@ -586,6 +643,8 @@ struct SettingsView: View {
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                usageDataControls
 
                 if let usage = state.usageSummary {
                     GroupBox {

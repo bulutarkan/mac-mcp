@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
+from .runtime_settings import usage_privacy
+
 SCHEMA_VERSION = 1
 SOURCE_REPORT = "report"
 SOURCE_NATIVE_TOKENIZER = "native_tokenizer"
@@ -287,7 +289,28 @@ class ProviderUsageStore:
             )
         return ordinal, f"codex:{session}:turn:{ordinal}"
 
+    def _prune(self, conn: sqlite3.Connection) -> None:
+        cutoff = (
+            datetime.now().astimezone().date() - timedelta(days=usage_privacy()["retention_days"] - 1)
+        ).isoformat()
+        conn.execute("DELETE FROM provider_usage_events WHERE local_date < ?", (cutoff,))
+        conn.execute("DELETE FROM provider_usage_daily WHERE local_date < ?", (cutoff,))
+        conn.execute("DELETE FROM provider_usage_daily_agents WHERE local_date < ?", (cutoff,))
+
+    def clear(self) -> int:
+        """Delete every stored provider usage row; returns the number removed."""
+        with self._lock, closing(self._connect()) as conn:
+            conn.execute("PRAGMA secure_delete=ON")
+            with conn:
+                removed = 0
+                for table in ("provider_usage_events", "provider_usage_daily", "provider_usage_daily_agents"):
+                    removed += int(conn.execute(f"DELETE FROM {table}").rowcount or 0)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return removed
+
     def ingest(self, record: UsageRecord) -> bool:
+        if not usage_privacy()["enabled"]:
+            return False
         provider = str(record.provider or "").strip().lower()
         if provider not in {"codex", "opencode"}:
             return False
@@ -424,25 +447,23 @@ class ProviderUsageStore:
                     """,
                     (time.time(),),
                 )
-                cutoff = (
-                    datetime.now().astimezone().date() - timedelta(days=RETENTION_DAYS)
-                ).isoformat()
-                conn.execute("DELETE FROM provider_usage_events WHERE local_date < ?", (cutoff,))
-                conn.execute("DELETE FROM provider_usage_daily WHERE local_date < ?", (cutoff,))
-                conn.execute("DELETE FROM provider_usage_daily_agents WHERE local_date < ?", (cutoff,))
+                self._prune(conn)
             return True
         except Exception:
             self.diagnostic_increment("store_errors")
             return False
 
     def summary(self, *, days: int = 365) -> Dict[str, Any]:
-        bounded = max(1, min(int(days or 365), RETENTION_DAYS))
+        privacy = usage_privacy()
+        bounded = max(1, min(int(days or 365), privacy["retention_days"]))
         start = (
             datetime.now().astimezone().date() - timedelta(days=bounded - 1)
         ).isoformat()
 
         with self._lock, closing(self._connect()) as conn:
             self._schema(conn)
+            with conn:
+                self._prune(conn)
             rows = conn.execute(
                 """
                 SELECT provider,
@@ -559,6 +580,8 @@ class ProviderUsageStore:
         return {
             "ok": True,
             "days": bounded,
+            "metering_enabled": privacy["enabled"],
+            "retention_days": privacy["retention_days"],
             "available_since": available_since,
             "schema_version": SCHEMA_VERSION,
             "metric_name": "Provider Tokens",
@@ -592,3 +615,7 @@ def get_store() -> ProviderUsageStore:
 
 def summary(*, days: int = 365) -> Dict[str, Any]:
     return get_store().summary(days=days)
+
+
+def clear() -> int:
+    return get_store().clear()

@@ -155,9 +155,13 @@ struct UsageSummaryEnvelope: Decodable, Equatable {
     let totals: UsageTotals
     let topTools: [UsageTool]
     let diagnostics: UsageDiagnostics?
+    let meteringEnabled: Bool?
+    let retentionDays: Int?
 
     enum CodingKeys: String, CodingKey {
         case ok, days, daily, totals, diagnostics
+        case meteringEnabled = "metering_enabled"
+        case retentionDays = "retention_days"
         case actorClass = "actor_class"
         case availableSince = "available_since"
         case historyCompleteSince = "history_complete_since"
@@ -168,6 +172,29 @@ struct UsageSummaryEnvelope: Decodable, Equatable {
         case inputDefinition = "input_definition"
         case outputDefinition = "output_definition"
         case topTools = "top_tools"
+    }
+}
+
+struct UsagePrivacyEnvelope: Decodable, Equatable {
+    let ok: Bool
+    let enabled: Bool
+    let retentionDays: Int
+
+    enum CodingKeys: String, CodingKey {
+        case ok, enabled
+        case retentionDays = "retention_days"
+    }
+}
+
+struct UsageClearEnvelope: Decodable, Equatable {
+    let ok: Bool
+    let toolUsageRows: Int
+    let providerUsageRows: Int
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case toolUsageRows = "tool_usage_rows"
+        case providerUsageRows = "provider_usage_rows"
     }
 }
 
@@ -1406,6 +1433,8 @@ final class AppState: ObservableObject {
     @Published private(set) var usageSummary: UsageSummaryEnvelope?
     @Published private(set) var usageLoading = false
     @Published private(set) var usageIssue: String?
+    @Published private(set) var usagePrivacy: UsagePrivacyEnvelope?
+    @Published private(set) var usageDataNotice: String?
     @Published private(set) var providerUsageSummary: ProviderUsageSummaryEnvelope?
     @Published private(set) var providerUsageLoading = false
     @Published private(set) var providerUsageIssue: String?
@@ -1995,7 +2024,12 @@ final class AppState: ObservableObject {
         return .error(message)
     }
 
-    func refreshUsage(days: Int = 365, actorClass: String = "all") async {
+    private var lastUsageActorClass = "all"
+
+    func refreshUsage(days: Int = 365, actorClass: String? = nil) async {
+        // Refreshes after a settings change keep the Source filter the pane is showing.
+        let actorClass = actorClass ?? lastUsageActorClass
+        lastUsageActorClass = actorClass
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else {
             setIfChanged(\.usageIssue, "Could not load Usage because the server URL is invalid.")
             return
@@ -2031,6 +2065,41 @@ final class AppState: ObservableObject {
         } catch {
             setIfChanged(\.decisionIssue, "Could not read Decision status: \(Self.issueText(for: error))")
         }
+    }
+
+    func updateUsagePrivacy(enabled: Bool? = nil, retentionDays: Int? = nil) async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        var body: [String: Any] = [:]
+        if let enabled { body["metering_enabled"] = enabled }
+        if let retentionDays { body["retention_days"] = retentionDays }
+        guard !body.isEmpty else { return }
+        do {
+            let result: UsagePrivacyEnvelope = try await post(
+                base.appendingPathComponent("dashboard/api/usage/settings"), body: body, timeout: 4.0
+            )
+            setIfChanged(\.usagePrivacy, result)
+            setIfChanged(\.usageDataNotice, nil)
+        } catch {
+            setIfChanged(\.usageDataNotice, "Could not save usage settings: \(Self.issueText(for: error))")
+        }
+        await refreshUsage()
+    }
+
+    func clearUsage() async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        do {
+            let result: UsageClearEnvelope = try await post(
+                base.appendingPathComponent("dashboard/api/usage/clear"), body: ["confirm": true], timeout: 10.0
+            )
+            setIfChanged(
+                \.usageDataNotice,
+                "Deleted \(result.toolUsageRows + result.providerUsageRows) stored usage rows."
+            )
+        } catch {
+            setIfChanged(\.usageDataNotice, "Could not clear usage data: \(Self.issueText(for: error))")
+        }
+        await refreshUsage()
+        await refreshProviderUsage()
     }
 
     func verifyDecisionsKey() async {

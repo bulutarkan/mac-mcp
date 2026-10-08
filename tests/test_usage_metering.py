@@ -6,6 +6,7 @@ import tempfile
 import time
 import threading
 import unittest
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ from starlette.testclient import TestClient
 from mcp_server.dashboard_routes import create_dashboard_routes
 from mcp_server.mobile_auth import MobileAuthStore
 from mcp_server.mobile_routes import create_mobile_routes
+from mcp_server import runtime_settings
 from mcp_server.observability import TelemetryManager
 from mcp_server.security import load_settings
 from mcp_server.usage_metering import (
@@ -25,6 +27,23 @@ from mcp_server.usage_metering import (
     canonical_json_text,
     measure_payload,
 )
+
+
+# Usage metering reads ~/.mac-mcp/settings.json; never let the owner's real
+# privacy settings decide these results.
+_SETTINGS_DIR = tempfile.TemporaryDirectory(prefix="mac-mcp-usage-settings-")
+_SETTINGS_ENV = patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(Path(_SETTINGS_DIR.name) / "settings.json")})
+
+
+def setUpModule() -> None:
+    _SETTINGS_ENV.start()
+    runtime_settings._usage_privacy_cache.update({"at": -1.0, "value": None})
+
+
+def tearDownModule() -> None:
+    _SETTINGS_ENV.stop()
+    runtime_settings._usage_privacy_cache.update({"at": -1.0, "value": None})
+    _SETTINGS_DIR.cleanup()
 
 
 DASHBOARD_TOKEN = "dashboard-test-token-0123456789-abcdefghijklmnopqrstuvwxyz"
