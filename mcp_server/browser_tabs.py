@@ -60,6 +60,11 @@ class TabTarget:
     previous_origin: Optional[str] = None
 
 
+_SCAN_ATTEMPTS = 3
+# AppleScript "Invalid index" and "Can't get" errors from a tab list changing mid-scan.
+_SCAN_RACE_ERRORS = ("(-1719)", "(-1728)")
+
+
 def _osascript(script: str) -> str:
     proc = subprocess.run(
         ["osascript", "-e", script],
@@ -302,7 +307,10 @@ tell application "Safari"
     set wCount to count of windows
     repeat with wi from 1 to wCount
         tell window wi
-            set cur to index of current tab
+            set cur to 0
+            try
+                set cur to index of current tab
+            end try
             set tCount to count of tabs
             repeat with ti from 1 to tCount
                 set t to tab ti
@@ -324,7 +332,10 @@ tell application "Google Chrome"
     set wCount to count of windows
     repeat with wi from 1 to wCount
         tell window wi
-            set cur to active tab index
+            set cur to 0
+            try
+                set cur to active tab index
+            end try
             set tCount to count of tabs
             repeat with ti from 1 to tCount
                 set t to tab ti
@@ -336,8 +347,17 @@ end tell
 return out
 '''
 
+    # The scan walks tabs by position, so a tab opened or closed by another agent
+    # mid-scan surfaces as an index error. Re-reading is side-effect free.
+    for attempt in range(_SCAN_ATTEMPTS):
+        try:
+            raw = _osascript(script)
+            break
+        except RuntimeError as exc:
+            if attempt == _SCAN_ATTEMPTS - 1 or not any(code in str(exc) for code in _SCAN_RACE_ERRORS):
+                raise
     rows: List[Dict[str, Any]] = []
-    for line in _osascript(script).splitlines():
+    for line in raw.splitlines():
         parts = line.split("\t", 5)
         if len(parts) < 6:
             continue

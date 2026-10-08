@@ -44,7 +44,7 @@ This is a powerful combination, not a Mac MCP-only voice feature. ChatGPT provid
 Mac MCP can inspect and interact with Safari and Chrome tabs in the background while you keep working in another app or browser tab. Here, **background** means a normal, visible Safari/Chrome tab that Mac MCP controls without bringing the browser or tab to the front; it is not a hidden/headless browser session.
 
 - New browser tabs open in the background by default and return a stable `tab_handle`.
-- Stable tab handles survive tab-index changes, so long-running tasks keep targeting the intended Safari or Chrome tab even as other tabs open, close, or move.
+- Stable tab handles survive tab-index changes, so long-running tasks keep targeting the intended Safari or Chrome tab even as other tabs open, close, or move. Each AppleScript step re-resolves the tab by its native identity, so a shift in the middle of a `browser_act` call does not fail it; if the target tab itself closes, the call returns `tab_target_closed` with the actions that already completed and `automatic_retry: false` instead of an HTTP error.
 - `browser_observe` can return compact DOM context plus viewport, element, or full-page visuals without activating the browser, switching tabs, scrolling the user's page, or leaving screenshot files on disk.
 - High-level browser actions can target a specific background tab directly by handle, which makes parallel research and delegated-agent workflows practical without constant focus stealing.
 - Foreground-only fallbacks such as native key presses, absolute coordinate clicks, foreground URL opens, and Safari's native file-picker path are **capability-gated**. A model cannot grant itself focus by sending `allow_foreground=true` or `background=false`.

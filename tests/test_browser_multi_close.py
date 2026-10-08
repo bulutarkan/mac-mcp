@@ -35,11 +35,11 @@ class BrowserMultiCloseTests(unittest.TestCase):
             return [dict(row) for row in state]
 
         def run_script(script, timeout_s=30):
-            # The identity guard includes the expected URL. Simulate the browser close
+            # The identity guard names the native id. Simulate the browser close
             # so the next stable-handle resolution observes shifted indices.
-            if 'actualNativeId is not "102"' in script:
+            if 'whose pid is "102"' in script:
                 state[:] = [row for row in state if row["native_id"] != "102"]
-            elif 'actualNativeId is not "103"' in script:
+            elif 'whose pid is "103"' in script:
                 state[:] = [row for row in state if row["native_id"] != "103"]
             for index, row in enumerate(state, start=1):
                 row["tab_index"] = index

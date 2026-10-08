@@ -117,6 +117,7 @@ BROWSERS = {
 
 _TAB_IDENTITY_CHANGED = "MAC_MCP_TAB_IDENTITY_CHANGED"
 _TAB_TARGET_NOT_ACTIVE = "MAC_MCP_TAB_TARGET_NOT_ACTIVE"
+_TAB_TARGET_MISSING = "MAC_MCP_TAB_TARGET_MISSING"
 _CHROME_NATIVE_JS_DENIED = False
 _CHROME_BRIDGE_INLINE_LIMIT = 2400
 _CHROME_BACKGROUND_OPEN_LOCK = threading.Lock()
@@ -262,29 +263,43 @@ def _tab_lease(
 
 
 def _tab_identity_guard(target: browser_tabs.TabTarget) -> str:
-    """Resolve and validate the native tab inside the same AppleScript as its action."""
+    """Resolve and validate the native tab inside the same AppleScript as its action.
+
+    The tab is looked up by native identity, not by the index captured at lease
+    time, so another agent opening or closing a tab to its left cannot redirect or
+    break the action. When several tabs share the identity the leased index breaks
+    the tie, and a tab no longer present in the window fails with a distinct marker.
+    """
     native_id = _js_escape(target.native_id)
     url = _js_escape(target.url)
     title = _js_escape(target.title)
-    lines = [f"set targetTab to tab {target.tab_index}"]
     if native_id and native_id != "0":
         native_property = "id" if target.browser == "Google Chrome" else "pid"
-        lines.extend(
-            [
-                'set actualNativeId to ""',
-                f"try\nset actualNativeId to ({native_property} of targetTab) as text\nend try",
-                f'if actualNativeId is not "{native_id}" then error "{_TAB_IDENTITY_CHANGED}"',
-            ]
-        )
+        match_clause = f'every tab whose {native_property} is "{native_id}"'
+        tie_check = f'(({native_property} of leasedTab) as text) is "{native_id}"'
     else:
         title_property = "title" if target.browser == "Google Chrome" else "name"
-        lines.extend(
-            [
-                f'if ((URL of targetTab) as text) is not "{url}" then error "{_TAB_IDENTITY_CHANGED}"',
-                f'if (({title_property} of targetTab) as text) is not "{title}" then error "{_TAB_IDENTITY_CHANGED}"',
-            ]
+        match_clause = f'every tab whose URL is "{url}" and {title_property} is "{title}"'
+        tie_check = (
+            f'((URL of leasedTab) as text) is "{url}" and '
+            f'(({title_property} of leasedTab) as text) is "{title}"'
         )
-    return "\n".join(lines)
+    return "\n".join(
+        [
+            f"set targetMatches to ({match_clause})",
+            f'if (count of targetMatches) is 0 then error "{_TAB_TARGET_MISSING}"',
+            "if (count of targetMatches) is 1 then",
+            "set targetTab to item 1 of targetMatches",
+            "else",
+            "set targetTab to missing value",
+            "try",
+            f"set leasedTab to tab {target.tab_index}",
+            f"if {tie_check} then set targetTab to leasedTab",
+            "end try",
+            f'if targetTab is missing value then error "{_TAB_IDENTITY_CHANGED}"',
+            "end if",
+        ]
+    )
 
 
 def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) -> None:
@@ -337,6 +352,20 @@ def _run_osascript(script: str, timeout_s: int = 30) -> str:
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 "Target tab identity changed before the operation; resolve or observe the tab again.",
+            )
+        if _TAB_TARGET_MISSING in msg:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {
+                    "ok": False,
+                    "error": "tab_target_closed",
+                    "reason_code": "TAB_TARGET_CLOSED",
+                    "retryable": True,
+                    "observe_again": True,
+                    "required_action": "browser_list_tabs",
+                    "do_not_fallback_to_active_tab": True,
+                    "message": "The target tab was closed or moved to another window; list tabs before retrying.",
+                },
             )
         if _TAB_TARGET_NOT_ACTIVE in msg:
             raise HTTPException(
@@ -1017,7 +1046,13 @@ def browser_activate_tab(
                 {"activate" if allow_foreground else ""}
                 tell window {target.window_index}
                     {guard}
-                    set active tab index to {target.tab_index}
+                    set targetTabId to id of targetTab
+                    repeat with candidateIndex from 1 to (count of tabs)
+                        if (id of tab candidateIndex) is targetTabId then
+                            set active tab index to candidateIndex
+                            exit repeat
+                        end if
+                    end repeat
                 end tell
             end tell
             '''
@@ -2118,7 +2153,7 @@ def browser_press_key(
         if b == "Safari":
             active_guard = f'if (current tab) is not targetTab then error "{_TAB_TARGET_NOT_ACTIVE}"'
         else:
-            active_guard = f'if active tab index is not {target.tab_index} then error "{_TAB_TARGET_NOT_ACTIVE}"'
+            active_guard = f'if (id of active tab) is not (id of targetTab) then error "{_TAB_TARGET_NOT_ACTIVE}"'
 
         script = f'''
 tell application "{b}"

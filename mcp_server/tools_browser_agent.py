@@ -3403,6 +3403,35 @@ def _decide_browser_target(
     return out
 
 
+_NON_MUTATING_ACT_TYPES = {"wait", "extract"}
+
+
+def _tab_loss_detail(exc: HTTPException) -> Optional[Dict[str, Any]]:
+    """Classify an error raised because the act's target tab disappeared mid-call."""
+    detail = exc.detail
+    if isinstance(detail, dict):
+        error = str(detail.get("error") or "")
+        if error in {"tab_target_closed", "stale_tab_handle", "ambiguous_tab_handle"}:
+            return {
+                "error": error,
+                "reason_code": str(detail.get("reason_code") or error.upper()),
+                "message": str(detail.get("message") or ""),
+            }
+        return None
+    text = str(detail or "")
+    if exc.status_code == status.HTTP_409_CONFLICT and text.startswith("Target tab identity changed"):
+        return {"error": "tab_identity_changed", "reason_code": "TAB_IDENTITY_CHANGED", "message": text}
+    if "Invalid index" in text and ("tab" in text or "window" in text):
+        # Safari tab references are positional inside one AppleScript; a tab closed
+        # between the identity guard and the action surfaces as an index error.
+        return {
+            "error": "tab_target_closed",
+            "reason_code": "TAB_TARGET_CLOSED",
+            "message": "The target tab moved or closed while the action was running.",
+        }
+    return None
+
+
 def browser_act(
     settings: Settings,
     browser: str,
@@ -3502,6 +3531,7 @@ def _browser_act_locked(
         internal_js_calls += 1
         initial_url = str(initial_state.get("url") or "")
     pending: List[Dict[str, Any]] = []
+    in_flight: List[str] = []
     compact_state_candidate: Optional[Dict[str, Any]] = None
 
     def note_possible_navigation() -> None:
@@ -3555,7 +3585,7 @@ def _browser_act_locked(
         return resolved, chosen
 
     def flush_pending() -> bool:
-        nonlocal pending, internal_js_calls, current_observation_id
+        nonlocal pending, internal_js_calls, current_observation_id, in_flight
         if not pending:
             return True
         mutation_target, blocked = revalidate_mutation(
@@ -3566,6 +3596,7 @@ def _browser_act_locked(
             results.append(blocked)
             pending = []
             return False
+        in_flight = [str(item.get("type") or "") for item in pending]
         out = _run_json_js(
             settings,
             browser,
@@ -3582,169 +3613,194 @@ def _browser_act_locked(
             return False
         results.extend(out.get("actions") or [])
         pending = []
+        in_flight = []
         if out.get("ok"):
             current_observation_id = None
         return bool(out.get("ok"))
 
-    for action in actions:
-        if not isinstance(action, dict):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Each action must be an object.")
-        typ = str(action.get("type") or "").lower().replace("-", "_")
-        resolved_target: Optional[Dict[str, Any]] = None
-        work_action = dict(action)
-        if typ not in {"wait", "key", "keyboard", "shortcut", "extract"}:
-            work_action, resolved_target = resolve_target(action)
-            if isinstance(resolved_target, dict) and resolved_target.get("ok") is False:
-                results.append({"type": typ, **resolved_target})
-                break
+    tab_lost: Optional[Dict[str, Any]] = None
+    typ = ""
+    try:
+        for action in actions:
+            if not isinstance(action, dict):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Each action must be an object.")
+            typ = str(action.get("type") or "").lower().replace("-", "_")
+            in_flight = []
+            resolved_target: Optional[Dict[str, Any]] = None
+            work_action = dict(action)
+            if typ not in {"wait", "key", "keyboard", "shortcut", "extract"}:
+                work_action, resolved_target = resolve_target(action)
+                if isinstance(resolved_target, dict) and resolved_target.get("ok") is False:
+                    results.append({"type": typ, **resolved_target})
+                    break
 
-        if typ in {"wait", "key", "keyboard", "shortcut", "select", "extract", "click", "double_click", "type", "type_text", "paste"}:
-            if not flush_pending():
-                break
-            if typ in {"click", "double_click", "type", "type_text", "paste"}:
-                if typ in {"click", "double_click"}:
-                    note_possible_navigation()
-                action_result = _verified_dom_action(
-                    settings, browser, work_action, current_observation_id,
-                    window_index, tab_index, tab_handle,
-                    mutation_revalidator=revalidate_mutation,
-                )
-                internal_js_calls += int(action_result.pop("_js_calls", 0))
-                action_compact_state = action_result.pop("_compact_state", None)
-                if action_compact_state is not None:
-                    compact_state_candidate = action_compact_state
-                if resolved_target:
-                    action_result["resolved_target"] = {
-                        k: resolved_target.get(k)
-                        for k in ("element_id", "text", "role", "tag", "confidence")
-                    }
-                    if resolved_target.get("decision"):
-                        action_result["resolved_target"]["decision"] = resolved_target["decision"]
-                results.append(action_result)
-                if not action_result.get("ok"):
+            if typ in {"wait", "key", "keyboard", "shortcut", "select", "extract", "click", "double_click", "type", "type_text", "paste"}:
+                if not flush_pending():
                     break
-                current_observation_id = None
-            elif typ == "extract":
-                extract_result = _extract_action(
-                    settings, browser, action, window_index, tab_index, tab_handle,
-                )
-                internal_js_calls += int(extract_result.pop("_js_calls", 0))
-                results.append(extract_result)
-                if not extract_result.get("ok"):
-                    break
-            elif typ == "select":
-                note_possible_navigation()
-                select_result = _select_action(
-                    settings,
-                    browser,
-                    work_action,
-                    current_observation_id,
-                    window_index,
-                    tab_index,
-                    tab_handle,
-                    mutation_revalidator=revalidate_mutation,
-                )
-                internal_js_calls += int(select_result.pop("_js_calls", 0))
-                if resolved_target:
-                    select_result["resolved_target"] = {
-                        k: resolved_target.get(k)
-                        for k in ("element_id", "text", "role", "tag", "confidence")
-                    }
-                    if resolved_target.get("decision"):
-                        select_result["resolved_target"]["decision"] = resolved_target["decision"]
-                results.append(select_result)
-                if not select_result.get("ok"):
-                    break
-                current_observation_id = None
-            elif typ == "wait":
-                wait_result = _wait_action(
-                    settings,
-                    browser,
-                    action,
-                    window_index,
-                    tab_index,
-                    initial_url,
-                    tab_handle,
-                )
-                compact_state_candidate = wait_result.pop("_compact_state", None)
-                internal_js_calls += int(wait_result.pop("_js_calls", 0))
-                results.append(wait_result)
-                if not wait_result.get("matched") and action.get("required", True):
-                    break
-            else:
-                key_action = dict(action)
-                if not key_action.get("element_id") and any(key_action.get(k) for k in ("query", "target", "role", "text_match", "target_text")):
-                    key_action, resolved_target = resolve_target(key_action)
-                    if isinstance(resolved_target, dict) and resolved_target.get("ok") is False:
-                        results.append({"type": "key", **resolved_target})
-                        break
-                eid = key_action.get("element_id")
-                key_mode = str(action.get("input_mode") or "auto").strip().lower()
-                if key_mode == "dom" or (key_mode == "auto" and not allow_foreground):
-                    # Background-safe default: DOM key events never change app focus.
-                    mutation_target, blocked = revalidate_mutation("key")
-                    if blocked is not None:
-                        results.append(blocked)
-                        break
-                    note_possible_navigation()
-                    key_result = _dom_key_action(
-                        settings, browser, action, eid, window_index, tab_index, tab_handle,
-                        prevalidated_target=mutation_target,
+                in_flight = [typ]
+                if typ in {"click", "double_click", "type", "type_text", "paste"}:
+                    if typ in {"click", "double_click"}:
+                        note_possible_navigation()
+                    action_result = _verified_dom_action(
+                        settings, browser, work_action, current_observation_id,
+                        window_index, tab_index, tab_handle,
+                        mutation_revalidator=revalidate_mutation,
                     )
-                    internal_js_calls += int(key_result.pop("_js_calls", 0))
-                    key_compact_state = key_result.pop("_compact_state", None)
-                    if key_compact_state is not None:
-                        compact_state_candidate = key_compact_state
+                    internal_js_calls += int(action_result.pop("_js_calls", 0))
+                    action_compact_state = action_result.pop("_compact_state", None)
+                    if action_compact_state is not None:
+                        compact_state_candidate = action_compact_state
                     if resolved_target:
-                        key_result["resolved_target"] = {
+                        action_result["resolved_target"] = {
                             k: resolved_target.get(k)
                             for k in ("element_id", "text", "role", "tag", "confidence")
                         }
-                    results.append(key_result)
+                        if resolved_target.get("decision"):
+                            action_result["resolved_target"]["decision"] = resolved_target["decision"]
+                    results.append(action_result)
+                    if not action_result.get("ok"):
+                        break
+                    current_observation_id = None
+                elif typ == "extract":
+                    extract_result = _extract_action(
+                        settings, browser, action, window_index, tab_index, tab_handle,
+                    )
+                    internal_js_calls += int(extract_result.pop("_js_calls", 0))
+                    results.append(extract_result)
+                    if not extract_result.get("ok"):
+                        break
+                elif typ == "select":
+                    note_possible_navigation()
+                    select_result = _select_action(
+                        settings,
+                        browser,
+                        work_action,
+                        current_observation_id,
+                        window_index,
+                        tab_index,
+                        tab_handle,
+                        mutation_revalidator=revalidate_mutation,
+                    )
+                    internal_js_calls += int(select_result.pop("_js_calls", 0))
+                    if resolved_target:
+                        select_result["resolved_target"] = {
+                            k: resolved_target.get(k)
+                            for k in ("element_id", "text", "role", "tag", "confidence")
+                        }
+                        if resolved_target.get("decision"):
+                            select_result["resolved_target"]["decision"] = resolved_target["decision"]
+                    results.append(select_result)
+                    if not select_result.get("ok"):
+                        break
+                    current_observation_id = None
+                elif typ == "wait":
+                    wait_result = _wait_action(
+                        settings,
+                        browser,
+                        action,
+                        window_index,
+                        tab_index,
+                        initial_url,
+                        tab_handle,
+                    )
+                    compact_state_candidate = wait_result.pop("_compact_state", None)
+                    internal_js_calls += int(wait_result.pop("_js_calls", 0))
+                    results.append(wait_result)
+                    if not wait_result.get("matched") and action.get("required", True):
+                        break
+                else:
+                    key_action = dict(action)
+                    if not key_action.get("element_id") and any(key_action.get(k) for k in ("query", "target", "role", "text_match", "target_text")):
+                        key_action, resolved_target = resolve_target(key_action)
+                        if isinstance(resolved_target, dict) and resolved_target.get("ok") is False:
+                            results.append({"type": "key", **resolved_target})
+                            break
+                    eid = key_action.get("element_id")
+                    key_mode = str(action.get("input_mode") or "auto").strip().lower()
+                    if key_mode == "dom" or (key_mode == "auto" and not allow_foreground):
+                        # Background-safe default: DOM key events never change app focus.
+                        mutation_target, blocked = revalidate_mutation("key")
+                        if blocked is not None:
+                            results.append(blocked)
+                            break
+                        note_possible_navigation()
+                        key_result = _dom_key_action(
+                            settings, browser, action, eid, window_index, tab_index, tab_handle,
+                            prevalidated_target=mutation_target,
+                        )
+                        internal_js_calls += int(key_result.pop("_js_calls", 0))
+                        key_compact_state = key_result.pop("_compact_state", None)
+                        if key_compact_state is not None:
+                            compact_state_candidate = key_compact_state
+                        if resolved_target:
+                            key_result["resolved_target"] = {
+                                k: resolved_target.get(k)
+                                for k in ("element_id", "text", "role", "tag", "confidence")
+                            }
+                        results.append(key_result)
+                        if not key_result.get("ok"):
+                            break
+                        current_observation_id = None
+                        continue
+                    if eid:
+                        mutation_target, blocked = revalidate_mutation("key")
+                        if blocked is not None:
+                            results.append(blocked)
+                            break
+                        focus_result = _run_json_js(
+                            settings, browser, _batch_js([{"type": "focus", "element_id": eid}], current_observation_id),
+                            window_index, tab_index, tab_handle,
+                            prevalidated_target=mutation_target,
+                        )
+                        internal_js_calls += 1
+                        if not focus_result.get("ok"):
+                            results.extend(focus_result.get("actions") or [{"ok": False, "error": "could_not_focus"}])
+                            break
+                        current_observation_id = None
+                    note_possible_navigation()
+                    key_result = browser_press_key(
+                        settings, browser=browser, key=str(action.get("key") or ""),
+                        modifiers=action.get("modifiers") or [], window_index=window_index,
+                        tab_handle=tab_handle, lease_generation=lease_generation,
+                        allow_foreground=allow_foreground,
+                    )
+                    results.append({
+                        "type": "key",
+                        "ok": bool(key_result.get("ok")),
+                        "key": action.get("key"),
+                        "foreground_required": bool(key_result.get("foreground_required")),
+                        "reason_code": key_result.get("reason_code"),
+                        "reason": key_result.get("reason"),
+                        "tab_handle": key_result.get("tab_handle") or tab_handle,
+                        "lease_generation": key_result.get("lease_generation"),
+                    })
                     if not key_result.get("ok"):
                         break
-                    current_observation_id = None
-                    continue
-                if eid:
-                    mutation_target, blocked = revalidate_mutation("key")
-                    if blocked is not None:
-                        results.append(blocked)
-                        break
-                    focus_result = _run_json_js(
-                        settings, browser, _batch_js([{"type": "focus", "element_id": eid}], current_observation_id),
-                        window_index, tab_index, tab_handle,
-                        prevalidated_target=mutation_target,
-                    )
-                    internal_js_calls += 1
-                    if not focus_result.get("ok"):
-                        results.extend(focus_result.get("actions") or [{"ok": False, "error": "could_not_focus"}])
-                        break
-                    current_observation_id = None
-                note_possible_navigation()
-                key_result = browser_press_key(
-                    settings, browser=browser, key=str(action.get("key") or ""),
-                    modifiers=action.get("modifiers") or [], window_index=window_index,
-                    tab_handle=tab_handle, lease_generation=lease_generation,
-                    allow_foreground=allow_foreground,
-                )
-                results.append({
-                    "type": "key",
-                    "ok": bool(key_result.get("ok")),
-                    "key": action.get("key"),
-                    "foreground_required": bool(key_result.get("foreground_required")),
-                    "reason_code": key_result.get("reason_code"),
-                    "reason": key_result.get("reason"),
-                    "tab_handle": key_result.get("tab_handle") or tab_handle,
-                    "lease_generation": key_result.get("lease_generation"),
-                })
-                if not key_result.get("ok"):
-                    break
+            else:
+                pending.append(work_action)
         else:
-            pending.append(work_action)
-    else:
-        flush_pending()
-    if pending:
-        flush_pending()
+            flush_pending()
+        if pending:
+            flush_pending()
+    except HTTPException as exc:
+        tab_lost = _tab_loss_detail(exc)
+        if tab_lost is None:
+            raise
+        # Earlier actions already ran; report them instead of failing the whole call so
+        # the agent never replays completed side effects.
+        mutated = any(item not in _NON_MUTATING_ACT_TYPES for item in in_flight)
+        results.append({
+            "type": in_flight[0] if len(in_flight) == 1 else ("batch" if in_flight else typ),
+            **({"in_flight_types": in_flight} if len(in_flight) > 1 else {}),
+            "ok": False,
+            **tab_lost,
+            "retryable": True,
+            "automatic_retry": False,
+            "observe_again": True,
+            "outcome_unknown": mutated,
+            "resource_kind": "browser_tab",
+            "tab_handle": tab_handle,
+        })
 
     ok = all(bool(r.get("ok")) for r in results) if results else True
     response: Dict[str, Any] = {
@@ -3768,43 +3824,57 @@ def _browser_act_locked(
             ):
                 if key in failed:
                     response[key] = failed.get(key)
-    if return_state == "compact":
-        if compact_state_candidate is not None:
-            response["state"] = compact_state_candidate
-        else:
-            response["state"] = _run_json_js(
-                settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
-            )
-            response["internal_js_calls"] += 1
-    elif return_state == "full":
-        try:
-            full = _observe_payload(
-                settings,
-                browser,
-                "content",
-                120,
-                window_index=window_index,
-                tab_index=tab_index,
-                tab_handle=tab_handle,
-            )
-            response["state"] = full
-            response["internal_js_calls"] += 1
-        except HTTPException as exc:
-            if exc.status_code != status.HTTP_413_REQUEST_ENTITY_TOO_LARGE:
-                raise
-            response["state"] = _run_json_js(
-                settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
-            )
-            response["state_fallback"] = "compact"
-            response["full_state_error"] = "payload_too_large"
-            response["internal_js_calls"] += 1
-    if return_state == "none":
-        progress = _run_json_js(
-            settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+    if tab_lost is not None:
+        response["outcome_unknown"] = bool(results[-1].get("outcome_unknown"))
+        response["completed_action_count"] = sum(
+            1 for item in results if isinstance(item, dict) and item.get("ok")
         )
-        response["progress"] = {
-            key: progress.get(key) for key in ("url", "title", "dom_revision")
-            if progress.get(key) is not None
-        }
-        response["internal_js_calls"] += 1
+        response["state_error"] = tab_lost["error"]
+        return response
+    try:
+        if return_state == "compact":
+            if compact_state_candidate is not None:
+                response["state"] = compact_state_candidate
+            else:
+                response["state"] = _run_json_js(
+                    settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+                )
+                response["internal_js_calls"] += 1
+        elif return_state == "full":
+            try:
+                full = _observe_payload(
+                    settings,
+                    browser,
+                    "content",
+                    120,
+                    window_index=window_index,
+                    tab_index=tab_index,
+                    tab_handle=tab_handle,
+                )
+                response["state"] = full
+                response["internal_js_calls"] += 1
+            except HTTPException as exc:
+                if exc.status_code != status.HTTP_413_REQUEST_ENTITY_TOO_LARGE:
+                    raise
+                response["state"] = _run_json_js(
+                    settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+                )
+                response["state_fallback"] = "compact"
+                response["full_state_error"] = "payload_too_large"
+                response["internal_js_calls"] += 1
+        if return_state == "none":
+            progress = _run_json_js(
+                settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+            )
+            response["progress"] = {
+                key: progress.get(key) for key in ("url", "title", "dom_revision")
+                if progress.get(key) is not None
+            }
+            response["internal_js_calls"] += 1
+    except HTTPException as exc:
+        state_lost = _tab_loss_detail(exc)
+        if state_lost is None:
+            raise
+        # The last action may itself have closed the tab; the actions still completed.
+        response["state_error"] = state_lost["error"]
     return response
