@@ -50,6 +50,7 @@ from .update_helper import (
     validate_update_state,
 )
 from .tools_update import launch_detached_update
+from .log_retention import log_limits, managed_logs, rotate_copy_truncate, tail_log, update_logs_dir
 from .version import __version__
 from .connection_config import (
     ConnectionConfigError,
@@ -424,6 +425,8 @@ def _start_server(args: argparse.Namespace) -> int:
     env.pop(RESTART_REQUESTER_ENV, None)
     env.setdefault("MAC_MCP_HOST", args.host)
     env.setdefault("MAC_MCP_PORT", str(port))
+    # Only the CLI-managed server rotates the shared logs in the background.
+    env["MAC_MCP_MANAGED_SERVER"] = "1"
     cmd = [
         sys.executable,
         "-m",
@@ -437,6 +440,9 @@ def _start_server(args: argparse.Namespace) -> int:
     if args.reload:
         cmd.append("--reload")
 
+    # Rotate the file this start is about to append to (the module path, so tests
+    # that point LOG_FILE elsewhere never touch the real log).
+    rotate_copy_truncate(LOG_FILE)
     log = LOG_FILE.open("a", encoding="utf-8")
     proc = subprocess.Popen(
         cmd,
@@ -1703,6 +1709,36 @@ def update(args: argparse.Namespace) -> int:
         return 1
 
 
+def logs(args: argparse.Namespace) -> int:
+    """Print recent, redacted lines from one Mac MCP log."""
+    from .security import BASE_DIR
+
+    paths = managed_logs(BASE_DIR)
+    if args.component == "update":
+        update_dir = update_logs_dir()
+        candidates = sorted(update_dir.glob("upd_*.log"), key=lambda item: item.stat().st_mtime) if update_dir.is_dir() else []
+        path = candidates[-1] if candidates else update_dir / "upd_none.log"
+    else:
+        path = paths[args.component]
+    limits = log_limits()
+    if args.list:
+        for name, item in {**paths, "update": update_logs_dir()}.items():
+            try:
+                size = item.stat().st_size if item.is_file() else sum(f.stat().st_size for f in item.glob("*.log"))
+            except OSError:
+                size = 0
+            print(f"{name:12} {size / 1024 / 1024:8.1f} MB  {item}")
+        print(f"bounds: {limits['max_bytes'] // (1024 * 1024)} MB x {limits['backups'] + 1} files per log, "
+              f"audit 5 MB x 4, newest {limits['update_logs_kept']} update logs")
+        return 0
+    if not path.exists():
+        print(f"No {args.component} log yet ({path}).", file=sys.stderr)
+        return 1
+    print(f"== {path} (last {args.lines} lines, secrets redacted)")
+    print(tail_log(path, args.lines))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _load_env()
     parser = argparse.ArgumentParser(description="Manage the Mac MCP local server.")
@@ -1781,6 +1817,12 @@ def main(argv: list[str] | None = None) -> int:
     p_conformance.add_argument("--json", action="store_true", help="Print the conformance report as JSON.")
     p_conformance.add_argument("--live", action="store_true", help="Also include read-only live Mac/companion health checks.")
     p_conformance.set_defaults(func=conformance)
+
+    p_logs = sub.add_parser("logs", help="Show recent, redacted lines from a Mac MCP log, or --list sizes and bounds.")
+    p_logs.add_argument("component", nargs="?", default="server", choices=("server", "cloudflared", "ngrok", "audit", "update"))
+    p_logs.add_argument("-n", "--lines", type=int, default=80, help="Number of lines (max 2000).")
+    p_logs.add_argument("--list", action="store_true", help="List every log with its size and the retention bounds.")
+    p_logs.set_defaults(func=logs)
 
     p_update = sub.add_parser("update", help="Update Mac MCP to the latest verified stable release checkpoint.")
     p_update.add_argument("--check", action="store_true", help="Check for updates without changing files.")

@@ -12,6 +12,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Deque, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -415,7 +416,14 @@ def setup_audit_logger() -> logging.Logger:
     if logger.handlers:
         return logger
     logger.setLevel(logging.INFO)
-    handler = logging.FileHandler(BASE_DIR / "audit.log")
+    path = BASE_DIR / "audit.log"
+    try:
+        os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600))
+        path.chmod(0o600)
+    except OSError:
+        pass
+    # Bounded: 5 MB per file, three older files kept (tool, outcome and duration only).
+    handler = RotatingFileHandler(path, maxBytes=5 * 1024 * 1024, backupCount=3)
     handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s", "%Y-%m-%d %H:%M:%S"))
     logger.addHandler(handler)
     logger.propagate = False

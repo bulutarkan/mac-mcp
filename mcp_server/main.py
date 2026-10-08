@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 import hashlib
 import json
+import os
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -19,7 +20,8 @@ from starlette.routing import Route, Mount
 from mcp.server.transport_security import TransportSecuritySettings
 from .request_client import client_address
 from .workflow_checkpoints import clear_not_executed
-from .security import AuthFailureLimiter, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
+from .log_retention import start_log_rotation
+from .security import BASE_DIR, AuthFailureLimiter, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
 from .observability import ObservedFastMCP, TelemetryManager, current_security_session
 from .policy import PROFILES, current_policy_context, declared_risk, reset_policy_context, set_policy_context
 from .policy_scope import ScopeRequest, evaluate_scope
@@ -2181,3 +2183,7 @@ def create_app():
 
 
 app = create_app()
+
+if os.getenv("MAC_MCP_MANAGED_SERVER") == "1":
+    # The CLI-started server owns log upkeep; imports in tests never rotate real logs.
+    start_log_rotation(base_dir=BASE_DIR)
