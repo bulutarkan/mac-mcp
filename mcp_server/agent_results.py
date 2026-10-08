@@ -149,6 +149,33 @@ def _normalize_error(item: Any, index: int) -> Dict[str, Any]:
     return row
 
 
+def _validate_references(envelope: Dict[str, Any]) -> None:
+    for name in ("claims", "evidence", "artifacts"):
+        seen: set[str] = set()
+        for row in envelope[name]:
+            if row["id"] in seen:
+                raise ResultContractError("duplicate_id", f"{name} contains duplicate id {row['id']!r}")
+            seen.add(row["id"])
+    claim_ids = {row["id"] for row in envelope["claims"]}
+    supported: set[str] = set()
+    for row in envelope["evidence"]:
+        for claim_id in row["claim_ids"]:
+            if claim_id not in claim_ids:
+                raise ResultContractError(
+                    "dangling_claim_reference",
+                    f"evidence {row['id']!r} references unknown claim {claim_id!r}",
+                )
+            supported.add(claim_id)
+    # Evidence stays optional, but consumers can see which claims lack support.
+    unsupported = sorted(claim_ids - supported)
+    envelope["evidence_coverage"] = {
+        "claim_count": len(claim_ids),
+        "evidence_count": len(envelope["evidence"]),
+        "unsupported_claim_count": len(unsupported),
+        "unsupported_claim_ids": unsupported[:32],
+    }
+
+
 def normalize_result_envelope(
     raw: Mapping[str, Any],
     *,
@@ -213,6 +240,7 @@ def normalize_result_envelope(
         "quality_gate": None,
         "truncation": {"truncated": False, "omitted": {}},
     }
+    _validate_references(envelope)
     gate = raw.get("quality_gate")
     if gate is not None:
         if not isinstance(gate, Mapping):

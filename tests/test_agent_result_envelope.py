@@ -7,6 +7,7 @@ from mcp_server.agent_results import (
     RESULT_ENVELOPE_MARKER,
     ResultContractError,
     bound_result_envelope,
+    normalize_result_envelope,
     parse_provider_result,
     reduce_task_results,
 )
@@ -62,6 +63,34 @@ class AgentResultEnvelopeTests(unittest.TestCase):
         with self.assertRaises(ResultContractError) as ctx:
             parse_provider_result(marked(payload), provenance={"agent_id": "agent-1"})
         self.assertEqual("missing_summary", ctx.exception.code)
+
+    def test_duplicate_ids_and_dangling_claim_references_fail_validation(self) -> None:
+        base = {
+            "schema_version": 1, "outcome": "success", "summary": "done",
+            "claims": [{"id": "c1", "statement": "a"}, {"id": "c2", "statement": "b"}],
+            "evidence": [{"id": "e1", "ref": "test:1", "claim_ids": ["c1"]}],
+            "artifacts": [], "warnings": [], "confidence": 0.8, "errors": [],
+        }
+        envelope = normalize_result_envelope(base)
+        self.assertEqual(
+            {"claim_count": 2, "evidence_count": 1, "unsupported_claim_count": 1, "unsupported_claim_ids": ["c2"]},
+            envelope["evidence_coverage"],
+        )
+        cases = {
+            "duplicate_id": [
+                {**base, "claims": [{"id": "c1", "statement": "a"}, {"id": "c1", "statement": "b"}]},
+                {**base, "evidence": [{"id": "e1", "ref": "x"}, {"id": "e1", "ref": "y"}]},
+                {**base, "artifacts": [{"id": "a1", "ref": "p"}, {"id": "a1", "ref": "q"}]},
+            ],
+            "dangling_claim_reference": [
+                {**base, "evidence": [{"id": "e1", "ref": "test:1", "claim_ids": ["c9"]}]},
+            ],
+        }
+        for code, payloads in cases.items():
+            for payload in payloads:
+                with self.subTest(code=code), self.assertRaises(ResultContractError) as ctx:
+                    normalize_result_envelope(payload)
+                self.assertEqual(code, ctx.exception.code)
 
     def test_legacy_provider_fallback_is_explicit_and_versioned(self) -> None:
         env, meta = parse_provider_result(
