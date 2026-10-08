@@ -224,6 +224,48 @@ class MobileDashboardTests(unittest.TestCase):
             )
             self.assertEqual(401, correct.status_code)
 
+    def test_wrong_codes_from_another_source_cannot_burn_owner_pairing(self):
+        from mcp_server import mobile_auth
+
+        with tempfile.TemporaryDirectory() as td:
+            app, _telemetry, store = self.make_app(Path(td))
+            manager = TestClient(app, base_url="https://testserver")
+            pairing = self.create_pairing(manager)
+            client = TestClient(app, base_url="https://testserver")
+            with patch(
+                "mcp_server.mobile_routes._client_address",
+                side_effect=lambda request: request.headers.get("x-test-source", "unknown"),
+            ):
+                for index in range(mobile_auth.MAX_MANUAL_ATTEMPTS + 1):
+                    wrong = client.post(
+                        "/mobile/pair",
+                        json={"code": f"ZZZZ-ZZ{index:02d}", "device_name": "Stranger"},
+                        headers={"x-test-source": "203.0.113.9"},
+                    )
+                    self.assertEqual(401, wrong.status_code)
+                locked = client.post(
+                    "/mobile/pair",
+                    json={"code": pairing["manual_code"], "device_name": "Stranger"},
+                    headers={"x-test-source": "203.0.113.9"},
+                )
+                self.assertEqual(401, locked.status_code)
+                owner = client.post(
+                    "/mobile/pair",
+                    json={"code": pairing["manual_code"], "device_name": "Owner"},
+                    headers={"x-test-source": "198.51.100.7"},
+                )
+            self.assertEqual(200, owner.status_code)
+
+    def test_total_wrong_codes_across_sources_still_close_the_window(self):
+        from mcp_server import mobile_auth
+
+        with tempfile.TemporaryDirectory() as td:
+            _app, _telemetry, store = self.make_app(Path(td))
+            issued = store.issue_pairing()
+            for index in range(mobile_auth.MAX_MANUAL_TOTAL_ATTEMPTS):
+                self.assertIsNone(store.consume_pairing("ZZZZ-ZZZZ", source=f"198.18.{index // 250}.{index % 250}"))
+            self.assertIsNone(store.consume_pairing(issued["manual_code"], source="198.51.100.7"))
+
     def test_manual_pairing_ip_rate_limit_returns_429(self):
         with tempfile.TemporaryDirectory() as td:
             app, _telemetry, _store = self.make_app(Path(td))

@@ -17,7 +17,12 @@ DEFAULT_PAIR_TTL_S = 120
 DEFAULT_SESSION_TTL_S = 60 * 60 * 24 * 30
 MANUAL_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 MANUAL_CODE_LENGTH = 8
+# Wrong manual codes lock only the source that sent them, so a stranger on the
+# public tunnel cannot burn the owner's pairing window. The window itself is
+# consumed after MAX_MANUAL_TOTAL_ATTEMPTS failures from all sources combined,
+# which keeps brute force bounded against the 32**8 code space.
 MAX_MANUAL_ATTEMPTS = 5
+MAX_MANUAL_TOTAL_ATTEMPTS = 200
 
 
 def mobile_auth_db_path() -> Path:
@@ -29,6 +34,7 @@ class MobileAuthStore:
     def __init__(self, db_path: Optional[Path] = None) -> None:
         self.db_path = Path(db_path or mobile_auth_db_path()).expanduser()
         self._lock = threading.RLock()
+        self._manual_failures: Dict[str, int] = {}
 
     @staticmethod
     def _hash(value: str) -> str:
@@ -120,6 +126,7 @@ class MobileAuthStore:
                 # invalidates any previous unused window so manual-code attempt
                 # accounting stays unambiguous.
                 conn.execute("DELETE FROM mobile_pairings")
+                self._manual_failures.clear()
                 conn.execute(
                     """
                     INSERT INTO mobile_pairings(
@@ -147,9 +154,11 @@ class MobileAuthStore:
         *,
         device_name: object = None,
         session_ttl_s: int = DEFAULT_SESSION_TTL_S,
+        source: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         if not isinstance(code, str):
             return None
+        source_key = str(source or "unknown")
 
         is_qr_code = code.startswith(PAIR_PREFIX)
         manual_code = self._normalize_manual_code(code)
@@ -197,8 +206,9 @@ class MobileAuthStore:
                             (now,),
                         ).fetchone()
                         if active is not None:
+                            self._manual_failures[source_key] = self._manual_failures.get(source_key, 0) + 1
                             attempts = int(active["failed_attempts"] or 0) + 1
-                            if attempts >= MAX_MANUAL_ATTEMPTS:
+                            if attempts >= MAX_MANUAL_TOTAL_ATTEMPTS:
                                 conn.execute(
                                     """
                                     UPDATE mobile_pairings
@@ -223,7 +233,8 @@ class MobileAuthStore:
                     row is None
                     or row["consumed_at"] is not None
                     or float(row["expires_at"]) <= now
-                    or int(row["failed_attempts"] or 0) >= MAX_MANUAL_ATTEMPTS
+                    or int(row["failed_attempts"] or 0) >= MAX_MANUAL_TOTAL_ATTEMPTS
+                    or (not is_qr_code and self._manual_failures.get(source_key, 0) >= MAX_MANUAL_ATTEMPTS)
                 ):
                     conn.rollback()
                     return None
