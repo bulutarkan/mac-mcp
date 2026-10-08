@@ -153,6 +153,35 @@ class InstallerPublicEndpointTests(unittest.TestCase):
             self.assertEqual("none", settings["server"]["public_endpoint_mode"])
             self.assertEqual("", settings["server"]["public_url"])
 
+    def test_invalid_ngrok_domain_falls_back_to_local_only_without_aborting(self) -> None:
+        cases = {
+            "https://demo.ngrok-free.app": ("none", ""),
+            "demo.ngrok-free.app/mcp": ("none", ""),
+            "nodot": ("none", ""),
+            "Demo.ngrok-free.app": ("ngrok", "demo.ngrok-free.app"),
+        }
+        for value, (mode, domain) in cases.items():
+            with self.subTest(value=value), tempfile.TemporaryDirectory(prefix="mac-mcp-installer-ngrok-") as td:
+                root = Path(td)
+                state = root / "state"
+                runtime = root / "runtime"
+                state.mkdir()
+                (runtime / "mcp_server").mkdir(parents=True)
+                proc = self.run_bash(
+                    f'STATE_DIR="{state}"; RUNTIME_DIR="{runtime}"; PYTHON_BIN=/usr/bin/python3; '
+                    'PUBLIC_ENDPOINT_MODE=ngrok; PUBLIC_PROVIDER_AVAILABLE=1; TTY_AVAILABLE=0; RUNTIME_SETTINGS_BROKEN=0; '
+                    'configure_public_endpoint; echo "CONFIGURED=$PUBLIC_ENDPOINT_CONFIGURED"',
+                    {"MAC_MCP_INSTALL_NGROK_DOMAIN": value},
+                )
+                self.assertEqual(0, proc.returncode, proc.stderr)
+                settings = json.loads((state / "settings.json").read_text(encoding="utf-8"))
+                self.assertEqual(mode, settings["server"]["public_endpoint_mode"])
+                env = (runtime / "mcp_server/.env").read_text(encoding="utf-8")
+                self.assertIn(f"NGROK_DOMAIN={domain}\n", env)
+                self.assertIn(f"CONFIGURED={1 if mode == 'ngrok' else 0}", proc.stdout)
+                if mode == "none":
+                    self.assertIn("example.ngrok-free.app", proc.stdout + proc.stderr)
+
     def test_cloudflare_installer_contract_is_secret_safe_and_defer_safe(self) -> None:
         source = INSTALLER.read_text(encoding="utf-8")
         self.assertIn('Install $package with Homebrew?', source)

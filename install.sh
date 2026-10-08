@@ -1189,7 +1189,11 @@ configure_public_endpoint() {
         warn "ngrok configuration deferred. Local only will remain active."
         return 0
       fi
-      persist_public_endpoint_config "ngrok" "" "$domain"
+      if ! persist_public_endpoint_config "ngrok" "" "$domain"; then
+        persist_public_endpoint_config "none" "" ""
+        warn "Invalid ngrok domain. Enter only the hostname, for example example.ngrok-free.app. Local only will remain active; configure it later in Settings."
+        return 0
+      fi
       NGROK_DOMAIN_INPUT="$domain"
       PUBLIC_ENDPOINT_CONFIGURED=1
       ok "ngrok public endpoint configured."
