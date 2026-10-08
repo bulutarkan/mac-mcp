@@ -32,7 +32,8 @@
     <section id="pairing" class="pairing hidden">
       <div class="lock-ring">⌁</div>
       <h2>Pair this device</h2>
-      <p>Open <strong>Mac MCP → Settings → Mobile Access</strong> on your Mac and enter the one-time code.</p>
+      <p id="accessLost" class="notice hidden" role="status">This device’s access has expired or was removed. Pair it again with a new code.</p>
+      <p>Open <strong>Mac MCP → Settings → Connections → Mobile</strong> on your Mac and enter the one-time code.</p>
 
       <form id="manualPairForm" class="pair-form" autocomplete="off">
         <label for="manualPairCode">Pairing code</label>
@@ -52,7 +53,8 @@
         </div>
       </form>
 
-      <p id="pairError" class="error hidden">That pairing code is invalid, expired, or already used.</p>
+      <p id="pairError" class="error hidden" role="alert">That pairing code is invalid, expired, or already used.</p>
+      <p id="pairRateLimited" class="error hidden" role="alert">Too many pairing attempts from this device. Wait a minute, then try again.</p>
       <div class="trust">Read-only · Device-specific · Revocable</div>
     </section>
 

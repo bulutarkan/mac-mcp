@@ -227,6 +227,9 @@ def create_mobile_routes(
         submitted_code = str(payload.get("code") or "")
         is_manual_code = bool(submitted_code) and not submitted_code.startswith(PAIR_PREFIX)
         if is_manual_code and manual_pairing_rate_limited(request):
+            if form_navigation:
+                # A form post is a page navigation; show the pairing view, not raw JSON.
+                return RedirectResponse("/mobile?pair_error=rate_limited", status_code=303)
             return JSONResponse(
                 {"ok": False, "error": "pairing_rate_limited"},
                 status_code=429,

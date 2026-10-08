@@ -266,6 +266,36 @@ class MobileDashboardTests(unittest.TestCase):
                 self.assertIsNone(store.consume_pairing("ZZZZ-ZZZZ", source=f"198.18.{index // 250}.{index % 250}"))
             self.assertIsNone(store.consume_pairing(issued["manual_code"], source="198.51.100.7"))
 
+    def test_rate_limited_form_pairing_redirects_to_the_pairing_view(self):
+        with tempfile.TemporaryDirectory() as td:
+            app, _telemetry, _store = self.make_app(Path(td))
+            manager = TestClient(app, base_url="https://testserver")
+            self.create_pairing(manager)
+            client = TestClient(app, base_url="https://testserver", follow_redirects=False)
+            responses = [
+                client.post(
+                    "/mobile/pair",
+                    data={"code": f"BAD{index}", "device_name": "Phone"},
+                    headers={"x-forwarded-for": "203.0.113.77"},
+                )
+                for index in range(9)
+            ]
+            self.assertEqual(303, responses[-1].status_code)
+            self.assertEqual("/mobile?pair_error=rate_limited", responses[-1].headers["location"])
+
+    def test_mobile_page_explains_lost_access_without_storing_the_session(self):
+        root = Path(__file__).resolve().parents[1] / "mcp_server" / "mobile"
+        html = (root / "index.html").read_text(encoding="utf-8")
+        script = (root / "mobile.js").read_text(encoding="utf-8")
+        self.assertIn('id="accessLost"', html)
+        self.assertIn('role="status"', html)
+        self.assertIn("Settings → Connections → Mobile", html)
+        self.assertIn('id="pairRateLimited"', html)
+        self.assertIn('locked(pairedBefore() ? "access_lost" : "")', script)
+        self.assertIn("clearDashboard();", script)
+        self.assertIn('localStorage.setItem(PAIRED_MARKER_KEY, "1")', script)
+        self.assertEqual(1, script.count("localStorage.setItem("))
+
     def test_manual_pairing_ip_rate_limit_returns_429(self):
         with tempfile.TemporaryDirectory() as td:
             app, _telemetry, _store = self.make_app(Path(td))

@@ -2,6 +2,9 @@
   "use strict";
   const $ = (id) => document.getElementById(id);
   const LEGACY_STORAGE_KEY = "mac_mcp_mobile_session";
+  // A non-secret marker so a later 401 can say access was lost instead of
+  // looking like a first visit. The session itself stays in the HttpOnly cookie.
+  const PAIRED_MARKER_KEY = "mac_mcp_mobile_paired";
   const state = { timer: null, agentCollapsed: null, activeAgents: null };
 
   function clearLegacySessionExposure() {
@@ -300,15 +303,35 @@
       renderSessionError();
     }
   }
-  function locked(showError=false) {
+  function pairedBefore() {
+    try { return localStorage.getItem(PAIRED_MARKER_KEY) === "1"; } catch (_) { return false; }
+  }
+  function rememberPaired(paired) {
+    try {
+      if (paired) localStorage.setItem(PAIRED_MARKER_KEY, "1");
+      else localStorage.removeItem(PAIRED_MARKER_KEY);
+    } catch (_) {}
+  }
+  function clearDashboard() {
+    for (const id of ["agents", "activity", "sessions"]) $(id).innerHTML = "";
+    for (const id of ["activeAgents", "calls1h", "successRate", "agentHint", "agentMeta", "sessionMeta"]) $(id).textContent = "";
+  }
+  function locked(reason="") {
+    const accessLost = reason === "access_lost";
+    clearDashboard();
     $("dashboard").classList.add("hidden");
     $("pairing").classList.remove("hidden");
-    $("serverText").textContent = "Pairing required";
+    $("serverText").textContent = accessLost ? "Access expired or removed" : "Pairing required";
     $("version").textContent = "";
     $("connector").textContent = "Mobile";
-    $("pairError").classList.toggle("hidden", !showError);
+    $("accessLost").classList.toggle("hidden", !accessLost);
+    $("pairError").classList.toggle("hidden", reason !== "pair_error");
+    $("pairRateLimited").classList.toggle("hidden", reason !== "rate_limited");
+    if (accessLost) rememberPaired(false);
   }
   function unlocked() {
+    rememberPaired(true);
+    $("accessLost").classList.add("hidden");
     $("pairing").classList.add("hidden");
     $("dashboard").classList.remove("hidden");
   }
@@ -338,7 +361,7 @@
     } catch (e) {
       if (e.status === 401) {
         clearLegacySessionExposure();
-        locked(false);
+        locked(pairedBefore() ? "access_lost" : "");
         if (state.timer) clearInterval(state.timer);
         state.timer = null;
       } else {
@@ -352,8 +375,11 @@
     const code = pairingCode();
     if (code) { submitPairing(code); return; }
     const u = new URL(location.href);
-    if (u.searchParams.get("pair_error")) {
-      history.replaceState(null, "", location.pathname); locked(true); return;
+    const pairError = u.searchParams.get("pair_error");
+    if (pairError) {
+      history.replaceState(null, "", location.pathname);
+      locked(pairError === "rate_limited" ? "rate_limited" : "pair_error");
+      return;
     }
     await refresh();
     if (!state.timer && !$("dashboard").classList.contains("hidden")) state.timer = setInterval(refresh, 4000);
