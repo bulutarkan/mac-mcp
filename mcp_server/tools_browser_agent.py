@@ -1409,6 +1409,8 @@ def _browser_observe_locked(
     _norm_browser(browser)
     window_index, tab_index = _resolve_tab_target(browser, tab_handle, window_index, tab_index)
     scope = str(scope or "interactive").lower().strip()
+    # Agents keep asking for the whole page; that is what content returns.
+    scope = {"page": "content", "full": "content", "all": "content"}.get(scope, scope)
     if scope not in {"interactive", "visible", "content", "leaf"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "scope must be interactive, visible, content, or leaf.")
     visual = str(visual or "none").lower().strip()
@@ -3564,6 +3566,38 @@ def _decide_browser_target(
 
 
 _NON_MUTATING_ACT_TYPES = {"wait", "extract"}
+_ACT_TYPES = (
+    "click", "double_click", "type", "type_text", "paste", "select", "scroll", "focus",
+    "wait", "key", "keyboard", "shortcut", "extract",
+)
+# Agents often name the action kind "action" instead of "type"; accept it.
+_ACT_TYPE_ALIASES = ("action", "kind", "op")
+
+
+def normalize_act_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return actions with a known lower-case type, or raise before anything runs.
+
+    An unknown or missing type used to be queued and only fail inside the page
+    batch, after earlier steps ran and with the call counted as dispatched.
+    """
+    normalized: List[Dict[str, Any]] = []
+    for index, action in enumerate(actions):
+        if not isinstance(action, dict):
+            raise mark_not_executed(HTTPException(status.HTTP_400_BAD_REQUEST, "Each action must be an object."))
+        raw = action.get("type")
+        if not raw:
+            raw = next((action.get(key) for key in _ACT_TYPE_ALIASES if action.get(key)), None)
+        typ = str(raw or "").strip().lower().replace("-", "_")
+        if typ not in _ACT_TYPES:
+            raise mark_not_executed(HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"actions[{index}] has unsupported type {str(raw or '')!r}; "
+                f"set \"type\" to one of: {', '.join(_ACT_TYPES)}.",
+            ))
+        item = dict(action)
+        item["type"] = typ
+        normalized.append(item)
+    return normalized
 
 
 def _tab_loss_detail(exc: HTTPException) -> Optional[Dict[str, Any]]:
@@ -3611,6 +3645,7 @@ def browser_act(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "actions must be a non-empty list.")
         if len(actions) > _MAX_ACTIONS:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"actions may contain at most {_MAX_ACTIONS} items.")
+        actions = normalize_act_actions(actions)
         normalized_return_state = str(return_state or "compact").lower().strip()
         if normalized_return_state not in _RETURN_STATE_MODES:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")
@@ -3656,6 +3691,7 @@ def _browser_act_locked(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "actions must be a non-empty list.")
     if len(actions) > _MAX_ACTIONS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"actions may contain at most {_MAX_ACTIONS} items.")
+    actions = normalize_act_actions(actions)
     return_state = str(return_state or "compact").lower().strip()
     if return_state not in _RETURN_STATE_MODES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")

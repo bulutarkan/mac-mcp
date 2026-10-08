@@ -63,7 +63,9 @@ from .tools_browser import (
     browser_screenshot, browser_scroll, browser_press_key,
     browser_coordinate_click, browser_get_snapshot,
 )
-from .tools_browser_agent import browser_observe, browser_find, browser_act, semantic_extract_fields
+from .tools_browser_agent import (
+    browser_observe, browser_find, browser_act, normalize_act_actions, semantic_extract_fields,
+)
 from .tools_interactive import ask_choice, ask_confirmation, ask_user
 from .tools_voice import ask_user_voice
 from .tools_update import mac_mcp_update
@@ -1411,7 +1413,8 @@ def create_app():
         def work() -> Dict[str, Any]:
             handle = tab_handle
             opened = None
-            requested_actions = list(actions or [])
+            # Reject a malformed action before the tab is opened or navigated.
+            requested_actions = normalize_act_actions(list(actions)) if actions else []
             work_actions = list(requested_actions)
             semantic_fields = semantic_extract_fields(extract) if extract is not None else None
             automatic_actions = (1 if semantic_fields else 0) + (1 if url and wait_after_open else 0)

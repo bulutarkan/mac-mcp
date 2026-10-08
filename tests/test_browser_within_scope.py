@@ -103,8 +103,44 @@ class WithinResolutionTests(unittest.TestCase):
         self.assertTrue(all(call.kwargs.get("within") == "teach it" for call in find.call_args_list))
         self.assertTrue(all("wait_timeout_s" not in call.kwargs for call in find.call_args_list))
 
+    def test_action_key_is_accepted_as_the_type(self) -> None:
+        # The exact shape a delegated agent sent live: "action" instead of "type".
+        near = {"element_id": "e_near", "text": "reply", "role": "link", "confidence": 1.0, "within_up": 4, "within_down": 3}
+        box = {"element_id": "e_box", "text": "", "role": "textbox", "confidence": 0.8, "within_up": 5, "within_down": 4}
+        result, _find, verified = self._act(
+            [
+                {"action": "click", "text_match": "reply", "within": "One more thing worth adding"},
+                {"action": "type", "role": "textbox", "text": "Draft only, please ignore.",
+                 "within": "One more thing worth adding"},
+            ],
+            [_found("ok", [near]), _found("ok", []), _found("ok", [box])],
+        )
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(["e_near", "e_box"], verified)
+        self.assertEqual(["click", "type"], [item["type"] for item in result["actions"]])
+
 
 class BrowserActNotExecutedTests(unittest.TestCase):
+    def test_unknown_action_type_is_refused_before_anything_runs(self) -> None:
+        from fastapi import HTTPException
+
+        from mcp_server.workflow_checkpoints import exception_not_executed
+
+        for actions in (
+            [{"type": "click", "query": "Reply"}, {"type": "hover", "query": "Save"}],
+            [{"query": "Reply"}],
+        ):
+            with self.subTest(actions=actions), \
+                 patch.object(agent, "_tab_lease") as lease, \
+                 patch.object(agent, "_run_json_js") as run_js:
+                with self.assertRaises(HTTPException) as ctx:
+                    agent.browser_act(MagicMock(), "Safari", actions, tab_handle="tab")
+                self.assertEqual(400, ctx.exception.status_code)
+                self.assertIn("type", str(ctx.exception.detail))
+                self.assertTrue(exception_not_executed(ctx.exception))
+                lease.assert_not_called()
+                run_js.assert_not_called()
+
     def test_refusal_before_actions_is_tagged_not_executed(self) -> None:
         from fastapi import HTTPException
 
@@ -132,6 +168,24 @@ class BrowserActNotExecutedTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as ctx:
                 agent.browser_act(MagicMock(), "Safari", [{"type": "click", "query": "Reply"}], tab_handle="tab")
         self.assertFalse(exception_not_executed(ctx.exception))
+
+
+class ObserveScopeAliasTests(unittest.TestCase):
+    def test_page_scope_reads_content_and_unknown_scope_still_fails(self) -> None:
+        from fastapi import HTTPException
+
+        class Reached(Exception):
+            pass
+
+        with patch.object(agent, "_resolve_tab_target", return_value=(1, 1)), \
+             patch.object(agent, "_run_json_js", side_effect=Reached) as run_js:
+            for scope in ("page", "Full", "all"):
+                with self.subTest(scope=scope), self.assertRaises(Reached):
+                    agent._browser_observe_locked(MagicMock(), "Safari", tab_handle="tab", scope=scope)
+            self.assertEqual(3, run_js.call_count)
+            with self.assertRaises(HTTPException) as ctx:
+                agent._browser_observe_locked(MagicMock(), "Safari", tab_handle="tab", scope="everything")
+        self.assertEqual(400, ctx.exception.status_code)
 
 
 if __name__ == "__main__":
