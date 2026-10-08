@@ -296,6 +296,70 @@ class ObservedReceiptTests(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_refused_before_dispatch_keeps_the_agent_able_to_act(self) -> None:
+        async def run() -> None:
+            with tempfile.TemporaryDirectory() as td, patch.dict(
+                os.environ, {"MAC_MCP_STATE_DIR": str(Path(td) / "state")}, clear=False,
+            ):
+                input_hash = workflows.workflow_input_hash(
+                    prompt="reply once", provider="codex", cwd=td, access_mode="workspace_write",
+                    scope={}, role=None,
+                )
+                workflows.create_workflow(agent_id="agt_refused01", input_hash=input_hash, provider="codex")
+                telemetry = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3")
+                context = PolicyContext(profile="trusted", actor="agent:agt_refused01", agent_id="agt_refused01")
+                mcp = ObservedFastMCP(name="refused-test", telemetry=telemetry, policy_context_provider=lambda: context)
+                calls = {"n": 0}
+
+                @mcp.tool(name="write_file")
+                def write_file(path: str, content: str) -> dict:
+                    calls["n"] += 1
+                    if calls["n"] == 1:
+                        raise workflows.mark_not_executed(HTTPException(409, {"error": "stable_tab_handle_required"}))
+                    if calls["n"] == 2:
+                        return {"ok": False, "error": "target_not_found", "mutation_dispatched": False}
+                    if calls["n"] == 3:
+                        return {"ok": True, "path": path}
+                    raise RuntimeError("failed after writing")
+
+                with self.assertRaises(ToolError):
+                    await mcp.call_tool("write_file", {"path": "/tmp/a", "content": "x"})
+                checkpoint = workflows.workflow_for_agent("agt_refused01")
+                self.assertEqual("verified", checkpoint["safety"])
+                self.assertEqual([], checkpoint["pending_effects"])
+
+                await mcp.call_tool("write_file", {"path": "/tmp/a", "content": "x"})
+                self.assertEqual("verified", workflows.workflow_for_agent("agt_refused01")["safety"])
+
+                await mcp.call_tool("write_file", {"path": "/tmp/a", "content": "x"})
+                checkpoint = workflows.workflow_for_agent("agt_refused01")
+                self.assertEqual(1, checkpoint["receipt_count"])
+                self.assertEqual(
+                    ["refused_before_dispatch", "result_not_dispatched"],
+                    [event["reason"] for event in checkpoint["not_executed_events"]],
+                )
+
+                with self.assertRaises(ToolError):
+                    await mcp.call_tool("write_file", {"path": "/tmp/a", "content": "x"})
+                checkpoint = workflows.workflow_for_agent("agt_refused01")
+                self.assertEqual("unknown", checkpoint["safety"])
+                self.assertEqual("side_effect_call_raised", checkpoint["unknown_reason"])
+
+        asyncio.run(run())
+
+    def test_not_executed_tag_follows_wrapping_and_can_be_withdrawn(self) -> None:
+        inner = workflows.mark_not_executed(HTTPException(409, "busy"))
+        try:
+            try:
+                raise inner
+            except HTTPException as exc:
+                raise ToolError("Error executing tool browser_act") from exc
+        except ToolError as wrapped:
+            self.assertTrue(workflows.exception_not_executed(wrapped))
+            workflows.clear_not_executed(wrapped)
+            self.assertFalse(workflows.exception_not_executed(wrapped))
+        self.assertFalse(workflows.exception_not_executed(RuntimeError("plain")))
+
     def test_mutating_agent_without_durable_workflow_is_not_executed(self) -> None:
         async def run() -> None:
             with tempfile.TemporaryDirectory() as td, patch.dict(

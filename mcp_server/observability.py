@@ -32,8 +32,8 @@ from .tool_summaries import COMPACT_DESCRIPTION_LIMIT, CORE_TOOL_SUMMARIES
 from .security_context import SecurityContextManager
 from .data_guard import contains_direct_secret, redact_sensitive_source_result, redact_sensitive_text, sanitize_tool_arguments
 from .workflow_checkpoints import (
-    WorkflowCheckpointError, abandon_side_effect, begin_side_effect,
-    mark_checkpoint_unknown, record_side_effect_outcome, risk_has_side_effect,
+    WorkflowCheckpointError, abandon_side_effect, begin_side_effect, exception_not_executed,
+    mark_checkpoint_unknown, record_side_effect_outcome, release_side_effect, risk_has_side_effect,
 )
 from .tool_cancellation import (
     ToolCancellationContext, current_tool_cancellation, reset_tool_cancellation,
@@ -1567,7 +1567,15 @@ class ObservedFastMCP(FastMCP):
                     raise
                 if receipt_required and policy_context.agent_id:
                     try:
-                        if side_effect_intent is not None:
+                        if exception_not_executed(exc):
+                            # Refused before dispatching anything: close the intent
+                            # without making the agent's outcome unknown.
+                            release_side_effect(
+                                policy_context.agent_id,
+                                (side_effect_intent or {}).get("intent_id"),
+                                "refused_before_dispatch", tool=name,
+                            )
+                        elif side_effect_intent is not None:
                             abandon_side_effect(
                                 policy_context.agent_id, side_effect_intent.get("intent_id"),
                                 "side_effect_call_raised", tool=name, event_type=exc.__class__.__name__,
