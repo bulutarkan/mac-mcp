@@ -188,6 +188,6 @@ h1{margin:0;font-size:17px;line-height:1.15;letter-spacing:-.025em;font-weight:7
 }
 .pair-input-row button:disabled{opacity:.55;cursor:default}
 .error{color:#ff8c90!important}
-.notice{margin:0 0 12px;padding:10px 12px;border-radius:12px;background:#231d0f;border:1px solid #3b3017;color:#f3d58c;font-size:13px;line-height:1.4}
+.pairing .notice{margin:14px auto 0;padding:10px 12px;border-radius:12px;background:#231d0f;border:1px solid #3b3017;color:#f3d58c;font-size:13px;line-height:1.4}
 .trust{display:inline-block;margin-top:17px;padding:6px 9px;border-radius:8px;background:#161618;color:#66666d;font-size:8px}
 .hidden{display:none!important}
