@@ -571,10 +571,16 @@ Use MCP tool discovery for the authoritative live schema.
 
 ## Updating
 
+**From the app:** click the Mac MCP menu bar icon, open **Settings** (gear icon) → **General** → **Updates**. The card checks the verified release channel when you open it and shows your current version next to the newest verified release. **Check Update** checks again, and **Update Now** installs it while the card lists each step as it runs, from Prepare and Backup through Restart and the final Health check. If an update is interrupted, the same button changes to **Resume Recovery** or **Retry Recovery**. "Blocked by local changes" means the source checkout has uncommitted or untracked files (`git status` in the source checkout lists them): commit, stash or move them, then check again. If anything still looks wrong, `mac-mcp doctor` reports update and recovery state.
+
+**From Terminal**, for automation or if you prefer the CLI:
+
 ```bash
 mac-mcp update --check
 mac-mcp update
 ```
+
+Both paths run the same updater with the same signature, lineage and dirty-repository checks.
 
 The updater scans the first-parent history of `origin/main` and installs the newest cryptographically verified stable release checkpoint, not arbitrary repository HEAD. Development or otherwise unverified commits ahead of that checkpoint are not offered as normal updates. It also blocks on dirty repositories, preserves runtime overlays and private files, creates a runtime backup, restarts the managed service, performs a health check, and rolls back managed runtime files if verification fails.
 
