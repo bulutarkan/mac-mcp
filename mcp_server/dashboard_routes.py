@@ -918,7 +918,9 @@ def create_dashboard_routes(
 
         async def generator():
             try:
-                hello = {"kind": "connected", "active": telemetry.active_calls()}
+                # Same browser_context as /dashboard/api/events, so a client can keep
+                # its activity list from the stream instead of polling for it.
+                hello = {"kind": "connected", "active": [_with_browser_context(item) for item in telemetry.active_calls()]}
                 yield "event: telemetry\ndata: " + json.dumps(hello, ensure_ascii=False) + "\n\n"
                 while True:
                     if await request.is_disconnected():
@@ -928,6 +930,8 @@ def create_dashboard_routes(
                     except asyncio.TimeoutError:
                         yield ": keepalive\n\n"
                         continue
+                    if isinstance(event, dict) and event.get("kind") in {"call_started", "call_finished"}:
+                        event = _with_browser_context(event)
                     yield "event: telemetry\ndata: " + json.dumps(event, ensure_ascii=False) + "\n\n"
             finally:
                 telemetry.unsubscribe(queue)

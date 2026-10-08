@@ -1486,6 +1486,12 @@ final class AppState: ObservableObject {
     let settings = SettingsStore()
     private var pollTask: Task<Void, Never>?
     private var toolActivityStreamTask: Task<Void, Never>?
+    /// True while the /dashboard/events stream is open and feeding the activity list.
+    private var toolActivityStreamConnected = false
+    /// Set after one events poll completes on the current stream connection, so the
+    /// list starts from a full snapshot before the stream alone keeps it current.
+    private var streamActivitySeeded = false
+    nonisolated static let recentActivityLimit = 20
     private var pulseTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
     private var updateStatePollTask: Task<Void, Never>?
@@ -1851,9 +1857,47 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Poll /dashboard/api/events only when the stream cannot be trusted to keep
+    /// the list current: not connected, or not yet seeded on this connection.
+    nonisolated static func shouldPollActivityEvents(streamConnected: Bool, seeded: Bool) -> Bool {
+        !(streamConnected && seeded)
+    }
+
+    /// Apply one stream event to the activity lists, keeping the same shape as a
+    /// poll: newest first, at most `limit` recent events from the last hour.
+    nonisolated static func applyActivityStreamEvent(
+        kind: String,
+        event: ToolEvent?,
+        active: [ToolEvent],
+        recent: [ToolEvent],
+        limit: Int = recentActivityLimit,
+        now: Double = Date().timeIntervalSince1970
+    ) -> (active: [ToolEvent], recent: [ToolEvent]) {
+        guard let event else { return (active, recent) }
+        var nextActive = active.filter { $0.eventID != event.eventID }
+        var nextRecent = recent
+        if kind == "call_started" {
+            nextActive.insert(event, at: 0)
+        } else if kind == "call_finished" {
+            nextRecent.removeAll { $0.eventID == event.eventID }
+            nextRecent.insert(event, at: 0)
+            nextRecent = Array(nextRecent.filter { $0.timestamp >= now - 3600 }.prefix(limit))
+        } else {
+            return (active, recent)
+        }
+        return (nextActive, nextRecent)
+    }
+
+    nonisolated static func toolEvent(from payload: [String: Any]) -> ToolEvent? {
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
+        return try? JSONDecoder().decode(ToolEvent.self, from: data)
+    }
+
     func restartToolActivityStream() {
         toolActivityStreamTask?.cancel()
         toolActivityStreamTask = nil
+        toolActivityStreamConnected = false
 
         guard settings.requireToolDescriptions, settings.showToolActivity else {
             ToolActivityBubbleController.shared.hideImmediately()
@@ -1888,6 +1932,9 @@ final class AppState: ObservableObject {
                 else {
                     throw URLError(.badServerResponse)
                 }
+                toolActivityStreamConnected = true
+                // Reseed once per connection so nothing finished while it was down is lost.
+                streamActivitySeeded = false
 
                 for try await line in bytes.lines {
                     if Task.isCancelled { return }
@@ -1900,11 +1947,14 @@ final class AppState: ObservableObject {
                     handleToolActivityPayload(payload)
                 }
             } catch {
+                toolActivityStreamConnected = false
                 if Task.isCancelled { return }
             }
+            toolActivityStreamConnected = false
 
             try? await Task.sleep(nanoseconds: 900_000_000)
         }
+        toolActivityStreamConnected = false
     }
 
     private func handleToolActivityPayload(_ payload: [String: Any]) {
@@ -1913,11 +1963,18 @@ final class AppState: ObservableObject {
         if kind == "connected" {
             ToolActivityBubbleController.shared.hideImmediately()
             guard let active = payload["active"] as? [[String: Any]] else { return }
+            setIfChanged(\.activeEvents, active.compactMap(Self.toolEvent(from:)))
             for event in active.reversed() {
                 presentToolActivityEvent(event)
             }
             return
         }
+
+        let lists = Self.applyActivityStreamEvent(
+            kind: kind, event: Self.toolEvent(from: payload), active: activeEvents, recent: recentEvents
+        )
+        setIfChanged(\.activeEvents, lists.active)
+        setIfChanged(\.recentEvents, lists.recent)
 
         guard let eventID = payload["event_id"] as? String, !eventID.isEmpty else { return }
         if kind == "call_started" {
@@ -1956,7 +2013,11 @@ final class AppState: ObservableObject {
         do {
             let summary: DashboardSummary = try await fetch(base.appendingPathComponent("dashboard/api/summary"), query: ["hours": "1"])
 
-            async let eventsFetch: EventsEnvelope = fetch(base.appendingPathComponent("dashboard/api/events"), query: ["hours": "1", "limit": "20"])
+            let pollEvents = Self.shouldPollActivityEvents(
+                streamConnected: toolActivityStreamConnected, seeded: streamActivitySeeded
+            )
+            let streamWasConnected = toolActivityStreamConnected
+            async let eventsFetch: EventsEnvelope? = fetchActivityEvents(base: base, poll: pollEvents)
             async let agentsFetch: AgentsEnvelope = fetch(base.appendingPathComponent("dashboard/api/agents"), query: ["limit": "20"])
             async let steeringFetch: SteeringEnvelope = fetch(base.appendingPathComponent("dashboard/api/steering"), query: [:])
             async let securityFetch: SecuritySemanticsEnvelope = fetch(base.appendingPathComponent("dashboard/api/security/semantics"), query: [:])
@@ -1969,9 +2030,11 @@ final class AppState: ObservableObject {
             var secondaryIssue: String?
             var resolvedActiveAgents = summary.activeAgents ?? activeAgents
             do {
-                let eventsEnvelope = try await eventsFetch
-                setIfChanged(\.recentEvents, eventsEnvelope.events)
-                setIfChanged(\.activeEvents, eventsEnvelope.active)
+                if let eventsEnvelope = try await eventsFetch {
+                    setIfChanged(\.recentEvents, eventsEnvelope.events)
+                    setIfChanged(\.activeEvents, eventsEnvelope.active)
+                    if streamWasConnected && toolActivityStreamConnected { streamActivitySeeded = true }
+                }
             } catch {
                 setIfChanged(\.activeEvents, [])
                 secondaryIssue = secondaryIssue ?? "Activity: \(Self.issueText(for: error))"
@@ -3105,6 +3168,15 @@ final class AppState: ObservableObject {
         if let token = dashboardToken() {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
+    }
+
+    private func fetchActivityEvents(base: URL, poll: Bool) async throws -> EventsEnvelope? {
+        guard poll else { return nil }
+        let envelope: EventsEnvelope = try await fetch(
+            base.appendingPathComponent("dashboard/api/events"),
+            query: ["hours": "1", "limit": String(Self.recentActivityLimit)]
+        )
+        return envelope
     }
 
     private func fetch<T: Decodable>(
