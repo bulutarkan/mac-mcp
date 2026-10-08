@@ -1291,7 +1291,10 @@ def create_app():
                                              window_index=window_index, tab_index=tab_index, tab_handle=tab_handle))
 
     @mcp.tool(name="browser_list_tabs",
-              description="List all open tabs with title, URL, indices, and stable tab_handle values that survive tab index shifts.")
+              description=(
+                  "List all open tabs with title, URL, indices, and stable tab_handle values that survive tab index shifts. "
+                  "For Google Chrome, transport says whether background automation works now and how to fix it."
+              ))
     def _browser_list_tabs(browser: str) -> Dict[str, Any]:
         return _log(audit_logger, "browser_list_tabs",
                     lambda: browser_list_tabs(settings, browser=browser))

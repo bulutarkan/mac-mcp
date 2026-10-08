@@ -1011,7 +1011,12 @@ def browser_list_tabs(settings: Settings, browser: str) -> Dict[str, Any]:
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             f"Could not enumerate browser tabs: {exc}",
         ) from exc
-    return {"ok": True, "browser": b, "tabs": tabs}
+    out: Dict[str, Any] = {"ok": True, "browser": b, "tabs": tabs}
+    if b == "Google Chrome":
+        # Agents list tabs first, so this is where they learn whether background
+        # automation works before they start acting.
+        out["transport"] = chrome_transport_capabilities()
+    return out
 
 
 def browser_activate_tab(
@@ -1371,6 +1376,85 @@ end tell'''
                     ) from exc
                 raise
         raise
+
+
+_CHROME_JS_PROBE_TTL_S = 30.0
+_CHROME_JS_PROBE: Dict[str, Any] = {"at": 0.0, "state": "unknown"}
+_CHROME_JS_DENIED_MARKERS = ("Access not allowed", "Executing JavaScript through AppleScript is turned off")
+
+
+def _probe_chrome_apple_events_js() -> str:
+    """Return allowed/denied/unknown without launching or focusing Chrome.
+
+    The probe evaluates a constant in the front tab, which changes nothing on the
+    page. A short cache keeps tab listings cheap.
+    """
+    global _CHROME_NATIVE_JS_DENIED
+    now = time.monotonic()
+    if now - float(_CHROME_JS_PROBE["at"]) < _CHROME_JS_PROBE_TTL_S:
+        return str(_CHROME_JS_PROBE["state"])
+    state = "unknown"
+    if _chrome_is_running():
+        try:
+            out = _run_osascript(
+                'tell application "Google Chrome"\n'
+                '    if (count of windows) is 0 then return "no_window"\n'
+                '    return (execute active tab of front window javascript "1+1") as text\n'
+                'end tell',
+                timeout_s=4,
+            )
+            state = "allowed" if out.strip() == "2" else "unknown"
+        except HTTPException as exc:
+            detail = str(getattr(exc, "detail", "") or "")
+            state = "denied" if any(marker in detail for marker in _CHROME_JS_DENIED_MARKERS) else "unknown"
+    # The setting can be turned on or off while the server runs; follow the probe.
+    if state == "allowed":
+        _CHROME_NATIVE_JS_DENIED = False
+    elif state == "denied":
+        _CHROME_NATIVE_JS_DENIED = True
+    _CHROME_JS_PROBE.update({"at": now, "state": state})
+    return state
+
+
+def chrome_transport_capabilities(*, probe: bool = True) -> Dict[str, Any]:
+    """Describe which Chrome automation paths work right now, before a task acts."""
+    companion = chrome_background_bridge.is_connected()
+    running = companion or _chrome_is_running()
+    apple_events = "denied" if _CHROME_NATIVE_JS_DENIED else "unknown"
+    if probe and not companion and running:
+        apple_events = _probe_chrome_apple_events_js()
+    if companion:
+        transport, dom = "companion", "background"
+    elif apple_events == "allowed":
+        transport, dom = "apple_events_javascript", "background"
+    elif apple_events == "denied":
+        transport, dom = "url_bridge_foreground_only", "foreground_only"
+    else:
+        transport, dom = "unknown", "unknown"
+    remediation: List[str] = []
+    if not companion:
+        remediation.append(
+            "Install or reconnect the Mac MCP Chrome companion for background DOM automation "
+            "and trusted background pointer input."
+        )
+    if apple_events == "denied" and not companion:
+        remediation.append(
+            "Or enable Chrome View → Developer → Allow JavaScript from Apple Events "
+            "(Chrome requires a real click for this setting)."
+        )
+    return {
+        "browser": "Google Chrome",
+        "chrome_running": running,
+        "active_transport": transport,
+        "dom_automation": dom,
+        "background_dom_automation": dom == "background",
+        "trusted_background_pointer": companion,
+        "companion_connected": companion,
+        "apple_events_javascript": "not_needed" if companion else apple_events,
+        # The URL bridge brings Chrome forward, so it never runs without authorization.
+        "focus_change_requires_authorization": True,
+        "remediation": remediation,
+    }
 
 
 def _browser_execute_js_mode(
