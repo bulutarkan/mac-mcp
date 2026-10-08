@@ -19,6 +19,7 @@ from mcp.server.fastmcp.utilities.types import Image
 from .security import Settings, truncate
 from .computer_use_perf import record_computer_use_sample
 from . import decision_engine
+from .data_guard import redact_sensitive_text
 from .perception import finalize_perception_telemetry, refresh_perception_size
 from . import browser_tabs
 from .chrome_background_bridge import chrome_background_bridge
@@ -3403,6 +3404,26 @@ def _late_target_wait_s(action: Dict[str, Any], results: List[Dict[str, Any]]) -
     return _LATE_TARGET_WAIT_S if mutated else 0.0
 
 
+_INTENT_HINT_LIMIT = 120
+
+
+def _action_intent_hint(action: Dict[str, Any]) -> str:
+    """The agent's optional disambiguation note, safe to send to the Decisions API.
+
+    Values the action types into the page never leave the machine through it,
+    and secrets are redacted before it is capped.
+    """
+    raw = action.get("intent")
+    if not isinstance(raw, str):
+        return ""
+    hint = " ".join(raw.split())
+    for key in ("text", "value"):
+        typed = str(action.get(key) or "").strip()
+        if len(typed) >= 3:
+            hint = re.sub(re.escape(typed), "[typed value]", hint, flags=re.IGNORECASE)
+    return redact_sensitive_text(hint)[:_INTENT_HINT_LIMIT].strip()
+
+
 def _decide_browser_target(
     action: Dict[str, Any],
     query: str,
@@ -3444,6 +3465,9 @@ def _decide_browser_target(
     ]
     action_type = str(action.get("type") or "").lower()
     intent = f"Browser {action_type} target. query: {query}; role: {role or ''}; text: {match_text or ''}"
+    hint = _action_intent_hint(action)
+    if hint:
+        intent += f"; intent: {hint}"
     result = decision_engine.resolve_ambiguity(
         intent, candidates, surface="browser", deterministic_id="c1",
     )

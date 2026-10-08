@@ -282,6 +282,61 @@ class BrowserActDecisionTests(unittest.TestCase):
         self.assertEqual("e2", result["actions"][0]["resolved_target"]["element_id"])
 
 
+class BrowserIntentHintTests(unittest.TestCase):
+    MATCHES = [
+        {"element_id": "e1", "text": "Continue", "role": "button", "tag": "button", "confidence": 0.98,
+         "context": "Shipping"},
+        {"element_id": "e2", "text": "Continue", "role": "button", "tag": "button", "confidence": 0.98,
+         "context": "Billing"},
+    ]
+
+    def _decide(self, action, matches=None):
+        resolver = MagicMock(return_value=decision_engine.DecisionResult(outcome="disabled"))
+        with patch.object(decision_engine, "resolve_ambiguity", resolver), \
+                patch.object(decision_engine, "is_risky_label", return_value=False):
+            from mcp_server.tools_browser_agent import _decide_browser_target
+            _decide_browser_target(action, "Continue", "button", None, matches or self.MATCHES)
+        return resolver
+
+    def test_without_intent_the_request_is_unchanged(self) -> None:
+        resolver = self._decide({"type": "click", "query": "Continue"})
+        self.assertEqual(
+            "Browser click target. query: Continue; role: button; text: ", resolver.call_args.args[0],
+        )
+
+    def test_intent_is_appended_to_the_decision_input(self) -> None:
+        resolver = self._decide({"type": "click", "query": "Continue", "intent": "Continue in the  Billing\nsection"})
+        self.assertTrue(resolver.call_args.args[0].endswith("; intent: Continue in the Billing section"))
+
+    def test_intent_is_redacted_capped_and_never_carries_typed_values(self) -> None:
+        from mcp_server.tools_browser_agent import _action_intent_hint
+        action = {
+            "type": "type", "text": "4111 1111 1111 1111",
+            "intent": "Card field 4111 1111 1111 1111 near token ghp_abcdefghijklmnopqrstuvwxyz0123456789 " + "x" * 300,
+        }
+        hint = _action_intent_hint(action)
+        self.assertNotIn("4111", hint)
+        self.assertIn("[typed value]", hint)
+        self.assertNotIn("ghp_abcdefghijklmnopqrstuvwxyz0123456789", hint)
+        self.assertLessEqual(len(hint), 120)
+        self.assertEqual("", _action_intent_hint({"intent": {"not": "text"}}))
+
+    def test_intent_never_triggers_a_request_without_ambiguity(self) -> None:
+        unique = [dict(self.MATCHES[0]), {**self.MATCHES[1], "confidence": 0.60}]
+        resolver = self._decide({"type": "click", "query": "Continue", "intent": "Billing"}, unique)
+        resolver.assert_not_called()
+
+    def test_disabled_layer_makes_no_outbound_call_even_with_intent(self) -> None:
+        with patch.object(decision_engine, "_client") as client:
+            result = decision_engine.resolve_ambiguity(
+                "Browser click target. query: Continue; intent: Billing", [
+                    DecisionCandidate("c1", label="Continue"), DecisionCandidate("c2", label="Continue"),
+                ], surface="browser", deterministic_id="c1", config=DecisionConfig(),
+            )
+        self.assertEqual("disabled", result.outcome)
+        client.assert_not_called()
+
+
 class DecisionDashboardRouteTests(unittest.TestCase):
     def test_status_and_verify_routes_require_dashboard_auth_and_never_return_key(self) -> None:
         from starlette.applications import Starlette

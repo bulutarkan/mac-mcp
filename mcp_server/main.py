@@ -118,7 +118,9 @@ BROWSER_ACT_DESCRIPTION = (
     "so type then key Enter commits search boxes and date fields in the same batch. After an earlier action changes the page, a missing target is awaited "
     "briefly (set wait_s per action to change it), so picker confirm buttons and autocomplete options can follow in the same batch. "
     "Click actions default to background-safe synthetic DOM input; input_mode='trusted' is an explicit Chrome Background Companion-only pointer path and fails closed on Safari "
-    "without foreground/coordinate fallback. No-effect mutations are never automatically replayed. return_state: none, compact, or full."
+    "without foreground/coordinate fallback. No-effect mutations are never automatically replayed. return_state: none, compact, or full. "
+    "When labels repeat (two Continue buttons), add an optional per-action intent such as 'Continue in the Billing section'; "
+    "it is used only to break such ties and never carries typed values."
 )
 
 _BROWSER_DO_OUTPUT_BUDGET_BYTES = 8_192
