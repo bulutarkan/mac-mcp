@@ -655,6 +655,8 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "lesson_record": _r("lesson_record", "memory", _caps(Capability.LOCAL_WRITE), sensitive=True),
     "lesson_feedback": _r("lesson_feedback", "memory", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
     "lesson_consolidate": _r("lesson_consolidate", "memory", _caps(Capability.READ, Capability.LOCAL_WRITE), destructive=True, sensitive=True),
+    "lesson_delete": _r("lesson_delete", "memory", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
+    "lesson_export": _r("lesson_export", "memory", _caps(Capability.READ), sensitive=True),
     "skill_list": _r("skill_list", "skills", _caps(Capability.READ), sensitive=True),
     "skill_search": _r("skill_search", "skills", _caps(Capability.READ), sensitive=True),
     "skill_get": _r("skill_get", "skills", _caps(Capability.READ), sensitive=True),

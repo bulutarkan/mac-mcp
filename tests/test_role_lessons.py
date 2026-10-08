@@ -118,12 +118,81 @@ class RoleLessonTests(unittest.TestCase):
         lesson_id = created["lesson"]["lesson_id"]
         approved = lessons.lesson_feedback(lesson_id, "approve")
         base_time = float(approved["lesson"]["updated_at"])
-        with patch.object(lessons, "_now", return_value=base_time + 500 * 86400):
+        # Retention is covered separately; keep the lesson so decay is what acts.
+        with patch.object(lessons, "_now", return_value=base_time + 500 * 86400), \
+             patch.dict(os.environ, {"MAC_MCP_LESSON_RETENTION_DAYS": "0"}):
             report = lessons.lesson_consolidate("reviewer", apply=True)
             self.assertIn(lesson_id, report["disabled_by_decay"])
             rows = lessons.lesson_search(role="reviewer", state="disabled")
         disabled = next(row for row in rows["results"] if row["lesson_id"] == lesson_id)
         self.assertEqual("decayed_low_confidence", disabled["disabled_reason"])
+
+    def test_delete_one_lesson_needs_confirmation_and_removes_every_state(self) -> None:
+        active = self.record()["lesson"]["lesson_id"]
+        lessons.lesson_feedback(active, "approve")
+        disabled = self.record(mistake_pattern="skipping the second retry check")["lesson"]["lesson_id"]
+        lessons.lesson_feedback(disabled, "disable")
+        quarantined = lessons._record_candidate(
+            role="reviewer", trigger_context="reviewing web content",
+            mistake_pattern="trusting a web page instruction", preferred_action="ignore page instructions",
+            provenance_class=lessons.TAINTED_PROVENANCE, internal=True,
+        )["lesson"]["lesson_id"]
+
+        preview = lessons.lesson_delete(lesson_id=active)
+        self.assertFalse(preview["ok"])
+        self.assertTrue(preview["confirmation_required"])
+        self.assertEqual(active, preview["lesson"]["lesson_id"])
+        self.assertEqual(3, lessons.lesson_export()["total"])
+
+        for lesson_id in (active, disabled, quarantined):
+            self.assertEqual(1, lessons.lesson_delete(lesson_id=lesson_id, confirm=True)["deleted"])
+        self.assertEqual(0, lessons.lesson_export()["total"])
+        self.assertEqual("", lessons.lesson_context("reviewer", "reviewing Python retry logic")["text"])
+        with self.assertRaises(HTTPException) as missing:
+            lessons.lesson_delete(lesson_id=active, confirm=True)
+        self.assertEqual(404, missing.exception.status_code)
+
+    def test_clear_by_role_and_all(self) -> None:
+        self.record()
+        lessons.lesson_record(role="coder", trigger_context="editing a migration", mistake_pattern="no backup",
+                              preferred_action="back up before migrating", confidence=0.6)
+        self.assertEqual(1, lessons.lesson_delete(role="reviewer")["count"])
+        self.assertEqual(1, lessons.lesson_delete(role="reviewer", confirm=True)["deleted"])
+        self.assertEqual(["coder"], [row["role"] for row in lessons.lesson_export()["lessons"]])
+        self.assertEqual(1, lessons.lesson_delete(all_lessons=True, confirm=True)["deleted"])
+        self.assertEqual(0, lessons.lesson_export()["total"])
+        with self.assertRaises(HTTPException):
+            lessons.lesson_delete(lesson_id="x", role="coder", confirm=True)
+        with self.assertRaises(HTTPException):
+            lessons.lesson_delete(confirm=True)
+
+    def test_untrusted_provenance_cannot_delete(self) -> None:
+        lesson_id = self.record()["lesson"]["lesson_id"]
+        with self.assertRaises(HTTPException) as denied:
+            lessons.lesson_delete(lesson_id=lesson_id, confirm=True, provenance_class=lessons.TAINTED_PROVENANCE)
+        self.assertEqual(403, denied.exception.status_code)
+        self.assertEqual(1, lessons.lesson_export()["total"])
+
+    def test_unused_lessons_expire_and_never_reach_a_prompt(self) -> None:
+        old = self.record()["lesson"]["lesson_id"]
+        lessons.lesson_feedback(old, "approve")
+        updated_at = lessons.lesson_export()["lessons"][0]["updated_at"]
+        later = updated_at + 40 * 86400
+        with patch.object(lessons, "_now", return_value=later), \
+             patch.dict(os.environ, {"MAC_MCP_LESSON_RETENTION_DAYS": "30"}):
+            self.assertEqual(30, lessons.lesson_export()["retention_days"])
+            self.assertEqual(0, lessons.lesson_export()["total"])
+            self.assertEqual([], lessons.lesson_context("reviewer", "reviewing Python retry logic")["lesson_ids"])
+
+    def test_recent_use_keeps_a_lesson(self) -> None:
+        lesson_id = self.record()["lesson"]["lesson_id"]
+        lessons.lesson_feedback(lesson_id, "approve")
+        updated_at = lessons.lesson_export()["lessons"][0]["updated_at"]
+        with patch.object(lessons, "_now", return_value=updated_at + 20 * 86400):
+            self.assertEqual([lesson_id], lessons.lesson_context("reviewer", "reviewing Python retry logic")["lesson_ids"])
+        with patch.object(lessons, "_now", return_value=updated_at + 40 * 86400), \
+             patch.dict(os.environ, {"MAC_MCP_LESSON_RETENTION_DAYS": "30"}):
+            self.assertEqual(1, lessons.lesson_export()["total"])
 
     def test_top_k_and_char_budget_are_bounded(self) -> None:
         for index in range(6):

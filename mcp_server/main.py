@@ -70,7 +70,9 @@ from .tools_interactive import ask_choice, ask_confirmation, ask_user
 from .tools_voice import ask_user_voice
 from .tools_update import mac_mcp_update
 from .tools_memory import memory_add, memory_search, memory_get, memory_update, memory_delete
-from .tools_lessons import lesson_consolidate, lesson_feedback, lesson_record, lesson_search
+from .tools_lessons import (
+    lesson_consolidate, lesson_delete, lesson_export, lesson_feedback, lesson_record, lesson_search,
+)
 from .tools_skills import skill_list, skill_search, skill_get, skill_register, skill_update_index
 from .menu_app_bootstrap import bootstrap_menu_app_and_legacy_state
 from .runtime_settings import tool_activity_setting
@@ -1821,6 +1823,36 @@ def create_app():
         return await asyncio.to_thread(
             _log, audit_logger, "lesson_consolidate",
             lambda: lesson_consolidate(role=role, apply=apply, provenance_class=provenance),
+        )
+
+    @mcp.tool(
+        name="lesson_delete",
+        description=(
+            "Permanently delete role-learning lessons: one lesson_id, every lesson of a role, or all_lessons=true. "
+            "Without confirm=true it only shows what would be deleted. Deleted lessons never reach a worker prompt again."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False),
+    )
+    async def _lesson_delete(lesson_id: Optional[str] = None, role: Optional[str] = None,
+                             all_lessons: bool = False, confirm: bool = False) -> Dict[str, Any]:
+        provenance = current_provenance_class()
+        return await asyncio.to_thread(
+            _log, audit_logger, "lesson_delete",
+            lambda: lesson_delete(lesson_id=lesson_id, role=role, all_lessons=all_lessons,
+                                  confirm=confirm, provenance_class=provenance),
+        )
+
+    @mcp.tool(
+        name="lesson_export",
+        description=(
+            "Export every stored role lesson (candidates, active and disabled) with its evidence and the retention period, "
+            "so the user can review what was learned."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    )
+    async def _lesson_export(role: Optional[str] = None, state: Optional[str] = None) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "lesson_export", lambda: lesson_export(role=role, state=state),
         )
 
     # ── Agent Skills tools ───────────────────────────────────────────────────
