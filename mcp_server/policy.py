@@ -443,6 +443,24 @@ def _computer_plan_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     )
 
 
+def _recipe_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    action = str(arguments.get("action") or "list").strip().lower()
+    if action in {"list", "inspect", "run"}:
+        # run hands the steps to computer_plan, whose nested calls are each
+        # re-evaluated for profile, scope, egress and receipts.
+        return RiskOverride(
+            capabilities=_caps(Capability.READ),
+            destructive=False,
+            sensitive=True,
+            requested_access_mode=AccessMode.READ_ONLY,
+        )
+    return RiskOverride(
+        capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE),
+        destructive=action == "delete",
+        sensitive=True,
+    )
+
+
 def _update_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     check_only = arguments.get("check_only", True)
     if check_only is not False:
@@ -623,6 +641,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "mac_observe": _r("mac_observe", "accessibility", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY), sensitive=True),
     "mac_act": _r("mac_act", "accessibility", _caps(Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True, resolver=_mac_act_risk),
     "mac_app": _r("mac_app", "accessibility", _caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY), sensitive=True, resolver=_mac_app_risk),
+    "recipe": _r("recipe", "meta", _caps(Capability.READ, Capability.LOCAL_WRITE), destructive=True, sensitive=True, resolver=_recipe_risk),
     "computer_plan": _r("computer_plan", "meta", _caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True, resolver=_computer_plan_risk),
     # Local search and HTTP
     "search_files": _r("search_files", "search", _caps(Capability.READ), sensitive=True),

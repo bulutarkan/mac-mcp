@@ -563,6 +563,7 @@ The capability set covers:
 - delegated OpenCode/Codex agents;
 - file management;
 - macOS automation and Accessibility UI control;
+- saved recipes: `computer_plan(save_as_recipe="name")` keeps a successful plan as a draft in `~/.mac-mcp/recipes` (owner-only); `recipe(action="update", parameterize=[{"literal": "October", "param": "month"}])` turns fixed values into typed parameters, `recipe(action="activate", confirm=true)` makes it runnable after review (secret-like values are refused), and `recipe(action="run", values={...})` validates the values and runs the steps through `computer_plan` with the usual policy and verification; recipes can be listed, inspected, paused, resumed and deleted;
 - typed `mac_app` adapters for Finder, Notes, Mail, Calendar, Reminders, Preview and System Settings, including Calendar `create_event`/`update_event` and Reminders `list_reminders`/`complete_reminder`: each returns the item's stable id with a read-back check, a repeated create returns the existing event instead of a twin, and an uncertain result is reported as `outcome_unknown` rather than retried;
 - Safari/Chrome browser automation with stable tab handles and background visual observation;
 - HTTP and search;

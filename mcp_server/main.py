@@ -21,6 +21,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from .request_client import client_address
 from .workflow_checkpoints import clear_not_executed
 from .log_retention import start_log_rotation
+from . import recipes
 from .security import BASE_DIR, AuthFailureLimiter, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
 from .observability import ObservedFastMCP, TelemetryManager, current_security_session
 from .policy import PROFILES, current_policy_context, declared_risk, reset_policy_context, set_policy_context
@@ -1267,10 +1268,11 @@ def create_app():
         max_recovery_seconds: float = 12.0,
         max_action_units: int = 24,
         resources: Optional[List[Dict[str, Any]]] = None,
+        save_as_recipe: Optional[str] = None,
     ) -> Dict[str, Any]:
         try:
             normalized_resources = _computer_plan_resources(steps, resources)
-            return await execute_computer_plan(
+            result = await execute_computer_plan(
                 mcp.call_tool,
                 steps=steps,
                 max_seconds=max_seconds,
@@ -1283,6 +1285,87 @@ def create_app():
             )
         except ComputerPlanError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        if save_as_recipe and str(save_as_recipe).strip():
+            # Opt-in capture: only a successful plan is saved, and only as a draft
+            # that must be reviewed and activated before it can run.
+            if not result.get("ok"):
+                result["recipe_draft"] = {"saved": False, "reason": "The plan did not finish successfully."}
+            else:
+                try:
+                    result["recipe_draft"] = recipes.capture_draft(
+                        str(save_as_recipe), steps=steps, plan_version=plan_version,
+                        budgets={"max_seconds": max_seconds, "max_recoveries": max_recoveries,
+                                 "max_recovery_seconds": max_recovery_seconds, "max_action_units": max_action_units},
+                        plan_result=result,
+                    )
+                except recipes.RecipeError as exc:
+                    result["recipe_draft"] = {"saved": False, "reason_code": exc.code, "reason": str(exc)}
+        return result
+
+    @mcp.tool(
+        name="recipe",
+        title="Saved computer_plan recipes",
+        description=(
+            "Reuse a successful computer_plan as a reviewed, parameterized recipe. Capture with "
+            "computer_plan(save_as_recipe='name'), which saves a draft. action=list|inspect|update|activate|run|pause|"
+            "resume|delete. update: name, summary (what the recipe does), parameters {name: {type: string|integer|number|boolean|date|"
+            "datetime, required, default, enum, max_length}} and parameterize [{literal, param}] to turn literal "
+            "values into {{param}} placeholders; edits return the recipe to draft. activate needs confirm=true and "
+            "refuses secret-like literals. run takes values {param: value}; it always executes through computer_plan "
+            "with normal policy and verification. delete needs confirm=true."
+        ),
+        structured_output=False,
+    )
+    async def _recipe(
+        action: str = "list",
+        recipe_id: Optional[str] = None,
+        name: Optional[str] = None,
+        summary: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        parameterize: Optional[List[Dict[str, Any]]] = None,
+        values: Optional[Dict[str, Any]] = None,
+        confirm: bool = False,
+        include_drafts: bool = True,
+    ) -> Dict[str, Any]:
+        verb = str(action or "list").strip().lower()
+        try:
+            if verb == "list":
+                return recipes.list_recipes(include_drafts=include_drafts)
+            if not recipe_id:
+                raise recipes.RecipeError("RECIPE_ARGUMENT_INVALID", f"action={verb} requires recipe_id.")
+            if verb == "inspect":
+                return recipes.inspect_recipe(recipe_id)
+            if verb == "update":
+                return recipes.update_recipe(recipe_id, name=name, description=summary,
+                                             parameters=parameters, parameterize=parameterize)
+            if verb in {"activate", "resume"}:
+                return recipes.set_status(recipe_id, "active", confirm=confirm)
+            if verb == "pause":
+                return recipes.set_status(recipe_id, "paused")
+            if verb == "delete":
+                return recipes.delete_recipe(recipe_id, confirm=confirm)
+            if verb == "run":
+                prepared = recipes.prepare_run(recipe_id, values)
+                budgets = prepared["budgets"]
+                try:
+                    result = await execute_computer_plan(
+                        mcp.call_tool,
+                        steps=prepared["steps"],
+                        plan_version=prepared["plan_version"],
+                        resources=_computer_plan_resources(prepared["steps"], None),
+                        admission_root=AGENTS_DIR,
+                        **{key: budgets[key] for key in ("max_seconds", "max_recoveries",
+                                                          "max_recovery_seconds", "max_action_units") if key in budgets},
+                    )
+                except ComputerPlanError as exc:
+                    raise recipes.RecipeError("RECIPE_PLAN_INVALID", str(exc)) from exc
+                result["recipe"] = {"recipe_id": recipe_id, "name": prepared["recipe"].get("name"),
+                                    "values": prepared["values"], "last_run": recipes.record_run(recipe_id, result)}
+                return result
+            raise recipes.RecipeError("RECIPE_ARGUMENT_INVALID",
+                                      "action must be list, inspect, update, activate, run, pause, resume or delete.")
+        except recipes.RecipeError as exc:
+            return {"ok": False, "error": exc.code.lower(), "reason_code": exc.code, "message": str(exc), **exc.extra}
 
     # ── Search tools ────────────────────────────────────────────────────────
     @mcp.tool(name="search_files",
