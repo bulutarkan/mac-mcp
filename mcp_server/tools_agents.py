@@ -3875,6 +3875,33 @@ def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
             meta = _read_meta(agent_id)
         except HTTPException:
             pass
+    if meta.get("status") in {"starting", "running"} and not meta.get("worker_pid"):
+        with _WORKERS_LOCK:
+            spawning_here = agent_id in _WORKERS
+        requested_at = float(meta.get("spawn_requested_at") or meta.get("started_at") or 0.0)
+        if not spawning_here and _now() - requested_at >= _STALE_START_S:
+            def mark_never_started(current: Dict[str, Any]) -> Optional[bool]:
+                if current.get("worker_pid") or current.get("status") not in {"starting", "running"}:
+                    return False
+                if not _claim_terminal_transition(current, "failed", phase="worker_never_started"):
+                    return False
+                current["note"] = (
+                    "The agent worker never reported that it started (the server may have stopped "
+                    "while launching it); no provider work ran under this agent."
+                )
+                current["failure_reason"] = "worker_never_started"
+                return True
+
+            meta = _update_meta(agent_id, mark_never_started)
+            if meta.get("status") == "failed" and meta.get("failure_reason") == "worker_never_started":
+                browser_tabs.release_agent_leases(agent_id)
+                _release_agent_admission(agent_id, meta)
+                _converge_workflow_terminal(agent_id, meta)
+                try:
+                    meta = _read_meta(agent_id)
+                except HTTPException:
+                    pass
+            return meta
     if meta.get("status") in {"starting", "running"}:
         worker_pid = meta.get("worker_pid")
         if worker_pid and not _is_pid_alive(worker_pid):
@@ -3908,11 +3935,20 @@ def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     return meta
 
 
-def _spawn_worker_process(agent_id: str, worker_log) -> subprocess.Popen:
+_LAUNCH_NONCE_ENV = "MAC_MCP_AGENT_LAUNCH_NONCE"
+# A start with no worker identity after this long never launched (or died before
+# it could say so); see _normalize.
+_STALE_START_S = 120.0
+
+
+def _spawn_worker_process(agent_id: str, worker_log, launch_nonce: Optional[str] = None) -> subprocess.Popen:
+    env = _base_env()
+    if launch_nonce:
+        env[_LAUNCH_NONCE_ENV] = launch_nonce
     return subprocess.Popen(
         [sys.executable, "-m", "mcp_server.tools_agents", "--worker", agent_id],
         cwd=str(BASE_DIR.parent),
-        env=_base_env(),
+        env=env,
         stdin=subprocess.DEVNULL,
         stdout=worker_log,
         stderr=subprocess.STDOUT,
@@ -4203,6 +4239,7 @@ def _spawn_internal(
         "exit_code": None,
         "started_at": started,
         "spawn_requested_at": started,
+        "launch_nonce": uuid.uuid4().hex,
         "worker_started_at": None,
         "provider_started_at": None,
         "first_event_at": None,
@@ -4294,7 +4331,7 @@ def _spawn_internal(
 
     worker_log = (path / "worker.log").open("a", encoding="utf-8")
     try:
-        proc = _spawn_worker_process(agent_id, worker_log)
+        proc = _spawn_worker_process(agent_id, worker_log, str(meta.get("launch_nonce") or "") or None)
     except OSError as exc:
         worker_log.close()
         spawn_error = str(exc)
@@ -6318,17 +6355,30 @@ def _worker(agent_id: str) -> int:
     result_path = path / "result.txt"
     now = _now()
 
+    launch_nonce = os.environ.get(_LAUNCH_NONCE_ENV) or None
+
     def record_worker_start(current: Dict[str, Any]) -> Optional[bool]:
         if current.get("status") == "cancelled":
             return False
+        expected = current.get("launch_nonce")
+        if expected and launch_nonce and expected != launch_nonce:
+            return False  # a different launch owns this agent
+        if current.get("status") in TERMINAL_STATUSES:
+            return False  # already reconciled as never started
         current.update({
             "status": "running", "phase": "worker_starting", "worker_started_at": now,
             "last_activity_at": now, "updated_at": now,
+            # Recorded by the worker itself, so a parent that crashed before
+            # storing the PID still leaves a verifiable worker behind.
+            "worker_pid": current.get("worker_pid") or os.getpid(),
+            "worker_identity": {"pid": os.getpid(), "nonce": launch_nonce, "started_at": now},
         })
         return True
 
     meta = _update_meta(agent_id, record_worker_start)
     if meta.get("status") == "cancelled":
+        return 0
+    if (meta.get("worker_identity") or {}).get("pid") != os.getpid():
         return 0
 
     final_reason: Optional[str] = None
