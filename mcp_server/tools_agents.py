@@ -5659,7 +5659,17 @@ def _extract_codex_session(path: Path) -> Optional[str]:
     return None
 
 
-def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path) -> List[str]:
+def _codex_shell_home_args(access_mode: str, shell_home: Optional[str]) -> List[str]:
+    # Codex shells otherwise see the real home, whose ~/.gitconfig is outside the
+    # Seatbelt read roots, so every git command fails. Point them at the private home.
+    if access_mode == "full" or not shell_home:
+        return []
+    return ["--config", f"shell_environment_policy.set.HOME={json.dumps(str(shell_home))}"]
+
+
+def _build_provider_command(
+    meta: Dict[str, Any], prompt: str, result_path: Path, shell_home: Optional[str] = None,
+) -> List[str]:
     provider = meta["provider"]
     binary = meta["binary"]
     model = meta.get("model")
@@ -5709,6 +5719,7 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
             "--config", 'shell_environment_policy.inherit="none"',
             "--config", 'shell_environment_policy.set.PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"',
         ]
+        cmd += _codex_shell_home_args(access_mode, shell_home)
         cmd += _codex_scoped_mcp_args(meta)
         if model:
             cmd += ["--model", model]
@@ -5730,6 +5741,7 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
         ]
     else:
         cmd.append("--dangerously-bypass-approvals-and-sandbox")
+    cmd += _codex_shell_home_args(access_mode, shell_home)
     cmd += _codex_scoped_mcp_args(meta)
     if model:
         cmd += ["--model", model]
@@ -6192,7 +6204,7 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
     env, cleanup_root = _provider_env(agent_id, meta, scoped_token)
     boundary_profile: Optional[Path] = None
     try:
-        cmd = _build_provider_command(meta, prompt, result_path)
+        cmd = _build_provider_command(meta, prompt, result_path, shell_home=env.get("HOME"))
         cmd, boundary_profile = _provider_process_command(agent_id, meta, cmd)
         proc = subprocess.Popen(
             cmd, cwd=meta["cwd"], env=env, stdin=subprocess.DEVNULL,

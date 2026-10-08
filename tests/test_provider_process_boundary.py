@@ -395,6 +395,25 @@ class ProviderModeMatrixTests(unittest.TestCase):
         self.assertNotIn("--sandbox read-only", joined)
         self.assertIn('shell_environment_policy.inherit="none"', joined)
 
+    def test_codex_restricted_shell_home_is_private(self) -> None:
+        meta = {
+            "provider": "codex",
+            "binary": "/opt/homebrew/bin/codex",
+            "cwd": "/tmp",
+            "access_mode": "read_only",
+        }
+        home = "/tmp/agents/agt_x/provider_state/codex/home"
+        for resume in (None, "session-1"):
+            with self.subTest(resume=resume):
+                cmd = agents._build_provider_command(
+                    {**meta, "resume_session_id": resume}, "PROMPT", Path("/tmp/result.txt"), shell_home=home,
+                )
+                self.assertIn(f'shell_environment_policy.set.HOME="{home}"', cmd)
+        full = agents._build_provider_command(
+            {**meta, "access_mode": "full"}, "PROMPT", Path("/tmp/result.txt"), shell_home=home,
+        )
+        self.assertFalse(any("set.HOME" in part for part in full))
+
     def test_codex_full_command_still_strips_shell_environment(self) -> None:
         meta = {
             "provider": "codex",
