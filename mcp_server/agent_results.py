@@ -24,12 +24,46 @@ class ResultContractError(ValueError):
         super().__init__(message)
 
 
-def result_contract_instruction(*, detailed: bool = False) -> str:
+def evidence_policy_for(access_mode: Any, *, integration_required: bool = False) -> str:
+    """Tasks that change files must back a success with evidence; others may omit it."""
+    mode = str(access_mode or "workspace_write").strip().lower()
+    return "required" if integration_required or mode != "read_only" else "optional"
+
+
+def apply_evidence_policy(envelope: Dict[str, Any], policy: str) -> Dict[str, Any]:
+    """Record the policy and downgrade an unsupported success when evidence is required.
+
+    Only a valid typed contract is held to the policy; a legacy text handoff has no
+    structured evidence to check and is already marked as such.
+    """
+    envelope["evidence_policy"] = "required" if policy == "required" else "optional"
+    if (
+        envelope["evidence_policy"] == "required"
+        and envelope.get("contract_status") == "valid"
+        and envelope.get("outcome") == "success"
+        and not envelope.get("evidence")
+    ):
+        envelope["outcome"] = "partial_failure"
+        envelope.setdefault("errors", []).append({
+            "code": "evidence_required",
+            "message": "This task changes files, so a successful result must include evidence "
+                       "(tests, build or checks that were run); none was provided.",
+        })
+    return envelope
+
+
+def result_contract_instruction(*, detailed: bool = False, evidence_required: bool = False) -> str:
     detail = (
         "Use claims/evidence/artifacts generously when they materially support the handoff."
         if detailed
         else "Keep arrays compact and include only material claims/evidence/artifacts."
     )
+    if evidence_required:
+        detail += (
+            " This task can change files: outcome=success requires at least one evidence item for the "
+            "tests, build or checks you ran, linked to the claims it supports; without it the result is "
+            "recorded as partial_failure."
+        )
     return (
         "Return a provider-independent typed handoff. Your final response MUST end with the marker "
         f"{RESULT_ENVELOPE_MARKER} followed by one JSON object (optionally in a json code fence). "

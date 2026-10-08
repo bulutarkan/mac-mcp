@@ -47,6 +47,7 @@ from .agent_results import (
     RESULT_ENVELOPE_MARKER, RESULT_ENVELOPE_VERSION, ResultContractError,
     bound_result_envelope, legacy_result_envelope, normalize_result_envelope,
     parse_provider_result, reduce_task_results, result_contract_instruction,
+    apply_evidence_policy, evidence_policy_for,
 )
 from .agent_admission import (
     AdmissionError, bind_agent as admission_bind_agent, cancel_queued as admission_cancel_queued,
@@ -3704,7 +3705,7 @@ def _resolve_cwd(cwd: Optional[str]) -> Path:
     return workdir
 
 
-def _handoff_instruction(result_style: str) -> str:
+def _handoff_instruction(result_style: str, *, evidence_required: bool = False) -> str:
     if result_style == "detailed":
         prose = (
             "When the work is finished, give the parent AI a clean handoff. Do not narrate routine tool/file steps. "
@@ -3717,7 +3718,9 @@ def _handoff_instruction(result_style: str) -> str:
             "or your thinking process. Include only verified findings/results, material numbers or changes, important caveats, "
             "and the next useful action. Aim for roughly 250 words or less unless the task itself requires more."
         )
-    return prose + "\n\n" + result_contract_instruction(detailed=result_style == "detailed")
+    return prose + "\n\n" + result_contract_instruction(
+        detailed=result_style == "detailed", evidence_required=evidence_required,
+    )
 
 
 def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -4113,7 +4116,12 @@ def _spawn_internal(
         + ("\n\n" + access_instruction if access_instruction else "")
         + "\n\n" + scope_instruction
         + ("\n\n" + role_learning_instruction if role_learning_instruction else "")
-        + "\n\n" + _handoff_instruction(result_style)
+        + "\n\n" + _handoff_instruction(
+            result_style,
+            evidence_required=evidence_policy_for(
+                access_mode, integration_required=bool(integration_instruction),
+            ) == "required",
+        )
     )
     (path / "prompt.txt").write_text(user_prompt, encoding="utf-8")
     (path / "effective_prompt.txt").write_text(effective_prompt, encoding="utf-8")
@@ -6599,6 +6607,10 @@ def _worker(agent_id: str) -> int:
             "error": contract_error,
         }
 
+    worktree_state = meta.get("worktree") if isinstance(meta.get("worktree"), dict) else {}
+    apply_evidence_policy(envelope, evidence_policy_for(
+        meta.get("access_mode"), integration_required=bool(worktree_state.get("integration_required")),
+    ))
     original_result_chars = len(result)
     full_result, full_result_truncated = truncate(result, FULL_RESULT_LIMIT)
     _write_full_result(agent_id, full_result)
