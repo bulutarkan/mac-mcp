@@ -96,8 +96,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .local-pill svg { width: 14px; height: 14px; fill: none; stroke: var(--mint); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .connection { color: var(--mint); font-weight: 600; }
 .connection.is-offline { color: var(--red); }
+.connection.is-connecting { color: var(--muted); }
+.connection.is-stale { color: var(--amber); }
+.freshness { display: block; margin-top: 4px; color: var(--amber); font-size: 10.5px; font-weight: 600; }
 .pulse-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px rgba(111, 209, 181, .08); }
-.connection:not(.is-offline) .pulse-dot { animation: breathe 2.8s ease-in-out infinite; }
+.connection:not(.is-offline):not(.is-connecting):not(.is-stale) .pulse-dot { animation: breathe 2.8s ease-in-out infinite; }
 @keyframes breathe { 50% { box-shadow: 0 0 0 7px rgba(111, 209, 181, .02); opacity: .76; } }
 .topbar-meta { white-space: nowrap; }
 

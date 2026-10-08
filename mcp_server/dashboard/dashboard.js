@@ -33,7 +33,8 @@
 
   const $ = (id) => document.getElementById(id);
   const els = {
-    connection: $("connectionState"), version: $("versionLabel"), uptime: $("uptimeLabel"),
+    connection: $("connectionState"), connectionText: $("connectionText"),
+    agentsFreshness: $("agentsFreshness"), changesFreshness: $("changesFreshness"), version: $("versionLabel"), uptime: $("uptimeLabel"),
     activeNow: $("activeNow"), lastTool: $("lastTool"), lastLatency: $("lastLatency"), traceBars: $("traceBars"),
     calls: $("metricCalls"), success: $("metricSuccess"), errors: $("metricErrors"), average: $("metricAverage"), p95: $("metricP95"), window: $("metricWindow"),
     rows: $("eventRows"), announcer: $("activityAnnouncer"), empty: $("emptyState"), activeStrip: $("activeStrip"), activeStripCount: $("activeStripCount"), topTools: $("topTools"), sourceMix: $("sourceMix"), agentCount: $("agentCount"), agentList: $("agentList"),
@@ -122,9 +123,63 @@
     return data;
   }
 
+  // Last successful refresh per data source; values stay on screen when a refresh
+  // fails, but are labelled stale instead of looking current.
+  const freshness = {summary: 0, agents: 0, changes: 0, offline: false, authRequired: false};
+  const STALE_AFTER_MS = {summary: 20000, agents: 15000, changes: 45000};
+
+  function ago(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 5) return "just now";
+    if (s < 60) return `${s}s ago`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    return `${Math.floor(s / 3600)}h ago`;
+  }
+
+  function renderPanelFreshness(el, key) {
+    if (!el) return;
+    const at = freshness[key];
+    const age = Date.now() - at;
+    if (at && age <= STALE_AFTER_MS[key]) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    el.textContent = at ? `Stale · updated ${ago(age)}` : "Not loaded yet";
+  }
+
+  function renderFreshness() {
+    const conn = els.connection;
+    conn.classList.remove("is-offline", "is-connecting", "is-stale");
+    let text;
+    if (freshness.authRequired) {
+      conn.classList.add("is-offline");
+      text = "Authentication required";
+    } else if (!freshness.summary) {
+      conn.classList.add(freshness.offline ? "is-offline" : "is-connecting");
+      text = freshness.offline ? "Cannot reach Mac MCP · retrying" : "Connecting…";
+    } else {
+      const age = Date.now() - freshness.summary;
+      if (freshness.offline) {
+        conn.classList.add("is-offline");
+        text = `Reconnecting · updated ${ago(age)}`;
+      } else if (age > STALE_AFTER_MS.summary) {
+        conn.classList.add("is-stale");
+        text = `Stale · updated ${ago(age)}`;
+      } else {
+        text = `Live · updated ${ago(age)}`;
+      }
+    }
+    if (els.connectionText.textContent !== text) els.connectionText.textContent = text;
+    renderPanelFreshness(els.agentsFreshness, "agents");
+    renderPanelFreshness(els.changesFreshness, "changes");
+  }
+
   async function refreshSummary() {
     try {
       const data = await fetchJSON(`/dashboard/api/summary?hours=${encodeURIComponent(state.hours)}`);
+      freshness.summary = Date.now();
+      freshness.authRequired = false;
       els.calls.textContent = number(data.total_calls);
       els.success.textContent = `${Number(data.success_rate || 0).toFixed(1).replace(".0", "")}%`;
       els.errors.textContent = `${number(data.error_calls)} ${data.error_calls === 1 ? "error" : "errors"}`;
@@ -138,6 +193,7 @@
       const mix = (data.sources || []).map((item) => `${String(item.source).toUpperCase()} ${item.calls}`).join(" / ");
       els.sourceMix.textContent = mix || "No calls";
       els.agentCount.textContent = `${number(data.active_agents || 0)} active`;
+      markOnline();
     } catch (error) {
       markOffline(error);
     }
@@ -167,9 +223,12 @@
       state.globalAdmission = data.global_admission || null;
       renderAgents(state.agents);
       if (state.changeSets.length) renderChanges();
+      freshness.agents = Date.now();
     } catch (error) {
-      els.agentList.innerHTML = `<div class="no-agents">Agent state is temporarily unavailable.</div>`;
+      // Keep the last agent list on screen; renderFreshness marks it stale.
+      if (!freshness.agents) els.agentList.innerHTML = `<div class="no-agents">Agent state is temporarily unavailable.</div>`;
     }
+    renderFreshness();
   }
 
   function changeSetLabel(changeSet, index) {
@@ -227,9 +286,11 @@
       state.changeSets = data.change_sets || [];
       state.selectedChangeSet = Math.min(state.selectedChangeSet, Math.max(0, state.changeSets.length - 1));
       renderChanges();
+      freshness.changes = Date.now();
     } catch {
-      els.changeHeadline.textContent = "Change receipts are temporarily unavailable.";
+      if (!freshness.changes) els.changeHeadline.textContent = "Change receipts are temporarily unavailable.";
     }
+    renderFreshness();
   }
 
   function scheduleChangesRefresh() {
@@ -658,7 +719,6 @@
 
   function handleTelemetry(event) {
     if (!event || !event.kind) return;
-    markOnline();
     if (event.kind === "connected") {
       state.active = new Map((event.active || []).map((item) => [item.event_id, item]));
       renderEvents();
@@ -715,7 +775,6 @@
       });
       if (response.status === 401) { markAuthRequired(); return; }
       if (!response.ok || !response.body) throw new Error(`${response.status} ${response.statusText}`);
-      markOnline();
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -738,16 +797,16 @@
   }
 
   function markOnline() {
-    els.connection.classList.remove("is-offline");
-    els.connection.lastChild.textContent = "Live";
+    freshness.offline = false;
+    renderFreshness();
   }
   function markOffline() {
-    els.connection.classList.add("is-offline");
-    els.connection.lastChild.textContent = "Reconnecting";
+    freshness.offline = true;
+    renderFreshness();
   }
   function markAuthRequired() {
-    els.connection.classList.add("is-offline");
-    els.connection.lastChild.textContent = "Authentication required";
+    freshness.authRequired = true;
+    renderFreshness();
   }
   function formatUptime(seconds) {
     const s = Number(seconds || 0);
@@ -799,6 +858,7 @@
 
   Promise.all([refreshSummary(), refreshEvents(), refreshAgents(), refreshChanges(), refreshTransactions()]).finally(connectStream);
   window.setInterval(refreshSummary, 5000);
+  window.setInterval(renderFreshness, 5000);
   window.setInterval(refreshAgents, 2200);
   window.setInterval(() => { if (!document.hidden) refreshChanges(); }, 10000);
   window.setInterval(() => { if (!document.hidden) refreshTransactions(); }, 10000);

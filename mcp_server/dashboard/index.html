@@ -25,7 +25,7 @@
           <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.25 16 4.7v4.75c0 3.9-2.45 6.7-6 8.3-3.55-1.6-6-4.4-6-8.3V4.7z"/><path d="m7.2 9.8 1.75 1.75 3.85-4.1"/></svg>
           Local only
         </span>
-        <span class="connection" id="connectionState"><span class="pulse-dot"></span>Live</span>
+        <span class="connection is-connecting" id="connectionState"><span class="pulse-dot"></span><span id="connectionText">Connecting…</span></span>
         <span class="topbar-meta" id="versionLabel">v—</span>
         <span class="topbar-meta" id="uptimeLabel">Uptime —</span>
       </div>
@@ -76,22 +76,22 @@
       <section class="metric-grid" aria-label="Telemetry summary">
         <div class="metric-card surface-card">
           <div class="metric-label"><span class="metric-dot metric-dot-blue"></span>Tool calls</div>
-          <strong id="metricCalls">0</strong>
+          <strong id="metricCalls">—</strong>
           <small id="metricWindow">last 24 hours</small>
         </div>
         <div class="metric-card surface-card">
           <div class="metric-label"><span class="metric-dot metric-dot-green"></span>Success</div>
-          <strong id="metricSuccess">100%</strong>
-          <small id="metricErrors">0 errors</small>
+          <strong id="metricSuccess">—</strong>
+          <small id="metricErrors">waiting for data</small>
         </div>
         <div class="metric-card surface-card">
           <div class="metric-label"><span class="metric-dot metric-dot-slate"></span>Average latency</div>
-          <strong id="metricAverage">0 ms</strong>
+          <strong id="metricAverage">—</strong>
           <small>completed calls</small>
         </div>
         <div class="metric-card metric-card-emphasis surface-card">
           <div class="metric-label"><span class="metric-dot metric-dot-amber"></span>P95 latency</div>
-          <strong id="metricP95">0 ms</strong>
+          <strong id="metricP95">—</strong>
           <small>slow-path signal</small>
         </div>
       </section>
@@ -168,8 +168,9 @@
               <div>
                 <h2 id="changesTitle">What Changed on My Mac</h2>
                 <p>Sanitized action receipts for the latest task.</p>
+                <small class="freshness" id="changesFreshness" hidden></small>
               </div>
-              <span id="changeCount">0</span>
+              <span id="changeCount">—</span>
             </div>
             <div id="changeTaskSwitch" class="change-task-switch" aria-label="Recent task change sets"></div>
             <div id="changeHeadline" class="change-headline">No Mac changes recorded.</div>
@@ -212,8 +213,9 @@
               <div>
                 <h2>Delegated agents</h2>
                 <p>Active first, then the most recent workers.</p>
+                <small class="freshness" id="agentsFreshness" hidden></small>
               </div>
-              <span id="agentCount">0</span>
+              <span id="agentCount">—</span>
             </div>
             <div id="agentList" class="agent-list"></div>
           </section>
