@@ -1161,12 +1161,15 @@ def create_app():
         description=(
             "Use typed semantic adapters for Finder, Notes, Mail, Calendar, Reminders, Preview, and System Settings. "
             "Common action=capabilities reports app-specific actions. Finder: selection|select_file. "
-            "Notes: find_notes|open_note. Mail: find_messages|open_message. "
+            "Notes: find_notes|open_note|create_note (title, optional body/folder/account). "
+            "Mail: find_messages|open_message|create_draft (title as subject, optional body, to/cc as comma-separated "
+            "addresses, account name or address; required when several accounts are enabled). create_draft only saves "
+            "to Drafts and never sends. "
             "Calendar: find_events|open_event|create_event (title, start, optional end/calendar/location/notes; "
             "start as YYYY-MM-DD makes an all-day event)|update_event (item_id uid plus fields to change). "
             "Reminders: list_reminders (query, list_name, include_completed)|complete_reminder (item_id). "
             "Data actions return the item's stable id and a read-back verification; a replayed create returns the "
-            "existing event instead of a duplicate, and an uncertain result says outcome_unknown and must not be retried blindly. "
+            "existing item instead of a duplicate, and an uncertain result says outcome_unknown and must not be retried blindly. "
             "Preview: list_documents|open_document. System Settings: list_panes|open_pane. "
             "Unsupported apps/actions return an explicit mac_observe/mac_act fallback; no generic AX action runs automatically. "
             "Mutating/open adapter actions preserve the user's current focus by default. preserve_focus=false is foreground intent only and fails closed for normal MCP/model calls; only a trusted local-user foreground capability can authorize it. "
@@ -1196,6 +1199,11 @@ def create_app():
         notes: Optional[str] = None,
         list_name: Optional[str] = None,
         include_completed: bool = False,
+        body: Optional[str] = None,
+        folder: Optional[str] = None,
+        account: Optional[str] = None,
+        to: Optional[str] = None,
+        cc: Optional[str] = None,
     ) -> Dict[str, Any]:
         return _log(
             audit_logger,
@@ -1223,6 +1231,11 @@ def create_app():
                 notes=notes,
                 list_name=list_name,
                 include_completed=include_completed,
+                body=body,
+                folder=folder,
+                account=account,
+                to=to,
+                cc=cc,
             ),
         )
 
