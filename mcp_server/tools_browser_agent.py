@@ -1677,6 +1677,52 @@ def _score_candidate(element: Dict[str, Any], query: str, role: Optional[str], t
     return max(0.0, min(1.0, score))
 
 
+_REDUNDANT_CANDIDATE_PENALTY = 0.15
+
+
+def _demote_redundant_candidates(
+    scored: List[Tuple[float, Dict[str, Any]]],
+) -> List[Tuple[float, Dict[str, Any]]]:
+    """Separate the element that carries the match from candidates that only echo it.
+
+    A container whose aggregated text merely includes a matching descendant, the
+    inner text node of a control that already matches, and a label whose control
+    also matches all describe one target. Within the ambiguity margin, keep the
+    innermost match unless only its container is actionable, in which case keep
+    the container so the click lands on the control. Distinct targets keep their
+    scores, and scores are compared before any demotion.
+    """
+    raw = {str(element.get("element_id")): score for score, element in scored if element.get("element_id")}
+    by_id = {str(element.get("element_id")): element for _, element in scored if element.get("element_id")}
+    demoted: set[str] = set()
+
+    def linked(label: Dict[str, Any], control: Dict[str, Any]) -> bool:
+        return (
+            str((label.get("associated_control") or {}).get("element_id") or "") == str(control.get("element_id"))
+            or str((control.get("associated_label") or {}).get("element_id") or "") == str(label.get("element_id"))
+        )
+
+    for container_id, container in by_id.items():
+        if str(container.get("tag") or "").lower() == "label" and any(
+            linked(container, other) for other_id, other in by_id.items() if other_id != container_id
+        ):
+            # The control is the target; its label is another way to reach it.
+            demoted.add(container_id)
+            continue
+        for nested_id in container.get("nested_match_ids") or []:
+            nested = by_id.get(str(nested_id))
+            if nested is None or raw[str(nested_id)] < raw[container_id] - decision_engine.AMBIGUITY_MARGIN:
+                continue
+            if container.get("actionable") and not nested.get("actionable"):
+                demoted.add(str(nested_id))
+            else:
+                demoted.add(container_id)
+    return [
+        (max(0.0, score - _REDUNDANT_CANDIDATE_PENALTY) if str(element.get("element_id")) in demoted else score, element)
+        for score, element in scored
+    ]
+
+
 def _find_candidates_js(query: str, role: Optional[str], text: Optional[str], max_candidates: int = 80, actionable_only: bool = False) -> str:
     q_raw = _normalize_text(query)
     q_tokens = [token for token in q_raw.split() if token not in _GENERIC_QUERY_WORDS]
@@ -1703,7 +1749,7 @@ function level(actual,wanted){{
 }}
 var s=__mcpState(), q={q_js}, wantedRole={role_js}, wantedText={text_js}, actionableOnly={actionable_js};
 __mcpVisual('Finding',null,'',1600);
-var out=[],modal=__mcpTopBlockingModal();
+var out=[],els=[],modal=__mcpTopBlockingModal();
 var all=__mcpQueryAll('*');
 for(var i=0;i<all.length&&out.length<{max_candidates};i++){{
   var el=all[i]; if(!rendered(el))continue;
@@ -1719,7 +1765,13 @@ for(var i=0;i<all.length&&out.length<{max_candidates};i++){{
     if(d.options){{d.options.forEach(function(o){{ql=Math.max(ql,level(o.text||'',q),level(o.value||'',q));}});}}
     if(!ql)continue;
   }}
-  out.push(d);
+  out.push(d);els.push(el);
+}}
+function contains(a,b){{try{{if(a.contains(b))return true;}}catch(e){{}}return __mcpComposedContains(a,b);}}
+for(var ci=0;ci<els.length;ci++){{
+  var nested=[];
+  for(var cj=0;cj<els.length&&nested.length<12;cj++){{if(ci!==cj&&els[ci]!==els[cj]&&contains(els[ci],els[cj]))nested.push(out[cj].element_id);}}
+  if(nested.length)out[ci].nested_match_ids=nested;
 }}
 var obs='bobs_'+s.pageToken+'_'+Date.now().toString(36);s.observations[obs]=s.mutationRevision;
 return __mcpB64({{ok:true,observation_id:obs,dom_revision:s.mutationRevision,url:location.href,title:document.title,modal_scope:modal?{{active:true,element_id:__mcpId(modal,s),role:__mcpRole(modal),text:__mcpText(modal).slice(0,120)}}:{{active:false}},elements:out}});
@@ -1786,6 +1838,7 @@ def browser_find(
         score = _score_candidate(element, str(query or ""), role, text)
         if score >= 0.30:
             scored.append((score, element))
+    scored = _demote_redundant_candidates(scored)
     def control_priority(element: Dict[str, Any]) -> int:
         tag = str(element.get("tag") or "").lower()
         role_name = str(element.get("role") or "").lower()
