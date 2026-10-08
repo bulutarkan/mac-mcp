@@ -255,10 +255,7 @@ def normalize_result_envelope(
     return envelope
 
 
-def _extract_marked_json(text: str) -> Optional[str]:
-    marker_index = text.rfind(RESULT_ENVELOPE_MARKER)
-    if marker_index < 0:
-        return None
+def _marked_tail(text: str, marker_index: int) -> str:
     tail = text[marker_index + len(RESULT_ENVELOPE_MARKER):].strip()
     if tail.startswith("```"):
         lines = tail.splitlines()
@@ -268,6 +265,30 @@ def _extract_marked_json(text: str) -> Optional[str]:
             lines = lines[:-1]
         tail = "\n".join(lines).strip()
     return tail
+
+
+def _extract_marked_json(text: str) -> Optional[str]:
+    marker_index = text.rfind(RESULT_ENVELOPE_MARKER)
+    if marker_index < 0:
+        return None
+    last_tail = _marked_tail(text, marker_index)
+    # Some providers close the block with the marker too ("MARKER {...} MARKER"),
+    # which leaves nothing after the last marker. Walk back to the nearest marker
+    # whose block is valid JSON once a trailing marker is dropped.
+    index = marker_index
+    while index >= 0:
+        tail = _marked_tail(text, index)
+        if tail.endswith(RESULT_ENVELOPE_MARKER):
+            tail = tail[: -len(RESULT_ENVELOPE_MARKER)].rstrip()
+        if tail.startswith("{"):
+            try:
+                json.loads(tail)
+            except json.JSONDecodeError:
+                pass
+            else:
+                return tail
+        index = text.rfind(RESULT_ENVELOPE_MARKER, 0, index)
+    return last_tail
 
 
 def legacy_result_envelope(

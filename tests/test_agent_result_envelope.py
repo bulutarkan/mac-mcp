@@ -92,6 +92,18 @@ class AgentResultEnvelopeTests(unittest.TestCase):
                     normalize_result_envelope(payload)
                 self.assertEqual(code, ctx.exception.code)
 
+    def test_envelope_closed_by_a_second_marker_still_parses(self) -> None:
+        payload = {
+            "schema_version": 1, "outcome": "partial_failure", "summary": "tab missing",
+            "claims": [], "evidence": [], "artifacts": [], "warnings": [], "confidence": 0.9, "errors": [],
+        }
+        text = f"{RESULT_ENVELOPE_MARKER} {json.dumps(payload)} {RESULT_ENVELOPE_MARKER}"
+        envelope, meta = parse_provider_result(text)
+        self.assertEqual("valid", meta["contract_status"])
+        self.assertEqual("partial_failure", envelope["outcome"])
+        with self.assertRaises(ResultContractError):
+            parse_provider_result(f"{RESULT_ENVELOPE_MARKER} {{\"schema_version\": 1, broken {RESULT_ENVELOPE_MARKER}")
+
     def test_legacy_provider_fallback_is_explicit_and_versioned(self) -> None:
         env, meta = parse_provider_result(
             "Legacy final answer",
