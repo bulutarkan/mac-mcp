@@ -144,7 +144,7 @@
             </label>
           </div>
 
-          <div class="activity-table" aria-label="Tool activity">
+          <div class="activity-table">
             <div class="activity-header" aria-hidden="true">
               <span>Time</span>
               <span>Tool</span>
@@ -152,7 +152,8 @@
               <span>Duration</span>
               <span>Status</span>
             </div>
-            <div id="eventRows" class="event-rows" aria-live="polite"></div>
+            <ul id="eventRows" class="event-rows" aria-label="Tool calls, newest first"></ul>
+            <div id="activityAnnouncer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
             <div id="emptyState" class="empty-state" hidden>
               <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M8 14h32M8 24h21M8 34h14"/><circle cx="36" cy="31" r="7"/></svg>
               <strong>No calls in this view</strong>

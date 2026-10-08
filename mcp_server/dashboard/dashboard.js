@@ -36,7 +36,7 @@
     connection: $("connectionState"), version: $("versionLabel"), uptime: $("uptimeLabel"),
     activeNow: $("activeNow"), lastTool: $("lastTool"), lastLatency: $("lastLatency"), traceBars: $("traceBars"),
     calls: $("metricCalls"), success: $("metricSuccess"), errors: $("metricErrors"), average: $("metricAverage"), p95: $("metricP95"), window: $("metricWindow"),
-    rows: $("eventRows"), empty: $("emptyState"), activeStrip: $("activeStrip"), activeStripCount: $("activeStripCount"), topTools: $("topTools"), sourceMix: $("sourceMix"), agentCount: $("agentCount"), agentList: $("agentList"),
+    rows: $("eventRows"), announcer: $("activityAnnouncer"), empty: $("emptyState"), activeStrip: $("activeStrip"), activeStripCount: $("activeStripCount"), topTools: $("topTools"), sourceMix: $("sourceMix"), agentCount: $("agentCount"), agentList: $("agentList"),
     changeCount: $("changeCount"), changeTaskSwitch: $("changeTaskSwitch"), changeHeadline: $("changeHeadline"), changeList: $("changeList"),
     transactionCount: $("transactionCount"), transactionMessage: $("transactionMessage"), transactionList: $("transactionList"),
     transactionNewer: $("transactionNewer"), transactionOlder: $("transactionOlder"), transactionPage: $("transactionPage"),
@@ -515,20 +515,39 @@
     return true;
   }
 
+  function statusLabel(status) {
+    return status === "success" ? "Success" : status === "error" ? "Error" : "Running";
+  }
+
+  // One button per call, labelled in reading order; the visual columns are hidden
+  // from assistive tech so the list is not read as a broken table.
+  function eventRowButton(eventId) {
+    return [...els.rows.querySelectorAll(".event-row")].find((row) => row.dataset.eventId === eventId) || null;
+  }
+
   function renderEvents(newEventId = null) {
+    // Rows are rebuilt on every update; keep keyboard focus on the same call.
+    const focusedId = els.rows.contains(document.activeElement) ? document.activeElement.dataset.eventId : null;
     const events = visibleEvents();
     els.empty.hidden = events.length > 0;
     els.rows.innerHTML = events.map((event) => {
       const status = event.status || "running";
-      return `<button class="event-row${event.event_id === newEventId ? " is-new" : ""}" type="button" role="row" data-event-id="${esc(event.event_id)}" aria-label="Inspect ${esc(event.tool)} call, ${esc(status)}">
-        <span class="event-time" role="cell">${clock(event.started_at || event.timestamp)}</span>
-        <span class="event-tool" role="cell"><strong>${esc(event.tool)}</strong><small>${esc(compactToolDetail(event))}</small></span>
-        <span class="source-chip" role="cell">${esc(event.source || "mcp")}</span>
-        <span class="duration" role="cell">${event.status === "running" ? "live" : duration(event.duration_ms)}</span>
-        <span class="status status-${esc(status)}" role="cell">${status === "success" ? "Success" : status === "error" ? "Error" : "Running"}</span>
-      </button>`;
+      const time = clock(event.started_at || event.timestamp);
+      const took = event.status === "running" ? "still running" : duration(event.duration_ms);
+      const label = `${time}, ${event.tool || "tool"}, ${event.source || "mcp"}, ${took}, ${statusLabel(status)}. Open details`;
+      return `<li><button class="event-row${event.event_id === newEventId ? " is-new" : ""}" type="button" data-event-id="${esc(event.event_id)}" aria-label="${esc(label)}">
+        <span class="event-time" aria-hidden="true">${time}</span>
+        <span class="event-tool" aria-hidden="true"><strong>${esc(event.tool)}</strong><small>${esc(compactToolDetail(event))}</small></span>
+        <span class="source-chip" aria-hidden="true">${esc(event.source || "mcp")}</span>
+        <span class="duration" aria-hidden="true">${event.status === "running" ? "live" : duration(event.duration_ms)}</span>
+        <span class="status status-${esc(status)}" aria-hidden="true">${statusLabel(status)}</span>
+      </button></li>`;
     }).join("");
     els.rows.querySelectorAll(".event-row").forEach((row) => row.addEventListener("click", () => openDrawer(row.dataset.eventId)));
+    if (focusedId) {
+      const row = eventRowButton(focusedId);
+      if (row) row.focus({preventScroll: true});
+    }
   }
 
   function openDrawer(eventId) {
@@ -559,7 +578,10 @@
     els.drawer.classList.remove("is-open");
     els.drawer.setAttribute("aria-hidden", "true");
     window.setTimeout(() => { els.backdrop.hidden = true; }, 240);
-    if (state.restoreFocus && typeof state.restoreFocus.focus === "function") state.restoreFocus.focus();
+    // The row that opened the drawer may have been re-rendered meanwhile.
+    const selectedRow = state.selected ? eventRowButton(state.selected.event_id) : null;
+    const target = state.restoreFocus && state.restoreFocus.isConnected ? state.restoreFocus : selectedRow;
+    if (target && typeof target.focus === "function") target.focus();
     state.selected = null;
   }
 
@@ -618,6 +640,22 @@
     renderActiveStrip();
   }
 
+  // A burst of calls becomes one short status message instead of a re-read list.
+  const announcement = { pending: [], timer: null };
+  function announceActivity(text) {
+    if (!els.announcer) return;
+    announcement.pending.push(text);
+    if (announcement.timer) return;
+    announcement.timer = setTimeout(() => {
+      const items = announcement.pending;
+      announcement.pending = [];
+      announcement.timer = null;
+      els.announcer.textContent = items.length === 1
+        ? items[0]
+        : `${items.length} calls finished. Latest: ${items[items.length - 1]}`;
+    }, 1200);
+  }
+
   function handleTelemetry(event) {
     if (!event || !event.kind) return;
     markOnline();
@@ -643,6 +681,7 @@
       pushTrace(event);
       renderEvents(event.event_id);
       renderActiveCount();
+      announceActivity(`Completed: ${event.tool || "tool"} · ${statusLabel(event.status)}`);
       refreshSummary();
       scheduleChangesRefresh();
       if (transactionJournalMayChange(event.tool)) scheduleTransactionRefresh();
