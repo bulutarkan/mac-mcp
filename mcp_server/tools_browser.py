@@ -1346,6 +1346,11 @@ end tell'''
             pass
 
 
+def _is_debugger_detached_error(exc: HTTPException) -> bool:
+    detail = exc.detail if isinstance(exc.detail, dict) else {"message": exc.detail}
+    return "Debugger is not attached" in str(detail.get("message") or "")
+
+
 def _is_foreign_extension_frame_error(exc: HTTPException) -> bool:
     detail = exc.detail if isinstance(exc.detail, dict) else {"message": exc.detail}
     text = str(detail.get("message") or "")
@@ -1361,7 +1366,15 @@ def _execute_js_for_target(
     global _CHROME_NATIVE_JS_DENIED
     if browser == "Google Chrome" and chrome_background_bridge.is_connected() and target.native_id:
         try:
-            return chrome_background_bridge.request_execute_js(target.native_id, js, timeout_s=timeout_s)
+            try:
+                return chrome_background_bridge.request_execute_js(target.native_id, js, timeout_s=timeout_s)
+            except HTTPException as first:
+                # Chrome drops the debugger when another extension adds a frame mid-call
+                # (a password manager on a sign-in page); the script was never sent, so
+                # one more attempt either runs or meets the frame and falls back below.
+                if not _is_debugger_detached_error(first):
+                    raise
+                return chrome_background_bridge.request_execute_js(target.native_id, js, timeout_s=timeout_s)
         except HTTPException as exc:
             # Chrome refuses a debugger on a tab that holds another extension's frame
             # (password managers on sign-in pages). Apple Events JavaScript still runs

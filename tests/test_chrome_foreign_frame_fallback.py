@@ -33,6 +33,15 @@ class ForeignExtensionFrameTests(unittest.TestCase):
         self.assertEqual("eyJvayI6dHJ1ZX0=", out)
         self.assertIn("execute targetTab javascript", osa.call_args.args[0])
 
+    def test_debugger_dropped_mid_call_is_retried_once(self) -> None:
+        dropped = HTTPException(502, {"error": "chrome_debugger_evaluate_failed",
+                                      "message": "Debugger is not attached to the tab with id: 42."})
+        with patch.object(tools_browser.chrome_background_bridge, "is_connected", return_value=True), \
+                patch.object(tools_browser.chrome_background_bridge, "request_execute_js",
+                             side_effect=[dropped, "b2s="]) as send:
+            self.assertEqual("b2s=", tools_browser._execute_js_for_target("Google Chrome", "1", _target(), 10))
+        self.assertEqual(2, send.call_count)
+
     def test_other_companion_errors_still_raise(self) -> None:
         other = HTTPException(502, {"error": "chrome_debugger_evaluate_failed", "message": "Target closed"})
         with patch.object(tools_browser.chrome_background_bridge, "is_connected", return_value=True), \

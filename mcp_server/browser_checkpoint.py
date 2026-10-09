@@ -127,7 +127,7 @@ def check(
         record = dict(_CHECKPOINTS.get(str(checkpoint_id or "")) or {})
     if not record:
         raise HTTPException(status.HTTP_404_NOT_FOUND, {"error": "unknown_checkpoint",
-                                                        "message": "No such checkpoint (expired after 30 minutes or cancelled)."})
+                                                        "message": "No such checkpoint (expired after 30 minutes, cancelled, or the server restarted)."})
     deadline = clock() + max(0.0, min(float(wait_s or 0), MAX_WAIT_S))
     while True:
         if not tab_exists():
