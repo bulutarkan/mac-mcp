@@ -12,7 +12,8 @@ from typing import Any, Callable, Dict, List, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from .security import Settings, load_settings
+from .request_client import client_address
+from .security import AuthFailureLimiter, RateLimiter, Settings, auth_failure_response_detail, load_settings, rate_limit
 from .security_context import SecurityContextManager
 from .scoped_auth import resolve_request_identity
 from .policy import (
@@ -66,11 +67,16 @@ _rest_security_approval_provider: Optional[Callable[[Dict[str, Any]], Dict[str, 
 def configure_rest_security(
     security_context: SecurityContextManager, telemetry: Any,
     approval_provider: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    *,
+    auth_failures: Optional[AuthFailureLimiter] = None,
 ) -> None:
-    global _rest_security_context, _rest_security_telemetry, _rest_security_approval_provider
+    global _rest_security_context, _rest_security_telemetry, _rest_security_approval_provider, _rest_auth_failures, _rest_limiter
+    _rest_limiter = None
     _rest_security_context = security_context
     _rest_security_telemetry = telemetry
     _rest_security_approval_provider = approval_provider
+    # Shared with /mcp so one address cannot double its guessing budget.
+    _rest_auth_failures = auth_failures or AuthFailureLimiter()
 
 
 def get_settings() -> Settings:
@@ -80,8 +86,31 @@ def get_settings() -> Settings:
     return _settings
 
 
+_rest_limiter: Optional[RateLimiter] = None
+_rest_auth_failures = AuthFailureLimiter()
+
+
+def _rest_rate_limiter(settings: Settings) -> RateLimiter:
+    global _rest_limiter
+    if _rest_limiter is None:
+        _rest_limiter = RateLimiter(settings.rate_limit_per_minute)
+    return _rest_limiter
+
+
 def require_auth(request: Request) -> str:
-    rate_key, context = resolve_request_identity(get_settings(), request.headers.get("authorization"))
+    settings = get_settings()
+    # Same throttling as /mcp: failed credentials count per verified address
+    # before any lookup, and accepted calls share the per-key request limit.
+    ip = client_address(request)
+    if _rest_auth_failures.blocked(ip):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, auth_failure_response_detail(), headers={"Retry-After": "60"})
+    try:
+        rate_key, context = resolve_request_identity(settings, request.headers.get("authorization"))
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            _rest_auth_failures.record_failure(ip)
+        raise
+    rate_limit(_rest_rate_limiter(settings), rate_key, ip)
     request.state.policy_context = context
     digest = hashlib.sha256(str(rate_key).encode("utf-8")).hexdigest()
     request.state.security_key = f"rest:{digest}"

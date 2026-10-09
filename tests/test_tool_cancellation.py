@@ -62,20 +62,26 @@ class CancellationPrimitiveTests(unittest.TestCase):
                     policy_context_provider=lambda: context,
                 )
 
+                worker_done = threading.Event()
+
                 @mcp.tool(name="process_list", structured_output=False)
                 def fake_process_list(filter: str | None = None):
                     started.set()
-                    for _ in range(100):
-                        cancellable_sleep(0.02)
-                    sentinel.write_text("late", encoding="utf-8")
-                    return {"ok": True}
+                    try:
+                        for _ in range(100):
+                            cancellable_sleep(0.02)
+                        sentinel.write_text("late", encoding="utf-8")
+                        return {"ok": True}
+                    finally:
+                        worker_done.set()
 
                 task = asyncio.create_task(mcp.call_tool("process_list", {}))
-                self.assertTrue(await asyncio.to_thread(started.wait, 1.0))
+                self.assertTrue(await asyncio.to_thread(started.wait, 10.0))
                 task.cancel()
                 with self.assertRaises(asyncio.CancelledError):
                     await task
-                await asyncio.sleep(0.15)
+                # The worker has actually stopped, so the sentinel can no longer appear.
+                self.assertTrue(await asyncio.to_thread(worker_done.wait, 10.0))
                 self.assertFalse(sentinel.exists())
                 events = telemetry.query_events(tool="process_list", limit=5)
                 self.assertTrue(events)
@@ -328,18 +334,23 @@ class CancellationOutcomeSafetyTests(unittest.TestCase):
                     policy_context_provider=lambda: context,
                 )
 
+                worker_done = threading.Event()
+
                 @mcp.tool(name="write_file", structured_output=False)
                 def fake_write_file(path: str, content: str):
                     started.set()
-                    # Intentionally non-cooperative to model an opaque native call.
-                    time.sleep(2.2)
-                    sentinel.write_text(content, encoding="utf-8")
-                    return {"ok": True, "path": path}
+                    try:
+                        # Intentionally non-cooperative to model an opaque native call.
+                        time.sleep(2.2)
+                        sentinel.write_text(content, encoding="utf-8")
+                        return {"ok": True, "path": path}
+                    finally:
+                        worker_done.set()
 
                 task = asyncio.create_task(mcp.call_tool(
                     "write_file", {"path": str(sentinel), "content": "late"}
                 ))
-                self.assertTrue(await asyncio.to_thread(started.wait, 1.0))
+                self.assertTrue(await asyncio.to_thread(started.wait, 10.0))
                 task.cancel()
                 with self.assertRaises(asyncio.CancelledError):
                     await task
@@ -358,7 +369,7 @@ class CancellationOutcomeSafetyTests(unittest.TestCase):
                 self.assertTrue(events)
                 self.assertEqual("outcome_unknown", events[0]["status"])
                 # Let the opaque worker finish so the test leaves no thread behind.
-                await asyncio.sleep(0.9)
+                self.assertTrue(await asyncio.to_thread(worker_done.wait, 10.0))
                 self.assertTrue(sentinel.exists())
 
         asyncio.run(run())

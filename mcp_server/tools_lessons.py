@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from fastapi import HTTPException, status
 
 from . import embedding_manager as embeddings
+from .runtime_settings import privacy_setting
 
 VALID_ROLES = {"coder", "reviewer", "orchestrator"}
 VALID_STATES = {"candidate", "active", "disabled"}
@@ -28,6 +29,8 @@ MAX_EVIDENCE_REFS = 16
 MAX_TRIGGER_CHARS = 500
 MAX_MISTAKE_CHARS = 700
 MAX_ACTION_CHARS = 700
+DEFAULT_RETENTION_DAYS = 365
+MAX_EXPORT = 1000
 
 
 def _now() -> float:
@@ -62,6 +65,7 @@ def _connect(root: Optional[Path] = None) -> sqlite3.Connection:
         """
         PRAGMA journal_mode=WAL;
         PRAGMA synchronous=NORMAL;
+        PRAGMA secure_delete=ON;
         CREATE TABLE IF NOT EXISTS lessons (
             lesson_id TEXT PRIMARY KEY,
             role TEXT NOT NULL,
@@ -86,7 +90,34 @@ def _connect(root: Optional[Path] = None) -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_lessons_updated ON lessons(updated_at DESC);
         """
     )
+    _purge_expired(conn)
     return conn
+
+
+def lesson_retention_days() -> int:
+    """Days a lesson is kept after its last update or use; 0 keeps lessons until deleted."""
+    raw = os.getenv("MAC_MCP_LESSON_RETENTION_DAYS", "").strip() or privacy_setting(
+        "lesson_retention_days", DEFAULT_RETENTION_DAYS,
+    )
+    try:
+        days = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_RETENTION_DAYS
+    return max(0, min(days, 3650))
+
+
+def _purge_expired(conn: sqlite3.Connection) -> int:
+    days = lesson_retention_days()
+    if days <= 0:
+        return 0
+    cutoff = _now() - days * 86400.0
+    cursor = conn.execute(
+        "DELETE FROM lessons WHERE MAX(created_at, updated_at, COALESCE(last_used_at, 0)) < ?",
+        (cutoff,),
+    )
+    # The DELETE opens an implicit transaction even when nothing matched.
+    conn.commit()
+    return int(cursor.rowcount or 0)
 
 
 def _clean_role(role: str) -> str:
@@ -414,6 +445,83 @@ def lesson_feedback(
         conn.commit()
         updated = conn.execute("SELECT * FROM lessons WHERE lesson_id=?", (key,)).fetchone()
     return {"ok": True, "outcome": action, "lesson": _public(updated)}
+
+
+def lesson_delete(
+    lesson_id: Optional[str] = None,
+    role: Optional[str] = None,
+    all_lessons: bool = False,
+    confirm: bool = False,
+    provenance_class: str = "local",
+) -> Dict[str, Any]:
+    """Permanently delete one lesson, every lesson of a role, or all lessons.
+
+    Without confirm=true it only reports what would be deleted. Quarantined and
+    disabled lessons are deleted the same way as active ones.
+    """
+    require_trusted_lesson_write(provenance_class)
+    key = str(lesson_id or "").strip()
+    selectors = sum(1 for value in (key, role, all_lessons) if value)
+    if selectors != 1:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Pass exactly one of lesson_id, role, or all_lessons=true.",
+        )
+    if key:
+        where, params, scope = "lesson_id=?", [key], {"lesson_id": key}
+    elif role:
+        clean_role = _clean_role(role)
+        where, params, scope = "role=?", [clean_role], {"role": clean_role}
+    else:
+        where, params, scope = "1=1", [], {"all_lessons": True}
+    with closing(_connect()) as conn:
+        rows = conn.execute(f"SELECT * FROM lessons WHERE {where}", params).fetchall()
+        if key and not rows:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Lesson not found: {key}")
+        states: Dict[str, int] = {}
+        for row in rows:
+            states[str(row["state"])] = states.get(str(row["state"]), 0) + 1
+        if not confirm:
+            preview: Dict[str, Any] = {
+                "ok": False, "action": "delete", "confirmation_required": True, **scope,
+                "count": len(rows), "states": states,
+                "message": "Call lesson_delete again with confirm=true to permanently delete these lessons.",
+            }
+            if key:
+                preview["lesson"] = _public(rows[0])
+            return preview
+        conn.execute("BEGIN IMMEDIATE")
+        deleted = conn.execute(f"DELETE FROM lessons WHERE {where}", params).rowcount
+        conn.commit()
+        # Do not leave deleted text behind in the write-ahead log.
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    return {"ok": True, "action": "deleted", **scope, "deleted": int(deleted or 0), "states": states}
+
+
+def lesson_export(role: Optional[str] = None, state: Optional[str] = None) -> Dict[str, Any]:
+    """Return every stored lesson, including candidates and disabled ones, for review."""
+    clean_role = _clean_role(role) if role else None
+    clean_state = str(state or "").strip().lower() or None
+    if clean_state and clean_state not in VALID_STATES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"state must be one of: {', '.join(sorted(VALID_STATES))}.")
+    clauses: List[str] = []
+    params: List[Any] = []
+    if clean_role:
+        clauses.append("role=?"); params.append(clean_role)
+    if clean_state:
+        clauses.append("state=?"); params.append(clean_state)
+    sql = "SELECT * FROM lessons" + (" WHERE " + " AND ".join(clauses) if clauses else "") + " ORDER BY created_at"
+    with closing(_connect()) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    current = _now()
+    return {
+        "ok": True,
+        "exported_at": current,
+        "retention_days": lesson_retention_days(),
+        "total": len(rows),
+        "truncated": len(rows) > MAX_EXPORT,
+        "lessons": [_public(row, now=current) for row in rows[:MAX_EXPORT]],
+    }
 
 
 def lesson_context(

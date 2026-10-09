@@ -1124,23 +1124,38 @@ struct MenuBarView: View {
 
 struct RobotRunner: View {
     let active: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: active ? 0.12 : 1.0)) { context in
-            Canvas { canvas, size in
-                let t = context.date.timeIntervalSinceReferenceDate
-                let phase = active ? sin(t * 9) : 0
-                let bob = active ? abs(phase) * 1.4 : 0
-                let centerX = size.width / 2
-                let bodyY = size.height / 2 - bob
-                let stroke = Color.primary.opacity(0.85)
-                var antenna = Path(); antenna.move(to: CGPoint(x: centerX, y: bodyY - 13)); antenna.addLine(to: CGPoint(x: centerX, y: bodyY - 18)); canvas.stroke(antenna, with: .color(stroke), lineWidth: 1.6)
-                canvas.fill(Path(ellipseIn: CGRect(x: centerX - 2, y: bodyY - 21, width: 4, height: 4)), with: .color(active ? .green : .secondary))
-                let head = RoundedRectangle(cornerRadius: 5).path(in: CGRect(x: centerX - 12, y: bodyY - 12, width: 24, height: 18)); canvas.fill(head, with: .color(Color.primary.opacity(0.10))); canvas.stroke(head, with: .color(stroke), lineWidth: 1.6)
-                canvas.fill(Path(ellipseIn: CGRect(x: centerX - 6, y: bodyY - 6, width: 3.5, height: 3.5)), with: .color(stroke)); canvas.fill(Path(ellipseIn: CGRect(x: centerX + 3, y: bodyY - 6, width: 3.5, height: 3.5)), with: .color(stroke))
-                var torso = Path(); torso.move(to: CGPoint(x: centerX, y: bodyY + 6)); torso.addLine(to: CGPoint(x: centerX, y: bodyY + 14)); canvas.stroke(torso, with: .color(stroke), lineWidth: 2)
-                let swing = active ? CGFloat(phase) * 6 : 0
-                var limbs = Path(); limbs.move(to: CGPoint(x: centerX, y: bodyY + 14)); limbs.addLine(to: CGPoint(x: centerX - 7 + swing, y: bodyY + 21)); limbs.move(to: CGPoint(x: centerX, y: bodyY + 14)); limbs.addLine(to: CGPoint(x: centerX + 7 - swing, y: bodyY + 21)); limbs.move(to: CGPoint(x: centerX, y: bodyY + 8)); limbs.addLine(to: CGPoint(x: centerX - 10 - swing * 0.7, y: bodyY + 12)); limbs.move(to: CGPoint(x: centerX, y: bodyY + 8)); limbs.addLine(to: CGPoint(x: centerX + 10 + swing * 0.7, y: bodyY + 12)); canvas.stroke(limbs, with: .color(stroke), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+        Group {
+            if active && !reduceMotion {
+                TimelineView(.animation(minimumInterval: 0.12)) { context in
+                    Canvas { canvas, size in
+                        Self.draw(canvas, size, t: context.date.timeIntervalSinceReferenceDate, active: true, moving: true)
+                    }
+                }
+            } else {
+                // Reduce Motion (or idle): one still pose; the green antenna and the
+                // label below still say the agent is working.
+                Canvas { canvas, size in
+                    Self.draw(canvas, size, t: 0, active: active, moving: false)
+                }
             }
         }.accessibilityLabel(active ? "Agent working" : "Agent idle")
+    }
+
+    private static func draw(_ canvas: GraphicsContext, _ size: CGSize, t: TimeInterval, active: Bool, moving: Bool) {
+        let phase = moving ? sin(t * 9) : 0
+        let bob = moving ? abs(phase) * 1.4 : 0
+        let centerX = size.width / 2
+        let bodyY = size.height / 2 - bob
+        let stroke = Color.primary.opacity(0.85)
+        var antenna = Path(); antenna.move(to: CGPoint(x: centerX, y: bodyY - 13)); antenna.addLine(to: CGPoint(x: centerX, y: bodyY - 18)); canvas.stroke(antenna, with: .color(stroke), lineWidth: 1.6)
+        canvas.fill(Path(ellipseIn: CGRect(x: centerX - 2, y: bodyY - 21, width: 4, height: 4)), with: .color(active ? .green : .secondary))
+        let head = RoundedRectangle(cornerRadius: 5).path(in: CGRect(x: centerX - 12, y: bodyY - 12, width: 24, height: 18)); canvas.fill(head, with: .color(Color.primary.opacity(0.10))); canvas.stroke(head, with: .color(stroke), lineWidth: 1.6)
+        canvas.fill(Path(ellipseIn: CGRect(x: centerX - 6, y: bodyY - 6, width: 3.5, height: 3.5)), with: .color(stroke)); canvas.fill(Path(ellipseIn: CGRect(x: centerX + 3, y: bodyY - 6, width: 3.5, height: 3.5)), with: .color(stroke))
+        var torso = Path(); torso.move(to: CGPoint(x: centerX, y: bodyY + 6)); torso.addLine(to: CGPoint(x: centerX, y: bodyY + 14)); canvas.stroke(torso, with: .color(stroke), lineWidth: 2)
+        let swing = moving ? CGFloat(phase) * 6 : 0
+        var limbs = Path(); limbs.move(to: CGPoint(x: centerX, y: bodyY + 14)); limbs.addLine(to: CGPoint(x: centerX - 7 + swing, y: bodyY + 21)); limbs.move(to: CGPoint(x: centerX, y: bodyY + 14)); limbs.addLine(to: CGPoint(x: centerX + 7 - swing, y: bodyY + 21)); limbs.move(to: CGPoint(x: centerX, y: bodyY + 8)); limbs.addLine(to: CGPoint(x: centerX - 10 - swing * 0.7, y: bodyY + 12)); limbs.move(to: CGPoint(x: centerX, y: bodyY + 8)); limbs.addLine(to: CGPoint(x: centerX + 10 + swing * 0.7, y: bodyY + 12)); canvas.stroke(limbs, with: .color(stroke), style: StrokeStyle(lineWidth: 2, lineCap: .round))
     }
 }

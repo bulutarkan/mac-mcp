@@ -414,6 +414,96 @@ def note_provider_event(agent_id: str, provider: str, event: Mapping[str, Any]) 
         mark_checkpoint_unknown(agent_id, "opaque_provider_tool_activity", tool="provider_tool", event_type=event_type)
 
 
+_NOT_EXECUTED_ATTR = "mac_mcp_not_executed"
+MAX_NOT_EXECUTED_EVENTS = 20
+
+
+def mark_not_executed(exc: BaseException) -> BaseException:
+    """Tag an exception raised before a tool dispatched any side effect."""
+    setattr(exc, _NOT_EXECUTED_ATTR, True)
+    return exc
+
+
+def clear_not_executed(exc: BaseException) -> BaseException:
+    """Withdraw the tag when an outer layer already caused a side effect."""
+    current: Optional[BaseException] = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if getattr(current, _NOT_EXECUTED_ATTR, None) is not None:
+            setattr(current, _NOT_EXECUTED_ATTR, False)
+        current = current.__cause__ or current.__context__
+    return exc
+
+
+def exception_not_executed(exc: BaseException) -> bool:
+    """True only when the raised exception (or one it wraps) is tagged not-executed."""
+    current: Optional[BaseException] = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        tagged = getattr(current, _NOT_EXECUTED_ATTR, None)
+        if tagged is not None:
+            return bool(tagged)
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _note_not_executed(payload: Dict[str, Any], *, reason: str, tool: Optional[str]) -> None:
+    events = list(payload.get("not_executed_events") or [])
+    events.append({"reason": str(reason)[:120], "tool": str(tool or "")[:120] or None, "at": _now()})
+    payload["not_executed_events"] = events[-MAX_NOT_EXECUTED_EVENTS:]
+    if not payload.get("pending_effects") and str(payload.get("safety") or "") == "pending":
+        payload["safety"] = "verified"
+        payload["unknown_reason"] = None
+
+
+def release_side_effect(
+    agent_id: str, intent_id: Optional[str], reason: str, *, tool: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Close an intent whose tool call provably dispatched nothing.
+
+    Unlike abandon_side_effect this does not make the workflow outcome unknown,
+    so a refused call (missing tab_handle, busy tab) does not block every later
+    mutation of the agent.
+    """
+    workflow_id = workflow_id_for_agent(agent_id)
+    if not workflow_id:
+        return None
+    with _workflow_lock(workflow_id):
+        payload = read_workflow(workflow_id)
+        if intent_id:
+            payload["pending_effects"] = [
+                item for item in list(payload.get("pending_effects") or [])
+                if str(item.get("intent_id") or "") != str(intent_id)
+            ]
+        _note_not_executed(payload, reason=reason, tool=tool)
+        now = _now()
+        payload["updated_at"] = now
+        payload["last_checkpoint_at"] = now
+        _write_workflow(payload)
+        return dict(payload)
+
+
+def _result_mapping(value: Any) -> Optional[Mapping[str, Any]]:
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, tuple) and len(value) == 2:
+        return _result_mapping(value[1])
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        item = value[0]
+        if isinstance(item, Mapping):
+            return item
+        text = getattr(item, "text", None)
+        if isinstance(text, str) and text.lstrip().startswith("{"):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return None
+            return parsed if isinstance(parsed, Mapping) else None
+    return None
+
+
 def risk_has_side_effect(capabilities: Sequence[str], destructive: bool = False) -> bool:
     caps = {str(item) for item in capabilities}
     return bool(destructive or caps.intersection(_SIDE_EFFECT_CAPABILITIES))
@@ -556,6 +646,16 @@ def record_side_effect_outcome(
             _write_workflow(payload)
             return {"verified": False, "workflow_id": workflow_id, "reason": "side_effect_intent_missing"}
         payload["pending_effects"] = kept
+
+        mapped = _result_mapping(result)
+        if explicit_ok is False and mapped is not None and mapped.get("mutation_dispatched") is False:
+            # The tool reports it refused before dispatching anything (target not
+            # found, ambiguous scope): nothing happened, so nothing is uncertain.
+            _note_not_executed(payload, reason="result_not_dispatched", tool=tool)
+            payload["updated_at"] = now
+            payload["last_checkpoint_at"] = now
+            _write_workflow(payload)
+            return {"verified": False, "not_executed": True, "workflow_id": workflow_id}
 
         if explicit_ok is False:
             _append_uncertain_event(

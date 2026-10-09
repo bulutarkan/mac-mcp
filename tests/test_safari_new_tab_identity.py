@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
+from mcp_server import tools_browser
 from mcp_server import browser_tabs
 from mcp_server.tools_browser import (
     _claim_tab_visual,
@@ -38,6 +39,44 @@ def row(
         "tab_handle": handle,
     }
 
+
+
+class _ProbeLock:
+    """A real lock that reports acquire attempts, so a test can prove a contender
+    reached the lock instead of hoping a short sleep was long enough."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._cond = threading.Condition()
+        self.attempts = 0
+        self.refused = 0
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        with self._cond:
+            self.attempts += 1
+            self._cond.notify_all()
+        acquired = self._lock.acquire(blocking, timeout)
+        if not acquired:
+            with self._cond:
+                self.refused += 1
+                self._cond.notify_all()
+        return acquired
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    def __enter__(self) -> bool:
+        return self.acquire()
+
+    def __exit__(self, *_exc) -> None:
+        self.release()
+
+    def wait_until(self, predicate, timeout: float = 10.0) -> bool:
+        with self._cond:
+            return self._cond.wait_for(lambda: predicate(self), timeout)
 
 class SafariCreatedTabIdentityTests(unittest.TestCase):
     def test_returned_native_identity_beats_shifted_index(self) -> None:
@@ -156,6 +195,19 @@ class SafariCreatedTabIdentityTests(unittest.TestCase):
         )
 
     def test_window_scoped_creation_lock_serializes_same_window_only(self) -> None:
+        probe = _ProbeLock()
+        with tools_browser._SAFARI_NEW_TAB_LOCK_GUARD:
+            previous = tools_browser._SAFARI_NEW_TAB_LOCKS.get(1)
+            tools_browser._SAFARI_NEW_TAB_LOCKS[1] = probe
+
+        def restore() -> None:
+            with tools_browser._SAFARI_NEW_TAB_LOCK_GUARD:
+                if previous is None:
+                    tools_browser._SAFARI_NEW_TAB_LOCKS.pop(1, None)
+                else:
+                    tools_browser._SAFARI_NEW_TAB_LOCKS[1] = previous
+
+        self.addCleanup(restore)
         entered_one = threading.Event()
         release_one = threading.Event()
         entered_same = threading.Event()
@@ -182,13 +234,17 @@ class SafariCreatedTabIdentityTests(unittest.TestCase):
         t1.start()
         t2.start()
         t3.start()
-        self.assertTrue(entered_one.wait(1))
-        self.assertTrue(entered_other.wait(1), "different Safari window should not be blocked")
-        self.assertFalse(entered_same.wait(0.1), "same Safari window should remain serialized")
+        self.assertTrue(entered_one.wait(10))
+        self.assertTrue(entered_other.wait(10), "different Safari window should not be blocked")
+        # The same-window contender has reached the lock; while the holder owns
+        # it, it cannot have entered, whatever the scheduler did.
+        self.assertTrue(probe.wait_until(lambda lock: lock.attempts >= 2), "same-window contender never reached the lock")
+        self.assertTrue(probe.locked())
+        self.assertFalse(entered_same.is_set(), "same Safari window should remain serialized")
         release_one.set()
-        self.assertTrue(entered_same.wait(1))
+        self.assertTrue(entered_same.wait(10))
         for thread in (t1, t2, t3):
-            thread.join(2)
+            thread.join(10)
             self.assertFalse(thread.is_alive())
 
     def test_visual_claim_targets_resolved_safari_window(self) -> None:

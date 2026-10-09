@@ -32,7 +32,7 @@ struct AgentTerminalNotification: Equatable {
     let label: String
 
     var requestIdentifier: String {
-        "mac-mcp.(targetKind.rawValue).(targetID).(outcome.rawValue)"
+        "mac-mcp.\(targetKind.rawValue).\(targetID).\(outcome.rawValue)"
     }
 }
 
@@ -270,6 +270,25 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
             trigger: nil
         )
         try? await center.add(request)
+    }
+
+    /// Posts a one-off message (for example a recipe result); false when not allowed.
+    func scheduleMessage(title: String, body: String) async -> Bool {
+        guard await authorizationState() == .authorized else { return false }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        let request = UNNotificationRequest(
+            identifier: "mac-mcp.message.\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        do {
+            try await center.add(request)
+            return true
+        } catch {
+            return false
+        }
     }
 
     func removeDeliveredNotifications() {

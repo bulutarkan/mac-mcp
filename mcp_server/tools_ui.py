@@ -1679,19 +1679,43 @@ def _resolve_registered_native_target(
 
 
 def _format_result(payload: Dict[str, Any], image_data: Optional[bytes] = None) -> Any:
-    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    # Compact separators match perception.json_bytes, so payload_bytes is the
+    # size of the text actually returned.
+    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     if image_data:
         return [text, Image(data=image_data, format=_SCREENSHOT_FORMAT)]
     return text
 
 
+def _native_node_has_text(node: Dict[str, Any], keys: Tuple[str, ...] = ("title", "description", "value")) -> bool:
+    return any(isinstance(node.get(key), str) and node[key].strip() for key in keys)
+
+
 def _native_semantic_text_available(nodes: List[Dict[str, Any]]) -> bool:
-    for node in nodes:
-        for key in ("title", "description", "value"):
-            value = node.get(key)
-            if isinstance(value, str) and value.strip():
-                return True
-    return False
+    return any(_native_node_has_text(node) for node in nodes)
+
+
+def _native_ocr_coverage(nodes: List[Dict[str, Any]]) -> Tuple[bool, str]:
+    """Decide whether semantic text covers the window well enough to skip OCR.
+
+    A labeled toolbar must not hide an opaque embedded web view, so every
+    AXWebArea needs readable text inside its own subtree. Its description is
+    only a label ("message body"), so it does not count as content.
+    """
+    for area in nodes:
+        if area.get("role") != "AXWebArea":
+            continue
+        area_id = str(area.get("element_id") or "")
+        prefix = area_id + "/"
+        covered = _native_node_has_text(area, ("value",)) or any(
+            str(node.get("element_id") or "").startswith(prefix) and _native_node_has_text(node)
+            for node in nodes
+        )
+        if not covered:
+            return False, "web_content_without_text"
+    if _native_semantic_text_available(nodes):
+        return True, "semantic_text_available"
+    return False, "no_semantic_text"
 
 
 def _native_context_truncated(
@@ -1769,7 +1793,7 @@ def _collect_observation(
     )
 
     selected_handle = selected_window.get("window_handle") if selected_window else None
-    semantic_text_available = _native_semantic_text_available(nodes)
+    semantic_text_available, ocr_coverage_reason = _native_ocr_coverage(nodes)
     ocr_should_run = bool(ocr and not semantic_text_available)
     image_data: Optional[bytes] = None
     screenshot_error: Optional[str] = None
@@ -1850,7 +1874,7 @@ def _collect_observation(
                 "requested": True,
                 "ok": True,
                 "skipped": True,
-                "reason": "semantic_text_available",
+                "reason": ocr_coverage_reason,
                 "text": "",
             }
         elif image_data:
@@ -1864,6 +1888,7 @@ def _collect_observation(
                 "requested": True,
                 "ok": ocr_error is None,
                 "skipped": False,
+                "reason": ocr_coverage_reason,
                 "text": ocr_text or "",
             }
             if ocr_error:
@@ -1873,6 +1898,7 @@ def _collect_observation(
                 "requested": True,
                 "ok": False,
                 "skipped": False,
+                "reason": ocr_coverage_reason,
                 "text": "",
                 "error": screenshot_error or "OCR could not capture the screen",
             }

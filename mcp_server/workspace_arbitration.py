@@ -153,44 +153,15 @@ def native_app_human_takeover(app: str) -> Optional[Dict[str, Any]]:
 
 
 def browser_human_takeover(browser: str, row: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
-    identity = delegated_agent_identity()
-    if identity is None:
-        return None
+    """Browser tabs never yield to the user being on them.
 
-    app = str(browser or "").strip()
-    if app.lower() == "chrome":
-        app = "Google Chrome"
-    elif app.lower() == "safari":
-        app = "Safari"
-
-    if not bool(row.get("active")) or int(row.get("window_index") or 0) != 1:
-        return None
-
-    frontmost, error = frontmost_application_name()
-    if frontmost is None:
-        return {
-            "reason_code": "HUMAN_OWNERSHIP_UNKNOWN",
-            "retryable": True,
-            "human_priority": True,
-            "yielded": True,
-            "resource_kind": "browser_tab",
-            "probe_error": error,
-            **identity,
-        }
-    if frontmost != app:
-        return None
-
-    # The exact visible tab is sufficient evidence of human ownership.
-    # Physical input age is reserved for the narrower mid-action takeover race
-    # so ordinary human-yield checks stay cheap and deterministic.
-    return {
-        "reason_code": "HUMAN_ACTIVE_RESOURCE",
-        "retryable": True,
-        "human_priority": True,
-        "yielded": True,
-        "resource_kind": "browser_tab",
-        **identity,
-    }
+    Delegated agents used to stop whenever their tab was the visible tab of the
+    frontmost browser, which also blocked them while the user was only watching
+    the work. The owner asked for agents to keep acting on the page they are
+    on, so browser mutations are no longer gated on human presence.
+    """
+    _ = (browser, row)
+    return None
 
 
 def native_app_resource_id(

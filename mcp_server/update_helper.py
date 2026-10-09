@@ -353,6 +353,11 @@ def _copy_file(src: Path, dst: Path) -> None:
     shutil.copy2(src, dst)
 
 
+# Passed per command: `git config` in a linked worktree writes the shared repository
+# config, which would then sign the user's own commits as the updater.
+_UPDATER_IDENTITY = ("-c", "user.name=Mac MCP Updater", "-c", "user.email=mac-mcp-updater@localhost")
+
+
 def _prepare_runtime_merge(repo: Path, runtime: Path, deployed: str, target: str, temp_root: Path) -> tuple[Path, int]:
     stage = temp_root / "runtime-merge"
     _git(repo, "worktree", "add", "--quiet", "--detach", str(stage), deployed)
@@ -368,14 +373,15 @@ def _prepare_runtime_merge(repo: Path, runtime: Path, deployed: str, target: str
                 _copy_file(src, dst)
                 overlay_count += 1
     if overlay_count:
-        _git(stage, "config", "user.email", "mac-mcp-updater@localhost")
-        _git(stage, "config", "user.name", "Mac MCP Updater")
         add_paths = ["mcp_server"]
         if (stage / "menu_app").exists():
             add_paths.append("menu_app")
         _git(stage, "add", "--", *add_paths)
-        _git(stage, "commit", "--quiet", "-m", "runtime overlay")
-    merge = _run(["git", "-C", str(stage), "merge", "--no-edit", "--no-ff", target], check=False, timeout=120)
+        _git(stage, *_UPDATER_IDENTITY, "commit", "--quiet", "-m", "runtime overlay")
+    merge = _run(
+        ["git", "-C", str(stage), *_UPDATER_IDENTITY, "merge", "--no-edit", "--no-ff", target],
+        check=False, timeout=120,
+    )
     if merge.returncode != 0:
         conflicts = _git(stage, "diff", "--name-only", "--diff-filter=U", check=False)
         detail = conflicts.replace("\n", ", ") if conflicts else (merge.stderr or merge.stdout).strip()

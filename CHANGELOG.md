@@ -1,5 +1,52 @@
 ## Unreleased
 
+## [2.1.9] - 2026-10-08
+
+### ChatGPT plugin panel (MCP Apps)
+- Added a Mac MCP app for ChatGPT plugins with both a global (sidebar, fullscreen) and a thread (side panel) entrypoint, a monochrome `>_` tool icon, and a bundled single-file MCP Apps UI served as `ui://mac-mcp/panel-v3.html` (`text/html;profile=mcp-app`).
+- The panel shows 24-hour MCP tool calls, active agents, mean latency and errors, the 20 most recent delegated agents, 7-day provider-reported token usage for Codex/OpenCode/ChatGPT Web (unreported totals stay unavailable, never estimated), and MCP server uptime.
+- Data comes from the host's initial tool result; refreshes are manual through an icon-only button, with no polling. A single fallback read runs only if a host opens the panel without delivering a result.
+- Settings tab: the only writable setting is the default delegated agent (`subagents.default`). The provider must be enabled, the model must exist in that provider's live-discovered catalog (exact lookup, so large OpenCode catalogs are not truncated away), and the reasoning level must be supported by the model. Unknown fields, disabled providers and invalid values fail closed without touching the settings file, and unrelated settings are preserved through the atomic `0600` merge write.
+- Agent completion notifications and the activity bubble are shown read-only (owned by the native app and macOS notification permission); Connection shows version, permission profile, endpoint mode and public host only, never the URL query or API key.
+- Added `mac_mcp_panel_state(models_for=<provider>)` for on-demand, bounded model catalogs (≤600 models, ids ≤120 chars, ≤12 reasoning values) loaded only when the editor opens.
+- New tools `open_mac_mcp_panel`, `mac_mcp_panel_state` and `mac_mcp_panel_setting` are classified in the central risk registry (read/read/local-write); the setting tool is unavailable in `read_only` profiles and in delegated scopes that exclude it.
+- ChatGPT-only discovery gate: tools and the UI resource are listed, readable and callable only for recognized ChatGPT `clientInfo` labels, including `openai-mcp` and runtime-suffixed `openai-mcp (codex)` when the client advertises MCP Apps UI support. Claude, Codex, OpenCode, `chatgpt-web-cli` and unknown clients never see them. The extension can be disabled live with `{"chatgpt_extensions": {"enabled": false}}`; malformed settings fail closed. clientInfo is treated as a UX routing hint, not identity; normal MCP authentication and approvals still apply.
+- Earlier panel resource URIs (`panel-v2.html`, `control-center`) remain readable but unlisted so hosts that cached an older `resourceUri` keep working.
+- The UI honors host `safeAreaInsets`/display mode via `ui/initialize` and `ui/notifications/host-context-changed`, and keeps room for the desktop composer in fullscreen.
+- `mac_mcp_ui_read` log lines record the client label, decision and URI for each UI resource read.
+
+### Agent visibility and approvals
+- Added tool activity intent bubbles in the native app, with concurrent activity lanes and a stabilized multi-call bubble.
+- Added opt-in native notifications when delegated agents complete.
+- Added an optional Server Approval overlay (`Off`/`Critical`/`High Risk`) with Allow Once/Block confirmation for raw execution, update control, and destructive process/external/browser/native actions, and hardened live approval settings.
+
+### Browser and Computer Use
+- Made browser interactions batch-first and kept the batch guidance in the compact tool catalog.
+- `browser_act` key actions no longer require foreground focus: DOM keyboard events go to the focused/resolved element, Enter emulates implicit form submission via `requestSubmit()`, and the effect is verified (`ACTION_NO_EFFECT` when a page ignores untrusted events). After an earlier action changed the page, missing targets are awaited briefly instead of failing the batch.
+- Safari tab handles now survive Mac MCP's own cross-site navigations (WebContent process swaps) under strict same-window/same-position/same-site rebinding rules; ambiguous Safari handles still fail closed.
+- Tabs are re-resolved by native identity (Safari pid, Chrome id) inside every AppleScript step, so tab index shifts cannot fail a call; a closed target returns structured `tab_target_closed` with completed actions, `outcome_unknown` and `automatic_retry: false`.
+- Click verification counts a DOM mutation elsewhere on the page as the effect when the page was quiet for at least 250 ms beforehand; Visual Companion mutations are ignored everywhere.
+- `browser_observe` visual capture works on Trusted Types pages such as Google Sheets through a narrowly scoped Trusted Types policy, with per-color fallback for CSS Color 4 functions and `TRUSTED_TYPES_BLOCKED` when a page forbids the policy.
+- `browser_find` demotes containers that only echo a descendant's match, inner text nodes of actionable controls, and labels whose control also matches, removing most ambiguous ties.
+- Added an opt-in Decision Acceleration layer (OpenAI Decisions, Keychain-stored key, off by default) that only picks among already-ranked candidates for ambiguous `browser_act` targets and `computer_plan` rebinds; policy, lease, takeover and readiness checks still run afterwards. `browser_act` actions accept an optional `intent` hint (redacted, ≤120 chars) used only for ambiguous decisions.
+- Revalidated browser ownership before mutations and hardened browser input and security metadata.
+- Read-only snapshots no longer launch Safari or Chrome just to enumerate tabs.
+- Visual Companion accessibility: a single polite live region for session-level transitions, synchronized `aria-expanded`/`aria-controls`, Escape to close with focus return, focus-visible rings, and decorative parts hidden from assistive technology.
+
+### Delegated agents
+- Added conflict-aware agent integration fan-in, made agent terminalization atomic, and clarified agent team admission budgets.
+
+### Setup, API and dashboard
+- Added `mac-mcp connect-config --client chatgpt|codex|opencode` to generate connection snippets from the actually configured endpoint and authentication.
+- Added a safe transaction history view to the operations dashboard.
+- Exposed read-only memory and Agent Skills REST APIs and made the published OpenAPI surface machine-accurate.
+
+### Updates, restarts and reliability
+- CLI-driven updates run detached and survive Mac MCP's own restart; updater server ownership can be recovered from exactly one verified listener; updater-spawned server environments are sanitized; a corrupt updater journal fails closed; updater wording matches the verified stable-checkpoint model; release signer rotation is hardened.
+- The runtime-overlay merge passes the updater identity with `git -c` so it no longer writes "Mac MCP Updater" into the source checkout's `.git/config`.
+- `mac-mcp restart` keeps waiting for an exiting server whose identity is briefly unreadable instead of aborting and leaving Mac MCP stopped; it still never signals an unverified process.
+- Background jobs stay running while children of their shell survive; stop/timeout signal the surviving process group and escalate to SIGKILL, never signalling a reused pid's group.
+
 ## [2.1.8] - 2026-10-05
 
 - Kept read-only snapshots side-effect free by skipping browser tab enumeration for Safari or Chrome when that browser is not already running; closed browsers are no longer launched merely to inspect tabs.

@@ -20,6 +20,7 @@ from .update_helper import (
     validate_update_state,
 )
 from .update_state import INCOMPLETE_UPDATE_STATES, update_state_path
+from .log_retention import prune_update_logs
 
 
 def _public_info(info) -> Dict[str, Any]:
@@ -63,6 +64,7 @@ def launch_detached_update(
     status_path = update_state_path()
     logs_dir = status_path.parent / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
+    prune_update_logs(logs_dir)
     log_path = logs_dir / f"{update_id}.log"
 
     helper_src = Path(__file__).with_name("update_helper.py")

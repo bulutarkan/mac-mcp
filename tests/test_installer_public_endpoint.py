@@ -153,6 +153,35 @@ class InstallerPublicEndpointTests(unittest.TestCase):
             self.assertEqual("none", settings["server"]["public_endpoint_mode"])
             self.assertEqual("", settings["server"]["public_url"])
 
+    def test_invalid_ngrok_domain_falls_back_to_local_only_without_aborting(self) -> None:
+        cases = {
+            "https://demo.ngrok-free.app": ("none", ""),
+            "demo.ngrok-free.app/mcp": ("none", ""),
+            "nodot": ("none", ""),
+            "Demo.ngrok-free.app": ("ngrok", "demo.ngrok-free.app"),
+        }
+        for value, (mode, domain) in cases.items():
+            with self.subTest(value=value), tempfile.TemporaryDirectory(prefix="mac-mcp-installer-ngrok-") as td:
+                root = Path(td)
+                state = root / "state"
+                runtime = root / "runtime"
+                state.mkdir()
+                (runtime / "mcp_server").mkdir(parents=True)
+                proc = self.run_bash(
+                    f'STATE_DIR="{state}"; RUNTIME_DIR="{runtime}"; PYTHON_BIN=/usr/bin/python3; '
+                    'PUBLIC_ENDPOINT_MODE=ngrok; PUBLIC_PROVIDER_AVAILABLE=1; TTY_AVAILABLE=0; RUNTIME_SETTINGS_BROKEN=0; '
+                    'configure_public_endpoint; echo "CONFIGURED=$PUBLIC_ENDPOINT_CONFIGURED"',
+                    {"MAC_MCP_INSTALL_NGROK_DOMAIN": value},
+                )
+                self.assertEqual(0, proc.returncode, proc.stderr)
+                settings = json.loads((state / "settings.json").read_text(encoding="utf-8"))
+                self.assertEqual(mode, settings["server"]["public_endpoint_mode"])
+                env = (runtime / "mcp_server/.env").read_text(encoding="utf-8")
+                self.assertIn(f"NGROK_DOMAIN={domain}\n", env)
+                self.assertIn(f"CONFIGURED={1 if mode == 'ngrok' else 0}", proc.stdout)
+                if mode == "none":
+                    self.assertIn("example.ngrok-free.app", proc.stdout + proc.stderr)
+
     def test_cloudflare_installer_contract_is_secret_safe_and_defer_safe(self) -> None:
         source = INSTALLER.read_text(encoding="utf-8")
         self.assertIn('Install $package with Homebrew?', source)
@@ -224,3 +253,44 @@ class InstallerPublicEndpointTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstallerTargetPreflightTests(unittest.TestCase):
+    def test_existing_install_targets_fail_before_optional_prompts(self) -> None:
+        stubs = "; ".join(
+            f'{name}() {{ echo "CALLED {name}"; }}'
+            for name in (
+                "print_header", "ensure_required_tools", "choose_public_endpoint_mode",
+                "install_selected_public_provider", "handle_optional_helpers", "handle_optional_chatgpt_cli",
+                "clone_source_and_runtime",
+            )
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cases = {
+                "source": {"MAC_MCP_SOURCE_DIR": str(root)},
+                "runtime": {"MAC_MCP_RUNTIME_DIR": str(root)},
+                "cli": {"MAC_MCP_BIN_DIR": str(root)},
+            }
+            (root / "mac-mcp").write_text("#!/bin/sh\n", encoding="utf-8")
+            for name, overrides in cases.items():
+                env = os.environ.copy()
+                env.update({
+                    "MAC_MCP_INSTALLER_LIBRARY_ONLY": "1",
+                    "MAC_MCP_SOURCE_DIR": str(root / "fresh-source"),
+                    "MAC_MCP_RUNTIME_DIR": str(root / "fresh-runtime"),
+                    "MAC_MCP_BIN_DIR": str(root / "fresh-bin"),
+                    **overrides,
+                })
+                with self.subTest(collision=name):
+                    proc = subprocess.run(
+                        ["/bin/bash", "-c", f'source "{INSTALLER}"; {stubs}; main'],
+                        text=True, capture_output=True, env=env, check=False,
+                    )
+                    output = proc.stdout + proc.stderr
+                    self.assertNotEqual(0, proc.returncode)
+                    self.assertIn("CALLED ensure_required_tools", output)
+                    self.assertIn("already exists", output)
+                    for later in ("choose_public_endpoint_mode", "install_selected_public_provider",
+                                  "handle_optional_helpers", "handle_optional_chatgpt_cli", "clone_source_and_runtime"):
+                        self.assertNotIn(f"CALLED {later}", output)

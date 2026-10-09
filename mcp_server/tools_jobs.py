@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import HTTPException, status
 
@@ -27,9 +27,44 @@ DEFAULT_JOB_ENV = {
 }
 
 _PROCS: Dict[str, subprocess.Popen[str]] = {}
+# Exact last-output time per running job; meta.json only gets a throttled copy.
+_LAST_OUTPUT: Dict[str, float] = {}
 _LOCK = threading.RLock()
 _DEFAULT_WAIT_TIMEOUT_S = 60
 _MAX_WAIT_TIMEOUT_S = 600
+_ACTIVE_STATUSES = {"starting", "running", "stopping"}
+_META_OUTPUT_UPDATE_S = 0.5
+_PRUNE_INTERVAL_S = 60.0
+_last_prune_at = 0.0
+
+
+def _env_limit(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        return min(maximum, max(minimum, int(os.getenv(name, "") or default)))
+    except ValueError:
+        return default
+
+
+def stream_max_bytes() -> int:
+    """Bytes kept per stdout/stderr file; later output is drained but not stored."""
+    return _env_limit("MAC_MCP_JOB_STREAM_MAX_BYTES", 16 * 1024 * 1024, 64 * 1024, 1024 * 1024 * 1024)
+
+
+def job_retention() -> Dict[str, int]:
+    """Finished jobs older than days, beyond count, or over total bytes are removed."""
+    return {
+        "days": _env_limit("MAC_MCP_JOB_RETENTION_DAYS", 7, 1, 365),
+        "max_jobs": _env_limit("MAC_MCP_JOB_RETENTION_COUNT", 200, 10, 10_000),
+        "max_total_bytes": _env_limit("MAC_MCP_JOB_RETENTION_BYTES", 1024 * 1024 * 1024, 16 * 1024 * 1024, 64 * 1024 * 1024 * 1024),
+    }
+
+
+def _private_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
 
 
 def _now() -> float:
@@ -60,7 +95,9 @@ def _write_meta(job_id: str, meta: Dict[str, Any]) -> None:
     path = _meta_path(job_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(meta, ensure_ascii=False, indent=2, sort_keys=True))
     tmp.replace(path)
 
 
@@ -92,47 +129,57 @@ def _is_pid_alive(pid: Optional[int]) -> bool:
         return True
 
 
-def _terminate_process(proc: subprocess.Popen[str], signal_name: int = signal.SIGTERM,
-                       grace_s: float = 1.0) -> None:
-    """Terminate a job's process group and never leave its descendants behind."""
-    if proc.poll() is not None:
+def _surviving_group(pgid: Optional[int]) -> bool:
+    """Whether a job's process group still has members after its leader is gone.
+
+    Jobs start in a new session, so the group id equals the leader's pid. Once the
+    leader is reaped, a live group with that id can only hold the job's leftover
+    descendants: a new group with the same id needs a live process with that pid,
+    and in that case the id belongs to someone else and is never claimed.
+    """
+    if not pgid or _is_pid_alive(pgid):
+        return False
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _signal_group_until_gone(pgid: int, alive: Callable[[], bool], signal_name: int, grace_s: float) -> None:
+    if not alive():
         return
     try:
-        os.killpg(proc.pid, signal_name)
+        os.killpg(pgid, signal_name)
     except ProcessLookupError:
         return
-
     if signal_name == signal.SIGKILL:
         return
 
     deadline = time.monotonic() + max(0.0, grace_s)
-    while proc.poll() is None and time.monotonic() < deadline:
+    while alive() and time.monotonic() < deadline:
         time.sleep(0.05)
-    if proc.poll() is None:
+    if alive():
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
+            os.killpg(pgid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+
+
+def _terminate_process(proc: subprocess.Popen[str], signal_name: int = signal.SIGTERM,
+                       grace_s: float = 1.0) -> None:
+    """Terminate a job's process group and never leave its descendants behind."""
+    _signal_group_until_gone(
+        proc.pid, lambda: proc.poll() is None or _surviving_group(proc.pid), signal_name, grace_s,
+    )
 
 
 def _terminate_pid_group(pid: int, signal_name: int = signal.SIGTERM,
                          grace_s: float = 1.0) -> None:
     """Best-effort cleanup for jobs created before this server process started."""
-    try:
-        os.killpg(pid, signal_name)
-    except ProcessLookupError:
-        return
-    if signal_name == signal.SIGKILL:
-        return
-
-    deadline = time.monotonic() + max(0.0, grace_s)
-    while _is_pid_alive(pid) and time.monotonic() < deadline:
-        time.sleep(0.05)
-    if _is_pid_alive(pid):
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+    _signal_group_until_gone(
+        pid, lambda: _is_pid_alive(pid) or _surviving_group(pid), signal_name, grace_s,
+    )
 
 
 def _normalize_timeout(value: Optional[int], field_name: str) -> Optional[int]:
@@ -157,16 +204,39 @@ def _wait_timeout(settings: Settings, timeout_s: Optional[int]) -> int:
 
 def _append_stream(job_id: str, stream, filename: str) -> None:
     path = _job_dir(job_id) / filename
+    limit = stream_max_bytes()
+    written = path.stat().st_size if path.exists() else 0
+    capped = False
+    cap_recorded = False
+    last_meta_at = 0.0
     with path.open("a", encoding="utf-8", errors="replace") as log_file:
         for chunk in iter(stream.readline, ""):
             if not chunk:
                 break
-            log_file.write(chunk)
-            log_file.flush()
-            with _LOCK:
-                meta = _read_meta(job_id)
-                meta["last_output_at"] = _now()
-                _write_meta(job_id, meta)
+            # Keep draining after the cap so the process never blocks on a full pipe.
+            if not capped:
+                size = len(chunk.encode("utf-8", errors="replace"))
+                if written + size <= limit:
+                    log_file.write(chunk)
+                    log_file.flush()
+                    written += size
+                else:
+                    capped = True
+                    log_file.write(f"\n[mac-mcp: {filename} truncated after {written} bytes; later output was not stored]\n")
+                    log_file.flush()
+            now = _now()
+            _LAST_OUTPUT[job_id] = now
+            # Output still counts as activity for stall detection, but meta.json is
+            # rewritten at most twice a second instead of once per line.
+            if (capped and not cap_recorded) or now - last_meta_at >= _META_OUTPUT_UPDATE_S:
+                with _LOCK:
+                    meta = _read_meta(job_id)
+                    meta["last_output_at"] = now
+                    if capped:
+                        meta[f"{filename.split('.')[0]}_truncated"] = True
+                    _write_meta(job_id, meta)
+                last_meta_at = now
+                cap_recorded = capped
     stream.close()
 
 
@@ -207,7 +277,10 @@ def _watch_process(job_id: str, timeout_s: Optional[int], no_output_timeout_s: O
     while proc.poll() is None:
         with _LOCK:
             meta = _read_meta(job_id)
-            last_output_at = float(meta.get("last_output_at") or meta.get("started_at") or _now())
+            last_output_at = max(
+                float(meta.get("last_output_at") or meta.get("started_at") or _now()),
+                _LAST_OUTPUT.get(job_id, 0.0),
+            )
             now = _now()
             if no_output_timeout_s is not None and now - last_output_at >= no_output_timeout_s:
                 meta["status"] = "stopping"
@@ -227,14 +300,39 @@ def _watch_process(job_id: str, timeout_s: Optional[int], no_output_timeout_s: O
         time.sleep(0.5)
 
     exit_code = proc.wait()
+    # The shell exiting does not end the job while descendants in its group still
+    # run (for example `server &`); keep the same timeout and stall limits on them.
+    while termination_reason is None and _surviving_group(proc.pid):
+        with _LOCK:
+            meta = _read_meta(job_id)
+            last_output_at = max(
+                float(meta.get("last_output_at") or meta.get("started_at") or _now()),
+                _LAST_OUTPUT.get(job_id, 0.0),
+            )
+            now = _now()
+            if no_output_timeout_s is not None and now - last_output_at >= no_output_timeout_s:
+                termination_reason = "stalled"
+            elif deadline is not None and now >= deadline:
+                termination_reason = "timeout"
+            if termination_reason:
+                meta.update({"status": "stopping", "stop_reason": termination_reason, "updated_at": now})
+                _write_meta(job_id, meta)
+        if termination_reason:
+            _terminate_process(proc)
+            break
+        time.sleep(0.5)
     with _LOCK:
         try:
             meta = _read_meta(job_id)
         except HTTPException as exc:
             if exc.status_code == status.HTTP_404_NOT_FOUND:
                 _PROCS.pop(job_id, None)
+                _LAST_OUTPUT.pop(job_id, None)
                 return
             raise
+        last_output = _LAST_OUTPUT.pop(job_id, None)
+        if last_output is not None:
+            meta["last_output_at"] = max(float(meta.get("last_output_at") or 0.0), last_output)
         if meta.get("status") == "killed":
             final_status = "killed"
         elif termination_reason == "stalled" or meta.get("stop_reason") == "stalled" or meta.get("status") == "stalled":
@@ -255,10 +353,28 @@ def _watch_process(job_id: str, timeout_s: Optional[int], no_output_timeout_s: O
         _PROCS.pop(job_id, None)
 
 
+_STALE_START_S = 60.0
+
+
 def _normalize_status(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     status_value = meta.get("status")
-    if status_value in {"running", "stalled", "stopping"}:
+    # Metadata is written before Popen; a crash in between leaves no process at all.
+    if (
+        status_value == "starting" and not meta.get("pid") and job_id not in _PROCS
+        and _now() - float(meta.get("started_at") or 0.0) >= _STALE_START_S
+    ):
+        meta.update({
+            "status": "failed", "exit_code": None, "ended_at": _now(), "updated_at": _now(),
+            "note": "The job never started; the server stopped before launching it.",
+        })
+        _write_meta(job_id, meta)
+        return meta
+    # A stopped job is "killed" before its processes are gone; finalize it once they are.
+    if status_value in {"running", "stalled", "stopping"} or (status_value == "killed" and not meta.get("ended_at")):
         proc = _PROCS.get(job_id)
+        if proc is not None and proc.poll() is not None and _surviving_group(proc.pid):
+            # The leader exited but its descendants still run; the watcher finalizes.
+            return meta
         if proc is not None and proc.poll() is not None:
             exit_code = proc.returncode
             if status_value == "stopping":
@@ -273,7 +389,7 @@ def _normalize_status(job_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
             _finalize_job_capture(meta)
             _write_meta(job_id, meta)
             _PROCS.pop(job_id, None)
-        elif proc is None and not _is_pid_alive(meta.get("pid")):
+        elif proc is None and not _is_pid_alive(meta.get("pid")) and not _surviving_group(meta.get("pid")):
             if meta.get("ended_at"):
                 return meta
             if status_value == "stopping":
@@ -321,11 +437,13 @@ def start_background_job(
         timeout_s = _DEFAULT_WAIT_TIMEOUT_S
     no_output_timeout_s = _normalize_timeout(no_output_timeout_s, "no_output_timeout_s")
 
+    prune_jobs()
     job_id = uuid.uuid4().hex[:12]
     job_path = _job_dir(job_id)
-    job_path.mkdir(parents=True, exist_ok=True)
-    (job_path / "stdout.log").touch()
-    (job_path / "stderr.log").touch()
+    _private_dir(JOBS_DIR)
+    _private_dir(job_path)
+    for name in ("stdout.log", "stderr.log"):
+        (job_path / name).touch(mode=0o600)
 
     if join_transaction_ids and not reversible:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "join_transaction_ids requires reversible=true.")
@@ -419,9 +537,77 @@ def get_job_status(settings: Settings, job_id: str) -> Dict[str, Any]:
         return {"ok": True, **_public_meta(job_id, meta)}
 
 
-def list_jobs(settings: Settings, status_filter: Optional[str] = None) -> Dict[str, Any]:
-    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+def _job_bytes(path: Path) -> int:
+    total = 0
+    for child in path.iterdir():
+        try:
+            total += child.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def _is_active(job_id: str, meta: Dict[str, Any]) -> bool:
+    return job_id in _PROCS or str(meta.get("status") or "") in _ACTIVE_STATUSES or not meta.get("ended_at")
+
+
+def _remove_job_dir(path: Path) -> None:
+    for child in path.iterdir():
+        try:
+            child.unlink()
+        except OSError:
+            pass
+    try:
+        path.rmdir()
+    except OSError:
+        pass
+
+
+def prune_jobs(*, force: bool = False) -> Dict[str, Any]:
+    """Drop finished jobs past the age, count or total-size limit; active jobs stay."""
+    global _last_prune_at
+    now = _now()
+    if not force and now - _last_prune_at < _PRUNE_INTERVAL_S:
+        return {"pruned": 0, "skipped": True}
+    _last_prune_at = now
+    limits = job_retention()
+    if not JOBS_DIR.exists():
+        return {"pruned": 0, **limits}
+    finished: List[tuple[float, Path, int]] = []
+    kept_bytes = 0
+    pruned = 0
+    with _LOCK:
+        for path in JOBS_DIR.iterdir():
+            if not path.is_dir():
+                continue
+            try:
+                meta = _normalize_status(path.name, _read_meta(path.name))
+            except HTTPException:
+                continue
+            size = _job_bytes(path)
+            if _is_active(path.name, meta):
+                kept_bytes += size
+                continue
+            finished.append((float(meta.get("ended_at") or meta.get("updated_at") or 0.0), path, size))
+        finished.sort(key=lambda item: item[0], reverse=True)  # newest first
+        cutoff = now - limits["days"] * 86400
+        for index, (ended_at, path, size) in enumerate(finished):
+            over_count = index >= limits["max_jobs"]
+            over_bytes = kept_bytes + size > limits["max_total_bytes"]
+            if ended_at < cutoff or over_count or over_bytes:
+                _remove_job_dir(path)
+                pruned += 1
+            else:
+                kept_bytes += size
+    return {"pruned": pruned, **limits}
+
+
+def list_jobs(settings: Settings, status_filter: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+    _private_dir(JOBS_DIR)
+    prune_jobs()
+    bounded = max(1, min(int(limit or 50), 500))
     jobs: List[Dict[str, Any]] = []
+    total = 0
     with _LOCK:
         for path in sorted(JOBS_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
             if not path.is_dir() or not (path / "meta.json").exists():
@@ -430,8 +616,28 @@ def list_jobs(settings: Settings, status_filter: Optional[str] = None) -> Dict[s
             public = _public_meta(path.name, meta)
             if status_filter and public.get("status") != status_filter:
                 continue
-            jobs.append(public)
-    return {"ok": True, "jobs": jobs, "count": len(jobs)}
+            total += 1
+            if len(jobs) < bounded:
+                jobs.append(public)
+    return {
+        "ok": True, "jobs": jobs, "count": len(jobs), "total": total,
+        "truncated": total > len(jobs), "retention": job_retention(),
+    }
+
+
+def delete_job(settings: Settings, job_id: str) -> Dict[str, Any]:
+    """Remove a finished job's metadata and both output streams."""
+    path = _job_dir(job_id)
+    with _LOCK:
+        meta = _read_meta(job_id)
+        meta = _normalize_status(job_id, meta)
+        if _is_active(job_id, meta):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {"error": "job_active", "message": "Stop the job before deleting it.", "status": meta.get("status")},
+            )
+        _remove_job_dir(path)
+    return {"ok": True, "job_id": job_id, "deleted": not path.exists()}
 
 
 def get_job_output(
@@ -441,24 +647,39 @@ def get_job_output(
     since_offset: Optional[int] = None,
     stream: str = "both",
 ) -> Dict[str, Any]:
-    _read_meta(job_id)
     streams = ["stdout", "stderr"] if stream == "both" else [stream]
     if any(s not in {"stdout", "stderr"} for s in streams):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "stream must be stdout, stderr, or both.")
 
-    result: Dict[str, Any] = {"ok": True, "job_id": job_id, "offsets": {}}
+    meta = _read_meta(job_id)
+    # Read only the requested slice: memory stays bounded by the response budget,
+    # not by how much the job wrote.
+    budget = max(4096, int(settings.max_output_chars) * 4)
+    result: Dict[str, Any] = {"ok": True, "job_id": job_id, "offsets": {}, "sizes": {}}
     for name in streams:
         path = _job_dir(job_id) / f"{name}.log"
-        data = path.read_bytes() if path.exists() else b""
-        start = max(0, int(since_offset or 0))
-        chunk = data[start:]
-        text = chunk.decode("utf-8", errors="replace")
+        size = path.stat().st_size if path.exists() else 0
+        start = min(max(0, int(since_offset or 0)), size)
+        if since_offset is None and tail_lines is not None:
+            start = max(0, size - budget)
+        length = min(size - start, budget)
+        data = b""
+        if length > 0:
+            with path.open("rb") as handle:
+                handle.seek(start)
+                data = handle.read(length)
+        end = start + len(data)
+        text = data.decode("utf-8", errors="replace")
         if tail_lines is not None:
             text = "\n".join(text.splitlines()[-max(0, int(tail_lines)):])
         text, truncated = truncate(text, settings.max_output_chars)
         result[name] = text
-        result[f"{name}_truncated"] = truncated
-        result["offsets"][name] = len(data)
+        result[f"{name}_truncated"] = truncated or end < size
+        # A follow-up since_offset continues where this slice ended.
+        result["offsets"][name] = size if tail_lines is not None and since_offset is None else end
+        result["sizes"][name] = size
+        if meta.get(f"{name}_truncated"):
+            result[f"{name}_capped_at_bytes"] = stream_max_bytes()
     return result
 
 

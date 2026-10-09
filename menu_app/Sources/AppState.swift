@@ -155,9 +155,13 @@ struct UsageSummaryEnvelope: Decodable, Equatable {
     let totals: UsageTotals
     let topTools: [UsageTool]
     let diagnostics: UsageDiagnostics?
+    let meteringEnabled: Bool?
+    let retentionDays: Int?
 
     enum CodingKeys: String, CodingKey {
         case ok, days, daily, totals, diagnostics
+        case meteringEnabled = "metering_enabled"
+        case retentionDays = "retention_days"
         case actorClass = "actor_class"
         case availableSince = "available_since"
         case historyCompleteSince = "history_complete_since"
@@ -168,6 +172,29 @@ struct UsageSummaryEnvelope: Decodable, Equatable {
         case inputDefinition = "input_definition"
         case outputDefinition = "output_definition"
         case topTools = "top_tools"
+    }
+}
+
+struct UsagePrivacyEnvelope: Decodable, Equatable {
+    let ok: Bool
+    let enabled: Bool
+    let retentionDays: Int
+
+    enum CodingKeys: String, CodingKey {
+        case ok, enabled
+        case retentionDays = "retention_days"
+    }
+}
+
+struct UsageClearEnvelope: Decodable, Equatable {
+    let ok: Bool
+    let toolUsageRows: Int
+    let providerUsageRows: Int
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case toolUsageRows = "tool_usage_rows"
+        case providerUsageRows = "provider_usage_rows"
     }
 }
 
@@ -1406,6 +1433,8 @@ final class AppState: ObservableObject {
     @Published private(set) var usageSummary: UsageSummaryEnvelope?
     @Published private(set) var usageLoading = false
     @Published private(set) var usageIssue: String?
+    @Published private(set) var usagePrivacy: UsagePrivacyEnvelope?
+    @Published private(set) var usageDataNotice: String?
     @Published private(set) var providerUsageSummary: ProviderUsageSummaryEnvelope?
     @Published private(set) var providerUsageLoading = false
     @Published private(set) var providerUsageIssue: String?
@@ -1457,6 +1486,12 @@ final class AppState: ObservableObject {
     let settings = SettingsStore()
     private var pollTask: Task<Void, Never>?
     private var toolActivityStreamTask: Task<Void, Never>?
+    /// True while the /dashboard/events stream is open and feeding the activity list.
+    private var toolActivityStreamConnected = false
+    /// Set after one events poll completes on the current stream connection, so the
+    /// list starts from a full snapshot before the stream alone keeps it current.
+    private var streamActivitySeeded = false
+    nonisolated static let recentActivityLimit = 20
     private var pulseTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
     private var updateStatePollTask: Task<Void, Never>?
@@ -1488,6 +1523,7 @@ final class AppState: ObservableObject {
                 }
             }
             startTasks()
+            observeReduceMotion()
             Task { [weak self] in
                 await self?.refreshAgentNotificationAuthorization(reconcilePreference: true)
             }
@@ -1499,6 +1535,9 @@ final class AppState: ObservableObject {
         pulseTask?.cancel()
         noticeTask?.cancel()
         updateStatePollTask?.cancel()
+        if let reduceMotionObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(reduceMotionObserver)
+        }
     }
 
     func refreshAgentNotificationAuthorization(reconcilePreference: Bool = false) async {
@@ -1720,8 +1759,28 @@ final class AppState: ObservableObject {
         hasActiveWork ? Self.activePollIntervalSeconds : Self.idlePollIntervalSeconds
     }
 
+    /// Mirrors System Settings > Accessibility > Display > Reduce motion.
+    @Published private(set) var reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    private var reduceMotionObserver: NSObjectProtocol?
+
     private var shouldPulse: Bool {
-        activeAgents > 0
+        // With Reduce Motion the menu bar keeps the static active symbol instead of blinking.
+        activeAgents > 0 && !reduceMotion
+    }
+
+    private func observeReduceMotion() {
+        guard reduceMotionObserver == nil else { return }
+        reduceMotionObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.setIfChanged(\.reduceMotion, NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+                self.updatePulseTask()
+            }
+        }
     }
 
     private func refreshNgrokStateIfNeeded(now: Double = ProcessInfo.processInfo.systemUptime) {
@@ -1798,9 +1857,47 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Poll /dashboard/api/events only when the stream cannot be trusted to keep
+    /// the list current: not connected, or not yet seeded on this connection.
+    nonisolated static func shouldPollActivityEvents(streamConnected: Bool, seeded: Bool) -> Bool {
+        !(streamConnected && seeded)
+    }
+
+    /// Apply one stream event to the activity lists, keeping the same shape as a
+    /// poll: newest first, at most `limit` recent events from the last hour.
+    nonisolated static func applyActivityStreamEvent(
+        kind: String,
+        event: ToolEvent?,
+        active: [ToolEvent],
+        recent: [ToolEvent],
+        limit: Int = recentActivityLimit,
+        now: Double = Date().timeIntervalSince1970
+    ) -> (active: [ToolEvent], recent: [ToolEvent]) {
+        guard let event else { return (active, recent) }
+        var nextActive = active.filter { $0.eventID != event.eventID }
+        var nextRecent = recent
+        if kind == "call_started" {
+            nextActive.insert(event, at: 0)
+        } else if kind == "call_finished" {
+            nextRecent.removeAll { $0.eventID == event.eventID }
+            nextRecent.insert(event, at: 0)
+            nextRecent = Array(nextRecent.filter { $0.timestamp >= now - 3600 }.prefix(limit))
+        } else {
+            return (active, recent)
+        }
+        return (nextActive, nextRecent)
+    }
+
+    nonisolated static func toolEvent(from payload: [String: Any]) -> ToolEvent? {
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
+        return try? JSONDecoder().decode(ToolEvent.self, from: data)
+    }
+
     func restartToolActivityStream() {
         toolActivityStreamTask?.cancel()
         toolActivityStreamTask = nil
+        toolActivityStreamConnected = false
 
         guard settings.requireToolDescriptions, settings.showToolActivity else {
             ToolActivityBubbleController.shared.hideImmediately()
@@ -1835,6 +1932,9 @@ final class AppState: ObservableObject {
                 else {
                     throw URLError(.badServerResponse)
                 }
+                toolActivityStreamConnected = true
+                // Reseed once per connection so nothing finished while it was down is lost.
+                streamActivitySeeded = false
 
                 for try await line in bytes.lines {
                     if Task.isCancelled { return }
@@ -1847,11 +1947,14 @@ final class AppState: ObservableObject {
                     handleToolActivityPayload(payload)
                 }
             } catch {
+                toolActivityStreamConnected = false
                 if Task.isCancelled { return }
             }
+            toolActivityStreamConnected = false
 
             try? await Task.sleep(nanoseconds: 900_000_000)
         }
+        toolActivityStreamConnected = false
     }
 
     private func handleToolActivityPayload(_ payload: [String: Any]) {
@@ -1860,11 +1963,18 @@ final class AppState: ObservableObject {
         if kind == "connected" {
             ToolActivityBubbleController.shared.hideImmediately()
             guard let active = payload["active"] as? [[String: Any]] else { return }
+            setIfChanged(\.activeEvents, active.compactMap(Self.toolEvent(from:)))
             for event in active.reversed() {
                 presentToolActivityEvent(event)
             }
             return
         }
+
+        let lists = Self.applyActivityStreamEvent(
+            kind: kind, event: Self.toolEvent(from: payload), active: activeEvents, recent: recentEvents
+        )
+        setIfChanged(\.activeEvents, lists.active)
+        setIfChanged(\.recentEvents, lists.recent)
 
         guard let eventID = payload["event_id"] as? String, !eventID.isEmpty else { return }
         if kind == "call_started" {
@@ -1903,7 +2013,11 @@ final class AppState: ObservableObject {
         do {
             let summary: DashboardSummary = try await fetch(base.appendingPathComponent("dashboard/api/summary"), query: ["hours": "1"])
 
-            async let eventsFetch: EventsEnvelope = fetch(base.appendingPathComponent("dashboard/api/events"), query: ["hours": "1", "limit": "20"])
+            let pollEvents = Self.shouldPollActivityEvents(
+                streamConnected: toolActivityStreamConnected, seeded: streamActivitySeeded
+            )
+            let streamWasConnected = toolActivityStreamConnected
+            async let eventsFetch: EventsEnvelope? = fetchActivityEvents(base: base, poll: pollEvents)
             async let agentsFetch: AgentsEnvelope = fetch(base.appendingPathComponent("dashboard/api/agents"), query: ["limit": "20"])
             async let steeringFetch: SteeringEnvelope = fetch(base.appendingPathComponent("dashboard/api/steering"), query: [:])
             async let securityFetch: SecuritySemanticsEnvelope = fetch(base.appendingPathComponent("dashboard/api/security/semantics"), query: [:])
@@ -1916,9 +2030,11 @@ final class AppState: ObservableObject {
             var secondaryIssue: String?
             var resolvedActiveAgents = summary.activeAgents ?? activeAgents
             do {
-                let eventsEnvelope = try await eventsFetch
-                setIfChanged(\.recentEvents, eventsEnvelope.events)
-                setIfChanged(\.activeEvents, eventsEnvelope.active)
+                if let eventsEnvelope = try await eventsFetch {
+                    setIfChanged(\.recentEvents, eventsEnvelope.events)
+                    setIfChanged(\.activeEvents, eventsEnvelope.active)
+                    if streamWasConnected && toolActivityStreamConnected { streamActivitySeeded = true }
+                }
             } catch {
                 setIfChanged(\.activeEvents, [])
                 secondaryIssue = secondaryIssue ?? "Activity: \(Self.issueText(for: error))"
@@ -1995,7 +2111,12 @@ final class AppState: ObservableObject {
         return .error(message)
     }
 
-    func refreshUsage(days: Int = 365, actorClass: String = "all") async {
+    private var lastUsageActorClass = "all"
+
+    func refreshUsage(days: Int = 365, actorClass: String? = nil) async {
+        // Refreshes after a settings change keep the Source filter the pane is showing.
+        let actorClass = actorClass ?? lastUsageActorClass
+        lastUsageActorClass = actorClass
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else {
             setIfChanged(\.usageIssue, "Could not load Usage because the server URL is invalid.")
             return
@@ -2031,6 +2152,41 @@ final class AppState: ObservableObject {
         } catch {
             setIfChanged(\.decisionIssue, "Could not read Decision status: \(Self.issueText(for: error))")
         }
+    }
+
+    func updateUsagePrivacy(enabled: Bool? = nil, retentionDays: Int? = nil) async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        var body: [String: Any] = [:]
+        if let enabled { body["metering_enabled"] = enabled }
+        if let retentionDays { body["retention_days"] = retentionDays }
+        guard !body.isEmpty else { return }
+        do {
+            let result: UsagePrivacyEnvelope = try await post(
+                base.appendingPathComponent("dashboard/api/usage/settings"), body: body, timeout: 4.0
+            )
+            setIfChanged(\.usagePrivacy, result)
+            setIfChanged(\.usageDataNotice, nil)
+        } catch {
+            setIfChanged(\.usageDataNotice, "Could not save usage settings: \(Self.issueText(for: error))")
+        }
+        await refreshUsage()
+    }
+
+    func clearUsage() async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        do {
+            let result: UsageClearEnvelope = try await post(
+                base.appendingPathComponent("dashboard/api/usage/clear"), body: ["confirm": true], timeout: 10.0
+            )
+            setIfChanged(
+                \.usageDataNotice,
+                "Deleted \(result.toolUsageRows + result.providerUsageRows) stored usage rows."
+            )
+        } catch {
+            setIfChanged(\.usageDataNotice, "Could not clear usage data: \(Self.issueText(for: error))")
+        }
+        await refreshUsage()
+        await refreshProviderUsage()
     }
 
     func verifyDecisionsKey() async {
@@ -3008,10 +3164,19 @@ final class AppState: ObservableObject {
         return value
     }
 
-    private func authorizeDashboardRequest(_ request: inout URLRequest) {
+    func authorizeDashboardRequest(_ request: inout URLRequest) {
         if let token = dashboardToken() {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
+    }
+
+    private func fetchActivityEvents(base: URL, poll: Bool) async throws -> EventsEnvelope? {
+        guard poll else { return nil }
+        let envelope: EventsEnvelope = try await fetch(
+            base.appendingPathComponent("dashboard/api/events"),
+            query: ["hours": "1", "limit": String(Self.recentActivityLimit)]
+        )
+        return envelope
     }
 
     private func fetch<T: Decodable>(

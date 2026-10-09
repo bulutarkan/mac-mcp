@@ -92,11 +92,11 @@ class BrowserKeyTargetingTests(unittest.TestCase):
         self.assertEqual(7, result["lease_generation"])
         script = osa.call_args.args[0]
         self.assertIn("MAC_MCP_TAB_TARGET_NOT_ACTIVE", script)
-        self.assertIn("set actualNativeId", script)
+        self.assertIn('every tab whose pid is "', script)
         self.assertIn('tell window 1', script)
         self.assertIn("key code 36", script)
 
-    def test_chrome_active_exact_target_uses_active_tab_index_guard(self) -> None:
+    def test_chrome_active_exact_target_uses_active_tab_identity_guard(self) -> None:
         target = _target(browser="Google Chrome", active=True, tab_index=3)
         with foreground_authorization("test"), \
              patch("mcp_server.tools_browser._tab_lease", return_value=nullcontext(target)), \
@@ -108,7 +108,8 @@ class BrowserKeyTargetingTests(unittest.TestCase):
             )
         self.assertTrue(result["ok"])
         script = osa.call_args.args[0]
-        self.assertIn("if active tab index is not 3", script)
+        self.assertIn("if (id of active tab) is not (id of targetTab)", script)
+        self.assertNotIn("active tab index is not 3", script)
         self.assertIn("MAC_MCP_TAB_TARGET_NOT_ACTIVE", script)
         self.assertIn("key code 48", script)
 

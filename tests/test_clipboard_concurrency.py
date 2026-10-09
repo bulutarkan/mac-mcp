@@ -7,9 +7,48 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from mcp_server import tools_macos, tools_ui
+from mcp_server import clipboard_guard as clipboard_guard_module
 from mcp_server.clipboard_guard import ClipboardBusyError, clipboard_guard
 from mcp_server.tool_cancellation import ToolCancelledError
 
+
+
+class _ProbeLock:
+    """A real lock that reports acquire attempts, so a test can prove a contender
+    reached the lock instead of hoping a short sleep was long enough."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._cond = threading.Condition()
+        self.attempts = 0
+        self.refused = 0
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        with self._cond:
+            self.attempts += 1
+            self._cond.notify_all()
+        acquired = self._lock.acquire(blocking, timeout)
+        if not acquired:
+            with self._cond:
+                self.refused += 1
+                self._cond.notify_all()
+        return acquired
+
+    def release(self) -> None:
+        self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    def __enter__(self) -> bool:
+        return self.acquire()
+
+    def __exit__(self, *_exc) -> None:
+        self.release()
+
+    def wait_until(self, predicate, timeout: float = 10.0) -> bool:
+        with self._cond:
+            return self._cond.wait_for(lambda: predicate(self), timeout)
 
 class ClipboardTransactionTests(unittest.TestCase):
     def _paste_patches(self, state: dict[str, str], run_impl):
@@ -49,7 +88,8 @@ class ClipboardTransactionTests(unittest.TestCase):
                 self.assertTrue(release_first.wait(2.0))
             return True, "", ""
 
-        patches = self._paste_patches(state, run_impl)
+        probe = _ProbeLock()
+        patches = (*self._paste_patches(state, run_impl), patch.object(clipboard_guard_module, "_CLIPBOARD_LOCK", probe))
         for ctx in patches:
             ctx.start()
         try:
@@ -62,9 +102,10 @@ class ClipboardTransactionTests(unittest.TestCase):
             one = threading.Thread(target=worker, args=("a", "payload-a"))
             two = threading.Thread(target=worker, args=("b", "payload-b"))
             one.start()
-            self.assertTrue(first_inside.wait(1.0))
+            self.assertTrue(first_inside.wait(10.0))
             two.start()
-            time.sleep(0.12)
+            # The second paste has asked for the clipboard and been refused.
+            self.assertTrue(probe.wait_until(lambda lock: lock.refused >= 1), "second paste never reached the clipboard lock")
             self.assertEqual("payload-a", state["value"])
             self.assertEqual(["payload-a"], run_order)
             release_first.set()
@@ -136,14 +177,16 @@ class ClipboardTransactionTests(unittest.TestCase):
             started.set()
             result.update(tools_macos.clipboard_set(SimpleNamespace(), "direct-value"))
 
-        with patch.object(tools_macos.subprocess, "run", side_effect=fake_run):
-            with clipboard_guard(timeout_s=1.0):
+        probe = _ProbeLock()
+        with patch.object(tools_macos.subprocess, "run", side_effect=fake_run), \
+             patch.object(clipboard_guard_module, "_CLIPBOARD_LOCK", probe):
+            with clipboard_guard(timeout_s=10.0):
                 thread = threading.Thread(target=worker)
                 thread.start()
-                self.assertTrue(started.wait(0.5))
-                time.sleep(0.12)
+                self.assertTrue(started.wait(10.0))
+                self.assertTrue(probe.wait_until(lambda lock: lock.refused >= 1), "clipboard_set never reached the lock")
                 self.assertFalse(subprocess_called.is_set())
-            thread.join(1.0)
+            thread.join(10.0)
 
         self.assertTrue(subprocess_called.is_set())
         self.assertTrue(result.get("ok"))

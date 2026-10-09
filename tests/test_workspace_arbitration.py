@@ -548,7 +548,7 @@ class BrowserHumanPriorityTests(unittest.TestCase):
         }
         self.assertIsNone(browser_human_takeover("Safari", row))
 
-    def test_delegated_agent_yields_on_frontmost_active_tab(self) -> None:
+    def test_delegated_agent_keeps_acting_on_frontmost_active_tab(self) -> None:
         row = {
             "browser": "Safari",
             "window_index": 1,
@@ -578,9 +578,8 @@ class BrowserHumanPriorityTests(unittest.TestCase):
                 conflict = browser_human_takeover("Safari", row)
         finally:
             reset_policy_context(token)
-        self.assertEqual("HUMAN_ACTIVE_RESOURCE", conflict["reason_code"])
-        self.assertTrue(conflict["human_priority"])
-        self.assertTrue(conflict["yielded"])
+        # The owner watches agents work in the visible tab; that must not block them.
+        self.assertIsNone(conflict)
 
     def test_mutating_tab_lease_yields_on_global_resource_busy(self) -> None:
         row = {

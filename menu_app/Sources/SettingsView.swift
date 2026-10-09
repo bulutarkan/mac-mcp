@@ -40,22 +40,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     }
 
     var searchTerms: String {
-        switch self {
-        case .general:
-            return "general overview update version status notifications alerts completion agents"
-        case .agents:
-            return "agents subagents provider codex opencode chatgpt model reasoning thinking default agent"
-        case .usage:
-            return "usage tokens payload calls errors latency heatmap activity input output top tools"
-        case .permissions:
-            return "permissions safety approvals security profile read only trusted access"
-        case .connections:
-            return "connections browser safari chrome mobile iphone ipad pairing public endpoint ngrok cloudflare tunnel"
-        case .voice:
-            return "voice audio microphone speaker groq language"
-        case .advanced:
-            return "advanced developer runtime server port cli command decision acceleration openai decisions api key ambiguity"
-        }
+        SettingsSearchIndex.terms[rawValue] ?? ""
     }
 }
 
@@ -138,6 +123,7 @@ struct SettingsView: View {
     @StateObject private var audio = AudioDeviceStore()
     @MacMCPState private var selection: SettingsSection = .general
     @MacMCPState private var notice = ""
+    @MacMCPState private var confirmClearUsage = false
     @MacMCPState private var groqKey = ""
     @MacMCPState private var decisionsKey = ""
     @MacMCPState private var cloudflareToken = ""
@@ -182,11 +168,13 @@ struct SettingsView: View {
     }
 
     private var filteredSections: [SettingsSection] {
-        let query = settingsSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return SettingsSection.allCases }
-        return SettingsSection.allCases.filter {
-            $0.title.lowercased().contains(query) || $0.searchTerms.contains(query)
+        SettingsSection.allCases.filter {
+            SettingsSearchIndex.matches(query: settingsSearch, title: $0.title, terms: $0.searchTerms)
         }
+    }
+
+    private var trimmedSettingsSearch: String {
+        settingsSearch.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var generalPane: some View {
@@ -438,6 +426,26 @@ struct SettingsView: View {
                 .font(.caption)
                 .padding(.horizontal, 10)
                 .padding(.bottom, 5)
+                .onChange(of: settingsSearch) { _ in
+                    // Never leave a pane on screen that the search no longer lists.
+                    let matches = filteredSections
+                    if !matches.contains(selection), let first = matches.first {
+                        selection = first
+                    }
+                }
+
+            if filteredSections.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("No settings found for “\(trimmedSettingsSearch)”")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Clear Search") { settingsSearch = "" }
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 4)
+            }
 
             ForEach(filteredSections) { item in
                 Button {
@@ -479,6 +487,26 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var detail: some View {
+        if filteredSections.isEmpty {
+            VStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.secondary)
+                Text("No settings found for “\(trimmedSettingsSearch)”")
+                    .font(.headline)
+                Text("Try a shorter or different word, such as port, tunnel or notifications.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Clear Search") { settingsSearch = "" }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            selectedPane
+        }
+    }
+
+    @ViewBuilder
+    private var selectedPane: some View {
         switch selection {
         case .general: generalPane
         case .agents: subagentsPane
@@ -536,13 +564,69 @@ struct SettingsView: View {
         }
     }
 
+    private var usageRetentionDays: Int {
+        state.usagePrivacy?.retentionDays ?? state.usageSummary?.retentionDays ?? 365
+    }
+
+    private var usageMeteringEnabled: Bool {
+        state.usagePrivacy?.enabled ?? state.usageSummary?.meteringEnabled ?? true
+    }
+
+    private var usageDataControls: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 16) {
+                    Toggle(
+                        "Record usage",
+                        isOn: Binding(
+                            get: { usageMeteringEnabled },
+                            set: { value in Task { await state.updateUsagePrivacy(enabled: value) } }
+                        )
+                    )
+                    Picker(
+                        "Keep for",
+                        selection: Binding(
+                            get: { usageRetentionDays },
+                            set: { value in Task { await state.updateUsagePrivacy(retentionDays: value) } }
+                        )
+                    ) {
+                        Text("30 days").tag(30)
+                        Text("90 days").tag(90)
+                        Text("365 days").tag(365)
+                    }
+                    .frame(width: 190)
+                    Spacer(minLength: 8)
+                    Button("Clear Usage Data…", role: .destructive) { confirmClearUsage = true }
+                }
+                Text("Only daily per-tool counts, sizes and latency buckets are kept, never prompts, arguments or results. Older days are removed automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let notice = state.usageDataNotice {
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } label: {
+            Label("Data & Retention", systemImage: "hand.raised")
+        }
+        .confirmationDialog("Delete all stored usage data?", isPresented: $confirmClearUsage) {
+            Button("Delete Usage Data", role: .destructive) {
+                Task { await state.clearUsage() }
+            }
+        } message: {
+            Text("This removes tool and provider usage history from this Mac. It cannot be undone.")
+        }
+    }
+
     private var usagePane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top) {
                     paneHeader(
                         "Usage",
-                        subtitle: "12 months of Mac-MCP-attributable tool payload activity. This is not provider billing or model context usage."
+                        subtitle: "Up to \(usageRetentionDays) days of Mac-MCP-attributable tool payload activity. This is not provider billing or model context usage."
                     )
                     Spacer(minLength: 12)
                     if state.usageLoading {
@@ -586,6 +670,8 @@ struct SettingsView: View {
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                usageDataControls
 
                 if let usage = state.usageSummary {
                     GroupBox {

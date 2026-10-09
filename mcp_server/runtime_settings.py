@@ -105,6 +105,43 @@ def tool_activity_setting(name: str, default: Any = None) -> Any:
     return activity.get(name, default)
 
 
+def privacy_setting(name: str, default: Any = None) -> Any:
+    privacy = load_runtime_settings().get("privacy", {})
+    if not isinstance(privacy, dict):
+        return default
+    return privacy.get(name, default)
+
+
+USAGE_RETENTION_CHOICES = (30, 90, 365)
+DEFAULT_USAGE_RETENTION_DAYS = 365
+_USAGE_PRIVACY_TTL_S = 2.0
+_usage_privacy_cache: dict[str, Any] = {"at": -1.0, "value": None}
+
+
+def usage_privacy(*, fresh: bool = False) -> dict[str, Any]:
+    """Usage metering switch and retention, read live from settings with a short cache.
+
+    The collector consults this on every tool call, so the file is read at most
+    once every couple of seconds.
+    """
+    import time as _time
+
+    now = _time.monotonic()
+    cached = _usage_privacy_cache.get("value")
+    if not fresh and cached is not None and now - float(_usage_privacy_cache["at"]) < _USAGE_PRIVACY_TTL_S:
+        return dict(cached)
+    enabled = privacy_setting("usage_metering", True)
+    try:
+        days = int(privacy_setting("usage_retention_days", DEFAULT_USAGE_RETENTION_DAYS))
+    except (TypeError, ValueError):
+        days = DEFAULT_USAGE_RETENTION_DAYS
+    if days not in USAGE_RETENTION_CHOICES:
+        days = min(USAGE_RETENTION_CHOICES, key=lambda choice: abs(choice - days))
+    value = {"enabled": enabled is not False, "retention_days": days}
+    _usage_privacy_cache.update({"at": now, "value": value})
+    return dict(value)
+
+
 def security_setting(name: str, default: Any = None) -> Any:
     security = load_runtime_settings().get("security", {})
     if not isinstance(security, dict):

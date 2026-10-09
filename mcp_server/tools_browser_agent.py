@@ -19,11 +19,13 @@ from mcp.server.fastmcp.utilities.types import Image
 from .security import Settings, truncate
 from .computer_use_perf import record_computer_use_sample
 from . import decision_engine
-from .perception import finalize_perception_telemetry, refresh_perception_size
+from .data_guard import redact_sensitive_text
+from .perception import estimate_payload_tokens, finalize_perception_telemetry, json_bytes, refresh_perception_size
 from . import browser_tabs
 from .chrome_background_bridge import chrome_background_bridge
 from .tool_cancellation import cancellable_sleep, cancellation_checkpoint
 from .workspace_arbitration import delegated_agent_identity
+from .workflow_checkpoints import mark_not_executed
 from .tools_browser import (
     _execute_js_for_target,
     _norm_browser,
@@ -80,10 +82,51 @@ def _browser_observation_owned_by_current(observation_id: Optional[str]) -> bool
     with _BROWSER_OBSERVATION_OWNER_LOCK:
         return _BROWSER_OBSERVATION_OWNERS.get(key) == _perception_owner_key()
 _VISUAL_ENSURE_CACHE: Dict[Tuple[str, str, str], float] = {}
+# Guards cache metadata only; browser I/O runs outside it. Injection into one
+# tab is already single-flight because _tab_lease is exclusive per tab.
+_VISUAL_ENSURE_LOCK = threading.Lock()
 _VISUAL_ENSURE_TTL_S = 12.0
 _DOM_RASTERIZER_PATH = Path(__file__).resolve().parent / "vendor" / "html2canvas.min.js"
 _DOM_CAPTURE_STATE_PREFIX = "__macMcpVisualCapture"
 _DOM_RASTERIZER_GLOBAL = "__macMcpHtml2Canvas"
+# html2canvas writes two fixed strings into DOM sinks. Pages that enforce Trusted
+# Types (Google Sheets, Docs) reject plain strings there, so both sinks go through
+# a Mac MCP policy that accepts only those two strings. The helper is a page
+# global, so it must never turn arbitrary markup into TrustedHTML.
+_TRUSTED_TYPES_SINK_PATCHES = (
+    (
+        'o.write(mn(document.doctype)+"<html></html>")',
+        'o.write(__macMcpTrustedHTML(mn(document.doctype)+"<html></html>"))',
+    ),
+    (
+        'e.innerHTML="function"==typeof"".repeat?"&#128104;".repeat(10):""',
+        'e.innerHTML=__macMcpTrustedHTML("function"==typeof"".repeat?"&#128104;".repeat(10):"")',
+    ),
+    # html2canvas 1.4.1 aborts the whole capture on CSS Color 4 functions such
+    # as color(srgb ...), which Google Sheets uses; fall back per color instead.
+    (
+        """if(void 0===t)throw new Error('Attempting to parse an unsupported color function "'+e.name+'"');""",
+        "if(void 0===t)return __macMcpUnsupportedColor(e);",
+    ),
+)
+_TRUSTED_TYPES_PRELUDE = r"""var __macMcpTrustedHTML=(function(){
+var shell=/^(<!DOCTYPE [^<>]*>)?<html><\/html>$/,emoji=new Array(11).join("&#128104;"),policy=null;
+try{if(window.trustedTypes&&typeof window.trustedTypes.createPolicy==="function"){
+policy=window.trustedTypes.createPolicy("mac-mcp-capture",{createHTML:function(value){
+if(value===""||value===emoji||shell.test(value))return value;
+throw new TypeError("mac-mcp-capture accepts only the rasterizer document shell");}});}}catch(e){policy=null;}
+return function(value){value=String(value);return policy?policy.createHTML(value):value;};
+})();
+var __macMcpUnsupportedColor=function(fn){
+var gray=((128<<24)|(128<<16)|(128<<8)|255)>>>0;
+try{var parts=(fn&&fn.values||[]).filter(function(t){return t&&(t.type===17||t.type===16);}).map(function(t){return t.type===16?t.number/100:t.number;});
+if(String(fn&&fn.name||"").toLowerCase()!=="color"||parts.length<3)return gray;
+var c=function(v){return Math.max(0,Math.min(255,Math.round(v*255)));},a=parts.length>3?Math.max(0,Math.min(1,parts[3])):1;
+return ((c(parts[0])<<24)|(c(parts[1])<<16)|(c(parts[2])<<8)|Math.round(255*a))>>>0;}catch(e){return gray;}
+};
+"""
+_DOM_RASTERIZER_RUNTIME_LOCK = threading.Lock()
+_DOM_RASTERIZER_RUNTIME: Dict[str, Any] = {}
 _DOM_CAPTURE_VIEWPORT_TIMEOUT_S = 18.0
 _DOM_CAPTURE_FULL_PAGE_TIMEOUT_S = 30.0
 _DOM_CAPTURE_MAX_CSS_HEIGHT = 20_000
@@ -96,6 +139,9 @@ _ELEMENT_READINESS_POLL_S = 0.06
 _ELEMENT_READINESS_STABLE_MS = 300
 _ACTION_VERIFY_TIMEOUT_S = 0.55
 _ACTION_VERIFY_POLL_S = 0.07
+# A DOM mutation after a click counts as its effect only when the page was quiet
+# this long before the click, so background animation cannot fake an effect.
+_DOM_EFFECT_QUIET_MS = 250
 _GENERIC_QUERY_WORDS = {
     "button", "link", "input", "field", "select", "dropdown", "combobox", "option",
     "filter", "control", "element", "box", "menu", "tab", "checkbox", "radio",
@@ -220,7 +266,8 @@ def _ensure_visual_companion(
         with _tab_lease(b, tab_handle, window_index, tab_index, allow_rebind=True) as target:
             key = (b, str(target.native_id or target.tab_handle), str(target.url or ""))
             now = time.monotonic()
-            last = _VISUAL_ENSURE_CACHE.get(key, 0.0)
+            with _VISUAL_ENSURE_LOCK:
+                last = _VISUAL_ENSURE_CACHE.get(key, 0.0)
             if last and now - last < _VISUAL_ENSURE_TTL_S:
                 return True
             probe = _execute_js_for_target(
@@ -233,11 +280,12 @@ def _ensure_visual_companion(
                 )
             ok = str(probe or "").strip() == "1"
             if ok:
-                _VISUAL_ENSURE_CACHE[key] = now
-                # Drop old cache entries for the same native tab after navigation/reload.
-                for old_key in list(_VISUAL_ENSURE_CACHE):
-                    if old_key != key and old_key[:2] == key[:2]:
-                        _VISUAL_ENSURE_CACHE.pop(old_key, None)
+                with _VISUAL_ENSURE_LOCK:
+                    _VISUAL_ENSURE_CACHE[key] = now
+                    # Drop old cache entries for the same native tab after navigation/reload.
+                    for old_key in list(_VISUAL_ENSURE_CACHE):
+                        if old_key != key and old_key[:2] == key[:2]:
+                            _VISUAL_ENSURE_CACHE.pop(old_key, None)
             return ok
     except Exception:
         # Companion is UX only. Browser automation must continue even if browser policy
@@ -267,6 +315,41 @@ def _execute_js_unbounded(
             target,
             timeout_s=max(1, min(int(timeout_s), 60)),
         )
+
+
+def _dom_rasterizer_source() -> str:
+    """Vendored html2canvas with its two DOM sinks routed through the Trusted Types helper."""
+    with _DOM_RASTERIZER_RUNTIME_LOCK:
+        cached = _DOM_RASTERIZER_RUNTIME.get("source")
+        if cached:
+            return str(cached)
+        source = _DOM_RASTERIZER_PATH.read_text(encoding="utf-8")
+        for original, patched in _TRUSTED_TYPES_SINK_PATCHES:
+            if source.count(original) != 1:
+                raise HTTPException(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    "DOM screenshot rasterizer does not match the expected html2canvas build.",
+                )
+            source = source.replace(original, patched)
+        source = _TRUSTED_TYPES_PRELUDE + source
+        _DOM_RASTERIZER_RUNTIME["source"] = source
+        return source
+
+
+def _dom_rasterizer_runtime_path() -> Path:
+    """Private on-disk copy of the patched rasterizer for Safari's AppleScript loader."""
+    source = _dom_rasterizer_source()
+    with _DOM_RASTERIZER_RUNTIME_LOCK:
+        cached = _DOM_RASTERIZER_RUNTIME.get("path")
+        if cached and Path(cached).is_file():
+            return Path(cached)
+        directory = Path(tempfile.mkdtemp(prefix="mac-mcp-rasterizer-"))
+        path = directory / "html2canvas-trusted-types.js"
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(source)
+        _DOM_RASTERIZER_RUNTIME["path"] = str(path)
+        return path
 
 
 def _ensure_dom_rasterizer(
@@ -305,12 +388,12 @@ def _ensure_dom_rasterizer(
     )
     with _tab_lease(b, tab_handle, window_index, tab_index) as target:
         if b == "Google Chrome":
-            source = _DOM_RASTERIZER_PATH.read_text(encoding="utf-8")
+            source = _dom_rasterizer_source()
             _execute_js_for_target(b, pre_raw, target, timeout_s=10)
             _execute_js_for_target(b, source, target, timeout_s=30)
             loaded = _execute_js_for_target(b, post_raw, target, timeout_s=10)
         else:
-            path_literal = json.dumps(str(_DOM_RASTERIZER_PATH))
+            path_literal = json.dumps(str(_dom_rasterizer_runtime_path()))
             pre = _js_escape(pre_raw)
             post = _js_escape(post_raw)
             guard = _tab_identity_guard(target)
@@ -612,7 +695,14 @@ def _capture_dom_visual_locked(
             if state == "done":
                 break
             if state in {"error", "missing"}:
-                return None, str(finished.get("error") or f"DOM screenshot state became {state}."), meta
+                message = str(finished.get("error") or f"DOM screenshot state became {state}.")
+                if "trusted" in message.lower():
+                    meta["reason_code"] = "TRUSTED_TYPES_BLOCKED"
+                    message = (
+                        "The page's Trusted Types policy blocked the DOM screenshot. "
+                        "Use semantic observe or browser_find instead."
+                    )
+                return None, message, meta
             cancellable_sleep(0.12)
         else:
             return None, f"DOM screenshot timed out after {timeout_s:.0f}s.", meta
@@ -668,6 +758,13 @@ def _b64_return(expression: str) -> str:
 def _browser_state_bootstrap() -> str:
     return r'''
 function __mcpInternalHost(el){try{return !!el&&el.id==='mac-mcp-visual-companion-root';}catch(e){return false;}}
+function __mcpInternalMutation(rec){
+  if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')return true;
+  if(__mcpInternalHost(rec.target))return true;
+  if(rec.type!=='childList')return false;
+  var nodes=Array.prototype.concat.call([],Array.prototype.slice.call(rec.addedNodes||[]),Array.prototype.slice.call(rec.removedNodes||[]));
+  return nodes.length>0&&nodes.every(function(n){return __mcpInternalHost(n);});
+}
 function __mcpRoots(){
   var roots=[],seen=new Set();
   function visit(root,depth){
@@ -704,7 +801,7 @@ function __mcpStopMutationWatch(s){
 }
 function __mcpStartMutationWatch(s,ttl){
   __mcpStopMutationWatch(s);var roots=__mcpRoots(),bump=function(records){
-    for(var j=0;j<records.length;j++){var rec=records[j];if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')continue;s.mutationRevision+=1;s.lastMutationAt=Date.now();break;}
+    for(var j=0;j<records.length;j++){var rec=records[j];if(__mcpInternalMutation(rec))continue;s.mutationRevision+=1;s.lastMutationAt=Date.now();break;}
   };
   for(var i=0;i<roots.length;i++){try{var ob=new MutationObserver(bump);ob.observe(roots[i],{subtree:true,childList:true,attributes:true,characterData:true});s.rootObservers.push(ob);}catch(e){}}
   s.observerTimer=setTimeout(function(){__mcpStopMutationWatch(s);},Math.max(500,Math.min(Number(ttl||3000),8000)));
@@ -713,6 +810,7 @@ function __mcpState(){
   var s=window.__macMcpBrowserAgent;
   if(!s){var stableAt=Date.now();try{var nav=performance.getEntriesByType&&performance.getEntriesByType('navigation')[0];if(document.readyState==='complete'&&nav&&nav.loadEventEnd>0&&performance.now()-nav.loadEventEnd>=300)stableAt=Date.now()-1000;}catch(e){}s=window.__macMcpBrowserAgent={counter:0,ids:new WeakMap(),elements:Object.create(null),pageToken:Math.random().toString(36).slice(2,10),mutationRevision:0,lastMutationAt:stableAt,observations:Object.create(null),observationMeta:Object.create(null),rootObservers:[],observerTimer:null};}
 if(!s.observationMeta)s.observationMeta=Object.create(null);
+if(!s.targetFp)s.targetFp=Object.create(null);
   return s;
 }
 function __mcpVisualTarget(el){
@@ -731,6 +829,15 @@ function __mcpVisual(action,el,effect,ttl,detail){
     var raw=btoa(unescape(encodeURIComponent(JSON.stringify(payload))));(document.documentElement||document.body).setAttribute('data-mac-mcp-visual-event',raw);try{window.dispatchEvent(new Event('mac-mcp-visual'));}catch(e){}
   }catch(e){}}
 function __mcpId(el,s){var id=s.ids.get(el);if(!id){id='e_'+s.pageToken+'_'+(++s.counter);s.ids.set(el,id);}s.elements[id]=el;return id;}
+function __mcpRoute(){var h=String(location.hash||'');return String(location.pathname||'')+String(location.search||'')+((h.indexOf('#/')===0||h.indexOf('#!')===0)?h:'');}
+function __mcpTargetFp(el){
+  var role=String(__mcpRole(el)||''),tag=String(el.tagName||'').toLowerCase();
+  var editable=!!el.isContentEditable||['input','textarea','select'].indexOf(tag)>=0||['textbox','searchbox','combobox'].indexOf(role)>=0;
+  var attr=function(n){try{return String(el.getAttribute(n)||'');}catch(e){return '';}};
+  var label=attr('aria-label')||attr('name')||attr('placeholder')||attr('title')||(editable?'':__mcpText(el));
+  return {route:__mcpRoute(),role:role,tag:tag,name:__mcpNorm(label).replace(/[0-9]+/g,'#').slice(0,120)};
+}
+function __mcpRememberTarget(el,id,s){if(!el||!id)return;try{s.targetFp[id]=__mcpTargetFp(el);}catch(e){}}
 function __mcpVisible(el){if(!el||el.nodeType!==1)return false;var st=__mcpStyle(el);if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0)return false;var r=__mcpTopRect(el);if(r.width<1||r.height<1)return false;return r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}
 function __mcpActionable(el){
   var tag=(el.tagName||'').toLowerCase(),role=(el.getAttribute('role')||'').toLowerCase();
@@ -995,7 +1102,7 @@ function __mcpFlushMutations(s){
   var changed=false,obs=s.rootObservers||[];
   for(var i=0;i<obs.length;i++){
     var records=[];try{records=obs[i].takeRecords();}catch(e){}
-    for(var j=0;j<records.length;j++){var rec=records[j];if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')continue;changed=true;break;}
+    for(var j=0;j<records.length;j++){var rec=records[j];if(__mcpInternalMutation(rec))continue;changed=true;break;}
   }
   if(changed){s.mutationRevision+=1;s.lastMutationAt=Date.now();}return changed;
 }
@@ -1106,7 +1213,7 @@ function __mcpContentCandidate(el,actionable){{
 var s=__mcpState();
 __mcpStartMutationWatch(s,5000);
 __mcpVisual('Inspecting',null,'',1800);
-Object.keys(s.elements).forEach(function(k){{var e=s.elements[k];if(!e||!e.isConnected)delete s.elements[k];}});
+Object.keys(s.elements).forEach(function(k){{var e=s.elements[k];if(!e||!e.isConnected){{delete s.elements[k];delete s.targetFp[k];}}}});
 var scope={scope_js};
 var all=__mcpQueryAll('*');
 var elements=[];
@@ -1122,6 +1229,7 @@ for(var i=0;i<all.length && elements.length<{max_elements};i++){{
   }}
   if((scope==='content'||scope==='leaf') && !__mcpContentCandidate(el,actionable)) continue;
   var desc=__mcpDescribe(el,s);
+  __mcpRememberTarget(el,desc.element_id,s);
   if((scope==='content'||scope==='leaf') && !actionable){{
     var own=__mcpOwnText(el);
     if(own) desc.text=own;
@@ -1285,7 +1393,7 @@ def _format_observation(payload: Dict[str, Any], image_data: Optional[bytes]) ->
         }
         text = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
         return [text, Image(data=image_data, format="jpeg")]
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def browser_observe(
@@ -1335,7 +1443,7 @@ def browser_observe(
                 payload.update(lease_meta)
                 if isinstance(payload.get("telemetry"), dict):
                     refresh_perception_size(payload)
-                return json.dumps(payload, ensure_ascii=False, indent=2)
+                return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         if isinstance(observed, list) and observed and isinstance(observed[0], str):
             try:
                 payload = json.loads(observed[0])
@@ -1365,6 +1473,8 @@ def _browser_observe_locked(
     _norm_browser(browser)
     window_index, tab_index = _resolve_tab_target(browser, tab_handle, window_index, tab_index)
     scope = str(scope or "interactive").lower().strip()
+    # Agents keep asking for the whole page; that is what content returns.
+    scope = {"page": "content", "full": "content", "all": "content"}.get(scope, scope)
     if scope not in {"interactive", "visible", "content", "leaf"}:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "scope must be interactive, visible, content, or leaf.")
     visual = str(visual or "none").lower().strip()
@@ -1417,27 +1527,22 @@ def _browser_observe_locked(
                 node_count=0,
                 duration_ms=int(out["duration_ms"]),
                 context_budget_bytes=64_000,
+                measure=False,
             )
             metrics = out["telemetry"]
+            sample_bytes = json_bytes(out)
             metrics["benchmark"] = record_computer_use_sample(
                 "browser_observe",
                 duration_ms=int(metrics.get("duration_ms") or 0),
-                payload_bytes=int(metrics.get("payload_bytes") or 0),
-                payload_tokens_estimate=int(metrics.get("payload_tokens_estimate") or 0),
+                payload_bytes=sample_bytes,
+                payload_tokens_estimate=estimate_payload_tokens(sample_bytes),
                 remote_js_calls=1,
                 ax_traversals=0,
                 visual_bytes=0,
                 node_count=0,
                 state_mode="not_modified",
             )
-            finalize_perception_telemetry(
-                out,
-                stage="conditional",
-                state_mode="not_modified",
-                node_count=0,
-                duration_ms=int(out["duration_ms"]),
-                context_budget_bytes=64_000,
-            )
+            refresh_perception_size(out)
             return _format_observation(out, None)
 
     payload = _observe_payload(
@@ -1525,36 +1630,25 @@ def _browser_observe_locked(
         context_budget_bytes=64_000,
         context_truncated=context_truncated,
         expand_hint=expand_hint,
+        measure=False,
     )
     metrics = payload["telemetry"]
     metrics["remote_js_calls"] = remote_js_calls
     if visual_meta.get("elapsed_ms") is not None:
         metrics["capture_duration_ms"] = int(visual_meta.get("elapsed_ms") or 0)
+    sample_bytes = json_bytes(payload)
     metrics["benchmark"] = record_computer_use_sample(
         "browser_observe",
         duration_ms=int(metrics.get("duration_ms") or 0),
-        payload_bytes=int(metrics.get("payload_bytes") or 0),
-        payload_tokens_estimate=int(metrics.get("payload_tokens_estimate") or 0),
+        payload_bytes=sample_bytes,
+        payload_tokens_estimate=estimate_payload_tokens(sample_bytes),
         remote_js_calls=remote_js_calls,
         ax_traversals=0,
         visual_bytes=visual_bytes,
         node_count=int(metrics.get("node_count") or 0),
         state_mode="full",
     )
-    finalize_perception_telemetry(
-        payload,
-        stage="targeted_visual" if visual != "none" else "semantic",
-        state_mode="full",
-        node_count=int(payload.get("element_count") or len(payload.get("elements") or [])),
-        duration_ms=int(payload.get("duration_ms") or 0),
-        visual_bytes=visual_bytes,
-        visual_width=(visual_meta or {}).get("output_width"),
-        visual_height=(visual_meta or {}).get("output_height"),
-        ocr_used=False,
-        context_budget_bytes=64_000,
-        context_truncated=context_truncated,
-        expand_hint=expand_hint,
-    )
+    refresh_perception_size(payload)
     return _format_observation(payload, image_data)
 
 
@@ -1640,7 +1734,113 @@ def _score_candidate(element: Dict[str, Any], query: str, role: Optional[str], t
     return max(0.0, min(1.0, score))
 
 
-def _find_candidates_js(query: str, role: Optional[str], text: Optional[str], max_candidates: int = 80, actionable_only: bool = False) -> str:
+_REDUNDANT_CANDIDATE_PENALTY = 0.15
+
+
+def _demote_redundant_candidates(
+    scored: List[Tuple[float, Dict[str, Any]]],
+) -> List[Tuple[float, Dict[str, Any]]]:
+    """Separate the element that carries the match from candidates that only echo it.
+
+    A container whose aggregated text merely includes a matching descendant, the
+    inner text node of a control that already matches, and a label whose control
+    also matches all describe one target. Within the ambiguity margin, keep the
+    innermost match unless only its container is actionable, in which case keep
+    the container so the click lands on the control. Distinct targets keep their
+    scores, and scores are compared before any demotion.
+    """
+    raw = {str(element.get("element_id")): score for score, element in scored if element.get("element_id")}
+    by_id = {str(element.get("element_id")): element for _, element in scored if element.get("element_id")}
+    demoted: set[str] = set()
+
+    def linked(label: Dict[str, Any], control: Dict[str, Any]) -> bool:
+        return (
+            str((label.get("associated_control") or {}).get("element_id") or "") == str(control.get("element_id"))
+            or str((control.get("associated_label") or {}).get("element_id") or "") == str(label.get("element_id"))
+        )
+
+    for container_id, container in by_id.items():
+        if str(container.get("tag") or "").lower() == "label" and any(
+            linked(container, other) for other_id, other in by_id.items() if other_id != container_id
+        ):
+            # The control is the target; its label is another way to reach it.
+            demoted.add(container_id)
+            continue
+        for nested_id in container.get("nested_match_ids") or []:
+            nested = by_id.get(str(nested_id))
+            if nested is None or raw[str(nested_id)] < raw[container_id] - decision_engine.AMBIGUITY_MARGIN:
+                continue
+            if container.get("actionable") and not nested.get("actionable"):
+                demoted.add(str(nested_id))
+            else:
+                demoted.add(container_id)
+    return [
+        (max(0.0, score - _REDUNDANT_CANDIDATE_PENALTY) if str(element.get("element_id")) in demoted else score, element)
+        for score, element in scored
+    ]
+
+
+_WITHIN_DEFAULT_LEVELS = 6
+_WITHIN_MAX_LEVELS = 30
+_WITHIN_SCAN_LIMIT = 3000
+
+
+def _within_scope_js(within: Optional[str], within_element_id: Optional[str], within_levels: int) -> str:
+    """JS that scopes collected candidates to the item around an anchor.
+
+    The anchor is the element holding the `within` text (or within_element_id).
+    A candidate stays in scope when its nearest common ancestor with the anchor
+    is at most `levels` steps above the anchor, so the Reply link of a comment
+    matches while the Reply links of parent comments and the page-level comment
+    box do not. Candidates are ordered nearest first. A `within` text found in
+    several places is reported as ambiguous instead of guessed.
+    """
+    within_js = json.dumps(str(within or ""))
+    within_id_js = json.dumps(str(within_element_id or ""))
+    levels = max(1, min(int(within_levels or _WITHIN_DEFAULT_LEVELS), _WITHIN_MAX_LEVELS))
+    return f'''
+var withinRaw={within_js}, withinId={within_id_js}, withinLevels={levels};
+if(withinRaw||withinId){{
+  function cparent(n){{return n.parentNode||(n.host||null);}}
+  function chain(n){{var a=[];while(n){{a.push(n);n=cparent(n);}}return a;}}
+  var anchors=[];
+  if(withinId){{var ae=__mcpRecoverElement(withinId,s);if(ae)anchors.push(ae);}}
+  else{{
+    var w=norm(withinRaw);
+    if(w){{
+      var tw=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT),tn;
+      while((tn=tw.nextNode())){{var pe=tn.parentElement;if(pe&&rendered(pe)&&norm(tn.data).indexOf(w)>=0&&anchors.indexOf(pe)<0)anchors.push(pe);}}
+      if(!anchors.length){{
+        var every=__mcpQueryAll('*');
+        for(var wi=0;wi<every.length;wi++){{var we=every[wi];if(!rendered(we))continue;var lab=norm([we.getAttribute('aria-label'),we.getAttribute('title'),(we.textContent||'').length<3000?we.textContent:''].join(' '));if(lab.indexOf(w)>=0)anchors.push(we);}}
+      }}
+      // Keep the innermost matches: an ancestor of another match is the same anchor.
+      anchors=anchors.filter(function(a){{return !anchors.some(function(b){{return b!==a&&contains(a,b);}});}});
+    }}
+  }}
+  withinInfo={{levels:withinLevels,anchor_count:anchors.length,anchors:anchors.slice(0,5).map(function(a){{return __mcpText(a).slice(0,100);}})}};
+  if(!anchors.length){{withinInfo.status='anchor_not_found';out=[];els=[];}}
+  else if(anchors.length>1){{withinInfo.status='anchor_ambiguous';out=[];els=[];}}
+  else{{
+    var anchorChain=chain(anchors[0]);withinInfo.status='ok';withinInfo.anchor_element_id=__mcpId(anchors[0],s);
+    var scoped=[];
+    for(var si=0;si<els.length;si++){{
+      var cc=chain(els[si]),up=-1,down=-1;
+      for(var ai=0;ai<anchorChain.length;ai++){{var k=cc.indexOf(anchorChain[ai]);if(k>=0){{up=ai;down=k;break;}}}}
+      if(up<0||up>withinLevels)continue;
+      out[si].within_up=up;out[si].within_down=down;scoped.push([up,down,out[si],els[si]]);
+    }}
+    scoped.sort(function(a,b){{return a[0]-b[0]||a[1]-b[1];}});
+    out=scoped.map(function(r){{return r[2];}});els=scoped.map(function(r){{return r[3];}});
+  }}
+}}
+'''
+
+
+def _find_candidates_js(
+    query: str, role: Optional[str], text: Optional[str], max_candidates: int = 80, actionable_only: bool = False,
+    within: Optional[str] = None, within_element_id: Optional[str] = None, within_levels: int = _WITHIN_DEFAULT_LEVELS,
+) -> str:
     q_raw = _normalize_text(query)
     q_tokens = [token for token in q_raw.split() if token not in _GENERIC_QUERY_WORDS]
     q = " ".join(q_tokens) if q_tokens else q_raw
@@ -1648,6 +1848,11 @@ def _find_candidates_js(query: str, role: Optional[str], text: Optional[str], ma
     role_js = json.dumps(_normalize_text(role) if role else "")
     text_js = json.dumps(_normalize_text(text) if text else "")
     actionable_js = "true" if actionable_only else "false"
+    scoped = bool(within or within_element_id)
+    # A scoped search must see every match before choosing the nearest one,
+    # so collection is capped by the scan limit and trimmed after scoping.
+    collect_limit = _WITHIN_SCAN_LIMIT if scoped else max_candidates
+    within_block = _within_scope_js(within, within_element_id, within_levels) if scoped else ""
     return f'''(function(){{
 {_browser_state_bootstrap()}
 function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
@@ -1666,9 +1871,9 @@ function level(actual,wanted){{
 }}
 var s=__mcpState(), q={q_js}, wantedRole={role_js}, wantedText={text_js}, actionableOnly={actionable_js};
 __mcpVisual('Finding',null,'',1600);
-var out=[],modal=__mcpTopBlockingModal();
+var out=[],els=[],modal=__mcpTopBlockingModal();
 var all=__mcpQueryAll('*');
-for(var i=0;i<all.length&&out.length<{max_candidates};i++){{
+for(var i=0;i<all.length&&out.length<{collect_limit};i++){{
   var el=all[i]; if(!rendered(el))continue;
   if(modal&&el!==modal&&!__mcpComposedContains(modal,el))continue;
   var d=__mcpDescribe(el,s); d.actionable=__mcpActionable(el);
@@ -1682,10 +1887,20 @@ for(var i=0;i<all.length&&out.length<{max_candidates};i++){{
     if(d.options){{d.options.forEach(function(o){{ql=Math.max(ql,level(o.text||'',q),level(o.value||'',q));}});}}
     if(!ql)continue;
   }}
-  out.push(d);
+  out.push(d);els.push(el);
+}}
+function contains(a,b){{try{{if(a.contains(b))return true;}}catch(e){{}}return __mcpComposedContains(a,b);}}
+var withinInfo=null;
+{within_block}
+if(out.length>{max_candidates}){{out=out.slice(0,{max_candidates});els=els.slice(0,{max_candidates});}}
+for(var fi=0;fi<els.length;fi++)__mcpRememberTarget(els[fi],out[fi].element_id,s);
+for(var ci=0;ci<els.length;ci++){{
+  var nested=[];
+  for(var cj=0;cj<els.length&&nested.length<12;cj++){{if(ci!==cj&&els[ci]!==els[cj]&&contains(els[ci],els[cj]))nested.push(out[cj].element_id);}}
+  if(nested.length)out[ci].nested_match_ids=nested;
 }}
 var obs='bobs_'+s.pageToken+'_'+Date.now().toString(36);s.observations[obs]=s.mutationRevision;
-return __mcpB64({{ok:true,observation_id:obs,dom_revision:s.mutationRevision,url:location.href,title:document.title,modal_scope:modal?{{active:true,element_id:__mcpId(modal,s),role:__mcpRole(modal),text:__mcpText(modal).slice(0,120)}}:{{active:false}},elements:out}});
+return __mcpB64({{ok:true,observation_id:obs,dom_revision:s.mutationRevision,url:location.href,title:document.title,modal_scope:modal?{{active:true,element_id:__mcpId(modal,s),role:__mcpRole(modal),text:__mcpText(modal).slice(0,120)}}:{{active:false}},within:withinInfo,elements:out}});
 }})()'''
 
 
@@ -1701,8 +1916,15 @@ def browser_find(
     max_results: int = 5,
     actionable_only: bool = False,
     wait_timeout_s: float = 0.0,
+    within: Optional[str] = None,
+    within_element_id: Optional[str] = None,
+    within_levels: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Find a rendered DOM target with exact-first ranking and hard role/text constraints."""
+    """Find a rendered DOM target with exact-first ranking and hard role/text constraints.
+
+    within/within_element_id limit matches to the item around an anchor (for
+    example one comment) and rank them nearest first.
+    """
     window_index, tab_index = _resolve_tab_target(browser, tab_handle, window_index, tab_index)
     _ensure_visual_companion(settings, browser, window_index, tab_index, tab_handle)
     if not str(query or "").strip() and not text and not role:
@@ -1734,7 +1956,9 @@ def browser_find(
         try:
             payload = _run_json_js(
                 settings, browser, _find_candidates_js(
-                    str(query or ""), role, text, candidate_limit, actionable_only=actionable_only
+                    str(query or ""), role, text, candidate_limit, actionable_only=actionable_only,
+                    within=within, within_element_id=within_element_id,
+                    within_levels=int(within_levels or _WITHIN_DEFAULT_LEVELS),
                 ),
                 window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
             )
@@ -1749,6 +1973,7 @@ def browser_find(
         score = _score_candidate(element, str(query or ""), role, text)
         if score >= 0.30:
             scored.append((score, element))
+    scored = _demote_redundant_candidates(scored)
     def control_priority(element: Dict[str, Any]) -> int:
         tag = str(element.get("tag") or "").lower()
         role_name = str(element.get("role") or "").lower()
@@ -1760,10 +1985,22 @@ def browser_find(
             return 2
         return 1
 
-    scored.sort(
-        key=lambda item: (item[0], control_priority(item[1]), -len(str(item[1].get("text") or ""))),
-        reverse=True,
-    )
+    scoped = bool(within or within_element_id)
+    if scoped:
+        # Locality decides among equally good text matches: the nearest common
+        # ancestor with the anchor first, then the shortest path below it.
+        scored.sort(
+            key=lambda item: (
+                round(item[0], 1), -int(item[1].get("within_up") or 0), -int(item[1].get("within_down") or 0),
+                control_priority(item[1]), -len(str(item[1].get("text") or "")),
+            ),
+            reverse=True,
+        )
+    else:
+        scored.sort(
+            key=lambda item: (item[0], control_priority(item[1]), -len(str(item[1].get("text") or ""))),
+            reverse=True,
+        )
     matches = []
     for score, element in scored[:max_results]:
         matches.append({
@@ -1779,6 +2016,7 @@ def browser_find(
             "modal_scope": element.get("modal_scope"), "association_text": element.get("association_text"),
             "associated_control": element.get("associated_control"), "associated_label": element.get("associated_label"),
             "association_ambiguous": element.get("association_ambiguous"), "hit_target": element.get("hit_target"),
+            **({"within_up": element.get("within_up"), "within_down": element.get("within_down")} if scoped else {}),
         })
     return {
         "ok": True,
@@ -1801,6 +2039,9 @@ def browser_find(
             "fallback_polls": int(((wait_meta or {}).get("telemetry") or {}).get("fallback_polls") or 0) if wait_meta is not None else 0,
             "benchmark": ((wait_meta or {}).get("telemetry") or {}).get("benchmark") if wait_meta is not None else None,
         },
+        **({"within": payload.get("within")} if scoped else {}),
+        # Tool output is what the model reads most closely; point at the shortcut.
+        "to_act": "Pass the same query/role/within to browser_act directly; it resolves the target, no element_id needed.",
         "best_match": matches[0] if matches else None,
         "matches": matches,
         "duration_ms": int((time.perf_counter() - started) * 1000),
@@ -1852,8 +2093,13 @@ function pageEffect(beforeRevision,beforeUrl,beforeTitle,beforeState,el){
 }
 for(var i=0;i<actions.length;i++){
   var a=actions[i]||{}, type=String(a.type||'').toLowerCase().replace(/-/g,'_');
+  // A remembered target that moved to another route or now means something else
+  // must not be acted on; nothing has run for this action yet.
+  var fpWas=(a.element_id&&type!=='scroll'&&s.targetFp)?s.targetFp[a.element_id]:null;
+  if(fpWas&&fpWas.route!==__mcpRoute()){results.push({index:i,type:type,element_id:a.element_id,ok:false,error:'stale_target',reason_code:'ROUTE_CHANGED',observe_again:true,no_side_effect:true});break;}
   var el=a.element_id?target(a):null;
   if(a.element_id && !el){results.push({index:i,type:type,element_id:a.element_id,ok:false,error:'stale_element',observe_again:true});break;}
+  if(fpWas&&el){var fpNow=__mcpTargetFp(el);if(fpNow.role!==fpWas.role||fpNow.tag!==fpWas.tag||fpNow.name!==fpWas.name){results.push({index:i,type:type,element_id:a.element_id,ok:false,error:'stale_target',reason_code:'TARGET_CHANGED',observe_again:true,no_side_effect:true});break;}}
   var visualLabel=type==='click'||type==='double_click'?'Clicking':(type==='type'||type==='type_text'||type==='paste'?'Typing':(type==='scroll'?'Scrolling':(type==='focus'?'Focusing':(type==='select'?'Selecting':'Working'))));
   var visualDetail=type==='scroll'?(el?'Into view':(Number(a.dy||300)<0?'Up':'Down')):'';
   __mcpVisual(visualLabel,el,(type==='click'||type==='double_click')?'click':'',2200,visualDetail);
@@ -1866,6 +2112,7 @@ for(var i=0;i<actions.length;i++){
       var tag=(el.tagName||'').toLowerCase(),href=String(el.getAttribute('href')||''),inputType=String(el.getAttribute('type')||'').toLowerCase();
       var mayNavigate=(tag==='a'&&href&&href!=='#'&&!href.endsWith('#'))||((tag==='button'||tag==='input')&&inputType==='submit');
       var shouldDefer=(type==='click'&&i===actions.length-1&&mayNavigate),activated=el,effectObserved=false,verification='no_immediate_effect';
+      var beforeQuietMs=Math.max(0,Date.now()-Number(s.lastMutationAt||0));
       if(type==='double_click') activated=__mcpDoubleActivate(el);
       else if(shouldDefer) setTimeout(function(node){return function(){try{__mcpActivate(node);}catch(e){}};}(el),0);
       else activated=__mcpActivate(el);
@@ -1873,8 +2120,9 @@ for(var i=0;i<actions.length;i++){
       else{
         effectObserved=pageEffect(beforeRevision,beforeUrl,beforeTitle,beforeState,activated||el);
         if(effectObserved) verification='state_changed';
+        else if(beforeQuietMs>=__QUIET_MS__&&s.mutationRevision!==beforeRevision){effectObserved=true;verification='dom_mutated';}
       }
-      var clickResult={index:i,type:type,element_id:a.element_id,ok:true,deferred:shouldDefer,activation_target:activated?__mcpId(activated,s):a.element_id,effect_observed:effectObserved,verification:verification,activation_trace:s.lastActivationTrace||null,_verify_revision:beforeRevision,_verify_url:beforeUrl,_verify_title:beforeTitle,_verify_state:beforeState};
+      var clickResult={index:i,type:type,element_id:a.element_id,ok:true,deferred:shouldDefer,activation_target:activated?__mcpId(activated,s):a.element_id,effect_observed:effectObserved,verification:verification,activation_trace:s.lastActivationTrace||null,_verify_revision:beforeRevision,_verify_url:beforeUrl,_verify_title:beforeTitle,_verify_state:beforeState,_verify_quiet_ms:beforeQuietMs};
       if(!effectObserved)clickResult.observe_again=true;
       results.push(clickResult);
     } else if(type==='type'||type==='type_text'||type==='paste'){
@@ -1911,7 +2159,12 @@ var active=document.activeElement;
 var compact={ok:true,url:location.href,title:document.title,scroll:{x:scrollX,y:scrollY},dom_revision:s.mutationRevision,active_element:active&&active.nodeType===1?__mcpDescribe(active,s):null};
 return __mcpB64({ok:results.every(function(r){return r.ok;}),actions:results,dom_changed_since_observe:changed,dom_revision:s.mutationRevision,url:location.href,title:document.title,scroll:{x:scrollX,y:scrollY},state:compact});
 })()'''
-    return template.replace('__BOOTSTRAP__', _browser_state_bootstrap()).replace('__OBS__', obs_json).replace('__ACTIONS__', actions_json)
+    return (
+        template.replace('__BOOTSTRAP__', _browser_state_bootstrap())
+        .replace('__QUIET_MS__', str(_DOM_EFFECT_QUIET_MS))
+        .replace('__OBS__', obs_json)
+        .replace('__ACTIONS__', actions_json)
+    )
 
 
 def _select_prepare_js(element_id: str, observation_id: Optional[str], option: Any) -> str:
@@ -1925,8 +2178,11 @@ function norm(v){{return String(v||'').normalize('NFKD').toLowerCase().replace(/
 var s=__mcpState(), expected={obs}, eid={eid}, wanted=norm({wanted});
 __mcpStartMutationWatch(s,3000);
 if(expected && !(expected in s.observations)) return __mcpB64({{ok:false,error:'stale_observation',observe_again:true}});
+var fpWas=s.targetFp?s.targetFp[eid]:null;
+if(fpWas&&fpWas.route!==__mcpRoute()) return __mcpB64({{ok:false,error:'stale_target',reason_code:'ROUTE_CHANGED',observe_again:true,no_side_effect:true,element_id:eid}});
 var el=s.elements[eid];
 if(!el||!el.isConnected) return __mcpB64({{ok:false,error:'stale_element',observe_again:true,element_id:eid}});
+if(fpWas){{var fpNow=__mcpTargetFp(el);if(fpNow.role!==fpWas.role||fpNow.tag!==fpWas.tag||fpNow.name!==fpWas.name)return __mcpB64({{ok:false,error:'stale_target',reason_code:'TARGET_CHANGED',observe_again:true,no_side_effect:true,element_id:eid}});}}
 __mcpVisual('Selecting',el,'',2200);
 if((el.tagName||'').toLowerCase()==='select'){{
   var opts=Array.from(el.options||[]);
@@ -2614,6 +2870,8 @@ def _verified_dom_action(
     before_url = result.pop("_verify_url", None)
     before_title = result.pop("_verify_title", None)
     before_state = result.pop("_verify_state", None)
+    before_quiet_ms = result.pop("_verify_quiet_ms", None)
+    page_was_quiet = before_quiet_ms is not None and float(before_quiet_ms) >= _DOM_EFFECT_QUIET_MS
     normalized_before_state: Dict[str, Any] = {
         "url": before_url,
         "title": before_title,
@@ -2667,9 +2925,16 @@ def _verified_dom_action(
                     or (before_url is not None and post.get("url") != before_url)
                     or (before_title is not None and post.get("title") != before_title)
                 )
-                if progressed:
+                dom_progressed = (
+                    page_was_quiet and before_revision is not None
+                    and post.get("dom_revision") is not None and post.get("dom_revision") != before_revision
+                )
+                if progressed or dom_progressed:
                     result["effect_observed"] = True
-                    result["verification"] = "async_network_activity" if network_progressed else "async_state_changed"
+                    result["verification"] = (
+                        "async_network_activity" if network_progressed
+                        else "async_state_changed" if progressed else "async_dom_mutated"
+                    )
                     result.pop("observe_again", None)
                     compact_state = post
                     break
@@ -2823,7 +3088,7 @@ for(var ri=0;ri<roots.length;ri++){
       var meaningful=false;
       for(var j=0;j<records.length;j++){
         var rec=records[j];
-        if(rec.type==='attributes'&&rec.attributeName==='data-mac-mcp-visual-event')continue;
+        if(__mcpInternalMutation(rec))continue;
         meaningful=true;break;
       }
       if(meaningful){s.mutationRevision+=1;s.lastMutationAt=Date.now();signal('mutation');}
@@ -3354,6 +3619,26 @@ def _late_target_wait_s(action: Dict[str, Any], results: List[Dict[str, Any]]) -
     return _LATE_TARGET_WAIT_S if mutated else 0.0
 
 
+_INTENT_HINT_LIMIT = 120
+
+
+def _action_intent_hint(action: Dict[str, Any]) -> str:
+    """The agent's optional disambiguation note, safe to send to the Decisions API.
+
+    Values the action types into the page never leave the machine through it,
+    and secrets are redacted before it is capped.
+    """
+    raw = action.get("intent")
+    if not isinstance(raw, str):
+        return ""
+    hint = " ".join(raw.split())
+    for key in ("text", "value"):
+        typed = str(action.get(key) or "").strip()
+        if len(typed) >= 3:
+            hint = re.sub(re.escape(typed), "[typed value]", hint, flags=re.IGNORECASE)
+    return redact_sensitive_text(hint)[:_INTENT_HINT_LIMIT].strip()
+
+
 def _decide_browser_target(
     action: Dict[str, Any],
     query: str,
@@ -3395,6 +3680,9 @@ def _decide_browser_target(
     ]
     action_type = str(action.get("type") or "").lower()
     intent = f"Browser {action_type} target. query: {query}; role: {role or ''}; text: {match_text or ''}"
+    hint = _action_intent_hint(action)
+    if hint:
+        intent += f"; intent: {hint}"
     result = decision_engine.resolve_ambiguity(
         intent, candidates, surface="browser", deterministic_id="c1",
     )
@@ -3405,6 +3693,72 @@ def _decide_browser_target(
     out = dict(chosen or best)
     out["decision"] = {"ambiguity": assessment, **result.metadata()}
     return out
+
+
+_NON_MUTATING_ACT_TYPES = {"wait", "extract"}
+_LOCATOR_KEYS = ("query", "target", "role", "text_match", "target_text")
+
+
+def _has_locator(action: Dict[str, Any]) -> bool:
+    return any(action.get(key) for key in _LOCATOR_KEYS)
+_ACT_TYPES = (
+    "click", "double_click", "type", "type_text", "paste", "select", "scroll", "focus",
+    "wait", "key", "keyboard", "shortcut", "extract",
+)
+# Agents often name the action kind "action" instead of "type"; accept it.
+_ACT_TYPE_ALIASES = ("action", "kind", "op")
+
+
+def normalize_act_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return actions with a known lower-case type, or raise before anything runs.
+
+    An unknown or missing type used to be queued and only fail inside the page
+    batch, after earlier steps ran and with the call counted as dispatched.
+    """
+    normalized: List[Dict[str, Any]] = []
+    for index, action in enumerate(actions):
+        if not isinstance(action, dict):
+            raise mark_not_executed(HTTPException(status.HTTP_400_BAD_REQUEST, "Each action must be an object."))
+        raw = action.get("type")
+        if not raw:
+            raw = next((action.get(key) for key in _ACT_TYPE_ALIASES if action.get(key)), None)
+        typ = str(raw or "").strip().lower().replace("-", "_")
+        if typ not in _ACT_TYPES:
+            raise mark_not_executed(HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"actions[{index}] has unsupported type {str(raw or '')!r}; "
+                f"set \"type\" to one of: {', '.join(_ACT_TYPES)}.",
+            ))
+        item = dict(action)
+        item["type"] = typ
+        normalized.append(item)
+    return normalized
+
+
+def _tab_loss_detail(exc: HTTPException) -> Optional[Dict[str, Any]]:
+    """Classify an error raised because the act's target tab disappeared mid-call."""
+    detail = exc.detail
+    if isinstance(detail, dict):
+        error = str(detail.get("error") or "")
+        if error in {"tab_target_closed", "stale_tab_handle", "ambiguous_tab_handle"}:
+            return {
+                "error": error,
+                "reason_code": str(detail.get("reason_code") or error.upper()),
+                "message": str(detail.get("message") or ""),
+            }
+        return None
+    text = str(detail or "")
+    if exc.status_code == status.HTTP_409_CONFLICT and text.startswith("Target tab identity changed"):
+        return {"error": "tab_identity_changed", "reason_code": "TAB_IDENTITY_CHANGED", "message": text}
+    if "Invalid index" in text and ("tab" in text or "window" in text):
+        # Safari tab references are positional inside one AppleScript; a tab closed
+        # between the identity guard and the action surfaces as an index error.
+        return {
+            "error": "tab_target_closed",
+            "reason_code": "TAB_TARGET_CLOSED",
+            "message": "The target tab moved or closed while the action was running.",
+        }
+    return None
 
 
 def browser_act(
@@ -3420,29 +3774,39 @@ def browser_act(
 ) -> Dict[str, Any]:
     """Perform one serialized action transaction against a single logical tab."""
     cancellation_checkpoint()
-    if not isinstance(actions, list) or not actions:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "actions must be a non-empty list.")
-    if len(actions) > _MAX_ACTIONS:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"actions may contain at most {_MAX_ACTIONS} items.")
-    normalized_return_state = str(return_state or "compact").lower().strip()
-    if normalized_return_state not in _RETURN_STATE_MODES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")
-    b = _norm_browser(browser)
-    _require_stable_handle_for_mutation(b, tab_handle, window_index, "browser_act")
-    _ensure_visual_companion(settings, b, window_index, tab_index, tab_handle)
-    with _tab_lease(b, tab_handle, window_index, tab_index, mutation=True) as target:
-        return _browser_act_locked(
-            settings=settings,
-            browser=target.browser,
-            actions=actions,
-            observation_id=observation_id,
-            window_index=target.window_index,
-            tab_index=target.tab_index,
-            tab_handle=target.tab_handle,
-            lease_generation=int(getattr(target, "lease_generation", 0) or 0),
-            return_state=normalized_return_state,
-            allow_foreground=allow_foreground,
-        )
+    started = False
+    try:
+        if not isinstance(actions, list) or not actions:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "actions must be a non-empty list.")
+        if len(actions) > _MAX_ACTIONS:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"actions may contain at most {_MAX_ACTIONS} items.")
+        actions = normalize_act_actions(actions)
+        normalized_return_state = str(return_state or "compact").lower().strip()
+        if normalized_return_state not in _RETURN_STATE_MODES:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")
+        b = _norm_browser(browser)
+        _require_stable_handle_for_mutation(b, tab_handle, window_index, "browser_act")
+        _ensure_visual_companion(settings, b, window_index, tab_index, tab_handle)
+        with _tab_lease(b, tab_handle, window_index, tab_index, mutation=True) as target:
+            started = True
+            return _browser_act_locked(
+                settings=settings,
+                browser=target.browser,
+                actions=actions,
+                observation_id=observation_id,
+                window_index=target.window_index,
+                tab_index=target.tab_index,
+                tab_handle=target.tab_handle,
+                lease_generation=int(getattr(target, "lease_generation", 0) or 0),
+                return_state=normalized_return_state,
+                allow_foreground=allow_foreground,
+            )
+    except HTTPException as exc:
+        # Validation, tab-handle and lease refusals happen before any action runs;
+        # tag them so a delegated agent's checkpoint is not made unknown.
+        if not started:
+            mark_not_executed(exc)
+        raise
 
 
 def _browser_act_locked(
@@ -3462,6 +3826,7 @@ def _browser_act_locked(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "actions must be a non-empty list.")
     if len(actions) > _MAX_ACTIONS:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"actions may contain at most {_MAX_ACTIONS} items.")
+    actions = normalize_act_actions(actions)
     return_state = str(return_state or "compact").lower().strip()
     if return_state not in _RETURN_STATE_MODES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")
@@ -3506,7 +3871,21 @@ def _browser_act_locked(
         internal_js_calls += 1
         initial_url = str(initial_state.get("url") or "")
     pending: List[Dict[str, Any]] = []
+    in_flight: List[str] = []
     compact_state_candidate: Optional[Dict[str, Any]] = None
+    # The result dict whose action produced the candidate; progress reuses the
+    # candidate only while that action is still the last one in results.
+    compact_state_source: Optional[Dict[str, Any]] = None
+    # Set just before any page-changing step runs; a result that fails without
+    # it proves nothing was done, which lets a delegated agent keep working.
+    mutation_dispatched = False
+
+    def note_possible_navigation() -> None:
+        # Marked before dispatch: a click, key or select may start a cross-site
+        # navigation whose Safari pid swap lands while the action is still being
+        # verified. The marker lets that swap rebind this same handle.
+        if browser == "Safari" and tab_handle:
+            browser_tabs.expect_safari_navigation(tab_handle)
 
     def resolve_target(action: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         nonlocal internal_js_calls
@@ -3526,27 +3905,52 @@ def _browser_act_locked(
         query = str(action.get("query") or action.get("target") or "").strip()
         role = action.get("role")
         match_text = action.get("text_match") or action.get("target_text")
+        within = str(action.get("within") or "").strip() or None
+        within_element_id = str(action.get("within_element_id") or "").strip() or None
+        within_levels = action.get("within_levels")
         if not query and not role and not match_text:
             return dict(action), None
-        found = browser_find(
-            settings, browser, query=query, role=role, text=match_text,
+        find_args = dict(
+            query=query, role=role, text=match_text,
             window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
             max_results=_TARGET_CANDIDATE_LIMIT,
+            within=within, within_element_id=within_element_id, within_levels=within_levels,
         )
+        found = browser_find(settings, browser, **find_args)
         internal_js_calls += 1
         best = found.get("best_match")
         waited_s = 0.0
+        scope = found.get("within") if isinstance(found.get("within"), dict) else None
+        if scope is not None and scope.get("status") in {"anchor_not_found", "anchor_ambiguous"}:
+            ambiguous = scope.get("status") == "anchor_ambiguous"
+            return dict(action), {
+                "ok": False,
+                "error": "within_anchor_ambiguous" if ambiguous else "within_anchor_not_found",
+                "reason_code": "WITHIN_ANCHOR_AMBIGUOUS" if ambiguous else "WITHIN_ANCHOR_NOT_FOUND",
+                "within": within or within_element_id, "anchor_count": scope.get("anchor_count"),
+                "anchors": scope.get("anchors"), "observe_again": False, "automatic_retry": False,
+                "hint": (
+                    "Use a longer phrase that appears only in the intended item, or pass within_element_id."
+                    if ambiguous else "The within text is not on the page; check the anchor text."
+                ),
+            }
         if not best:
             wait_s = _late_target_wait_s(action, results)
-            if wait_s > 0:
+            if wait_s > 0 and scope is not None:
+                # The generic DOM waiter does not know the scope and would return
+                # as soon as any match exists elsewhere, so poll the scoped search.
+                deadline = time.monotonic() + wait_s
+                while not best and time.monotonic() < deadline:
+                    time.sleep(0.25)
+                    found = browser_find(settings, browser, **find_args)
+                    internal_js_calls += 1
+                    best = found.get("best_match")
+                waited_s = wait_s
+            elif wait_s > 0:
                 # A control revealed by an earlier step in this batch (picker confirm,
                 # autocomplete option) may render a moment later; wait for it here
                 # instead of failing back to the outer agent for another observe.
-                found = browser_find(
-                    settings, browser, query=query, role=role, text=match_text,
-                    window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
-                    max_results=_TARGET_CANDIDATE_LIMIT, wait_timeout_s=wait_s,
-                )
+                found = browser_find(settings, browser, wait_timeout_s=wait_s, **find_args)
                 internal_js_calls += 1
                 best = found.get("best_match")
                 waited_s = wait_s
@@ -3554,16 +3958,22 @@ def _browser_act_locked(
             return dict(action), {
                 "ok": False, "error": "target_not_found", "query": query,
                 "role": role, "text": match_text,
+                **({"within": within or within_element_id, "within_levels": (scope or {}).get("levels")} if scope else {}),
                 **({"waited_s": waited_s} if waited_s else {}),
             }
         matches = [item for item in (found.get("matches") or []) if isinstance(item, dict)] or [best]
+        if scope is not None:
+            # Inside a scope the nearest match is the answer; only exact
+            # locality ties go to the general look-alike tie-breaker.
+            nearest = (best.get("within_up"), best.get("within_down"))
+            matches = [item for item in matches if (item.get("within_up"), item.get("within_down")) == nearest] or [best]
         chosen = _decide_browser_target(action, query, role, match_text, matches)
         resolved = dict(action)
         resolved["element_id"] = chosen.get("element_id")
         return resolved, chosen
 
     def flush_pending() -> bool:
-        nonlocal pending, internal_js_calls, current_observation_id
+        nonlocal pending, internal_js_calls, current_observation_id, in_flight, mutation_dispatched
         if not pending:
             return True
         mutation_target, blocked = revalidate_mutation(
@@ -3574,6 +3984,8 @@ def _browser_act_locked(
             results.append(blocked)
             pending = []
             return False
+        in_flight = [str(item.get("type") or "") for item in pending]
+        mutation_dispatched = True
         out = _run_json_js(
             settings,
             browser,
@@ -3590,164 +4002,233 @@ def _browser_act_locked(
             return False
         results.extend(out.get("actions") or [])
         pending = []
+        in_flight = []
         if out.get("ok"):
             current_observation_id = None
         return bool(out.get("ok"))
 
-    for action in actions:
-        if not isinstance(action, dict):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Each action must be an object.")
-        typ = str(action.get("type") or "").lower().replace("-", "_")
-        resolved_target: Optional[Dict[str, Any]] = None
-        work_action = dict(action)
-        if typ not in {"wait", "key", "keyboard", "shortcut", "extract"}:
-            work_action, resolved_target = resolve_target(action)
-            if isinstance(resolved_target, dict) and resolved_target.get("ok") is False:
-                results.append({"type": typ, **resolved_target})
-                break
+    tab_lost: Optional[Dict[str, Any]] = None
+    typ = ""
+    try:
+        for action in actions:
+            if not isinstance(action, dict):
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, "Each action must be an object.")
+            typ = str(action.get("type") or "").lower().replace("-", "_")
+            in_flight = []
+            resolved_target: Optional[Dict[str, Any]] = None
+            work_action = dict(action)
+            if typ not in {"wait", "key", "keyboard", "shortcut", "extract"}:
+                work_action, resolved_target = resolve_target(action)
+                if isinstance(resolved_target, dict) and resolved_target.get("ok") is False:
+                    results.append({"type": typ, **resolved_target})
+                    break
 
-        if typ in {"wait", "key", "keyboard", "shortcut", "select", "extract", "click", "double_click", "type", "type_text", "paste"}:
-            if not flush_pending():
-                break
-            if typ in {"click", "double_click", "type", "type_text", "paste"}:
-                action_result = _verified_dom_action(
-                    settings, browser, work_action, current_observation_id,
-                    window_index, tab_index, tab_handle,
-                    mutation_revalidator=revalidate_mutation,
-                )
-                internal_js_calls += int(action_result.pop("_js_calls", 0))
-                action_compact_state = action_result.pop("_compact_state", None)
-                if action_compact_state is not None:
-                    compact_state_candidate = action_compact_state
-                if resolved_target:
-                    action_result["resolved_target"] = {
-                        k: resolved_target.get(k)
-                        for k in ("element_id", "text", "role", "tag", "confidence")
-                    }
-                    if resolved_target.get("decision"):
-                        action_result["resolved_target"]["decision"] = resolved_target["decision"]
-                results.append(action_result)
-                if not action_result.get("ok"):
+            if typ in {"wait", "key", "keyboard", "shortcut", "select", "extract", "click", "double_click", "type", "type_text", "paste"}:
+                if not flush_pending():
                     break
-                current_observation_id = None
-            elif typ == "extract":
-                extract_result = _extract_action(
-                    settings, browser, action, window_index, tab_index, tab_handle,
-                )
-                internal_js_calls += int(extract_result.pop("_js_calls", 0))
-                results.append(extract_result)
-                if not extract_result.get("ok"):
-                    break
-            elif typ == "select":
-                select_result = _select_action(
-                    settings,
-                    browser,
-                    work_action,
-                    current_observation_id,
-                    window_index,
-                    tab_index,
-                    tab_handle,
-                    mutation_revalidator=revalidate_mutation,
-                )
-                internal_js_calls += int(select_result.pop("_js_calls", 0))
-                if resolved_target:
-                    select_result["resolved_target"] = {
-                        k: resolved_target.get(k)
-                        for k in ("element_id", "text", "role", "tag", "confidence")
-                    }
-                    if resolved_target.get("decision"):
-                        select_result["resolved_target"]["decision"] = resolved_target["decision"]
-                results.append(select_result)
-                if not select_result.get("ok"):
-                    break
-                current_observation_id = None
-            elif typ == "wait":
-                wait_result = _wait_action(
-                    settings,
-                    browser,
-                    action,
-                    window_index,
-                    tab_index,
-                    initial_url,
-                    tab_handle,
-                )
-                compact_state_candidate = wait_result.pop("_compact_state", None)
-                internal_js_calls += int(wait_result.pop("_js_calls", 0))
-                results.append(wait_result)
-                if not wait_result.get("matched") and action.get("required", True):
-                    break
-            else:
-                key_action = dict(action)
-                if not key_action.get("element_id") and any(key_action.get(k) for k in ("query", "target", "role", "text_match", "target_text")):
-                    key_action, resolved_target = resolve_target(key_action)
-                    if isinstance(resolved_target, dict) and resolved_target.get("ok") is False:
-                        results.append({"type": "key", **resolved_target})
-                        break
-                eid = key_action.get("element_id")
-                key_mode = str(action.get("input_mode") or "auto").strip().lower()
-                if key_mode == "dom" or (key_mode == "auto" and not allow_foreground):
-                    # Background-safe default: DOM key events never change app focus.
-                    mutation_target, blocked = revalidate_mutation("key")
-                    if blocked is not None:
-                        results.append(blocked)
-                        break
-                    key_result = _dom_key_action(
-                        settings, browser, action, eid, window_index, tab_index, tab_handle,
-                        prevalidated_target=mutation_target,
+                in_flight = [typ]
+                if typ in {"click", "double_click", "type", "type_text", "paste"}:
+                    if typ in {"click", "double_click"}:
+                        note_possible_navigation()
+                    dispatched_before = mutation_dispatched
+                    mutation_dispatched = True
+                    action_result = _verified_dom_action(
+                        settings, browser, work_action, current_observation_id,
+                        window_index, tab_index, tab_handle,
+                        mutation_revalidator=revalidate_mutation,
                     )
-                    internal_js_calls += int(key_result.pop("_js_calls", 0))
-                    key_compact_state = key_result.pop("_compact_state", None)
-                    if key_compact_state is not None:
-                        compact_state_candidate = key_compact_state
+                    internal_js_calls += int(action_result.pop("_js_calls", 0))
+                    if action_result.get("no_side_effect"):
+                        # The page refused the remembered target before acting on it.
+                        mutation_dispatched = dispatched_before
+                        if resolved_target is None and _has_locator(action):
+                            # The caller also described the target, so look it up again
+                            # on the current page once instead of acting on the old id.
+                            relocated = {k: v for k, v in action.items() if k != "element_id"}
+                            retry_action, retry_target = resolve_target(relocated)
+                            if isinstance(retry_target, dict) and retry_target.get("ok") is False:
+                                results.append({"type": typ, **retry_target, "stale_element_id": action.get("element_id")})
+                                break
+                            current_observation_id = None
+                            mutation_dispatched = True
+                            stale_result = action_result
+                            work_action, resolved_target = retry_action, retry_target
+                            action_result = _verified_dom_action(
+                                settings, browser, work_action, None,
+                                window_index, tab_index, tab_handle,
+                                mutation_revalidator=revalidate_mutation,
+                            )
+                            internal_js_calls += int(action_result.pop("_js_calls", 0))
+                            if action_result.get("no_side_effect"):
+                                mutation_dispatched = dispatched_before
+                            action_result["re_resolved"] = {
+                                "stale_element_id": action.get("element_id"),
+                                "reason_code": stale_result.get("reason_code"),
+                            }
+                    action_compact_state = action_result.pop("_compact_state", None)
+                    if action_compact_state is not None:
+                        compact_state_candidate = action_compact_state
+                        compact_state_source = action_result
                     if resolved_target:
-                        key_result["resolved_target"] = {
+                        action_result["resolved_target"] = {
                             k: resolved_target.get(k)
-                            for k in ("element_id", "text", "role", "tag", "confidence")
+                            for k in ("element_id", "text", "role", "tag", "confidence", "within_up")
                         }
-                    results.append(key_result)
+                        if resolved_target.get("decision"):
+                            action_result["resolved_target"]["decision"] = resolved_target["decision"]
+                    results.append(action_result)
+                    if not action_result.get("ok"):
+                        break
+                    current_observation_id = None
+                elif typ == "extract":
+                    extract_result = _extract_action(
+                        settings, browser, action, window_index, tab_index, tab_handle,
+                    )
+                    internal_js_calls += int(extract_result.pop("_js_calls", 0))
+                    results.append(extract_result)
+                    if not extract_result.get("ok"):
+                        break
+                elif typ == "select":
+                    note_possible_navigation()
+                    dispatched_before = mutation_dispatched
+                    mutation_dispatched = True
+                    select_result = _select_action(
+                        settings,
+                        browser,
+                        work_action,
+                        current_observation_id,
+                        window_index,
+                        tab_index,
+                        tab_handle,
+                        mutation_revalidator=revalidate_mutation,
+                    )
+                    internal_js_calls += int(select_result.pop("_js_calls", 0))
+                    if select_result.get("no_side_effect"):
+                        mutation_dispatched = dispatched_before
+                    if resolved_target:
+                        select_result["resolved_target"] = {
+                            k: resolved_target.get(k)
+                            for k in ("element_id", "text", "role", "tag", "confidence", "within_up")
+                        }
+                        if resolved_target.get("decision"):
+                            select_result["resolved_target"]["decision"] = resolved_target["decision"]
+                    results.append(select_result)
+                    if not select_result.get("ok"):
+                        break
+                    current_observation_id = None
+                elif typ == "wait":
+                    wait_result = _wait_action(
+                        settings,
+                        browser,
+                        action,
+                        window_index,
+                        tab_index,
+                        initial_url,
+                        tab_handle,
+                    )
+                    compact_state_candidate = wait_result.pop("_compact_state", None)
+                    compact_state_source = wait_result
+                    internal_js_calls += int(wait_result.pop("_js_calls", 0))
+                    results.append(wait_result)
+                    if not wait_result.get("matched") and action.get("required", True):
+                        break
+                else:
+                    key_action = dict(action)
+                    if not key_action.get("element_id") and any(key_action.get(k) for k in ("query", "target", "role", "text_match", "target_text")):
+                        key_action, resolved_target = resolve_target(key_action)
+                        if isinstance(resolved_target, dict) and resolved_target.get("ok") is False:
+                            results.append({"type": "key", **resolved_target})
+                            break
+                    eid = key_action.get("element_id")
+                    key_mode = str(action.get("input_mode") or "auto").strip().lower()
+                    if key_mode == "dom" or (key_mode == "auto" and not allow_foreground):
+                        # Background-safe default: DOM key events never change app focus.
+                        mutation_target, blocked = revalidate_mutation("key")
+                        if blocked is not None:
+                            results.append(blocked)
+                            break
+                        note_possible_navigation()
+                        mutation_dispatched = True
+                        key_result = _dom_key_action(
+                            settings, browser, action, eid, window_index, tab_index, tab_handle,
+                            prevalidated_target=mutation_target,
+                        )
+                        internal_js_calls += int(key_result.pop("_js_calls", 0))
+                        key_compact_state = key_result.pop("_compact_state", None)
+                        if key_compact_state is not None:
+                            compact_state_candidate = key_compact_state
+                            compact_state_source = key_result
+                        if resolved_target:
+                            key_result["resolved_target"] = {
+                                k: resolved_target.get(k)
+                                for k in ("element_id", "text", "role", "tag", "confidence", "within_up")
+                            }
+                        results.append(key_result)
+                        if not key_result.get("ok"):
+                            break
+                        current_observation_id = None
+                        continue
+                    if eid:
+                        mutation_target, blocked = revalidate_mutation("key")
+                        if blocked is not None:
+                            results.append(blocked)
+                            break
+                        mutation_dispatched = True
+                        focus_result = _run_json_js(
+                            settings, browser, _batch_js([{"type": "focus", "element_id": eid}], current_observation_id),
+                            window_index, tab_index, tab_handle,
+                            prevalidated_target=mutation_target,
+                        )
+                        internal_js_calls += 1
+                        if not focus_result.get("ok"):
+                            results.extend(focus_result.get("actions") or [{"ok": False, "error": "could_not_focus"}])
+                            break
+                        current_observation_id = None
+                    note_possible_navigation()
+                    mutation_dispatched = True
+                    key_result = browser_press_key(
+                        settings, browser=browser, key=str(action.get("key") or ""),
+                        modifiers=action.get("modifiers") or [], window_index=window_index,
+                        tab_handle=tab_handle, lease_generation=lease_generation,
+                        allow_foreground=allow_foreground,
+                    )
+                    results.append({
+                        "type": "key",
+                        "ok": bool(key_result.get("ok")),
+                        "key": action.get("key"),
+                        "foreground_required": bool(key_result.get("foreground_required")),
+                        "reason_code": key_result.get("reason_code"),
+                        "reason": key_result.get("reason"),
+                        "tab_handle": key_result.get("tab_handle") or tab_handle,
+                        "lease_generation": key_result.get("lease_generation"),
+                    })
                     if not key_result.get("ok"):
                         break
-                    current_observation_id = None
-                    continue
-                if eid:
-                    mutation_target, blocked = revalidate_mutation("key")
-                    if blocked is not None:
-                        results.append(blocked)
-                        break
-                    focus_result = _run_json_js(
-                        settings, browser, _batch_js([{"type": "focus", "element_id": eid}], current_observation_id),
-                        window_index, tab_index, tab_handle,
-                        prevalidated_target=mutation_target,
-                    )
-                    internal_js_calls += 1
-                    if not focus_result.get("ok"):
-                        results.extend(focus_result.get("actions") or [{"ok": False, "error": "could_not_focus"}])
-                        break
-                    current_observation_id = None
-                key_result = browser_press_key(
-                    settings, browser=browser, key=str(action.get("key") or ""),
-                    modifiers=action.get("modifiers") or [], window_index=window_index,
-                    tab_handle=tab_handle, lease_generation=lease_generation,
-                    allow_foreground=allow_foreground,
-                )
-                results.append({
-                    "type": "key",
-                    "ok": bool(key_result.get("ok")),
-                    "key": action.get("key"),
-                    "foreground_required": bool(key_result.get("foreground_required")),
-                    "reason_code": key_result.get("reason_code"),
-                    "reason": key_result.get("reason"),
-                    "tab_handle": key_result.get("tab_handle") or tab_handle,
-                    "lease_generation": key_result.get("lease_generation"),
-                })
-                if not key_result.get("ok"):
-                    break
+            else:
+                pending.append(work_action)
         else:
-            pending.append(work_action)
-    else:
-        flush_pending()
-    if pending:
-        flush_pending()
+            flush_pending()
+        if pending:
+            flush_pending()
+    except HTTPException as exc:
+        tab_lost = _tab_loss_detail(exc)
+        if tab_lost is None:
+            raise
+        # Earlier actions already ran; report them instead of failing the whole call so
+        # the agent never replays completed side effects.
+        mutated = any(item not in _NON_MUTATING_ACT_TYPES for item in in_flight)
+        results.append({
+            "type": in_flight[0] if len(in_flight) == 1 else ("batch" if in_flight else typ),
+            **({"in_flight_types": in_flight} if len(in_flight) > 1 else {}),
+            "ok": False,
+            **tab_lost,
+            "retryable": True,
+            "automatic_retry": False,
+            "observe_again": True,
+            "outcome_unknown": mutated,
+            "resource_kind": "browser_tab",
+            "tab_handle": tab_handle,
+        })
 
     ok = all(bool(r.get("ok")) for r in results) if results else True
     response: Dict[str, Any] = {
@@ -3756,6 +4237,7 @@ def _browser_act_locked(
         "action_count": len(actions),
         "internal_js_calls": internal_js_calls,
         "duration_ms": int((time.perf_counter() - started) * 1000),
+        "mutation_dispatched": mutation_dispatched,
     }
     if not ok:
         failed = next(
@@ -3771,43 +4253,65 @@ def _browser_act_locked(
             ):
                 if key in failed:
                     response[key] = failed.get(key)
-    if return_state == "compact":
-        if compact_state_candidate is not None:
-            response["state"] = compact_state_candidate
-        else:
-            response["state"] = _run_json_js(
-                settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
-            )
-            response["internal_js_calls"] += 1
-    elif return_state == "full":
-        try:
-            full = _observe_payload(
-                settings,
-                browser,
-                "content",
-                120,
-                window_index=window_index,
-                tab_index=tab_index,
-                tab_handle=tab_handle,
-            )
-            response["state"] = full
-            response["internal_js_calls"] += 1
-        except HTTPException as exc:
-            if exc.status_code != status.HTTP_413_REQUEST_ENTITY_TOO_LARGE:
-                raise
-            response["state"] = _run_json_js(
-                settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
-            )
-            response["state_fallback"] = "compact"
-            response["full_state_error"] = "payload_too_large"
-            response["internal_js_calls"] += 1
-    if return_state == "none":
-        progress = _run_json_js(
-            settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+    if tab_lost is not None:
+        response["outcome_unknown"] = bool(results[-1].get("outcome_unknown"))
+        response["completed_action_count"] = sum(
+            1 for item in results if isinstance(item, dict) and item.get("ok")
         )
-        response["progress"] = {
-            key: progress.get(key) for key in ("url", "title", "dom_revision")
-            if progress.get(key) is not None
-        }
-        response["internal_js_calls"] += 1
+        response["state_error"] = tab_lost["error"]
+        return response
+    try:
+        if return_state == "compact":
+            if compact_state_candidate is not None:
+                response["state"] = compact_state_candidate
+            else:
+                response["state"] = _run_json_js(
+                    settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+                )
+                response["internal_js_calls"] += 1
+        elif return_state == "full":
+            try:
+                full = _observe_payload(
+                    settings,
+                    browser,
+                    "content",
+                    120,
+                    window_index=window_index,
+                    tab_index=tab_index,
+                    tab_handle=tab_handle,
+                )
+                response["state"] = full
+                response["internal_js_calls"] += 1
+            except HTTPException as exc:
+                if exc.status_code != status.HTTP_413_REQUEST_ENTITY_TOO_LARGE:
+                    raise
+                response["state"] = _run_json_js(
+                    settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+                )
+                response["state_fallback"] = "compact"
+                response["full_state_error"] = "payload_too_large"
+                response["internal_js_calls"] += 1
+        if return_state == "none":
+            reusable = (
+                compact_state_candidate is not None
+                and results and results[-1] is compact_state_source
+                and all(compact_state_candidate.get(key) is not None for key in ("url", "title", "dom_revision"))
+            )
+            if reusable:
+                progress = compact_state_candidate
+            else:
+                progress = _run_json_js(
+                    settings, browser, _light_state_js(), window_index, tab_index, tab_handle,
+                )
+                response["internal_js_calls"] += 1
+            response["progress"] = {
+                key: progress.get(key) for key in ("url", "title", "dom_revision")
+                if progress.get(key) is not None
+            }
+    except HTTPException as exc:
+        state_lost = _tab_loss_detail(exc)
+        if state_lost is None:
+            raise
+        # The last action may itself have closed the tab; the actions still completed.
+        response["state_error"] = state_lost["error"]
     return response

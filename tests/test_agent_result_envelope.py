@@ -6,7 +6,10 @@ import unittest
 from mcp_server.agent_results import (
     RESULT_ENVELOPE_MARKER,
     ResultContractError,
+    apply_evidence_policy,
     bound_result_envelope,
+    evidence_policy_for,
+    normalize_result_envelope,
     parse_provider_result,
     reduce_task_results,
 )
@@ -62,6 +65,82 @@ class AgentResultEnvelopeTests(unittest.TestCase):
         with self.assertRaises(ResultContractError) as ctx:
             parse_provider_result(marked(payload), provenance={"agent_id": "agent-1"})
         self.assertEqual("missing_summary", ctx.exception.code)
+
+    def test_duplicate_ids_and_dangling_claim_references_fail_validation(self) -> None:
+        base = {
+            "schema_version": 1, "outcome": "success", "summary": "done",
+            "claims": [{"id": "c1", "statement": "a"}, {"id": "c2", "statement": "b"}],
+            "evidence": [{"id": "e1", "ref": "test:1", "claim_ids": ["c1"]}],
+            "artifacts": [], "warnings": [], "confidence": 0.8, "errors": [],
+        }
+        envelope = normalize_result_envelope(base)
+        self.assertEqual(
+            {"claim_count": 2, "evidence_count": 1, "unsupported_claim_count": 1, "unsupported_claim_ids": ["c2"]},
+            envelope["evidence_coverage"],
+        )
+        cases = {
+            "duplicate_id": [
+                {**base, "claims": [{"id": "c1", "statement": "a"}, {"id": "c1", "statement": "b"}]},
+                {**base, "evidence": [{"id": "e1", "ref": "x"}, {"id": "e1", "ref": "y"}]},
+                {**base, "artifacts": [{"id": "a1", "ref": "p"}, {"id": "a1", "ref": "q"}]},
+            ],
+            "dangling_claim_reference": [
+                {**base, "evidence": [{"id": "e1", "ref": "test:1", "claim_ids": ["c9"]}]},
+            ],
+        }
+        for code, payloads in cases.items():
+            for payload in payloads:
+                with self.subTest(code=code), self.assertRaises(ResultContractError) as ctx:
+                    normalize_result_envelope(payload)
+                self.assertEqual(code, ctx.exception.code)
+
+    def test_envelope_closed_by_a_second_marker_still_parses(self) -> None:
+        payload = {
+            "schema_version": 1, "outcome": "partial_failure", "summary": "tab missing",
+            "claims": [], "evidence": [], "artifacts": [], "warnings": [], "confidence": 0.9, "errors": [],
+        }
+        text = f"{RESULT_ENVELOPE_MARKER} {json.dumps(payload)} {RESULT_ENVELOPE_MARKER}"
+        envelope, meta = parse_provider_result(text)
+        self.assertEqual("valid", meta["contract_status"])
+        self.assertEqual("partial_failure", envelope["outcome"])
+        with self.assertRaises(ResultContractError):
+            parse_provider_result(f"{RESULT_ENVELOPE_MARKER} {{\"schema_version\": 1, broken {RESULT_ENVELOPE_MARKER}")
+
+    def test_write_task_success_without_evidence_is_downgraded(self) -> None:
+        self.assertEqual("required", evidence_policy_for("workspace_write"))
+        self.assertEqual("required", evidence_policy_for("full"))
+        self.assertEqual("required", evidence_policy_for("read_only", integration_required=True))
+        self.assertEqual("optional", evidence_policy_for("read_only"))
+        base = {"schema_version": 1, "outcome": "success", "summary": "Changed the parser.",
+                "claims": [{"id": "c1", "statement": "Parser handles the new form."}]}
+        envelope, _ = parse_provider_result(marked(base))
+        apply_evidence_policy(envelope, "required")
+        self.assertEqual("partial_failure", envelope["outcome"])
+        self.assertEqual("required", envelope["evidence_policy"])
+        self.assertEqual(["evidence_required"], [row["code"] for row in envelope["errors"]])
+
+        with_evidence = dict(base, evidence=[{"id": "e1", "ref": "unittest", "summary": "42 tests OK",
+                                              "claim_ids": ["c1"]}])
+        envelope, _ = parse_provider_result(marked(with_evidence))
+        apply_evidence_policy(envelope, "required")
+        self.assertEqual("success", envelope["outcome"])
+        self.assertEqual([], envelope["errors"])
+
+    def test_read_only_success_without_claims_or_evidence_stays_valid(self) -> None:
+        envelope, meta = parse_provider_result(marked(
+            {"schema_version": 1, "outcome": "success", "summary": "The page title is Example."}
+        ))
+        apply_evidence_policy(envelope, evidence_policy_for("read_only"))
+        self.assertTrue(meta["valid"])
+        self.assertEqual("success", envelope["outcome"])
+        self.assertEqual("optional", envelope["evidence_policy"])
+        self.assertEqual(0, envelope["evidence_coverage"]["evidence_count"])
+
+    def test_legacy_text_handoff_is_not_held_to_the_evidence_policy(self) -> None:
+        envelope, _ = parse_provider_result("Done, updated the file.")
+        apply_evidence_policy(envelope, "required")
+        self.assertEqual("legacy_fallback", envelope["contract_status"])
+        self.assertNotIn("evidence_required", [row.get("code") for row in envelope["errors"]])
 
     def test_legacy_provider_fallback_is_explicit_and_versioned(self) -> None:
         env, meta = parse_provider_result(

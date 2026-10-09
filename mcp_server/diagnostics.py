@@ -1183,13 +1183,35 @@ def doctor_checks() -> list[CheckResult]:
     return rows
 
 
+_PUBLIC_ENDPOINT_STATES = {
+    "PUBLIC_ENDPOINT_HEALTHY": "healthy",
+    "PUBLIC_ENDPOINT_LOCAL_ONLY": "local_only",
+    "PUBLIC_ENDPOINT_CONFIG_INVALID": "invalid",
+}
+
+
+def _public_endpoint_state(rows: list[dict[str, Any]]) -> str | None:
+    for row in rows:
+        if row.get("check_id") == "public.endpoint":
+            return _PUBLIC_ENDPOINT_STATES.get(str(row.get("reason_code") or ""), "unavailable")
+    return None
+
+
 def build_report(checks: Iterable[CheckResult], *, kind: str = "doctor", extra: dict[str, Any] | None = None) -> dict[str, Any]:
     rows = [c.to_dict() if isinstance(c, CheckResult) else dict(c) for c in checks]
     counts = {status: sum(1 for row in rows if row.get("status") == status) for status in (PASS, WARN, FAIL, INFO)}
+    local_ok = counts[FAIL] == 0
+    public_state = _public_endpoint_state(rows)
+    # A selected but unreachable public endpoint is only a WARN row, yet it must
+    # not yield an unqualified healthy result; local_ok keeps the local verdict.
+    public_down = public_state == "unavailable"
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "kind": kind,
-        "ok": counts[FAIL] == 0,
+        "ok": local_ok and not public_down,
+        "local_ok": local_ok,
+        "health": "failed" if not local_ok else ("degraded" if public_down else "healthy"),
+        "public_endpoint": public_state,
         "version": __version__,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "counts": counts,
@@ -1272,8 +1294,12 @@ def format_report(report: dict[str, Any], *, title: str = "Mac MCP Doctor") -> s
             lines.append(f"       Fix: {remediation}")
     counts = report.get("counts", {})
     lines.append("")
+    if report.get("health") == "degraded":
+        verdict = "DEGRADED (local runtime OK; selected public endpoint unavailable)"
+    else:
+        verdict = "OK" if report.get("ok") else "ISSUES FOUND"
     lines.append(
-        f"Result: {'OK' if report.get('ok') else 'ISSUES FOUND'} | "
+        f"Result: {verdict} | "
         f"pass={counts.get(PASS, 0)} warn={counts.get(WARN, 0)} fail={counts.get(FAIL, 0)} info={counts.get(INFO, 0)}"
     )
     return "\n".join(lines)
