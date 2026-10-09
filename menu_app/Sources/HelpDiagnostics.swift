@@ -148,6 +148,7 @@ struct HelpDiagnosticsPane: View {
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.top, 4)
                         }
                         .font(.caption)
@@ -162,7 +163,9 @@ struct HelpDiagnosticsPane: View {
     private var verdict: some View {
         if let report = center.report {
             let (text, symbol, color): (String, String, Color) = {
-                if report.ok { return ("Everything looks good", "checkmark.seal.fill", .green) }
+                let warnings = report.problems.count
+                if report.ok && warnings == 0 { return ("Everything looks good", "checkmark.seal.fill", .green) }
+                if report.ok { return ("Works, with \(warnings) warning\(warnings == 1 ? "" : "s")", "exclamationmark.triangle.fill", .orange) }
                 if report.health == "degraded" { return ("Mac MCP works locally; the public endpoint needs attention", "exclamationmark.triangle.fill", .orange) }
                 return ("\(report.problems.count) issue\(report.problems.count == 1 ? "" : "s") found", "exclamationmark.octagon.fill", .red)
             }()
