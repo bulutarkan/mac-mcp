@@ -731,6 +731,37 @@ def _resolve_safari_created_tab(
     )
 
 
+_CHROME_IN_PAGE_NAV_WAIT_S = 8.0
+
+
+def _chrome_navigate_in_page(
+    target: browser_tabs.TabTarget, url: str, previous_url: Optional[str],
+) -> Optional[Tuple[int, str, List[Dict[str, Any]]]]:
+    """Navigate a Chrome web tab from inside the page, without surfacing Chrome.
+
+    AppleScript's ``set URL of tab`` brings Chrome to the front even with no
+    ``activate``; page JavaScript (through the companion or Apple Events) does
+    not. Chrome's own pages refuse page JavaScript, so those, and any refused
+    call, return None and the caller keeps the AppleScript path.
+    """
+    if not target.native_id or not str(previous_url or "").lower().startswith(("http://", "https://")):
+        return None
+    try:
+        _execute_js_for_target("Google Chrome", f"location.assign({json.dumps(url)});'ok'", target, timeout_s=10)
+    except HTTPException:
+        return None
+    # A page-started navigation shows its new URL only once it commits.
+    deadline = time.monotonic() + _CHROME_IN_PAGE_NAV_WAIT_S
+    while True:
+        scanned = browser_tabs._scan("Google Chrome")
+        row = next((r for r in scanned if str(r.get("native_id") or "") == target.native_id), None)
+        if row is None:
+            return 0, target.native_id, scanned
+        if url == previous_url or str(row.get("url") or "") != previous_url or time.monotonic() >= deadline:
+            return int(row.get("tab_index") or 0), target.native_id, scanned
+        time.sleep(0.25)
+
+
 def browser_open_url(
     settings: Settings,
     browser: str,
@@ -785,15 +816,32 @@ def browser_open_url(
             selected_handle = str(selected.get("tab_handle") or "")
 
         with _tab_lease(b, selected_handle, window_index, tab_index, mutation=True) as target:
-            guard = _tab_identity_guard(target)
-            native_property = "id" if b == "Google Chrome" else "pid"
-            script = f'''
+            previous_url = target.url
+            in_page = (
+                _chrome_navigate_in_page(target, url, previous_url)
+                if b == "Google Chrome" and background else None
+            )
+            if in_page is not None:
+                resolved_index, returned_native, scanned = in_page
+            else:
+                guard = _tab_identity_guard(target)
+                native_property = "id" if b == "Google Chrome" else "pid"
+                # Chrome tabs have no index property; count to the tab by id instead.
+                index_line = (
+                    "set newIndex to 0\n"
+                    "                    set targetId to id of targetTab\n"
+                    "                    repeat with i from 1 to (count of tabs)\n"
+                    "                        if (id of tab i) is targetId then set newIndex to i\n"
+                    "                    end repeat"
+                    if b == "Google Chrome" else "set newIndex to index of targetTab"
+                )
+                script = f'''
             tell application "{b}"
                 {activate_line}
                 tell window {target.window_index}
                     {guard}
                     set URL of targetTab to "{escaped_url}"
-                    set newIndex to index of targetTab
+                    {index_line}
                     set newNativeId to ""
                     try
                         set newNativeId to ({native_property} of targetTab) as text
@@ -802,15 +850,14 @@ def browser_open_url(
                 end tell
             end tell
             '''
-            previous_url = target.url
-            raw = _run_osascript(script, timeout_s=30)
-            parts = str(raw or "").strip().split("|", 1)
-            try:
-                resolved_index = int(parts[0])
-            except (TypeError, ValueError, IndexError) as exc:
-                raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Browser did not return the navigated tab identity.") from exc
-            returned_native = parts[1].strip() if len(parts) > 1 else ""
-            scanned = browser_tabs._scan(b)
+                raw = _run_osascript(script, timeout_s=30)
+                parts = str(raw or "").strip().split("|", 1)
+                try:
+                    resolved_index = int(parts[0])
+                except (TypeError, ValueError, IndexError) as exc:
+                    raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Browser did not return the navigated tab identity.") from exc
+                returned_native = parts[1].strip() if len(parts) > 1 else ""
+                scanned = browser_tabs._scan(b)
             candidates = [
                 row for row in scanned
                 if int(row.get("window_index") or 0) == target.window_index

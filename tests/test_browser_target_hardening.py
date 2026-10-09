@@ -107,6 +107,68 @@ class BrowserTargetHardeningTests(unittest.TestCase):
         self.assertEqual(target_handle, result["tab_handle"])
         self.assertEqual("https://github.com/example/repo", after[0]["url"])
 
+    def _chrome_rows(self, url: str) -> list:
+        return [
+            {"browser": "Google Chrome", "window_index": 1, "tab_index": 1, "active": True,
+             "native_id": "3001", "title": "Mine", "url": "https://example.test/user"},
+            {"browser": "Google Chrome", "window_index": 1, "tab_index": 2, "active": False,
+             "native_id": "3002", "title": "Agent", "url": url},
+        ]
+
+    def _navigate_chrome(self, start_url: str, *, js_error: Exception = None):
+        state = {"url": start_url}
+
+        def scan(_browser):
+            return self._chrome_rows(state["url"])
+
+        def run_js(_browser, js, target, timeout_s):
+            if js_error is not None:
+                raise js_error
+            self.assertIn('location.assign("https://example.test/next")', js)
+            self.assertEqual("3002", target.native_id)
+            state["url"] = "https://example.test/next"
+            return "ok"
+
+        def osascript(script, timeout_s=30):
+            state["url"] = "https://example.test/next"
+            return "2|3002"
+
+        with patch("mcp_server.browser_tabs._scan", side_effect=scan), \
+             patch("mcp_server.tools_browser.validate_url"), \
+             patch("mcp_server.tools_browser._claim_tab_visual", return_value=False), \
+             patch("mcp_server.tools_browser._execute_js_for_target", side_effect=run_js) as js, \
+             patch("mcp_server.tools_browser._run_osascript", side_effect=osascript) as osa:
+            handle = browser_tabs.list_tabs("Google Chrome")[1]["tab_handle"]
+            result = browser_open_url(
+                None, "Google Chrome", "https://example.test/next",
+                new_tab=False, background=True, tab_handle=handle,
+            )
+        return result, handle, js, osa
+
+    def test_chrome_web_tab_navigates_in_page_without_surfacing_chrome(self) -> None:
+        result, handle, js, osa = self._navigate_chrome("https://example.test/start")
+        js.assert_called_once()
+        osa.assert_not_called()  # AppleScript's set URL brings Chrome to the front
+        self.assertEqual(handle, result["tab_handle"])
+        self.assertEqual(2, result["tab_index"])
+        self.assertEqual("https://example.test/next", result["url"])
+
+    def test_chrome_internal_page_keeps_applescript_and_counts_index_by_id(self) -> None:
+        result, handle, js, osa = self._navigate_chrome("chrome://newtab/")
+        js.assert_not_called()
+        script = osa.call_args.args[0]
+        self.assertIn("set URL of targetTab", script)
+        self.assertNotIn("index of targetTab", script)  # Chrome tabs have no index property
+        self.assertIn("if (id of tab i) is targetId then set newIndex to i", script)
+        self.assertEqual(2, result["tab_index"])
+
+    def test_chrome_refused_page_script_falls_back_to_applescript(self) -> None:
+        refused = HTTPException(403, {"error": "foreground_not_authorized"})
+        result, handle, js, osa = self._navigate_chrome("https://example.test/start", js_error=refused)
+        js.assert_called_once()
+        osa.assert_called_once()
+        self.assertEqual("https://example.test/next", result["url"])
+
     def test_ambiguous_mutation_requires_stable_handle(self) -> None:
         rows = [
             {"browser": "Safari", "window_index": 1, "tab_index": 1},
