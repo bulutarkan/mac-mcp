@@ -674,6 +674,8 @@ def create_app():
             "Each child produces a versioned typed result envelope; valid structured output is preserved, plain legacy text is "
             "adapted with explicit legacy_fallback status, and malformed marked envelopes fail closed (a read_only non-reviewer child keeps its plain report with contract_status=invalid and no structured claims). Dependency fan-in is deterministic, "
             "provenance-aware, deduplicates evidence/artifacts, flags keyed claim contradictions, and never injects raw provider logs. "
+            "conflict_policy=advisory (default) keeps success but reports unresolved contradictions; review or fail withholds "
+            "team success until a reviewer settles them with resolutions. A child reporting success with errors counts as partial_failure. "
             "Returns immediately with parent-visible budget and global admission/queue state."
         ),
     )
@@ -690,7 +692,7 @@ def create_app():
                       admission_tool_call_budget: Optional[int] = None,
                       admission_token_budget: Optional[int] = None,
                       max_total_tool_calls: Optional[int] = None, max_total_tokens: Optional[int] = None,
-                      git_isolation: str = "auto") -> Dict[str, Any]:
+                      git_isolation: str = "auto", conflict_policy: str = "advisory") -> Dict[str, Any]:
         context = current_policy_context()
         return _log(audit_logger, "spawn_agents",
                     lambda: spawn_agents(settings, tasks=tasks, provider=provider, model=model,
@@ -705,7 +707,8 @@ def create_app():
                                          admission_tool_call_budget=admission_tool_call_budget,
                                          admission_token_budget=admission_token_budget,
                                          max_total_tool_calls=max_total_tool_calls,
-                                         max_total_tokens=max_total_tokens, git_isolation=git_isolation))
+                                         max_total_tokens=max_total_tokens, git_isolation=git_isolation,
+                                         conflict_policy=conflict_policy))
 
     @mcp.tool(
         name="wait_agents",

@@ -75,8 +75,10 @@ def result_contract_instruction(*, detailed: bool = False, evidence_required: bo
         '"warnings":["..."],"confidence":0.0,'
         '"errors":[{"subtask_id":"optional","code":"...","message":"..."}],'
         '"provenance":{},'
-        '"quality_gate":{"decision":"pass|fail","feedback":"optional"}'
-        "}. Omit quality_gate unless you are reviewing another task. "
+        '"quality_gate":{"decision":"pass|fail","feedback":"optional"},'
+        '"resolutions":[{"key":"conflicting-claim-key","accepted_value":"...","reason":"..."}]'
+        "}. Omit quality_gate and resolutions unless you are reviewing other tasks; a reviewer settles "
+        "conflicting claim values with resolutions. outcome=success means no errors. "
         "Do not put raw logs, chain-of-thought, secrets, tokens, cookies, or full tool transcripts in the envelope. "
         + detail
     )
@@ -183,6 +185,22 @@ def _normalize_error(item: Any, index: int) -> Dict[str, Any]:
     return row
 
 
+def _normalize_resolution(item: Any, index: int) -> Dict[str, Any]:
+    """A reviewer's decision on a conflicting claim key: which value stands, and why."""
+    if not isinstance(item, Mapping):
+        raise ResultContractError("invalid_resolution", f"resolutions[{index}] must be an object")
+    key = _clean_text(item.get("key"), limit=200)
+    if not key:
+        raise ResultContractError("invalid_resolution", f"resolutions[{index}].key is required")
+    if "accepted_value" not in item:
+        raise ResultContractError("invalid_resolution", f"resolutions[{index}].accepted_value is required")
+    return {
+        "key": key,
+        "accepted_value": _json_scalar(item.get("accepted_value")),
+        "reason": _clean_text(item.get("reason"), limit=1000),
+    }
+
+
 def _validate_references(envelope: Dict[str, Any]) -> None:
     for name in ("claims", "evidence", "artifacts"):
         seen: set[str] = set()
@@ -274,6 +292,19 @@ def normalize_result_envelope(
         "quality_gate": None,
         "truncation": {"truncated": False, "omitted": {}},
     }
+    if outcome == "success" and envelope["errors"]:
+        # "success" with declared errors is not a clean success.
+        envelope["outcome"] = "partial_failure"
+        envelope["warnings"].append(
+            f"Outcome changed from success to partial_failure: the result also reported "
+            f"{len(envelope['errors'])} error(s)."
+        )
+    resolutions_raw = list(raw.get("resolutions") or [])
+    if len(resolutions_raw) > _MAX_ITEMS:
+        raise ResultContractError("too_many_items", f"resolutions exceeds {_MAX_ITEMS} items")
+    resolutions = [_normalize_resolution(item, i) for i, item in enumerate(resolutions_raw)]
+    if resolutions:
+        envelope["resolutions"] = resolutions
     _validate_references(envelope)
     gate = raw.get("quality_gate")
     if gate is not None:
@@ -395,11 +426,19 @@ def _dedupe_key(row: Mapping[str, Any], *, fallback_fields: Sequence[str]) -> st
     return "hash:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:20]
 
 
+CONFLICT_POLICIES = ("advisory", "review", "fail")
+
+
 def reduce_task_results(
     task_results: Sequence[Tuple[str, Mapping[str, Any]]],
     *,
     team_id: Optional[str] = None,
+    conflict_policy: str = "advisory",
 ) -> Dict[str, Any]:
+    """Combine child envelopes. Conflicting claim values stay visible with their source tasks;
+    a reviewer's resolutions settle them. Unresolved conflicts keep success under "advisory"
+    (with a prominent warning) and turn it into partial_failure under "review" or "fail".
+    """
     ordered = [(str(task_id), copy.deepcopy(dict(envelope))) for task_id, envelope in task_results]
     claims: List[Dict[str, Any]] = []
     evidence_by_key: Dict[str, Dict[str, Any]] = {}
@@ -411,8 +450,11 @@ def reduce_task_results(
     outcome_rows: List[str] = []
     provenance_children: List[Dict[str, Any]] = []
     keyed_claims: Dict[str, List[Dict[str, Any]]] = {}
+    resolutions: Dict[str, Dict[str, Any]] = {}
 
     for task_id, envelope in ordered:
+        for resolution in list(envelope.get("resolutions") or []):
+            resolutions[str(resolution.get("key"))] = {**dict(resolution), "resolved_by_task_id": task_id}
         summaries.append(f"{task_id}: {_clean_text(envelope.get('summary'), limit=3000)}")
         outcome_rows.append(str(envelope.get("outcome") or "failure"))
         try:
@@ -488,19 +530,37 @@ def reduce_task_results(
         for row in rows:
             values.setdefault(_canonical_value(row.get("value")), []).append(str(row.get("source_task_id")))
         if len(values) > 1:
-            contradictions.append({
+            contradiction: Dict[str, Any] = {
                 "key": key,
                 "values": [
                     {"value": json.loads(encoded), "source_task_ids": sorted(set(task_ids))}
                     for encoded, task_ids in sorted(values.items())
                 ],
-            })
+                "resolved": key in resolutions,
+            }
+            if key in resolutions:
+                contradiction["resolution"] = resolutions[key]
+            contradictions.append(contradiction)
+    unresolved = [row for row in contradictions if not row["resolved"]]
     if contradictions:
         warnings.append(f"Detected {len(contradictions)} conflicting claim key(s) during deterministic fan-in.")
+    if unresolved:
+        keys = ", ".join(row["key"] for row in unresolved[:5])
+        warnings.insert(0, (
+            f"UNRESOLVED: {len(unresolved)} claim key(s) have conflicting values ({keys}); "
+            "a reviewer can settle them with resolutions."
+        ))
 
     successes = sum(1 for outcome in outcome_rows if outcome == "success")
     failures = sum(1 for outcome in outcome_rows if outcome == "failure")
     partials = sum(1 for outcome in outcome_rows if outcome == "partial_failure")
+    policy = conflict_policy if conflict_policy in CONFLICT_POLICIES else "advisory"
+    if unresolved and policy != "advisory":
+        errors.append({
+            "code": "unresolved_conflict",
+            "message": f"{len(unresolved)} conflicting claim key(s) are unresolved (conflict_policy={policy}).",
+            "subtask_id": None,
+        })
     if not ordered or (failures and not successes and not partials):
         outcome = "failure"
     elif failures or partials or errors:
@@ -526,6 +586,8 @@ def reduce_task_results(
         },
         "quality_gate": None,
         "contradictions": contradictions,
+        "conflict_policy": policy,
+        "unresolved_conflict_count": len(unresolved),
         "truncation": {"truncated": False, "omitted": {}},
     }
     return envelope

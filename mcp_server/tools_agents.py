@@ -47,7 +47,7 @@ from .agent_worktrees import (
 from .agent_results import (
     RESULT_ENVELOPE_MARKER, RESULT_ENVELOPE_VERSION, ResultContractError,
     bound_result_envelope, legacy_result_envelope, normalize_result_envelope,
-    parse_provider_result, reduce_task_results, result_contract_instruction,
+    CONFLICT_POLICIES, parse_provider_result, reduce_task_results, result_contract_instruction,
     apply_evidence_policy, evidence_policy_for,
 )
 from .agent_admission import (
@@ -1173,7 +1173,10 @@ def _team_fan_in(team_id: str, team: Dict[str, Any], *, char_limit: int = DETAIL
             rows.append((str(task.get("id") or agent_id), envelope))
     if not rows:
         return None
-    return bound_result_envelope(reduce_task_results(rows, team_id=team_id), char_limit)
+    return bound_result_envelope(
+        reduce_task_results(rows, team_id=team_id, conflict_policy=str(team.get("conflict_policy") or "advisory")),
+        char_limit,
+    )
 
 
 def _team_agent_result(agent_id: Optional[str], limit: int = TEAM_RESULT_LIMIT * 2) -> str:
@@ -1769,6 +1772,8 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         global_admission_public = {
             "global_active": global_admission.get("global_active"),
             "global_limit": global_admission.get("global_limit"),
+            "configured_limit": global_admission.get("configured_limit"),
+            "memory_pressure": global_admission.get("memory_pressure"),
             "provider_active": global_admission.get("provider_active"),
             "provider_limits": global_admission.get("provider_limits"),
             "queued_count": global_admission.get("queued_count"),
@@ -1776,9 +1781,20 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
     except Exception:
         global_admission_public = None
     result_fan_in = _team_fan_in(team_id, team)
+    unresolved_conflicts = int((result_fan_in or {}).get("unresolved_conflict_count") or 0)
+    conflict_policy = str(team.get("conflict_policy") or "advisory")
+    if unresolved_conflicts and conflict_policy != "advisory" and outcome_state["outcome"] == "completed":
+        # Unresolved contradictions withhold an unqualified success under review/fail policies.
+        outcome_state = {**outcome_state, "success": False, "outcome": "partial_failure", "partial_failure": True}
+        failure_reasons = list(failure_reasons) + [{
+            "agent_id": None, "status": "completed", "reason": "unresolved_conflict",
+            "count": unresolved_conflicts,
+        }]
     return {
         "team_id": team_id,
         "status": team_status,
+        "conflict_policy": conflict_policy,
+        "unresolved_conflict_count": unresolved_conflicts,
         "success": outcome_state["success"],
         "outcome": outcome_state["outcome"],
         "partial_failure": outcome_state["partial_failure"],
@@ -4708,6 +4724,7 @@ def spawn_agents(
     max_total_tool_calls: Optional[int] = None,
     max_total_tokens: Optional[int] = None,
     git_isolation: str = "auto",
+    conflict_policy: str = "advisory",
 ) -> Dict[str, Any]:
     selection = _resolve_agent_selection(provider, model, reasoning)
     provider = str(selection["provider"])
@@ -4715,6 +4732,9 @@ def spawn_agents(
     reasoning = selection.get("reasoning")
     if not provider_enabled(provider):
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"provider_disabled: {provider} is disabled in Mac MCP Settings > Subagents.")
+    conflict_policy = str(conflict_policy or "advisory").strip().lower()
+    if conflict_policy not in CONFLICT_POLICIES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"conflict_policy must be one of: {', '.join(CONFLICT_POLICIES)}.")
     if provider != "chatgpt" and project:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "project is only supported by provider=chatgpt.")
     git_isolation = str(git_isolation or "auto").strip().lower()
@@ -4942,6 +4962,7 @@ def spawn_agents(
         "scheduler_version": 1,
         "max_parallel": effective_max_parallel,
         "max_revisions": effective_max_revisions,
+        "conflict_policy": conflict_policy,
         "team_timeout_s": effective_team_timeout,
         "deadline_at": created + effective_team_timeout,
         "max_team_retries": effective_team_retries,
@@ -5267,6 +5288,8 @@ def wait_agents(
         "condition_met": condition_met,
         "success": wait_success,
         "outcome": str(wait_state.get("outcome") or "running"),
+        "unresolved_conflict_count": int((team_summary or {}).get("unresolved_conflict_count") or 0),
+        "conflict_policy": (team_summary or {}).get("conflict_policy"),
         "partial_failure": bool(wait_state.get("partial_failure")),
         "timed_out": waiter_timed_out,
         "quorum_possible": quorum_possible,
