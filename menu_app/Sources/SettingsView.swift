@@ -555,6 +555,8 @@ struct SettingsView: View {
 
                 defaultAgentCard
 
+                concurrencyCard
+
                 Text("PROVIDERS")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.tertiary)
@@ -2712,6 +2714,51 @@ struct SettingsView: View {
         case "ultra": return "Ultra"
         default: return value.capitalized
         }
+    }
+
+    private var concurrencyCard: some View {
+        GroupBox {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Agents at Once")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Most delegated agents that run together; more wait in line. Fewer is gentler on memory. New agents also wait while macOS reports memory pressure.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                Stepper(value: maxActiveBinding, in: 1...16) {
+                    Text("\(settings.maxActiveAgents)")
+                        .font(.body.monospacedDigit().weight(.semibold))
+                        .frame(minWidth: 22, alignment: .trailing)
+                }
+                .fixedSize()
+                .accessibilityLabel("Agents at once")
+                .accessibilityValue("\(settings.maxActiveAgents)")
+            }
+            .padding(4)
+        }
+    }
+
+    private var maxActiveBinding: Binding<Int> {
+        Binding(
+            get: { settings.maxActiveAgents },
+            set: { value in
+                settings.maxActiveAgents = value
+                do {
+                    try settings.save()
+                    saveFeedback = SettingsSaveFeedback(
+                        scope: .agents, message: "Up to \(value) agents at once · applies to new agents", isError: false
+                    )
+                } catch {
+                    settings.load()
+                    saveFeedback = SettingsSaveFeedback(
+                        scope: .agents, message: "Could not save the agent limit: \(error.localizedDescription)", isError: true
+                    )
+                }
+            }
+        )
     }
 
     private func persistDefaultAgent() {

@@ -48,10 +48,13 @@ struct MenuSettings: Codable {
     struct Subagents: Codable {
         var providers: [String: Provider]
         var defaultAgent: DefaultAgent?
+        /// Most delegated agents running at once (the server's default is 8).
+        var maxActive: Int?
 
         enum CodingKeys: String, CodingKey {
             case providers
             case defaultAgent = "default"
+            case maxActive = "max_active"
         }
     }
 
@@ -119,6 +122,8 @@ final class SettingsStore: ObservableObject {
     @Published var defaultAgentProvider = ""
     @Published var defaultAgentModel = ""
     @Published var defaultAgentReasoning = ""
+    static let defaultMaxActiveAgents = 8
+    @Published var maxActiveAgents = SettingsStore.defaultMaxActiveAgents
     @Published var hasGroqKey = false
     @Published var decisionAccelerationEnabled = false
     @Published var decisionAccelerationScope = "both"
@@ -221,6 +226,7 @@ final class SettingsStore: ObservableObject {
         defaultAgentProvider = current.subagents?.defaultAgent?.provider ?? ""
         defaultAgentModel = current.subagents?.defaultAgent?.model ?? ""
         defaultAgentReasoning = current.subagents?.defaultAgent?.reasoning ?? ""
+        maxActiveAgents = min(16, max(1, current.subagents?.maxActive ?? Self.defaultMaxActiveAgents))
         if cliPath.isEmpty { cliPath = defaultCLIPath() }
     }
 
@@ -258,7 +264,8 @@ final class SettingsStore: ObservableObject {
                 ],
                 defaultAgent: defaultAgentProvider.nilIfEmpty.map {
                     .init(provider: $0, model: defaultAgentModel.nilIfEmpty, reasoning: defaultAgentReasoning.nilIfEmpty)
-                }
+                },
+                maxActive: min(16, max(1, maxActiveAgents))
             )
         )
         let payloadData = try JSONEncoder.pretty.encode(payload)

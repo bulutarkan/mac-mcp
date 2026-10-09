@@ -44,13 +44,77 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(value, maximum))
 
 
+def configured_global_limit() -> int:
+    """The owner's cap on active agents: environment, then Settings (subagents.max_active), then 8."""
+    if os.getenv("MAC_MCP_AGENT_GLOBAL_ACTIVE_LIMIT", "").strip():
+        return _env_int("MAC_MCP_AGENT_GLOBAL_ACTIVE_LIMIT", DEFAULT_GLOBAL_LIMIT, 1, MAX_LIMIT)
+    try:
+        from .runtime_settings import load_runtime_settings
+
+        configured = (load_runtime_settings().get("subagents") or {}).get("max_active")
+    except Exception:
+        configured = None
+    if isinstance(configured, int) and not isinstance(configured, bool):
+        return max(1, min(configured, MAX_LIMIT))
+    return DEFAULT_GLOBAL_LIMIT
+
+
+# Memory pressure (kern.memorystatus_vm_pressure_level: 1 normal, 2 warning,
+# 4 critical) only gates new admissions; running agents are never stopped. A
+# level is held for MEMORY_PRESSURE_HOLD_S after it was last seen, so a brief
+# dip does not let a burst of new agents in.
+MEMORY_PRESSURE_HOLD_S = 30.0
+_MEMORY_SAMPLE_TTL_S = 5.0
+_memory_state: Dict[str, Any] = {"sampled_at": 0.0, "level": "normal", "warning_until": 0.0, "critical_until": 0.0}
+
+
+def _sample_memory_pressure() -> int:
+    import subprocess
+
+    try:
+        raw = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
+            capture_output=True, text=True, timeout=2,
+        ).stdout.strip()
+        return int(raw)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 1
+
+
+def memory_pressure() -> str:
+    # On in the CLI-managed server (and its workers); MAC_MCP_AGENT_MEMORY_GATE=0/1 forces it.
+    gate = os.getenv("MAC_MCP_AGENT_MEMORY_GATE", "").strip().lower()
+    if gate in {"0", "false", "no", "off"} or (not gate and os.getenv("MAC_MCP_MANAGED_SERVER") != "1"):
+        return "normal"
+    now = _now()
+    if now - float(_memory_state["sampled_at"]) >= _MEMORY_SAMPLE_TTL_S:
+        level = _sample_memory_pressure()
+        _memory_state["sampled_at"] = now
+        if level >= 4:
+            _memory_state["critical_until"] = now + MEMORY_PRESSURE_HOLD_S
+        if level >= 2:
+            _memory_state["warning_until"] = now + MEMORY_PRESSURE_HOLD_S
+        if now < float(_memory_state["critical_until"]):
+            _memory_state["level"] = "critical"
+        elif now < float(_memory_state["warning_until"]):
+            _memory_state["level"] = "warning"
+        else:
+            _memory_state["level"] = "normal"
+    return str(_memory_state["level"])
+
+
 def global_limit() -> int:
-    return _env_int("MAC_MCP_AGENT_GLOBAL_ACTIVE_LIMIT", DEFAULT_GLOBAL_LIMIT, 1, MAX_LIMIT)
+    """Active-agent capacity right now: the configured cap, halved under memory pressure warning."""
+    configured = configured_global_limit()
+    if memory_pressure() == "warning":
+        return max(1, configured // 2)
+    return configured
 
 
 def provider_limit(provider: str) -> int:
     key = str(provider or "").strip().upper().replace("-", "_") or "DEFAULT"
-    fallback = _env_int("MAC_MCP_AGENT_PROVIDER_LIMIT", DEFAULT_PROVIDER_LIMIT, 1, MAX_LIMIT)
+    default = max(DEFAULT_PROVIDER_LIMIT, configured_global_limit())
+    fallback = _env_int("MAC_MCP_AGENT_PROVIDER_LIMIT", default, 1, MAX_LIMIT)
     return _env_int(f"MAC_MCP_AGENT_PROVIDER_LIMIT_{key}", fallback, 1, MAX_LIMIT)
 
 
@@ -379,6 +443,8 @@ def _effective_provider_limit(provider: str, override: Optional[int] = None) -> 
 def _capacity_reason(
     state: Mapping[str, Any], provider: str, provider_limit_override: Optional[int] = None,
 ) -> Optional[str]:
+    if memory_pressure() == "critical":
+        return "memory_pressure"
     total, by_provider = _active_counts(state)
     if total >= global_limit():
         return "global_capacity"
@@ -466,6 +532,8 @@ def _queued_reason(
         return capacity, {
             "global_active": total,
             "global_limit": global_limit(),
+            "configured_limit": configured_global_limit(),
+            "memory_pressure": memory_pressure(),
             "provider_active": int(by_provider.get(str(request.get("provider") or ""), 0)),
             "provider_limit": _effective_provider_limit(
                 str(request.get("provider") or ""), request.get("provider_limit_override"),
@@ -976,6 +1044,8 @@ def snapshot(root: Path) -> Dict[str, Any]:
         return {
             "global_active": total,
             "global_limit": global_limit(),
+            "configured_limit": configured_global_limit(),
+            "memory_pressure": memory_pressure(),
             "provider_active": by_provider,
             "provider_limits": {provider: provider_limit(provider) for provider in sorted(set(by_provider) | {"opencode", "codex", "chatgpt"})},
             "queued_count": len(queued),
