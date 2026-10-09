@@ -68,6 +68,10 @@ REGISTRY: Dict[str, ErrorSpec] = {
     "outcome_unknown": ErrorSpec("execution", "unknown", "observe_again", 409),
     "timeout": ErrorSpec("execution", "unknown", "observe_again", 504),
     "tool_failed": ErrorSpec("execution", "unknown", "observe_again", 500),
+    "invalid_idempotency_key": _VALIDATION,
+    "idempotency_key_conflict": ErrorSpec("validation", "not_executed", "fix_arguments", 409),
+    "idempotency_in_progress": ErrorSpec("preflight", "unknown", "observe_again", 409),
+    "idempotency_outcome_unknown": ErrorSpec("preflight", "unknown", "observe_again", 409),
 }
 
 _STATUS_CODES = {

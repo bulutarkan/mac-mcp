@@ -33,6 +33,7 @@ from . import browser_tabs
 from .tool_summaries import COMPACT_DESCRIPTION_LIMIT, CORE_TOOL_NAMES, CORE_TOOL_SUMMARIES
 from . import audit_chain
 from . import error_contract
+from . import idempotency
 from .security_context import SecurityContextManager, reset_delegated_provenance, set_delegated_provenance
 from .data_guard import contains_direct_secret, redact_sensitive_source_result, redact_sensitive_text, sanitize_tool_arguments
 from .workflow_checkpoints import (
@@ -51,7 +52,6 @@ from .usage_metering import (
 )
 
 from .policy import (
-    Capability,
     PolicyContext,
     annotations_for_tool,
     current_policy_context,
@@ -1053,7 +1053,7 @@ def _tool_can_mutate(name: str) -> bool:
         risk = declared_risk(name)
     except KeyError:
         return True
-    return bool(risk.destructive or set(risk.capabilities) - {Capability.READ})
+    return risk_has_side_effect([capability.value for capability in risk.capabilities], risk.destructive)
 
 
 class ObservedFastMCP(FastMCP):
@@ -1134,6 +1134,18 @@ class ObservedFastMCP(FastMCP):
         schema["required"] = required
         return tool.model_copy(update={"inputSchema": schema})
 
+    @staticmethod
+    def _with_idempotency_schema(tool: Any) -> Any:
+        if tool.name in CHATGPT_PANEL_TOOLS or not _tool_can_mutate(tool.name):
+            return tool
+        schema = dict(getattr(tool, "inputSchema", None) or {})
+        properties = dict(schema.get("properties") or {})
+        if "idempotency_key" in properties:
+            raise RuntimeError(f"tool_idempotency_reserved_field_conflict: tool={tool.name}")
+        properties["idempotency_key"] = dict(idempotency.KEY_SCHEMA)
+        schema["properties"] = properties
+        return tool.model_copy(update={"inputSchema": schema})
+
     async def list_available_tools(self, *, compact: bool = True):
         tools = await super().list_tools()
         if not is_chatgpt_client(self):
@@ -1144,6 +1156,7 @@ class ObservedFastMCP(FastMCP):
         ]
         if self.intent_descriptions_enabled():
             tools = [self._with_intent_schema(tool) for tool in tools]
+        tools = [self._with_idempotency_schema(tool) for tool in tools]
         if not compact or os.getenv("MAC_MCP_TOOL_PROFILE", "core").strip().lower() != "core":
             return tools
         extra = {
@@ -1291,6 +1304,8 @@ class ObservedFastMCP(FastMCP):
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):
         try:
+            if isinstance(arguments, dict) and "idempotency_key" in arguments:
+                return await self._call_tool_idempotent(name, dict(arguments))
             return await self._call_tool_observed(name, arguments)
         except Exception as exc:
             # Give every failure the shared machine contract once; an inner call
@@ -1299,6 +1314,37 @@ class ObservedFastMCP(FastMCP):
                 raise
             contract = error_contract.describe(exc, tool=name, mutating=_tool_can_mutate(name))
             raise ToolError(error_contract.annotate(str(exc), contract)) from exc
+
+    async def _call_tool_idempotent(self, name: str, arguments: dict[str, Any]):
+        """Run a state-changing call at most once per (caller, tool, idempotency_key); see idempotency.py."""
+        key = idempotency.validate_key(arguments.pop("idempotency_key"))
+        if not _tool_can_mutate(name):
+            return await self._call_tool_observed(name, arguments)
+        context = self._policy_context_provider()
+        caller = f"agent:{context.agent_id}" if context.agent_id else f"actor:{context.actor}"
+        scope = idempotency.scope_for(caller, name, key)
+        state, earlier = await asyncio.to_thread(idempotency.claim, scope, name, idempotency.arguments_hash(arguments))
+        if state == "conflict":
+            raise idempotency.IdempotencyError(
+                "idempotency_key_conflict", f"tool={name}; this idempotency_key was already used with different arguments",
+            )
+        if state == "completed":
+            return idempotency.replay(earlier)
+        if state != "new":
+            code = "idempotency_in_progress" if state == "started" else "idempotency_outcome_unknown"
+            raise idempotency.IdempotencyError(
+                code, f"tool={name}; the first call with this idempotency_key "
+                + ("has not finished" if state == "started" else "ended with an unknown outcome")
+                + "; it is not run again. Check the current state before acting.",
+            )
+        try:
+            result = await self._call_tool_observed(name, arguments)
+        except BaseException as exc:
+            refused = isinstance(exc, Exception) and error_contract.describe(exc, tool=name)["outcome"] == "not_executed"
+            await asyncio.to_thread(idempotency.release if refused else idempotency.mark_unknown, scope)
+            raise
+        await asyncio.to_thread(idempotency.complete, scope, idempotency.dump_result(result))
+        return result
 
     async def _call_tool_observed(self, name: str, arguments: dict[str, Any]):
         if name in CHATGPT_PANEL_TOOLS and not is_chatgpt_client(self):
