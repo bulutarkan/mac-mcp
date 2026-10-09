@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 from fastapi import HTTPException, status
 
 from .security import Settings, truncate, validate_browser_url as _validate_browser_destination
-from . import browser_tabs
+from . import applescript_host, browser_tabs
 from .chrome_background_bridge import chrome_background_bridge
 from .artifact_pipeline import (
     ArtifactError, drive_native_file_dialog, register_artifact, resolve_artifact, wait_for_file_dialog,
@@ -326,6 +326,19 @@ def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) 
 def _run_osascript(script: str, timeout_s: int = 30) -> str:
     timeout_s = max(1, min(int(timeout_s), 120))
     cancellation_checkpoint()
+    try:
+        ok, stdout, stderr = applescript_host.run(script, timeout_s)
+    except applescript_host.HostUnavailable:
+        return _run_osascript_process(script, timeout_s)
+    except applescript_host.HostTimeout:
+        raise HTTPException(status.HTTP_408_REQUEST_TIMEOUT, "AppleScript timed out.")
+    cancellation_checkpoint()
+    if not ok:
+        _raise_applescript_error((stderr or stdout or "AppleScript error").strip())
+    return (stdout or "").strip()
+
+
+def _run_osascript_process(script: str, timeout_s: int) -> str:
     proc = subprocess.Popen(
         ["osascript", "-e", script],
         stdin=subprocess.DEVNULL,
@@ -351,39 +364,43 @@ def _run_osascript(script: str, timeout_s: int = 30) -> str:
         unregister_cancellation_cleanup(cleanup_token)
 
     if proc.returncode != 0:
-        msg = (stderr or stdout or "AppleScript error").strip()
-        if _TAB_IDENTITY_CHANGED in msg:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                "Target tab identity changed before the operation; resolve or observe the tab again.",
-            )
-        if _TAB_TARGET_MISSING in msg:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                {
-                    "ok": False,
-                    "error": "tab_target_closed",
-                    "reason_code": "TAB_TARGET_CLOSED",
-                    "retryable": True,
-                    "observe_again": True,
-                    "required_action": "browser_list_tabs",
-                    "do_not_fallback_to_active_tab": True,
-                    "message": "The target tab was closed or moved to another window; list tabs before retrying.",
-                },
-            )
-        if _TAB_TARGET_NOT_ACTIVE in msg:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT,
-                {
-                    "ok": False,
-                    "error": "tab_target_not_active",
-                    "reason_code": "TAB_TARGET_NOT_ACTIVE",
-                    "retryable": True,
-                    "message": "The pinned browser tab stopped being the active tab before the native key event. No key was sent.",
-                },
-            )
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, msg)
+        _raise_applescript_error((stderr or stdout or "AppleScript error").strip())
     return (stdout or "").strip()
+
+
+def _raise_applescript_error(msg: str) -> None:
+    if _TAB_IDENTITY_CHANGED in msg:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Target tab identity changed before the operation; resolve or observe the tab again.",
+        )
+    if _TAB_TARGET_MISSING in msg:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {
+                "ok": False,
+                "error": "tab_target_closed",
+                "reason_code": "TAB_TARGET_CLOSED",
+                "retryable": True,
+                "observe_again": True,
+                "required_action": "browser_list_tabs",
+                "do_not_fallback_to_active_tab": True,
+                "message": "The target tab was closed or moved to another window; list tabs before retrying.",
+            },
+        )
+    if _TAB_TARGET_NOT_ACTIVE in msg:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {
+                "ok": False,
+                "error": "tab_target_not_active",
+                "reason_code": "TAB_TARGET_NOT_ACTIVE",
+                "retryable": True,
+                "message": "The pinned browser tab stopped being the active tab before the native key event. No key was sent.",
+            },
+        )
+    raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, msg)
+
 
 def _visual_claim_event_js(expected_url: str) -> str:
     expected = json.dumps(str(expected_url or ""))

@@ -15,6 +15,8 @@ from urllib.parse import urlsplit
 
 from fastapi import HTTPException, status
 
+from . import applescript_host
+
 from .workspace_arbitration import (
     browser_human_takeover,
     claim_delegated_resource,
@@ -100,15 +102,22 @@ _SCAN_RACE_ERRORS = ("(-1719)", "(-1728)")
 
 
 def _osascript(script: str) -> str:
-    proc = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError((proc.stderr or proc.stdout or "AppleScript error").strip())
-    return (proc.stdout or "").strip()
+    # Tab scans are read-only; the reusable host avoids launching osascript each time.
+    try:
+        ok, stdout, stderr = applescript_host.run(script, 30)
+    except applescript_host.HostUnavailable:
+        proc = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        ok, stdout, stderr = proc.returncode == 0, proc.stdout, proc.stderr
+    except applescript_host.HostTimeout as exc:
+        raise subprocess.TimeoutExpired(["osascript"], 30) from exc
+    if not ok:
+        raise RuntimeError((stderr or stdout or "AppleScript error").strip())
+    return (stdout or "").strip()
 
 
 def _browser_key(browser: str) -> str:
