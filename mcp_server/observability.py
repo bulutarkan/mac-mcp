@@ -30,7 +30,7 @@ ensure_fastmcp_settings_model_complete()
 
 from .steering import SteeringManager, attach_steering, preemption_error, steering_identity_from_context
 from . import browser_tabs
-from .tool_summaries import COMPACT_DESCRIPTION_LIMIT, CORE_TOOL_SUMMARIES
+from .tool_summaries import COMPACT_DESCRIPTION_LIMIT, CORE_TOOL_NAMES, CORE_TOOL_SUMMARIES
 from .security_context import SecurityContextManager
 from .data_guard import contains_direct_secret, redact_sensitive_source_result, redact_sensitive_text, sanitize_tool_arguments
 from .workflow_checkpoints import (
@@ -1038,16 +1038,7 @@ def _clip_description(description: str) -> str:
     return description[:keep].rsplit(" ", 1)[0] + _CLIP_MARKER
 
 
-_CORE_TOOL_NAMES = {
-    "open_mac_mcp_panel", "mac_mcp_panel_state", "mac_mcp_panel_setting",
-    "run_command", "run_commands_parallel",
-    "read_file", "write_file", "edit_file", "file_transaction_undo", "artifact_pipeline", "context_handoff", "search_files", "http_request",
-    "mac_snapshot", "mac_observe", "mac_act", "mac_app", "computer_plan",
-    "browser_list_tabs", "browser_close_tab", "browser_observe", "browser_find", "browser_act", "browser_do", "browser_upload_artifact",
-    "spawn_agents", "wait_agents",
-    "memory_search", "lesson_search", "lesson_feedback", "ask_user",
-    "tool_discover", "tool_invoke",
-}
+_CORE_TOOL_NAMES = CORE_TOOL_NAMES
 
 
 class ObservedFastMCP(FastMCP):

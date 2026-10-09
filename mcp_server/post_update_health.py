@@ -20,8 +20,10 @@ from mcp.client.streamable_http import streamable_http_client
 from . import release_trust
 from .policy import permission_profile_name, tool_availability
 from .public_endpoint import PublicEndpointError, public_health_url, resolve_public_endpoint
+from .chatgpt_client_gate import CHATGPT_PANEL_TOOLS
 from .runtime_resolver import resolve_cloudflared_binary, resolve_ngrok_binary
 from .security import Settings
+from .tool_summaries import CORE_TOOL_NAMES
 from .update_state import read_deployed_commit, update_root, update_state_path
 from .version import __version__
 
@@ -305,6 +307,18 @@ async def _public_endpoint_smoke(public_url: str) -> tuple[bool, int | None, str
     return False, last_status, last_error
 
 
+def expected_core_tools(profile: str) -> set[str]:
+    """Core tools this release must list for a non-ChatGPT client under ``profile``.
+
+    Tools the profile denies are intentionally absent, and extra tools from
+    MAC_MCP_CORE_EXTRA_TOOLS are optional, so neither is required.
+    """
+    return {
+        name for name in CORE_TOOL_NAMES - CHATGPT_PANEL_TOOLS
+        if tool_availability(profile, name).get("available") is True
+    }
+
+
 async def _mcp_smoke(settings: Settings, local_base: str) -> tuple[bool, dict[str, Any], str | None]:
     headers: dict[str, str] = {}
     if settings.api_key:
@@ -401,6 +415,20 @@ async def run_post_update_health_gate(
     ))
 
     profile = permission_profile_name()
+    expected_tools = expected_core_tools(profile)
+    missing_tools = sorted(expected_tools - set(mcp_details.get("tool_names") or []))
+    checks.append(_check(
+        "mcp.core_tools",
+        mcp_ok and not missing_tools,
+        critical=True,
+        pass_summary="Every core tool the permission profile allows is registered.",
+        fail_summary="Core tools the permission profile allows are missing.",
+        details={
+            "permission_profile": profile,
+            "expected_count": len(expected_tools),
+            "missing": missing_tools[:40],
+        },
+    ))
     run_command_expected = bool(settings.allow_shell and tool_availability(profile, "run_command").get("available"))
     actual_tools = set(mcp_details.get("tool_names") or [])
     run_command_present = "run_command" in actual_tools

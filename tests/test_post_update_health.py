@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, patch
 from starlette.testclient import TestClient
 
 import mcp_server.post_update_health as health
+from mcp_server.chatgpt_client_gate import CHATGPT_PANEL_TOOLS
+from mcp_server.tool_summaries import CORE_TOOL_NAMES
 from mcp_server.version import __version__
 
 
@@ -89,6 +91,8 @@ class PostUpdateHealthGateTests(unittest.IsolatedAsyncioTestCase):
         codesign_ok: bool = True,
         menu_pids: list[int] | None = None,
         allow_shell: bool = True,
+        profile: str = "trusted",
+        fake_availability: bool = True,
     ) -> dict:
         app, runtime = self._fixture(root)
         target = "d" * 40
@@ -102,7 +106,7 @@ class PostUpdateHealthGateTests(unittest.IsolatedAsyncioTestCase):
             api_key="test-key-not-secret",
             allow_shell=allow_shell,
         )
-        names = mcp_names if mcp_names is not None else ["read_file", "run_command"]
+        names = mcp_names if mcp_names is not None else sorted(CORE_TOOL_NAMES - CHATGPT_PANEL_TOOLS)
         context = {
             "target_commit": target,
             "release_id": "stable-test",
@@ -116,7 +120,7 @@ class PostUpdateHealthGateTests(unittest.IsolatedAsyncioTestCase):
                     mcp_ok,
                     {"protocol_version": "2025-11-25", "tool_count": len(names), "tool_names": names} if mcp_ok else {},
                     None if mcp_ok else "RuntimeError",
-                ))),                 patch.object(health, "permission_profile_name", return_value="trusted"),                 patch.object(health, "tool_availability", return_value={"available": True}),                 patch.object(health, "_menu_app_path", return_value=app),                 patch.object(health, "_codesign_ok", return_value=codesign_ok),                 patch.object(health, "_menu_process_pids", return_value=[123] if menu_pids is None else menu_pids),                 patch.object(health, "_runtime_root", return_value=runtime),                 patch.object(health, "_public_basic_health_url", return_value=(public_url, public_mode, "test")),                 patch.object(health, "resolve_cloudflared_binary", return_value=resolver),                 patch.object(health, "resolve_ngrok_binary", return_value=resolver),                 patch.object(health, "_public_endpoint_smoke", new=AsyncMock(return_value=(
+                ))),                 patch.object(health, "permission_profile_name", return_value=profile),                 patch.object(health, "tool_availability", **({"return_value": {"available": True}} if fake_availability else {"wraps": health.tool_availability})),                 patch.object(health, "_menu_app_path", return_value=app),                 patch.object(health, "_codesign_ok", return_value=codesign_ok),                 patch.object(health, "_menu_process_pids", return_value=[123] if menu_pids is None else menu_pids),                 patch.object(health, "_runtime_root", return_value=runtime),                 patch.object(health, "_public_basic_health_url", return_value=(public_url, public_mode, "test")),                 patch.object(health, "resolve_cloudflared_binary", return_value=resolver),                 patch.object(health, "resolve_ngrok_binary", return_value=resolver),                 patch.object(health, "_public_endpoint_smoke", new=AsyncMock(return_value=(
                     public_ok,
                     200 if public_ok else 503,
                     None if public_ok else "ConnectError",
@@ -135,6 +139,24 @@ class PostUpdateHealthGateTests(unittest.IsolatedAsyncioTestCase):
             report = await self._run_gate(Path(td), mcp_ok=False, allow_shell=False)
         self.assertFalse(report["ok"])
         self.assertIn("mcp.initialize_tools", report["critical_failures"])
+
+    async def test_a_missing_core_tool_fails_the_gate(self) -> None:
+        names = sorted(CORE_TOOL_NAMES - CHATGPT_PANEL_TOOLS - {"browser_act"})
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-health-missing-") as td:
+            report = await self._run_gate(Path(td), mcp_names=names)
+        self.assertFalse(report["ok"])
+        self.assertIn("mcp.core_tools", report["critical_failures"])
+        check = next(item for item in report["checks"] if item["check_id"] == "mcp.core_tools")
+        self.assertEqual(["browser_act"], check["details"]["missing"])
+
+    async def test_tools_the_profile_denies_are_not_required(self) -> None:
+        for profile in ("trusted", "standard", "read_only"):
+            names = sorted(health.expected_core_tools(profile))
+            with tempfile.TemporaryDirectory(prefix="mac-mcp-health-profile-") as td:
+                report = await self._run_gate(Path(td), mcp_names=names, profile=profile, fake_availability=False)
+            self.assertNotIn("mcp.core_tools", report["critical_failures"], profile)
+        self.assertLess(len(health.expected_core_tools("read_only")), len(health.expected_core_tools("trusted")))
+        self.assertNotIn("run_command", health.expected_core_tools("read_only"))
 
     async def test_public_endpoint_failure_is_critical_when_selected(self) -> None:
         with tempfile.TemporaryDirectory(prefix="mac-mcp-health-public-") as td:

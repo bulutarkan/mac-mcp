@@ -12,6 +12,19 @@ from typing import Dict
 
 COMPACT_DESCRIPTION_LIMIT = 220
 
+# Tools the default core profile lists (before permission-profile filtering).
+# The post-update health gate requires every one the profile allows.
+CORE_TOOL_NAMES = frozenset({
+    "open_mac_mcp_panel", "mac_mcp_panel_state", "mac_mcp_panel_setting",
+    "run_command", "run_commands_parallel",
+    "read_file", "write_file", "edit_file", "file_transaction_undo", "artifact_pipeline", "context_handoff", "search_files", "http_request",
+    "mac_snapshot", "mac_observe", "mac_act", "mac_app", "computer_plan",
+    "browser_list_tabs", "browser_close_tab", "browser_observe", "browser_find", "browser_act", "browser_do", "browser_upload_artifact",
+    "spawn_agents", "wait_agents",
+    "memory_search", "lesson_search", "lesson_feedback", "ask_user",
+    "tool_discover", "tool_invoke",
+})
+
 CORE_TOOL_SUMMARIES: Dict[str, str] = {
     "run_command": (
         "Run a short shell command in zsh and wait for it (full access unless scoped); long builds or servers belong in "
