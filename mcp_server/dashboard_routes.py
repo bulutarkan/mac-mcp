@@ -353,6 +353,16 @@ def create_dashboard_routes(
         server_profile = security_context.server_approval_profile if security_context is not None else "off"
         return JSONResponse(permission_semantics(server_approval_profile=server_profile))
 
+    async def security_integrity(request: Request) -> Response:
+        """Whether the retained security events still match their hash chain."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        try:
+            return JSONResponse(await asyncio.to_thread(telemetry.verify_security_chain))
+        except sqlite3.Error as exc:
+            return JSONResponse({"ok": False, "problem": "unreadable", "error": str(sanitize_value(exc))})
+
     async def set_security_profile(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -1108,6 +1118,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/decision-acceleration", decision_acceleration_status, methods=["GET"]),
         Route("/dashboard/api/decision-acceleration/verify", decision_acceleration_verify, methods=["POST"]),
         Route("/dashboard/api/security/semantics", security_semantics, methods=["GET"]),
+        Route("/dashboard/api/security/integrity", security_integrity, methods=["GET"]),
         Route("/dashboard/api/security/profile", set_security_profile, methods=["POST"]),
         Route("/dashboard/api/security/server-approval", set_server_approval_profile, methods=["POST"]),
         Route("/dashboard/api/security/events", security_events, methods=["GET"]),

@@ -419,3 +419,4 @@ pre { margin: 0; max-width: 100%; padding: 16px; overflow: auto; max-height: 44v
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
 }
 .agent-card-head .agent-phase { margin-left: auto; }
+.integrity-alert { margin: 0 0 10px; padding: 9px 12px; border: 1px solid rgba(200, 107, 112, .55); border-radius: 10px; background: rgba(120, 30, 36, .35); color: #f0b5b8; font-size: 11px; }

@@ -31,6 +31,7 @@ ensure_fastmcp_settings_model_complete()
 from .steering import SteeringManager, attach_steering, preemption_error, steering_identity_from_context
 from . import browser_tabs
 from .tool_summaries import COMPACT_DESCRIPTION_LIMIT, CORE_TOOL_NAMES, CORE_TOOL_SUMMARIES
+from . import audit_chain
 from .security_context import SecurityContextManager, reset_delegated_provenance, set_delegated_provenance
 from .data_guard import contains_direct_secret, redact_sensitive_source_result, redact_sensitive_text, sanitize_tool_arguments
 from .workflow_checkpoints import (
@@ -477,6 +478,7 @@ class TelemetryManager:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_time ON security_events(timestamp DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_session ON security_events(session_id, timestamp DESC)")
+        audit_chain.ensure_schema(conn)
         ensure_usage_schema(conn)
 
     def _init_db(self) -> None:
@@ -761,16 +763,8 @@ class TelemetryManager:
         cutoff = time.time() - (self.retention_days * 86400)
         with closing(self._connect()) as conn, conn:
             conn.execute("DELETE FROM tool_events WHERE timestamp < ?", (cutoff,))
-            conn.execute("DELETE FROM security_events WHERE timestamp < ?", (cutoff,))
-            conn.execute(
-                """
-                DELETE FROM security_events
-                WHERE event_id NOT IN (
-                    SELECT event_id FROM security_events ORDER BY timestamp DESC LIMIT ?
-                )
-                """,
-                (self.max_events,),
-            )
+            # Security events leave as a prefix of their hash chain, with an anchor.
+            audit_chain.prune(conn, cutoff=cutoff, max_events=self.max_events)
             conn.execute(
                 """
                 DELETE FROM tool_events
@@ -821,22 +815,31 @@ class TelemetryManager:
             "agent_id": str(agent_id) if agent_id else None,
             "target_summary": sanitize_value(target_summary, preview_chars=240) if target_summary else None,
         }
-        with closing(self._connect()) as conn, conn:
-            conn.execute(
-                """INSERT INTO security_events (
-                    event_id,timestamp,session_id,event_type,tool,tool_class,origin,decision,reason_code,
-                    profile,actor,agent_id,target_summary
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                tuple(event[key] for key in (
-                    "event_id","timestamp","session_id","event_type","tool","tool_class","origin","decision",
-                    "reason_code","profile","actor","agent_id","target_summary"
-                )),
-            )
+        # Each event is the next link of a hash chain (see audit_chain); the
+        # immediate transaction keeps concurrent writers from forking it.
+        with closing(self._connect()) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                seq, digest = audit_chain.append(conn, event)
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+        if seq % audit_chain.CHECKPOINT_EVERY == 0:
+            try:
+                audit_chain.write_checkpoint(self.db_path, seq, digest)
+            except OSError:
+                pass
         self._writes += 1
         if self._writes % 100 == 1:
             self._prune()
         self._publish({"kind": "security_event", **event})
         return event
+
+    def verify_security_chain(self) -> Dict[str, Any]:
+        """Check the retained security events against their hash chain and the latest checkpoint."""
+        with closing(self._connect()) as conn:
+            return audit_chain.verify(conn, self.db_path)
 
     def query_security_events(self, *, hours: float = 24, limit: int = 100, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
         bounded_hours = max(0.05, min(float(hours), 24 * 365))

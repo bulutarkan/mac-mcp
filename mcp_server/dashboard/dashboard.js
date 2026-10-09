@@ -939,6 +939,27 @@
   });
 
   Promise.all([refreshSummary(), refreshEvents(), refreshAgents(), refreshChanges(), refreshTransactions()]).finally(connectStream);
+  // The security record is hash-chained; say so loudly if it no longer verifies.
+  async function refreshIntegrity() {
+    let result = null;
+    try { result = await fetchJSON("/dashboard/api/security/integrity"); } catch { return; }
+    let banner = document.getElementById("integrityAlert");
+    if (result && result.ok === false) {
+      if (!banner) {
+        banner = document.createElement("div");
+        banner.id = "integrityAlert";
+        banner.className = "integrity-alert";
+        banner.setAttribute("role", "alert");
+        document.querySelector(".app-main")?.prepend(banner);
+      }
+      const problem = String(result.problem || "verification_failed").replace(/_/g, " ");
+      banner.textContent = `Security record check failed: ${problem}${result.seq ? ` at event #${result.seq}` : ""}. Events may have been edited or removed outside Mac MCP.`;
+    } else if (banner) {
+      banner.remove();
+    }
+  }
+  refreshIntegrity();
+  window.setInterval(() => { if (!document.hidden) refreshIntegrity(); }, 60000);
   window.setInterval(refreshSummary, 5000);
   window.setInterval(renderFreshness, 5000);
   window.setInterval(refreshAgents, 2200);

@@ -472,6 +472,46 @@ def _check_runtime_python() -> CheckResult:
                   started=started, details=report)
 
 
+def _check_security_chain() -> CheckResult:
+    """The retained security events still match their hash chain and latest checkpoint."""
+    started = time.perf_counter()
+    import sqlite3
+
+    from . import audit_chain
+
+    telemetry_dir = Path(os.getenv("MAC_MCP_TELEMETRY_DIR", str(Path.home() / ".mac-mcp" / "dashboard"))).expanduser()
+    db_path = telemetry_dir / "telemetry.sqlite3"
+    if not db_path.is_file():
+        return result("security.audit_chain", "security", INFO, "SECURITY_CHAIN_ABSENT",
+                      "No security events have been recorded yet.", started=started)
+    try:
+        # Read-only queries on a normal connection: mode=ro cannot open a WAL database.
+        conn = sqlite3.connect(db_path, timeout=2.0)
+        try:
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(security_events)").fetchall()}
+            if "chain_seq" not in columns:
+                return result("security.audit_chain", "security", INFO, "SECURITY_CHAIN_PENDING",
+                              "Security events are chained once the updated server records its first one.",
+                              started=started)
+            report = audit_chain.verify(conn, db_path)
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return result("security.audit_chain", "security", WARN, "SECURITY_CHAIN_UNREADABLE",
+                      "The security record could not be read for verification.", started=started,
+                      details={"error_type": type(exc).__name__})
+    if not report.get("ok"):
+        return result("security.audit_chain", "security", FAIL, "SECURITY_CHAIN_BROKEN",
+                      f"The security record no longer verifies ({report.get('problem')} at event "
+                      f"#{report.get('seq')}): events were edited or removed outside Mac MCP.",
+                      started=started,
+                      remediation="Keep a copy of ~/.mac-mcp/dashboard for inspection; new events keep chaining from here.",
+                      details=report)
+    return result("security.audit_chain", "security", PASS, "SECURITY_CHAIN_OK",
+                  f"{report.get('checked')} security events verify against their hash chain.",
+                  started=started, details=report)
+
+
 def _check_settings() -> CheckResult:
     started = time.perf_counter()
     path = settings_path()
@@ -1434,6 +1474,7 @@ def doctor_checks() -> list[CheckResult]:
         _check_agent_worktrees,
         _check_server_supervisor,
         _check_runtime_python,
+        _check_security_chain,
         _check_settings,
         _check_permission_profile_scope,
         _check_permission_coherence,
