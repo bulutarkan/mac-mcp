@@ -1151,6 +1151,9 @@ def create_dashboard_routes(
 
 async def rest_telemetry_middleware(request: Request, call_next, telemetry: TelemetryManager):
     """Capture legacy REST/OpenAPI usage without changing route handlers."""
+    if request.url.path.startswith("/api/v2/"):
+        # v2 dispatches through the MCP call path, which records the call itself.
+        return await call_next(request)
     raw_body = await request.body()
     payload: Dict[str, Any] = {}
     if raw_body:

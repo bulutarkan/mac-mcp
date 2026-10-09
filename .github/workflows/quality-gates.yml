@@ -33,4 +33,4 @@ jobs:
       - name: Installer syntax
         run: bash -n install.sh
       - name: OpenAPI JSON syntax
-        run: python -m json.tool openapi/custom-gpt-actions.json >/dev/null
+        run: python -m json.tool openapi/custom-gpt-actions.json >/dev/null && python -m json.tool openapi/mac-mcp-v2.json >/dev/null

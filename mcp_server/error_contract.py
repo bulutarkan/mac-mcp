@@ -200,7 +200,8 @@ def install_rest_handlers(app: Any, can_mutate: Any) -> None:
 
     def _tool(request: Any) -> Optional[str]:
         route = request.scope.get("route")
-        return getattr(route, "operation_id", None) or None
+        operation = getattr(route, "operation_id", None) or None
+        return operation[3:] if operation and operation.startswith("v2_") else operation
 
     async def on_http(request: Any, exc: StarletteHTTPException):
         tool = _tool(request)

@@ -1,0 +1,4806 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Mac MCP REST API v2",
+    "version": "2.0.0",
+    "x-product-version": "2.1.9",
+    "description": "Versioned REST surface generated from the Mac MCP tool contract: POST /api/v2/<tool> takes the MCP tool's input schema and runs through the same policy, approvals, telemetry, idempotency_key and error contract as MCP. Failures return {error: {code, stage, outcome, retry}}. The unversioned /api routes remain available unchanged."
+  },
+  "servers": [
+    {
+      "url": "https://YOUR-MAC-MCP-HOST"
+    }
+  ],
+  "components": {
+    "schemas": {
+      "ErrorContract": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "detail": {
+            "description": "Human-readable detail (not the machine contract)."
+          },
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "stage",
+              "outcome",
+              "retry"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "stage": {
+                "type": "string",
+                "enum": [
+                  "validation",
+                  "policy",
+                  "preflight",
+                  "execution"
+                ]
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "not_executed",
+                  "completed",
+                  "unknown"
+                ]
+              },
+              "retry": {
+                "type": "string",
+                "enum": [
+                  "fix_arguments",
+                  "safe_retry",
+                  "observe_again",
+                  "wait_for_user",
+                  "never_retry"
+                ]
+              },
+              "http_status": {
+                "type": "integer"
+              },
+              "message": {
+                "type": "string"
+              },
+              "tool": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "Result": {
+        "description": "Completed call; the tool's own result (it may report ok=false).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        }
+      },
+      "Error": {
+        "description": "Failed call (status from the error contract).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorContract"
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/api/v2/run_command": {
+      "post": {
+        "operationId": "run_command",
+        "summary": "run_command",
+        "description": "Run any shell command in zsh on the local Mac. Full access by default. Set reversible=true to capture bounded filesystem side effects under reversible_root (defaults to the command workspace). Git workspaces use commit-backed clean-file preimages plus snapshots for dirty/untracked files; non-Git wor",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "command": {
+                    "title": "Command",
+                    "type": "string"
+                  },
+                  "timeout_s": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Timeout S"
+                  },
+                  "reversible": {
+                    "default": false,
+                    "title": "Reversible",
+                    "type": "boolean"
+                  },
+                  "reversible_root": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Reversible Root"
+                  },
+                  "join_transaction_ids": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Join Transaction Ids"
+                  },
+                  "require_full_reversibility": {
+                    "default": false,
+                    "title": "Require Full Reversibility",
+                    "type": "boolean"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "command"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/process_list": {
+      "post": {
+        "operationId": "process_list",
+        "summary": "process_list",
+        "description": "List running processes. Optional filter by name substring.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "filter": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Filter"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/kill_process": {
+      "post": {
+        "operationId": "kill_process",
+        "summary": "kill_process",
+        "description": "Kill a process by PID. signal: TERM (graceful) or KILL (force).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "pid": {
+                    "title": "Pid",
+                    "type": "integer"
+                  },
+                  "signal": {
+                    "default": "TERM",
+                    "title": "Signal",
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "pid"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/get_system_info": {
+      "post": {
+        "operationId": "get_system_info",
+        "summary": "get_system_info",
+        "description": "Get Mac system info: CPU, memory, disk, battery, network, uptime.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/start_background_job": {
+      "post": {
+        "operationId": "start_background_job",
+        "summary": "start_background_job",
+        "description": "Start a shell command and return immediately with job_id. Default timeout is 60 seconds; set timeout_s explicitly (up to 600) for longer npm installs, builds, downloads, dev servers, docker, or tests. Set reversible=true for durable bounded filesystem capture; the watcher finalizes the transaction o",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "command": {
+                    "title": "Command",
+                    "type": "string"
+                  },
+                  "cwd": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Cwd"
+                  },
+                  "env": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Env"
+                  },
+                  "timeout_s": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Timeout S"
+                  },
+                  "no_output_timeout_s": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "No Output Timeout S"
+                  },
+                  "reversible": {
+                    "default": false,
+                    "title": "Reversible",
+                    "type": "boolean"
+                  },
+                  "reversible_root": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Reversible Root"
+                  },
+                  "join_transaction_ids": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Join Transaction Ids"
+                  },
+                  "require_full_reversibility": {
+                    "default": false,
+                    "title": "Require Full Reversibility",
+                    "type": "boolean"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "command"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/get_job_status": {
+      "post": {
+        "operationId": "get_job_status",
+        "summary": "get_job_status",
+        "description": "Get status for a background job by job_id.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "job_id": {
+                    "title": "Job Id",
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "job_id"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/get_job_output": {
+      "post": {
+        "operationId": "get_job_output",
+        "summary": "get_job_output",
+        "description": "Read stdout/stderr for a background job. Use since_offset for incremental output or tail_lines for recent logs.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "job_id": {
+                    "title": "Job Id",
+                    "type": "string"
+                  },
+                  "tail_lines": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tail Lines"
+                  },
+                  "since_offset": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Since Offset"
+                  },
+                  "stream": {
+                    "default": "both",
+                    "title": "Stream",
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "job_id"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/stop_job": {
+      "post": {
+        "operationId": "stop_job",
+        "summary": "stop_job",
+        "description": "Stop a background job by job_id. signal: TERM, KILL, INT, HUP.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "job_id": {
+                    "title": "Job Id",
+                    "type": "string"
+                  },
+                  "signal": {
+                    "default": "TERM",
+                    "title": "Signal",
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "job_id"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/list_jobs": {
+      "post": {
+        "operationId": "list_jobs",
+        "summary": "list_jobs",
+        "description": "List background jobs, newest first (limit, default 50; total says how many matched). status_filter can be running, stalled, completed, failed, timeout, killed. page.has_more + page.next_cursor continue the list. Finished jobs expire by age, count and size (see retention).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "status_filter": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Status Filter"
+                  },
+                  "limit": {
+                    "default": 50,
+                    "title": "Limit",
+                    "type": "integer"
+                  },
+                  "cursor": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Cursor"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/wait_jobs": {
+      "post": {
+        "operationId": "wait_jobs",
+        "summary": "wait_jobs",
+        "description": "Wait for background jobs to finish, optionally returning output. timeout_s defaults to 60 seconds; a bounded response is returned if jobs are still running.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "job_ids": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Job Ids",
+                    "type": "array"
+                  },
+                  "timeout_s": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Timeout S"
+                  },
+                  "return_output": {
+                    "default": false,
+                    "title": "Return Output",
+                    "type": "boolean"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "job_ids"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/run_commands_parallel": {
+      "post": {
+        "operationId": "run_commands_parallel",
+        "summary": "run_commands_parallel",
+        "description": "Run multiple shell commands in parallel and collect results. Best for independent checks like tests, lint, rg, scripts. timeout_s defaults to a bounded 60 seconds.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "commands": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Commands",
+                    "type": "array"
+                  },
+                  "cwd": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Cwd"
+                  },
+                  "timeout_s": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Timeout S"
+                  },
+                  "return_output": {
+                    "default": true,
+                    "title": "Return Output",
+                    "type": "boolean"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "commands"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/write_file": {
+      "post": {
+        "operationId": "write_file",
+        "summary": "write_file",
+        "description": "Write content to a file with a bounded reversible transaction journal. Creates parent directories if needed.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "path": {
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "content": {
+                    "title": "Content",
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "path",
+                  "content"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/write_files_batch": {
+      "post": {
+        "operationId": "write_files_batch",
+        "summary": "write_files_batch",
+        "description": "Write multiple files in one call with transaction journaling. atomic=true rolls back the whole batch if any write fails.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "files": {
+                    "items": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "type": "object"
+                    },
+                    "title": "Files",
+                    "type": "array"
+                  },
+                  "atomic": {
+                    "default": true,
+                    "title": "Atomic",
+                    "type": "boolean"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "files"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/read_file": {
+      "post": {
+        "operationId": "read_file",
+        "summary": "read_file",
+        "description": "Read a file (200,000 chars max). offset/length page by lines; when the text is cut or a page is requested, next_offset is the line to continue from (null at the end) and total_lines the line count.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "path": {
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "offset": {
+                    "default": 0,
+                    "title": "Offset",
+                    "type": "integer"
+                  },
+                  "length": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Length"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/read_multiple_files": {
+      "post": {
+        "operationId": "read_multiple_files",
+        "summary": "read_multiple_files",
+        "description": "Read several text files in one call. Returns files: a list of {path, status, content, truncated} records in request order (50,000 chars max each, max_total_chars for all, default 120,000); a missing file yields status=error without failing the rest. Files past the total budget come back status=skipp",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "paths": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Paths",
+                    "type": "array"
+                  },
+                  "max_total_chars": {
+                    "default": 120000,
+                    "title": "Max Total Chars",
+                    "type": "integer"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "paths"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/edit_file": {
+      "post": {
+        "operationId": "edit_file",
+        "summary": "edit_file",
+        "description": "Find-and-replace in a file with reversible transaction journaling. Fails if occurrence count != expected_replacements.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "path": {
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "old_string": {
+                    "title": "Old String",
+                    "type": "string"
+                  },
+                  "new_string": {
+                    "title": "New String",
+                    "type": "string"
+                  },
+                  "expected_replacements": {
+                    "default": 1,
+                    "title": "Expected Replacements",
+                    "type": "integer"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "path",
+                  "old_string",
+                  "new_string"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/move_file": {
+      "post": {
+        "operationId": "move_file",
+        "summary": "move_file",
+        "description": "Move or rename a file/directory with a bounded reversible transaction journal.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "source": {
+                    "title": "Source",
+                    "type": "string"
+                  },
+                  "destination": {
+                    "title": "Destination",
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "source",
+                  "destination"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/copy_file": {
+      "post": {
+        "operationId": "copy_file",
+        "summary": "copy_file",
+        "description": "Copy a file or directory.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "source": {
+                    "title": "Source",
+                    "type": "string"
+                  },
+                  "destination": {
+                    "title": "Destination",
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "source",
+                  "destination"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/delete_path": {
+      "post": {
+        "operationId": "delete_path",
+        "summary": "delete_path",
+        "description": "Delete a file or directory. Set recursive=true for directories. Returns a bounded undo transaction when reversible.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "path": {
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "recursive": {
+                    "default": false,
+                    "title": "Recursive",
+                    "type": "boolean"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/list_directory": {
+      "post": {
+        "operationId": "list_directory",
+        "summary": "list_directory",
+        "description": "List files and directories in a path, by name (limit default 200, max 1000; total gives the full count). page.has_more + page.next_cursor continue the listing.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "path": {
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 200,
+                    "title": "Limit",
+                    "type": "integer"
+                  },
+                  "cursor": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Cursor"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/directory_tree": {
+      "post": {
+        "operationId": "directory_tree",
+        "summary": "directory_tree",
+        "description": "Show directory structure as a tree. depth controls how deep.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "path": {
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "depth": {
+                    "default": 3,
+                    "title": "Depth",
+                    "type": "integer"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/create_directory": {
+      "post": {
+        "operationId": "create_directory",
+        "summary": "create_directory",
+        "description": "Create a directory (and parents).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "path": {
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/get_file_info": {
+      "post": {
+        "operationId": "get_file_info",
+        "summary": "get_file_info",
+        "description": "Get file/directory metadata: size, dates, type, permissions.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "path": {
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/find_files": {
+      "post": {
+        "operationId": "find_files",
+        "summary": "find_files",
+        "description": "Find files by name glob pattern (e.g. '*.py', 'report*'). file_type: file|dir|any. limit default 200, max 1000; page.has_more + page.next_cursor continue the search.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "pattern": {
+                    "title": "Pattern",
+                    "type": "string"
+                  },
+                  "path": {
+                    "default": "~",
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "file_type": {
+                    "default": "any",
+                    "title": "File Type",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 200,
+                    "title": "Limit",
+                    "type": "integer"
+                  },
+                  "cursor": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Cursor"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "pattern"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/run_applescript": {
+      "post": {
+        "operationId": "run_applescript",
+        "summary": "run_applescript",
+        "description": "Run AppleScript on macOS. Control apps, system settings, UI automation.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "script": {
+                    "title": "Script",
+                    "type": "string"
+                  },
+                  "timeout_s": {
+                    "default": 30,
+                    "title": "Timeout S",
+                    "type": "integer"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "script"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/send_notification": {
+      "post": {
+        "operationId": "send_notification",
+        "summary": "send_notification",
+        "description": "Send a macOS notification banner. sound: Pop, Glass, Basso, etc.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "title": {
+                    "title": "Title",
+                    "type": "string"
+                  },
+                  "message": {
+                    "title": "Message",
+                    "type": "string"
+                  },
+                  "sound": {
+                    "default": "Pop",
+                    "title": "Sound",
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "title",
+                  "message"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/clipboard_get": {
+      "post": {
+        "operationId": "clipboard_get",
+        "summary": "clipboard_get",
+        "description": "Read the current Mac clipboard contents.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/clipboard_set": {
+      "post": {
+        "operationId": "clipboard_set",
+        "summary": "clipboard_set",
+        "description": "Write text to the Mac clipboard.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "content": {
+                    "title": "Content",
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "content"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/open_app": {
+      "post": {
+        "operationId": "open_app",
+        "summary": "open_app",
+        "description": "Open a macOS application by name. e.g. 'Safari', 'Finder', 'Terminal'.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "app_name": {
+                    "title": "App Name",
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "app_name"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/open_url": {
+      "post": {
+        "operationId": "open_url",
+        "summary": "open_url",
+        "description": "Open a URL in the default browser.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "url": {
+                    "title": "Url",
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "url"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/set_volume": {
+      "post": {
+        "operationId": "set_volume",
+        "summary": "set_volume",
+        "description": "Set system volume (0-100).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "level": {
+                    "title": "Level",
+                    "type": "integer"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "level"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/get_volume": {
+      "post": {
+        "operationId": "get_volume",
+        "summary": "get_volume",
+        "description": "Get current system volume level.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/set_brightness": {
+      "post": {
+        "operationId": "set_brightness",
+        "summary": "set_brightness",
+        "description": "Set screen brightness (0-100). Requires 'brew install brightness'.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "level": {
+                    "title": "Level",
+                    "type": "integer"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "level"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/screenshot": {
+      "post": {
+        "operationId": "screenshot",
+        "summary": "screenshot",
+        "description": "Take a screenshot. path: save location. window=true for interactive window select.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "path": {
+                    "default": "~/Desktop/screenshot.png",
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "window": {
+                    "default": false,
+                    "title": "Window",
+                    "type": "boolean"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/set_reminder": {
+      "post": {
+        "operationId": "set_reminder",
+        "summary": "set_reminder",
+        "description": "Add a reminder to macOS Reminders. due_date format: 'month/day/year HH:MM AM/PM'.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "title": {
+                    "title": "Title",
+                    "type": "string"
+                  },
+                  "notes": {
+                    "default": "",
+                    "title": "Notes",
+                    "type": "string"
+                  },
+                  "due_date": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Due Date"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "title"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/get_running_apps": {
+      "post": {
+        "operationId": "get_running_apps",
+        "summary": "get_running_apps",
+        "description": "Get list of currently running macOS applications (visible apps only).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/artifact_pipeline": {
+      "post": {
+        "operationId": "artifact_pipeline",
+        "summary": "artifact_pipeline",
+        "description": "Register and verify explicit local file artifacts by stable handle + SHA-256, open a verified artifact in Preview, or run a verified Preview Save As. action: register|inspect|open_preview|preview_save_as. Pass both artifact_id and matching path for operations that consume an existing artifact; stale",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "action": {
+                    "title": "Action",
+                    "type": "string"
+                  },
+                  "path": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Path"
+                  },
+                  "artifact_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Artifact Id"
+                  },
+                  "destination": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Destination"
+                  },
+                  "overwrite": {
+                    "default": false,
+                    "title": "Overwrite",
+                    "type": "boolean"
+                  },
+                  "preserve_focus": {
+                    "default": true,
+                    "title": "Preserve Focus",
+                    "type": "boolean"
+                  },
+                  "timeout_s": {
+                    "default": 15.0,
+                    "title": "Timeout S",
+                    "type": "number"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "action"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/context_handoff": {
+      "post": {
+        "operationId": "context_handoff",
+        "summary": "context_handoff",
+        "description": "Create or inspect a typed, integrity-sealed, single-use handoff between browser/native/file contexts. Use action=create_browser_text for selected browser text+URL bound to a specific mac_observe target, or action=create_artifact for Finder/browser/local artifacts bound to a native file dialog, a ver",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "action": {
+                    "title": "Action",
+                    "type": "string"
+                  },
+                  "handoff_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Handoff Id"
+                  },
+                  "browser": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Browser"
+                  },
+                  "tab_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Handle"
+                  },
+                  "source_type": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Source Type"
+                  },
+                  "source_browser": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Source Browser"
+                  },
+                  "source_tab_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Source Tab Handle"
+                  },
+                  "path": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Path"
+                  },
+                  "artifact_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Artifact Id"
+                  },
+                  "target_kind": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Target Kind"
+                  },
+                  "target_app": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Target App"
+                  },
+                  "target_app_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Target App Handle"
+                  },
+                  "target_window_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Target Window Handle"
+                  },
+                  "target_observation_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Target Observation Id"
+                  },
+                  "target_element_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Target Element Id"
+                  },
+                  "target_browser": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Target Browser"
+                  },
+                  "target_tab_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Target Tab Handle"
+                  },
+                  "target_css_selector": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Target Css Selector"
+                  },
+                  "include_url": {
+                    "default": true,
+                    "title": "Include Url",
+                    "type": "boolean"
+                  },
+                  "clear": {
+                    "default": false,
+                    "title": "Clear",
+                    "type": "boolean"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "action"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/mac_snapshot": {
+      "post": {
+        "operationId": "mac_snapshot",
+        "summary": "mac_snapshot",
+        "description": "First rung of the low-context perception pipeline: collect a compact read-only Mac context snapshot in parallel. By default returns six bounded sections: visible apps, frontmost native windows, Finder selected paths/context, Safari/Chrome tabs, clipboard metadata without clipboard contents, and basi",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "sections": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Sections"
+                  },
+                  "app_limit": {
+                    "default": 20,
+                    "title": "App Limit",
+                    "type": "integer"
+                  },
+                  "window_limit": {
+                    "default": 12,
+                    "title": "Window Limit",
+                    "type": "integer"
+                  },
+                  "browser_tab_limit": {
+                    "default": 12,
+                    "title": "Browser Tab Limit",
+                    "type": "integer"
+                  },
+                  "selected_file_limit": {
+                    "default": 10,
+                    "title": "Selected File Limit",
+                    "type": "integer"
+                  },
+                  "max_output_bytes": {
+                    "default": 16384,
+                    "title": "Max Output Bytes",
+                    "type": "integer"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/mac_observe": {
+      "post": {
+        "operationId": "mac_observe",
+        "summary": "mac_observe",
+        "description": "Read the frontmost or named macOS application's current UI state. Returns an observation_id, Accessibility tree nodes with element_id, role, title, value, position, enabled state and supported actions, plus a targeted native-window image when include_screenshot=true and one stable window is selected",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "app": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "App"
+                  },
+                  "app_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "App Handle"
+                  },
+                  "window_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Window Handle"
+                  },
+                  "window_index": {
+                    "default": 1,
+                    "title": "Window Index",
+                    "type": "integer"
+                  },
+                  "max_depth": {
+                    "default": 5,
+                    "title": "Max Depth",
+                    "type": "integer"
+                  },
+                  "max_children": {
+                    "default": 30,
+                    "title": "Max Children",
+                    "type": "integer"
+                  },
+                  "include_screenshot": {
+                    "default": false,
+                    "title": "Include Screenshot",
+                    "type": "boolean"
+                  },
+                  "ocr": {
+                    "default": false,
+                    "title": "Ocr",
+                    "type": "boolean"
+                  },
+                  "previous_observation_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Previous Observation Id"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/mac_act": {
+      "post": {
+        "operationId": "mac_act",
+        "summary": "mac_act",
+        "description": "Mutating native UI actions require a stable process-bound target from mac_observe; implicit frontmost-app targeting is rejected. Pass observation_id plus app/app_handle/window_handle, and target_bundle_id from mac_observe when available, so target and effect are explicit. Perform one or more bounded",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "actions": {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "title": "Actions",
+                    "type": "array"
+                  },
+                  "observation_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Observation Id"
+                  },
+                  "app": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "App"
+                  },
+                  "app_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "App Handle"
+                  },
+                  "window_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Window Handle"
+                  },
+                  "target_bundle_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Target Bundle Id"
+                  },
+                  "state_mode": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "State Mode"
+                  },
+                  "include_screenshot": {
+                    "default": false,
+                    "title": "Include Screenshot",
+                    "type": "boolean"
+                  },
+                  "return_state": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Return State"
+                  },
+                  "allow_risky": {
+                    "default": false,
+                    "title": "Allow Risky",
+                    "type": "boolean"
+                  },
+                  "preserve_focus": {
+                    "default": true,
+                    "title": "Preserve Focus",
+                    "type": "boolean"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "actions"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/search_files": {
+      "post": {
+        "operationId": "search_files",
+        "summary": "search_files",
+        "description": "Search file contents with grep. include_extensions filters by type e.g. ['py','js'].",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "pattern": {
+                    "title": "Pattern",
+                    "type": "string"
+                  },
+                  "path": {
+                    "default": "~",
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "include_extensions": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Include Extensions"
+                  },
+                  "case_sensitive": {
+                    "default": false,
+                    "title": "Case Sensitive",
+                    "type": "boolean"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "pattern"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/spotlight_search": {
+      "post": {
+        "operationId": "spotlight_search",
+        "summary": "spotlight_search",
+        "description": "Search files by name using macOS Spotlight (mdfind) — very fast.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "query": {
+                    "title": "Query",
+                    "type": "string"
+                  },
+                  "max_results": {
+                    "default": 50,
+                    "title": "Max Results",
+                    "type": "integer"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/http_request": {
+      "post": {
+        "operationId": "http_request",
+        "summary": "http_request",
+        "description": "Make HTTP GET/POST/PUT/DELETE requests to external URLs.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "url": {
+                    "title": "Url",
+                    "type": "string"
+                  },
+                  "method": {
+                    "default": "GET",
+                    "title": "Method",
+                    "type": "string"
+                  },
+                  "headers": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": {
+                          "type": "string"
+                        },
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Headers"
+                  },
+                  "body": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Body"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "url"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/browser_list_tabs": {
+      "post": {
+        "operationId": "browser_list_tabs",
+        "summary": "browser_list_tabs",
+        "description": "List all open tabs with title, URL, indices, and stable tab_handle values that survive tab index shifts. For Google Chrome, transport says whether background automation works now and how to fix it.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "browser": {
+                    "title": "Browser",
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "browser"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/browser_observe": {
+      "post": {
+        "operationId": "browser_observe",
+        "summary": "browser_observe",
+        "description": "BATCH-FIRST HINT: multiple independent controls -> one browser_act for all follow-ups -> verify once. Re-observe only for dependency/rerender, stale/takeover risk, or consequential verification. High-level browser observation. Returns compact DOM with stable e1/e2 IDs; optional JPEG visuals keep the",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "browser": {
+                    "title": "Browser",
+                    "type": "string"
+                  },
+                  "window_index": {
+                    "default": 1,
+                    "title": "Window Index",
+                    "type": "integer"
+                  },
+                  "tab_index": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Index"
+                  },
+                  "tab_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Handle"
+                  },
+                  "scope": {
+                    "default": "interactive",
+                    "enum": [
+                      "interactive",
+                      "visible",
+                      "content",
+                      "leaf"
+                    ],
+                    "title": "Scope",
+                    "type": "string"
+                  },
+                  "max_elements": {
+                    "default": 40,
+                    "title": "Max Elements",
+                    "type": "integer"
+                  },
+                  "visual": {
+                    "default": "none",
+                    "enum": [
+                      "none",
+                      "viewport",
+                      "element",
+                      "full_page"
+                    ],
+                    "title": "Visual",
+                    "type": "string"
+                  },
+                  "element_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Element Id"
+                  },
+                  "previous_observation_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Previous Observation Id"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "browser"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/browser_find": {
+      "post": {
+        "operationId": "browser_find",
+        "summary": "browser_find",
+        "description": "Find a rendered browser element with exact-first ranking and hard role/text constraints. Queries also match input values; role-only lookup is supported. Use it to read or inspect a page. To act, do not find first: pass the same query/role/within straight to browser_act, which resolves the target its",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "browser": {
+                    "title": "Browser",
+                    "type": "string"
+                  },
+                  "query": {
+                    "default": "",
+                    "title": "Query",
+                    "type": "string"
+                  },
+                  "role": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Role"
+                  },
+                  "text": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Text"
+                  },
+                  "window_index": {
+                    "default": 1,
+                    "title": "Window Index",
+                    "type": "integer"
+                  },
+                  "tab_index": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Index"
+                  },
+                  "tab_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Handle"
+                  },
+                  "max_results": {
+                    "default": 5,
+                    "title": "Max Results",
+                    "type": "integer"
+                  },
+                  "actionable_only": {
+                    "default": false,
+                    "title": "Actionable Only",
+                    "type": "boolean"
+                  },
+                  "wait_timeout_s": {
+                    "default": 0.0,
+                    "title": "Wait Timeout S",
+                    "type": "number"
+                  },
+                  "within": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Within"
+                  },
+                  "within_element_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Within Element Id"
+                  },
+                  "within_levels": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Within Levels"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "browser"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/browser_act": {
+      "post": {
+        "operationId": "browser_act",
+        "summary": "browser_act",
+        "description": "BATCH-FIRST: forms observe once -> one browser_act with independent type/select/click/scroll -> observe verify. Custom dropdowns: select. Targets: element_id or query/role/text_match. Split only for dependencies. Prefer one browser_act call containing all independent actions instead of one call per ",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "browser": {
+                    "title": "Browser",
+                    "type": "string"
+                  },
+                  "actions": {
+                    "items": {
+                      "additionalProperties": true,
+                      "allOf": [
+                        {
+                          "if": {
+                            "properties": {
+                              "type": {
+                                "enum": [
+                                  "type",
+                                  "type_text",
+                                  "paste"
+                                ]
+                              }
+                            }
+                          },
+                          "then": {
+                            "anyOf": [
+                              {
+                                "required": [
+                                  "text"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "handoff_id"
+                                ]
+                              }
+                            ]
+                          }
+                        },
+                        {
+                          "if": {
+                            "properties": {
+                              "type": {
+                                "enum": [
+                                  "key",
+                                  "keyboard",
+                                  "shortcut"
+                                ]
+                              }
+                            }
+                          },
+                          "then": {
+                            "required": [
+                              "key"
+                            ]
+                          }
+                        }
+                      ],
+                      "properties": {
+                        "type": {
+                          "enum": [
+                            "click",
+                            "double_click",
+                            "type",
+                            "type_text",
+                            "paste",
+                            "select",
+                            "scroll",
+                            "focus",
+                            "wait",
+                            "key",
+                            "keyboard",
+                            "shortcut",
+                            "extract"
+                          ],
+                          "type": "string"
+                        },
+                        "element_id": {
+                          "description": "Id from browser_observe/browser_find; or describe the target with query/role/text_match.",
+                          "type": "string"
+                        },
+                        "query": {
+                          "description": "Words for the target, e.g. 'Email field', 'Continue'.",
+                          "type": "string"
+                        },
+                        "role": {
+                          "description": "ARIA role, e.g. button, link, textbox, combobox.",
+                          "type": "string"
+                        },
+                        "text_match": {
+                          "description": "Visible text the target contains.",
+                          "type": "string"
+                        },
+                        "within": {
+                          "description": "Phrase unique to one repeated item; limits matching to it.",
+                          "type": "string"
+                        },
+                        "within_element_id": {
+                          "type": "string"
+                        },
+                        "intent": {
+                          "description": "Optional; only breaks ties between equal targets.",
+                          "type": "string"
+                        },
+                        "text": {
+                          "description": "type/type_text/paste: text to enter. wait for=text: text to wait for.",
+                          "type": "string"
+                        },
+                        "handoff_id": {
+                          "description": "type/paste: sealed handoff from context_handoff instead of text.",
+                          "type": "string"
+                        },
+                        "option": {
+                          "description": "select: option label or value.",
+                          "type": "string"
+                        },
+                        "key": {
+                          "description": "key/keyboard/shortcut: Enter, Escape, Tab, ArrowDown or one character.",
+                          "type": "string"
+                        },
+                        "modifiers": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "input_mode": {
+                          "enum": [
+                            "auto",
+                            "dom",
+                            "trusted"
+                          ],
+                          "type": "string"
+                        },
+                        "dx": {
+                          "type": "number"
+                        },
+                        "dy": {
+                          "type": "number"
+                        },
+                        "for": {
+                          "description": "wait: selector (default), text, element_removed, url_change, network_idle, dom_stable.",
+                          "type": "string"
+                        },
+                        "selector": {
+                          "type": "string"
+                        },
+                        "timeout_s": {
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "wait_s": {
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        "required": {
+                          "type": "boolean"
+                        },
+                        "fields": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "maxItems": 20,
+                    "minItems": 1,
+                    "title": "Actions",
+                    "type": "array"
+                  },
+                  "observation_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Observation Id"
+                  },
+                  "window_index": {
+                    "default": 1,
+                    "title": "Window Index",
+                    "type": "integer"
+                  },
+                  "tab_index": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Index"
+                  },
+                  "tab_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Handle"
+                  },
+                  "return_state": {
+                    "default": "compact",
+                    "enum": [
+                      "none",
+                      "compact",
+                      "full"
+                    ],
+                    "title": "Return State",
+                    "type": "string"
+                  },
+                  "allow_foreground": {
+                    "default": false,
+                    "title": "Allow Foreground",
+                    "type": "boolean"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "browser",
+                  "actions"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/browser_do": {
+      "post": {
+        "operationId": "browser_do",
+        "summary": "browser_do",
+        "description": "One-shot browser workflow in one call: open a URL (or reuse tab_handle) -> wait -> optional actions -> extract -> optional close_after. For research use extract=['price','cancellation','parking','rating'] for compact semantic reads. For interactive, multi-step work on a page use browser_observe -> b",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "browser": {
+                    "title": "Browser",
+                    "type": "string"
+                  },
+                  "url": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Url"
+                  },
+                  "actions": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "additionalProperties": true,
+                          "description": "Same action object as browser_act.",
+                          "properties": {
+                            "type": {
+                              "enum": [
+                                "click",
+                                "double_click",
+                                "type",
+                                "type_text",
+                                "paste",
+                                "select",
+                                "scroll",
+                                "focus",
+                                "wait",
+                                "key",
+                                "keyboard",
+                                "shortcut",
+                                "extract"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "type"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 20,
+                        "type": "array"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Actions"
+                  },
+                  "new_tab": {
+                    "default": true,
+                    "title": "New Tab",
+                    "type": "boolean"
+                  },
+                  "background": {
+                    "default": true,
+                    "title": "Background",
+                    "type": "boolean"
+                  },
+                  "window_index": {
+                    "default": 1,
+                    "title": "Window Index",
+                    "type": "integer"
+                  },
+                  "tab_index": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Index"
+                  },
+                  "tab_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Handle"
+                  },
+                  "wait_after_open": {
+                    "default": true,
+                    "title": "Wait After Open",
+                    "type": "boolean"
+                  },
+                  "return_state": {
+                    "default": "none",
+                    "enum": [
+                      "none",
+                      "compact",
+                      "full"
+                    ],
+                    "title": "Return State",
+                    "type": "string"
+                  },
+                  "allow_foreground": {
+                    "default": false,
+                    "title": "Allow Foreground",
+                    "type": "boolean"
+                  },
+                  "close_after": {
+                    "default": false,
+                    "title": "Close After",
+                    "type": "boolean"
+                  },
+                  "debug": {
+                    "default": false,
+                    "title": "Debug",
+                    "type": "boolean"
+                  },
+                  "extract": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Extract"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "browser"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/browser_open_url": {
+      "post": {
+        "operationId": "browser_open_url",
+        "summary": "browser_open_url",
+        "description": "Open a URL in Safari or Google Chrome. New tabs open in the background by default and return a stable tab_handle. Model/agent automation must keep background=true; foreground activation requires an internal explicit local-user UI grant.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "browser": {
+                    "title": "Browser",
+                    "type": "string"
+                  },
+                  "url": {
+                    "title": "Url",
+                    "type": "string"
+                  },
+                  "new_tab": {
+                    "default": true,
+                    "title": "New Tab",
+                    "type": "boolean"
+                  },
+                  "background": {
+                    "default": true,
+                    "title": "Background",
+                    "type": "boolean"
+                  },
+                  "window_index": {
+                    "default": 1,
+                    "title": "Window Index",
+                    "type": "integer"
+                  },
+                  "tab_index": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Index"
+                  },
+                  "tab_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Handle"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "browser",
+                  "url"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/browser_activate_tab": {
+      "post": {
+        "operationId": "browser_activate_tab",
+        "summary": "browser_activate_tab",
+        "description": "User-visible tab selection by stable tab_handle or index. Normal MCP/agent calls are fail-closed even if allow_foreground=true, because selecting current/active tab can interrupt the user. Use tab_handle directly with observe/find/act; the local Show Tab UI is the authorized foreground path.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "browser": {
+                    "title": "Browser",
+                    "type": "string"
+                  },
+                  "window_index": {
+                    "default": 1,
+                    "title": "Window Index",
+                    "type": "integer"
+                  },
+                  "tab_index": {
+                    "default": 1,
+                    "title": "Tab Index",
+                    "type": "integer"
+                  },
+                  "tab_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Handle"
+                  },
+                  "allow_foreground": {
+                    "default": false,
+                    "title": "Allow Foreground",
+                    "type": "boolean"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "browser"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/browser_close_tab": {
+      "post": {
+        "operationId": "browser_close_tab",
+        "summary": "browser_close_tab",
+        "description": "Close one or multiple browser tabs. For safe selection, call browser_list_tabs first and choose tabs by their title/tab_handle. Use tab_handles for multiple stable handles; existing tab_handle or window_index+tab_index single-tab behavior remains supported.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "browser": {
+                    "title": "Browser",
+                    "type": "string"
+                  },
+                  "window_index": {
+                    "default": 1,
+                    "title": "Window Index",
+                    "type": "integer"
+                  },
+                  "tab_index": {
+                    "default": 1,
+                    "title": "Tab Index",
+                    "type": "integer"
+                  },
+                  "tab_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Handle"
+                  },
+                  "tab_handles": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Handles"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "browser"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/browser_wait_for_download": {
+      "post": {
+        "operationId": "browser_wait_for_download",
+        "summary": "browser_wait_for_download",
+        "description": "Wait for a browser download to reach a stable completed file, then register it as a SHA-256 artifact. Pass started_after_epoch_ms from the initiating click when available so fast downloads completed before this call are still detected.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "filename_contains": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Filename Contains"
+                  },
+                  "timeout_s": {
+                    "default": 60,
+                    "title": "Timeout S",
+                    "type": "integer"
+                  },
+                  "started_after_epoch_ms": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Started After Epoch Ms"
+                  },
+                  "stable_ms": {
+                    "default": 500,
+                    "title": "Stable Ms",
+                    "type": "integer"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/browser_upload_artifact": {
+      "post": {
+        "operationId": "browser_upload_artifact",
+        "summary": "browser_upload_artifact",
+        "description": "Select an explicitly registered artifact into an HTML input[type=file] and verify browser file metadata. Requires artifact_id plus the matching path. Chrome uses the background debugger bridge DOM.setFileInputFiles. Safari's native Open panel requires foreground capability and normal agent/MCP calls",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "browser": {
+                    "title": "Browser",
+                    "type": "string"
+                  },
+                  "css_selector": {
+                    "title": "Css Selector",
+                    "type": "string"
+                  },
+                  "artifact_id": {
+                    "title": "Artifact Id",
+                    "type": "string"
+                  },
+                  "path": {
+                    "title": "Path",
+                    "type": "string"
+                  },
+                  "window_index": {
+                    "default": 1,
+                    "title": "Window Index",
+                    "type": "integer"
+                  },
+                  "tab_index": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Index"
+                  },
+                  "tab_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Handle"
+                  },
+                  "timeout_s": {
+                    "default": 20,
+                    "title": "Timeout S",
+                    "type": "integer"
+                  },
+                  "preserve_focus": {
+                    "default": true,
+                    "title": "Preserve Focus",
+                    "type": "boolean"
+                  },
+                  "handoff_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Handoff Id"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "browser",
+                  "css_selector",
+                  "artifact_id",
+                  "path"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/browser_screenshot": {
+      "post": {
+        "operationId": "browser_screenshot",
+        "summary": "browser_screenshot",
+        "description": "Legacy raw browser-window pixel capture. It does not target a specific background tab and may be unreliable when the window is obscured. For AI visual grounding, background tabs, or full-page capture, prefer browser_observe with visual='viewport', 'element', or 'full_page'.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "browser": {
+                    "title": "Browser",
+                    "type": "string"
+                  },
+                  "path": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Path"
+                  },
+                  "window_index": {
+                    "default": 1,
+                    "title": "Window Index",
+                    "type": "integer"
+                  },
+                  "return_base64": {
+                    "default": true,
+                    "title": "Return Base64",
+                    "type": "boolean"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "browser"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/browser_get_snapshot": {
+      "post": {
+        "operationId": "browser_get_snapshot",
+        "summary": "browser_get_snapshot",
+        "description": "Returns the visible DOM tree. Each element includes tag, text, id, class, and screen coordinates (rect.x, rect.y, rect.w, rect.h). Use these coordinates with browser_coordinate_click. Use max_depth and max_children to limit traversal.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "browser": {
+                    "title": "Browser",
+                    "type": "string"
+                  },
+                  "window_index": {
+                    "default": 1,
+                    "title": "Window Index",
+                    "type": "integer"
+                  },
+                  "tab_index": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Index"
+                  },
+                  "tab_handle": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tab Handle"
+                  },
+                  "max_depth": {
+                    "default": 6,
+                    "title": "Max Depth",
+                    "type": "integer"
+                  },
+                  "max_children": {
+                    "default": 25,
+                    "title": "Max Children",
+                    "type": "integer"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "browser"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/ask_user": {
+      "post": {
+        "operationId": "ask_user",
+        "summary": "ask_user",
+        "description": "Ask the local user an interactive question or request guidance. A native macOS dialog opens with your question/message at the top, and an input field for the user's answer. When the user sends an answer, the response is returned to you. Skip or timeout returns response=null. Use this to get approval",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "question": {
+                    "title": "Question",
+                    "type": "string"
+                  },
+                  "sender": {
+                    "default": "AI",
+                    "title": "Sender",
+                    "type": "string"
+                  },
+                  "timeout_s": {
+                    "default": 60,
+                    "title": "Timeout S",
+                    "type": "integer"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "question"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/ask_choice": {
+      "post": {
+        "operationId": "ask_choice",
+        "summary": "ask_choice",
+        "description": "Open a native macOS dialog with 2-3 labeled choices and wait for the local user's selection. Two-choice dialogs show a Cancel button; three-choice dialogs use all three native buttons, and closing the window still cancels. Returns the selected choice and index. Timeout returns no choice. Use for pre",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "question": {
+                    "title": "Question",
+                    "type": "string"
+                  },
+                  "choices": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Choices",
+                    "type": "array"
+                  },
+                  "sender": {
+                    "default": "AI",
+                    "title": "Sender",
+                    "type": "string"
+                  },
+                  "timeout_s": {
+                    "default": 60,
+                    "title": "Timeout S",
+                    "type": "integer"
+                  },
+                  "default_choice": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Default Choice"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "question",
+                  "choices"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/ask_confirmation": {
+      "post": {
+        "operationId": "ask_confirmation",
+        "summary": "ask_confirmation",
+        "description": "Open a native macOS Yes/No confirmation dialog. Only an explicit confirm button produces confirmed=true; deny, cancel, close, or timeout is false. Use before consequential or destructive actions.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "question": {
+                    "title": "Question",
+                    "type": "string"
+                  },
+                  "sender": {
+                    "default": "AI",
+                    "title": "Sender",
+                    "type": "string"
+                  },
+                  "timeout_s": {
+                    "default": 60,
+                    "title": "Timeout S",
+                    "type": "integer"
+                  },
+                  "confirm_label": {
+                    "default": "Yes",
+                    "title": "Confirm Label",
+                    "type": "string"
+                  },
+                  "deny_label": {
+                    "default": "No",
+                    "title": "Deny Label",
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "minLength": 8,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]{8,128}$",
+                    "description": "Optional. Repeat with the same key and arguments to get the first result instead of running twice."
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "question"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/memory_search": {
+      "post": {
+        "operationId": "memory_search",
+        "summary": "memory_search",
+        "description": "Search or list Mac MCP memories. query enables hybrid SQLite FTS5 + local vector search; date/date_from/date_to filter time ranges. Query can be omitted to list memories chronologically.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "query": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Query"
+                  },
+                  "date": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Date"
+                  },
+                  "date_from": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Date From"
+                  },
+                  "date_to": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Date To"
+                  },
+                  "tags": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Tags"
+                  },
+                  "importance": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Importance"
+                  },
+                  "sort": {
+                    "default": "relevance",
+                    "title": "Sort",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 20,
+                    "title": "Limit",
+                    "type": "integer"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/memory_get": {
+      "post": {
+        "operationId": "memory_get",
+        "summary": "memory_get",
+        "description": "Get one exact memory by stable memory_id without running semantic search.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "memory_id": {
+                    "title": "Memory Id",
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "memory_id"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/skill_list": {
+      "post": {
+        "operationId": "skill_list",
+        "summary": "skill_list",
+        "description": "List indexed Agent Skills without loading full SKILL.md bodies. Returns name, description, and location for progressive disclosure.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "limit": {
+                    "default": 100,
+                    "title": "Limit",
+                    "type": "integer"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/skill_search": {
+      "post": {
+        "operationId": "skill_search",
+        "summary": "skill_search",
+        "description": "Search Agent Skills with hybrid SQLite FTS5 + the same shared multilingual embedding worker used by memory_search. Returns skill metadata and SKILL.md paths; call skill_get to activate one.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "query": {
+                    "title": "Query",
+                    "type": "string"
+                  },
+                  "limit": {
+                    "default": 10,
+                    "title": "Limit",
+                    "type": "integer"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v2/skill_get": {
+      "post": {
+        "operationId": "skill_get",
+        "summary": "skill_get",
+        "description": "Load one Agent Skill by name or SKILL.md path. Returns full SKILL.md content, skill directory, and bundled scripts/references/assets paths without eagerly loading resource contents.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Name"
+                  },
+                  "path": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Path"
+                  },
+                  "resource_limit": {
+                    "default": 200,
+                    "title": "Resource Limit",
+                    "type": "integer"
+                  },
+                  "description": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "description": "Optional short label shown in Mac MCP's activity view (required when that setting is on)."
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/Result"
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    }
+  }
+}

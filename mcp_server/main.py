@@ -2387,7 +2387,8 @@ def create_app():
 
     # REST API — FastAPI sub-app mounted at /api
     from fastapi import FastAPI
-    from .rest_routes import configure_rest_security, router as rest_router
+    from .rest_routes import configure_rest_security, require_auth, router as rest_router
+    from . import rest_v2
     configure_rest_security(mcp.security_context, telemetry, security_approval, auth_failures=auth_failures)
     # Runtime API docs would let anyone on the public tunnel enumerate routes
     # unauthenticated; the integration schema ships as openapi/custom-gpt-actions.json.
@@ -2399,6 +2400,7 @@ def create_app():
 
     rest_app.include_router(rest_router)
     error_contract.install_rest_handlers(rest_app, _tool_can_mutate)
+    rest_v2.install_routes(rest_app, mcp, require_auth)
     app.mount("/api", rest_app)
 
     # Outermost: refuse DNS-rebinding requests (foreign Host) on every route,
