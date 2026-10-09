@@ -1148,7 +1148,11 @@ def _refresh_installed_menu_app(runtime: Path) -> bool:
 
 
 def _deps_changed(repo: Path, deployed: str, target: str) -> bool:
-    changed = _git(repo, "diff", "--name-only", deployed, target, "--", "mcp_server/requirements.txt")
+    changed = _git(
+        repo, "diff", "--name-only", deployed, target, "--",
+        # The lock is generated from pyproject.toml, so any dependency change shows here.
+        "requirements.lock", "mcp_server/requirements.txt",
+    )
     return bool(changed.strip())
 
 
@@ -1190,7 +1194,10 @@ def _prepare_dependency_environment(runtime: Path, requirements: Path, target_co
         staged_python = staged / "bin" / "python"
         if not staged_python.exists():
             raise UpdateError("Staged virtual environment is incomplete.")
-        _run([str(staged_python), "-m", "pip", "install", "-r", str(requirements)], timeout=300)
+        command = [str(staged_python), "-m", "pip", "install", "--disable-pip-version-check", "-r", str(requirements)]
+        if requirements.name == "requirements.lock":
+            command.insert(4, "--require-hashes")  # every package pinned by version and hash
+        _run(command, timeout=300)
         return staged
     except Exception:
         shutil.rmtree(staging_root, ignore_errors=True)
@@ -1854,7 +1861,10 @@ def apply_update(
             print("[mac-mcp update] Refreshed installed Mac MCP menu bar app.", flush=True)
 
         if deps_changed and not skip_deps:
-            requirements = runtime_path / "mcp_server" / "requirements.txt"
+            # The hashed lock when this release has one; older releases used requirements.txt.
+            requirements = runtime_path / "requirements.lock"
+            if not requirements.is_file():
+                requirements = runtime_path / "mcp_server" / "requirements.txt"
             print("[mac-mcp update] Preparing transactional dependency environment...", flush=True)
             dependency_install_attempted = True
             staged_env = _prepare_dependency_environment(runtime_path, requirements, info.target_commit)

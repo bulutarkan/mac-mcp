@@ -5,11 +5,15 @@ on:
     branches: [main]
     paths:
       - "pyproject.toml"
+      - "requirements.lock"
+      - "build-requirements.in"
       - ".github/workflows/dependency-audit.yml"
   pull_request:
     branches: [main]
     paths:
       - "pyproject.toml"
+      - "requirements.lock"
+      - "build-requirements.in"
       - ".github/workflows/dependency-audit.yml"
   schedule:
     - cron: "23 5 * * 1"
@@ -30,10 +34,11 @@ jobs:
         with:
           python-version: "3.14"
           cache: pip
-      - name: Install project and auditor
+      - name: Install the locked dependency set and the auditor
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e . pip-audit
+          python -m pip install --disable-pip-version-check --require-hashes -r requirements.lock
+          python -m pip install --disable-pip-version-check --no-deps --no-build-isolation -e .
           python -m pip check
-      - name: Audit installed dependencies
-        run: pip-audit --progress-spinner off --skip-editable
+          python -m pip install --disable-pip-version-check pip-audit==2.9.0
+      - name: Audit the committed lock
+        run: pip-audit --progress-spinner off --require-hashes --disable-pip -r requirements.lock

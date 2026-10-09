@@ -1,0 +1,4 @@
+# Build tools for the editable install of mac-mcp (pyproject.toml [build-system]).
+# Pinned with hashes in requirements.lock so no unhashed tool is fetched at install time.
+setuptools>=69
+wheel

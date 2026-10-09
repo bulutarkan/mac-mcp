@@ -906,10 +906,22 @@ install_python_environment() {
   "$PYTHON_BIN" -m venv "$RUNTIME_DIR/.venv" || fail "Could not create the runtime virtual environment."
 
   info "Installing Mac MCP and its Python dependencies."
-  "$RUNTIME_DIR/.venv/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade pip setuptools wheel \
-    || fail "Could not prepare pip/setuptools/wheel."
-  "$RUNTIME_DIR/.venv/bin/python" -m pip install --quiet --disable-pip-version-check -e "$RUNTIME_DIR" \
-    || fail "Could not install Mac MCP Python dependencies."
+  if [[ -f "$RUNTIME_DIR/requirements.lock" ]]; then
+    # Every package, transitive dependencies and build tools included, is pinned
+    # by version and hash; pip refuses anything that does not match.
+    "$RUNTIME_DIR/.venv/bin/python" -m pip install --quiet --disable-pip-version-check --require-hashes \
+      -r "$RUNTIME_DIR/requirements.lock" \
+      || fail "Could not install the locked Mac MCP Python dependencies."
+    "$RUNTIME_DIR/.venv/bin/python" -m pip install --quiet --disable-pip-version-check --no-deps --no-build-isolation \
+      -e "$RUNTIME_DIR" \
+      || fail "Could not install Mac MCP into its Python environment."
+  else
+    # A stable release from before requirements.lock existed.
+    "$RUNTIME_DIR/.venv/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade pip setuptools wheel \
+      || fail "Could not prepare pip/setuptools/wheel."
+    "$RUNTIME_DIR/.venv/bin/python" -m pip install --quiet --disable-pip-version-check -e "$RUNTIME_DIR" \
+      || fail "Could not install Mac MCP Python dependencies."
+  fi
   "$RUNTIME_DIR/.venv/bin/python" -m pip check >/dev/null \
     || fail "Python dependency verification failed."
   "$RUNTIME_DIR/.venv/bin/python" -c 'import fastapi, uvicorn, mcp; from pathlib import Path; import sys; assert (Path(sys.prefix).parent / "mcp_server").is_dir()' \

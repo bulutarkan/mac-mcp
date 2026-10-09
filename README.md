@@ -169,9 +169,12 @@ git clone https://github.com/bulutarkan/mac-mcp.git
 cd mac-mcp
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install --require-hashes -r requirements.lock
+pip install --no-deps --no-build-isolation -e .
 cp mcp_server/.env.example mcp_server/.env
 ```
+
+`requirements.lock` pins every dependency, transitive packages and build tools included, by version and SHA-256 hash; the installer, the updater and CI all install from it, and pip refuses a package that does not match. After changing dependencies in `pyproject.toml`, regenerate it with the command at the top of the file (`uv pip compile ... --generate-hashes`).
 
 Configure at minimum:
 

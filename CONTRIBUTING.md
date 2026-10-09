@@ -17,8 +17,11 @@ Clone the repository and install it in a Python environment:
 ```bash
 git clone https://github.com/bulutarkan/mac-mcp.git
 cd mac-mcp
-python -m pip install -e .
+python -m pip install --require-hashes -r requirements.lock
+python -m pip install --no-deps --no-build-isolation -e .
 ```
+
+Dependencies are declared in `pyproject.toml` and locked, with hashes, in `requirements.lock`. When you change a dependency, regenerate the lock with the command at the top of `requirements.lock` and commit both files.
 
 Mac MCP currently supports Python 3.10+; CI exercises current supported Python versions on macOS.
 
