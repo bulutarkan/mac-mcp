@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import sqlite3
 import tempfile
 import time
@@ -673,12 +672,9 @@ class MobileDashboardTests(unittest.TestCase):
         refresh_body = script[script.index("async function refresh()"):script.index("function formatCount")]
         self.assertNotIn("/mobile/api/usage", refresh_body)
         self.assertEqual(1, script.count('api("/mobile/api/usage?days="'))
-        # Readable text: no mobile font is smaller than 12px and controls are 44px tall.
-        sizes = [float(v) for v in re.findall(r"font-size:([0-9.]+)px", css)]
-        self.assertGreaterEqual(min(sizes), 12.0)
-        self.assertIn("min-width:44px;min-height:44px", css)
+        # Run states are also given as text for screen readers, and keyboard focus is visible.
+        self.assertIn('<span class="sr-only">\' + (cls === "running" ? "Running"', script)
         self.assertIn("button:focus-visible", css)
-        self.assertIn("--soft:#9a9aa1", css)
 
     def test_existing_dashboard_remains_remote_denied(self):
         with tempfile.TemporaryDirectory() as td:

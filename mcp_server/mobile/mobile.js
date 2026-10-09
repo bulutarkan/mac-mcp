@@ -206,7 +206,7 @@
       svgIcon(toolIconName(e.tool)) + '</span><div class="activity-main"><strong>' + esc(e.tool || "Tool call") +
       '</strong><span>' + esc(sub) + '</span></div><div class="activity-side"><span>' +
       esc(duration(e.duration_ms)) + '</span><span class="result ' + cls + '" aria-hidden="true"></span>' +
-      '<span class="result-label ' + cls + '">' + (cls === "running" ? "Running" : (cls === "error" ? "Failed" : "OK")) +
+      '<span class="sr-only">' + (cls === "running" ? "Running" : (cls === "error" ? "Failed" : "OK")) +
       '</span></div></div>';
   }
   function lifecycleLabel(value) {
