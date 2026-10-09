@@ -29,10 +29,12 @@ from .public_endpoint import (
 )
 from .runtime_settings import server_setting
 from .managed_process import (
+    listener_owner,
     listener_pids,
     matches_role,
     migrate_legacy_record,
     pid_alive,
+    port_conflict_advice,
     port_is_listening,
     process_snapshot,
     read_pid,
@@ -392,11 +394,9 @@ def _start_server(args: argparse.Namespace) -> int:
 
     owned, foreign = _server_listener_state(port)
     if foreign:
-        rendered = ", ".join(str(pid) for pid in foreign if pid > 0) or "unknown"
-        print(
-            f"Port {port} is already listening under unmanaged process pid(s) {rendered}; "
-            "refusing to adopt or start mac-mcp."
-        )
+        owners = [listener_owner(pid) for pid in foreign if pid > 0]
+        print(f"Port {port} is already in use, so mac-mcp did not start.")
+        print(port_conflict_advice(port, owners))
         return 1
     if len(owned) > 1:
         print(
@@ -1194,6 +1194,7 @@ def status(args: argparse.Namespace) -> int:
             cloudflare_source = cf_validation.status
     cloudflare_running = cloudflare_pid is not None
 
+    port_owners: list[dict] = []
     if server_running:
         say(
             f"mac-mcp is running (pid {server_pid}; identity verified via {server_source})."
@@ -1202,11 +1203,12 @@ def status(args: argparse.Namespace) -> int:
     else:
         if server_source == "foreign_listener":
             conflicts = _server_listener_conflicts(port)
-            rendered = ", ".join(str(pid) for pid in conflicts if pid > 0) or "unknown"
-            say(
-                f"mac-mcp is not running; configured port {port} is occupied by "
-                f"unmanaged listener pid(s) {rendered}."
-            )
+            port_owners = [listener_owner(pid) for pid in conflicts if pid > 0]
+            rendered = ", ".join(
+                f"{owner['name']} (pid {owner['pid']})" if owner["name"] else f"pid {owner['pid']}"
+                for owner in port_owners
+            ) or "an unknown program"
+            say(f"mac-mcp is not running; configured port {port} is used by {rendered}.")
         elif server_source not in {"not_running"}:
             say(f"mac-mcp ownership is not verified ({server_source}).")
         else:
@@ -1276,7 +1278,7 @@ def status(args: argparse.Namespace) -> int:
         code = 1
         remediation.append({
             "stopped": "Start it with: mac-mcp start",
-            "port_conflict": f"Port {port} is used by another program; stop it or set MAC_MCP_PORT, then run mac-mcp start.",
+            "port_conflict": port_conflict_advice(port, port_owners),
             "ownership_unverified": "Run mac-mcp restart to start a verified server.",
         }[state])
     elif health == "unreachable":
@@ -1315,6 +1317,7 @@ def status(args: argparse.Namespace) -> int:
                 "port": port,
                 "health": health,
                 "log": str(LOG_FILE),
+                "port_owners": port_owners,
             },
             "public_endpoint": {
                 "mode": public.mode if public is not None else None,

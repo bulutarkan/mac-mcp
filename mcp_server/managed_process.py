@@ -450,3 +450,29 @@ def record_mode(path: Path) -> int | None:
         return stat.S_IMODE(path.stat().st_mode)
     except OSError:
         return None
+
+
+def listener_owner(pid: int) -> dict[str, Any]:
+    """Name the program behind a listener so a port conflict can be explained, never signalled."""
+    snapshot = process_snapshot(pid)
+    if snapshot is None or not snapshot.executable:
+        return {"pid": pid, "name": None, "executable": None}
+    executable = Path(snapshot.executable)
+    app = next((parent for parent in executable.parents if parent.suffix == ".app"), None)
+    return {"pid": pid, "name": app.stem if app is not None else executable.name, "executable": snapshot.executable}
+
+
+def port_conflict_advice(port: int, owners: list[dict[str, Any]]) -> str:
+    named = [owner for owner in owners if owner.get("name")]
+    if named:
+        who = ", ".join(f"{owner['name']} (pid {owner['pid']})" for owner in named)
+        first = f"Port {port} is used by {who}."
+    elif owners:
+        pids = ", ".join(str(owner["pid"]) for owner in owners)
+        first = (f"Port {port} is used by pid {pids}; open Activity Monitor, choose View > All Processes "
+                 "and search for that PID to see which program it is.")
+    else:
+        first = (f"Port {port} is in use, but the program could not be identified; "
+                 f"run lsof -nP -iTCP:{port} -sTCP:LISTEN to see it.")
+    return (f"{first} Mac MCP never stops programs it did not start: quit that program, or choose another "
+            "port in Mac MCP Settings > Advanced > Server Port, then start Mac MCP again.")

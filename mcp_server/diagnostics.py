@@ -18,12 +18,15 @@ from typing import Any, Callable, Iterable
 
 from .runtime_settings import load_runtime_settings, load_runtime_settings_state, settings_path
 from .managed_process import (
+    listener_owner,
     listener_pids,
     matches_role,
+    port_conflict_advice,
     port_is_listening,
     process_snapshot,
     validate_process_record,
 )
+from .permission_probe import DENIED, GRANTED, NOT_DETERMINED, probe_permissions
 from .cli_bootstrap import default_cli_path, launcher_kind, runtime_entrypoint
 from .runtime_resolver import resolve_cloudflared_binary, resolve_ngrok_binary
 from .public_endpoint import (
@@ -484,43 +487,106 @@ def _binary_result(check_id: str, name: str, *, required: bool, purpose: str) ->
     )
 
 
-def _check_accessibility() -> CheckResult:
-    started = time.perf_counter()
-    osa = shutil.which("osascript") or "/usr/bin/osascript"
-    if not Path(osa).exists():
-        return result(
-            "permissions.accessibility", "permissions", FAIL, "OSASCRIPT_MISSING",
-            "AppleScript is unavailable, so Accessibility cannot be checked.", started=started,
-        )
+def _server_permissions() -> dict[str, Any] | None:
+    """Ask the running server for its own permissions; consent is recorded per process."""
+    host, port = _local_host_port()
     try:
-        proc = subprocess.run(
-            [osa, "-e", 'tell application "System Events" to return UI elements enabled'],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5, check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return result(
-            "permissions.accessibility", "permissions", WARN, "ACCESSIBILITY_CHECK_TIMEOUT",
-            "Accessibility status check timed out.", started=started,
-            remediation="Open System Settings > Privacy & Security > Accessibility and verify the app/terminal running Mac MCP is allowed.",
-        )
+        token = dashboard_token_path().read_text(encoding="utf-8").strip()
     except OSError:
-        return result(
-            "permissions.accessibility", "permissions", WARN, "ACCESSIBILITY_CHECK_UNAVAILABLE",
-            "Accessibility status could not be queried.", started=started,
+        return None
+    try:
+        status_code, payload = _request_json(
+            f"http://{host}:{port}/dashboard/api/diagnostics/permissions",
+            headers={"Authorization": f"Bearer {token}"}, timeout=8.0,
         )
-    text = (proc.stdout or "").strip().lower()
-    enabled = proc.returncode == 0 and text == "true"
-    if enabled:
-        return result(
-            "permissions.accessibility", "permissions", PASS, "ACCESSIBILITY_ENABLED",
-            "macOS Accessibility UI scripting is enabled for this execution context.", started=started,
-        )
-    return result(
-        "permissions.accessibility", "permissions", FAIL, "ACCESSIBILITY_DISABLED",
-        "macOS Accessibility UI scripting is not enabled for this execution context.", started=started,
-        remediation="Grant Accessibility permission in System Settings > Privacy & Security > Accessibility, then rerun doctor.",
-        details={"probe_exit_code": int(proc.returncode)},
-    )
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError, ValueError):
+        return None
+    if status_code != 200 or not isinstance(payload.get("permissions"), dict):
+        return None
+    return payload
+
+
+def _permission_rows() -> list[CheckResult]:
+    started = time.perf_counter()
+    payload = _server_permissions()
+    context = "server"
+    if payload is None:
+        # Without a server, the doctor can only describe its own process.
+        payload = probe_permissions()
+        context = "doctor_process"
+    identity = payload.get("context") or {}
+    listed_as = str(identity.get("listed_as") or "the app running Mac MCP")
+    where = "" if context == "server" else " (for this terminal: Mac MCP is not running, so its own permissions could not be read)"
+    rows: list[CheckResult] = []
+
+    def row(key: str, status: str, reason: str, summary: str, remediation: str | None = None, **extra: Any) -> None:
+        entry = payload["permissions"].get(key) or {}
+        details = {
+            "state": entry.get("state"),
+            "context": context,
+            "listed_as": listed_as,
+            "executable": _safe_path(identity["executable"]) if identity.get("executable") else None,
+            "features": entry.get("features"),
+            "settings_path": entry.get("settings_path"),
+            "recovery": {"action": "open_system_settings", "url": entry.get("settings_url")},
+            **extra,
+        }
+        rows.append(result(f"permissions.{key}", "permissions", status, reason, summary + where,
+                           started=started, remediation=remediation, details=details))
+
+    def allow(key: str) -> str:
+        entry = payload["permissions"].get(key) or {}
+        features = ", ".join(entry.get("features") or [])
+        return f"Allow \u201c{listed_as}\u201d in {entry.get('settings_path')} (used for {features}), then rerun doctor."
+
+    ax = (payload["permissions"].get("accessibility") or {}).get("state")
+    if ax == GRANTED:
+        row("accessibility", PASS, "ACCESSIBILITY_ENABLED", "Accessibility is allowed.")
+    elif ax == DENIED:
+        # Only the server's own missing permission breaks Mac MCP.
+        row("accessibility", FAIL if context == "server" else WARN, "ACCESSIBILITY_DISABLED",
+            "Accessibility is not allowed.", allow("accessibility"))
+    else:
+        row("accessibility", INFO, "ACCESSIBILITY_UNKNOWN", "Accessibility state could not be determined.",
+            allow("accessibility"))
+
+    screen = (payload["permissions"].get("screen_recording") or {}).get("state")
+    if screen == GRANTED:
+        row("screen_recording", PASS, "SCREEN_RECORDING_ALLOWED", "Screen Recording is allowed.")
+    elif screen == DENIED:
+        row("screen_recording", WARN, "SCREEN_RECORDING_DENIED",
+            "Screen Recording is not allowed; screenshots and visual observation will fail.", allow("screen_recording"))
+    else:
+        row("screen_recording", INFO, "SCREEN_RECORDING_UNKNOWN", "Screen Recording state could not be determined.",
+            allow("screen_recording"))
+
+    automation = payload["permissions"].get("automation") or {}
+    targets = [t for t in automation.get("targets") or [] if isinstance(t, dict)]
+    denied = [t["app"] for t in targets if t.get("state") == DENIED]
+    asked = [t["app"] for t in targets if t.get("state") == NOT_DETERMINED]
+    allowed = [t["app"] for t in targets if t.get("state") == GRANTED]
+    not_running = [t["app"] for t in targets if t.get("state") == "not_running"]
+    extra = {"targets": targets}
+    if denied:
+        row("automation", WARN, "AUTOMATION_DENIED", "Automation is turned off for " + ", ".join(denied) + ".",
+            f"In {automation.get('settings_path')}, expand \u201c{listed_as}\u201d and turn on "
+            + ", ".join(denied) + ", then rerun doctor.", **extra)
+    elif asked:
+        row("automation", INFO, "AUTOMATION_NOT_ASKED_YET",
+            "macOS will ask the first time Mac MCP controls " + ", ".join(asked) + ".", **extra)
+    elif allowed:
+        tail = f" Not running, so not checked: {', '.join(not_running)}." if not_running else ""
+        row("automation", PASS, "AUTOMATION_ALLOWED", "Automation is allowed for " + ", ".join(allowed) + "." + tail, **extra)
+    else:
+        row("automation", INFO, "AUTOMATION_NOT_CHECKED",
+            "Automation could not be checked because none of the controlled apps is running.", **extra)
+
+    voice = (payload["permissions"].get("microphone") or {}).get("identity") or {}
+    row("microphone", INFO, "MICROPHONE_NOT_CHECKED",
+        f"Microphone access belongs to {voice.get('name', 'the voice helper')}, which macOS asks the first time you use voice. "
+        f"If voice reports that access was denied, allow it in {(payload['permissions'].get('microphone') or {}).get('settings_path')}.",
+        voice_helper=voice)
+    return rows
 
 
 def _pid_alive(pid: int) -> bool:
@@ -729,8 +795,9 @@ def _check_managed_process(name: str) -> CheckResult:
                 "process.server", "process", FAIL, "SERVER_PORT_FOREIGN_LISTENER",
                 "Configured Mac MCP port is occupied, but listener ownership could not be resolved.",
                 started=started,
-                remediation="Stop or move the unknown listener; Mac MCP will not adopt or signal it.",
+                remediation=port_conflict_advice(port, []),
                 details={
+                    "recovery": {"action": "open_settings", "pane": "advanced"},
                     "port": port,
                     "foreign_listener_pids": [],
                     "verified_listener_pids": [],
@@ -739,14 +806,21 @@ def _check_managed_process(name: str) -> CheckResult:
                 },
             )
         if foreign:
+            owners = [listener_owner(pid) for pid in foreign]
+            named = ", ".join(owner["name"] for owner in owners if owner["name"]) or "another program"
             return result(
                 "process.server", "process", FAIL, "SERVER_PORT_FOREIGN_LISTENER",
-                "Configured Mac MCP port is occupied by an unmanaged listener.",
+                f"Configured Mac MCP port {port} is used by {named}.",
                 started=started,
-                remediation="Stop or move the foreign listener; Mac MCP will not adopt or signal it.",
+                remediation=port_conflict_advice(port, owners),
                 details={
                     "port": port,
                     "foreign_listener_pids": foreign,
+                    "foreign_listeners": [
+                        {**owner, "executable": _safe_path(owner["executable"]) if owner["executable"] else None}
+                        for owner in owners
+                    ],
+                    "recovery": {"action": "open_settings", "pane": "advanced"},
                     "verified_listener_pids": owned,
                     "listener_pid_resolution": "resolved",
                     **({"stale_pid_files": stale} if stale else {}),
@@ -980,6 +1054,25 @@ def _check_runtime_companion_state() -> CheckResult:
     )
 
 
+def _selected_public_mode() -> str | None:
+    try:
+        return resolve_public_endpoint().mode
+    except PublicEndpointError:
+        return None
+
+
+_INSTALL_HINTS = {"ngrok": "brew install ngrok", "cloudflared": "brew install cloudflared"}
+
+
+def _selected_dependency_missing(name: str, started: float, source: str) -> CheckResult:
+    return result(
+        f"dependency.{name}", "dependencies", FAIL, f"{name.upper()}_MISSING_FOR_SELECTED_MODE",
+        f"{name} is the selected public endpoint but is not installed.", started=started,
+        remediation=f"Install it with: {_INSTALL_HINTS[name]} (or choose another mode in Settings > Connections), then restart Mac MCP.",
+        details={"source": source, "recovery": {"action": "open_settings", "pane": "connections"}},
+    )
+
+
 def _check_ngrok_dependency() -> CheckResult:
     started = time.perf_counter()
     resolved = resolve_ngrok_binary()
@@ -989,6 +1082,8 @@ def _check_ngrok_dependency() -> CheckResult:
             "ngrok is available (ngrok public tunnel).", started=started,
             details={"path": _safe_path(resolved.path), "source": resolved.source},
         )
+    if _selected_public_mode() == "ngrok":
+        return _selected_dependency_missing("ngrok", started, resolved.source)
     return result(
         "dependency.ngrok", "dependencies", WARN, "NGROK_MISSING",
         "ngrok is not installed (ngrok public tunnel).", started=started,
@@ -1006,6 +1101,8 @@ def _check_cloudflared_dependency() -> CheckResult:
             "cloudflared is available (Cloudflare Tunnel public endpoint).", started=started,
             details={"path": _safe_path(resolved.path), "source": resolved.source},
         )
+    if _selected_public_mode() == "cloudflare":
+        return _selected_dependency_missing("cloudflared", started, resolved.source)
     return result(
         "dependency.cloudflared", "dependencies", WARN, "CLOUDFLARED_MISSING",
         "cloudflared is not installed (Cloudflare Tunnel public endpoint).", started=started,
@@ -1058,6 +1155,25 @@ def _check_cloudflare_credential() -> CheckResult:
     )
 
 
+def _public_route_advice(mode: str, health_url: str) -> tuple[str, dict[str, Any]]:
+    """Point at the failing component: the local server, the tunnel process, or the route."""
+    _, port = _local_host_port()
+    if not port_is_listening(port):
+        return ("Mac MCP itself is not running, so nothing can answer publicly. Start Mac MCP, then rerun doctor.",
+                {"action": "restart"})
+    if mode in {"cloudflare", "ngrok"}:
+        name = "cloudflared" if mode == "cloudflare" else "ngrok"
+        if _check_managed_process(name).status != PASS:
+            return (f"The {name} tunnel is not running. Restart Mac MCP, then rerun doctor.", {"action": "restart"})
+        where = ("the Cloudflare dashboard (Zero Trust > Networks > Tunnels > Public hostname)"
+                 if mode == "cloudflare" else "your ngrok dashboard (Domains)")
+        return (f"{name} is running but {health_url} does not answer. Check in {where} that the hostname routes to "
+                f"http://127.0.0.1:{port}, then read mac-mcp logs {name}.",
+                {"action": "view_logs", "log": name})
+    return (f"Mac MCP is running but {health_url} does not answer. Check that your reverse proxy forwards this "
+            f"address to http://127.0.0.1:{port} and that DNS and TLS are valid.", {"action": "open_settings", "pane": "connections"})
+
+
 def _check_public_endpoint() -> CheckResult:
     started = time.perf_counter()
     try:
@@ -1083,18 +1199,20 @@ def _check_public_endpoint() -> CheckResult:
             str(health_url), headers={"User-Agent": f"Mac-MCP-Doctor/{__version__}"}, timeout=3.0
         )
     except urllib.error.HTTPError as exc:
+        advice, recovery = _public_route_advice(public.mode, str(health_url))
         return result(
             "public.endpoint", "network", WARN, "PUBLIC_ENDPOINT_HTTP_ERROR",
             "Configured public endpoint is not healthy from this Mac.", started=started,
-            remediation="Check the selected public endpoint provider/reverse proxy and rerun doctor.",
-            details={**details, "http_status": int(exc.code)},
+            remediation=advice,
+            details={**details, "http_status": int(exc.code), "recovery": recovery},
         )
     except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
+        advice, recovery = _public_route_advice(public.mode, str(health_url))
         return result(
             "public.endpoint", "network", WARN, "PUBLIC_ENDPOINT_UNREACHABLE",
             "Configured public endpoint could not be reached from this Mac.", started=started,
-            remediation="Check DNS/TLS/routing for the configured public endpoint and rerun doctor.",
-            details={**details, "error_type": type(exc).__name__},
+            remediation=advice,
+            details={**details, "error_type": type(exc).__name__, "recovery": recovery},
         )
     healthy = status_code == 200 and bool(payload.get("ok"))
     return result(
@@ -1122,7 +1240,19 @@ def _check_ngrok_for_selected_mode() -> CheckResult:
             "ngrok is not the selected public endpoint mode.", started=started,
             details={"mode": public.mode},
         )
-    return _check_managed_process("ngrok")
+    return _tunnel_stopped_is_actionable(_check_managed_process("ngrok"), "ngrok")
+
+
+def _tunnel_stopped_is_actionable(row: CheckResult, name: str) -> CheckResult:
+    if row.reason_code != f"{name.upper()}_PROCESS_NOT_DETECTED":
+        return row
+    return result(
+        row.check_id, "process", WARN, f"{name.upper()}_STOPPED",
+        f"The selected {name} tunnel is not running, so the public endpoint cannot work.",
+        remediation="Restart Mac MCP (menu bar > Restart, or mac-mcp restart); if it stops again, read mac-mcp logs "
+        + name + ".",
+        details={"recovery": {"action": "restart"}},
+    )
 
 
 def _check_cloudflare_for_selected_mode() -> CheckResult:
@@ -1140,11 +1270,11 @@ def _check_cloudflare_for_selected_mode() -> CheckResult:
             "Cloudflare Tunnel is not the selected public endpoint mode.", started=started,
             details={"mode": public.mode},
         )
-    return _check_managed_process("cloudflared")
+    return _tunnel_stopped_is_actionable(_check_managed_process("cloudflared"), "cloudflared")
 
 
 def doctor_checks() -> list[CheckResult]:
-    checks: list[Callable[[], CheckResult]] = [
+    checks: list[Callable[[], CheckResult | list[CheckResult]]] = [
         _check_runtime,
         _check_cli_installation,
         _check_state_dir,
@@ -1157,7 +1287,7 @@ def doctor_checks() -> list[CheckResult]:
         lambda: _binary_result("dependency.cliclick", "cliclick", required=False, purpose="coordinate/input fallback"),
         _check_ngrok_dependency,
         _check_cloudflared_dependency,
-        _check_accessibility,
+        _permission_rows,
         lambda: _check_managed_process("server"),
         _check_ngrok_for_selected_mode,
         _check_cloudflare_for_selected_mode,
@@ -1173,7 +1303,8 @@ def doctor_checks() -> list[CheckResult]:
     rows: list[CheckResult] = []
     for check in checks:
         try:
-            rows.append(check())
+            produced = check()
+            rows.extend(produced if isinstance(produced, list) else [produced])
         except Exception as exc:  # a doctor must report broken checks, not crash the whole report
             rows.append(result(
                 f"internal.{getattr(check, '__name__', 'check')}", "internal", WARN,

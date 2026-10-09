@@ -31,6 +31,7 @@ from .file_transactions import (
     undo_transaction,
 )
 from .observability import TelemetryManager, sanitize_value
+from .permission_probe import probe_permissions
 from .provider_usage import clear as provider_usage_clear, summary as provider_usage_summary
 from .policy import (
     GLOBAL_PROFILE_NAMES,
@@ -320,6 +321,13 @@ def create_dashboard_routes(
             "version": __version__,
             "chrome_companion_connected": bool(chrome_background_bridge.is_connected()),
         })
+
+    async def permissions_view(request: Request) -> Response:
+        # Consent is recorded per process, so only the server can describe its own.
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        return JSONResponse(await asyncio.to_thread(probe_permissions))
 
     async def decision_acceleration_status(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
@@ -1003,6 +1011,7 @@ def create_dashboard_routes(
         Route("/dashboard/assets/{name}", asset, methods=["GET"]),
         Route("/dashboard/api/summary", summary, methods=["GET"]),
         Route("/dashboard/api/diagnostics/runtime", runtime_diagnostics, methods=["GET"]),
+        Route("/dashboard/api/diagnostics/permissions", permissions_view, methods=["GET"]),
         Route("/dashboard/api/decision-acceleration", decision_acceleration_status, methods=["GET"]),
         Route("/dashboard/api/decision-acceleration/verify", decision_acceleration_verify, methods=["POST"]),
         Route("/dashboard/api/security/semantics", security_semantics, methods=["GET"]),
