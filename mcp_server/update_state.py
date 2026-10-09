@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shutil
@@ -47,6 +48,54 @@ def deployed_commit_path() -> Path:
 
 def update_state_path() -> Path:
     return update_root() / "state.json"
+
+
+class UpdateInProgress(RuntimeError):
+    """Another updater holds the update lock for this repo/runtime."""
+
+    def __init__(self, state: dict[str, Any] | None):
+        self.state = state or {}
+        update_id = str(self.state.get("update_id") or "unknown")
+        status = str(self.state.get("status") or "running")
+        super().__init__(f"Another Mac MCP update is already in progress ({update_id}, {status}).")
+
+
+def update_lock_path() -> Path:
+    return update_root() / "update.lock"
+
+
+def acquire_update_lock() -> int:
+    """Take the cross-process updater lock without waiting; return its file descriptor.
+
+    The lock is an flock on an open file, so it follows the descriptor into the
+    detached worker (pass it with pass_fds) and the kernel releases it when the
+    last holder exits, including after a crash.
+    """
+    fd = os.open(update_lock_path(), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        try:
+            state = read_update_state()
+        except UpdateStateError:
+            state = None
+        raise UpdateInProgress(state) from None
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def holds_update_lock(fd: int) -> bool:
+    """True when ``fd`` is (or now becomes) the holder of the updater lock."""
+    try:
+        if os.fstat(fd).st_ino != os.stat(update_lock_path()).st_ino:
+            return False
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
 
 
 def backups_root() -> Path:

@@ -19,7 +19,7 @@ from .update_helper import (
     secure_bootstrap_update_blocker,
     validate_update_state,
 )
-from .update_state import INCOMPLETE_UPDATE_STATES, update_state_path
+from .update_state import INCOMPLETE_UPDATE_STATES, UpdateInProgress, acquire_update_lock, update_state_path
 from .log_retention import prune_update_logs
 
 
@@ -58,7 +58,34 @@ def launch_detached_update(
     skip_restart: bool = False,
     skip_deps: bool = False,
 ) -> tuple[Dict[str, Any], subprocess.Popen]:
-    """Launch the staged updater in a process session that survives its caller."""
+    """Launch the staged updater in a process session that survives its caller.
+
+    Raises UpdateInProgress when another updater holds the update lock. The
+    lock is handed to the worker, which holds it until it exits.
+    """
+    lock_fd = acquire_update_lock()
+    try:
+        return _launch_locked_update(
+            info, repo, runtime, lock_fd, branch=branch, remote=remote, launchd_label=launchd_label,
+            skip_restart=skip_restart, skip_deps=skip_deps,
+        )
+    finally:
+        # The worker has its own copy of the descriptor; ours only closes.
+        os.close(lock_fd)
+
+
+def _launch_locked_update(
+    info,
+    repo: Path,
+    runtime: Path,
+    lock_fd: int,
+    *,
+    branch: str,
+    remote: str,
+    launchd_label: str,
+    skip_restart: bool,
+    skip_deps: bool,
+) -> tuple[Dict[str, Any], subprocess.Popen]:
     payload = _public_info(info)
     update_id = f"upd_{uuid.uuid4().hex[:10]}"
     status_path = update_state_path()
@@ -110,6 +137,7 @@ def launch_detached_update(
         "--branch", branch,
         "--remote", remote,
         "--deferred-seconds", "0.8",
+        "--lock-fd", str(lock_fd),
     ]
     if launchd_label:
         cmd.extend(["--launchd-label", launchd_label])
@@ -127,6 +155,7 @@ def launch_detached_update(
             cwd=str(repo),
             start_new_session=True,
             close_fds=True,
+            pass_fds=(lock_fd,),
         )
         log.close()
     except Exception:
@@ -145,6 +174,18 @@ def launch_detached_update(
         "message": "Update started. Mac MCP will restart automatically; refresh the MCP tools after it reconnects.",
     })
     return payload, proc
+
+
+def _in_progress_payload(exc: UpdateInProgress) -> Dict[str, Any]:
+    return {
+        "ok": False,
+        "blocked": True,
+        "reason": "update_in_progress",
+        "update_id": exc.state.get("update_id"),
+        "update_status": exc.state.get("status"),
+        "log_path": exc.state.get("log_path"),
+        "message": str(exc),
+    }
 
 
 def mac_mcp_update(check_only: bool = True, branch: str = "main") -> Dict[str, Any]:
@@ -198,6 +239,9 @@ def mac_mcp_update(check_only: bool = True, branch: str = "main") -> Dict[str, A
             remote="origin",
             launchd_label=os.getenv("MAC_MCP_LAUNCHD_LABEL", "").strip(),
         )
+    except UpdateInProgress as exc:
+        payload.update(_in_progress_payload(exc))
+        return payload
     except Exception as exc:
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,

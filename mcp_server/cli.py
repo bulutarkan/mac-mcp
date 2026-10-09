@@ -53,6 +53,7 @@ from .update_helper import (
     validate_update_state,
 )
 from .tools_update import launch_detached_update
+from .update_state import UpdateInProgress
 from .log_retention import log_limits, managed_logs, rotate_copy_truncate, tail_log, update_logs_dir
 from .version import __version__
 from .connection_config import (
@@ -1792,6 +1793,11 @@ def update(args: argparse.Namespace) -> int:
         if log_text:
             print(log_text, end="" if log_text.endswith("\n") else "\n")
         return 0 if return_code == 0 else 1
+    except UpdateInProgress as exc:
+        print(f"mac-mcp update: {exc}", file=sys.stderr)
+        if exc.state.get("log_path"):
+            print(f"mac-mcp update: follow it in {exc.state['log_path']}", file=sys.stderr)
+        return 1
     except UpdateError as exc:
         print(f"mac-mcp update failed: {exc}", file=sys.stderr)
         return 1

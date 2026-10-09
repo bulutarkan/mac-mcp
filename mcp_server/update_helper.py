@@ -29,8 +29,11 @@ if __package__:
     )
     from .update_state import (
         INCOMPLETE_UPDATE_STATES,
+        UpdateInProgress,
         UpdateStateError,
+        acquire_update_lock,
         backups_root,
+        holds_update_lock,
         read_deployed_commit,
         read_update_state,
         update_root,
@@ -54,8 +57,11 @@ else:
     )
     from update_state import (
         INCOMPLETE_UPDATE_STATES,
+        UpdateInProgress,
         UpdateStateError,
+        acquire_update_lock,
         backups_root,
+        holds_update_lock,
         read_deployed_commit,
         read_update_state,
         update_root,
@@ -1943,7 +1949,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--deferred-seconds", type=float, default=0.0, help=argparse.SUPPRESS)
     p.add_argument("--launchd-label", default=os.getenv("MAC_MCP_LAUNCHD_LABEL", DEFAULT_LAUNCHD_LABEL), help=argparse.SUPPRESS)
     p.add_argument("--cleanup-staging-dir", default=None, help=argparse.SUPPRESS)
+    p.add_argument("--lock-fd", type=int, default=None, help=argparse.SUPPRESS)
     return p
+
+
+def _hold_update_lock(lock_fd: int | None) -> int:
+    """Hold the updater lock for this process's lifetime (inherited, or taken here)."""
+    if lock_fd is not None:
+        if not holds_update_lock(lock_fd):
+            raise UpdateError("The updater lock handed to this worker is not held; refusing to update.")
+        return lock_fd
+    try:
+        return acquire_update_lock()
+    except UpdateInProgress as exc:
+        raise UpdateError(str(exc)) from exc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1959,6 +1978,8 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Migration required: {_format_secure_bootstrap_blocker(blocker)}")
                     return 2
             return 2 if info.dirty else 0
+        # Held until this process exits; the kernel releases it even on a crash.
+        _hold_update_lock(args.lock_fd)
         apply_update(
             repo=args.repo, runtime=args.runtime, branch=args.branch, remote=args.remote,
             launchd_label=args.launchd_label, skip_restart=args.skip_restart,
