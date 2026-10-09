@@ -225,3 +225,9 @@ button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid
   .agent-sub,.session-sub{white-space:normal;flex-wrap:wrap}
   .agent-title strong,.activity-main strong,.session-title{white-space:normal;overflow-wrap:anywhere}
 }
+.agent-stop{flex:0 0 auto;align-self:center;min-width:28px;height:28px;margin-left:8px;display:grid;place-items:center;padding:0 7px;border:1px solid rgba(255,255,255,.14);border-radius:8px;background:rgba(255,255,255,.05);color:#d7d7dc;font:inherit;font-size:10px;font-weight:650;cursor:pointer}
+.agent-stop .stop-square{width:9px;height:9px;border-radius:2px;background:#c9c9cf}
+.agent-stop.armed{border-color:rgba(255,99,99,.6);background:rgba(255,69,58,.18);color:#ff8a80}
+.agent-stop.busy{border:0;background:none;color:var(--soft);font-size:9px;cursor:default}
+.agent-stop:focus-visible{outline:2px solid rgba(10,132,255,.8);outline-offset:2px}
+.agent:has(.agent-stop){grid-template-columns:28px minmax(0,1fr) auto auto}

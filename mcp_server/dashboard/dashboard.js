@@ -18,6 +18,7 @@
     globalAdmission: null,
     focusAgent: null,
     teams: [],
+    stoppingAgents: new Set(),
     focusTeam: null,
     focusApplied: false,
     changeSets: [],
@@ -540,6 +541,7 @@
           <div class="agent-card-head">
             <strong title="${esc(agent.title || agent.agent_id)}">${esc(agent.title || agent.agent_id)}</strong>
             <span class="agent-phase">${esc(phase)}</span>
+            ${activeStatuses.has(status) ? stopButton(agent) : ''}
           </div>
           <div class="agent-meta">${esc(model)}<br>${last} · ${number(agent.tool_call_count)} calls · ${duration(agent.duration_ms)}${turn}${resilience ? `<br>${esc(resilience)}` : ''}</div>
         </div>
@@ -555,6 +557,10 @@
     if (active.length) groups.push(`<div class="agent-group-label"><strong>Active</strong><span>${active.length}</span></div>${active.map(card).join("")}`);
     if (recent.length) groups.push(`<div class="agent-group-label"><strong>Recent</strong><span>latest ${recent.length}</span></div>${recent.map(card).join("")}`);
     els.agentList.innerHTML = groups.join("");
+    els.agentList.querySelectorAll("[data-stop-agent]").forEach((button) => button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      stopAgent(button.dataset.stopAgent, button);
+    }));
     els.agentList.querySelectorAll("[data-focus-agent]").forEach((button) => button.addEventListener("click", () => {
       state.focusAgent = button.dataset.focusAgent;
       state.focusTeam = null;
@@ -571,6 +577,36 @@
         });
       }
     }
+  }
+
+  function stopButton(agent) {
+    const label = `Stop ${agent.title || "agent"}`;
+    if (state.stoppingAgents.has(agent.agent_id)) {
+      return `<span class="agent-stop is-busy" role="status" aria-label="Stopping">Stopping…</span>`;
+    }
+    return `<button type="button" class="agent-stop" data-stop-agent="${esc(agent.agent_id)}" title="${esc(label)}" aria-label="${esc(label)}"><span aria-hidden="true"></span></button>`;
+  }
+
+  // Stops a delegated agent as the user; the orchestrator sees "cancelled by the user".
+  async function stopAgent(agentId, button) {
+    if (!agentId || state.stoppingAgents.has(agentId)) return;
+    state.stoppingAgents.add(agentId);
+    if (button) button.disabled = true;
+    renderAgents(state.agents);
+    try {
+      const result = await postJSON("/dashboard/api/agents/cancel", {agent_id: agentId});
+      const unconfirmed = result.cancellation && result.cancellation.state === "unconfirmed";
+      announceAgent(unconfirmed ? "Stop requested; the agent has not exited yet." : "Agent stopped.");
+    } catch (error) {
+      announceAgent(`Could not stop the agent: ${error.message}`);
+    } finally {
+      state.stoppingAgents.delete(agentId);
+      await refreshAgents();
+    }
+  }
+
+  function announceAgent(text) {
+    if (els.announcer) els.announcer.textContent = text;
   }
 
   // A team's DAG as a compact task list: state, dependencies and why a node waits.

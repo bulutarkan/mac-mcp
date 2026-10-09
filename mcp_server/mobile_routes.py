@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
+from fastapi import HTTPException
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
@@ -18,7 +20,7 @@ from .public_endpoint import PublicEndpointError, resolve_public_endpoint
 from .request_client import client_address as _client_address, is_direct_local_request
 from .security import Settings, dashboard_authorized
 from .steering import STEERING_SCHEMA_VERSION, SteeringManager
-from .tools_agents import list_agents
+from .tools_agents import agent_action, list_agents
 from .version import __version__
 
 MOBILE_DIR = Path(__file__).resolve().parent / "mobile"
@@ -352,6 +354,39 @@ def create_mobile_routes(
             "agents": rows,
         })
 
+    async def agent_cancel(request: Request) -> Response:
+        """The paired owner stops a delegated agent from the phone (recorded as cancelled by the user)."""
+        _session, denied = require_mobile(request)
+        if denied is not None:
+            return denied
+        # Cookie-authenticated and state-changing: only same-origin JSON requests.
+        # A cross-site form cannot send application/json without a CORS preflight.
+        if "application/json" not in (request.headers.get("content-type") or "").lower():
+            return JSONResponse({"ok": False, "error": "json_required"}, status_code=415)
+        origin = (request.headers.get("origin") or "").strip()
+        host = (request.headers.get("host") or request.url.netloc).strip().lower()
+        # Compare hosts only: behind the HTTPS tunnel the server itself sees plain http.
+        if origin and urlsplit(origin).netloc.lower() != host:
+            return JSONResponse({"ok": False, "error": "cross_origin_rejected"}, status_code=403)
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+            payload = {}
+        agent_id = str((payload or {}).get("agent_id") or "").strip() if isinstance(payload, dict) else ""
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", agent_id):
+            return JSONResponse({"ok": False, "error": "invalid_agent_id"}, status_code=400)
+        try:
+            result = await asyncio.to_thread(
+                agent_action, settings, action="cancel", agent_id=agent_id, requested_by="user",
+            )
+        except HTTPException as exc:
+            return JSONResponse({"ok": False, "error": "cancel_failed"}, status_code=exc.status_code)
+        cancellation = result.get("cancellation") or {}
+        return JSONResponse({
+            "ok": True, "agent_id": agent_id, "status": result.get("status"),
+            "cancellation_state": cancellation.get("state"),
+        })
+
     async def sessions_view(request: Request) -> Response:
         _session, denied = require_mobile(request)
         if denied is not None:
@@ -488,6 +523,7 @@ def create_mobile_routes(
         Route("/mobile/pair", pair, methods=["POST"]),
         Route("/mobile/api/status", status_view, methods=["GET"]),
         Route("/mobile/api/agents", agents_view, methods=["GET"]),
+        Route("/mobile/api/agents/cancel", agent_cancel, methods=["POST"]),
         Route("/mobile/api/sessions", sessions_view, methods=["GET"]),
         Route("/mobile/api/activity", activity_view, methods=["GET"]),
         Route("/mobile/api/usage", usage_view, methods=["GET"]),

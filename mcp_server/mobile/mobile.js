@@ -9,6 +9,9 @@
     timer: null, agentCollapsed: null, activeAgents: null,
     lastSuccessAt: 0, online: null, unavailable: [], announced: "",
     loaded: { agents: false, activity: false, sessions: false },
+    stopping: new Set(),
+    armedStop: null,
+    lastAgents: null,
     usageOpen: false, usageDays: 7, usageRequest: 0
   };
 
@@ -195,7 +198,45 @@
       '</div><div class="agent-sub"><span>' + esc(provider) + '</span><span>·</span><span class="detail-with-icon">' +
       svgIcon(detailIcon, "mini-icon") + esc(detail) + '</span></div></div>' +
       '<div class="agent-side"><strong>' + esc(side) + '</strong>' +
-      (a.tool_call_count ? '<span>' + esc(a.tool_call_count) + ' tools</span>' : '') + '</div></div>';
+      (a.tool_call_count ? '<span>' + esc(a.tool_call_count) + ' tools</span>' : '') + '</div>' +
+      (running && a.agent_id ? stopButton(a) : '') + '</div>';
+  }
+  // Two taps: the first arms the button ("Stop?"), the second sends the stop.
+  function stopButton(a) {
+    const id = String(a.agent_id);
+    const title = a.title || "agent";
+    if (state.stopping.has(id)) {
+      return '<span class="agent-stop busy" role="status">Stopping…</span>';
+    }
+    const armed = state.armedStop === id;
+    return '<button type="button" class="agent-stop' + (armed ? ' armed' : '') + '" data-stop-agent="' + esc(id) +
+      '" aria-label="' + esc(armed ? "Tap again to stop " + title : "Stop " + title) + '">' +
+      (armed ? 'Stop?' : '<span class="stop-square" aria-hidden="true"></span>') + '</button>';
+  }
+  async function stopAgent(id) {
+    state.stopping.add(id);
+    state.armedStop = null;
+    rerenderAgents();
+    try {
+      const r = await fetch("/mobile/api/agents/cancel", {
+        method: "POST", cache: "no-store", credentials: "same-origin",
+        headers: { "Accept": "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_id: id })
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.error || ("HTTP " + r.status));
+      announce(body.cancellation_state === "unconfirmed"
+        ? "Stop requested; the agent has not exited yet."
+        : "Agent stopped.");
+    } catch (error) {
+      announce("Could not stop the agent: " + error.message);
+    } finally {
+      state.stopping.delete(id);
+      refresh();
+    }
+  }
+  function rerenderAgents() {
+    if (state.lastAgents) renderAgents(state.lastAgents);
   }
   function activityRow(e) {
     const t = e.timestamp || e.started_at || e.finished_at;
@@ -406,6 +447,7 @@
       : (status.active_agents ? "Running on your Mac right now" : "Nothing running right now");
   }
   function renderAgents(agents) {
+    state.lastAgents = agents;
     $("agentMeta").textContent = agents.active_count ? agents.active_count + " active" : ((agents.count || 0) ? "Recent" : "");
     $("agents").innerHTML = (agents.agents || []).map(agentRow).join("") || '<div class="empty">No delegated agents yet.</div>';
     updateAgentDisclosure(agents.active_count ?? 0);
@@ -553,6 +595,21 @@
   }
   const usageToggle = $("usageToggle");
   if (usageToggle) usageToggle.addEventListener("click", () => setUsageOpen(!state.usageOpen));
+  // One delegated listener survives the list being re-rendered on every refresh.
+  $("agents").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-stop-agent]");
+    if (!button) return;
+    const id = button.dataset.stopAgent;
+    if (state.armedStop === id) {
+      stopAgent(id);
+      return;
+    }
+    state.armedStop = id;
+    rerenderAgents();
+    window.setTimeout(() => {
+      if (state.armedStop === id) { state.armedStop = null; rerenderAgents(); }
+    }, 6000);
+  });
   document.querySelectorAll("[data-usage-days]").forEach(button => {
     button.addEventListener("click", () => {
       state.usageDays = Number(button.dataset.usageDays) || 7;
