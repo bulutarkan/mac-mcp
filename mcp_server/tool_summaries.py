@@ -20,6 +20,7 @@ CORE_TOOL_NAMES = frozenset({
     "read_file", "write_file", "edit_file", "file_transaction_undo", "artifact_pipeline", "context_handoff", "search_files", "http_request",
     "mac_snapshot", "mac_observe", "mac_act", "mac_app", "computer_plan",
     "browser_list_tabs", "browser_close_tab", "browser_observe", "browser_find", "browser_act", "browser_do", "browser_upload_artifact",
+    "browser_checkpoint",
     "spawn_agents", "wait_agents",
     "memory_search", "lesson_search", "lesson_feedback", "ask_user",
     "tool_discover", "tool_invoke",
@@ -107,6 +108,10 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
     "browser_upload_artifact": (
         "Select a registered artifact (artifact_id + matching path) into an input[type=file] and verify it. Selects only, "
         "never submits the form; Safari needs foreground capability and fails closed rather than stealing focus."
+    ),
+    "browser_checkpoint": (
+        "Sign-in/2FA/passkey/captcha step: create (tab_handle) -> awaiting_human + notifies the user; wait (<=300s) or "
+        "status -> resolved when the tab no longer shows it. Never type passwords or codes."
     ),
     "tool_discover": (
         "Find which tool to use, including less-common ones the profile allows: plain-word query, ranked results with why, "

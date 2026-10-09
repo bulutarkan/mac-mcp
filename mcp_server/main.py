@@ -7,7 +7,7 @@ import json
 import os
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import HTTPException, status
@@ -80,8 +80,11 @@ from .tools_browser import (
     browser_coordinate_click, browser_get_snapshot,
 )
 from .tools_browser_agent import (
-    browser_observe, browser_find, browser_act, normalize_act_actions, semantic_extract_fields,
+    _run_json_js, browser_observe, browser_find, browser_act, normalize_act_actions, semantic_extract_fields,
 )
+from .tools_browser import _norm_browser
+from . import browser_checkpoint, browser_tabs
+from .tool_cancellation import cancellable_sleep
 from .tools_interactive import ask_choice, ask_confirmation, ask_user
 from .tools_voice import ask_user_voice
 from . import applescript_host, ax_native, ax_watch
@@ -1524,6 +1527,44 @@ def create_app():
                                     visual=visual, element_id=element_id,
                                     previous_observation_id=previous_observation_id),
         )
+
+    @mcp.tool(
+        name="browser_checkpoint",
+        description=(
+            "Hand a sign-in, 2FA, passkey, push-approval or captcha step to the person without collecting secrets. "
+            "action=create (tab_handle; category optional, detected from the page) returns awaiting_human + checkpoint_id "
+            "and notifies the user; action=wait (wait_s<=300) or status reports resolved once that tab no longer shows "
+            "the challenge, tab_closed if it is gone; cancel drops it. Never type passwords or codes; after resolved, "
+            "browser_observe before acting."
+        ),
+    )
+    async def _browser_checkpoint(browser: str, action: Literal["create", "wait", "status", "cancel"] = "create",
+                                  tab_handle: Optional[str] = None, checkpoint_id: Optional[str] = None,
+                                  category: Optional[Literal["password", "otp", "passkey", "push", "captcha", "other"]] = None,
+                                  message: Optional[str] = None, completed_actions: Optional[int] = None,
+                                  wait_s: float = 0, notify: bool = True) -> Dict[str, Any]:
+        b = _norm_browser(browser)
+
+        def work() -> Dict[str, Any]:
+            if action == "cancel":
+                return browser_checkpoint.cancel(checkpoint_id or "")
+            if action == "create":
+                return browser_checkpoint.create(
+                    b, tab_handle or "",
+                    probe=lambda: _run_json_js(settings, b, browser_checkpoint.CHALLENGE_JS, tab_handle=tab_handle),
+                    notify=(lambda title, text: send_notification(settings, title=title, message=text)) if notify else None,
+                    category=category, message=message, completed_actions=completed_actions,
+                )
+            record_handle = browser_checkpoint.handle_for(checkpoint_id or "")
+            return browser_checkpoint.check(
+                checkpoint_id or "",
+                probe=lambda: _run_json_js(settings, b, browser_checkpoint.CHALLENGE_JS, tab_handle=record_handle),
+                tab_exists=lambda: any(row.get("tab_handle") == record_handle for row in browser_tabs.list_tabs(b)),
+                wait_s=wait_s if action == "wait" else 0,
+                sleep=cancellable_sleep,
+            )
+
+        return await asyncio.to_thread(_log, audit_logger, "browser_checkpoint", work)
 
     @mcp.tool(
         name="browser_find",

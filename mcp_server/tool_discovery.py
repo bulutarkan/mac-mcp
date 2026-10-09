@@ -33,6 +33,8 @@ TOOL_USE_CASES: Dict[str, Tuple[str, ...]] = {
     "browser_close_tab": ("close tab",),
     "browser_screenshot": ("screenshot web page", "capture page image"),
     "browser_wait_for_download": ("wait download file browser",),
+    "browser_checkpoint": ("sign in", "login 2fa", "two factor code", "otp verification", "captcha", "passkey",
+                           "let the user log in"),
     "browser_upload_artifact": ("upload file to website", "attach file in browser"),
     "run_command": ("run shell command", "execute terminal", "bash zsh", "cli command"),
     "start_background_job": ("run long command", "background process", "start server", "long build", "watcher",
