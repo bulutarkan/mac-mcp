@@ -3387,7 +3387,7 @@
                           "type": "string"
                         },
                         "intent": {
-                          "description": "Optional; only breaks ties between equal targets.",
+                          "description": "Only breaks ties.",
                           "type": "string"
                         },
                         "text": {
@@ -3420,10 +3420,17 @@
                           ],
                           "type": "string"
                         },
+                        "x": {
+                          "description": "Canvas: viewport px, with y.",
+                          "type": "number"
+                        },
                         "dx": {
                           "type": "number"
                         },
                         "dy": {
+                          "type": "number"
+                        },
+                        "y": {
                           "type": "number"
                         },
                         "for": {
@@ -3455,7 +3462,6 @@
                           "type": "array"
                         },
                         "item_selector": {
-                          "description": "scan: CSS for one row (default: guessed rows).",
                           "type": "string"
                         },
                         "key_field": {
@@ -3486,7 +3492,6 @@
                           "type": "string"
                         },
                         "to_element_id": {
-                          "description": "drag: drop target (or to_query/to_role, dx/dy).",
                           "type": "string"
                         },
                         "to_query": {

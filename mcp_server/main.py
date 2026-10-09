@@ -170,7 +170,10 @@ BROWSER_ACT_DESCRIPTION = (
     "(key_field text|href, item_selector optional) with stopped=end_of_list|no_new_items|max_items|max_steps|timeout|payload_budget. "
     "Chrome: hover moves the real pointer onto a target (CSS :hover menus); drag presses, moves and releases from the "
     "target to to_element_id / to_query / dx,dy. A native alert/confirm/prompt surfaces as browser_dialog_open with its "
-    "text; answer it only with {type:'dialog', decision:'accept'|'dismiss'} (prompt_text for prompt())."
+    "text; answer it only with {type:'dialog', decision:'accept'|'dismiss'} (prompt_text for prompt()). "
+    "Canvas apps (observe reports canvas.canvas_heavy): click/double_click/hover with x,y in viewport CSS px from a "
+    "visual='viewport' observation (pass its observation_id; a scrolled or resized page is refused as stale_coordinates), "
+    "and key with input_mode='trusted' for real key events (Chrome)."
 )
 
 _BROWSER_DO_OUTPUT_BUDGET_BYTES = 8_192

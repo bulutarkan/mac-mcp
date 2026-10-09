@@ -301,9 +301,9 @@ class ChromeBackgroundBridge:
         return self._request("handle_dialog", payload, timeout_s=timeout_s)
 
     def request_gesture(
-        self, chrome_tab_id: str | int, steps: list, *, timeout_s: float = 15.0,
+        self, chrome_tab_id: str | int, steps: list, *, timeout_s: float = 15.0, feature: str = "gestures",
     ) -> Dict[str, Any]:
-        self.require("gestures")
+        self.require(feature)
         return self._request("gesture", {"chrome_tab_id": int(chrome_tab_id), "steps": list(steps)}, timeout_s=timeout_s)
 
     def request_set_file_input(

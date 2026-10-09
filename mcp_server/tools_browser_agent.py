@@ -1363,13 +1363,21 @@ for(var i=0;i<all.length && elements.length<{max_elements};i++){{
 }}
 var obs='bobs_'+s.pageToken+'_'+Date.now().toString(36);
 s.observations[obs]=s.mutationRevision;
-s.observationMeta[obs]={{scope:scope,max_elements:{max_elements}}};
+s.observationMeta[obs]={{scope:scope,max_elements:{max_elements},view:{{sx:scrollX,sy:scrollY,w:innerWidth,h:innerHeight}}}};
+// Canvas apps draw their controls: say so, and where, instead of returning an empty-looking page.
+var canvasHint=(function(){{var vw=innerWidth*innerHeight,best=null,area=0;
+  Array.from(document.querySelectorAll('canvas')).forEach(function(c){{if(!__mcpVisible(c))return;var r=c.getBoundingClientRect();
+    var a=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0))*Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));if(a>area){{area=a;best=c;}}}});
+  if(!best||area<vw*0.25)return undefined;var r=best.getBoundingClientRect();
+  return {{canvas_heavy:true,element_id:__mcpId(best,s),rect:{{x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)}},coverage:Math.round(area/vw*100)/100,
+    hint:'Controls are drawn in a canvas: observe with visual=viewport, then browser_act click/hover with x,y (viewport CSS px) and this observation_id; keys with input_mode=trusted.'}};}})();
 var metrics={{screenX:screenX,screenY:screenY,outerWidth:outerWidth,outerHeight:outerHeight,innerWidth:innerWidth,innerHeight:innerHeight,devicePixelRatio:devicePixelRatio}};
 return __mcpB64({{
   ok:true, observation_id:obs, dom_revision:s.mutationRevision,
   url:location.href,title:document.title,scroll:{{x:scrollX,y:scrollY}},
   viewport:{{w:innerWidth,h:innerHeight}},window_metrics:metrics,
-  scope:scope,modal_scope:(function(){{var m=__mcpTopBlockingModal();return m?{{active:true,element_id:__mcpId(m,s),role:__mcpRole(m),text:__mcpText(m).slice(0,120)}}:{{active:false}};}})(),element_count:elements.length,elements:elements
+  scope:scope,modal_scope:(function(){{var m=__mcpTopBlockingModal();return m?{{active:true,element_id:__mcpId(m,s),role:__mcpRole(m),text:__mcpText(m).slice(0,120)}}:{{active:false}};}})(),element_count:elements.length,elements:elements,
+  canvas:canvasHint
 }});
 }})()'''
 
@@ -3636,6 +3644,108 @@ return __mcpB64({{ok:true,x:r.left+r.width/2,y:r.top+r.height/2,w:r.width,h:r.he
 }})()"""
 
 
+def _point_check_js(observation_id: str, x: float, y: float) -> str:
+    obs = json.dumps(str(observation_id or ""))
+    return f"""(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(o){{return btoa(unescape(encodeURIComponent(JSON.stringify(o))));}}
+var s=__mcpState(),m=(s.observationMeta||{{}})[{obs}],x={float(x)},y={float(y)};
+if(!m||!m.view)return __mcpB64({{ok:false,error:'observation_required',observe_again:true,
+  message:'Coordinates must come from a browser_observe of this page (pass its observation_id).'}});
+var v=m.view;
+if(Math.abs(scrollX-v.sx)>1||Math.abs(scrollY-v.sy)>1||innerWidth!==v.w||innerHeight!==v.h)
+  return __mcpB64({{ok:false,error:'stale_coordinates',reason_code:'VIEWPORT_CHANGED',observe_again:true,
+    message:'The page scrolled or resized since that observation; observe again for fresh coordinates.'}});
+if(x<0||y<0||x>=innerWidth||y>=innerHeight)return __mcpB64({{ok:false,error:'point_outside_viewport'}});
+var el=document.elementFromPoint(x,y);
+return __mcpB64({{ok:true,hit:el?{{tag:el.tagName.toLowerCase(),element_id:__mcpId(el,s)}}:null}});
+}})()"""
+
+
+def _is_point_action(action: Dict[str, Any]) -> bool:
+    return (
+        action.get("type") in {"click", "double_click", "hover"}
+        and action.get("x") is not None and action.get("y") is not None
+        and not action.get("element_id") and not _has_locator(action)
+    )
+
+
+def _point_action(
+    settings: Settings,
+    browser: str,
+    action: Dict[str, Any],
+    observation_id: Optional[str],
+    window_index: int,
+    tab_index: Optional[int],
+    tab_handle: Optional[str],
+    native_target: Any = None,
+) -> Dict[str, Any]:
+    """Trusted pointer input at viewport coordinates (canvas apps), bound to the observation they came from."""
+    typ = str(action["type"])
+    x, y = float(action["x"]), float(action["y"])
+    base: Dict[str, Any] = {"type": typ, "x": x, "y": y}
+    if _norm_browser(browser) != "Google Chrome":
+        return {**base, "ok": False, "error": "point_input_unsupported", "reason_code": "POINT_INPUT_UNSUPPORTED_SAFARI",
+                "message": "Coordinate input needs Chrome with the Mac MCP companion; Safari has no background pointer.",
+                "_js_calls": 0}
+    obs = str(action.get("observation_id") or observation_id or "")
+    check = _run_json_js(settings, browser, _point_check_js(obs, x, y), window_index, tab_index, tab_handle)
+    if not check.get("ok"):
+        return {**base, **check, "ok": False, "_js_calls": 1}
+    native_id = _chrome_native_id(browser, tab_handle, native_target)
+    if not native_id:
+        return {**base, "ok": False, "error": "stale_tab_handle", "reason_code": "STALE_TAB_HANDLE",
+                "observe_again": True, "_js_calls": 1}
+    try:
+        if typ == "hover":
+            chrome_background_bridge.request_gesture(native_id, [{"type": "move", "x": x, "y": y,
+                                                                   "delay_ms": int(action.get("hold_ms", 300))}])
+        else:
+            chrome_background_bridge.request_dispatch_mouse(
+                native_id, x, y, click_count=2 if typ == "double_click" else 1, timeout_s=8.0,
+            )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+        return {**base, "ok": False, "error": str(detail.get("error") or "trusted_input_dispatch_failed"),
+                "message": str(detail.get("message") or ""), "automatic_retry": False, "observe_again": True,
+                "_js_calls": 1}
+    return {**base, "ok": True, "input_trust": "trusted", "activation_mode": "trusted_chrome_cdp",
+            "hit": check.get("hit"), "verification": "dispatched", "observe_again": True, "_js_calls": 1}
+
+
+_CDP_MODIFIER_BITS = {"altKey": 1, "ctrlKey": 2, "metaKey": 4, "shiftKey": 8}
+
+
+def _trusted_key_action(browser: str, action: Dict[str, Any], tab_handle: Optional[str], native_target: Any = None) -> Dict[str, Any]:
+    """A real (trusted) key press through the Chrome companion, sent to the page's focused element."""
+    label = str(action.get("key") or "")
+    base = {"type": "key", "key": label, "input_mode": "trusted"}
+    spec = _dom_key_spec(label)
+    if spec is None:
+        return {**base, "ok": False, "error": "unsupported_key", "reason_code": "UNSUPPORTED_KEY",
+                "message": "Use a single character or a named key such as Enter, Escape, Tab, ArrowDown."}
+    key_name, code, key_code = spec
+    mask = 0
+    for modifier in action.get("modifiers") or []:
+        mapped = _DOM_KEY_MODIFIERS.get(str(modifier or "").strip().lower())
+        if mapped:
+            mask |= _CDP_MODIFIER_BITS[mapped]
+    native_id = _chrome_native_id(browser, tab_handle, native_target)
+    if not native_id:
+        return {**base, "ok": False, "error": "stale_tab_handle", "reason_code": "STALE_TAB_HANDLE", "observe_again": True}
+    printable = len(key_name) == 1 and not (mask & 0b0110)
+    step = {"type": "key", "key": key_name, "code": code, "key_code": key_code, "modifiers": mask,
+            "text": key_name if printable else ""}
+    try:
+        chrome_background_bridge.request_gesture(native_id, [step], feature="keys")
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+        return {**base, "ok": False, "error": str(detail.get("error") or "trusted_key_failed"),
+                "message": str(detail.get("message") or ""), "automatic_retry": False}
+    return {**base, "ok": True, "input_trust": "trusted", "activation_mode": "trusted_chrome_cdp",
+            "verification": "dispatched", "observe_again": True}
+
+
 _DRAG_STEPS = 10
 
 
@@ -4551,6 +4661,23 @@ def _browser_act_locked(
             in_flight = []
             resolved_target: Optional[Dict[str, Any]] = None
             work_action = dict(action)
+            if _is_point_action(action):
+                if not flush_pending():
+                    break
+                point_target, blocked = revalidate_mutation(typ)
+                if blocked is not None:
+                    results.append(blocked)
+                    break
+                point_result = _point_action(
+                    settings, browser, action, observation_id, window_index, tab_index, tab_handle, point_target,
+                )
+                internal_js_calls += int(point_result.pop("_js_calls", 0))
+                results.append(point_result)
+                current_observation_id = None
+                if not point_result.get("ok"):
+                    break
+                mutation_dispatched = True
+                continue
             if typ not in {"wait", "key", "keyboard", "shortcut", "extract", "scan", "dialog"} or (
                 typ == "scan" and not action.get("element_id") and _has_locator(action)
             ):
@@ -4716,6 +4843,19 @@ def _browser_act_locked(
                             break
                     eid = key_action.get("element_id")
                     key_mode = str(action.get("input_mode") or "auto").strip().lower()
+                    if key_mode == "trusted" and _norm_browser(browser) == "Google Chrome":
+                        # Canvas apps listen for real key events; the companion sends them in the background.
+                        mutation_target, blocked = revalidate_mutation("key")
+                        if blocked is not None:
+                            results.append(blocked)
+                            break
+                        mutation_dispatched = True
+                        key_result = _trusted_key_action(browser, action, tab_handle, mutation_target)
+                        results.append(key_result)
+                        current_observation_id = None
+                        if not key_result.get("ok"):
+                            break
+                        continue
                     if key_mode == "dom" or (key_mode == "auto" and not allow_foreground):
                         # Background-safe default: DOM key events never change app focus.
                         mutation_target, blocked = revalidate_mutation("key")

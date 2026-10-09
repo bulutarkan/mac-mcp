@@ -7,7 +7,7 @@ const PORT = Number(CONFIG.port || 0);
 const TOKEN = String(CONFIG.token || '');
 const RECONNECT_MS = Math.max(250, Math.min(Number(CONFIG.reconnect_ms || 1000), 10000));
 // Capabilities the server may rely on; an older companion simply does not list them.
-const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory', 'dialog_session_hold'];
+const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory', 'dialog_session_hold', 'keys'];
 const MAX_GESTURE_STEPS = 80;
 const DIALOG_TEXT_LIMIT = 300;
 let socket = null;
@@ -296,9 +296,10 @@ async function handleGesture(message) {
   const requestId = String(message.request_id || '');
   const tabId = Number(message.chrome_tab_id);
   const steps = Array.isArray(message.steps) ? message.steps : [];
-  const valid = steps.length > 0 && steps.length <= MAX_GESTURE_STEPS && steps.every((step) =>
-    step && ['move', 'down', 'up'].includes(step.type) && Number.isFinite(Number(step.x)) && Number.isFinite(Number(step.y))
-    && Number(step.x) >= 0 && Number(step.y) >= 0);
+  const valid = steps.length > 0 && steps.length <= MAX_GESTURE_STEPS && steps.every((step) => step && (
+    (['move', 'down', 'up'].includes(step.type) && Number.isFinite(Number(step.x)) && Number.isFinite(Number(step.y))
+      && Number(step.x) >= 0 && Number(step.y) >= 0)
+    || (step.type === 'key' && typeof step.key === 'string' && step.key.length > 0 && step.key.length <= 32)));
   if (!requestId || !Number.isInteger(tabId) || tabId < 0 || !valid) {
     send({type: 'result', request_id: requestId, ok: false, error: 'invalid_gesture_request'});
     return;
@@ -314,6 +315,20 @@ async function handleGesture(message) {
     await debuggerCommand(target, 'Emulation.setFocusEmulationEnabled', {enabled: true});
     for (const step of steps) {
       const x = Number(step.x), y = Number(step.y);
+      if (step.type === 'key') {
+        // Trusted key press for canvas apps; text makes printable keys produce input.
+        const key = String(step.key), code = String(step.code || ''), keyCode = Number(step.key_code || 0);
+        const modifiers = Math.max(0, Math.min(Number(step.modifiers || 0), 15));
+        const text = typeof step.text === 'string' ? step.text.slice(0, 4) : '';
+        await debuggerCommand(target, 'Input.dispatchKeyEvent', {
+          type: text ? 'keyDown' : 'rawKeyDown', key, code, windowsVirtualKeyCode: keyCode, modifiers, text
+        });
+        await debuggerCommand(target, 'Input.dispatchKeyEvent', {
+          type: 'keyUp', key, code, windowsVirtualKeyCode: keyCode, modifiers
+        });
+        done += 1;
+        continue;
+      }
       if (step.type === 'move') {
         await debuggerCommand(target, 'Input.dispatchMouseEvent', {
           type: 'mouseMoved', x, y, button: pressed ? 'left' : 'none', buttons: pressed ? 1 : 0, pointerType: 'mouse'
