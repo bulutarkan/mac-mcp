@@ -21,7 +21,7 @@ class ReadMultipleFilesTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         files = result["files"]
         self.assertEqual([str(small), str(missing), str(large)], [item["path"] for item in files])
-        self.assertEqual({"path": str(small), "content": "hello", "truncated": False, "status": "ok"}, files[0])
+        self.assertEqual({"path": str(small), "content": "hello", "truncated": False, "status": "ok", "chars": 5}, files[0])
         self.assertEqual("error", files[1]["status"])
         self.assertTrue(files[2]["truncated"])
         self.assertLessEqual(len(files[2]["content"]), 50_000)

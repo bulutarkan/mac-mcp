@@ -579,11 +579,13 @@ def create_app():
               description=(
                   "List background jobs, newest first (limit, default 50; total says how many matched). "
                   "status_filter can be running, stalled, completed, failed, timeout, killed. "
+                  "page.has_more + page.next_cursor continue the list. "
                   "Finished jobs expire by age, count and size (see retention)."
               ))
-    def _list_jobs(status_filter: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+    def _list_jobs(status_filter: Optional[str] = None, limit: int = 50,
+                   cursor: Optional[str] = None) -> Dict[str, Any]:
         return _log(audit_logger, "list_jobs",
-                    lambda: list_jobs(settings, status_filter=status_filter, limit=limit))
+                    lambda: list_jobs(settings, status_filter=status_filter, limit=limit, cursor=cursor))
 
     @mcp.tool(name="delete_job",
               description="Delete a finished background job: its metadata and both output streams. Stop a running job first.",
@@ -790,16 +792,24 @@ def create_app():
                     lambda: write_files_batch(settings, files=files, atomic=atomic))
 
     @mcp.tool(name="read_file",
-              description="Read a file. offset/length for line-based pagination.")
+              description=(
+                  "Read a file (200,000 chars max). offset/length page by lines; when the text is cut or a page is "
+                  "requested, next_offset is the line to continue from (null at the end) and total_lines the line count."
+              ))
     def _read_file(path: str, offset: int = 0, length: Optional[int] = None) -> Dict[str, Any]:
         return _log(audit_logger, "read_file",
                     lambda: read_file(settings, path=path, offset=offset, length=length))
 
     @mcp.tool(name="read_multiple_files",
-              description="Read several text files in one call. Returns files: a list of {path, status, content, truncated} records in request order (50,000 chars max each); a missing file yields status=error without failing the rest.")
-    def _read_multiple_files(paths: List[str]) -> Dict[str, Any]:
+              description=(
+                  "Read several text files in one call. Returns files: a list of {path, status, content, truncated} records in "
+                  "request order (50,000 chars max each, max_total_chars for all, default 120,000); a missing file yields "
+                  "status=error without failing the rest. Files past the total budget come back status=skipped and are listed in "
+                  "not_read; a cut file carries continue={tool: read_file, offset}."
+              ))
+    def _read_multiple_files(paths: List[str], max_total_chars: int = 120_000) -> Dict[str, Any]:
         return _log(audit_logger, "read_multiple_files",
-                    lambda: read_multiple_files(settings, paths=paths))
+                    lambda: read_multiple_files(settings, paths=paths, max_total_chars=max_total_chars))
 
     @mcp.tool(name="edit_file",
               description="Find-and-replace in a file with reversible transaction journaling. Fails if occurrence count != expected_replacements.")
@@ -848,10 +858,14 @@ def create_app():
         return _log(audit_logger, "file_transaction_undo",
                     lambda: undo_file_transaction(settings, transaction_id=transaction_id, force=force))
 
-    @mcp.tool(name="list_directory", description="List files and directories in a path.")
-    def _list_directory(path: str) -> Dict[str, Any]:
+    @mcp.tool(name="list_directory",
+              description=(
+                  "List files and directories in a path, by name (limit default 200, max 1000; total gives the full count). "
+                  "page.has_more + page.next_cursor continue the listing."
+              ))
+    def _list_directory(path: str, limit: int = 200, cursor: Optional[str] = None) -> Dict[str, Any]:
         return _log(audit_logger, "list_directory",
-                    lambda: list_directory(settings, path=path))
+                    lambda: list_directory(settings, path=path, limit=limit, cursor=cursor))
 
     @mcp.tool(name="directory_tree",
               description="Show directory structure as a tree. depth controls how deep.")
@@ -871,11 +885,15 @@ def create_app():
                     lambda: get_file_info(settings, path=path))
 
     @mcp.tool(name="find_files",
-              description="Find files by name glob pattern (e.g. '*.py', 'report*'). file_type: file|dir|any.")
+              description=(
+                  "Find files by name glob pattern (e.g. '*.py', 'report*'). file_type: file|dir|any. "
+                  "limit default 200, max 1000; page.has_more + page.next_cursor continue the search."
+              ))
     def _find_files(pattern: str, path: str = str(Path.home()),
-                    file_type: str = "any") -> Dict[str, Any]:
+                    file_type: str = "any", limit: int = 200, cursor: Optional[str] = None) -> Dict[str, Any]:
         return _log(audit_logger, "find_files",
-                    lambda: find_files(settings, pattern=pattern, path=path, file_type=file_type))
+                    lambda: find_files(settings, pattern=pattern, path=path, file_type=file_type,
+                                       limit=limit, cursor=cursor))
 
     # ── macOS tools ─────────────────────────────────────────────────────────
     @mcp.tool(name="run_applescript",

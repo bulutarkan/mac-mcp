@@ -9,7 +9,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Optional, Sequence
 
 from .policy_scope import AccessMode, ResourceScope, ScopeRequest, evaluate_scope
 
@@ -528,29 +528,37 @@ def scoped_get_info(scope: ResourceScope, path: Path) -> Dict[str, Any]:
         }
 
 
-def _walk_find(fd: int, base: Path, pattern: str, file_type: str, results: list[Dict[str, Any]], limit: int) -> None:
+def _walk_find(fd: int, base: Path, pattern: str, file_type: str, results: list[Dict[str, Any]], limit: int,
+               after: Optional[tuple] = None, prefix: tuple = ()) -> None:
+    """Depth-first in name order, i.e. ordered by relative path components; resumes after `after`."""
     import fnmatch
     for name in sorted(os.listdir(fd)):
         if len(results) >= limit:
             return
+        key = prefix + (name,)
+        bound = after[: len(key)] if after is not None else None
+        if bound is not None and key < bound:
+            continue  # this entry and everything under it came before the cursor
         st = os.stat(name, dir_fd=fd, follow_symlinks=False)
         kind = _entry_kind(st)
         current = base / name
-        if fnmatch.fnmatch(name, pattern):
+        if (bound is None or key > bound) and fnmatch.fnmatch(name, pattern):
             if file_type == "any" or (file_type == "file" and kind == "file") or (file_type == "dir" and kind == "directory"):
                 results.append({"path": str(current), "type": kind, "size": st.st_size if kind == "file" else None})
         if kind == "directory":
             cfd = _open_child_dir(fd, name)
             try:
-                _walk_find(cfd, current, pattern, file_type, results, limit)
+                _walk_find(cfd, current, pattern, file_type, results, limit,
+                           after if bound is not None and key == bound else None, key)
             finally:
                 os.close(cfd)
 
 
-def scoped_find(scope: ResourceScope, path: Path, pattern: str, file_type: str, limit: int = 500) -> list[Dict[str, Any]]:
+def scoped_find(scope: ResourceScope, path: Path, pattern: str, file_type: str, limit: int = 500,
+                after: Optional[Sequence[str]] = None) -> list[Dict[str, Any]]:
     with guarded_directory(scope, path) as (fd, absolute):
         results: list[Dict[str, Any]] = []
-        _walk_find(fd, absolute, pattern, file_type, results, limit)
+        _walk_find(fd, absolute, pattern, file_type, results, limit, tuple(after) if after else None)
         return results
 
 

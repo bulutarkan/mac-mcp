@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional
 from fastapi import HTTPException, status
 
 from .security import BASE_DIR, Settings, require_shell_enabled, truncate
+from . import result_pages
 from .workspace_sandbox import shell_execution_plan
 from .file_transactions import abort_capture_transaction
 from .shell_transactions import begin_shell_capture, finalize_shell_capture, shell_capture_http_error
@@ -602,14 +603,27 @@ def prune_jobs(*, force: bool = False) -> Dict[str, Any]:
     return {"pruned": pruned, **limits}
 
 
-def list_jobs(settings: Settings, status_filter: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+def list_jobs(settings: Settings, status_filter: Optional[str] = None, limit: int = 50,
+              cursor: Optional[str] = None) -> Dict[str, Any]:
     _private_dir(JOBS_DIR)
     prune_jobs()
     bounded = max(1, min(int(limit or 50), 500))
+    request = ("list_jobs", status_filter or "")
+    after = result_pages.decode_cursor(cursor, request)
+    after_key = (float(after[0]), str(after[1])) if isinstance(after, list) and len(after) == 2 else None
     jobs: List[Dict[str, Any]] = []
     total = 0
+    has_more = False
+    last_key = None
     with _LOCK:
-        for path in sorted(JOBS_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        keyed = []
+        for path in JOBS_DIR.iterdir():
+            try:
+                keyed.append(((path.stat().st_mtime, path.name), path))
+            except OSError:
+                continue
+        # Newest first; the cursor resumes strictly after the last (mtime, id) returned.
+        for key, path in sorted(keyed, key=lambda item: item[0], reverse=True):
             if not path.is_dir() or not (path / "meta.json").exists():
                 continue
             meta = _normalize_status(path.name, _read_meta(path.name))
@@ -617,11 +631,18 @@ def list_jobs(settings: Settings, status_filter: Optional[str] = None, limit: in
             if status_filter and public.get("status") != status_filter:
                 continue
             total += 1
+            if after_key is not None and key >= after_key:
+                continue
             if len(jobs) < bounded:
                 jobs.append(public)
+                last_key = key
+            else:
+                has_more = True
+    next_cursor = result_pages.encode_cursor(request, list(last_key)) if has_more and last_key else None
     return {
         "ok": True, "jobs": jobs, "count": len(jobs), "total": total,
-        "truncated": total > len(jobs), "retention": job_retention(),
+        "truncated": has_more, "retention": job_retention(),
+        "page": result_pages.page_meta(bounded, len(jobs), has_more, next_cursor),
     }
 
 

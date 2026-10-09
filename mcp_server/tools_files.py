@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 from fastapi import HTTPException, status
 
 from .security import Settings, resolve_path, truncate
+from . import result_pages
 from .policy import current_policy_context
 from .policy_scope import AccessMode, ResourceScope, ScopeRequest, evaluate_scope
 from .scoped_fs import (
@@ -348,6 +349,8 @@ def read_file(settings: Settings, path: str, offset: int = 0, length: Optional[i
         if not target.exists() or not target.is_file():
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"File not found: {path}")
         content = target.read_text(encoding="utf-8", errors="replace")
+    offset = max(0, int(offset or 0))
+    lines = None
     if offset or length is not None:
         lines = content.splitlines(keepends=True)
         sliced = lines[offset: offset + length if length else None]
@@ -357,12 +360,62 @@ def read_file(settings: Settings, path: str, offset: int = 0, length: Optional[i
         revision = path_revision(target, scope)
     except FileTransactionError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.code, "message": str(exc)}) from exc
-    return {"ok": True, "path": str(target), "content": bounded, "truncated": truncated, "revision": revision}
+    result = {"ok": True, "path": str(target), "content": bounded, "truncated": truncated, "revision": revision}
+    if truncated or lines is not None:
+        # Say exactly where to continue: the first line not returned in full.
+        total_lines = len(lines) if lines is not None else len(content.splitlines())
+        if truncated:
+            kept = content[: len(bounded) - len(_TRUNCATION_SUFFIX)]
+            next_offset = offset + kept.count("\n")
+        else:
+            next_offset = offset + len(content.splitlines())
+        result["total_lines"] = total_lines
+        result["truncation"] = {"truncated": truncated, "reason": "max_chars" if truncated else None,
+                                "limit_chars": MAX_READ_CHARS}
+        result["next_offset"] = next_offset if next_offset < total_lines else None
+    return result
 
 
-def read_multiple_files(settings: Settings, paths: List[str]) -> Dict[str, Any]:
+_TRUNCATION_SUFFIX = "\n... [truncated]"
+
+
+READ_MULTIPLE_PER_FILE_CHARS = 50_000
+READ_MULTIPLE_TOTAL_CHARS = 120_000
+READ_MULTIPLE_MAX_TOTAL_CHARS = 400_000
+
+
+def read_multiple_files(settings: Settings, paths: List[str],
+                        max_total_chars: int = READ_MULTIPLE_TOTAL_CHARS) -> Dict[str, Any]:
+    """Read files in order within one aggregate character budget.
+
+    Each file is capped at READ_MULTIPLE_PER_FILE_CHARS; once the aggregate
+    budget is spent, later files are not read and come back status=skipped,
+    listed in not_read so the caller can ask for them in another call.
+    """
+    budget = max(1_000, min(int(max_total_chars or READ_MULTIPLE_TOTAL_CHARS), READ_MULTIPLE_MAX_TOTAL_CHARS))
+    used = 0
     results = []
+    not_read: List[str] = []
+
+    def add_content(path: str, content: str) -> None:
+        nonlocal used
+        limit = min(READ_MULTIPLE_PER_FILE_CHARS, budget - used)
+        bounded, was_truncated = truncate(content, limit)
+        used += len(bounded)
+        record: Dict[str, Any] = {"path": path, "content": bounded, "truncated": was_truncated, "status": "ok",
+                                  "chars": len(content)}
+        if was_truncated:
+            reason = "per_file_limit" if limit == READ_MULTIPLE_PER_FILE_CHARS else "aggregate_budget"
+            kept = content[: len(bounded) - len(_TRUNCATION_SUFFIX)]
+            record["truncation"] = {"reason": reason, "limit_chars": limit}
+            record["continue"] = {"tool": "read_file", "path": path, "offset": kept.count("\n")}
+        results.append(record)
+
     for path in paths:
+        if used >= budget:
+            results.append({"path": path, "status": "skipped", "reason": "aggregate_budget"})
+            not_read.append(path)
+            continue
         try:
             target = resolve_path(path)
             scope = _current_path_scope()
@@ -374,19 +427,21 @@ def read_multiple_files(settings: Settings, paths: List[str]) -> Dict[str, Any]:
                         raise _scoped_http_error(exc) from exc
                     results.append({"path": path, "error": "Not found", "status": "error"})
                     continue
-                bounded, was_truncated = truncate(content, 50_000)
-                results.append({"path": path, "content": bounded, "truncated": was_truncated, "status": "ok"})
+                add_content(path, content)
             elif target.exists() and target.is_file():
-                content = target.read_text(encoding="utf-8", errors="replace")
-                bounded, was_truncated = truncate(content, 50_000)
-                results.append({"path": path, "content": bounded, "truncated": was_truncated, "status": "ok"})
+                add_content(path, target.read_text(encoding="utf-8", errors="replace"))
             else:
                 results.append({"path": path, "error": "Not found", "status": "error"})
         except HTTPException:
             raise
         except Exception as e:
             results.append({"path": path, "error": str(e), "status": "error"})
-    return {"ok": True, "files": results}
+    return {
+        "ok": True, "files": results,
+        "budget": {"limit_chars": budget, "used_chars": used, "per_file_limit_chars": READ_MULTIPLE_PER_FILE_CHARS},
+        "truncated": bool(not_read) or any(item.get("truncated") for item in results),
+        "not_read": not_read,
+    }
 
 
 # ── Edit (find & replace) ────────────────────────────────────────────────────
@@ -418,25 +473,47 @@ def edit_file(settings: Settings, path: str, old_string: str, new_string: str,
 
 # ── Directory ops ─────────────────────────────────────────────────────────────
 
-def list_directory(settings: Settings, path: str) -> Dict[str, Any]:
+LIST_DEFAULT_LIMIT = 200
+LIST_MAX_LIMIT = 1_000
+
+
+def list_directory(settings: Settings, path: str, limit: int = LIST_DEFAULT_LIMIT,
+                   cursor: Optional[str] = None) -> Dict[str, Any]:
     target = resolve_path(path)
+    bounded = result_pages.bounded_limit(limit, LIST_DEFAULT_LIMIT, LIST_MAX_LIMIT)
+    request = ("list_directory", str(target))
+    after = result_pages.decode_cursor(cursor, request)
     scope = _current_path_scope()
     if scope is not None:
         rows = _scoped_call(lambda: scoped_list_directory(scope, target))
-        entries = [{**row, "modified": time.ctime(float(row["modified"]))} for row in rows]
+        total = len(rows)
+        rows = [row for row in rows if after is None or row["name"] > after]
+        page_rows = rows[:bounded]
+        entries = [{**row, "modified": time.ctime(float(row["modified"]))} for row in page_rows]
+        has_more = len(rows) > bounded
     else:
         if not target.exists() or not target.is_dir():
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Directory not found: {path}")
+        names = sorted(entry.name for entry in os.scandir(target))
+        total = len(names)
+        remaining = [name for name in names if after is None or name > after]
+        has_more = len(remaining) > bounded
         entries = []
-        for entry in sorted(target.iterdir()):
-            stat = entry.stat()
+        for name in remaining[:bounded]:
+            entry = target / name
+            try:
+                stat = entry.stat()
+            except OSError:
+                stat = entry.lstat()
             entries.append({
-                "name": entry.name,
+                "name": name,
                 "type": "directory" if entry.is_dir() else "file",
                 "size": stat.st_size if entry.is_file() else None,
                 "modified": time.ctime(stat.st_mtime),
             })
-    return {"ok": True, "path": str(target), "count": len(entries), "entries": entries}
+    next_cursor = result_pages.encode_cursor(request, entries[-1]["name"]) if has_more and entries else None
+    return {"ok": True, "path": str(target), "count": len(entries), "total": total, "entries": entries,
+            "page": result_pages.page_meta(bounded, len(entries), has_more, next_cursor)}
 
 
 def directory_tree(settings: Settings, path: str, depth: int = 3) -> Dict[str, Any]:
@@ -600,30 +677,51 @@ def get_file_info(settings: Settings, path: str) -> Dict[str, Any]:
 
 # ── Find files by name ────────────────────────────────────────────────────────
 
+FIND_DEFAULT_LIMIT = 200
+FIND_MAX_LIMIT = 1_000
+
+
 def find_files(settings: Settings, pattern: str, path: str = str(Path.home()),
-               file_type: str = "any") -> Dict[str, Any]:
-    """Find files/directories by name pattern (glob). file_type: file | dir | any."""
+               file_type: str = "any", limit: int = FIND_DEFAULT_LIMIT, cursor: Optional[str] = None) -> Dict[str, Any]:
+    """Find files/directories by name pattern (glob). file_type: file | dir | any.
+
+    Results are ordered by relative path components (a directory, then what is
+    inside it) and paged with a cursor that resumes after the last path.
+    """
     root = resolve_path(path)
+    bounded = result_pages.bounded_limit(limit, FIND_DEFAULT_LIMIT, FIND_MAX_LIMIT)
+    request = ("find_files", str(root), pattern, file_type)
+    after = result_pages.decode_cursor(cursor, request)
+    after_key = tuple(after) if isinstance(after, list) else None
     scope = _current_path_scope()
     if scope is not None:
-        results = _scoped_call(lambda: scoped_find(scope, root, pattern, file_type, 500))
-        return {"ok": True, "count": len(results), "results": results}
-    if not root.exists():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Path not found: {path}")
-    results = []
-    try:
-        for match in sorted(root.rglob(pattern)):
-            if file_type == "file" and not match.is_file():
-                continue
-            if file_type == "dir" and not match.is_dir():
-                continue
-            results.append({
-                "path": str(match),
-                "type": "directory" if match.is_dir() else "file",
-                "size": match.stat().st_size if match.is_file() else None,
-            })
-            if len(results) >= 500:
-                break
-    except PermissionError:
-        pass
-    return {"ok": True, "count": len(results), "results": results}
+        results = _scoped_call(lambda: scoped_find(scope, root, pattern, file_type, bounded + 1, after_key))
+    else:
+        if not root.exists():
+            raise HTTPException(status.HTTP_404_NOT_FOUND, f"Path not found: {path}")
+        results = []
+        try:
+            for match in sorted(root.rglob(pattern), key=lambda item: item.relative_to(root).parts):
+                if after_key is not None and match.relative_to(root).parts <= after_key:
+                    continue
+                if file_type == "file" and not match.is_file():
+                    continue
+                if file_type == "dir" and not match.is_dir():
+                    continue
+                results.append({
+                    "path": str(match),
+                    "type": "directory" if match.is_dir() else "file",
+                    "size": match.stat().st_size if match.is_file() else None,
+                })
+                if len(results) > bounded:
+                    break
+        except PermissionError:
+            pass
+    has_more = len(results) > bounded
+    results = results[:bounded]
+    next_cursor = (
+        result_pages.encode_cursor(request, list(Path(results[-1]["path"]).relative_to(root).parts))
+        if has_more and results else None
+    )
+    return {"ok": True, "count": len(results), "results": results, "truncated": has_more,
+            "page": result_pages.page_meta(bounded, len(results), has_more, next_cursor)}
