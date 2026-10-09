@@ -83,6 +83,8 @@ RESTART_REQUESTER_ENV = "MAC_MCP_RESTART_REQUESTER_PID"
 RESTART_HANDOFF_LABEL = "com.macmcp.restart-handoff"
 RESTART_REQUESTER_WAIT_S = 5.0
 RESTART_RESPONSE_GRACE_S = 3.0
+RESTART_RECOVERY_DELAY_S = 2.0
+RESTART_FINAL_STATES = frozenset({"succeeded", "failed", "degraded"})
 DEFAULT_STARTUP_HEALTH_TIMEOUT_S = 10.0
 
 
@@ -1442,7 +1444,9 @@ def _write_restart_handoff_plist(args: argparse.Namespace) -> Path:
         f"{RESTART_HANDOFF_ENV}=1",
         f"MAC_MCP_STATE_DIR={STATE_DIR}",
         f"PYTHONPATH={PROJECT_ROOT}",
-        f"{RESTART_REQUESTER_ENV}={os.getpid()}",
+        # A waiting requester (restart --wait) stays alive until the outcome,
+        # so the worker must not wait for it to exit first.
+        f"{RESTART_REQUESTER_ENV}={0 if getattr(args, 'wait', False) else os.getpid()}",
         *_restart_handoff_command(args),
     ]
     payload = {
@@ -1471,10 +1475,11 @@ def _write_restart_handoff_plist(args: argparse.Namespace) -> Path:
 
 def _spawn_detached_restart(args: argparse.Namespace) -> int:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    requested_at = time.time()
     loaded, pid = _restart_handoff_job()
     if loaded and pid and _pid_alive(pid):
         print(f"mac-mcp restart is already in progress under launchd (helper pid {pid}).")
-        return 0
+        return _wait_for_restart_outcome(args, since=0.0) if getattr(args, "wait", False) else 0
     if loaded and not _remove_stale_restart_handoff():
         print("Could not clear the previous mac-mcp restart handoff job.")
         return 1
@@ -1513,7 +1518,46 @@ def _spawn_detached_restart(args: argparse.Namespace) -> int:
         "mac-mcp restart handed off to one-shot launchd worker"
         + (f" (helper pid {helper_pid})." if helper_pid else ".")
     )
+    if getattr(args, "wait", False):
+        return _wait_for_restart_outcome(args, since=requested_at)
     return 0
+
+
+def _read_restart_status() -> dict:
+    try:
+        payload = json.loads(_restart_status_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _wait_for_restart_outcome(args: argparse.Namespace, *, since: float) -> int:
+    """Block until the handed-off restart reports a final state; 0 only for success."""
+    deadline = time.time() + 2 * _startup_health_timeout_s() + RESTART_REQUESTER_WAIT_S + 60
+    payload: dict = {}
+    while time.time() < deadline:
+        payload = _read_restart_status()
+        state = str(payload.get("state") or "")
+        if state in RESTART_FINAL_STATES and float(payload.get("updated_at") or 0) >= since:
+            break
+        time.sleep(0.25)
+    else:
+        print(f"mac-mcp restart did not report an outcome in time (last stage: {payload.get('stage') or 'unknown'}).")
+        return 3
+    state = str(payload.get("state"))
+    if state == "succeeded":
+        retried = " after one recovery attempt" if payload.get("recovered_after_retry") else ""
+        print(f"mac-mcp restarted (pid {payload.get('server_pid')}; health verified{retried}).")
+        return 0
+    if state == "degraded":
+        print("mac-mcp restarted locally, but the public endpoint did not start. Run `mac-mcp doctor`.")
+        return 1
+    stage = payload.get("stage") or "unknown"
+    if payload.get("server_left_running"):
+        print(f"mac-mcp restart was not attempted ({stage}): {payload.get('error')}. The server kept running.")
+    else:
+        print(f"mac-mcp restart failed at stage '{stage}'. Repair with: {payload.get('repair_command') or 'mac-mcp doctor'}")
+    return 1
 
 
 def _restart_health_ok(
@@ -1588,6 +1632,71 @@ def _install_restart_signal_receipts() -> None:
             pass
 
 
+def _restart_preflight(args: argparse.Namespace) -> str | None:
+    """Checks that must pass before a restart stops a working server."""
+    try:
+        public = _public_endpoint_config(args)
+    except PublicEndpointError as exc:
+        return f"public endpoint configuration error: {exc}"
+    try:
+        validate_bootstrap_security(load_settings(), host=args.host, public_endpoint_mode=public.mode)
+    except RuntimeError as exc:
+        return f"security bootstrap error: {exc}"
+    if public.mode == "cloudflare" and not _resolve_cloudflared_binary(getattr(args, "cloudflared_bin", None)):
+        return "cloudflared is not installed"
+    if public.mode == "ngrok" and not _resolve_ngrok_binary(getattr(args, "ngrok_bin", None)):
+        return "ngrok is not installed"
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-c", "import uvicorn, fastapi, mcp, httpx"],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=60, cwd=str(PROJECT_ROOT),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"runtime Python could not run ({type(exc).__name__})"
+    if probe.returncode != 0:
+        return "runtime Python cannot import the server dependencies"
+    return None
+
+
+def _recover_failed_restart(args: argparse.Namespace, exit_code: int, *, stage: str = "start") -> int:
+    """After a failed start: one bounded retry, then a final state that says whether the server is up."""
+    if _restart_health_ok(args, timeout_s=3):
+        server_pid, source = _resolve_server_identity(int(args.port), adopt_listener=False)
+        _write_restart_status(
+            "degraded", stage="public_endpoint", exit_code=exit_code, server_pid=server_pid,
+            ownership_source=source, health=True, repair_command="mac-mcp doctor",
+        )
+        print("mac-mcp restarted locally, but the public endpoint did not start. Run `mac-mcp doctor`.")
+        return exit_code or 1
+    _write_restart_status("running", stage="recovering", first_stage=stage, first_exit_code=exit_code,
+                          helper_pid=os.getpid())
+    print(f"mac-mcp restart failed at '{stage}' (exit {exit_code}); retrying the start once.")
+    time.sleep(RESTART_RECOVERY_DELAY_S)
+    retry_code = start(args)
+    server_up = _restart_health_ok(args, timeout_s=_startup_health_timeout_s() if retry_code == 0 else 3)
+    server_pid, source = _resolve_server_identity(int(args.port), adopt_listener=False)
+    if retry_code == 0 and server_up:
+        _write_restart_status(
+            "succeeded", server_pid=server_pid, ownership_source=source, health=True,
+            recovered_after_retry=True, first_stage=stage, first_exit_code=exit_code,
+        )
+        print("mac-mcp restart recovered on the second start attempt.")
+        return 0
+    if server_up:
+        _write_restart_status(
+            "degraded", stage="public_endpoint", exit_code=retry_code, server_pid=server_pid,
+            ownership_source=source, health=True, first_stage=stage, repair_command="mac-mcp doctor",
+        )
+        print("mac-mcp restarted locally, but the public endpoint did not start. Run `mac-mcp doctor`.")
+        return retry_code or 1
+    _write_restart_status(
+        "failed", stage=stage, exit_code=retry_code or exit_code, server_down=True, helper_pid=os.getpid(),
+        repair_command="mac-mcp doctor && mac-mcp start",
+    )
+    print(f"mac-mcp is down after a failed restart. See {LOG_FILE}; repair with: mac-mcp doctor && mac-mcp start")
+    return retry_code or exit_code or 1
+
+
 def restart(args: argparse.Namespace) -> int:
     _load_env()
     handoff_child = os.getenv(RESTART_HANDOFF_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
@@ -1613,6 +1722,14 @@ def restart(args: argparse.Namespace) -> int:
     # has exited, descendants must not inherit stale restart coordination.
     os.environ.pop(RESTART_REQUESTER_ENV, None)
 
+    preflight_error = _restart_preflight(args)
+    if preflight_error:
+        _write_restart_status(
+            "failed", stage="preflight", error=preflight_error, helper_pid=os.getpid(), server_left_running=True,
+        )
+        print(f"Restart aborted before stopping the server: {preflight_error}")
+        return 1
+
     target_port = int(getattr(args, "port", _default_port()))
     target_server_pid, target_source = _resolve_server_identity(target_port, adopt_listener=False)
     _write_restart_status(
@@ -1635,14 +1752,11 @@ def restart(args: argparse.Namespace) -> int:
     _write_restart_status("running", stage="starting", helper_pid=os.getpid())
     start_code = start(args)
     if start_code != 0:
-        _write_restart_status("failed", stage="start", exit_code=start_code, helper_pid=os.getpid())
-        return start_code
+        return _recover_failed_restart(args, start_code)
 
     _write_restart_status("running", stage="verifying", helper_pid=os.getpid())
     if not _restart_health_ok(args):
-        _write_restart_status("failed", stage="health", exit_code=1, helper_pid=os.getpid())
-        print("mac-mcp restart health verification failed.")
-        return 1
+        return _recover_failed_restart(args, 1, stage="health")
 
     server_pid, source = _resolve_server_identity(int(args.port), adopt_listener=False)
     _write_restart_status(
@@ -1935,6 +2049,10 @@ def main(argv: list[str] | None = None) -> int:
     p_restart = sub.add_parser("restart", help="Restart the local server and apply the configured public endpoint mode.")
     add_start_flags(p_restart)
     p_restart.add_argument("--timeout", type=float, default=5)
+    p_restart.add_argument(
+        "--wait", action="store_true",
+        help="Wait until the restart finishes; exit 0 only when the server restarted healthy.",
+    )
     p_restart.set_defaults(func=restart)
 
     p_status = sub.add_parser("status", help="Show server and public endpoint status. Exits 0 healthy, 1 server down or not answering, 2 selected public endpoint unavailable or misconfigured.")

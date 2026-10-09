@@ -279,6 +279,7 @@ class SafeLifecycleTests(unittest.TestCase):
         args = argparse.Namespace(timeout=1.0)
         with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: "1"}, clear=False), \
              patch.object(cli, "_load_env"), \
+             patch.object(cli, "_restart_preflight", return_value=None), \
              patch.object(cli, "_write_restart_status") as status_write, \
              patch.object(cli.time, "sleep"), \
              patch.object(cli, "stop", return_value=1) as stop, \
@@ -304,7 +305,7 @@ class SafeLifecycleTests(unittest.TestCase):
             os.environ,
             {cli.RESTART_HANDOFF_ENV: "1", cli.RESTART_REQUESTER_ENV: "4242"},
             clear=False,
-        ),              patch.object(cli, "_load_env"),              patch.object(cli, "_write_restart_status"),              patch.object(cli, "_wait_for_restart_requester_exit", return_value=True),              patch.object(cli, "stop", return_value=0),              patch.object(cli, "start", side_effect=start_side_effect),              patch.object(cli, "_restart_health_ok", return_value=True),              patch.object(cli, "_resolve_server_identity", return_value=(4321, "pid_record")):
+        ),              patch.object(cli, "_load_env"),              patch.object(cli, "_restart_preflight", return_value=None),              patch.object(cli, "_write_restart_status"),              patch.object(cli, "_wait_for_restart_requester_exit", return_value=True),              patch.object(cli, "stop", return_value=0),              patch.object(cli, "start", side_effect=start_side_effect),              patch.object(cli, "_restart_health_ok", return_value=True),              patch.object(cli, "_resolve_server_identity", return_value=(4321, "pid_record")):
             code = cli.restart(args)
 
         self.assertEqual(0, code)
@@ -385,14 +386,19 @@ class SafeLifecycleTests(unittest.TestCase):
         args = argparse.Namespace(timeout=1.0, host="127.0.0.1", port=8765)
         with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: "1"}, clear=False), \
              patch.object(cli, "_load_env"), \
+             patch.object(cli, "_restart_preflight", return_value=None), \
              patch.object(cli, "_write_restart_status") as status_write, \
              patch.object(cli.time, "sleep"), \
              patch.object(cli, "stop", return_value=0), \
              patch.object(cli, "start", return_value=0), \
+             patch.object(cli, "_resolve_server_identity", return_value=(None, "not_running")), \
              patch.object(cli, "_restart_health_ok", return_value=False):
             code = cli.restart(args)
         self.assertEqual(1, code)
-        status_write.assert_any_call("failed", stage="health", exit_code=1, helper_pid=os.getpid())
+        final = status_write.call_args_list[-1]
+        self.assertEqual(("failed",), final.args)
+        self.assertEqual("health", final.kwargs["stage"])
+        self.assertTrue(final.kwargs["server_down"])
 
     def test_launchd_handoff_bootstraps_one_shot_job(self) -> None:
         args = argparse.Namespace(

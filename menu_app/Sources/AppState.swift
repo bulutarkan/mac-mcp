@@ -2596,7 +2596,7 @@ final class AppState: ObservableObject {
         guard busyAction == nil else { return false }
         busyAction = "Restarting"
         actionNotice = nil
-        let args = lifecycleArgs("restart")
+        let args = lifecycleArgs("restart") + ["--wait"]
         let result = await Self.runCLI(args: args, configuredPath: settings.cliPath, settingsPath: settings.path.path)
         busyAction = nil
         showNotice(Self.notice(for: args, result: result))
@@ -2606,7 +2606,8 @@ final class AppState: ObservableObject {
 
     func startServer() { runAction(title: "Starting", args: lifecycleArgs("start")) }
     func stopServer() { runAction(title: "Stopping", args: ["stop"]) }
-    func restartServer() { runAction(title: "Restarting", args: lifecycleArgs("restart")) }
+    // --wait: report the restart's real outcome, not just that launchd accepted the job.
+    func restartServer() { runAction(title: "Restarting", args: lifecycleArgs("restart") + ["--wait"]) }
 
     var canCheckForUpdates: Bool {
         busyAction == nil && !updateCheckLoading && !updateTransactionActive
@@ -3219,7 +3220,10 @@ final class AppState: ObservableObject {
             switch args.first {
             case "start": message = "Couldn’t start the server."
             case "stop": message = "Couldn’t stop the server."
-            case "restart": message = "Couldn’t restart the server."
+            case "restart":
+                message = output.contains("public endpoint did not start")
+                    ? "Server restarted locally, but the public endpoint didn’t start."
+                    : "Couldn’t restart the server."
             case "update": message = "Update failed."
             default: message = "Action failed."
             }
