@@ -1909,6 +1909,12 @@ def _adaptive_retry_decision(
         attempt_tail(stderr_path, stderr_offset),
     ))).lower()
     non_retryable = (
+        # Expired or revoked sign-in: the owner has to sign in again, then resume.
+        ("token expired", "provider_auth_expired"), ("token_expired", "provider_auth_expired"),
+        ("expired token", "provider_auth_expired"), ("refresh token", "provider_auth_expired"),
+        ("refresh_token", "provider_auth_expired"), ("session expired", "provider_auth_expired"),
+        ("please log in", "provider_auth_expired"), ("please login", "provider_auth_expired"),
+        ("login required", "provider_auth_expired"), ("re-authenticate", "provider_auth_expired"),
         ("authentication", "auth_error"), ("not authenticated", "auth_error"),
         ("unauthorized", "auth_error"), ("invalid api key", "auth_error"),
         ("forbidden", "permission_error"), ("permission denied", "permission_error"),
@@ -2198,6 +2204,33 @@ def _codex_secret_auth_path(agent_id: str, meta: Dict[str, Any]) -> Path:
     ).resolve(strict=False)
 
 
+def _refresh_codex_auth_snapshot(source_auth: Path, secret_auth: Path) -> bool:
+    """Copy the owner's Codex sign-in into the agent's private snapshot when it is new or changed.
+
+    Runs before every provider attempt (spawn, retry, resume), so signing in
+    again with `codex login` reaches a resumed agent. The sandbox still only
+    reads the snapshot; contents are never logged. Returns True when updated.
+    """
+    if not source_auth.is_file():
+        return False
+    try:
+        fresh = source_auth.read_bytes()
+        if secret_auth.is_file() and secret_auth.read_bytes() == fresh:
+            return False
+        fd, tmp_name = tempfile.mkstemp(prefix=".auth.", dir=str(secret_auth.parent))
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(fresh)
+            os.chmod(tmp_name, 0o600)
+            os.replace(tmp_name, secret_auth)
+        finally:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        return True
+    except OSError:
+        return False
+
+
 def _restricted_codex_state(agent_id: str, meta: Dict[str, Any]) -> Path:
     owner_id = _codex_state_owner_agent_id(agent_id, meta)
     root = _agent_dir(owner_id) / "provider_state" / "codex"
@@ -2222,12 +2255,7 @@ def _restricted_codex_state(agent_id: str, meta: Dict[str, Any]) -> Path:
     except OSError:
         pass
     source_auth = source_home / "auth.json"
-    if not secret_auth.exists() and source_auth.is_file():
-        try:
-            shutil.copy2(source_auth, secret_auth)
-            secret_auth.chmod(0o600)
-        except OSError:
-            secret_auth.unlink(missing_ok=True)
+    _refresh_codex_auth_snapshot(source_auth, secret_auth)
 
     auth_link = codex_home / "auth.json"
     if secret_auth.exists():
@@ -7031,6 +7059,16 @@ def _worker(agent_id: str) -> int:
                 current["note"] = f"Provider emitted an invalid typed result contract ({(contract_error or {}).get('code') or 'unknown'})."
             elif final_reason == "result_reported_failure":
                 current["note"] = "Typed result envelope reported outcome=failure."
+            elif final_reason in {"provider_auth_expired", "auth_error"}:
+                provider_name = str(current.get("provider") or "provider")
+                login = "codex login" if provider_name == "codex" else f"the {provider_name} sign-in"
+                current["note"] = (
+                    f"Provider failure is non-retryable ({final_reason}): the {provider_name} sign-in "
+                    "expired or was rejected. Sign in again "
+                    f"({login}) on this Mac, then agent_action(action=resume); the session is kept and "
+                    "the new sign-in is picked up for the next attempt."
+                )
+                current["failure_reason"] = final_reason
             elif final_reason in {
                 "auth_error", "permission_error", "quota_exhausted", "invalid_model", "invalid_request",
                 "provider_error_nonretryable",
