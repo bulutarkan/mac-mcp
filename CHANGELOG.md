@@ -1,5 +1,7 @@
 ## Unreleased
 
+- Browser modal scope honors native `showModal()` and `aria-modal="true"`, and recognizes open Radix/shadcn-style dialogs when siblings along the ancestor path are `aria-hidden` or `inert`. Explicit `aria-modal="false"`, native `show()`, and role-only unblocked panels stay nonmodal.
+
 ## [2.1.9] - 2026-10-08
 
 ### ChatGPT plugin panel (MCP Apps)

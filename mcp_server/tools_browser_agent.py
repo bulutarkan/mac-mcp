@@ -913,16 +913,35 @@ function __mcpSemanticVisible(el){
   if(['radio','checkbox','switch'].indexOf(role)<0&&!(tag==='input'&&['radio','checkbox'].indexOf(type)>=0))return false;
   var a=__mcpAssociation(el);return !a.ambiguous&&!!a.label&&__mcpVisible(a.label);
 }
+function __mcpOutsideBlocked(dialog){
+  // Portal-based dialogs (for example Radix) hide/inert the outside tree
+  // instead of declaring aria-modal. Check siblings along the composed path.
+  var cur=dialog,depth=0;
+  while(cur&&depth++<20){
+    var parent=cur.parentElement;
+    if(!parent)try{parent=cur.getRootNode();}catch(e){}
+    var siblings=parent&&parent.children?Array.from(parent.children):[];
+    for(var i=0;i<siblings.length;i++){
+      var sibling=siblings[i];
+      if(sibling===cur||/^(SCRIPT|STYLE|LINK|META|TEMPLATE)$/.test(sibling.tagName))continue;
+      if(String(sibling.getAttribute('aria-hidden')||'').toLowerCase()==='true'||sibling.hasAttribute('inert'))return true;
+    }
+    cur=__mcpParent(cur);
+  }
+  return false;
+}
 function __mcpTopBlockingModal(){
-  var all=__mcpQueryAll('dialog[open],[aria-modal="true"]'),best=null,bestZ=-2147483648,bestOrder=-1;
+  var all=__mcpQueryAll('dialog[open],[role="dialog"],[role="alertdialog"],[aria-modal="true"]'),best=null,bestZ=-2147483648,bestOrder=-1;
   for(var i=0;i<all.length;i++){
     var el=all[i],tag=String(el.tagName||'').toLowerCase(),role=String(el.getAttribute&&el.getAttribute('role')||'').toLowerCase(),aria=String(el.getAttribute&&el.getAttribute('aria-modal')||'').toLowerCase(),state=String(el.getAttribute&&el.getAttribute('data-state')||'').toLowerCase(),st=null,rect=null;
     if(state==='closed')continue;
     try{st=__mcpStyle(el);rect=__mcpTopRect(el);}catch(e){}
-    // role=dialog, fixed positioning and data-state=open do not imply modality.
+    // Dialog semantics alone do not imply modality. Explicit false opts out
+    // of inferred ARIA modality; native showModal() still blocks physically.
     // Native show() is non-modal; only showModal() matches :modal.
     var nativeModal=false;try{nativeModal=tag==='dialog'&&el.matches(':modal');}catch(e){}
-    var blocking=aria==='true'||nativeModal;
+    var inferred=tag!=='dialog'&&aria!=='false'&&(role==='dialog'||role==='alertdialog')&&state==='open'&&__mcpOutsideBlocked(el);
+    var blocking=aria==='true'||nativeModal||inferred;
     if(!blocking)continue;
     var structurallyVisible=!!(st&&rect&&st.display!=='none'&&st.visibility!=='hidden'&&rect.width>=1&&rect.height>=1&&rect.bottom>0&&rect.right>0&&rect.top<innerHeight&&rect.left<innerWidth);
     if(!__mcpVisible(el)&&!structurallyVisible)continue;

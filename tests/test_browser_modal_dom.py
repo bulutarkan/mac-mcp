@@ -128,6 +128,40 @@ class BrowserModalDOMTests(unittest.TestCase):
         self.assertFalse(found["modal_scope"]["active"])
         self.assertIn("Outside editor", self._texts(found))
 
+    def test_radix_portal_without_aria_modal_keeps_outside_scope_blocked(self):
+        for blocked in ('aria-hidden="true"', 'inert'):
+            for portal in (False, True):
+                with self.subTest(blocked=blocked, portal=portal):
+                    dialog = '<div class="floating" role="dialog" data-state="open"><input aria-label="Radix editor"></div>'
+                    if portal:
+                        dialog = '<div id="portal">' + dialog + '</div>'
+                    self._set_content(f'<main {blocked}><input class="outside-editor" aria-label="Blocked editor"></main>' + dialog + '<input aria-label="Unhidden outside editor">')
+                    outside = self._find("Unhidden outside editor")
+                    self.assertTrue(outside["modal_scope"]["active"])
+                    self.assertNotIn("Unhidden outside editor", self._texts(outside))
+                    inside = self._find("Radix editor")
+                    self.assertIn("Radix editor", self._texts(inside))
+                    observed = self._payload(_observe_js("interactive", 20))
+                    self.assertTrue(observed["modal_scope"]["active"])
+                    self.assertNotIn("Unhidden outside editor", self._texts(observed))
+
+    def test_explicit_false_and_open_role_without_blocked_outside_are_nonmodal(self):
+        for attributes, outside in (
+            ('aria-modal="false" data-state="open"', '<main aria-hidden="true">hidden outside</main>'),
+            ('data-state="open"', '<main>unblocked outside</main>'),
+            ('data-state="closed"', '<main inert>blocked outside</main>'),
+        ):
+            with self.subTest(attributes=attributes):
+                self._set_content(outside + f'<div class="floating" role="dialog" {attributes}><input aria-label="Panel editor"></div><input class="outside-editor" aria-label="Outside editor">')
+                found = self._find("Outside editor")
+                self.assertFalse(found["modal_scope"]["active"])
+                self.assertIn("Outside editor", self._texts(found))
+
+    def test_native_show_stays_nonmodal_with_blocked_sibling(self):
+        self._set_content('<main aria-hidden="true">hidden outside</main><input class="outside-editor" aria-label="Outside editor"><dialog id="native-dialog" class="floating"><input aria-label="Native dialog editor"></dialog>')
+        self.page.evaluate("document.getElementById('native-dialog').show()")
+        self.assertFalse(self._find("Outside editor")["modal_scope"]["active"])
+
     def test_native_show_modal_blocks_outside_but_allows_inside(self):
         self._set_content(
             """
