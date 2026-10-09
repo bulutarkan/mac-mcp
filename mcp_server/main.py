@@ -8,7 +8,7 @@ import os
 import time
 import uuid
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import HTTPException, status
 from mcp.types import ToolAnnotations
@@ -22,7 +22,9 @@ from .request_client import client_address
 from .workflow_checkpoints import clear_not_executed
 from .log_retention import start_log_rotation
 from . import recipes
-from .security import BASE_DIR, AuthFailureLimiter, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
+from .host_guard import HostGuard, extra_hosts_from_env
+from .public_endpoint import resolve_public_endpoint
+from .security import BASE_DIR, AuthFailureLimiter, _effective_bind_host, _loopback_host, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
 from .observability import ObservedFastMCP, TelemetryManager, current_security_session
 from mcp.server.fastmcp.exceptions import ToolError
 from .policy import (
@@ -2343,7 +2345,30 @@ def create_app():
     rest_app.include_router(rest_router)
     app.mount("/api", rest_app)
 
+    # Outermost: refuse DNS-rebinding requests (foreign Host) on every route,
+    # including WebSockets, before any authentication or tool dispatch.
+    app.add_middleware(
+        HostGuard,
+        enforce_hosts=_loopback_host(_effective_bind_host()),
+        no_auth=settings.allow_no_auth,
+        public_hosts=_public_endpoint_hosts,
+        extra_hosts=extra_hosts_from_env(),
+    )
     return app
+
+
+def _public_endpoint_hosts() -> list[str]:
+    """Hosts the configured public endpoint (tunnel or custom) delivers requests with."""
+    try:
+        public = resolve_public_endpoint()
+    except Exception:
+        return []
+    hosts = []
+    if public.endpoint_url:
+        hosts.append(urlsplit(public.endpoint_url).netloc)
+    if getattr(public, "ngrok_domain", None):
+        hosts.append(str(public.ngrok_domain))
+    return hosts
 
 
 app = create_app()

@@ -204,7 +204,7 @@ class PostUpdateHealthGateTests(unittest.IsolatedAsyncioTestCase):
 class UpdateHealthEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
         self.main = importlib.import_module("mcp_server.main")
-        self.client = TestClient(self.main.app)
+        self.client = TestClient(self.main.app, base_url="http://127.0.0.1:8765")
         self.context = {"target_commit": "f" * 40, "source": "test"}
 
     def test_basic_probe_bypasses_deep_gate(self) -> None:

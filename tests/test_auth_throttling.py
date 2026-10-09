@@ -15,7 +15,7 @@ from mcp_server.security import AuthFailureLimiter, RateLimiter, load_settings, 
 
 class AuthThrottlingTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.client = TestClient(create_app())
+        self.client = TestClient(create_app(), base_url="http://127.0.0.1:8765")
         self.limit = AuthFailureLimiter().limit
         self.valid = "Bearer " + os.environ["MCP_API_KEY"]
 

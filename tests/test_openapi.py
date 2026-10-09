@@ -143,7 +143,7 @@ class PublicDocsExposureTests(unittest.TestCase):
 
         from mcp_server.main import create_app
 
-        client = TestClient(create_app())
+        client = TestClient(create_app(), base_url="http://127.0.0.1:8765")
         for path in ("/api/openapi.json", "/api/docs", "/api/redoc", "/openapi.json", "/docs", "/redoc"):
             with self.subTest(path=path):
                 response = client.get(path)
