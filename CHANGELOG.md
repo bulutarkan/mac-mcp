@@ -1,5 +1,7 @@
 ## Unreleased
 
+- `browser_type_selector` now uses the shared background-safe editable input path and returns structured `ok` / `actions` results instead of `result="OK"`. Callers should check `ok`; `clear=false` appends. Native inputs restore the trailing `keyup` and verify immediately, allowing punctuation/spacing formatters with `verification="value_transformed"`. Contenteditable editors require delayed matching readbacks. These checks report `persistence_verified=false` and do not verify autosave or server persistence.
+
 ## [2.1.9] - 2026-10-08
 
 ### ChatGPT plugin panel (MCP Apps)

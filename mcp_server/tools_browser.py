@@ -1588,27 +1588,15 @@ def browser_type_selector(
     tab_index: Optional[int] = None,
     tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
-    sel = json.dumps(css_selector)
-    txt = json.dumps(text)
-    clr = "true" if clear else "false"
-    js = (
-        "(function(){"
-        f"var el=document.querySelector({sel}); if(!el) return 'NOT_FOUND';"
-        "try{el.focus();}catch(e){}"
-        f"if({clr}) el.value='';"
-        f"el.value = {txt};"
-        "el.dispatchEvent(new Event('input', {bubbles:true}));"
-        "el.dispatchEvent(new Event('change', {bubbles:true}));"
-        "return 'OK';"
-        "})()"
-    )
-    return browser_execute_js(
-        settings,
-        browser,
-        js,
-        window_index=window_index,
-        tab_index=tab_index,
-        tab_handle=tab_handle,
+    # Use the same readiness, editor input and readback checks as semantic typing.
+    # Local import avoids the browser agent's existing dependency on this module.
+    from .tools_browser_agent import browser_act
+
+    return browser_act(
+        settings, browser,
+        actions=[{"type": "type", "selector": css_selector, "text": text, "clear": clear}],
+        window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
+        return_state="none", allow_foreground=False,
     )
 
 

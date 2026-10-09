@@ -1,0 +1,40 @@
+<!doctype html>
+<title>Mac MCP editor input regression fixture</title>
+<style>
+body { margin: 20px; font: 15px sans-serif; }
+input, textarea, [contenteditable] { display: block; width: 420px; min-height: 30px; margin: 8px 0; border: 1px solid #888; }
+</style>
+<input id="native" aria-label="Native text" value="old">
+<textarea id="area" aria-label="Text area">old</textarea>
+<div id="plain" contenteditable="true" aria-label="Plain editor">old</div>
+<div id="accepted" contenteditable="true" aria-label="Accepted editor">old</div>
+<div id="rejected" contenteditable="true" aria-label="Rejected editor">old</div>
+<div id="reverted" contenteditable="true" aria-label="Reverted editor">old</div>
+<input id="readonly" aria-label="Read only" readonly value="old">
+<input id="phone" aria-label="Debounced phone" value="old">
+<input id="sync-phone" aria-label="Synchronous phone" value="old">
+<input id="autocomplete" aria-label="Keyup autocomplete" value="old">
+<output id="suggestion"></output>
+<script>
+window.__inputStats = {accepted:0,rejected:0,reverted:0,keyup:0};
+const formatPhone=value=>value==='5551234567'?'(555) 123-4567':value;
+document.getElementById('phone').addEventListener('input',function(){const value=this.value;setTimeout(()=>{this.value=formatPhone(value);},80);});
+document.getElementById('sync-phone').addEventListener('input',function(){this.value=formatPhone(this.value);});
+document.getElementById('autocomplete').addEventListener('keyup',function(event){window.__inputStats.keyup++;window.__lastKeyup=event.key;document.getElementById('suggestion').textContent=this.value+' suggestion';});
+window.__editorSelection = null;
+document.addEventListener('selectionchange', function() {
+  const el=document.activeElement, selection=document.getSelection();
+  if(el&&el.isContentEditable)window.__editorSelection={id:el.id,replace:!selection.isCollapsed};
+});
+for (const id of ['accepted','rejected','reverted']) {
+  document.getElementById(id).addEventListener('paste', function(event) {
+    event.preventDefault(); window.__inputStats[id]++;
+    window.__lastPasteHTML=event.clipboardData.getData('text/html');
+    if(id==='rejected')return;
+    const value=event.clipboardData.getData('text/plain'), original=this.textContent;
+    const selection=window.__editorSelection;
+    this.textContent=selection&&selection.id===id&&selection.replace?value:original+value;
+    if(id==='reverted')setTimeout(()=>{this.textContent=original;},50);
+  });
+}
+</script>

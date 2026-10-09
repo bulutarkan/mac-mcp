@@ -1139,6 +1139,10 @@ function __mcpElementReadiness(el,kind,minStableMs){
   if(base.stable_for_ms<minStableMs){base.reason_code='ELEMENT_UNSTABLE';return base;}
   try{
     var doc=target.ownerDocument||document,win=doc.defaultView||window,lr=target.getBoundingClientRect(),cx=lr.left+lr.width/2,cy=lr.top+lr.height/2;
+    // A long editor's geometric centre may be offscreen or under a footer even
+    // while its visible text can be edited. Pointer clicks still use the centre.
+    var textTarget=kind==='type'||kind==='type_text'||kind==='paste'||(kind==='observe'&&target.isContentEditable);
+    if(textTarget){cx=(Math.max(0,lr.left)+Math.min(win.innerWidth,lr.right))/2;cy=(Math.max(0,lr.top)+Math.min(win.innerHeight,lr.bottom))/2;}
     if(cx<0||cy<0||cx>=win.innerWidth||cy>=win.innerHeight){base.reason_code='ELEMENT_OFFSCREEN';return base;}
     var hit=doc.elementFromPoint(cx,cy);base.hit_tag=hit?String(hit.tagName||'').toLowerCase():null;
     if(hit)base.hit_target={tag:String(hit.tagName||'').toLowerCase(),role:__mcpRole(hit),element_id:__mcpId(hit,s)};
@@ -1301,11 +1305,69 @@ function __mcpKeyboardActivate(el){
   var win=__mcpOwnerWindow(el);function fire(type){try{el.dispatchEvent(new win.KeyboardEvent(type,{bubbles:true,cancelable:true,composed:true,key:key,code:key===' '?'Space':key}));}catch(e){}}
   fire('keydown');fire('keypress');fire('keyup');return key;
 }
+function __mcpReadInputText(el){
+  var tag=String(el.tagName||'').toLowerCase();
+  if(tag==='input'||tag==='textarea'||tag==='select')return String(el.value==null?'':el.value);
+  // Read editable DOM, never an arbitrary .value expando left on a DIV.
+  function read(node){
+    if(node.nodeType===3)return String(node.nodeValue||'');
+    if(node.nodeType!==1)return '';
+    if(node.tagName==='BR')return '\n';
+    var out='',previousBlock=false,children=Array.from(node.childNodes||[]);
+    for(var i=0;i<children.length;i++){
+      var child=children[i],block=child.nodeType===1&&/^(P|DIV|LI|UL|OL|H[1-6]|PRE|BLOCKQUOTE|SECTION|ARTICLE)$/.test(child.tagName),text=read(child);
+      if(block&&child.childNodes.length===1&&child.firstChild.nodeName==='BR')text='';
+      if(i>0&&(block||previousBlock))out+='\n';
+      out+=text;previousBlock=block;
+    }
+    return out;
+  }
+  // A cleared plain contenteditable keeps one placeholder BR in Chromium.
+  if(el.childNodes.length===1&&el.firstChild.nodeName==='BR')return '';
+  return read(el);
+}
+function __mcpNormalizeInputText(value){return String(value==null?'':value).replace(/\r\n?/g,'\n').replace(/\u00a0/g,' ');}
+function __mcpNativeInputVerification(actual,expected,previous){
+  actual=__mcpNormalizeInputText(actual);expected=__mcpNormalizeInputText(expected);previous=__mcpNormalizeInputText(previous);
+  if(actual===expected)return 'value_applied';
+  if(actual===previous||!expected)return 'input_not_applied';
+  // Permit formatting punctuation/spacing, never missing or substituted text.
+  var characters=function(text){return text.replace(/[^\p{L}\p{N}]/gu,'');},wanted=characters(expected);
+  return wanted&&characters(actual)===wanted?'value_transformed':'input_not_applied';
+}
 function __mcpSetText(el,value,clearFirst){
-  if(!el)throw new Error('element_not_found');if(el.disabled===true||el.getAttribute('aria-disabled')==='true')throw new Error('element_disabled');if(el.readOnly===true||el.getAttribute('readonly')!==null)throw new Error('element_readonly');__mcpScrollIntoView(el);try{el.focus({preventScroll:true});}catch(e){try{el.focus();}catch(_){}}
-  value=String(value==null?'':value);var tag=String(el.tagName||'').toLowerCase(),editable=(tag==='input'||tag==='textarea'||tag==='select'),before=__mcpInputEvent(el,'beforeinput',value,'insertText',true);if(before)try{el.dispatchEvent(before);}catch(e){}
-  if(editable){if(clearFirst!==false)__mcpNativeValueSetter(el,'');__mcpNativeValueSetter(el,value);}else if(el.isContentEditable||['textbox','searchbox'].indexOf(String(el.getAttribute('role')||'').toLowerCase())>=0){try{el.textContent=value;}catch(e){}}else{if(!__mcpNativeValueSetter(el,value))try{el.textContent=value;}catch(e){}}
-  var input=__mcpInputEvent(el,'input',value,'insertText',false);if(input)try{el.dispatchEvent(input);}catch(e){}try{el.dispatchEvent(new (__mcpOwnerWindow(el).Event)('change',{bubbles:true,composed:true}));}catch(e){}try{var ku=new (__mcpOwnerWindow(el).KeyboardEvent)('keyup',{bubbles:true,cancelable:true,composed:true,key:value.slice(-1)||'Unidentified'});el.dispatchEvent(ku);}catch(e){}return el;
+  if(!el)throw new Error('element_not_found');if(el.disabled===true||el.getAttribute('aria-disabled')==='true')throw new Error('element_disabled');if(el.readOnly===true||el.getAttribute('readonly')!==null)throw new Error('element_readonly');
+  var tag=String(el.tagName||'').toLowerCase(),nativeText=tag==='input'||tag==='textarea';
+  if(!nativeText&&!el.isContentEditable)throw new Error('element_not_editable');
+  __mcpScrollIntoView(el);try{el.focus({preventScroll:true});}catch(e){try{el.focus();}catch(_){}}
+  value=String(value==null?'':value);var previous=__mcpReadInputText(el),expected=clearFirst===false?previous+value:value,method='native_value_setter';
+  if(nativeText){
+    var before=__mcpInputEvent(el,'beforeinput',value,'insertText',true);
+    if(before&&!el.dispatchEvent(before))throw new Error('input_canceled');
+    if(!__mcpNativeValueSetter(el,expected))throw new Error('input_not_applied');
+    var input=__mcpInputEvent(el,'input',value,'insertText',false);if(input)el.dispatchEvent(input);
+    el.dispatchEvent(new (__mcpOwnerWindow(el).Event)('change',{bubbles:true,composed:true}));
+    el.dispatchEvent(new (__mcpOwnerWindow(el).KeyboardEvent)('keyup',{bubbles:true,cancelable:true,composed:true,key:value.slice(-1)||'Unidentified'}));
+  }else{
+    var doc=el.ownerDocument||document,win=__mcpOwnerWindow(el),selection=doc.getSelection(),range=doc.createRange();
+    range.selectNodeContents(el);if(clearFirst===false)range.collapse(false);selection.removeAllRanges();selection.addRange(range);
+    // Editors keep a separate selection model. Synchronize it before their
+    // paste handler reads it, rather than pasting at a stale model cursor.
+    doc.dispatchEvent(new win.Event('selectionchange'));
+    var transfer=new win.DataTransfer(),escape=doc.createElement('div');
+    transfer.setData('text/plain',value);
+    transfer.setData('text/html',value.split(/\r\n?|\n/).map(function(line){escape.textContent=line;return '<p>'+(escape.innerHTML||'<br>')+'</p>';}).join(''));
+    var paste=new win.ClipboardEvent('paste',{bubbles:true,cancelable:true,composed:true,clipboardData:transfer});
+    var handled=!el.dispatchEvent(paste)||paste.defaultPrevented||__mcpReadInputText(el)!==previous;
+    method='editor_paste_event';
+    // Synthetic paste has no browser default. A plain contenteditable needs the
+    // browser editing command; a consumed editor paste must never be replayed.
+    if(!handled){
+      method='contenteditable_edit_command';
+      if(!doc.execCommand(value?'insertText':'delete',false,value))throw new Error('input_not_applied');
+    }
+  }
+  return {expected:__mcpNormalizeInputText(expected),previous:previous,native:nativeText,method:method};
 }'''
 
 
@@ -2172,6 +2234,28 @@ def browser_find(
     }
 
 
+def _selector_target_js(selector: str) -> str:
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function encode(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+try{{document.querySelector({json.dumps(selector)});}}catch(e){{return encode({{ok:false,error:'invalid_selector'}});}}
+var matches=__mcpQueryAll({json.dumps(selector)});
+if(matches.length!==1)return encode({{ok:false,error:matches.length?'selector_ambiguous':'target_not_found',match_count:matches.length}});
+return encode({{ok:true,element_id:__mcpId(matches[0],__mcpState())}});
+}})()'''
+
+
+def _input_readback_js(element_id: str, expected: str) -> str:
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function encode(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var el=__mcpRecoverElement({json.dumps(element_id)},__mcpState());
+if(!el||!el.isConnected)return encode({{connected:false,matches:false}});
+var actual=__mcpNormalizeInputText(__mcpReadInputText(el));
+return encode({{connected:true,matches:actual==={json.dumps(expected)},value:actual.slice(0,200)}});
+}})()'''
+
+
 def _batch_js(actions: List[Dict[str, Any]], observation_id: Optional[str]) -> str:
     actions_json = json.dumps(actions, ensure_ascii=False)
     obs_json = json.dumps(observation_id)
@@ -2230,11 +2314,12 @@ for(var i=0;i<actions.length;i++){
     } else if(type==='type'||type==='type_text'||type==='paste'){
       if(!el) throw new Error('element_id is required');
       var value=String(a.text==null?'':a.text);
-      __mcpSetText(el,value,a.clear!==false);__mcpFlushMutations(s);
-      var actual='';try{actual=('value' in el)?String(el.value||''):String(el.textContent||'');}catch(e){}
-      var applied=actual===value;
-      var typed={index:i,type:type,element_id:a.element_id,ok:applied,value:actual.slice(0,200),effect_observed:applied,verification:applied?'value_applied':'input_not_applied',observe_again:!applied};
-      if(!applied)typed.error='input_not_applied';results.push(typed);if(!applied)break;
+      var inputResult=__mcpSetText(el,value,a.clear!==false);__mcpFlushMutations(s);
+      var actual=__mcpReadInputText(el),verification=inputResult.native?__mcpNativeInputVerification(actual,inputResult.expected,inputResult.previous):'input_dispatched',applied=verification!=='input_not_applied';
+      var typed={index:i,type:type,element_id:a.element_id,ok:applied,value:actual.slice(0,200),effect_observed:inputResult.native&&applied,verification:verification,input_method:inputResult.method,persistence_verified:false};
+      if(!inputResult.native)typed._input_expected=inputResult.expected;
+      if(!applied)typed.error='input_not_applied';
+      results.push(typed);if(!applied)break;
     } else if(type==='select'){
       if(!el) throw new Error('element_id is required');
       var wanted=String(a.option==null?'':a.option).trim().toLowerCase(),chosen=null;
@@ -3005,6 +3090,43 @@ def _verified_dom_action(
         result["type"] = typ
     if element_id and "element_id" not in result:
         result["element_id"] = element_id
+    if typ in {"type", "type_text", "paste"}:
+        expected = result.pop("_input_expected", None)
+        if result.get("ok") and expected is not None:
+            # Read twice after yielding to the editor. An immediate DOM write or
+            # event dispatch does not prove that a controlled editor accepted it.
+            deadline = time.perf_counter() + 1.2
+            matched_once = False
+            verified = False
+            verification_error = None
+            while expected is not None and time.perf_counter() < deadline:
+                cancellable_sleep(0.12)
+                try:
+                    post = _run_json_js(
+                        settings, browser, _input_readback_js(element_id, expected),
+                        window_index, tab_index, tab_handle,
+                    )
+                    js_calls += 1
+                except Exception:
+                    verification_error = "input_readback_failed"
+                    break
+                result["value"] = post.get("value", "")
+                if not post.get("connected"):
+                    verification_error = "input_target_detached"
+                    break
+                matches = post.get("matches") is True
+                if matches and matched_once:
+                    verified = True
+                    break
+                matched_once = matches
+            result.update({
+                "ok": verified, "effect_observed": verified,
+                "verification": "dom_readback_verified" if verified else "input_not_applied",
+                "persistence_verified": False, "automatic_retry": False,
+                "foreground_fallback": False,
+            })
+            if not verified:
+                result.update({"error": verification_error or "input_not_applied", "observe_again": True})
     result["readiness"] = {
         key: readiness.get(key)
         for key in ("ready", "reason_code", "stable_for_ms", "dom_revision", "rect", "pointer_events", "hit_tag", "hit_target", "modal_scope", "associated_control", "associated_label", "association_ambiguous", "pointer_events_association_fallback", "duration_ms")
@@ -4045,6 +4167,17 @@ def _browser_act_locked(
         nonlocal internal_js_calls
         if action.get("element_id"):
             return dict(action), None
+        if action.get("selector") is not None:
+            found = _run_json_js(
+                settings, browser, _selector_target_js(str(action["selector"])),
+                window_index, tab_index, tab_handle,
+            )
+            internal_js_calls += 1
+            if not found.get("ok"):
+                return dict(action), found
+            resolved = dict(action)
+            resolved["element_id"] = found["element_id"]
+            return resolved, found
         query = str(action.get("query") or action.get("target") or "").strip()
         role = action.get("role")
         match_text = action.get("text_match") or action.get("target_text")
