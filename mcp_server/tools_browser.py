@@ -435,7 +435,8 @@ def _visual_claim_script_for_target(
             f'in tab {int(tab_index)} of window {int(window_index)}'
         )
     else:
-        execute = f'set claimed to execute javascript "{js_escaped}" in tab {int(tab_index)} of window 1'
+        # Chrome's form is `execute <tab> javascript "..."`; "execute javascript ... in <tab>" fails to resolve (-1723).
+        execute = f'set claimed to execute tab {int(tab_index)} of window {int(window_index)} javascript "{js_escaped}"'
     return (
         f'tell application "{b}"\n'
         'repeat with attempt from 1 to 30\n'
@@ -1394,7 +1395,7 @@ end tell'''
     tell window {target.window_index}
         {guard}
         set r to ""
-        set r to execute javascript "{js_escaped}" in targetTab
+        set r to execute targetTab javascript "{js_escaped}"
         return r
     end tell
 end tell'''

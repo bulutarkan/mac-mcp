@@ -31,7 +31,7 @@ class ForeignExtensionFrameTests(unittest.TestCase):
                 patch.object(tools_browser, "_run_osascript", return_value="eyJvayI6dHJ1ZX0=") as osa:
             out = tools_browser._execute_js_for_target("Google Chrome", "1+1", _target(), 10)
         self.assertEqual("eyJvayI6dHJ1ZX0=", out)
-        self.assertIn("execute javascript", osa.call_args.args[0])
+        self.assertIn("execute targetTab javascript", osa.call_args.args[0])
 
     def test_other_companion_errors_still_raise(self) -> None:
         other = HTTPException(502, {"error": "chrome_debugger_evaluate_failed", "message": "Target closed"})
@@ -63,7 +63,7 @@ class ForeignExtensionFrameTests(unittest.TestCase):
                 patch.object(tools_browser, "_tab_identity_guard", return_value="set targetTab to tab 1"), \
                 patch.object(tools_browser, "_run_osascript", return_value="Mg==") as osa:
             self.assertEqual("Mg==", tools_browser._execute_js_for_target("Google Chrome", "1+1", _target(), 10))
-        self.assertIn("execute javascript", osa.call_args.args[0])
+        self.assertIn("execute targetTab javascript", osa.call_args.args[0])
 
     def test_probe_runs_in_a_web_tab_never_a_chrome_page(self) -> None:
         with patch.object(tools_browser, "_chrome_is_running", return_value=True), \

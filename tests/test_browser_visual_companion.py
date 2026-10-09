@@ -230,8 +230,9 @@ class BrowserVisualCompanionTests(unittest.TestCase):
         js = _visual_claim_js(expected)
         script = _visual_claim_script("Google Chrome", 4, expected)
         self.assertIn('tell application "Google Chrome"', script)
-        self.assertIn('execute javascript', script)
-        self.assertIn('tab 4 of window 1', script)
+        # Chrome's syntax is `execute <tab> javascript`; "execute javascript ... in <tab>" fails with -1723.
+        self.assertIn('execute tab 4 of window 1 javascript', script)
+        self.assertNotIn('execute javascript', script)
         claim_start = js.rfind("(()=>{try{const expected=")
         self.assertGreaterEqual(claim_start, 0)
         claim_js = js[claim_start:]
