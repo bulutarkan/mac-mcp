@@ -557,23 +557,28 @@ def _usage_total_tokens(usage: Any) -> int:
     return total
 
 
-def _team_usage_snapshot(team: Dict[str, Any]) -> Dict[str, int]:
+def _team_usage_snapshot(team: Dict[str, Any]) -> Dict[str, Any]:
     tool_calls = 0
     total_tokens = 0
     completed_agents = 0
+    unknown: List[str] = []
     for agent_id in list(team.get("agent_ids") or []):
         try:
             meta = _read_meta(str(agent_id))
         except HTTPException:
             continue
         tool_calls += max(0, int(meta.get("tool_call_count") or 0))
-        total_tokens += _usage_total_tokens(meta.get("usage"))
+        tokens, known = _agent_token_usage(meta)
+        total_tokens += tokens
+        if not known:
+            unknown.append(str(agent_id))
         if str(meta.get("status") or "") in TERMINAL_STATUSES:
             completed_agents += 1
     return {
         "tool_calls": tool_calls,
         "total_tokens": total_tokens,
         "completed_agents": completed_agents,
+        "token_usage_unknown_agents": unknown,
     }
 
 
@@ -650,6 +655,10 @@ def _team_budget_snapshot(team: Dict[str, Any], *, now: Optional[float] = None) 
         "tool_calls_overshoot": tool_overshoot,
         "admission_token_budget": token_limit,
         "total_tokens_used": usage["total_tokens"],
+        # Agents whose provider does not report usage (for example ChatGPT):
+        # their tokens are not in total_tokens_used, so it is a lower bound.
+        "total_tokens_complete": not usage["token_usage_unknown_agents"],
+        "token_usage_unknown_agents": usage["token_usage_unknown_agents"][:20],
         "total_tokens_remaining": tokens_remaining,
         "total_tokens_overshoot": token_overshoot,
         "active_at_limit": active_at_limit_count > 0,
@@ -6344,6 +6353,7 @@ def _ingest_provider_usage_event(
                 cache_write_tokens=normalized.cache_write_tokens,
                 total_tokens=normalized.total_tokens,
             ))
+            _accumulate_agent_usage(agent_id, event_key, normalized.total_tokens)
         finally:
             _close_codex_usage_turn(agent_id, event_key or None)
         return
@@ -6371,8 +6381,9 @@ def _ingest_provider_usage_event(
         store.diagnostic_increment("invalid_identity_opencode")
         return
     event_id = part_id if not message_id else f"{message_id}:{part_id}"
+    event_key = f"opencode:{session_id}:{part_id}"
     store.ingest(ProviderUsageRecord(
-        event_key=f"opencode:{session_id}:{part_id}",
+        event_key=event_key,
         provider="opencode",
         session_id=session_id,
         event_id=event_id,
@@ -6390,6 +6401,57 @@ def _ingest_provider_usage_event(
         cache_write_tokens=normalized.cache_write_tokens,
         total_tokens=normalized.total_tokens,
     ))
+    _accumulate_agent_usage(agent_id, event_key, normalized.total_tokens)
+
+
+_USAGE_COUNTED_KEYS_KEPT = 500
+
+
+def _accumulate_agent_usage(agent_id: str, event_key: str, total_tokens: int) -> None:
+    """Add one provider turn/step to the agent's running total, once per stable event key.
+
+    meta["usage"] holds only the latest turn or step; budgets need every one
+    across turns, steps, retries and resumes.
+    """
+    if not event_key:
+        return
+
+    def add(current: Dict[str, Any]) -> Optional[bool]:
+        cumulative = dict(current.get("usage_cumulative") or {})
+        counted = list(cumulative.get("counted_keys") or [])
+        if event_key in counted:
+            return False
+        counted.append(event_key)
+        cumulative["counted_keys"] = counted[-_USAGE_COUNTED_KEYS_KEPT:]
+        cumulative["total_tokens"] = int(cumulative.get("total_tokens") or 0) + max(0, int(total_tokens or 0))
+        cumulative["events"] = int(cumulative.get("events") or 0) + 1
+        current["usage_cumulative"] = cumulative
+        return True
+
+    try:
+        _update_meta(agent_id, add)
+    except HTTPException:
+        pass
+
+
+# Providers whose CLI reports token usage that Mac MCP can count.
+_USAGE_REPORTING_PROVIDERS = {"codex", "opencode"}
+
+
+def _agent_token_usage(meta: Dict[str, Any]) -> tuple[int, bool]:
+    """(tokens counted for this agent, whether its usage is known)."""
+    cumulative = meta.get("usage_cumulative") if isinstance(meta.get("usage_cumulative"), dict) else None
+    if cumulative:
+        return max(0, int(cumulative.get("total_tokens") or 0)), True
+    provider = str(meta.get("provider") or "").lower()
+    if provider not in _USAGE_REPORTING_PROVIDERS:
+        return 0, False
+    latest = _usage_total_tokens(meta.get("usage"))
+    if latest:
+        return latest, True  # an agent from before cumulative accounting
+    # A finished agent that did work but reported nothing is unknown, not zero.
+    did_work = int(meta.get("turn_count") or 0) or int(meta.get("step_count") or 0) or int(meta.get("tool_call_count") or 0)
+    return 0, not (str(meta.get("status") or "") in TERMINAL_STATUSES and did_work)
 
 
 def _record_provider_event(agent_id: str, raw_line: str) -> None:
