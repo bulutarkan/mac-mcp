@@ -299,6 +299,9 @@ struct MenuBarView: View {
                         Spacer()
                     }
                 }
+                ForEach(state.agentTeams.filter(\.isActive).prefix(2)) { team in
+                    teamRow(team)
+                }
                 ScrollViewReader { proxy in
                     ScrollView(.vertical) {
                         LazyVStack(spacing: 0) {
@@ -325,6 +328,26 @@ struct MenuBarView: View {
         } label: {
             Label("Delegated Agents", systemImage: "cpu")
         }
+    }
+
+    /// One active team in a line: progress through its task graph; opens the dashboard on that team.
+    private func teamRow(_ team: AgentTeamInfo) -> some View {
+        Button { state.openDashboard(focusTeamID: team.teamID) } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .font(.caption2).foregroundStyle(.secondary).frame(width: 18)
+                Text(team.title ?? "Team").font(.caption2.weight(.semibold)).lineLimit(1)
+                Spacer(minLength: 6)
+                Text(team.progressText).font(.caption2).foregroundStyle(
+                    (team.unresolvedConflictCount ?? 0) > 0 ? Color.orange : Color.secondary
+                ).lineLimit(1)
+                Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Show this team's tasks in the dashboard")
+        .accessibilityLabel("Team \(team.title ?? ""), \(team.progressText)")
     }
 
     private func agentRow(_ agent: AgentInfo) -> some View {

@@ -900,7 +900,7 @@ def create_dashboard_routes(
                     "workflow_id", "resume_generation", "checkpoint_state", "checkpoint_safety",
                     "checkpoint_reason", "side_effect_receipt_count", "pending_side_effect_count", "checkpoint_cursor", "last_durable_checkpoint_at", "resumable",
                     "throttle_count", "last_throttled_at", "last_throttle_reason", "cooldown_until",
-                    "retry_count", "output_tokens", "result_preview",
+                    "retry_count", "output_tokens", "result_preview", "cancellation",
                 )
             })
         public_teams = []
@@ -933,6 +933,11 @@ def create_dashboard_routes(
                 "updated_at": team.get("updated_at"),
                 "count": team.get("count"),
                 "terminal_count": team.get("terminal_count"),
+                "unresolved_conflict_count": team.get("unresolved_conflict_count"),
+                "conflict_policy": team.get("conflict_policy"),
+                "tasks": team.get("tasks") or [],
+                "budget": team.get("budget") or {},
+                "summary_at": team.get("summary_at"),
             })
         return JSONResponse({
             "ok": True, "count": len(public_agents), "agents": public_agents,

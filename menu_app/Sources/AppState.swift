@@ -553,12 +553,39 @@ struct AgentTeamInfo: Decodable, Identifiable, Equatable {
     let model: String?
     let count: Int?
     let terminalCount: Int?
+    let unresolvedConflictCount: Int?
+    let tasks: [TeamTaskInfo]?
+
+    struct TeamTaskInfo: Decodable, Equatable {
+        let id: String?
+        let state: String?
+        let queuedReason: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id, state
+            case queuedReason = "queued_reason"
+        }
+    }
 
     var id: String { teamID }
+    var isActive: Bool { (pendingCount ?? 0) > 0 }
+    /// "2/4 done · 1 waiting · 1 conflict" for the menu.
+    var progressText: String {
+        let all = tasks ?? []
+        let done = all.filter { ["completed", "skipped"].contains($0.state ?? "") }.count
+        let waiting = all.filter { $0.state == "queued" || $0.queuedReason != nil }.count
+        var parts = ["\(done)/\(all.isEmpty ? (workCount ?? 0) : all.count) done"]
+        if waiting > 0 { parts.append("\(waiting) waiting") }
+        if let conflicts = unresolvedConflictCount, conflicts > 0 {
+            parts.append(conflicts == 1 ? "1 conflict" : "\(conflicts) conflicts")
+        }
+        return parts.joined(separator: " · ")
+    }
 
     enum CodingKeys: String, CodingKey {
         case teamID = "team_id"
-        case status, success, outcome, title, provider, model, count
+        case status, success, outcome, title, provider, model, count, tasks
+        case unresolvedConflictCount = "unresolved_conflict_count"
         case partialFailure = "partial_failure"
         case successfulCount = "successful_count"
         case failureCount = "failure_count"

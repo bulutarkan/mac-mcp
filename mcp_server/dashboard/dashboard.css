@@ -283,6 +283,23 @@ h2 { margin: 0; font-size: 15px; letter-spacing: -.015em; font-weight: 630; }
 .agent-list { min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 7px; padding-right: 2px; }
 .agent-group-label { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 4px 0 1px; color: #60798c; font-size: 9px; }
 .agent-group-label strong { color: #8ca6b9; font-size: 9px; font-weight: 620; }
+.team-block { display: grid; gap: 6px; padding: 9px; border: 1px solid rgba(133, 174, 205, .14); border-radius: 11px; background: linear-gradient(180deg, rgba(14, 31, 45, .82), rgba(9, 23, 34, .82)); }
+.team-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.team-head strong { min-width: 0; overflow: hidden; color: #c9dae6; font-size: 10.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.team-head span { color: #8ca6b9; font-size: 9px; white-space: nowrap; }
+.team-tasks { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.team-task > button, .team-task > div { width: 100%; display: grid; grid-template-columns: 8px minmax(0,1fr) auto; align-items: center; column-gap: 7px; padding: 4px 6px; border: 0; border-radius: 7px; background: transparent; color: inherit; font: inherit; text-align: left; }
+.team-task > button { cursor: pointer; }
+.team-task > button:hover, .team-task > button:focus-visible { background: rgba(82, 157, 211, .1); outline: none; }
+.task-dot { width: 7px; height: 7px; border-radius: 50%; background: #45627a; }
+.team-task[data-state="running"] .task-dot, .team-task[data-state="spawning"] .task-dot { background: var(--ice-deep); box-shadow: 0 0 6px rgba(82, 163, 218, .5); }
+.team-task[data-state="completed"] .task-dot { background: #559d87; }
+.team-task[data-state="failed"] .task-dot, .team-task[data-state="quality_failed"] .task-dot { background: #c86b70; }
+.team-task[data-state="queued"] .task-dot, .team-task[data-state="blocked"] .task-dot, .team-task[data-state="pending"] .task-dot { background: #b39a5b; }
+.task-name { min-width: 0; overflow: hidden; color: #b6cad8; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.task-state { color: #7d95a7; font-size: 8.8px; }
+.task-note { grid-column: 2 / 4; color: #697f92; font-size: 8.8px; line-height: 1.35; }
+.team-fresh { justify-self: end; color: #4f6679; font-size: 8.5px; }
 .agent-card { position: relative; display: grid; grid-template-columns: 30px minmax(0,1fr); gap: 9px; padding: 9px; border: 1px solid rgba(133, 174, 205, .12); border-radius: 11px; background: linear-gradient(180deg, rgba(14, 31, 45, .82), rgba(9, 23, 34, .82)); }
 .agent-card::after { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; border-radius: 11px 0 0 11px; background: #45627a; }
 .agent-card[data-status="running"], .agent-card[data-status="starting"] { border-color: rgba(82, 157, 211, .2); }

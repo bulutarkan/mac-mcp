@@ -1839,11 +1839,39 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         "tasks": public_tasks,
     }
 
+def _dashboard_text(value: Any, limit: int = 96) -> Optional[str]:
+    text = " ".join(str(value or "").split())
+    return text[:limit] if text else None
+
+
+def _dashboard_task(task: Dict[str, Any]) -> Dict[str, Any]:
+    """One DAG node for people: states, links and reasons only; never prompts or paths."""
+    gate = task.get("gate_result")
+    gate_decision = (gate.get("decision") if isinstance(gate, dict) else gate) or None
+    return {
+        "id": _dashboard_text(task.get("id"), 40),
+        "title": _dashboard_text(task.get("title")),
+        "role": _dashboard_text(task.get("role"), 24),
+        "state": task.get("state"),
+        "depends_on": [str(dep)[:40] for dep in list(task.get("depends_on") or [])[:10]],
+        "review_of": _dashboard_text(task.get("review_of"), 40),
+        "queued_reason": task.get("queued_reason"),
+        "queue_position": task.get("queue_position"),
+        "gate_result": str(gate_decision).lower() if gate_decision else None,
+        "revision_count": int(task.get("revision_count") or 0),
+        "integration_state": task.get("integration_state"),
+        "integration_conflict_count": int(task.get("integration_conflict_count") or 0),
+        "failure_reason": task.get("failure_reason"),
+        "agent_id": task.get("active_agent_id") or task.get("latest_agent_id"),
+        "active": bool(task.get("active_agent_id")),
+    }
+
+
 def dashboard_team_summary(team_id: str) -> Dict[str, Any]:
     """Return a bounded team lifecycle summary for local dashboard consumers."""
     team = _authorize_team_control(str(team_id), "list_agents")
     summary = _team_summary(str(team_id), team)
-    return {
+    public = {
         key: summary.get(key)
         for key in (
             "team_id",
@@ -1862,8 +1890,20 @@ def dashboard_team_summary(team_id: str) -> Dict[str, Any]:
             "updated_at",
             "count",
             "terminal_count",
+            "unresolved_conflict_count",
+            "conflict_policy",
         )
     }
+    budget = summary.get("budget") if isinstance(summary.get("budget"), dict) else {}
+    public["tasks"] = [_dashboard_task(task) for task in list(summary.get("tasks") or [])[:MAX_TEAM_SIZE * 3]]
+    public["budget"] = {
+        key: budget.get(key) for key in (
+            "remaining_s", "tool_calls_used", "admission_tool_call_budget", "total_tokens_used",
+            "admission_token_budget", "total_tokens_complete", "exhausted_reason", "active", "max_parallel",
+        )
+    }
+    public["summary_at"] = _now()
+    return public
 
 
 def _tail_text(path: Path, max_lines: int = 40, max_chars: int = 6000) -> str:

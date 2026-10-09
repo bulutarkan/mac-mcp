@@ -17,6 +17,7 @@
     agents: [],
     globalAdmission: null,
     focusAgent: null,
+    teams: [],
     focusTeam: null,
     focusApplied: false,
     changeSets: [],
@@ -220,6 +221,7 @@
     try {
       const data = await fetchJSON("/dashboard/api/agents?limit=16");
       state.agents = data.agents || [];
+      state.teams = data.teams || [];
       state.globalAdmission = data.global_admission || null;
       renderAgents(state.agents);
       if (state.changeSets.length) renderChanges();
@@ -545,10 +547,20 @@
     };
     const groups = [];
     if (scheduler) groups.push(scheduler);
+    const teams = (state.teams || [])
+      .filter((team) => Number(team.pending_count || 0) > 0 || team.team_id === state.focusTeam)
+      .slice(0, 3);
+    if (teams.length) groups.push(`<div class="agent-group-label"><strong>Teams</strong><span>${teams.length}</span></div>${teams.map(teamBlock).join("")}`);
     if (focusedAgents.length) groups.push(`<div class="agent-group-label"><strong>Notification</strong><span>${focusedAgents.length}</span></div>${focusedAgents.map(card).join("")}`);
     if (active.length) groups.push(`<div class="agent-group-label"><strong>Active</strong><span>${active.length}</span></div>${active.map(card).join("")}`);
     if (recent.length) groups.push(`<div class="agent-group-label"><strong>Recent</strong><span>latest ${recent.length}</span></div>${recent.map(card).join("")}`);
     els.agentList.innerHTML = groups.join("");
+    els.agentList.querySelectorAll("[data-focus-agent]").forEach((button) => button.addEventListener("click", () => {
+      state.focusAgent = button.dataset.focusAgent;
+      state.focusTeam = null;
+      state.focusApplied = false;
+      renderAgents(state.agents);
+    }));
     if (!state.focusApplied && (state.focusAgent || state.focusTeam)) {
       const focused = els.agentList.querySelector(".agent-card.is-focus");
       if (focused) {
@@ -559,6 +571,40 @@
         });
       }
     }
+  }
+
+  // A team's DAG as a compact task list: state, dependencies and why a node waits.
+  function teamBlock(team) {
+    const tasks = team.tasks || [];
+    const done = tasks.filter((task) => ["completed", "skipped"].includes(task.state)).length;
+    const queued = tasks.filter((task) => task.state === "queued" || task.queued_reason).length;
+    const conflicts = Number(team.unresolved_conflict_count || 0);
+    const head = [
+      `${number(done)}/${number(tasks.length)} done`,
+      queued ? `${number(queued)} queued` : "",
+      conflicts ? `${number(conflicts)} unresolved conflict${conflicts === 1 ? "" : "s"}` : "",
+    ].filter(Boolean).join(" · ");
+    const rows = tasks.map((task) => {
+      const notes = [
+        task.depends_on && task.depends_on.length ? `after ${task.depends_on.join(", ")}` : "",
+        task.review_of ? `reviews ${task.review_of}` : "",
+        task.queued_reason ? `waiting: ${String(task.queued_reason).replace(/_/g, " ")}` : "",
+        task.gate_result ? `review ${task.gate_result}` : "",
+        task.revision_count ? `rev ${task.revision_count}` : "",
+        task.integration_conflict_count ? `${task.integration_conflict_count} merge conflicts` : "",
+        task.failure_reason ? String(task.failure_reason).replace(/_/g, " ") : "",
+      ].filter(Boolean).join(" · ");
+      const label = `${esc(task.id || "")}${task.title ? ` — ${esc(task.title)}` : ""}`;
+      const body = `<span class="task-dot" aria-hidden="true"></span><span class="task-name">${label}</span><span class="task-state">${esc(task.state || "")}</span>${notes ? `<span class="task-note">${esc(notes)}</span>` : ""}`;
+      return task.agent_id
+        ? `<li class="team-task" data-state="${esc(task.state || "")}"><button type="button" data-focus-agent="${esc(task.agent_id)}" title="Show this task's agent">${body}</button></li>`
+        : `<li class="team-task" data-state="${esc(task.state || "")}"><div>${body}</div></li>`;
+    }).join("");
+    const fresh = team.summary_at ? `<span class="team-fresh">updated ${esc(ago(Date.now() - Number(team.summary_at) * 1000))}</span>` : "";
+    return `<section class="team-block" data-team-id="${esc(team.team_id || "")}" aria-label="Team ${esc(team.title || team.team_id || "")}">
+      <div class="team-head"><strong title="${esc(team.title || team.team_id)}">${esc(team.title || team.team_id)}</strong><span>${esc(head)}</span></div>
+      <ol class="team-tasks">${rows}</ol>${fresh}
+    </section>`;
   }
 
   function visibleEvents() {
