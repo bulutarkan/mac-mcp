@@ -73,6 +73,16 @@ class MemoryPrivacyTests(_MemoryCase):
             if path.exists():
                 self.assertEqual(0o600, mode(path), path.name)
 
+    def test_existing_folders_are_tightened_on_the_next_read(self) -> None:
+        added = self.add("older note")
+        day_file = self.root / added["file_path"]
+        for folder in (day_file.parent, day_file.parent.parent):
+            folder.chmod(0o755)
+        day_file.chmod(0o644)
+        tm.memory_search(query="older")
+        self.assertEqual((0o700, 0o700, 0o600),
+                         (mode(day_file.parent), mode(day_file.parent.parent), mode(day_file)))
+
     def test_deleting_the_last_memory_of_a_day_leaves_nothing_behind(self) -> None:
         secret = "zebracactus-unique-7f3a"
         added = self.add(f"My locker code note {secret}")

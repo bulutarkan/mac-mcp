@@ -488,6 +488,8 @@ def _sync_index(root: Path, conn: sqlite3.Connection) -> Dict[str, int]:
             conn.execute("DELETE FROM indexed_files WHERE file_path=?", (rel,))
             removed += 1
     conn.commit()
+    for folder in {p.parent for p in files} | {p.parent.parent for p in files} | {root / ".cache"}:
+        _private(folder, 0o700)
     for rel, path in current.items():
         _private(path, 0o600)
         stat = path.stat()
