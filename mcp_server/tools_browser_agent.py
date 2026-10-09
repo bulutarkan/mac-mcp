@@ -1150,6 +1150,14 @@ function __mcpReadInputText(el){
   return read(el);
 }
 function __mcpNormalizeInputText(value){return String(value==null?'':value).replace(/\r\n?/g,'\n').replace(/\u00a0/g,' ');}
+function __mcpNativeInputVerification(actual,expected,previous){
+  actual=__mcpNormalizeInputText(actual);expected=__mcpNormalizeInputText(expected);previous=__mcpNormalizeInputText(previous);
+  if(actual===expected)return 'value_applied';
+  if(actual===previous||!expected)return 'input_not_applied';
+  // Permit formatting punctuation/spacing, never missing or substituted text.
+  var characters=function(text){return text.replace(/[^\p{L}\p{N}]/gu,'');},wanted=characters(expected);
+  return wanted&&characters(actual)===wanted?'value_transformed':'input_not_applied';
+}
 function __mcpSetText(el,value,clearFirst){
   if(!el)throw new Error('element_not_found');if(el.disabled===true||el.getAttribute('aria-disabled')==='true')throw new Error('element_disabled');if(el.readOnly===true||el.getAttribute('readonly')!==null)throw new Error('element_readonly');
   var tag=String(el.tagName||'').toLowerCase(),nativeText=tag==='input'||tag==='textarea';
@@ -1162,6 +1170,7 @@ function __mcpSetText(el,value,clearFirst){
     if(!__mcpNativeValueSetter(el,expected))throw new Error('input_not_applied');
     var input=__mcpInputEvent(el,'input',value,'insertText',false);if(input)el.dispatchEvent(input);
     el.dispatchEvent(new (__mcpOwnerWindow(el).Event)('change',{bubbles:true,composed:true}));
+    el.dispatchEvent(new (__mcpOwnerWindow(el).KeyboardEvent)('keyup',{bubbles:true,cancelable:true,composed:true,key:value.slice(-1)||'Unidentified'}));
   }else{
     var doc=el.ownerDocument||document,win=__mcpOwnerWindow(el),selection=doc.getSelection(),range=doc.createRange();
     range.selectNodeContents(el);if(clearFirst===false)range.collapse(false);selection.removeAllRanges();selection.addRange(range);
@@ -1181,7 +1190,7 @@ function __mcpSetText(el,value,clearFirst){
       if(!doc.execCommand(value?'insertText':'delete',false,value))throw new Error('input_not_applied');
     }
   }
-  return {expected:__mcpNormalizeInputText(expected),method:method};
+  return {expected:__mcpNormalizeInputText(expected),previous:previous,native:nativeText,method:method};
 }'''
 
 
@@ -2129,8 +2138,11 @@ for(var i=0;i<actions.length;i++){
       if(!el) throw new Error('element_id is required');
       var value=String(a.text==null?'':a.text);
       var inputResult=__mcpSetText(el,value,a.clear!==false);__mcpFlushMutations(s);
-      var actual=__mcpReadInputText(el);
-      results.push({index:i,type:type,element_id:a.element_id,ok:true,value:actual.slice(0,200),effect_observed:false,verification:'input_dispatched',input_method:inputResult.method,_input_expected:inputResult.expected});
+      var actual=__mcpReadInputText(el),verification=inputResult.native?__mcpNativeInputVerification(actual,inputResult.expected,inputResult.previous):'input_dispatched',applied=verification!=='input_not_applied';
+      var typed={index:i,type:type,element_id:a.element_id,ok:applied,value:actual.slice(0,200),effect_observed:inputResult.native&&applied,verification:verification,input_method:inputResult.method,persistence_verified:false};
+      if(!inputResult.native)typed._input_expected=inputResult.expected;
+      if(!applied)typed.error='input_not_applied';
+      results.push(typed);if(!applied)break;
     } else if(type==='select'){
       if(!el) throw new Error('element_id is required');
       var wanted=String(a.option==null?'':a.option).trim().toLowerCase(),chosen=null;
@@ -2825,7 +2837,7 @@ def _verified_dom_action(
         result["element_id"] = element_id
     if typ in {"type", "type_text", "paste"}:
         expected = result.pop("_input_expected", None)
-        if result.get("ok"):
+        if result.get("ok") and expected is not None:
             # Read twice after yielding to the editor. An immediate DOM write or
             # event dispatch does not prove that a controlled editor accepted it.
             deadline = time.perf_counter() + 1.2

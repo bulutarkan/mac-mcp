@@ -59,3 +59,21 @@ class BrowserTextInputTests(TestCase):
         self.assertEqual(expected, result)
         self.assertEqual({"type": "type", "selector": "#editor", "text": " appended", "clear": False}, act.call_args.kwargs["actions"][0])
         self.assertFalse(act.call_args.kwargs["allow_foreground"])
+
+    def test_native_input_skips_readback_roundtrips_and_waits(self):
+        dispatched = {"ok": True, "actions": [{
+            "ok": True, "type": "type", "element_id": "e_native",
+            "verification": "value_transformed", "value": "(555) 123-4567",
+            "input_method": "native_value_setter", "persistence_verified": False,
+        }]}
+        with patch("mcp_server.tools_browser_agent._wait_for_element_readiness", return_value={"ready": True}), \
+             patch("mcp_server.tools_browser_agent._run_json_js", return_value=dispatched) as execute, \
+             patch("mcp_server.tools_browser_agent.cancellable_sleep") as sleep:
+            result = _verified_dom_action(
+                MagicMock(), "Safari", {"type": "type", "element_id": "e_native", "text": "5551234567"},
+                None, 1, None, "tab-native",
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual("value_transformed", result["verification"])
+        execute.assert_called_once()
+        sleep.assert_not_called()

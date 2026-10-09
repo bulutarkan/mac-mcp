@@ -101,6 +101,40 @@ class BrowserTextInputDOMTests(unittest.TestCase):
         self.assertEqual("input_canceled", result["error"])
         self.assertEqual("old", self.page.locator("#native").input_value())
 
+    def test_native_checks_use_one_dispatch_without_delayed_readback(self):
+        result = self.type_text("#phone", "5551234567")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("value_applied", result["verification"])
+        # One readiness probe and one dispatch; no delayed readback calls.
+        self.assertEqual(2, result["_js_calls"])
+        self.assertFalse(result["persistence_verified"])
+        self.page.wait_for_function("document.querySelector('#phone').value === '(555) 123-4567'")
+
+    def test_synchronous_format_is_accepted_as_transformed(self):
+        result = self.type_text("#sync-phone", "5551234567")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("value_transformed", result["verification"])
+        self.assertEqual("(555) 123-4567", result["value"])
+
+    def test_keyup_only_autocomplete_updates_once(self):
+        result = self.type_text("#autocomplete", "query")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("query suggestion", self.page.locator("#suggestion").text_content())
+        self.assertEqual(1, self.page.evaluate("window.__inputStats.keyup"))
+        self.assertEqual("y", self.page.evaluate("window.__lastKeyup"))
+
+    def test_native_synchronous_revert_or_truncation_is_refused(self):
+        for replacement in ("old", "555123"):
+            with self.subTest(replacement=replacement):
+                self.page.evaluate("""replacement => {
+                    const el=document.querySelector('#native');el.value='old';
+                    el.oninput=()=>{el.value=replacement;};
+                }""", replacement)
+                result = self.type_text("#native", "5551234567")
+                self.assertFalse(result["ok"], result)
+                self.assertEqual("input_not_applied", result["error"])
+                self.assertEqual(2, result["_js_calls"])
+
     def test_invalid_missing_ambiguous_and_readonly_targets_fail(self):
         for selector, error in (("[", "invalid_selector"), ("#missing", "target_not_found"), ("input", "selector_ambiguous")):
             with self.subTest(selector=selector):
