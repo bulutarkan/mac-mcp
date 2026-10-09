@@ -97,7 +97,9 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
         "input_mode": {"type": "string", "enum": ["auto", "dom", "trusted"]},
         "dx": {"type": "number"},
         "dy": {"type": "number"},
-        "for": _str("wait: selector (default), text, element_removed, url_change, network_idle, dom_stable."),
+        "for": _str("wait: selector (default), text, element_removed, url_change, network_idle, dom_stable, "
+                    "new_tab (a tab the page opened; returns its tab_handle)."),
+        "url_contains": _str("wait for=new_tab: only a new tab whose URL contains this."),
         "selector": {"type": "string"},
         "timeout_s": {"type": "number", "minimum": 0},
         "wait_s": {"type": "number", "minimum": 0},

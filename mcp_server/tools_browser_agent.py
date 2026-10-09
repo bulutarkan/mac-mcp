@@ -3670,6 +3670,67 @@ def _wait_action_polling(
     return {"ok": True, "type": "wait", "for": kind, "matched": False, "timed_out": True, "duration_ms": int((time.perf_counter()-started)*1000), "_js_calls": js_calls}
 
 
+def _wait_kind(action: Dict[str, Any]) -> str:
+    return str(action.get("for") or action.get("condition") or "selector").lower().strip()
+
+
+_BLANK_URLS = {"", "about:blank"}
+
+
+def _public_tab(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: row.get(key) for key in ("tab_handle", "url", "title", "window_index", "tab_index", "active")}
+
+
+def _wait_new_tab(browser: str, action: Dict[str, Any], own_handle: Optional[str]) -> Dict[str, Any]:
+    """Wait for a tab the page opened (target=_blank, OAuth popup) and return its handle without activating it.
+
+    New means a handle that was not in the snapshot taken before the batch ran.
+    url_contains narrows the match; several remaining candidates are reported as
+    ambiguous instead of guessing, and a tab that is still about:blank is given
+    until the timeout to navigate.
+    """
+    before = set(action.get("_tabs_before") or ())
+    timeout_s = max(0.1, min(float(action.get("timeout_s", 10)), 60.0))
+    poll_s = max(0.1, min(float(action.get("poll_ms", 250)) / 1000.0, 2.0))
+    needle = str(action.get("url_contains") or "").strip().lower()
+    started = time.perf_counter()
+    scans = 0
+    pending_blank: Optional[Dict[str, Any]] = None
+
+    def finish(**fields: Any) -> Dict[str, Any]:
+        return {"ok": True, "type": "wait", "for": "new_tab", "tab_scans": scans,
+                "duration_ms": int((time.perf_counter() - started) * 1000), **fields}
+
+    while True:
+        cancellation_checkpoint()
+        rows = browser_tabs.list_tabs(browser)
+        scans += 1
+        fresh = [
+            row for row in rows
+            if str(row.get("tab_handle") or "") not in before and row.get("tab_handle") != own_handle
+        ]
+        if needle:
+            fresh = [row for row in fresh if needle in str(row.get("url") or "").lower()]
+        elapsed = time.perf_counter() - started
+        if len(fresh) > 1:
+            return finish(matched=False, error="ambiguous_new_tabs", reason_code="AMBIGUOUS_NEW_TABS",
+                          candidates=[_public_tab(row) for row in fresh[:10]],
+                          hint="Several tabs opened; pass url_contains to pick the one this action opened.")
+        if len(fresh) == 1:
+            row = fresh[0]
+            if str(row.get("url") or "") not in _BLANK_URLS or elapsed >= timeout_s:
+                return finish(matched=True, new_tab=_public_tab(row),
+                              url_pending=str(row.get("url") or "") in _BLANK_URLS)
+            pending_blank = row
+        if elapsed >= timeout_s:
+            if pending_blank is not None:
+                return finish(matched=True, new_tab=_public_tab(pending_blank), url_pending=True)
+            return finish(matched=False, timed_out=True, reason_code="NO_NEW_TAB",
+                          hint="No new tab appeared: the page may have blocked the popup or navigated in place "
+                               "(wait for=url_change instead).")
+        cancellable_sleep(poll_s)
+
+
 def _wait_action(
     settings: Settings,
     browser: str,
@@ -3680,7 +3741,9 @@ def _wait_action(
     tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Prefer in-page event wakeups; preserve bounded polling as a fallback."""
-    kind = str(action.get("for") or action.get("condition") or "selector").lower().strip()
+    kind = _wait_kind(action)
+    if kind == "new_tab":
+        return _wait_new_tab(browser, action, tab_handle)
     if kind not in {"selector", "text", "semantic", "element_removed", "url_change", "dom_stable", "network_idle"}:
         return _wait_action_polling(
             settings, browser, action, window_index, tab_index, initial_url, tab_handle,
@@ -3986,6 +4049,13 @@ def _browser_act_locked(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")
 
     window_index, tab_index = _resolve_tab_target(browser, tab_handle, window_index, tab_index)
+    if any(item["type"] == "wait" and _wait_kind(item) == "new_tab" for item in actions):
+        # A popup is recognized by a handle that did not exist before the batch.
+        before = sorted(str(row.get("tab_handle") or "") for row in browser_tabs.list_tabs(browser))
+        actions = [
+            {**item, "_tabs_before": before} if item["type"] == "wait" and _wait_kind(item) == "new_tab" else item
+            for item in actions
+        ]
 
     cancellation_checkpoint()
     started = time.perf_counter()

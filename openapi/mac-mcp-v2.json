@@ -3407,7 +3407,11 @@
                           "type": "number"
                         },
                         "for": {
-                          "description": "wait: selector (default), text, element_removed, url_change, network_idle, dom_stable.",
+                          "description": "wait: selector (default), text, element_removed, url_change, network_idle, dom_stable, new_tab (a tab the page opened; returns its tab_handle).",
+                          "type": "string"
+                        },
+                        "url_contains": {
+                          "description": "wait for=new_tab: only a new tab whose URL contains this.",
                           "type": "string"
                         },
                         "selector": {

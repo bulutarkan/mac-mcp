@@ -159,7 +159,9 @@ BROWSER_ACT_DESCRIPTION = (
     "When every item repeats the same controls (a Reply under each comment), give each action within='a phrase unique to that item' "
     "(or within_element_id): matches are limited to that item, nearest first, and a phrase found in several items fails as "
     "WITHIN_ANCHOR_AMBIGUOUS instead of guessing. Reply flows fit one call: click Reply within X -> type into role=textbox within X "
-    "-> click the submit control within X with role=button (a same-named link may be a bookmark) -> wait for the posted text."
+    "-> click the submit control within X with role=button (a same-named link may be a bookmark) -> wait for the posted text. "
+    "A click that opens a popup or target=_blank tab: follow it with wait for='new_tab' (optional url_contains); it returns "
+    "the new tab_handle without activating it, or ambiguous_new_tabs / NO_NEW_TAB."
 )
 
 _BROWSER_DO_OUTPUT_BUDGET_BYTES = 8_192
