@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import fcntl
 import plistlib
 import re
 import signal
@@ -52,6 +53,7 @@ from .update_helper import (
     resolve_paths as resolve_update_paths, secure_bootstrap_update_blocker,
     validate_update_state,
 )
+from . import supervisor
 from .tools_update import launch_detached_update
 from .update_state import UpdateInProgress
 from .log_retention import log_limits, managed_logs, rotate_copy_truncate, tail_log, update_logs_dir
@@ -359,7 +361,29 @@ def _resolve_server_identity(
 
 
 def _start_server(args: argparse.Namespace) -> int:
+    """Start (or adopt) the server under a start lock, so concurrent starts yield one server."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(STATE_DIR / "server-start.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        deadline = time.monotonic() + _startup_health_timeout_s() + 15
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    print("Another mac-mcp start is still in progress; not starting a second server.")
+                    return 1
+                time.sleep(0.2)
+        code = _start_server_locked(args)
+    finally:
+        os.close(fd)
+    if code == 0:
+        _ensure_supervisor()
+    return code
+
+
+def _start_server_locked(args: argparse.Namespace) -> int:
     port = int(args.port)
 
     validation = _validate_managed_pid(PID_FILE, "mac-mcp")
@@ -511,6 +535,123 @@ def _start_server(args: argparse.Namespace) -> int:
     print(f"mac-mcp log: {LOG_FILE}")
     _launch_menu_app()
     return 0
+
+
+SUPERVISOR_LABEL = "com.macmcp.supervisor"
+SUPERVISOR_INTERVAL_S = 30
+DEFAULT_STATE_DIR = Path.home() / ".mac-mcp"
+
+
+def _supervisor_enabled() -> bool:
+    return os.getenv("MAC_MCP_SUPERVISOR", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _record_intent(desired: str, args: argparse.Namespace | None) -> None:
+    try:
+        supervisor.write_intent(
+            desired, start_args=_lifecycle_flags(args) if args is not None else None, root=STATE_DIR,
+        )
+    except OSError as exc:
+        print(f"Warning: could not record the server intent ({type(exc).__name__}).")
+
+
+def _supervisor_plist_path() -> Path:
+    return STATE_DIR / "supervisor.plist"
+
+
+def _supervisor_payload() -> dict:
+    return {
+        "Label": SUPERVISOR_LABEL,
+        "ProgramArguments": [
+            "/usr/bin/env",
+            f"MAC_MCP_STATE_DIR={STATE_DIR}",
+            f"PYTHONPATH={PROJECT_ROOT}",
+            f"PATH={os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')}",
+            sys.executable, "-m", "mcp_server.supervisor",
+        ],
+        "StartInterval": SUPERVISOR_INTERVAL_S,
+        "RunAtLoad": False,
+        "ProcessType": "Background",
+        "WorkingDirectory": str(PROJECT_ROOT),
+        "StandardOutPath": str(STATE_DIR / "supervisor.log"),
+        "StandardErrorPath": str(STATE_DIR / "supervisor.log"),
+        "Umask": 0o077,
+    }
+
+
+def _supervisor_loaded() -> bool:
+    try:
+        return _launchctl_run("print", _launchctl_target(SUPERVISOR_LABEL), capture=True, timeout=3.0).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _ensure_supervisor() -> None:
+    """Load the crash supervisor for the default installation (idempotent).
+
+    The plist lives in the state folder, not ~/Library/LaunchAgents, so it does
+    not start anything at login by itself; `mac-mcp start` loads it.
+    """
+    if STATE_DIR.resolve() != DEFAULT_STATE_DIR.resolve():
+        return
+    if not _supervisor_enabled():
+        if _supervisor_loaded():
+            _launchctl_run("bootout", _launchctl_target(SUPERVISOR_LABEL), capture=True)
+        return
+    payload = _supervisor_payload()
+    path = _supervisor_plist_path()
+    try:
+        current = plistlib.loads(path.read_bytes()) if path.exists() else None
+    except (OSError, plistlib.InvalidFileException):
+        current = None
+    loaded = _supervisor_loaded()
+    if loaded and current == payload:
+        return
+    try:
+        if loaded:
+            _launchctl_run("bootout", _launchctl_target(SUPERVISOR_LABEL), capture=True)
+        tmp = path.with_name(f".{path.name}.tmp")
+        with tmp.open("wb") as handle:
+            plistlib.dump(payload, handle, fmt=plistlib.FMT_XML, sort_keys=True)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+        proc = _launchctl_run("bootstrap", f"gui/{os.getuid()}", str(path), capture=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"Warning: crash supervisor could not be loaded ({type(exc).__name__}).")
+        return
+    if proc.returncode != 0:
+        print(f"Warning: crash supervisor could not be loaded: {(proc.stderr or proc.stdout or '').strip()}")
+
+
+def supervisor_report() -> dict:
+    state = supervisor.read_state(STATE_DIR)
+    intent = supervisor.read_intent(STATE_DIR)
+    return {
+        "enabled": _supervisor_enabled(),
+        "loaded": _supervisor_loaded(),
+        "intent": intent.get("desired"),
+        "last_check_at": state.get("last_check_at"),
+        "last_result": state.get("last_result"),
+        "last_recovery": {
+            key: value for key, value in (state.get("last_recovery") or {}).items() if key != "log_tail"
+        } or None,
+        "backoff_until": state.get("backoff_until") if state.get("last_result") == "backoff" else None,
+    }
+
+
+def _format_supervision(report: dict) -> str:
+    if not report.get("enabled"):
+        return "crash supervisor: disabled (MAC_MCP_SUPERVISOR=0)"
+    if not report.get("loaded"):
+        return "crash supervisor: not loaded (mac-mcp start loads it)"
+    line = f"crash supervisor: watching (intent {report.get('intent') or 'unknown'})"
+    recovery = report.get("last_recovery") or {}
+    if recovery:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(recovery.get("at") or 0)))
+        line += f"; last recovery {when}: {recovery.get('reason')} -> {recovery.get('result')}"
+    if report.get("backoff_until"):
+        line += "; backing off after repeated failures"
+    return line
 
 
 def _default_port() -> int:
@@ -1004,6 +1145,7 @@ def start(args: argparse.Namespace) -> int:
     except RuntimeError as exc:
         print(f"Security bootstrap error: {exc}")
         return 2
+    _record_intent("running", args)
     server_code = _start_server(args)
     if server_code != 0:
         return server_code
@@ -1021,6 +1163,9 @@ def start(args: argparse.Namespace) -> int:
 
 def stop(args: argparse.Namespace) -> int:
     _load_env()
+    if not getattr(args, "keep_intent", False):
+        # Before stopping anything, so the supervisor never undoes this stop.
+        _record_intent("stopped", None)
     port = _default_port()
     server_pid, server_source = _resolve_server_identity(port)
     if server_pid:
@@ -1301,6 +1446,9 @@ def status(args: argparse.Namespace) -> int:
     else:
         state, code = "healthy", 0
 
+    supervision = supervisor_report()
+    say(_format_supervision(supervision))
+
     if getattr(args, "json", False):
         tunnel_pid = cloudflare_pid if public is not None and public.mode == "cloudflare" else (
             ngrok_pid if public is not None and public.mode == "ngrok" else None)
@@ -1333,6 +1481,7 @@ def status(args: argparse.Namespace) -> int:
                 "error": public_error,
             },
             "stray_processes": stray,
+            "supervisor": supervision,
             "remediation": remediation,
         }
         sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
@@ -1364,13 +1513,9 @@ def _write_restart_status(state: str, **details: object) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def _restart_handoff_command(args: argparse.Namespace) -> list[str]:
-    command = [
-        sys.executable, "-m", "mcp_server.cli", "restart",
-        "--host", str(args.host),
-        "--port", str(int(args.port)),
-        "--timeout", str(float(args.timeout)),
-    ]
+def _lifecycle_flags(args: argparse.Namespace) -> list[str]:
+    """Start flags that reproduce this lifecycle request (no secrets: paths and modes only)."""
+    command = ["--host", str(args.host), "--port", str(int(args.port))]
     if getattr(args, "reload", False):
         command.append("--reload")
     for flag, attr in (
@@ -1388,6 +1533,14 @@ def _restart_handoff_command(args: argparse.Namespace) -> list[str]:
     if getattr(args, "ngrok", False):
         command.append("--ngrok")
     return command
+
+
+def _restart_handoff_command(args: argparse.Namespace) -> list[str]:
+    return [
+        sys.executable, "-m", "mcp_server.cli", "restart",
+        "--timeout", str(float(args.timeout)),
+        *_lifecycle_flags(args),
+    ]
 
 
 def _restart_handoff_job() -> tuple[bool, int | None]:
@@ -1742,7 +1895,7 @@ def restart(args: argparse.Namespace) -> int:
         target_server_pid=target_server_pid,
         target_source=target_source,
     )
-    stop_args = argparse.Namespace(timeout=args.timeout, force=True)
+    stop_args = argparse.Namespace(timeout=args.timeout, force=True, keep_intent=True)
     stop_code = stop(stop_args)
     if stop_code != 0:
         _write_restart_status("failed", stage="stop", exit_code=stop_code, helper_pid=os.getpid())
@@ -2044,6 +2197,8 @@ def main(argv: list[str] | None = None) -> int:
     p_stop = sub.add_parser("stop", help="Stop the local server and any managed public tunnel.")
     p_stop.add_argument("--timeout", type=float, default=5)
     p_stop.add_argument("--force", action="store_true")
+    # Internal: the supervisor's own stop before a restart keeps the "running" intent.
+    p_stop.add_argument("--keep-intent", action="store_true", help=argparse.SUPPRESS)
     p_stop.set_defaults(func=stop)
 
     p_restart = sub.add_parser("restart", help="Restart the local server and apply the configured public endpoint mode.")

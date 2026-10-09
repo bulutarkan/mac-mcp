@@ -395,6 +395,51 @@ def _check_agent_worktrees() -> CheckResult:
     )
 
 
+def _check_server_supervisor() -> CheckResult:
+    """Whether the crash supervisor is loaded, and what its last pass and recovery did."""
+    started = time.perf_counter()
+    from . import supervisor
+
+    root = state_dir()
+    intent = supervisor.read_intent(root)
+    state = supervisor.read_state(root)
+    try:
+        loaded = subprocess.run(
+            ["/bin/launchctl", "print", f"gui/{os.getuid()}/com.macmcp.supervisor"],
+            capture_output=True, timeout=3,
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        loaded = False
+    recovery = {k: v for k, v in (state.get("last_recovery") or {}).items() if k != "log_tail"}
+    details = {
+        "loaded": loaded,
+        "intent": intent.get("desired"),
+        "last_result": state.get("last_result"),
+        "last_check_age_s": round(time.time() - float(state["last_check_at"]), 1) if state.get("last_check_at") else None,
+        "last_recovery": recovery or None,
+    }
+    if os.getenv("MAC_MCP_SUPERVISOR", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return result("server.supervisor", "server", INFO, "SUPERVISOR_DISABLED",
+                      "Crash supervision is turned off (MAC_MCP_SUPERVISOR=0).", started=started, details=details)
+    if intent.get("desired") != "running":
+        return result("server.supervisor", "server", INFO, "SUPERVISOR_IDLE",
+                      "The server was stopped on purpose; the supervisor will not start it.", started=started,
+                      details=details)
+    if not loaded:
+        return result("server.supervisor", "server", WARN, "SUPERVISOR_NOT_LOADED",
+                      "The server is not supervised: if it crashes, nothing restarts it.", started=started,
+                      remediation="Run `mac-mcp start` (or restart) to load the crash supervisor.", details=details)
+    if state.get("last_result") in {"backoff", "recovery_failed"}:
+        return result("server.supervisor", "server", WARN, "SUPERVISOR_RECOVERY_FAILING",
+                      "The supervisor could not bring the server back; it is backing off.", started=started,
+                      remediation="Run `mac-mcp doctor` and `mac-mcp logs server`, fix the cause, then `mac-mcp start`.",
+                      details=details)
+    summary = "The crash supervisor is watching the server."
+    if recovery:
+        summary += f" Last recovery: {recovery.get('reason')} -> {recovery.get('result')}."
+    return result("server.supervisor", "server", PASS, "SUPERVISOR_ACTIVE", summary, started=started, details=details)
+
+
 def _check_settings() -> CheckResult:
     started = time.perf_counter()
     path = settings_path()
@@ -1355,6 +1400,7 @@ def doctor_checks() -> list[CheckResult]:
         _check_update_recovery_state,
         _check_update_storage,
         _check_agent_worktrees,
+        _check_server_supervisor,
         _check_settings,
         _check_permission_profile_scope,
         _check_permission_coherence,
