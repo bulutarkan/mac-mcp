@@ -73,6 +73,8 @@ REGISTRY: Dict[str, ErrorSpec] = {
     "tab_owned_by_other_agent": ErrorSpec("preflight", "not_executed", "safe_retry", 409),
     "stable_tab_handle_required": _VALIDATION,
     "tab_target_required": _VALIDATION,
+    # The Chrome companion is disconnected: the request was never sent.
+    "chrome_background_transport_unavailable": ErrorSpec("preflight", "not_executed", "safe_retry", 409),
     "provider_incompatible": ErrorSpec("preflight", "not_executed", "never_retry", 409),
     "outcome_unknown": ErrorSpec("execution", "unknown", "observe_again", 409),
     "timeout": ErrorSpec("execution", "unknown", "observe_again", 504),

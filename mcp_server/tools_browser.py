@@ -1365,8 +1365,16 @@ def _execute_js_for_target(
             # Chrome refuses a debugger on a tab that holds another extension's frame
             # (password managers on sign-in pages). Apple Events JavaScript still runs
             # in the background there, so use it when the user allowed it.
-            if not _is_foreign_extension_frame_error(exc) or _CHROME_NATIVE_JS_DENIED:
+            if not _is_foreign_extension_frame_error(exc):
                 raise
+            if _CHROME_NATIVE_JS_DENIED:
+                detail = dict(exc.detail) if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+                detail.update(
+                    error="chrome_foreign_extension_frame", fallback="apple_events_javascript_denied",
+                    message="Another extension's frame (e.g. a password manager) blocks the companion on this tab, "
+                            "and Chrome's Allow JavaScript from Apple Events is off.",
+                )
+                raise HTTPException(exc.status_code, detail) from exc
     if browser == "Google Chrome" and _CHROME_NATIVE_JS_DENIED:
         return _chrome_execute_js_via_url_bridge(js, target, timeout_s)
     js_escaped = _js_escape(js)
