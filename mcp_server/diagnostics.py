@@ -455,19 +455,19 @@ def _check_runtime_python() -> CheckResult:
     report = inspect_venv(runtime)
     repair = f"python3 {runtime / 'mcp_server' / 'venv_repair.py'} repair"
     if report["status"] == "missing":
-        return result("runtime.python", "runtime", INFO, "RUNTIME_VENV_ABSENT",
+        return result("runtime.venv", "runtime", INFO, "RUNTIME_VENV_ABSENT",
                       "This checkout has no runtime virtual environment.", started=started, details=report)
     if report["status"] != "ok":
-        return result("runtime.python", "runtime", FAIL, "RUNTIME_VENV_BROKEN",
+        return result("runtime.venv", "runtime", FAIL, "RUNTIME_VENV_BROKEN",
                       f"The runtime virtual environment is unusable ({report['status']}).", started=started,
                       remediation=f"Rebuild it safely with: {repair}", details=report)
     if report["pinned_to_versioned_path"]:
-        return result("runtime.python", "runtime", WARN, "RUNTIME_VENV_FRAGILE",
+        return result("runtime.venv", "runtime", WARN, "RUNTIME_VENV_FRAGILE",
                       "The runtime venv points at a versioned Homebrew Python path, which the next "
                       "Python upgrade removes.", started=started,
                       remediation=f"Rebuild it on Homebrew's stable opt/ path with: {repair} --force",
                       details=report)
-    return result("runtime.python", "runtime", PASS, "RUNTIME_VENV_OK",
+    return result("runtime.venv", "runtime", PASS, "RUNTIME_VENV_OK",
                   f"Runtime Python {report.get('version')} ({report.get('machine')}) is present.",
                   started=started, details=report)
 

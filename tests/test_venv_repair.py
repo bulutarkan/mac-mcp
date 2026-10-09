@@ -122,5 +122,16 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("venv_repair.py repair", proc.stderr)
 
 
+class DoctorIdTests(unittest.TestCase):
+    def test_every_doctor_check_has_a_unique_id(self) -> None:
+        from mcp_server import diagnostics
+
+        with patch.object(diagnostics.subprocess, "run", side_effect=OSError("no subprocesses in this test")):
+            ids = [check.check_id for check in diagnostics.doctor_checks()]
+        duplicates = sorted({check_id for check_id in ids if ids.count(check_id) > 1})
+        self.assertEqual([], duplicates)
+        self.assertIn("runtime.venv", ids)
+
+
 if __name__ == "__main__":
     unittest.main()
