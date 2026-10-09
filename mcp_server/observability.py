@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import contextvars
 import json
 import logging
 import os
+import queue
 import re
 import sqlite3
 import threading
@@ -163,6 +165,27 @@ def _omit_private_answers(tool: str, arguments: Any, result: Any) -> Any:
     if tool == "ask_user_voice" and isinstance(result, dict) and result.get("response"):
         return {**result, "response": _TRANSCRIPT_PLACEHOLDER}
     return result
+
+
+# Small on purpose: a full queue makes callers write inline, which bounds how
+# far dashboard events can lag (~12 large events) instead of letting a backlog grow.
+FINISH_QUEUE_SIZE = 12
+FINISH_WORKER_IDLE_EXIT_S = 30.0
+
+
+def _snapshot_containers(value: Any, depth: int = 0) -> Any:
+    """Copy dict/list containers so a queued result cannot change before it is sanitized.
+
+    Leaves (strings, numbers, bytes, models) are shared; the expensive
+    redaction still runs later on the telemetry writer thread.
+    """
+    if depth > 13:
+        return value
+    if isinstance(value, dict):
+        return {key: _snapshot_containers(item, depth + 1) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_snapshot_containers(item, depth + 1) for item in value]
+    return value
 
 
 def sanitize_value(value: Any, *, key: Optional[str] = None, preview_chars: int = DEFAULT_PREVIEW_CHARS,
@@ -340,6 +363,7 @@ class TelemetryManager:
         max_events: Optional[int] = None,
         preview_chars: Optional[int] = None,
         usage_enabled: Optional[bool] = None,
+        async_writes: Optional[bool] = None,
     ) -> None:
         self.started_at = time.time()
         telemetry_dir = Path(os.getenv("MAC_MCP_TELEMETRY_DIR", str(DEFAULT_TELEMETRY_DIR))).expanduser()
@@ -367,6 +391,14 @@ class TelemetryManager:
         # lifecycle deterministic unless usage collection is explicitly requested.
         effective_usage_enabled = (db_path is None) if usage_enabled is None else bool(usage_enabled)
         self._usage = UsageCollector(self.db_path, enabled=effective_usage_enabled)
+        # Finished-call events are sanitized and written off the response path
+        # (explicit db_path callers stay synchronous unless they ask). Security
+        # events and the audit log are always written synchronously.
+        self._async_writes = (db_path is None) if async_writes is None else bool(async_writes)
+        self._finish_queue: queue.Queue[tuple] = queue.Queue(maxsize=FINISH_QUEUE_SIZE)
+        self._finish_worker: Optional[threading.Thread] = None
+        if self._async_writes:
+            atexit.register(self.wait_events_idle, 2.0)
         self._load_recent()
 
     def _connect(self) -> sqlite3.Connection:
@@ -591,6 +623,56 @@ class TelemetryManager:
             usage_arguments = self._usage_arguments.pop(event_id, None)
         if started_event is None:
             return {"event_id": event_id, "status": "unknown"}
+        job = (event_id, started_event, usage_arguments, _snapshot_containers(result), error, dict(metadata or {}), ended)
+        if self._async_writes:
+            try:
+                self._finish_queue.put_nowait(job)
+            except queue.Full:
+                # Never drop an event: a saturated writer means writing inline.
+                return self._complete_call(*job)
+            self._ensure_finish_worker()
+            return {"event_id": event_id, "status": normalize_result_status(result, error), "queued": True}
+        return self._complete_call(*job)
+
+    def _ensure_finish_worker(self) -> None:
+        with self._lock:
+            if self._finish_worker is not None and self._finish_worker.is_alive():
+                return
+            self._finish_worker = threading.Thread(
+                target=self._finish_worker_loop, name="mac-mcp-telemetry", daemon=True,
+            )
+            self._finish_worker.start()
+
+    def _finish_worker_loop(self) -> None:
+        while True:
+            try:
+                job = self._finish_queue.get(timeout=FINISH_WORKER_IDLE_EXIT_S)
+            except queue.Empty:
+                return
+            try:
+                self._complete_call(*job)
+            except Exception:
+                logging.getLogger(__name__).exception("telemetry event write failed")
+            finally:
+                self._finish_queue.task_done()
+
+    def wait_events_idle(self, timeout_s: float = 2.0) -> bool:
+        """Wait until queued finished-call events are written (shutdown, tests)."""
+        deadline = time.monotonic() + max(0.01, float(timeout_s))
+        while self._finish_queue.unfinished_tasks and time.monotonic() < deadline:
+            time.sleep(0.005)
+        return self._finish_queue.unfinished_tasks == 0
+
+    def _complete_call(
+        self,
+        event_id: str,
+        started_event: Dict[str, Any],
+        usage_arguments: Any,
+        result: Any,
+        error: Optional[BaseException | str],
+        metadata: Dict[str, Any],
+        ended: float,
+    ) -> Dict[str, Any]:
         telemetry_result = _omit_private_answers(str(started_event.get("tool") or ""), started_event.get("arguments") or {}, result)
         if error is None:
             telemetry_result = redact_sensitive_source_result(
