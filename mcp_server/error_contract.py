@@ -159,7 +159,7 @@ def describe(exc: BaseException, *, tool: Optional[str] = None, mutating: bool =
         retry = "observe_again"
     contract = {
         "code": code, "stage": spec.stage, "outcome": outcome, "retry": retry,
-        "http_status": status or spec.http_status, "message": _message(exc)[:500],
+        "http_status": status or spec.http_status, "message": _message(http or exc)[:500],
     }
     if tool:
         contract["tool"] = tool

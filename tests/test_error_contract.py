@@ -111,6 +111,7 @@ class TransportParityTests(unittest.TestCase):
         invoke = self._invoke_error("get_job_status", {"job_id": "job_does_not_exist"})
         rest = self._rest_error("/api/jobs/status", {"job_id": "job_does_not_exist"}, 404)
         self.assertEqual("not_found", mcp["code"])
+        self.assertEqual("Job not found: job_does_not_exist", mcp["message"])
         self.assertEqual("fix_arguments", mcp["retry"])
         self.assertEqual(_key(mcp), _key(invoke))
         self.assertEqual(_key(mcp), _key(rest))
