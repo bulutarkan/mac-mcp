@@ -63,6 +63,15 @@ class FrameRoutingTests(unittest.TestCase):
         self.assertEqual({"selector": "pay.example", "url": "https://pay.example/card"}, out["frame"])
         with self.assertRaises(HTTPException):
             agent.browser_observe(None, "Google Chrome", tab_handle="t", visual="viewport", frame="pay.example")
+        # Observations are compact JSON text; the frame is added there too.
+        import json as _json
+        with patch.object(agent, "_browser_observe_impl", return_value='{"ok":true,"url":"https://pay.example/card"}'):
+            text = agent.browser_observe(None, "Google Chrome", tab_handle="t", frame="pay.example")
+        self.assertEqual("pay.example", _json.loads(text)["frame"]["selector"])
+        with patch.object(agent, "_browser_act_impl", return_value={"ok": True, "progress": {"url": "https://pay.example/x"}}):
+            acted = agent.browser_act(None, "Google Chrome", [{"type": "click", "query": "Pay"}], tab_handle="t",
+                                      frame="pay.example")
+        self.assertEqual("https://pay.example/x", acted["frame"]["url"])
         with patch.object(agent, "_browser_act_impl", return_value={"ok": True}) as act:
             agent.browser_act(None, "Google Chrome", [{"type": "click", "query": "Pay"}], tab_handle="t")
         self.assertNotIn("frame", act.return_value)

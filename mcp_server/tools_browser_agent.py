@@ -1378,8 +1378,17 @@ var canvasHint=(function(){{var vw=innerWidth*innerHeight,best=null,area=0;
     hint:'Controls are drawn in a canvas: observe with visual=viewport, then browser_act click/hover with x,y (viewport CSS px) and this observation_id; keys with input_mode=trusted.'}};}})();
 var metrics={{screenX:screenX,screenY:screenY,outerWidth:outerWidth,outerHeight:outerHeight,innerWidth:innerWidth,innerHeight:innerHeight,devicePixelRatio:devicePixelRatio}};
 // Child frames: same-origin ones are already walked above; cross-origin ones are named so they are not silently missing.
-var frameList=(function(){{var out=[];Array.from(document.querySelectorAll('iframe,frame')).slice(0,30).forEach(function(f){{
-  if(out.length>=15||!__mcpVisible(f))return;var r=f.getBoundingClientRect(),src=String(f.src||''),same=false;
+var frameList=(function(){{var out=[],found=[],scanned=0;
+  // Frames can sit inside open shadow roots (web components) and below the fold; find both, bounded.
+  (function collect(root,depth){{
+    try{{Array.from(root.querySelectorAll('iframe,frame')).forEach(function(f){{if(found.length<30)found.push(f);}});}}catch(e){{}}
+    if(depth>=4||found.length>=30)return;
+    var all=[];try{{all=root.querySelectorAll('*');}}catch(e){{}}
+    for(var i=0;i<all.length&&scanned<4000;i++){{scanned++;if(all[i].shadowRoot)collect(all[i].shadowRoot,depth+1);}}
+  }})(document,0);
+  found.forEach(function(f){{
+  var shown=false;try{{var st=getComputedStyle(f),fr=f.getBoundingClientRect();shown=st.display!=='none'&&st.visibility!=='hidden'&&fr.width>0&&fr.height>0;}}catch(e){{}}
+  if(out.length>=15||!shown)return;var r=f.getBoundingClientRect(),src=String(f.src||''),same=false;
   try{{same=!!(f.contentDocument&&f.contentDocument.documentElement);}}catch(e){{same=false;}}
   var origin='';try{{origin=src?new URL(src,location.href).origin:'';}}catch(e){{}}
   out.push({{element_id:__mcpId(f,s),origin:origin,src:src.slice(0,160),title:String(f.title||f.name||'').slice(0,80),
@@ -5064,8 +5073,25 @@ def _in_frame(frame: Optional[str], call: Callable[[], Any]) -> Any:
         return call()
     with frame_scope(frame):
         out = call()
+
+    def tag(payload: Dict[str, Any]) -> Dict[str, Any]:
+        progress = payload.get("progress") if isinstance(payload.get("progress"), dict) else {}
+        payload["frame"] = {"selector": str(frame).strip(), "url": payload.get("url") or progress.get("url")}
+        return payload
+
+    # Observations come back as compact JSON text (or [text, image]); actions as a dict.
     if isinstance(out, dict):
-        out["frame"] = {"selector": str(frame).strip(), "url": out.get("url")}
+        return tag(out)
+    if isinstance(out, str) or (isinstance(out, list) and out and isinstance(out[0], str)):
+        text = out if isinstance(out, str) else out[0]
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            return out
+        if not isinstance(payload, dict):
+            return out
+        tagged = json.dumps(tag(payload), ensure_ascii=False, separators=(",", ":"))
+        return tagged if isinstance(out, str) else [tagged, *out[1:]]
     return out
 
 
