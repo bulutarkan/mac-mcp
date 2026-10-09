@@ -36,6 +36,12 @@ def launcher_text(runtime: Path) -> str:
         '  printf \'%s\\n\' "mac-mcp: set MAC_MCP_RUNTIME_DIR or reinstall Mac MCP." >&2\n'
         "  exit 127\n"
         "fi\n"
+        # -e follows the venv's python symlink: false once its base Python was removed.
+        'if [ ! -e "$runtime/.venv/bin/python" ]; then\n'
+        '  printf \'%s\\n\' "mac-mcp: the runtime Python is gone (probably removed by a Homebrew or macOS upgrade)." >&2\n'
+        '  printf \'%s\\n\' "mac-mcp: repair it with: python3 $runtime/mcp_server/venv_repair.py repair" >&2\n'
+        "  exit 70\n"
+        "fi\n"
         'exec "$entry" "$@"\n'
     )
 

@@ -22,6 +22,8 @@ class CliErgonomicsTests(unittest.TestCase):
         entry.parent.mkdir(parents=True)
         entry.write_text("#!/bin/sh\nprintf 'delegated:%s\\n' \"$*\"\n", encoding="utf-8")
         os.chmod(entry, 0o755)
+        # A real venv's python links to its base interpreter; the launcher checks it.
+        os.symlink(sys.executable, entry.parent / "python")
         return runtime
 
     def test_launcher_is_regular_executable_and_works_without_path(self) -> None:

@@ -446,6 +446,32 @@ def _check_server_supervisor() -> CheckResult:
     return result("server.supervisor", "server", PASS, "SUPERVISOR_ACTIVE", summary, started=started, details=details)
 
 
+def _check_runtime_python() -> CheckResult:
+    """The runtime venv's interpreter: present, supported, right architecture, and not on a fragile path."""
+    started = time.perf_counter()
+    from .venv_repair import inspect_venv
+
+    runtime = Path(__file__).resolve().parent.parent
+    report = inspect_venv(runtime)
+    repair = f"python3 {runtime / 'mcp_server' / 'venv_repair.py'} repair"
+    if report["status"] == "missing":
+        return result("runtime.python", "runtime", INFO, "RUNTIME_VENV_ABSENT",
+                      "This checkout has no runtime virtual environment.", started=started, details=report)
+    if report["status"] != "ok":
+        return result("runtime.python", "runtime", FAIL, "RUNTIME_VENV_BROKEN",
+                      f"The runtime virtual environment is unusable ({report['status']}).", started=started,
+                      remediation=f"Rebuild it safely with: {repair}", details=report)
+    if report["pinned_to_versioned_path"]:
+        return result("runtime.python", "runtime", WARN, "RUNTIME_VENV_FRAGILE",
+                      "The runtime venv points at a versioned Homebrew Python path, which the next "
+                      "Python upgrade removes.", started=started,
+                      remediation=f"Rebuild it on Homebrew's stable opt/ path with: {repair} --force",
+                      details=report)
+    return result("runtime.python", "runtime", PASS, "RUNTIME_VENV_OK",
+                  f"Runtime Python {report.get('version')} ({report.get('machine')}) is present.",
+                  started=started, details=report)
+
+
 def _check_settings() -> CheckResult:
     started = time.perf_counter()
     path = settings_path()
@@ -1407,6 +1433,7 @@ def doctor_checks() -> list[CheckResult]:
         _check_update_storage,
         _check_agent_worktrees,
         _check_server_supervisor,
+        _check_runtime_python,
         _check_settings,
         _check_permission_profile_scope,
         _check_permission_coherence,

@@ -55,6 +55,7 @@ from .update_helper import (
     validate_update_state,
 )
 from . import supervisor
+from .venv_repair import inspect_venv
 from .tools_update import launch_detached_update
 from .update_state import UpdateInProgress
 from .log_retention import log_limits, managed_logs, rotate_copy_truncate, tail_log, update_logs_dir
@@ -1845,6 +1846,13 @@ def _restart_preflight(args: argparse.Namespace) -> str | None:
         return "cloudflared is not installed"
     if public.mode == "ngrok" and not _resolve_ngrok_binary(getattr(args, "ngrok_bin", None)):
         return "ngrok is not installed"
+    if Path(sys.prefix).resolve() == (PROJECT_ROOT / ".venv").resolve():
+        venv = inspect_venv(PROJECT_ROOT)
+        if venv["status"] != "ok":
+            return (
+                f"runtime Python environment is {venv['status']}; repair it with: "
+                f"python3 {PROJECT_ROOT / 'mcp_server' / 'venv_repair.py'} repair"
+            )
     try:
         probe = subprocess.run(
             [sys.executable, "-c", "import uvicorn, fastapi, mcp, httpx"],

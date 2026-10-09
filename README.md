@@ -387,7 +387,7 @@ Permissions are read from the running server, because macOS records consent for 
 
 The same checks are in the app under **Settings → Help & Diagnostics**: run or recheck diagnostics, use the fix button next to each problem (restart, open the right setting or System Settings pane, view the redacted log), export a support report after seeing what it contains, view the server or tunnel log, copy version information, and open the documentation, issue form or private security policy. Nothing is sent anywhere automatically.
 
-`mac-mcp status --json` prints one object for scripts: `ok`, `state`, `exit_code`, `server` (`running`, `pid`, `identity`, `port`, `health` from the local `/health` route), `public_endpoint` (`mode`, `url`, `tunnel_running`, `error`), `stray_processes` and `remediation`. `state` tells the cases apart: `healthy`, `stopped`, `port_conflict`, `ownership_unverified`, `unresponsive` (process alive but `/health` does not answer), `degraded` (selected tunnel not running) and `config_error` (public endpoint settings invalid). `doctor --json` carries the same `exit_code` field.
+`mac-mcp status --json` prints one object for scripts: `ok`, `state`, `exit_code`, `server` (`running`, `pid`, `identity`, `port`, `health` from the local `/health` route), `public_endpoint` (`mode`, `url`, `tunnel_running`, `route` — whether the public `/health` answers — and `error`), `stray_processes`, `supervisor` and `remediation`. `state` tells the cases apart: `healthy`, `stopped`, `port_conflict`, `ownership_unverified`, `unresponsive` (process alive but `/health` does not answer), `degraded` (selected tunnel not running, or running while its public route does not answer) and `config_error` (public endpoint settings invalid). `doctor --json` carries the same `exit_code` field.
 
 CLI exit codes are a stable contract:
 
@@ -395,8 +395,9 @@ CLI exit codes are a stable contract:
 |---|---|---|---|---|
 | `status` | healthy | server stopped, unverified, port taken or not answering `/health` | public endpoint unavailable or misconfigured (0 with `--local-only`) | — |
 | `doctor` | all checks pass | a check failed | — | — |
-| `start` | started | could not start (for example port conflict) | invalid configuration or security bootstrap error | — |
+| `start` | started | could not start (for example port conflict) | invalid configuration or security bootstrap error | ngrok started but its public `/health` does not answer yet |
 | `stop` / `restart` | done | a component did not stop or come back healthy | — | — |
+| `restart --wait` | restarted and healthy | restart failed, or only the public endpoint failed (degraded) | — | no outcome reported in time |
 | `update --check` | checked | check failed | local changes block updating | — |
 | `update` | updated or already current | update failed or was blocked | — | — |
 | `recipe run` | completed | failed | needs approval | server not running |
@@ -405,6 +406,21 @@ CLI exit codes are a stable contract:
 In short: 0 is success, 1 is an operational failure, 2 means a person has to act (configuration, approval, a degraded connector, or invalid command-line usage), and 3 means the server could not be reached.
 
 `mac-mcp logs [server|cloudflared|ngrok|audit|update] [-n LINES]` prints the last lines of one log with tokens, keys and credential values redacted; `mac-mcp logs --list` shows every log's size and the bounds. Server, `cloudflared` and `ngrok` logs rotate at 10 MB and keep three older files (`MAC_MCP_LOG_MAX_BYTES`, `MAC_MCP_LOG_BACKUPS`); rotation copies and truncates, so the running process keeps writing. The audit log (tool, outcome and duration only, `0600`) rotates at 5 MB with three older files, and only the newest 20 update logs are kept (`MAC_MCP_UPDATE_LOGS_KEPT`).
+
+**Crash supervision.** `mac-mcp start` records that the server should run and loads a small launchd job (`com.macmcp.supervisor`, every 30 seconds; its plist stays in `~/.mac-mcp`, so nothing new starts at login). If the server process is gone, or stops answering `/health` for four checks in a row, it is started again through the normal `mac-mcp start`; an exited ngrok tunnel is restarted the same way while the server keeps running. `mac-mcp stop` records the stop first, so the supervisor never undoes it, and the supervisor steps aside during updates and restarts. After three failed recoveries in 15 minutes it backs off. `mac-mcp status` and `doctor` (also **Settings → Help & Diagnostics**) show the last recovery and why; `MAC_MCP_SUPERVISOR=0` turns supervision off.
+
+**Restarts.** `mac-mcp restart` checks the configuration, the tunnel binary and the runtime Python before it stops anything, and leaves a working server alone if a check fails. If the new server does not come up, it retries once; the final state (`succeeded`, `degraded` when only the public endpoint failed, or `failed` with a repair command) is written to `~/.mac-mcp/restart-status.json`. `restart --wait` waits for that outcome, which is what the app's Restart button reports.
+
+**Updates.** Only one update runs at a time; a second request reports the running update's ID and status. The newest 10 runtime backups are kept (`MAC_MCP_UPDATE_BACKUPS_KEPT`), plus the one recovery needs, and each update removes scratch folders and worktrees left by an updater that was killed. Finished agents' worktrees with nothing left to review are removed after 7 days (`MAC_MCP_AGENT_WORKTREE_RETENTION_DAYS`, `0` keeps them); `doctor` shows backup and worktree disk use.
+
+**If the runtime Python disappears.** When a Homebrew or macOS upgrade removes the Python the runtime venv was built from, `mac-mcp` says so and prints the repair command instead of failing with "bad interpreter":
+
+```bash
+python3 ~/mac-mcp/mcp_server/venv_repair.py check
+python3 ~/mac-mcp/mcp_server/venv_repair.py repair
+```
+
+`repair` builds and verifies a new venv beside the old one with the newest supported Homebrew Python, swaps it in, keeps the old one as `.venv.previous-<timestamp>` and restores it if the new one fails its checks. `doctor` warns ahead of time when the venv points at a versioned Homebrew path that the next upgrade will remove.
 
 `mac-mcp conformance` runs the deterministic Computer Use regression lab. Its default suite is CI-safe and verifies contracts such as background browser behavior, explicit foreground fallbacks, stable tab identity, stale-handle rejection, render/element readiness, bounded action batches, and no-effect click handling. `--live` adds read-only checks against this Mac without clicking or typing in the user's applications.
 

@@ -4,7 +4,10 @@ import asyncio
 import json
 import shutil
 import tempfile
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10, the declared floor
+    tomllib = None
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -491,6 +494,7 @@ class DashboardSecurityTests(unittest.TestCase):
 
 
 class VersionTests(unittest.TestCase):
+    @unittest.skipIf(tomllib is None, "tomllib needs Python 3.11+")
     def test_runtime_and_package_versions_match(self) -> None:
         project = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
         self.assertEqual(project["project"]["version"], __version__)

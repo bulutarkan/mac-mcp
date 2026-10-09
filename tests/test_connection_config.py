@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10, the declared floor
+    tomllib = None
 import unittest
 from pathlib import Path
 from contextlib import redirect_stderr, redirect_stdout
@@ -21,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ConnectionConfigTemplateTests(unittest.TestCase):
+    @unittest.skipIf(tomllib is None, "tomllib needs Python 3.11+")
     def test_codex_toml_is_parseable_and_uses_env_token(self) -> None:
         rendered = render_connection_config(
             client="codex",
