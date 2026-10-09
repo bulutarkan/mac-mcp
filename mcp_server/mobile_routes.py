@@ -292,30 +292,40 @@ def create_mobile_routes(
         _session, denied = require_mobile(request)
         if denied is not None:
             return denied
+        # A failing source is reported as unavailable (null values), never as an
+        # empty or perfectly healthy system.
+        sources = {"agents": "ok", "telemetry": "ok", "connector": "ok"}
+        active_agents: Optional[int] = None
         try:
             agent_data = await asyncio.to_thread(list_agents, settings, limit=100)
-            agents = list(agent_data.get("agents", []))
+            active_agents = sum(
+                1 for row in agent_data.get("agents", []) if row.get("status") in {"starting", "running"}
+            )
         except Exception:
-            agents = []
+            sources["agents"] = "unavailable"
+        calls_1h: Optional[int] = None
+        success_rate: Optional[float] = None
         try:
             summary = telemetry.summary(1)
+            calls_1h = int(summary.get("total_calls") or 0)
+            success_rate = float(summary.get("success_rate") or 0.0) if calls_1h else None
         except Exception:
-            summary = {"total_calls": 0, "success_rate": 100.0}
+            sources["telemetry"] = "unavailable"
         try:
-            endpoint = resolve_public_endpoint()
-            connector = endpoint.mode
+            connector = resolve_public_endpoint().mode
         except Exception:
-            connector = "none"
+            connector = None
+            sources["connector"] = "unavailable"
         return JSONResponse({
             "ok": True,
             "server": "Mac MCP",
             "version": __version__,
             "connector": connector,
-            "calls_1h": int(summary.get("total_calls") or 0),
-            "success_rate": float(summary.get("success_rate") or 0.0),
-            "active_agents": sum(
-                1 for row in agents if row.get("status") in {"starting", "running"}
-            ),
+            "calls_1h": calls_1h,
+            "success_rate": success_rate,
+            "active_agents": active_agents,
+            "sources": sources,
+            "generated_at": time.time(),
         })
 
     async def agents_view(request: Request) -> Response:
@@ -330,9 +340,13 @@ def create_mobile_routes(
                 1 for row in all_rows if row.get("status") in {"starting", "running"}
             )
         except Exception:
-            rows, active_count = [], 0
+            return JSONResponse({
+                "ok": False, "available": False, "error": "agents_unavailable",
+                "count": None, "active_count": None, "agents": [],
+            })
         return JSONResponse({
             "ok": True,
+            "available": True,
             "count": len(rows),
             "active_count": active_count,
             "agents": rows,
@@ -345,19 +359,28 @@ def create_mobile_routes(
         if steering is None:
             return JSONResponse({
                 "ok": True,
+                "available": True,
                 "schema_version": STEERING_SCHEMA_VERSION,
                 "count": 0,
                 "sessions": [],
                 "recent": [],
                 "session_ttl_minutes": 10,
             })
-        rows = [_safe_session(row) for row in steering.sessions()[:12]]
-        recent = [
-            safe for safe in (_safe_recent_session(row) for row in steering.recent(30))
-            if safe is not None
-        ][:12]
+        try:
+            rows = [_safe_session(row) for row in steering.sessions()[:12]]
+            recent = [
+                safe for safe in (_safe_recent_session(row) for row in steering.recent(30))
+                if safe is not None
+            ][:12]
+        except Exception:
+            return JSONResponse({
+                "ok": False, "available": False, "error": "sessions_unavailable",
+                "schema_version": STEERING_SCHEMA_VERSION, "count": None, "sessions": [], "recent": [],
+                "session_ttl_minutes": steering.session_ttl_minutes,
+            })
         return JSONResponse({
             "ok": True,
+            "available": True,
             "schema_version": STEERING_SCHEMA_VERSION,
             "count": len(rows),
             "sessions": rows,
@@ -373,9 +396,12 @@ def create_mobile_routes(
             events = telemetry.query_events(hours=1, limit=12)
             active = telemetry.active_calls()
         except Exception:
-            events, active = [], []
+            return JSONResponse({
+                "ok": False, "available": False, "error": "activity_unavailable", "events": [], "active": [],
+            })
         return JSONResponse({
             "ok": True,
+            "available": True,
             "events": [_safe_event(row) for row in events[:8]],
             "active": [_safe_event(row) for row in active[:6]],
         })

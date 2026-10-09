@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-title" content="Mac MCP">
   <title>Mac MCP</title>
   <link rel="manifest" href="/mobile/assets/manifest.json">
-  <link rel="stylesheet" href="/mobile/assets/mobile.css?v=mobile-v7">
+  <link rel="stylesheet" href="/mobile/assets/mobile.css?v=mobile-v8">
 </head>
 <body>
   <main class="shell">
@@ -28,6 +28,8 @@
       </div>
       <div id="connector" class="chip">Remote</div>
     </header>
+    <p id="connection" class="connection"></p>
+    <div id="announcer" class="sr-only" role="status" aria-live="polite"></div>
 
     <section id="pairing" class="pairing hidden">
       <div class="lock-ring">⌁</div>
@@ -71,6 +73,22 @@
         </div>
       </section>
 
+      <section id="usageSection" class="section usage-section">
+        <div class="section-head">
+          <h2>Usage</h2>
+          <button id="usageToggle" class="section-toggle text-toggle" type="button" aria-expanded="false" aria-controls="usagePanel">Show</button>
+        </div>
+        <div id="usagePanel" class="usage-panel hidden">
+          <div class="usage-period" role="group" aria-label="Usage period">
+            <button type="button" data-usage-days="1" aria-pressed="false">Today</button>
+            <button type="button" data-usage-days="7" aria-pressed="true">7 days</button>
+            <button type="button" data-usage-days="30" aria-pressed="false">30 days</button>
+          </div>
+          <div id="usageBody" aria-live="polite"></div>
+          <p class="usage-note">Local tool payload activity · not provider billing</p>
+        </div>
+      </section>
+
       <section id="agentsSection" class="section agents-section">
         <div class="section-head">
           <h2>Agents</h2>
@@ -97,12 +115,12 @@
       <section class="section">
         <div class="section-head">
           <h2>Recent Activity</h2>
-          <span>Last hour</span>
+          <span id="activityMeta">Last hour</span>
         </div>
         <div id="activity" class="stack"></div>
       </section>
     </div>
   </main>
-  <script src="/mobile/assets/mobile.js?v=mobile-v7" defer></script>
+  <script src="/mobile/assets/mobile.js?v=mobile-v8" defer></script>
 </body>
 </html>

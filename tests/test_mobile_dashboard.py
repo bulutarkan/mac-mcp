@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 import tempfile
 import time
@@ -603,6 +604,81 @@ class MobileDashboardTests(unittest.TestCase):
             self.assertEqual(403, response.status_code)
             devices = client.get("/dashboard/api/mobile/devices", headers=headers)
             self.assertEqual(403, devices.status_code)
+
+    def paired_phone(self, app):
+        manager = TestClient(app, base_url="https://testserver")
+        code = self.pair_code(self.create_pairing(manager)["pair_url"])
+        phone = TestClient(app, base_url="https://testserver")
+        self.assertEqual(200, phone.post("/mobile/pair", json={"code": code, "device_name": "iPhone"}).status_code)
+        return phone
+
+    def test_failed_sources_are_reported_unavailable_not_empty(self):
+        with tempfile.TemporaryDirectory() as td:
+            app, telemetry, _store = self.make_app(Path(td))
+            phone = self.paired_phone(app)
+            with patch("mcp_server.mobile_routes.list_agents", side_effect=RuntimeError("db locked")), \
+                 patch.object(telemetry, "summary", side_effect=RuntimeError("telemetry down")), \
+                 patch.object(telemetry, "query_events", side_effect=RuntimeError("telemetry down")):
+                status = phone.get("/mobile/api/status").json()
+                agents = phone.get("/mobile/api/agents").json()
+                activity = phone.get("/mobile/api/activity").json()
+            self.assertIsNone(status["active_agents"])
+            self.assertIsNone(status["calls_1h"])
+            self.assertIsNone(status["success_rate"])
+            self.assertEqual("unavailable", status["sources"]["agents"])
+            self.assertEqual("unavailable", status["sources"]["telemetry"])
+            self.assertEqual((False, None, "agents_unavailable"), (agents["available"], agents["active_count"], agents["error"]))
+            self.assertEqual((False, "activity_unavailable"), (activity["available"], activity["error"]))
+            self.assertNotIn("db locked", str(agents))
+
+            with patch("mcp_server.mobile_routes.list_agents", return_value={"ok": True, "agents": [], "count": 0}):
+                healthy = phone.get("/mobile/api/status").json()
+                empty = phone.get("/mobile/api/agents").json()
+            # A genuinely empty system is distinguishable from an unavailable one.
+            self.assertEqual(0, healthy["active_agents"])
+            self.assertEqual({"agents": "ok", "telemetry": "ok", "connector": "ok"}, healthy["sources"])
+            self.assertEqual((True, 0), (empty["available"], empty["active_count"]))
+            self.assertIsNone(healthy["success_rate"], "no calls means no success rate, not 100%")
+
+    def test_session_source_failure_is_reported(self):
+        class BrokenSteering:
+            session_ttl_minutes = 10
+
+            def sessions(self):
+                raise RuntimeError("steering store unavailable")
+
+            def recent(self, _limit):
+                return []
+
+        with tempfile.TemporaryDirectory() as td:
+            app, _telemetry, _store = self.make_app(Path(td), steering=BrokenSteering())
+            body = self.paired_phone(app).get("/mobile/api/sessions").json()
+        self.assertEqual((False, "sessions_unavailable"), (body["available"], body["error"]))
+
+    def test_mobile_page_separates_reachability_staleness_and_usage(self):
+        root = Path(__file__).resolve().parents[1] / "mcp_server" / "mobile"
+        html = (root / "index.html").read_text(encoding="utf-8")
+        script = (root / "mobile.js").read_text(encoding="utf-8")
+        css = (root / "mobile.css").read_text(encoding="utf-8")
+        # The status dot comes back after a successful refresh.
+        self.assertIn('$("onlineDot").classList.toggle("online", online);', script)
+        self.assertIn("setOnline(true);", script)
+        # Failed sources keep the last values and say they are stale.
+        self.assertIn('if (agents.ok && agents.body.available !== false) renderAgents(agents.body);', script)
+        self.assertIn('"Can’t reach your Mac"', script)
+        self.assertIn('id="announcer" class="sr-only" role="status"', html)
+        # Usage loads only on request and is labelled as payload telemetry.
+        self.assertIn('aria-controls="usagePanel"', html)
+        self.assertIn("Local tool payload activity · not provider billing", html)
+        refresh_body = script[script.index("async function refresh()"):script.index("function formatCount")]
+        self.assertNotIn("/mobile/api/usage", refresh_body)
+        self.assertEqual(1, script.count('api("/mobile/api/usage?days="'))
+        # Readable text: no mobile font is smaller than 12px and controls are 44px tall.
+        sizes = [float(v) for v in re.findall(r"font-size:([0-9.]+)px", css)]
+        self.assertGreaterEqual(min(sizes), 12.0)
+        self.assertIn("min-width:44px;min-height:44px", css)
+        self.assertIn("button:focus-visible", css)
+        self.assertIn("--soft:#9a9aa1", css)
 
     def test_existing_dashboard_remains_remote_denied(self):
         with tempfile.TemporaryDirectory() as td:

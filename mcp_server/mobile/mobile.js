@@ -5,7 +5,12 @@
   // A non-secret marker so a later 401 can say access was lost instead of
   // looking like a first visit. The session itself stays in the HttpOnly cookie.
   const PAIRED_MARKER_KEY = "mac_mcp_mobile_paired";
-  const state = { timer: null, agentCollapsed: null, activeAgents: null };
+  const state = {
+    timer: null, agentCollapsed: null, activeAgents: null,
+    lastSuccessAt: 0, online: null, unavailable: [], announced: "",
+    loaded: { agents: false, activity: false, sessions: false },
+    usageOpen: false, usageDays: 7, usageRequest: 0
+  };
 
   function clearLegacySessionExposure() {
     try { localStorage.removeItem(LEGACY_STORAGE_KEY); } catch (_) {}
@@ -184,6 +189,7 @@
     return '<div class="agent">' +
       '<span class="row-icon agent-icon">' + svgIcon("agent") +
       '<span class="icon-state ' + (running ? "running" : (failed ? "failed" : "")) + '"></span></span>' +
+      '<span class="sr-only">' + esc(running ? "Running" : (failed ? "Failed" : (status || "Idle"))) + '</span>' +
       '<div class="agent-main"><div class="agent-title"><strong>' + esc(title) + '</strong>' +
       (a.reasoning ? '<span class="badge">' + esc(a.reasoning) + '</span>' : '') +
       '</div><div class="agent-sub"><span>' + esc(provider) + '</span><span>·</span><span class="detail-with-icon">' +
@@ -199,7 +205,9 @@
     return '<div class="activity-row"><span class="row-icon activity-icon">' +
       svgIcon(toolIconName(e.tool)) + '</span><div class="activity-main"><strong>' + esc(e.tool || "Tool call") +
       '</strong><span>' + esc(sub) + '</span></div><div class="activity-side"><span>' +
-      esc(duration(e.duration_ms)) + '</span><span class="result ' + cls + '"></span></div></div>';
+      esc(duration(e.duration_ms)) + '</span><span class="result ' + cls + '" aria-hidden="true"></span>' +
+      '<span class="result-label ' + cls + '">' + (cls === "running" ? "Running" : (cls === "error" ? "Failed" : "OK")) +
+      '</span></div></div>';
   }
   function lifecycleLabel(value) {
     return ({
@@ -288,6 +296,11 @@
       '<div class="empty">No sessions yet.</div>';
   }
   function renderSessionError() {
+    // Keep sessions already on screen and say they are out of date.
+    if (state.loaded.sessions) {
+      $("sessionMeta").textContent = "Unavailable · " + staleText();
+      return;
+    }
     $("sessionMeta").textContent = "Unavailable";
     $("sessions").innerHTML =
       '<div class="session-error">Sessions couldn’t be loaded.<br><button id="sessionRetry" type="button">Retry</button></div>';
@@ -297,10 +310,17 @@
   async function refreshSessions() {
     try {
       const sessions = await api("/mobile/api/sessions");
+      if (sessions.available === false) {
+        renderSessionError();
+        return false;
+      }
       renderSessions(sessions);
+      state.loaded.sessions = true;
+      return true;
     } catch (e) {
       if (e.status === 401) throw e;
       renderSessionError();
+      return false;
     }
   }
   function pairedBefore() {
@@ -313,8 +333,10 @@
     } catch (_) {}
   }
   function clearDashboard() {
-    for (const id of ["agents", "activity", "sessions"]) $(id).innerHTML = "";
-    for (const id of ["activeAgents", "calls1h", "successRate", "agentHint", "agentMeta", "sessionMeta"]) $(id).textContent = "";
+    for (const id of ["agents", "activity", "sessions", "usageBody"]) $(id).innerHTML = "";
+    for (const id of ["activeAgents", "calls1h", "successRate", "agentHint", "agentMeta", "sessionMeta", "activityMeta", "connection"]) $(id).textContent = "";
+    state.lastSuccessAt = 0;
+    state.loaded = { agents: false, activity: false, sessions: false };
   }
   function locked(reason="") {
     const accessLost = reason === "access_lost";
@@ -335,40 +357,184 @@
     $("pairing").classList.add("hidden");
     $("dashboard").classList.remove("hidden");
   }
-  async function refresh() {
-    try {
-      const [status, agents, activity] = await Promise.all([
-        api("/mobile/api/status"), api("/mobile/api/agents"), api("/mobile/api/activity")
-      ]);
-      unlocked();
-      $("serverText").textContent = "Online";
-      $("version").textContent = status.version ? "v" + status.version : "";
-      $("connector").textContent = connector(status.connector);
-      $("activeAgents").textContent = status.active_agents ?? 0;
-      $("calls1h").textContent = status.calls_1h ?? 0;
-      $("successRate").textContent = rate(status.success_rate);
-      $("agentHint").textContent = status.active_agents ? "Running on your Mac right now" : "Nothing running right now";
-      $("agentMeta").textContent = agents.active_count ? agents.active_count + " active" : ((agents.count || 0) ? "Recent" : "");
-      $("agents").innerHTML = (agents.agents || []).map(agentRow).join("") || '<div class="empty">No delegated agents yet.</div>';
-      updateAgentDisclosure(agents.active_count ?? status.active_agents ?? 0);
-      const seen = new Set();
-      const rows = [...(activity.active || []), ...(activity.events || [])].filter(e => {
-        const key = e.event_id || ((e.tool || "") + ":" + (e.timestamp || e.started_at || ""));
-        if (seen.has(key)) return false; seen.add(key); return true;
-      }).slice(0, 8);
-      $("activity").innerHTML = rows.map(activityRow).join("") || '<div class="empty">No tool activity in the last hour.</div>';
-      await refreshSessions();
-    } catch (e) {
-      if (e.status === 401) {
-        clearLegacySessionExposure();
-        locked(pairedBefore() ? "access_lost" : "");
-        if (state.timer) clearInterval(state.timer);
-        state.timer = null;
-      } else {
-        $("serverText").textContent = "Connection unavailable";
-        $("onlineDot").classList.remove("online");
-      }
+  function staleText() {
+    return state.lastSuccessAt ? "showing data from " + ago(state.lastSuccessAt / 1000) : "no data yet";
+  }
+  function updatedText() {
+    const age = ago(state.lastSuccessAt / 1000);
+    return age === "now" ? "Updated just now" : "Updated " + age;
+  }
+  function announce(text) {
+    // Announce changes of state only, not the ticking "Updated" time.
+    if (text === state.announced) return;
+    state.announced = text;
+    $("announcer").textContent = text;
+  }
+  function renderConnection() {
+    const row = $("connection");
+    const parts = [];
+    if (state.online) {
+      parts.push("Mac reachable");
+      state.unavailable.forEach(name => parts.push(name + " unavailable"));
+      parts.push(updatedText());
+    } else {
+      parts.push("Can’t reach your Mac");
+      parts.push(state.lastSuccessAt ? staleText() : "retrying");
     }
+    row.textContent = parts.join(" · ");
+    row.classList.toggle("degraded", !state.online || state.unavailable.length > 0);
+    announce(state.online
+      ? (state.unavailable.length ? "Mac reachable. " + state.unavailable.join(", ") + " unavailable." : "Mac reachable.")
+      : "Can’t reach your Mac.");
+  }
+  function setOnline(online) {
+    state.online = online;
+    $("onlineDot").classList.toggle("online", online);
+    $("serverText").textContent = online ? "Online" : "Connection unavailable";
+  }
+  function metric(value) {
+    return value === null || value === undefined ? "—" : value;
+  }
+  function renderStatus(status) {
+    $("version").textContent = status.version ? "v" + status.version : "";
+    $("connector").textContent = status.connector ? connector(status.connector) : "—";
+    $("activeAgents").textContent = metric(status.active_agents);
+    $("calls1h").textContent = metric(status.calls_1h);
+    $("successRate").textContent = status.success_rate === null || status.success_rate === undefined ? "—" : rate(status.success_rate);
+    $("agentHint").textContent = status.active_agents === null || status.active_agents === undefined
+      ? "Agent data unavailable"
+      : (status.active_agents ? "Running on your Mac right now" : "Nothing running right now");
+  }
+  function renderAgents(agents) {
+    $("agentMeta").textContent = agents.active_count ? agents.active_count + " active" : ((agents.count || 0) ? "Recent" : "");
+    $("agents").innerHTML = (agents.agents || []).map(agentRow).join("") || '<div class="empty">No delegated agents yet.</div>';
+    updateAgentDisclosure(agents.active_count ?? 0);
+    state.loaded.agents = true;
+  }
+  function renderActivity(activity) {
+    const seen = new Set();
+    const rows = [...(activity.active || []), ...(activity.events || [])].filter(e => {
+      const key = e.event_id || ((e.tool || "") + ":" + (e.timestamp || e.started_at || ""));
+      if (seen.has(key)) return false; seen.add(key); return true;
+    }).slice(0, 8);
+    $("activityMeta").textContent = "Last hour";
+    $("activity").innerHTML = rows.map(activityRow).join("") || '<div class="empty">No tool activity in the last hour.</div>';
+    state.loaded.activity = true;
+  }
+  function markUnavailable(section) {
+    // A failed source keeps what was last shown instead of claiming "none".
+    if (section === "agents") {
+      $("agentMeta").textContent = "Unavailable";
+      if (!state.loaded.agents) $("agents").innerHTML = '<div class="empty">Agent data is unavailable right now.</div>';
+      $("agentsSection").classList.remove("collapsible");
+      $("agentsToggle").disabled = true;
+      setAgentCollapsed(false);
+    } else {
+      $("activityMeta").textContent = "Unavailable";
+      if (!state.loaded.activity) $("activity").innerHTML = '<div class="empty">Activity is unavailable right now.</div>';
+    }
+  }
+  async function settle(url) {
+    try { return { ok: true, body: await api(url) }; }
+    catch (error) { return { ok: false, error }; }
+  }
+  function lockOut() {
+    clearLegacySessionExposure();
+    locked(pairedBefore() ? "access_lost" : "");
+    if (state.timer) clearInterval(state.timer);
+    state.timer = null;
+  }
+  async function refresh() {
+    const [status, agents, activity] = await Promise.all([
+      settle("/mobile/api/status"), settle("/mobile/api/agents"), settle("/mobile/api/activity")
+    ]);
+    if ([status, agents, activity].some(r => !r.ok && r.error.status === 401)) {
+      lockOut();
+      return;
+    }
+    if (!status.ok) {
+      // The Mac itself is unreachable: keep the last values and say how old they are.
+      setOnline(false);
+      if (state.loaded.agents) $("agentMeta").textContent = "Stale";
+      if (state.loaded.activity) $("activityMeta").textContent = "Stale";
+      if (state.loaded.sessions) $("sessionMeta").textContent = "Stale";
+      renderConnection();
+      return;
+    }
+    unlocked();
+    setOnline(true);
+    state.lastSuccessAt = Date.now();
+    renderStatus(status.body);
+    const unavailable = [];
+    const sources = status.body.sources || {};
+    if (agents.ok && agents.body.available !== false) renderAgents(agents.body);
+    else { markUnavailable("agents"); unavailable.push("Agent data"); }
+    if (activity.ok && activity.body.available !== false) renderActivity(activity.body);
+    else { markUnavailable("activity"); unavailable.push("Activity"); }
+    if (sources.telemetry === "unavailable" && !unavailable.includes("Activity")) unavailable.push("Call metrics");
+    try {
+      if (!(await refreshSessions())) unavailable.push("Sessions");
+    } catch (e) {
+      if (e.status === 401) { lockOut(); return; }
+    }
+    state.unavailable = unavailable;
+    renderConnection();
+  }
+  function formatCount(value) {
+    const n = Number(value || 0);
+    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+    if (n >= 1e4) return Math.round(n / 1e3) + "k";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+    return String(n);
+  }
+  function renderUsage(data) {
+    const body = $("usageBody");
+    if (data.metering_enabled === false) {
+      body.innerHTML = '<div class="empty">Usage metering is turned off on your Mac.</div>';
+      return;
+    }
+    const totals = data.totals || {};
+    if (!Number(totals.calls || 0)) {
+      body.innerHTML = '<div class="empty">No tool calls in this period.</div>';
+      return;
+    }
+    const tokens = Number(totals.input_tokens || 0) + Number(totals.output_tokens || 0);
+    const days = (Array.isArray(data.daily) ? data.daily : []).slice().reverse().slice(0, 30);
+    body.innerHTML =
+      '<div class="usage-grid">' +
+      '<div><span>Calls</span><strong>' + esc(formatCount(totals.calls)) + '</strong></div>' +
+      '<div><span>Errors</span><strong>' + esc(formatCount(totals.error_count)) + '</strong></div>' +
+      '<div><span>Payload tokens</span><strong>' + esc(formatCount(tokens)) + '</strong></div>' +
+      '</div>' +
+      (days.length ? '<details class="usage-daily"><summary>Daily breakdown</summary>' +
+        days.map(d => '<div class="usage-day"><span>' + esc(d.date) + '</span><span>' +
+          esc(formatCount(d.calls)) + ' calls · ' + esc(formatCount(d.error_count)) + ' errors · ' +
+          esc(formatCount(Number(d.input_tokens || 0) + Number(d.output_tokens || 0))) + ' tokens</span></div>').join("") +
+        '</details>' : '');
+  }
+  async function loadUsage() {
+    const request = ++state.usageRequest;
+    const body = $("usageBody");
+    body.innerHTML = '<div class="empty">Loading usage…</div>';
+    try {
+      const data = await api("/mobile/api/usage?days=" + state.usageDays);
+      if (request !== state.usageRequest) return;
+      renderUsage(data);
+    } catch (e) {
+      if (request !== state.usageRequest) return;
+      if (e.status === 401) { lockOut(); return; }
+      body.innerHTML = '<div class="session-error">Usage couldn’t be loaded.<br><button id="usageRetry" type="button">Retry</button></div>';
+      const retry = $("usageRetry");
+      if (retry) retry.addEventListener("click", () => loadUsage());
+    }
+  }
+  function setUsageOpen(open) {
+    state.usageOpen = open;
+    $("usagePanel").classList.toggle("hidden", !open);
+    $("usageToggle").setAttribute("aria-expanded", open ? "true" : "false");
+    $("usageToggle").textContent = open ? "Hide" : "Show";
+    // Usage is fetched only when someone asks for it, never on the refresh timer.
+    if (open) loadUsage();
   }
   async function boot() {
     clearLegacySessionExposure();
@@ -382,8 +548,19 @@
       return;
     }
     await refresh();
-    if (!state.timer && !$("dashboard").classList.contains("hidden")) state.timer = setInterval(refresh, 4000);
+    // Keep retrying while the Mac is unreachable; stop only when pairing is needed.
+    if (!state.timer && $("pairing").classList.contains("hidden")) state.timer = setInterval(refresh, 4000);
   }
+  const usageToggle = $("usageToggle");
+  if (usageToggle) usageToggle.addEventListener("click", () => setUsageOpen(!state.usageOpen));
+  document.querySelectorAll("[data-usage-days]").forEach(button => {
+    button.addEventListener("click", () => {
+      state.usageDays = Number(button.dataset.usageDays) || 7;
+      document.querySelectorAll("[data-usage-days]").forEach(b =>
+        b.setAttribute("aria-pressed", b === button ? "true" : "false"));
+      loadUsage();
+    });
+  });
   const agentsToggle = $("agentsToggle");
   if (agentsToggle) {
     agentsToggle.addEventListener("click", () => {
