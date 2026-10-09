@@ -371,6 +371,7 @@ mac-mcp start --public-mode cloudflare --public-url https://mac.example.com/mcp
 mac-mcp start --public-mode custom --public-url https://mac.example.com/mcp
 mac-mcp start --public-mode none
 mac-mcp status
+mac-mcp status --json
 mac-mcp restart
 mac-mcp stop
 mac-mcp dashboard
@@ -381,6 +382,23 @@ mac-mcp conformance
 The legacy `--ngrok` flag remains supported as an alias for `--public-mode ngrok`. When no CLI override is supplied, `start`/`restart` use the public endpoint mode saved by the native Settings window (or the `MAC_MCP_PUBLIC_*` environment overrides).
 
 `mac-mcp doctor` performs read-only checks for the local runtime, Python/version, disk space, state/settings validity, Accessibility, required/optional helpers, local server health, selected public endpoint health/configuration, dashboard credential file metadata, and Safari/Chrome companion state. Use `--json` for automation; the JSON reports `local_ok`, `public_endpoint` and `health` (`healthy`, `degraded`, `failed`) separately. A selected public endpoint that cannot be reached makes `doctor` exit 1 and `mac-mcp status` exit 2 (1 means the local server is down); pass `--local-only` to either command to judge only the local runtime. `--support-bundle [PATH]` writes an owner-only (`0600`) structured support report; it intentionally excludes raw `.env`, settings values, logs, credentials, cookies, prompts, and chat content.
+
+`mac-mcp status --json` prints one object for scripts: `ok`, `state`, `exit_code`, `server` (`running`, `pid`, `identity`, `port`, `health` from the local `/health` route), `public_endpoint` (`mode`, `url`, `tunnel_running`, `error`), `stray_processes` and `remediation`. `state` tells the cases apart: `healthy`, `stopped`, `port_conflict`, `ownership_unverified`, `unresponsive` (process alive but `/health` does not answer), `degraded` (selected tunnel not running) and `config_error` (public endpoint settings invalid). `doctor --json` carries the same `exit_code` field.
+
+CLI exit codes are a stable contract:
+
+| Command | 0 | 1 | 2 | 3 |
+|---|---|---|---|---|
+| `status` | healthy | server stopped, unverified, port taken or not answering `/health` | public endpoint unavailable or misconfigured (0 with `--local-only`) | — |
+| `doctor` | all checks pass | a check failed | — | — |
+| `start` | started | could not start (for example port conflict) | invalid configuration or security bootstrap error | — |
+| `stop` / `restart` | done | a component did not stop or come back healthy | — | — |
+| `update --check` | checked | check failed | local changes block updating | — |
+| `update` | updated or already current | update failed or was blocked | — | — |
+| `recipe run` | completed | failed | needs approval | server not running |
+| `recipe list` | listed | request failed | — | server not running |
+
+In short: 0 is success, 1 is an operational failure, 2 means a person has to act (configuration, approval, a degraded connector, or invalid command-line usage), and 3 means the server could not be reached.
 
 `mac-mcp logs [server|cloudflared|ngrok|audit|update] [-n LINES]` prints the last lines of one log with tokens, keys and credential values redacted; `mac-mcp logs --list` shows every log's size and the bounds. Server, `cloudflared` and `ngrok` logs rotate at 10 MB and keep three older files (`MAC_MCP_LOG_MAX_BYTES`, `MAC_MCP_LOG_BACKUPS`); rotation copies and truncates, so the running process keeps writing. The audit log (tool, outcome and duration only, `0600`) rotates at 5 MB with three older files, and only the newest 20 update logs are kept (`MAC_MCP_UPDATE_LOGS_KEPT`).
 

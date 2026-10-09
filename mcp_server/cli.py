@@ -13,6 +13,7 @@ import time
 import webbrowser
 from pathlib import Path
 from typing import Optional
+from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import urlopen
 
@@ -1111,9 +1112,31 @@ def connect_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def _server_health(port: int) -> str:
+    """Probe the local /health endpoint; a live process that never answers is not healthy."""
+    for attempt in range(2):
+        try:
+            with urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as response:  # noqa: S310 - fixed loopback URL
+                if response.status == 200:
+                    return "ok"
+        except (URLError, OSError, ValueError):
+            pass
+        if attempt == 0:
+            time.sleep(0.5)
+    return "unreachable"
+
+
 def status(args: argparse.Namespace) -> int:
+    """Report server and public endpoint state.
+
+    Exit codes (stable): 0 healthy; 1 server not running, not verified, its port is
+    taken by another process, or it does not answer /health; 2 server running but the
+    selected public endpoint is unavailable or misconfigured (0 with --local-only).
+    """
     _load_env()
     port = _default_port()
+    lines: list[str] = []
+    say = lines.append  # human output is collected so --json can replace it
 
     server_pid, server_source = _resolve_server_identity(port)
     server_running = server_pid is not None
@@ -1172,84 +1195,145 @@ def status(args: argparse.Namespace) -> int:
     cloudflare_running = cloudflare_pid is not None
 
     if server_running:
-        print(
+        say(
             f"mac-mcp is running (pid {server_pid}; identity verified via {server_source})."
         )
-        print(f"mac-mcp log: {LOG_FILE}")
+        say(f"mac-mcp log: {LOG_FILE}")
     else:
         if server_source == "foreign_listener":
             conflicts = _server_listener_conflicts(port)
             rendered = ", ".join(str(pid) for pid in conflicts if pid > 0) or "unknown"
-            print(
+            say(
                 f"mac-mcp is not running; configured port {port} is occupied by "
                 f"unmanaged listener pid(s) {rendered}."
             )
         elif server_source not in {"not_running"}:
-            print(f"mac-mcp ownership is not verified ({server_source}).")
+            say(f"mac-mcp ownership is not verified ({server_source}).")
         else:
-            print("mac-mcp is not running.")
+            say("mac-mcp is not running.")
 
+    public_error: str | None = None
     try:
         public = resolve_public_endpoint()
     except PublicEndpointError as exc:
         public = None
-        print(f"public endpoint configuration error: {exc}")
+        public_error = str(exc)
+        say(f"public endpoint configuration error: {exc}")
 
     if public is not None:
         if public.mode == "custom":
-            print("public endpoint mode: custom")
-            print(f"MCP URL: {public.endpoint_url}")
+            say("public endpoint mode: custom")
+            say(f"MCP URL: {public.endpoint_url}")
         elif public.mode == "cloudflare":
-            print("public endpoint mode: cloudflare")
+            say("public endpoint mode: cloudflare")
             if cloudflare_running:
-                print(
+                say(
                     f"cloudflared is running (pid {cloudflare_pid}; identity verified via {cloudflare_source})."
                 )
-                print(f"cloudflared log: {CLOUDFLARE_LOG_FILE}")
-                print(f"MCP URL: {public.endpoint_url}")
+                say(f"cloudflared log: {CLOUDFLARE_LOG_FILE}")
+                say(f"MCP URL: {public.endpoint_url}")
             else:
-                print(
+                say(
                     "Cloudflare Tunnel is configured but no verified mac-mcp cloudflared process is running "
                     f"({cloudflare_source})."
                 )
         elif public.mode == "ngrok":
-            print("public endpoint mode: ngrok")
+            say("public endpoint mode: ngrok")
             if ngrok_running:
-                print(f"ngrok is running (pid {ngrok_pid}; identity verified).")
-                print(f"ngrok log: {NGROK_LOG_FILE}")
-                print(f"MCP URL: {public.endpoint_url}")
+                say(f"ngrok is running (pid {ngrok_pid}; identity verified).")
+                say(f"ngrok log: {NGROK_LOG_FILE}")
+                say(f"MCP URL: {public.endpoint_url}")
             else:
-                print(
+                say(
                     "ngrok is configured but no verified mac-mcp ngrok process is running "
                     f"({ngrok_validation.status})."
                 )
         else:
-            print("public endpoint mode: local only")
+            say("public endpoint mode: local only")
 
     if ngrok_running and (public is None or public.mode != "ngrok"):
-        print(
+        say(
             f"ngrok managed process is still running (pid {ngrok_pid}) but is not "
             "the selected public endpoint mode."
         )
 
     if cloudflare_running and (public is None or public.mode != "cloudflare"):
-        print(
+        say(
             f"cloudflared managed process is still running (pid {cloudflare_pid}) but is not "
             "the selected public endpoint mode."
         )
 
-    if not server_running:
-        return 1
+    health = _server_health(port) if server_running else None
+    if health == "unreachable":
+        say(f"mac-mcp process is running but http://127.0.0.1:{port}/health does not answer.")
     tunnel_missing = public is not None and (
         (public.mode == "cloudflare" and not cloudflare_running)
         or (public.mode == "ngrok" and not ngrok_running)
     )
-    if public is None or tunnel_missing:
-        print("overall: degraded (local server running; selected public endpoint unavailable)")
+    remediation: list[str] = []
+    if not server_running:
+        state = {"not_running": "stopped", "foreign_listener": "port_conflict"}.get(server_source, "ownership_unverified")
+        code = 1
+        remediation.append({
+            "stopped": "Start it with: mac-mcp start",
+            "port_conflict": f"Port {port} is used by another program; stop it or set MAC_MCP_PORT, then run mac-mcp start.",
+            "ownership_unverified": "Run mac-mcp restart to start a verified server.",
+        }[state])
+    elif health == "unreachable":
+        state, code = "unresponsive", 1
+        remediation.append("Run mac-mcp restart; if it keeps failing, check mac-mcp logs server.")
+    elif public is None or tunnel_missing:
+        state = "config_error" if public is None else "degraded"
+        say("overall: degraded (local server running; selected public endpoint unavailable)")
         # Exit 2 keeps scripts from reading a missing tunnel as healthy;
         # --local-only restores the local-server-only verdict.
-        return 0 if getattr(args, "local_only", False) else 2
-    return 0
+        code = 0 if getattr(args, "local_only", False) else 2
+        remediation.append(
+            "Fix the public endpoint settings; mac-mcp doctor shows the details."
+            if public is None
+            else f"Run mac-mcp restart to start the {public.mode} tunnel, or use --local-only to ignore it."
+        )
+    else:
+        state, code = "healthy", 0
+
+    if getattr(args, "json", False):
+        tunnel_pid = cloudflare_pid if public is not None and public.mode == "cloudflare" else (
+            ngrok_pid if public is not None and public.mode == "ngrok" else None)
+        stray = [
+            {"name": name, "pid": pid}
+            for name, pid, mode in (("ngrok", ngrok_pid, "ngrok"), ("cloudflared", cloudflare_pid, "cloudflare"))
+            if pid is not None and (public is None or public.mode != mode)
+        ]
+        report = {
+            "ok": code == 0,
+            "state": state,
+            "exit_code": code,
+            "server": {
+                "running": server_running,
+                "pid": server_pid,
+                "identity": server_source,
+                "port": port,
+                "health": health,
+                "log": str(LOG_FILE),
+            },
+            "public_endpoint": {
+                "mode": public.mode if public is not None else None,
+                "url": public.endpoint_url if public is not None else None,
+                "tunnel_running": (
+                    (cloudflare_running if public.mode == "cloudflare" else ngrok_running)
+                    if public is not None and public.mode in {"cloudflare", "ngrok"} else None
+                ),
+                "tunnel_pid": tunnel_pid,
+                "error": public_error,
+            },
+            "stray_processes": stray,
+            "remediation": remediation,
+        }
+        sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    else:
+        for line in lines:
+            sys.stdout.write(line + "\n")
+    return code
 
 
 def _restart_status_path() -> Path:
@@ -1632,16 +1716,17 @@ def doctor(args: argparse.Namespace) -> int:
         support_path = write_support_bundle(report, args.support_bundle or None)
         report = dict(report)
         report["support_bundle"] = str(support_path)
+    if getattr(args, "local_only", False):
+        code = 0 if report.get("local_ok", report.get("ok")) else 1
+    else:
+        code = 0 if report.get("ok") else 1
     if args.json:
-        import json
-        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        print(json.dumps({**report, "exit_code": code}, ensure_ascii=False, indent=2, sort_keys=True))
     else:
         print(format_report(report))
         if support_path is not None:
             print(f"Support bundle: {support_path}")
-    if getattr(args, "local_only", False):
-        return 0 if report.get("local_ok", report.get("ok")) else 1
-    return 0 if report.get("ok") else 1
+    return code
 
 
 def conformance(args: argparse.Namespace) -> int:
@@ -1843,8 +1928,9 @@ def main(argv: list[str] | None = None) -> int:
     p_restart.add_argument("--timeout", type=float, default=5)
     p_restart.set_defaults(func=restart)
 
-    p_status = sub.add_parser("status", help="Show server and public endpoint status. Exits 0 healthy, 1 server down, 2 selected public endpoint unavailable.")
+    p_status = sub.add_parser("status", help="Show server and public endpoint status. Exits 0 healthy, 1 server down or not answering, 2 selected public endpoint unavailable or misconfigured.")
     p_status.add_argument("--local-only", action="store_true", help="Exit 0 whenever the local server is running, ignoring the public endpoint.")
+    p_status.add_argument("--json", action="store_true", help="Print state, health and remediation as JSON (same exit codes).")
     p_status.set_defaults(func=status)
 
     p_connect = sub.add_parser(

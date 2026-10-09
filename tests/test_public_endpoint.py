@@ -291,6 +291,7 @@ class PublicEndpointCLITests(unittest.TestCase):
         with patch.object(cli, "_resolve_server_identity", return_value=(4321, "adopted_listener")), \
              patch.object(cli, "_validate_managed_pid", return_value=missing), \
              patch.object(cli, "_launchctl_pid", return_value=None), \
+             patch.object(cli, "_server_health", return_value="ok"), \
              patch.object(cli, "resolve_public_endpoint", return_value=type("Public", (), {"mode": "none", "endpoint_url": None})()), \
              redirect_stdout(StringIO()):
             code = cli.status(argparse.Namespace())
@@ -305,6 +306,7 @@ class PublicEndpointCLITests(unittest.TestCase):
                  patch.object(cli, "_resolve_server_identity", return_value=(4321, "adopted_listener")), \
                  patch.object(cli, "_validate_managed_pid", return_value=missing), \
                  patch.object(cli, "_launchctl_pid", return_value=None), \
+                 patch.object(cli, "_server_health", return_value="ok"), \
                  patch.object(cli, "CLOUDFLARE_PID_FILE", Path("/nonexistent/mac-mcp/cloudflared.pid")), \
                  patch.object(cli, "resolve_public_endpoint", return_value=public), \
                  redirect_stdout(out):
@@ -333,6 +335,67 @@ class PublicEndpointCLITests(unittest.TestCase):
         rendered = out.getvalue()
         self.assertIn("public endpoint mode: custom", rendered)
         self.assertIn("MCP URL: https://mac.example.com/mcp", rendered)
+
+
+class StatusJsonContractTests(unittest.TestCase):
+    MISSING = ProcessValidation("missing", None, "ngrok", None, "record_missing")
+
+    def run_status(self, *, identity, health="ok", public=None, public_error=None, local_only=False, as_json=True):
+        out = StringIO()
+        resolver = (
+            patch.object(cli, "resolve_public_endpoint", side_effect=PublicEndpointError(public_error))
+            if public_error else
+            patch.object(cli, "resolve_public_endpoint",
+                         return_value=public or type("Public", (), {"mode": "none", "endpoint_url": None})())
+        )
+        with patch.object(cli, "_resolve_server_identity", return_value=identity), \
+             patch.object(cli, "_validate_managed_pid", return_value=self.MISSING), \
+             patch.object(cli, "_launchctl_pid", return_value=None), \
+             patch.object(cli, "_server_listener_conflicts", return_value=[999]), \
+             patch.object(cli, "CLOUDFLARE_PID_FILE", Path("/nonexistent/mac-mcp/cloudflared.pid")), \
+             patch.object(cli, "_server_health", return_value=health) as probe, \
+             resolver, redirect_stdout(out):
+            code = cli.status(argparse.Namespace(local_only=local_only, json=as_json))
+        return code, out.getvalue(), probe
+
+    def test_each_state_has_a_stable_exit_code_and_remediation(self) -> None:
+        tunnel = type("Public", (), {"mode": "cloudflare", "endpoint_url": "https://mac.example.com/mcp"})()
+        cases = (
+            ("healthy", 0, dict(identity=(4321, "pid_record"))),
+            ("stopped", 1, dict(identity=(None, "not_running"))),
+            ("port_conflict", 1, dict(identity=(None, "foreign_listener"))),
+            ("ownership_unverified", 1, dict(identity=(None, "record_mismatch"))),
+            ("unresponsive", 1, dict(identity=(4321, "pid_record"), health="unreachable")),
+            ("degraded", 2, dict(identity=(4321, "pid_record"), public=tunnel)),
+            ("config_error", 2, dict(identity=(4321, "pid_record"), public_error="bad mode")),
+        )
+        for state, expected, kwargs in cases:
+            with self.subTest(state=state):
+                code, out, _ = self.run_status(**kwargs)
+                report = json.loads(out)
+                self.assertEqual((expected, expected), (code, report["exit_code"]))
+                self.assertEqual(state, report["state"])
+                self.assertEqual(code == 0, report["ok"])
+                self.assertEqual(state != "healthy", bool(report["remediation"]))
+        _, out, _ = self.run_status(identity=(4321, "pid_record"), public_error="bad mode")
+        self.assertEqual("bad mode", json.loads(out)["public_endpoint"]["error"])
+        code, out, _ = self.run_status(identity=(4321, "pid_record"), public=tunnel, local_only=True)
+        self.assertEqual((0, "degraded"), (code, json.loads(out)["state"]))
+
+    def test_json_replaces_human_output_and_stopped_server_is_not_probed(self) -> None:
+        code, out, probe = self.run_status(identity=(None, "not_running"))
+        report = json.loads(out)
+        self.assertEqual(1, code)
+        self.assertIsNone(report["server"]["health"])
+        probe.assert_not_called()
+        self.assertNotIn("mac-mcp is not running.", out)
+        code, human, _ = self.run_status(identity=(4321, "pid_record"), health="unreachable", as_json=False)
+        self.assertEqual(1, code)
+        self.assertIn("does not answer", human)
+
+    def test_health_probe_reports_unreachable_without_a_listener(self) -> None:
+        with patch.object(cli.time, "sleep"):
+            self.assertEqual("unreachable", cli._server_health(1))
 
 
 class PublicEndpointDoctorTests(unittest.TestCase):
