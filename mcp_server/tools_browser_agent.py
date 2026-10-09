@@ -3681,6 +3681,22 @@ def _public_tab(row: Dict[str, Any]) -> Dict[str, Any]:
     return {key: row.get(key) for key in ("tab_handle", "url", "title", "window_index", "tab_index", "active")}
 
 
+def _credit_opened_tab(browser: str, action_result: Dict[str, Any], tabs_before: List[str],
+                       own_handle: Optional[str]) -> None:
+    """A click whose effect is a new tab changes nothing on its own page; count the new tab as its effect."""
+    try:
+        rows = browser_tabs.list_tabs(browser)
+    except Exception:
+        return
+    before = set(tabs_before)
+    if not any(str(row.get("tab_handle") or "") not in before and row.get("tab_handle") != own_handle for row in rows):
+        return
+    for key in ("error", "reason_code", "observe_again", "automatic_retry"):
+        action_result.pop(key, None)
+    action_result.update(ok=True, effect_observed=True, effect="new_tab_opened",
+                         verification="new_tab_opened")
+
+
 def _wait_new_tab(browser: str, action: Dict[str, Any], own_handle: Optional[str]) -> Dict[str, Any]:
     """Wait for a tab the page opened (target=_blank, OAuth popup) and return its handle without activating it.
 
@@ -4049,9 +4065,11 @@ def _browser_act_locked(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")
 
     window_index, tab_index = _resolve_tab_target(browser, tab_handle, window_index, tab_index)
+    tabs_before: Optional[List[str]] = None
     if any(item["type"] == "wait" and _wait_kind(item) == "new_tab" for item in actions):
         # A popup is recognized by a handle that did not exist before the batch.
         before = sorted(str(row.get("tab_handle") or "") for row in browser_tabs.list_tabs(browser))
+        tabs_before = before
         actions = [
             {**item, "_tabs_before": before} if item["type"] == "wait" and _wait_kind(item) == "new_tab" else item
             for item in actions
@@ -4289,6 +4307,11 @@ def _browser_act_locked(
                         }
                         if resolved_target.get("decision"):
                             action_result["resolved_target"]["decision"] = resolved_target["decision"]
+                    if (
+                        typ in {"click", "double_click"} and action_result.get("error") == "action_no_effect"
+                        and tabs_before is not None
+                    ):
+                        _credit_opened_tab(browser, action_result, tabs_before, tab_handle)
                     results.append(action_result)
                     if not action_result.get("ok"):
                         break

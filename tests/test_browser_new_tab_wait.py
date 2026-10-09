@@ -46,6 +46,19 @@ class NewTabWaitTests(unittest.TestCase):
         self.assertTrue(result["timed_out"])
         self.assertEqual("NO_NEW_TAB", result["reason_code"])
 
+    def test_click_that_only_opens_a_tab_counts_as_effective(self) -> None:
+        result = {"ok": False, "type": "click", "error": "action_no_effect", "reason_code": "ACTION_NO_EFFECT",
+                  "observe_again": True, "automatic_retry": False, "effect_observed": False}
+        with patch.object(agent.browser_tabs, "list_tabs", return_value=[_row("own"), _row("popup")]):
+            agent._credit_opened_tab("Google Chrome", result, ["own"], "own")
+        self.assertTrue(result["ok"])
+        self.assertEqual("new_tab_opened", result["effect"])
+        self.assertNotIn("error", result)
+        unchanged = {"ok": False, "error": "action_no_effect"}
+        with patch.object(agent.browser_tabs, "list_tabs", return_value=[_row("own")]):
+            agent._credit_opened_tab("Google Chrome", unchanged, ["own"], "own")
+        self.assertEqual("action_no_effect", unchanged["error"])
+
     def test_batch_snapshots_tabs_before_running_actions(self) -> None:
         captured = {}
 
