@@ -44,10 +44,34 @@ class ForeignExtensionFrameTests(unittest.TestCase):
 
     def test_no_fallback_when_apple_events_javascript_is_off(self) -> None:
         with patch.object(tools_browser, "_CHROME_NATIVE_JS_DENIED", True), \
+                patch.object(tools_browser, "_probe_chrome_apple_events_js", return_value="denied"), \
                 patch.object(tools_browser.chrome_background_bridge, "is_connected", return_value=True), \
                 patch.object(tools_browser.chrome_background_bridge, "request_execute_js", side_effect=FOREIGN):
-            with self.assertRaises(HTTPException):
+            with self.assertRaises(HTTPException) as ctx:
                 tools_browser._execute_js_for_target("Google Chrome", "1+1", _target(), 10)
+        self.assertEqual("chrome_foreign_extension_frame", ctx.exception.detail["error"])
+
+    def test_a_stale_denied_flag_is_rechecked_before_giving_up(self) -> None:
+        def probe(force=False):
+            tools_browser._CHROME_NATIVE_JS_DENIED = False
+            return "allowed"
+
+        with patch.object(tools_browser, "_CHROME_NATIVE_JS_DENIED", True), \
+                patch.object(tools_browser, "_probe_chrome_apple_events_js", side_effect=probe), \
+                patch.object(tools_browser.chrome_background_bridge, "is_connected", return_value=True), \
+                patch.object(tools_browser.chrome_background_bridge, "request_execute_js", side_effect=FOREIGN), \
+                patch.object(tools_browser, "_tab_identity_guard", return_value="set targetTab to tab 1"), \
+                patch.object(tools_browser, "_run_osascript", return_value="Mg==") as osa:
+            self.assertEqual("Mg==", tools_browser._execute_js_for_target("Google Chrome", "1+1", _target(), 10))
+        self.assertIn("execute javascript", osa.call_args.args[0])
+
+    def test_probe_runs_in_a_web_tab_never_a_chrome_page(self) -> None:
+        with patch.object(tools_browser, "_chrome_is_running", return_value=True), \
+                patch.object(tools_browser, "_run_osascript", return_value="2") as osa:
+            self.assertEqual("allowed", tools_browser._probe_chrome_apple_events_js(force=True))
+        script = osa.call_args.args[0]
+        self.assertIn('starts with "https://"', script)
+        self.assertNotIn("active tab of front window", script)
 
 
 if __name__ == "__main__":

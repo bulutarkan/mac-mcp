@@ -1367,7 +1367,8 @@ def _execute_js_for_target(
             # in the background there, so use it when the user allowed it.
             if not _is_foreign_extension_frame_error(exc):
                 raise
-            if _CHROME_NATIVE_JS_DENIED:
+            # The denied flag can be stale (set by an earlier probe or call); check once more.
+            if _CHROME_NATIVE_JS_DENIED and _probe_chrome_apple_events_js(force=True) != "allowed":
                 detail = dict(exc.detail) if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
                 detail.update(
                     error="chrome_foreign_extension_frame", fallback="apple_events_javascript_denied",
@@ -1425,23 +1426,33 @@ _CHROME_JS_PROBE: Dict[str, Any] = {"at": 0.0, "state": "unknown"}
 _CHROME_JS_DENIED_MARKERS = ("Access not allowed", "Executing JavaScript through AppleScript is turned off")
 
 
-def _probe_chrome_apple_events_js() -> str:
+def _probe_chrome_apple_events_js(force: bool = False) -> str:
     """Return allowed/denied/unknown without launching or focusing Chrome.
 
-    The probe evaluates a constant in the front tab, which changes nothing on the
-    page. A short cache keeps tab listings cheap.
+    The probe evaluates a constant in the first web (http/https) tab, which
+    changes nothing on the page. Chrome refuses page JavaScript on its own
+    chrome:// pages whatever the setting, so probing such a tab (an open
+    chrome://extensions in front, say) used to be misread as the setting
+    being off. A short cache keeps tab listings cheap.
     """
     global _CHROME_NATIVE_JS_DENIED
     now = time.monotonic()
-    if now - float(_CHROME_JS_PROBE["at"]) < _CHROME_JS_PROBE_TTL_S:
+    if not force and now - float(_CHROME_JS_PROBE["at"]) < _CHROME_JS_PROBE_TTL_S:
         return str(_CHROME_JS_PROBE["state"])
     state = "unknown"
     if _chrome_is_running():
         try:
             out = _run_osascript(
                 'tell application "Google Chrome"\n'
-                '    if (count of windows) is 0 then return "no_window"\n'
-                '    return (execute active tab of front window javascript "1+1") as text\n'
+                '    repeat with w in windows\n'
+                '        repeat with t in tabs of w\n'
+                '            set u to URL of t\n'
+                '            if u starts with "http://" or u starts with "https://" then\n'
+                '                return (execute t javascript "1+1") as text\n'
+                '            end if\n'
+                '        end repeat\n'
+                '    end repeat\n'
+                '    return "no_web_tab"\n'
                 'end tell',
                 timeout_s=4,
             )
