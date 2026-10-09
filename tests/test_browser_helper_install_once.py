@@ -32,7 +32,7 @@ class HelperInstallOnceTests(unittest.TestCase):
         js = agent._light_state_js()
         api = agent._agent_api()
         self.assertIn(api["full"], js)
-        self.assertEqual(50, len(api["names"]))
+        self.assertEqual(51, len(api["names"]))
         self.assertEqual(api["names"], agent._top_level_function_names(agent._bootstrap_functions_source()))
         for name in api["names"]:
             self.assertIn(f"{name}=__mcpApi.{name}", api["binding"])

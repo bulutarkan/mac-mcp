@@ -29,13 +29,19 @@ class BrowserDoProgressTests(unittest.TestCase):
             )
         return result, light
 
-    def test_progress_reuses_state_from_the_last_action(self) -> None:
+    def test_progress_and_changes_come_from_one_final_read(self) -> None:
+        # The action's own state is not enough: the final read also says what the batch changed.
         state = {"url": "https://example.test/next", "title": "Next", "dom_revision": 4, "active_element": None}
-        result, light = self._run([{"type": "click", "element_id": "e_1"}], state)
+        changes = {"baseline": "observation", "url_changed": True, "appeared_count": 1,
+                   "appeared": [{"element_id": "e_9", "tag": "button", "text": "Confirm"}], "disappeared_count": 0}
+        with patch.dict(LIGHT_STATE, {"changes": changes}):
+            result, light = self._run([{"type": "click", "element_id": "e_1"}], state)
         self.assertTrue(result["ok"])
-        self.assertEqual({"url": "https://example.test/next", "title": "Next", "dom_revision": 4}, result["progress"])
-        light.assert_not_called()
-        self.assertEqual(1, result["internal_js_calls"])
+        self.assertEqual({"url": "https://example.test/after", "title": "After", "dom_revision": 9}, result["progress"])
+        self.assertEqual(changes, result["changes"])
+        light.assert_called_once()
+        self.assertIn("observationMeta||{})[\"obs-1\"]", light.call_args.args[2])
+        self.assertEqual(2, result["internal_js_calls"])
 
     def test_progress_falls_back_when_state_is_missing_incomplete_or_stale(self) -> None:
         expected = {key: LIGHT_STATE[key] for key in ("url", "title", "dom_revision")}

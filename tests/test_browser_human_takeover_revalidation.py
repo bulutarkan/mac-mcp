@@ -179,7 +179,7 @@ class BrowserMutationRevalidationTests(unittest.TestCase):
         run_js.assert_not_called()
 
     def test_no_takeover_allows_multiple_mutations(self) -> None:
-        js_types = iter(("click", "type"))
+        js_types = iter(("click", "type", "summary"))
         with patch(
             "mcp_server.tools_browser_agent.delegated_agent_identity",
             return_value={"agent_id": "agt_ok", "team_id": "team_one", "actor": "agent:agt_ok"},
@@ -212,7 +212,7 @@ class BrowserMutationRevalidationTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(2, revalidate.call_count)
-        self.assertEqual(2, run_js.call_count)
+        self.assertEqual(3, run_js.call_count)  # two mutations, then the final changes read
 
     def test_custom_select_revalidates_again_before_option_click(self) -> None:
         revalidation = [

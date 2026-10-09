@@ -67,7 +67,9 @@ class BrowserAgentLayerTests(unittest.TestCase):
         self.assertIn("__mcpQueryAll('dialog[open],[aria-modal=\"true\"],[role=\"dialog\"]')", bootstrap)
         self.assertNotIn(',[data-state=\"open\"]', bootstrap)
         self.assertIn("d.association_text||''", find_script)
-        self.assertIn('return __mcpSemanticVisible(el)', find_script)
+        self.assertIn('if(__mcpSemanticVisible(el)) return true;', find_script)
+        # Off-screen controls stay findable (act scrolls them into view) and are flagged.
+        self.assertIn('offscreen.add(el)', find_script)
         self.assertIn('modal_scope:modal?', find_script)
         observe = __import__('mcp_server.tools_browser_agent', fromlist=['_observe_js'])._observe_js('interactive', 20)
         self.assertIn('var modalScope=__mcpModalScope(el)', observe)
