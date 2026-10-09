@@ -34,6 +34,7 @@ if __package__:
         acquire_update_lock,
         backups_root,
         holds_update_lock,
+        staging_root as update_staging_root,
         read_deployed_commit,
         read_update_state,
         update_root,
@@ -62,6 +63,7 @@ else:
         acquire_update_lock,
         backups_root,
         holds_update_lock,
+        staging_root as update_staging_root,
         read_deployed_commit,
         read_update_state,
         update_root,
@@ -417,6 +419,196 @@ def _backup_runtime(repo: Path, runtime: Path, deployed: str, target: str) -> tu
     }
     (backup / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return backup, old_files, new_files
+
+
+# Backups made by _backup_runtime: "<YYYYmmdd-HHMMSS>-<commit>" with a manifest.
+# Anything else in the backups folder (for example manual-*) is never pruned.
+_UPDATER_BACKUP_NAME = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{7,12}(?:-\d+)?$")
+DEFAULT_UPDATE_BACKUPS_KEPT = 10
+# Staging younger than this is left alone even when it looks orphaned.
+_STAGING_MIN_AGE_S = 600
+
+
+def _update_backups_kept() -> int:
+    try:
+        value = int(os.getenv("MAC_MCP_UPDATE_BACKUPS_KEPT", "") or DEFAULT_UPDATE_BACKUPS_KEPT)
+    except ValueError:
+        value = DEFAULT_UPDATE_BACKUPS_KEPT
+    return min(200, max(2, value))
+
+
+def _dir_bytes(path: Path) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def _current_journal() -> Optional[dict]:
+    try:
+        return read_update_state()
+    except UpdateStateError:
+        return None
+
+
+def prune_update_backups(*, protect: Iterable[Path] = ()) -> dict:
+    """Keep the newest updater backups and any the journal still points at.
+
+    Call with the update lock held. Nothing is removed while an update
+    transaction is incomplete or unreadable, since recovery needs its backup.
+    """
+    journal = _current_journal()
+    if journal is None and update_state_path_exists():
+        return {"status": "skipped", "reason": "update journal unreadable"}
+    if journal and str(journal.get("status") or "") in INCOMPLETE_UPDATE_STATES:
+        return {"status": "skipped", "reason": "update transaction incomplete"}
+    protected = {Path(p).resolve() for p in protect}
+    if journal and journal.get("backup"):
+        protected.add(Path(str(journal["backup"])).resolve())
+    folder = update_root() / "backups"
+    if not folder.is_dir():
+        return {"status": "ok", "kept": 0, "removed": 0, "bytes_freed": 0, "failures": []}
+    backups = sorted(
+        (
+            child for child in folder.iterdir()
+            if child.is_dir() and not child.is_symlink()
+            and _UPDATER_BACKUP_NAME.match(child.name) and (child / "manifest.json").is_file()
+        ),
+        key=lambda child: child.name,
+        reverse=True,
+    )
+    keep = _update_backups_kept()
+    removed, freed, failures = 0, 0, []
+    for child in backups[keep:]:
+        if child.resolve() in protected:
+            continue
+        size = _dir_bytes(child)
+        try:
+            shutil.rmtree(child)
+        except OSError as exc:
+            failures.append(f"{child.name}: {type(exc).__name__}")
+            continue
+        removed, freed = removed + 1, freed + size
+    return {
+        "status": "failed" if failures else "ok",
+        "kept": len(backups) - removed, "removed": removed, "bytes_freed": freed, "failures": failures[:10],
+    }
+
+
+def update_state_path_exists() -> bool:
+    return (update_root() / "state.json").exists()
+
+
+def _git_common_dir(repo: Path) -> Optional[Path]:
+    value = _git(repo, "rev-parse", "--git-common-dir", check=False)
+    if not value:
+        return None
+    path = Path(value)
+    return path if path.is_absolute() else (repo / path).resolve()
+
+
+def _is_updater_stage(path: Path) -> bool:
+    return path.name == "runtime-merge" and path.parent.name.startswith("mac-mcp-update-")
+
+
+def cleanup_orphaned_staging(repo: Path, runtime: Path, *, exclude: Iterable[Path] = ()) -> dict:
+    """Remove staging left by an updater that was killed before its own cleanup.
+
+    Call with the update lock held and after recover_incomplete_update(), so no
+    other updater and no unfinished transaction can own these paths. Only
+    updater-owned names are touched: <tmp>/mac-mcp-update-* directories, their
+    runtime-merge worktree registrations and <runtime>.venv-update-* folders.
+    Scratch directories live under the updater's staging folder, not /tmp.
+    """
+    journal = _current_journal()
+    if journal is None and update_state_path_exists():
+        return {"status": "skipped", "reason": "update journal unreadable"}
+    if journal and str(journal.get("status") or "") in INCOMPLETE_UPDATE_STATES:
+        return {"status": "skipped", "reason": "update transaction incomplete"}
+    excluded = {Path(p).resolve() for p in exclude}
+    removed: list[str] = []
+    failures: list[str] = []
+
+    def settled(path: Path) -> bool:
+        try:
+            return time.time() - path.stat().st_mtime >= _STAGING_MIN_AGE_S
+        except OSError:
+            return False
+
+    # Ages are read up front: removing a worktree touches its parent's mtime.
+    candidates = [
+        path for path in [
+            *update_staging_root().glob("mac-mcp-update-*"),
+            *runtime.parent.glob(f".{runtime.name}.venv-update-*"),
+        ]
+        if path.is_dir() and not path.is_symlink() and path.resolve() not in excluded and settled(path)
+    ]
+    settled_roots = {path.resolve() for path in candidates}
+
+    common = _git_common_dir(repo)
+    admin_root = common / "worktrees" if common else None
+    if admin_root is not None and admin_root.is_dir():
+        for admin in admin_root.iterdir():
+            try:
+                registered = Path((admin / "gitdir").read_text(encoding="utf-8").strip()).parent
+            except OSError:
+                continue
+            if not _is_updater_stage(registered):
+                continue
+            if registered.exists():
+                if registered.parent.resolve() not in settled_roots:
+                    continue
+                result = _run(["git", "-C", str(repo), "worktree", "remove", "--force", str(registered)],
+                              check=False, timeout=60)
+                if result.returncode != 0:
+                    failures.append(f"worktree {registered.parent.name}")
+                    continue
+            else:
+                # Its directory is gone; drop just this registration, not every stale one.
+                shutil.rmtree(admin, ignore_errors=True)
+            removed.append(f"worktree {registered.parent.name}")
+
+    for path in candidates:
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            failures.append(f"{path.name}: {type(exc).__name__}")
+            continue
+        removed.append(path.name)
+    return {"status": "failed" if failures else "ok", "removed": removed[:40], "failures": failures[:10]}
+
+
+def _format_cleanup(result: dict) -> str:
+    if result.get("status") == "skipped":
+        return f"skipped ({result.get('reason')})"
+    parts = []
+    if "removed" in result:
+        removed = result["removed"]
+        parts.append(f"removed {removed if isinstance(removed, int) else len(removed)}")
+    if result.get("bytes_freed"):
+        parts.append(f"freed {int(result['bytes_freed']) // (1024 * 1024)} MiB")
+    if result.get("failures"):
+        parts.append("failed: " + ", ".join(result["failures"]))
+    return ", ".join(parts) or "nothing to do"
+
+
+def _report_storage_cleanup(repo: Path, runtime: Path) -> None:
+    """Clean orphaned staging and old backups before a new update; never fail the update."""
+    own_staging = Path(__file__).resolve().parent
+    for label, action in (
+        ("Orphaned staging cleanup", lambda: cleanup_orphaned_staging(repo, runtime, exclude=[own_staging])),
+        ("Backup retention", prune_update_backups),
+    ):
+        try:
+            result = action()
+        except Exception as exc:  # cleanup is best effort; the update itself must not depend on it
+            result = {"status": "failed", "failures": [type(exc).__name__]}
+        if result.get("removed") or result.get("failures"):
+            print(f"[mac-mcp update] {label}: {_format_cleanup(result)}", flush=True)
 
 
 def _sync_runtime(stage: Path, runtime: Path, old_files: Iterable[str], new_files: Iterable[str]) -> int:
@@ -1108,14 +1300,14 @@ def _cleanup_staging_dir(requested_dir: str | None) -> None:
         helper_file = Path(__file__).resolve(strict=True)
         helper_dir = helper_file.parent
         requested_path = Path(requested_dir).expanduser().resolve(strict=True)
-        temp_dir = Path(tempfile.gettempdir()).resolve()
+        staging_dir = update_staging_root().resolve()
     except (OSError, RuntimeError):
         return
 
     if (
         helper_file.name != "update_helper.py"
         or requested_path != helper_dir
-        or helper_dir.parent != temp_dir
+        or helper_dir.parent != staging_dir
         or not _STAGING_DIR_RE.fullmatch(helper_dir.name)
         or not helper_dir.is_dir()
         or not (helper_dir / "update_state.py").is_file()
@@ -1488,6 +1680,7 @@ def apply_update(
         launchd_label=launchd_label,
         skip_restart=skip_restart,
     )
+    _report_storage_cleanup(repo_path, runtime_path)
     print("[mac-mcp update] Checking repository...", flush=True)
     info = check_update(repo_path, runtime_path, branch=branch, remote=remote, fetch=True)
     print(f"[mac-mcp update] Current deployed commit: {_short(info.deployed_commit)}", flush=True)
@@ -1535,7 +1728,7 @@ def apply_update(
         })
         raise UpdateError(_format_secure_bootstrap_blocker(bootstrap_blocker))
 
-    temp_root = Path(tempfile.mkdtemp(prefix="mac-mcp-update-"))
+    temp_root = Path(tempfile.mkdtemp(prefix="mac-mcp-update-", dir=str(update_staging_root())))
     stage: Optional[Path] = None
     backup: Optional[Path] = None
     health_url: Optional[str] = None
@@ -1782,6 +1975,11 @@ def apply_update(
         }
         _write_update_state(runtime_path, {"status": "completed", **result})
         print(f"[mac-mcp update] Update complete: {_short(info.deployed_commit)} -> {_short(info.target_commit)}", flush=True)
+        backups = prune_update_backups(protect=[backup] if backup else [])
+        if backups.get("removed") or backups.get("failures"):
+            result["backup_retention"] = backups
+            _write_update_state(runtime_path, {"status": "completed", **result})
+            print(f"[mac-mcp update] Backup retention: {_format_cleanup(backups)}", flush=True)
         return result
     except Exception as exc:
         message = str(exc)

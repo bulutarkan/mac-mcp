@@ -60,6 +60,17 @@ class UpdateInProgress(RuntimeError):
         super().__init__(f"Another Mac MCP update is already in progress ({update_id}, {status}).")
 
 
+def staging_root() -> Path:
+    """Where updater scratch directories live, so orphans can be found without scanning /tmp."""
+    path = update_root() / "staging"
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+    return path
+
+
 def update_lock_path() -> Path:
     return update_root() / "update.lock"
 

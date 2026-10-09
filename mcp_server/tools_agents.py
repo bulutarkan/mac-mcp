@@ -41,6 +41,7 @@ from . import browser_tabs
 from .agent_worktrees import (
     GIT_ISOLATION_MODES, AgentWorktreeError, apply_worktree, cleanup_worktree,
     inspect_worktree, prepare_worktree, remapped_roots, resolve_git_base, reuse_worktree, seed_worktree,
+    worktree_retention_s,
     validate_integration_worktree,
 )
 from .agent_results import (
@@ -3619,6 +3620,73 @@ def _persist_shared_worktree_state(agent_id: str, state: Dict[str, Any]) -> None
             continue
 
 
+_WORKTREE_SWEEP_INTERVAL_S = 3600.0
+_WORKTREE_SWEEP = {"last": 0.0, "running": False}
+_WORKTREE_SWEEP_LOCK = threading.Lock()
+
+
+def expire_agent_worktrees(*, now: Optional[float] = None) -> Dict[str, Any]:
+    """Remove worktrees of finished agents that are past retention and hold nothing to review.
+
+    A worktree is kept while its agent runs, while another running agent uses
+    it, and while a fresh inspection finds changes that were never applied.
+    """
+    retention = worktree_retention_s()
+    if retention <= 0:
+        return {"status": "disabled", "removed": []}
+    now = time.time() if now is None else now
+    removed: List[str] = []
+    for meta_path in sorted(AGENTS_DIR.glob("*/meta.json")):
+        agent_id = meta_path.parent.name
+        try:
+            meta = _read_meta(agent_id)
+        except HTTPException:
+            continue
+        state = meta.get("worktree") if isinstance(meta.get("worktree"), dict) else {}
+        if (
+            not state.get("enabled")
+            or state.get("status") in {"cleaned", "discarded", "missing"}
+            or meta.get("status") not in TERMINAL_STATUSES
+            or now - float(state.get("created_at") or now) < retention
+        ):
+            continue
+        path = str(state.get("path") or "")
+        if not path or not Path(path).is_dir() or _active_worktree_referrers(path, exclude_agent_id=agent_id):
+            continue
+        try:
+            refreshed = inspect_worktree(state)
+            if refreshed.get("pending_changes"):
+                continue
+            cleaned = cleanup_worktree(refreshed, force=True)
+        except AgentWorktreeError:
+            continue
+        cleaned["expired"] = True
+        _persist_shared_worktree_state(agent_id, cleaned)
+        removed.append(agent_id)
+    return {"status": "ok", "removed": removed}
+
+
+def _maybe_expire_agent_worktrees() -> None:
+    """Run the worktree expiry at most hourly, off the caller's thread (managed server only)."""
+    if os.getenv("MAC_MCP_MANAGED_SERVER") != "1":
+        return
+    with _WORKTREE_SWEEP_LOCK:
+        if _WORKTREE_SWEEP["running"] or time.time() - _WORKTREE_SWEEP["last"] < _WORKTREE_SWEEP_INTERVAL_S:
+            return
+        _WORKTREE_SWEEP.update(running=True, last=time.time())
+
+    def sweep() -> None:
+        try:
+            expire_agent_worktrees()
+        except Exception:
+            pass
+        finally:
+            with _WORKTREE_SWEEP_LOCK:
+                _WORKTREE_SWEEP["running"] = False
+
+    threading.Thread(target=sweep, name="agent-worktree-expiry", daemon=True).start()
+
+
 def _ensure_integration_resolved(agent_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
     current = dict(state or {})
     if not current.get("integration_required"):
@@ -4400,6 +4468,7 @@ def spawn_agent(
     provenance_class: str = "local",
     git_isolation: str = "auto",
 ) -> Dict[str, Any]:
+    _maybe_expire_agent_worktrees()
     selection = _resolve_agent_selection(provider, model, reasoning)
     provider = str(selection["provider"])
     model = selection.get("model")

@@ -19,7 +19,13 @@ from .update_helper import (
     secure_bootstrap_update_blocker,
     validate_update_state,
 )
-from .update_state import INCOMPLETE_UPDATE_STATES, UpdateInProgress, acquire_update_lock, update_state_path
+from .update_state import (
+    INCOMPLETE_UPDATE_STATES,
+    UpdateInProgress,
+    acquire_update_lock,
+    staging_root,
+    update_state_path,
+)
 from .log_retention import prune_update_logs
 
 
@@ -99,7 +105,7 @@ def _launch_locked_update(
     release_trust_src = helper_src.with_name("release_trust.py")
     managed_process_src = helper_src.with_name("managed_process.py")
     trusted_signers_src = helper_src.with_name("release_trusted_signers.txt")
-    helper_tmp_dir = Path(tempfile.mkdtemp(prefix=f"mac-mcp-update-{update_id}-"))
+    helper_tmp_dir = Path(tempfile.mkdtemp(prefix=f"mac-mcp-update-{update_id}-", dir=str(staging_root())))
     helper_tmp = helper_tmp_dir / "update_helper.py"
     shutil.copy2(helper_src, helper_tmp)
     shutil.copy2(state_src, helper_tmp_dir / "update_state.py")

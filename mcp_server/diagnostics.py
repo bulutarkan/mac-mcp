@@ -44,7 +44,7 @@ from .policy import (
 )
 from .security import dashboard_token_path, load_settings
 from .version import __version__
-from .update_state import UpdateStateError, read_deployed_commit, read_update_state, update_state_path
+from .update_state import UpdateStateError, read_deployed_commit, read_update_state, update_root, update_state_path
 
 SCHEMA_VERSION = 1
 PASS = "pass"
@@ -317,6 +317,80 @@ def _check_update_recovery_state() -> CheckResult:
     return result(
         "update.recovery", "update", PASS, "UPDATE_STATE_HEALTHY",
         "Updater state does not report a degraded rollback.", started=started,
+        details=details,
+    )
+
+
+def _check_update_storage() -> CheckResult:
+    """Updater backups and staging: size, orphans, and the last cleanup failures."""
+    started = time.perf_counter()
+    root = update_root()
+    backups = [
+        child for child in (root / "backups").glob("*")
+        if child.is_dir() and (child / "manifest.json").is_file()
+    ] if (root / "backups").is_dir() else []
+    total = 0
+    for child in backups:
+        for dirpath, _dirs, files in os.walk(child):
+            for name in files:
+                try:
+                    total += os.lstat(os.path.join(dirpath, name)).st_size
+                except OSError:
+                    pass
+    staging = [child for child in (root / "staging").glob("mac-mcp-update-*")] if (root / "staging").is_dir() else []
+    try:
+        payload = read_update_state(update_state_path()) or {}
+    except UpdateStateError:
+        payload = {}
+    retention = payload.get("backup_retention") if isinstance(payload.get("backup_retention"), dict) else {}
+    details = {
+        "backups": len(backups),
+        "backups_mib": round(total / (1024 * 1024), 1),
+        "staging_dirs": len(staging),
+        "last_cleanup_failures": list(retention.get("failures") or [])[:10],
+    }
+    if details["last_cleanup_failures"]:
+        return result(
+            "update.storage", "update", WARN, "UPDATE_CLEANUP_FAILED",
+            "The last update could not remove some old backups.", started=started,
+            remediation="Check permissions under ~/.mac-mcp/update/backups; the next update retries the cleanup.",
+            details=details,
+        )
+    return result(
+        "update.storage", "update", PASS, "UPDATE_STORAGE_OK",
+        f"{len(backups)} update backups ({details['backups_mib']} MiB); old ones and orphaned staging are cleaned on each update.",
+        started=started, details=details,
+    )
+
+
+def _check_agent_worktrees() -> CheckResult:
+    """Disk used by agent worktrees still on disk, and how many hold unreviewed work."""
+    started = time.perf_counter()
+    from .agent_worktrees import retained_worktrees, worktree_retention_s
+    from .security import BASE_DIR
+
+    rows = retained_worktrees(BASE_DIR / "agents")
+    retention_days = round(worktree_retention_s() / 86400, 1)
+    details = {
+        "count": len(rows),
+        "mib": round(sum(row["bytes"] for row in rows) / (1024 * 1024), 1),
+        "oldest_days": round(max((row["age_s"] for row in rows), default=0) / 86400, 1),
+        "with_unreviewed_changes": sum(1 for row in rows if row["pending_changes"]),
+        "retention_days": retention_days,
+    }
+    if not rows:
+        summary = "No agent worktrees are kept on disk."
+    else:
+        summary = (
+            f"{details['count']} agent worktrees use {details['mib']} MiB; "
+            f"{details['with_unreviewed_changes']} hold unreviewed changes."
+        )
+    return result(
+        "agents.worktrees", "agents", INFO, "AGENT_WORKTREES", summary, started=started,
+        remediation=(
+            "Finished agents' worktrees with nothing left to review are removed after "
+            f"{retention_days} days (MAC_MCP_AGENT_WORKTREE_RETENTION_DAYS); review or discard the others."
+        ) if rows else None,
         details=details,
     )
 
@@ -1279,6 +1353,8 @@ def doctor_checks() -> list[CheckResult]:
         _check_cli_installation,
         _check_state_dir,
         _check_update_recovery_state,
+        _check_update_storage,
+        _check_agent_worktrees,
         _check_settings,
         _check_permission_profile_scope,
         _check_permission_coherence,

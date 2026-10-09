@@ -28,6 +28,65 @@ class AgentWorktreeError(RuntimeError):
         super().__init__(message)
 
 
+DEFAULT_WORKTREE_RETENTION_DAYS = 7
+_SIZE_WALK_FILE_LIMIT = 200_000
+
+
+def worktree_retention_s() -> float:
+    """How long a finished agent's worktree with nothing left to review is kept (0 = forever)."""
+    try:
+        days = float(os.getenv("MAC_MCP_AGENT_WORKTREE_RETENTION_DAYS", "") or DEFAULT_WORKTREE_RETENTION_DAYS)
+    except ValueError:
+        days = DEFAULT_WORKTREE_RETENTION_DAYS
+    return max(0.0, min(days, 3650.0)) * 86400
+
+
+def _approximate_bytes(path: Path) -> tuple[int, bool]:
+    total, seen = 0, 0
+    for root, dirs, files in os.walk(path):
+        dirs[:] = [name for name in dirs if name != ".git"]
+        for name in files:
+            seen += 1
+            if seen > _SIZE_WALK_FILE_LIMIT:
+                return total, False
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                pass
+    return total, True
+
+
+def retained_worktrees(agents_dir: Path) -> list[dict[str, Any]]:
+    """Agent worktrees still on disk, with size, age and whether they hold unreviewed work."""
+    import json
+
+    rows: list[dict[str, Any]] = []
+    now = time.time()
+    for meta_path in sorted(Path(agents_dir).glob("*/meta.json")):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        state = meta.get("worktree") if isinstance(meta, dict) and isinstance(meta.get("worktree"), dict) else {}
+        if not state.get("enabled") or state.get("status") in {"cleaned", "discarded"}:
+            continue
+        path = Path(str(state.get("path") or ""))
+        if not str(state.get("path") or "") or not path.is_dir():
+            continue
+        size, exact = _approximate_bytes(path)
+        rows.append({
+            "agent_id": meta_path.parent.name,
+            "agent_status": meta.get("status"),
+            "worktree_status": state.get("status"),
+            "apply_status": state.get("apply_status"),
+            "age_s": max(0.0, now - float(state.get("created_at") or now)),
+            "bytes": size,
+            "bytes_exact": exact,
+            "pending_changes": bool(state.get("pending_changes", state.get("has_changes"))),
+        })
+    return rows
+
+
 def _run(
     cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None,
     input_bytes: bytes | None = None, check: bool = True, timeout: int = 120,
