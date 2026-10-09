@@ -3971,7 +3971,7 @@
       "post": {
         "operationId": "browser_wait_for_download",
         "summary": "browser_wait_for_download",
-        "description": "Wait for a browser download to reach a stable completed file, then register it as a SHA-256 artifact. Pass started_after_epoch_ms from the initiating click when available so fast downloads completed before this call are still detected.",
+        "description": "Wait for a browser download to reach a stable completed file, then register it as a SHA-256 artifact. Pass started_after_epoch_ms from the initiating click when available so fast downloads completed before this call are still detected. If several downloads finished or are running it returns complete",
         "requestBody": {
           "required": true,
           "content": {

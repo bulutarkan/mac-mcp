@@ -156,6 +156,36 @@ class DownloadArtifactTests(unittest.TestCase):
             self.assertTrue(result["artifact_id"].startswith("artifact_"))
             self.assertEqual(8, result["artifact"]["size"])
 
+    def test_concurrent_finished_downloads_are_ambiguous_without_a_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            settings = replace(load_settings(), download_dir=root, max_wait_s=3)
+            trigger = int(time.time() * 1000)
+            time.sleep(0.003)
+            (root / "invoice.pdf").write_bytes(b"task-a")
+            (root / "statement.csv").write_bytes(b"task-b")
+            result = browser_wait_for_download(settings, timeout_s=2, started_after_epoch_ms=trigger, stable_ms=100)
+            self.assertFalse(result["completed"])
+            self.assertIsNone(result["artifact_id"])
+            self.assertEqual("ambiguous_download", result["error"])
+            self.assertEqual({"invoice.pdf", "statement.csv"}, set(result["candidates"]))
+            narrowed = browser_wait_for_download(settings, filename_contains="invoice", timeout_s=2,
+                                                 started_after_epoch_ms=trigger, stable_ms=100)
+            self.assertTrue(narrowed["completed"])
+            self.assertEqual("invoice.pdf", narrowed["filename"])
+
+    def test_another_download_in_progress_makes_an_unfiltered_wait_ambiguous(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            settings = replace(load_settings(), download_dir=root, max_wait_s=3)
+            trigger = int(time.time() * 1000)
+            time.sleep(0.003)
+            (root / "invoice.pdf").write_bytes(b"done")
+            (root / "Unconfirmed 1234.crdownload").write_bytes(b"other task still running")
+            result = browser_wait_for_download(settings, timeout_s=2, started_after_epoch_ms=trigger, stable_ms=100)
+            self.assertEqual("ambiguous_download", result["error"])
+            self.assertEqual(["unconfirmed 1234.crdownload"], result["in_progress"])
+
     def test_partial_browser_file_blocks_completion_until_removed(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

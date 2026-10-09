@@ -1670,6 +1670,39 @@ def browser_get_html(
     return {"ok": True, "html": html, "truncated": truncated}
 
 
+_PARTIAL_SUFFIXES = (".download", ".crdownload", ".part", ".tmp")
+
+
+def _download_ambiguity(
+    candidate: Path,
+    candidates: List[Tuple[int, Path, Tuple[int, int]]],
+    partial_names: set,
+    filtered: bool,
+) -> Optional[Dict[str, Any]]:
+    """Refuse to pick when the finished file may not be the one this task started.
+
+    Another finished file that also matches, or (without a filename filter)
+    another download still in progress, means concurrent downloads; returning
+    the newest could hand one task another task's file.
+    """
+    others = sorted(path.name for _, path, _ in candidates if path != candidate)
+    own_stem = candidate.name.lower()
+    in_progress = sorted(
+        name for name in partial_names
+        if not filtered and not name.startswith(own_stem)
+    )
+    if not others and not in_progress:
+        return None
+    return {
+        "error": "ambiguous_download",
+        "reason_code": "AMBIGUOUS_DOWNLOAD",
+        "candidates": [candidate.name, *others][:10],
+        "in_progress": in_progress[:10],
+        "hint": "Several downloads finished or are running; pass filename_contains or started_after_epoch_ms "
+                "from the initiating click to pick this task's file.",
+    }
+
+
 def browser_wait_for_download(
     settings: Settings,
     filename_contains: Optional[str] = None,
@@ -1736,6 +1769,13 @@ def browser_wait_for_download(
                 continue
             if (now - previous[1]) * 1000 < stable_ms:
                 continue
+            ambiguity = _download_ambiguity(candidate, candidates, partial_names, bool(needle))
+            if ambiguity is not None:
+                return {
+                    "ok": True, "completed": False, "path": None, "filename": None, "artifact_id": None,
+                    "artifact": None, "stable_ms": stable_ms, "elapsed_s": round(now - started, 3),
+                    **ambiguity,
+                }
             try:
                 artifact = register_artifact(candidate, source="browser_download")
             except ArtifactError:

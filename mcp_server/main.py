@@ -1733,7 +1733,9 @@ def create_app():
     @mcp.tool(name="browser_wait_for_download",
               description=(
                   "Wait for a browser download to reach a stable completed file, then register it as a SHA-256 artifact. "
-                  "Pass started_after_epoch_ms from the initiating click when available so fast downloads completed before this call are still detected."
+                  "Pass started_after_epoch_ms from the initiating click when available so fast downloads completed before this call are still detected. "
+                  "If several downloads finished or are running it returns completed=false with error=ambiguous_download and the "
+                  "candidates instead of guessing; narrow with filename_contains."
               ))
     def _browser_wait_for_download(filename_contains: Optional[str] = None,
                                     timeout_s: int = 60,
