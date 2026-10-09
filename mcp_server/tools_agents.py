@@ -56,6 +56,7 @@ from .agent_admission import (
     request_admission, snapshot as admission_snapshot,
 )
 from .workspace_arbitration import sanitize_resource_claims
+from . import provider_compat
 from .provider_usage import (
     SOURCE_REPORT as PROVIDER_USAGE_SOURCE_REPORT,
     UsageRecord as ProviderUsageRecord,
@@ -3188,6 +3189,23 @@ def _scope_prompt(scope: ResourceScope, profile: str, provider: str) -> str:
     return base
 
 
+def _provider_compatibility(provider: str, binary: str) -> Dict[str, Any]:
+    env = _chatgpt_env() if provider == "chatgpt" else _base_env()
+    return provider_compat.check(provider, binary, env=env)
+
+
+def _require_provider_compatible(provider: str, binary: str) -> None:
+    compat = _provider_compatibility(provider, binary)
+    if compat.get("status") == "incompatible":
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "error": "provider_incompatible",
+            "provider": provider,
+            "missing_options": compat.get("missing") or [],
+            "version": _version(binary),
+            "message": compat.get("remediation"),
+        })
+
+
 def provider_overview() -> Dict[str, Any]:
     labels = {"opencode": "OpenCode", "codex": "Codex", "chatgpt": "ChatGPT Web CLI"}
     rows: List[Dict[str, Any]] = []
@@ -3201,6 +3219,7 @@ def provider_overview() -> Dict[str, Any]:
             "detected": bool(binary),
             "binary_path": binary,
             "version": _version(binary) if enabled else None,
+            "compatibility": _provider_compatibility(provider, binary) if enabled and binary else None,
         })
     return {"ok": True, "providers": rows}
 
@@ -3940,6 +3959,7 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "exit_code": meta.get("exit_code"),
         "note": meta.get("note"),
         "cancellation": _cancellation_public(meta),
+        "unknown_event_types": list(meta.get("unknown_event_types") or []) or None,
         "usage": usage,
         "output_tokens": usage.get("output") if usage else None,
         "result_contract_version": meta.get("result_contract_version"),
@@ -4285,6 +4305,7 @@ def _spawn_internal(
     binary = _find_binary(provider)
     if not binary:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"{provider} CLI is not installed or not executable.")
+    _require_provider_compatible(provider, binary)
     if not prompt or not prompt.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "prompt is required.")
     selection_validation = (
@@ -4893,6 +4914,8 @@ def spawn_agents(
     provider_binary = _find_binary(provider)
     if not provider_binary:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"{provider} CLI is not installed or not executable.")
+    # Before worktrees and admission: an incompatible CLI must not get work.
+    _require_provider_compatible(provider, provider_binary)
     workdir = _resolve_cwd(cwd)
     team_scope, team_profile, effective_capability_profile = _requested_agent_scope(
         workdir, access_mode, scope, parent_scope, parent_profile, capability_profile
@@ -6137,6 +6160,20 @@ def _codex_tool_name(item: Dict[str, Any]) -> Optional[str]:
     return str(explicit).strip() if explicit else item_type
 
 
+# Event types each adapter knows but does not act on; anything else is recorded
+# as a compatibility diagnostic instead of passing silently as generic output.
+_CODEX_PASSIVE_EVENTS = {"item.updated", "output"}
+_OPENCODE_PASSIVE_EVENTS = {"output", "reasoning", "error"}
+_UNKNOWN_EVENT_TYPES_KEPT = 10
+
+
+def _note_unknown_event(meta: Dict[str, Any], event_type: str) -> None:
+    seen = list(meta.get("unknown_event_types") or [])
+    if event_type not in seen and len(seen) < _UNKNOWN_EVENT_TYPES_KEPT:
+        seen.append(str(event_type)[:80])
+        meta["unknown_event_types"] = seen
+
+
 def _apply_provider_event(meta: Dict[str, Any], event: Dict[str, Any], now: float) -> Optional[bool]:
     if meta.get("status") == "cancelled":
         return False
@@ -6258,6 +6295,8 @@ def _apply_provider_event(meta: Dict[str, Any], event: Dict[str, Any], now: floa
         elif event_type in {"turn.failed", "error"}:
             meta["phase"] = "failed"
         else:
+            if event_type not in _CODEX_PASSIVE_EVENTS:
+                _note_unknown_event(meta, event_type)
             meta["phase"] = meta.get("phase") or "reasoning"
     else:
         if event_type == "step_start":
@@ -6279,6 +6318,8 @@ def _apply_provider_event(meta: Dict[str, Any], event: Dict[str, Any], now: floa
             reason = part.get("reason")
             meta["phase"] = "finalizing" if reason == "stop" else "reasoning"
         else:
+            if event_type not in _OPENCODE_PASSIVE_EVENTS:
+                _note_unknown_event(meta, event_type)
             meta["phase"] = meta.get("phase") or "working"
 
     meta["updated_at"] = now
