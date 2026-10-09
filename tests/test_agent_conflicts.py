@@ -4,7 +4,7 @@ import unittest
 
 from mcp_server import tools_agents as agents
 from mcp_server.agent_results import normalize_result_envelope, reduce_task_results
-from tests.test_agent_team_outcome import FailureAwareTeamOutcomeTests
+from tests.test_agent_team_outcome import TeamFixture
 
 
 def envelope(claims=(), *, outcome="success", errors=(), resolutions=None) -> dict:
@@ -53,7 +53,7 @@ class EnvelopeAndReducerTests(unittest.TestCase):
                           "resolved_by_task_id": "review"}, conflict["resolution"])
 
 
-class TeamConflictOutcomeTests(FailureAwareTeamOutcomeTests):
+class TeamConflictOutcomeTests(TeamFixture, unittest.TestCase):
     def conflicting_team(self, policy: str) -> str:
         team_id = f"team_conflict_{policy}"
         a = self.agent(f"agt_a_{policy}", "completed", team_id=team_id, task_id="a")

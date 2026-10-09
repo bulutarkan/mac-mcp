@@ -5175,6 +5175,46 @@ def _wait_snapshot(states: List[Dict[str, Any]], team_summary: Optional[Dict[str
     return _agent_wait_snapshot(states)
 
 
+_WAIT_POLL_S = 0.25
+# Even with no visible change, rebuild this often: a worker that dies without
+# writing anything is only noticed when its state is re-read.
+_WAIT_FULL_REFRESH_S = 2.0
+
+
+def _wait_signature(team_id: Optional[str], ids: List[str]) -> tuple:
+    """Cheap change signal: size and mtime of every watched agent's meta and the team file.
+
+    Workers in other processes update these files on every lifecycle step, so the
+    signal works across processes and survives a server restart.
+    """
+    paths = [_meta_path(str(agent_id)) for agent_id in ids]
+    if team_id:
+        paths.append(_team_meta_path(str(team_id)))
+    signature = []
+    for path in paths:
+        try:
+            info = path.stat()
+            signature.append((info.st_mtime_ns, info.st_size))
+        except OSError:
+            signature.append(None)
+    return tuple(signature)
+
+
+def _wait_progress(states: List[Dict[str, Any]], *, polls: int, rebuilds: int) -> Dict[str, Any]:
+    counts: Dict[str, int] = {}
+    last_activity = 0.0
+    for item in states:
+        state = str(item.get("status") or "unknown")
+        counts[state] = counts.get(state, 0) + 1
+        last_activity = max(last_activity, float(item.get("last_activity_at") or 0.0))
+    return {
+        "states": counts,
+        "last_activity_at": last_activity or None,
+        "checks": polls,
+        "state_rebuilds": rebuilds,
+    }
+
+
 def wait_agents(
     settings: Settings,
     team_id: Optional[str] = None,
@@ -5208,7 +5248,22 @@ def wait_agents(
     wait_state: Dict[str, Any] = _aggregate_work_outcome(0, 0, 0)
     wait_state.update({"terminal_count": 0, "failure_reasons": []})
     quorum_total = 0
+    signature: Optional[tuple] = None
+    last_rebuild = 0.0
+    polls = rebuilds = 0
     while True:
+        polls += 1
+        current_signature = _wait_signature(team_id, ids)
+        if (
+            states and current_signature == signature
+            and time.monotonic() - last_rebuild < _WAIT_FULL_REFRESH_S
+            and time.monotonic() < deadline
+        ):
+            # Nothing any watched agent or the team wrote has changed: skip the rebuild.
+            time.sleep(_WAIT_POLL_S)
+            continue
+        signature, last_rebuild = current_signature, time.monotonic()
+        rebuilds += 1
         if team_id:
             team_summary = _team_summary(str(team_id))
             ids = list(team_summary.get("agent_ids") or [])
@@ -5225,7 +5280,7 @@ def wait_agents(
         if time.monotonic() >= deadline:
             waiter_timed_out = True
             break
-        time.sleep(0.25)
+        time.sleep(_WAIT_POLL_S)
     compact: List[Dict[str, Any]] = []
     for item in states:
         row = {
@@ -5316,6 +5371,7 @@ def wait_agents(
         "condition_met": condition_met,
         "success": wait_success,
         "outcome": str(wait_state.get("outcome") or "running"),
+        "progress": _wait_progress(states, polls=polls, rebuilds=rebuilds),
         "unresolved_conflict_count": int((team_summary or {}).get("unresolved_conflict_count") or 0),
         "conflict_policy": (team_summary or {}).get("conflict_policy"),
         "partial_failure": bool(wait_state.get("partial_failure")),

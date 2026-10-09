@@ -8,7 +8,9 @@ from pathlib import Path
 from mcp_server import tools_agents as agents
 
 
-class FailureAwareTeamOutcomeTests(unittest.TestCase):
+class TeamFixture:
+    """Temporary agents/teams folders plus helpers; mix into a TestCase."""
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -75,6 +77,9 @@ class FailureAwareTeamOutcomeTests(unittest.TestCase):
             "budget_exhausted_reason": budget_exhausted_reason,
         })
 
+
+
+class FailureAwareTeamOutcomeTests(TeamFixture, unittest.TestCase):
     def test_any_failed_plus_running_does_not_form_success_quorum(self) -> None:
         failed = self.agent("agt_failed", "failed")
         running = self.agent("agt_running", "running")
