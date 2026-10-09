@@ -54,6 +54,14 @@ class DescribeTests(unittest.TestCase):
         policy = error_contract.describe(ToolError("scope_denied: tool=x; reasons=y"))
         self.assertEqual(("scope_denied", "policy", "not_executed", "never_retry"), _key(policy))
 
+    def test_tab_guard_refusals_are_not_executed(self) -> None:
+        for code, retry in (("tab_rebind_required", "observe_again"), ("tab_busy", "safe_retry"),
+                            ("tab_owned_by_other_agent", "never_retry")):
+            with self.subTest(code=code):
+                contract = error_contract.describe(HTTPException(409, {"error": code}), tool="browser_close_tab")
+                self.assertEqual(("preflight" if code != "tab_owned_by_other_agent" else "policy", "not_executed", retry),
+                                 (contract["stage"], contract["outcome"], contract["retry"]))
+
     def test_annotate_and_parse_round_trip(self) -> None:
         contract = error_contract.describe(HTTPException(404, "File not found"), tool="read_file", mutating=False)
         text = error_contract.annotate("Error executing tool read_file: 404: File not found", contract)
