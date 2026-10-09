@@ -79,6 +79,14 @@ REGISTRY: Dict[str, ErrorSpec] = {
     # A native dialog opened (often by the action itself); answer it with browser_act type=dialog.
     "browser_dialog_open": ErrorSpec("execution", "unknown", "observe_again", 409),
     "no_dialog_open": ErrorSpec("execution", "not_executed", "observe_again", 409),
+    # Frame selection happens before any script runs in the frame.
+    "frame_not_found": ErrorSpec("validation", "not_executed", "fix_arguments", 409),
+    "frame_ambiguous": ErrorSpec("validation", "not_executed", "fix_arguments", 409),
+    "frame_context_unavailable": ErrorSpec("preflight", "not_executed", "observe_again", 409),
+    "frame_unsupported": ErrorSpec("preflight", "not_executed", "never_retry", 409),
+    "frame_visual_unsupported": _VALIDATION,
+    "trusted_input_in_frame_unsupported": _VALIDATION,
+    "stale_coordinates": ErrorSpec("preflight", "not_executed", "observe_again", 409),
     "provider_incompatible": ErrorSpec("preflight", "not_executed", "never_retry", 409),
     "outcome_unknown": ErrorSpec("execution", "unknown", "observe_again", 409),
     "timeout": ErrorSpec("execution", "unknown", "observe_again", 504),

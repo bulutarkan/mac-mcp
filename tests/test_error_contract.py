@@ -67,6 +67,11 @@ class DescribeTests(unittest.TestCase):
         }), tool="browser_close_tab")
         self.assertEqual(1000, owned["retry_after_ms"])
 
+    def test_frame_selection_errors_ask_for_a_better_selector(self) -> None:
+        for code in ("frame_ambiguous", "frame_not_found"):
+            contract = error_contract.describe(HTTPException(502, {"error": code}), tool="browser_observe")
+            self.assertEqual(("not_executed", "fix_arguments"), (contract["outcome"], contract["retry"]))
+
     def test_annotate_and_parse_round_trip(self) -> None:
         contract = error_contract.describe(HTTPException(404, "File not found"), tool="read_file", mutating=False)
         text = error_contract.annotate("Error executing tool read_file: 404: File not found", contract)
