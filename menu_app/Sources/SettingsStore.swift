@@ -92,6 +92,7 @@ final class SettingsStore: ObservableObject {
     /// The value read from disk; the server may change it (Always Allow in the
     /// voice dialog), so only a change made here is written back.
     private var loadedVoiceAskEveryTime = true
+    var voiceConsentEdited: Bool { voiceAskEveryTime != loadedVoiceAskEveryTime }
     @Published var language = "auto"
     @Published var inputDevice = "auto"
     @Published var outputDevice = "system"
@@ -137,6 +138,17 @@ final class SettingsStore: ObservableObject {
         load()
         hasGroqKey = KeychainStore.hasGroqKey()
         hasDecisionsKey = KeychainStore.hasDecisionsKey()
+    }
+
+    /// Re-read only the voice consent choice, which the voice dialog's Always
+    /// Allow can change behind this window, without touching other edits.
+    func refreshVoiceConsent() {
+        guard let data = try? Data(contentsOf: path),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        let consent = (object["voice"] as? [String: Any])?["transcription_consent"] as? String ?? "ask"
+        let askEveryTime = consent != "always"
+        loadedVoiceAskEveryTime = askEveryTime
+        if voiceAskEveryTime != askEveryTime { voiceAskEveryTime = askEveryTime }
     }
 
     func load() {

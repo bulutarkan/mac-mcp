@@ -158,6 +158,9 @@ struct SettingsView: View {
             await state.refreshAgentNotificationAuthorization()
         }
         .task(id: selection) {
+            if selection == .voice {
+                settings.refreshVoiceConsent()
+            }
             if selection == .usage {
                 await state.refreshUsage(actorClass: usageActor.apiValue)
                 await state.refreshProviderUsage(days: providerUsagePeriod.days)
@@ -1704,7 +1707,10 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(!settings.voiceEnabled)
-                .onChange(of: settings.voiceAskEveryTime) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
+                .onChange(of: settings.voiceAskEveryTime) { _ in
+                    // Values re-read from disk are not edits and are not written back.
+                    if settings.voiceConsentEdited { persistSettings(scope: .voice, success: "Saved · applies live") }
+                }
 
                 Divider()
 

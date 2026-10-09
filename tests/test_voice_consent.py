@@ -112,5 +112,19 @@ class VoiceTelemetryTests(unittest.TestCase):
         self.assertIn("voice transcript not stored", stored)
 
 
+
+class VoiceConsentSettingsSourceTests(unittest.TestCase):
+    def test_app_never_overwrites_a_consent_choice_made_in_the_dialog(self) -> None:
+        sources = Path(__file__).resolve().parents[1] / "menu_app" / "Sources"
+        store = (sources / "SettingsStore.swift").read_text(encoding="utf-8")
+        view = (sources / "SettingsView.swift").read_text(encoding="utf-8")
+        # Unedited, the app writes nil so the merge keeps what the server stored.
+        self.assertIn('transcription_consent: voiceAskEveryTime == loadedVoiceAskEveryTime ? nil', store)
+        self.assertIn("func refreshVoiceConsent()", store)
+        self.assertIn("settings.refreshVoiceConsent()", view)
+        self.assertIn("if settings.voiceConsentEdited { persistSettings(scope: .voice", view)
+        self.assertIn('experimental_tools: ["ask_user_voice": ExperimentalTool(enabled: false)]', store)
+
+
 if __name__ == "__main__":
     unittest.main()
