@@ -5,7 +5,6 @@ Publishes a selected compatibility subset of the full MCP tool surface.
 from __future__ import annotations
 
 from pathlib import Path
-import hashlib
 import os
 from typing import Any, Callable, Dict, List, Optional
 
@@ -112,10 +111,17 @@ def require_auth(request: Request) -> str:
         raise
     rate_limit(_rest_rate_limiter(settings), rate_key, ip)
     request.state.policy_context = context
-    digest = hashlib.sha256(str(rate_key).encode("utf-8")).hexdigest()
-    request.state.security_key = f"rest:{digest}"
-    request.state.security_session_id = context.agent_id or f"rest_{digest[:16]}"
+    request.state.security_key, request.state.security_session_id = rest_security_identity(context)
     return rate_key
+
+
+def rest_security_identity(context: Any) -> tuple[str, str]:
+    """The same security key MCP uses for this principal, so provenance and secret
+    fingerprints follow an agent across transports (agent:<id>); other callers are
+    keyed by actor and profile, as MCP calls outside a chat session are."""
+    key = SecurityContextManager.identity_key(context, None)
+    session_id = context.agent_id or f"actor:{context.actor}"
+    return key, session_id
 
 
 def _record_rest_security_event(
