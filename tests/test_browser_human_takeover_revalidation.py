@@ -54,6 +54,12 @@ def _target(
 
 
 class BrowserMutationRevalidationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # These cases drive the stepwise readiness-then-action path explicitly.
+        fused = patch("mcp_server.tools_browser_agent._try_fused_action", return_value={"js_calls": 0})
+        fused.start()
+        self.addCleanup(fused.stop)
+
     def _batch_result(self, typ: str) -> dict:
         return {
             "ok": True,

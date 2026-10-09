@@ -21,6 +21,12 @@ def _post(**extra):
 
 
 class ClickDomEffectTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # These cases script the stepwise readiness-then-action calls explicitly.
+        fused = patch.object(agent, "_try_fused_action", return_value={"js_calls": 0})
+        fused.start()
+        self.addCleanup(fused.stop)
+
     def _verify(self, click, *posts):
         queue = [{"ok": True, "actions": [click]}, *posts]
 

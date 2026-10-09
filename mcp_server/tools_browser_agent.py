@@ -857,11 +857,24 @@ def _browser_state_bootstrap() -> str:
 
 
 def _with_binding_only(js: str) -> Optional[str]:
-    start = js.find(_BOOT_BEGIN)
-    end = js.find(_BOOT_END, start + len(_BOOT_BEGIN)) if start >= 0 else -1
-    if start < 0 or end < 0:
+    """Replace every marked helper region (a composed script can hold several)."""
+    binding = str(_agent_api()["binding"])
+    out: List[str] = []
+    position = 0
+    replaced = False
+    while True:
+        start = js.find(_BOOT_BEGIN, position)
+        end = js.find(_BOOT_END, start + len(_BOOT_BEGIN)) if start >= 0 else -1
+        if start < 0 or end < 0:
+            break
+        out.append(js[position:start])
+        out.append(binding)
+        position = end + len(_BOOT_END)
+        replaced = True
+    if not replaced:
         return None
-    return js[:start] + str(_agent_api()["binding"]) + js[end + len(_BOOT_END):]
+    out.append(js[position:])
+    return "".join(out)
 
 
 def _document_key(browser: str, target: browser_tabs.TabTarget) -> Tuple[str, str]:
@@ -2728,6 +2741,60 @@ def _effect_changed(before: Dict[str, Any], after: Dict[str, Any]) -> bool:
     return False
 
 
+def _ready_then_batch_js(action: Dict[str, Any], observation_id: Optional[str], action_type: str, stable_ms: int) -> str:
+    """Check readiness and, only if ready, run the action in the same bridge call.
+
+    Not ready means nothing ran: the host then falls back to its bounded readiness
+    polling before acting, exactly as before.
+    """
+    readiness = _element_readiness_js(str(action.get("element_id") or ""), action_type, stable_ms)
+    batch = _batch_js([action], observation_id)
+    return (
+        "(function(){"
+        "function __mcpDecode(v){return JSON.parse(decodeURIComponent(escape(atob(v))));}"
+        "function __mcpEncode(o){return btoa(unescape(encodeURIComponent(JSON.stringify(o))));}"
+        "var raw=" + readiness + ";"
+        "if(raw==='" + _AGENT_API_MISSING + "')return raw;"
+        "var ready=__mcpDecode(raw);"
+        "if(!ready.ready)return __mcpEncode({fused:true,ready:false,readiness:ready});"
+        "var done=" + batch + ";"
+        "if(done==='" + _AGENT_API_MISSING + "')return done;"
+        "return __mcpEncode({fused:true,ready:true,readiness:ready,batch:__mcpDecode(done)});"
+        "})()"
+    )
+
+
+# Phase timings use their own clock so tests that script time.perf_counter keep working.
+_phase_clock = time.perf_counter
+
+
+def _try_fused_action(
+    settings: Settings,
+    browser: str,
+    action: Dict[str, Any],
+    observation_id: Optional[str],
+    action_type: str,
+    window_index: int,
+    tab_index: Optional[int],
+    tab_handle: Optional[str],
+    mutation_revalidator: Optional[MutationRevalidator],
+) -> Dict[str, Any]:
+    """Most targets are already stable: check readiness and act in one bridge call."""
+    target = None
+    if mutation_revalidator is not None:
+        target, blocked = mutation_revalidator(action_type)
+        if blocked is not None:
+            return {"blocked": blocked, "js_calls": 0}
+    stable_ms = max(0, min(int(action.get("readiness_stable_ms", _ELEMENT_READINESS_STABLE_MS)), 1500))
+    attempt = _run_json_js(
+        settings, browser, _ready_then_batch_js(action, observation_id, action_type, stable_ms),
+        window_index, tab_index, tab_handle, prevalidated_target=target,
+    )
+    if attempt.get("ready") and isinstance(attempt.get("batch"), dict):
+        return {"out": attempt["batch"], "readiness": attempt.get("readiness"), "js_calls": 1}
+    return {"js_calls": 1}
+
+
 def _verified_dom_action(
     settings: Settings,
     browser: str,
@@ -2756,10 +2823,28 @@ def _verified_dom_action(
             "message": "input_mode=trusted is supported only for click and double_click.", "_js_calls": 0,
         }
 
-    readiness = _wait_for_element_readiness(
-        settings, browser, action, window_index, tab_index, tab_handle,
-    )
-    js_calls += int(readiness.pop("_js_calls", 0))
+    phase_started = _phase_clock()
+    phases: Dict[str, int] = {}
+    fused_out: Optional[Dict[str, Any]] = None
+    readiness: Dict[str, Any] = {}
+    if input_mode == "synthetic" and element_id:
+        fused = _try_fused_action(
+            settings, browser, action, observation_id, typ, window_index, tab_index, tab_handle,
+            mutation_revalidator,
+        )
+        js_calls += int(fused.get("js_calls") or 0)
+        if fused.get("blocked") is not None:
+            return {"type": typ, "element_id": element_id or None, "_js_calls": js_calls, **fused["blocked"]}
+        if fused.get("out") is not None:
+            readiness = dict(fused.get("readiness") or {})
+            readiness["duration_ms"] = int((_phase_clock() - phase_started) * 1000)
+            fused_out = fused["out"]
+    if fused_out is None:
+        readiness = _wait_for_element_readiness(
+            settings, browser, action, window_index, tab_index, tab_handle,
+        )
+        js_calls += int(readiness.pop("_js_calls", 0))
+    phases["readiness_ms"] = int((_phase_clock() - phase_started) * 1000)
     if not readiness.get("ready"):
         return {
             "ok": False,
@@ -2884,20 +2969,26 @@ def _verified_dom_action(
         }
         out = {"ok": True, "actions": [result]}
     else:
-        mutation_target = None
-        if mutation_revalidator is not None:
-            mutation_target, blocked = mutation_revalidator(typ)
-            if blocked is not None:
-                return {
-                    "type": typ, "element_id": element_id or None,
-                    "readiness": readiness, "_js_calls": js_calls, **blocked,
-                }
-        out = _run_json_js(
-            settings, browser, _batch_js([action], observation_id),
-            window_index, tab_index, tab_handle,
-            prevalidated_target=mutation_target,
-        )
-        js_calls += 1
+        action_started = _phase_clock()
+        if fused_out is not None:
+            out = fused_out
+            phases["action_ms"] = 0  # ran inside the readiness call
+        else:
+            mutation_target = None
+            if mutation_revalidator is not None:
+                mutation_target, blocked = mutation_revalidator(typ)
+                if blocked is not None:
+                    return {
+                        "type": typ, "element_id": element_id or None,
+                        "readiness": readiness, "_js_calls": js_calls, **blocked,
+                    }
+            out = _run_json_js(
+                settings, browser, _batch_js([action], observation_id),
+                window_index, tab_index, tab_handle,
+                prevalidated_target=mutation_target,
+            )
+            js_calls += 1
+            phases["action_ms"] = int((_phase_clock() - action_started) * 1000)
         result = dict((out.get("actions") or [out])[0])
         if typ in {"click", "double_click"}:
             result.setdefault("activation_mode", "synthetic_dom")
@@ -2949,6 +3040,7 @@ def _verified_dom_action(
 
     # A real click is emitted only once. Verification is read-only and bounded so a
     # delayed SPA commit can be observed without risking a duplicate destructive action.
+    verify_started = _phase_clock()
     if result.get("ok") and typ in {"click", "double_click"} and not result.get("effect_observed"):
         deadline = time.perf_counter() + max(
             0.1,
@@ -3010,6 +3102,10 @@ def _verified_dom_action(
                 "automatic_retry": False,
             })
 
+    phases["verify_ms"] = int((_phase_clock() - verify_started) * 1000)
+    result["phase_ms"] = phases
+    if fused_out is not None:
+        result["readiness_fused"] = True
     result["_js_calls"] = js_calls
     if isinstance(compact_state, dict):
         result["_compact_state"] = compact_state

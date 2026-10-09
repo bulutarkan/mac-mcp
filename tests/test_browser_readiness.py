@@ -71,6 +71,12 @@ class BrowserRenderReadinessTests(unittest.TestCase):
 
 
 class BrowserElementReadinessTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # These cases drive the stepwise readiness-then-action path explicitly.
+        fused = patch("mcp_server.tools_browser_agent._try_fused_action", return_value={"js_calls": 0})
+        fused.start()
+        self.addCleanup(fused.stop)
+
     def test_shared_readiness_primitive_checks_pointer_events_hit_test_and_stability(self) -> None:
         bootstrap = _browser_state_bootstrap()
         for token in (
