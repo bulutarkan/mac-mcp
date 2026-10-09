@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 from urllib.parse import urlsplit
@@ -133,6 +134,25 @@ class ContextGateDecision:
     tab_title: Optional[str] = None
 
 
+# The spawning call's untrusted-web provenance, set by the tool wrapper around
+# spawn_agent/spawn_agents/agent_action so the agent code can persist it on the
+# child before the child's worker starts (see ``seed_child_state``).
+_DELEGATED_PROVENANCE: ContextVar[Optional[dict]] = ContextVar("mac_mcp_delegated_provenance", default=None)
+
+
+def set_delegated_provenance(snapshot: Optional[dict]):
+    return _DELEGATED_PROVENANCE.set(snapshot)
+
+
+def reset_delegated_provenance(token) -> None:
+    _DELEGATED_PROVENANCE.reset(token)
+
+
+def current_delegated_provenance() -> Optional[dict]:
+    value = _DELEGATED_PROVENANCE.get()
+    return dict(value) if value else None
+
+
 class SecurityContextManager:
     """In-memory provenance, web→host boundary, and secret-egress state."""
 
@@ -218,6 +238,43 @@ class SecurityContextManager:
             if pending.public_session_id == public_session_id:
                 self._pending.pop(request_id, None)
 
+    def set_child_seed_loader(self, loader) -> None:
+        """loader(agent_id) -> persisted inherited provenance or None (read from the agent's meta)."""
+        self._child_seed_loader = loader
+
+    def provenance_snapshot(self, key: str, public_session_id: str) -> Optional[dict]:
+        """What a child spawned by this caller must inherit, or None when the caller is not tainted."""
+        with self._lock:
+            parent = self._states.get(key)
+            if parent is None or not parent.web_scoped or parent.provenance_class != "tainted_untrusted_web":
+                return None
+            return {
+                "provenance_class": "tainted_untrusted_web",
+                "origin": parent.provenance_origin or parent.current_origin,
+                "tab_handle": parent.provenance_tab_handle or parent.tab_handle,
+                "tab_title": parent.provenance_tab_title or parent.tab_title,
+                "inherited_from_session": public_session_id,
+                "inheritance_hops": parent.inheritance_hops + 1,
+            }
+
+    def _seed_new_agent_state_locked(self, state: ExecutionSecurityState) -> None:
+        loader = getattr(self, "_child_seed_loader", None)
+        if loader is None or not state.key.startswith("agent:"):
+            return
+        try:
+            seed = loader(state.key[len("agent:"):])
+        except Exception:
+            seed = None
+        if not isinstance(seed, Mapping) or seed.get("provenance_class") != "tainted_untrusted_web":
+            return
+        self._mark_untrusted_provenance_locked(
+            state, origin=seed.get("origin"), tab_handle=seed.get("tab_handle"), tab_title=seed.get("tab_title"),
+            reason="delegated_context_transfer",
+            inherited_from_session=seed.get("inherited_from_session"),
+            inheritance_hops=int(seed.get("inheritance_hops") or 1),
+        )
+        state.current_origin = seed.get("origin") or state.current_origin
+
     def touch(self, key: str, public_session_id: str) -> ExecutionSecurityState:
         now = time.time()
         with self._lock:
@@ -225,6 +282,9 @@ class SecurityContextManager:
             state = self._states.get(key)
             if state is None:
                 state = ExecutionSecurityState(key=key, public_session_id=public_session_id, last_seen_at=now)
+                # A delegated child starts with the provenance persisted when it was
+                # spawned, so its first call is gated like its parent's would be.
+                self._seed_new_agent_state_locked(state)
                 self._states[key] = state
             else:
                 if state.public_session_id != public_session_id:

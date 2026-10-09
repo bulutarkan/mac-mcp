@@ -43,6 +43,7 @@ from .tools_jobs import (
     stop_job, list_jobs, delete_job, wait_jobs, run_commands_parallel,
 )
 from .tools_agents import (
+    inherited_provenance_for,
     AGENTS_DIR, agent_catalog, spawn_agent, spawn_agents, wait_agents,
     list_agents, get_agent, agent_action,
 )
@@ -341,6 +342,7 @@ def create_app():
         )
 
     security_context = SecurityContextManager()
+    security_context.set_child_seed_loader(inherited_provenance_for)
     mcp = ObservedFastMCP(
         telemetry=telemetry,
         security_context=security_context,

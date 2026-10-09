@@ -31,7 +31,7 @@ ensure_fastmcp_settings_model_complete()
 from .steering import SteeringManager, attach_steering, preemption_error, steering_identity_from_context
 from . import browser_tabs
 from .tool_summaries import COMPACT_DESCRIPTION_LIMIT, CORE_TOOL_NAMES, CORE_TOOL_SUMMARIES
-from .security_context import SecurityContextManager
+from .security_context import SecurityContextManager, reset_delegated_provenance, set_delegated_provenance
 from .data_guard import contains_direct_secret, redact_sensitive_source_result, redact_sensitive_text, sanitize_tool_arguments
 from .workflow_checkpoints import (
     WorkflowCheckpointError, abandon_side_effect, begin_side_effect, exception_not_executed,
@@ -1039,6 +1039,8 @@ def _clip_description(description: str) -> str:
 
 
 _CORE_TOOL_NAMES = CORE_TOOL_NAMES
+# Tools that start or restart delegated agents (see SecurityContextManager.provenance_snapshot).
+_DELEGATING_TOOLS = frozenset({"spawn_agent", "spawn_agents", "agent_action", "tool_invoke"})
 
 
 class ObservedFastMCP(FastMCP):
@@ -1610,12 +1612,19 @@ class ObservedFastMCP(FastMCP):
                 browser_owner = f"agent:{policy_context.agent_id}"
             elif steering_identity is not None:
                 browser_owner = f"session:{steering_identity.key}"
+            # Children spawned by this call persist the caller's untrusted-web
+            # provenance before their worker starts (see seed_child_state).
+            delegated_token = set_delegated_provenance(
+                self.security_context.provenance_snapshot(security_key, public_session_id)
+                if name in _DELEGATING_TOOLS else None
+            )
             try:
                 with browser_tabs.logical_owner_scope(
                     browser_owner, agent_id=policy_context.agent_id, profile=policy_context.profile,
                 ):
                     result = await self._call_registered_tool(name, arguments)
             except BaseException as exc:
+                reset_delegated_provenance(delegated_token)
                 if isinstance(exc, asyncio.CancelledError):
                     if cancellation_scope is not None:
                         cancellation_scope.cancel("client_cancelled")
@@ -1679,6 +1688,7 @@ class ObservedFastMCP(FastMCP):
                     self.steering.finish_call(steering_identity, event_id, delivered=False, outcome="failed")
                 raise
 
+            reset_delegated_provenance(delegated_token)
             result = filter_scoped_result(policy_context.scope, name, result)
             if receipt_required and policy_context.agent_id:
                 try:

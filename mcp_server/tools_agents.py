@@ -57,6 +57,7 @@ from .agent_admission import (
 )
 from .workspace_arbitration import sanitize_resource_claims
 from . import provider_compat
+from .security_context import current_delegated_provenance
 from .provider_usage import (
     SOURCE_REPORT as PROVIDER_USAGE_SOURCE_REPORT,
     UsageRecord as ProviderUsageRecord,
@@ -4300,6 +4301,32 @@ def _spawn_worker_process(agent_id: str, worker_log, launch_nonce: Optional[str]
     )
 
 
+def _inherited_provenance_seed(*, team_id: Optional[str], parent_agent_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Untrusted-web provenance a new agent starts with: from the spawning call, its team or its parent."""
+    seed = current_delegated_provenance()
+    if seed:
+        return seed
+    for loader, owner in ((_read_team, team_id), (_read_meta, parent_agent_id)):
+        if not owner:
+            continue
+        try:
+            stored = loader(str(owner)).get("inherited_provenance")
+        except (HTTPException, OSError, ValueError):
+            continue
+        if isinstance(stored, dict) and stored.get("provenance_class") == "tainted_untrusted_web":
+            return dict(stored)
+    return None
+
+
+def inherited_provenance_for(agent_id: str) -> Optional[Dict[str, Any]]:
+    """Seed loader for the security context: the provenance persisted when this agent was spawned."""
+    try:
+        stored = _read_meta(str(agent_id)).get("inherited_provenance")
+    except (HTTPException, OSError, ValueError):
+        return None
+    return dict(stored) if isinstance(stored, dict) else None
+
+
 def _spawn_internal(
     settings: Settings,
     provider: str,
@@ -4673,6 +4700,10 @@ def _spawn_internal(
         status_code = status.HTTP_409_CONFLICT if isinstance(exc, (CheckpointConflictError, CheckpointUnknownError)) else status.HTTP_500_INTERNAL_SERVER_ERROR
         raise HTTPException(status_code, f"{exc.code}: {exc}") from exc
 
+    # Before the worker exists: a child of tainted context must be gated from its first call.
+    seed = _inherited_provenance_seed(team_id=team_id, parent_agent_id=parent_agent_id)
+    if seed:
+        meta = _update_meta(agent_id, lambda current: current.update(inherited_provenance=seed))
     worker_log = (path / "worker.log").open("a", encoding="utf-8")
     try:
         proc = _spawn_worker_process(agent_id, worker_log, str(meta.get("launch_nonce") or "") or None)
@@ -5068,6 +5099,8 @@ def spawn_agents(
         "max_parallel": effective_max_parallel,
         "max_revisions": effective_max_revisions,
         "conflict_policy": conflict_policy,
+        # Tasks the scheduler starts later (possibly from a worker process) inherit this too.
+        "inherited_provenance": current_delegated_provenance(),
         "team_timeout_s": effective_team_timeout,
         "deadline_at": created + effective_team_timeout,
         "max_team_retries": effective_team_retries,
