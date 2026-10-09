@@ -121,7 +121,7 @@ class AuditLogTests(unittest.TestCase):
         self.assertIn('if os.getenv("MAC_MCP_MANAGED_SERVER") == "1":', main_source)
         cli_source = (Path(__file__).resolve().parents[1] / "mcp_server" / "cli.py").read_text(encoding="utf-8")
         self.assertIn('env["MAC_MCP_MANAGED_SERVER"] = "1"', cli_source)
-        self.assertLess(cli_source.index("rotate_copy_truncate(LOG_FILE)"), cli_source.index('log = LOG_FILE.open("a", encoding="utf-8")'))
+        self.assertLess(cli_source.index("rotate_copy_truncate(LOG_FILE)"), cli_source.index('with LOG_FILE.open("a", encoding="utf-8") as log:'))
         self.assertNotIn("rotate_managed_logs()", cli_source)
 
 

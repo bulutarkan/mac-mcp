@@ -473,16 +473,17 @@ def _start_server_locked(args: argparse.Namespace) -> int:
     # Rotate the file this start is about to append to (the module path, so tests
     # that point LOG_FILE elsewhere never touch the real log).
     rotate_copy_truncate(LOG_FILE)
-    log = LOG_FILE.open("a", encoding="utf-8")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-        env=env,
-        cwd=str(PROJECT_ROOT),
-        start_new_session=True,
-    )
+    # The child keeps its own copy of the log descriptor; close ours right away.
+    with LOG_FILE.open("a", encoding="utf-8") as log:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            cwd=str(PROJECT_ROOT),
+            start_new_session=True,
+        )
     time.sleep(0.5)
     if proc.poll() is not None:
         print(f"mac-mcp failed to start. See log: {LOG_FILE}")
@@ -1086,14 +1087,14 @@ def _start_ngrok(args: argparse.Namespace) -> int:
         cmd = [ngrok_path, "http", "--url", public_url, target]
     else:
         cmd = [ngrok_path, "http", f"--domain={domain}", target]
-    log = NGROK_LOG_FILE.open("a", encoding="utf-8")
-    proc = subprocess.Popen(
-        cmd,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    with NGROK_LOG_FILE.open("a", encoding="utf-8") as log:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
     time.sleep(0.8)
     if proc.poll() is not None:
         print(f"ngrok failed to start. See log: {NGROK_LOG_FILE}")
