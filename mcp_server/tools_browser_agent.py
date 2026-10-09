@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import tempfile
 import threading
 import time
 import unicodedata
 import uuid
+from collections import OrderedDict
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from fastapi import HTTPException, status
 from mcp.server.fastmcp.utilities.types import Image
@@ -27,7 +31,7 @@ from .tool_cancellation import cancellable_sleep, cancellation_checkpoint
 from .workspace_arbitration import delegated_agent_identity
 from .workflow_checkpoints import mark_not_executed
 from .tools_browser import (
-    _execute_js_for_target,
+    _execute_js_for_target as _raw_execute_js_for_target,
     _norm_browser,
     _require_stable_handle_for_mutation,
     _resolve_tab_target,
@@ -773,7 +777,149 @@ def _b64_return(expression: str) -> str:
     )
 
 
+# The page-side helper library (about 36 KB of function declarations) used to be
+# sent with every browser script. It is now installed once per document under a
+# versioned, per-process window property; later scripts bind its functions in a
+# few hundred bytes. Builders still emit complete, standalone scripts: the helper
+# sits between two markers that the executor swaps for the short binding when the
+# document already has the library, and a missing library is reported with a
+# sentinel so the complete script runs instead.
+_BOOT_BEGIN = "/*__MAC_MCP_BOOT_BEGIN__*/"
+_BOOT_END = "/*__MAC_MCP_BOOT_END__*/"
+_AGENT_API_MISSING = "__MAC_MCP_AGENT_API_MISSING__"
+_AGENT_API_NONCE = secrets.token_hex(4)
+_AGENT_API_LOCK = threading.Lock()
+_AGENT_API_CACHE: Dict[str, Any] = {}
+_WARM_DOCUMENTS: "OrderedDict[Tuple[str, str], float]" = OrderedDict()
+_WARM_DOCUMENT_LIMIT = 256
+_TRANSPORT = threading.local()
+
+
+def _top_level_function_names(source: str) -> List[str]:
+    names: List[str] = []
+    depth = 0
+    quote: Optional[str] = None
+    escaped = False
+    index = 0
+    while index < len(source):
+        ch = source[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = None
+        elif ch in "'\"`":
+            quote = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif depth == 0 and source.startswith("function ", index):
+            match = re.match(r"function\s+([A-Za-z_$][\w$]*)", source[index:])
+            if match:
+                names.append(match.group(1))
+        index += 1
+    return names
+
+
+def _agent_api() -> Dict[str, Any]:
+    with _AGENT_API_LOCK:
+        if not _AGENT_API_CACHE:
+            source = _bootstrap_functions_source()
+            version = hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
+            names = _top_level_function_names(source)
+            key = f"__macMcpAgentApi_{version}_{_AGENT_API_NONCE}"
+            exports = ",".join(f"{name}:{name}" for name in names)
+            install = (
+                "(function(){try{if(window['" + key + "'])return;"
+                "var api={" + exports + ",__mcpVersion:'" + version + "'};"
+                "try{Object.defineProperty(window,'" + key + "',{value:api,configurable:true});}"
+                "catch(e){window['" + key + "']=api;}}catch(e){}})();"
+            )
+            binding = (
+                "var __mcpApi=window['" + key + "'];"
+                "if(!__mcpApi||__mcpApi.__mcpVersion!=='" + version + "')return '" + _AGENT_API_MISSING + "';"
+                "var " + ",".join(f"{name}=__mcpApi.{name}" for name in names) + ";"
+            )
+            _AGENT_API_CACHE.update(
+                full=_BOOT_BEGIN + "\n" + source + "\n" + install + "\n" + _BOOT_END,
+                binding=_BOOT_BEGIN + binding + _BOOT_END,
+                names=names,
+                version=version,
+            )
+        return _AGENT_API_CACHE
+
+
 def _browser_state_bootstrap() -> str:
+    return str(_agent_api()["full"])
+
+
+def _with_binding_only(js: str) -> Optional[str]:
+    start = js.find(_BOOT_BEGIN)
+    end = js.find(_BOOT_END, start + len(_BOOT_BEGIN)) if start >= 0 else -1
+    if start < 0 or end < 0:
+        return None
+    return js[:start] + str(_agent_api()["binding"]) + js[end + len(_BOOT_END):]
+
+
+def _document_key(browser: str, target: browser_tabs.TabTarget) -> Tuple[str, str]:
+    return (str(browser), str(target.native_id or target.tab_handle or ""))
+
+
+def _note_transport(sent: int, received: int, injected: bool) -> None:
+    stats = getattr(_TRANSPORT, "stats", None)
+    if stats is not None:
+        stats["js_calls"] += 1
+        stats["sent_bytes"] += sent
+        stats["received_bytes"] += received
+        stats["helper_injections"] += 1 if injected else 0
+
+
+def _execute_js_for_target(browser: str, js: str, target: browser_tabs.TabTarget, timeout_s: int) -> str:
+    """Run page JavaScript, sending the helper library only when the document lacks it."""
+    light = _with_binding_only(js)
+    key = _document_key(browser, target)
+    if light is not None:
+        with _AGENT_API_LOCK:
+            warm = key in _WARM_DOCUMENTS
+        if warm:
+            out = _raw_execute_js_for_target(browser, light, target, timeout_s)
+            if str(out or "").strip() != _AGENT_API_MISSING:
+                _note_transport(len(light.encode("utf-8")), len(str(out or "")), False)
+                return out
+            # Reloaded or navigated: the document no longer has the library.
+            _note_transport(len(light.encode("utf-8")), len(str(out or "")), False)
+            with _AGENT_API_LOCK:
+                _WARM_DOCUMENTS.pop(key, None)
+    out = _raw_execute_js_for_target(browser, js, target, timeout_s)
+    _note_transport(len(js.encode("utf-8")), len(str(out or "")), light is not None)
+    if light is not None:
+        with _AGENT_API_LOCK:
+            _WARM_DOCUMENTS[key] = time.monotonic()
+            _WARM_DOCUMENTS.move_to_end(key)
+            while len(_WARM_DOCUMENTS) > _WARM_DOCUMENT_LIMIT:
+                _WARM_DOCUMENTS.popitem(last=False)
+    return out
+
+
+@contextmanager
+def _measure_transport() -> Iterator[Dict[str, int]]:
+    """Count JavaScript bridge traffic for one browser operation on this thread."""
+    previous = getattr(_TRANSPORT, "stats", None)
+    stats = {"js_calls": 0, "sent_bytes": 0, "received_bytes": 0, "helper_injections": 0}
+    _TRANSPORT.stats = stats
+    try:
+        yield stats
+    finally:
+        _TRANSPORT.stats = previous
+        if previous is not None:
+            for name, value in stats.items():
+                previous[name] += value
+
+
+def _bootstrap_functions_source() -> str:
     return r'''
 function __mcpInternalHost(el){try{return !!el&&el.id==='mac-mcp-visual-companion-root';}catch(e){return false;}}
 function __mcpInternalMutation(rec){
@@ -3695,9 +3841,9 @@ def browser_act(
         b = _norm_browser(browser)
         _require_stable_handle_for_mutation(b, tab_handle, window_index, "browser_act")
         _ensure_visual_companion(settings, b, window_index, tab_index, tab_handle)
-        with _tab_lease(b, tab_handle, window_index, tab_index, mutation=True) as target:
+        with _measure_transport() as transport, _tab_lease(b, tab_handle, window_index, tab_index, mutation=True) as target:
             started = True
-            return _browser_act_locked(
+            result = _browser_act_locked(
                 settings=settings,
                 browser=target.browser,
                 actions=actions,
@@ -3709,6 +3855,10 @@ def browser_act(
                 return_state=normalized_return_state,
                 allow_foreground=allow_foreground,
             )
+            if isinstance(result, dict):
+                # Bytes sent to and returned from the page, separate from the response size.
+                result["transport"] = dict(transport)
+            return result
     except HTTPException as exc:
         # Validation, tab-handle and lease refusals happen before any action runs;
         # tag them so a delegated agent's checkpoint is not made unknown.
