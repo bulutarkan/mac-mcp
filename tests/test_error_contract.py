@@ -33,6 +33,12 @@ class DescribeTests(unittest.TestCase):
                 contract = error_contract.describe(HTTPException(status, "x"), mutating=True)
                 self.assertFalse(contract["outcome"] == "unknown" and contract["retry"] == "safe_retry")
 
+    def test_auth_failures_are_policy_stage(self) -> None:
+        for status in (401, 403):
+            contract = error_contract.describe(HTTPException(status, "Invalid API key."), mutating=False)
+            self.assertEqual(("policy", "not_executed", "never_retry"),
+                             (contract["stage"], contract["outcome"], contract["retry"]))
+
     def test_read_only_tools_and_marked_refusals_are_not_executed(self) -> None:
         read = error_contract.describe(RuntimeError("boom"), tool="read_file", mutating=False)
         self.assertEqual(("not_executed", "safe_retry"), (read["outcome"], read["retry"]))

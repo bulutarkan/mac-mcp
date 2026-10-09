@@ -144,7 +144,7 @@ def describe(exc: BaseException, *, tool: Optional[str] = None, mutating: bool =
         status = status or 500
         unknown = mutating and not not_executed and (status >= 500 or status in (408, 409))
         spec = ErrorSpec(
-            "validation" if status in (400, 404, 422) else "execution",
+            "validation" if status in (400, 404, 422) else "policy" if status in (401, 403) else "execution",
             "unknown" if unknown else "not_executed",
             _status_retry(status, unknown),
             status,
