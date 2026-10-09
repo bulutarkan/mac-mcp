@@ -14,11 +14,9 @@ enables it, so tests and imports never build or start the helper.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import select
-import shutil
 import signal
 import subprocess
 import threading
@@ -26,6 +24,7 @@ import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from . import swift_build
 from .tool_cancellation import (
     ToolCancelledError,
     cancellation_checkpoint,
@@ -63,32 +62,10 @@ def _enabled() -> bool:
     return os.getenv("MAC_MCP_APPLESCRIPT_HOST", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _cache_dir() -> Path:
-    path = Path(os.getenv("MAC_MCP_APPLESCRIPT_HOST_CACHE", "~/.mac-mcp/cache/applescript-host")).expanduser()
-    path.mkdir(parents=True, exist_ok=True)
-    try:
-        path.chmod(0o700)
-    except OSError:
-        pass
-    return path
-
-
 def _build() -> None:
     try:
-        digest = hashlib.sha256(_SOURCE.read_bytes()).hexdigest()
-        cache = _cache_dir()
-        executable = cache / f"applescript-host-{digest[:16]}"
-        if not executable.exists():
-            swiftc = shutil.which("swiftc") or "/usr/bin/swiftc"
-            if not Path(swiftc).exists():
-                raise RuntimeError("swiftc is unavailable")
-            temporary = cache / f".build-{os.getpid()}"
-            subprocess.run(
-                [swiftc, "-O", str(_SOURCE), "-o", str(temporary)],
-                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180, check=True,
-            )
-            temporary.chmod(0o700)
-            os.replace(temporary, executable)
+        directory = swift_build.cache_dir("MAC_MCP_APPLESCRIPT_HOST_CACHE", "~/.mac-mcp/cache/applescript-host")
+        executable = swift_build.compile_cached(_SOURCE, directory, "applescript-host")
         with _lock:
             _state["executable"] = str(executable)
     except (OSError, subprocess.SubprocessError, RuntimeError):

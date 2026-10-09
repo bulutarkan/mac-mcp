@@ -40,6 +40,7 @@ from .native_targets import (
     window_handle_map as _window_handle_map,
 )
 from .native_window_capture import resolve_window_id as _resolve_native_window_id
+from . import ax_native
 from .security import Settings, truncate
 from .computer_use_perf import record_computer_use_sample
 from .perception import finalize_perception_telemetry, refresh_perception_size
@@ -299,6 +300,12 @@ def _parse_bool(value: str) -> bool:
     return str(value).strip().lower() in {"true", "yes", "1"}
 
 
+def _ax_text(value: str) -> str:
+    # AppleScript renders an empty attribute as the text "missing value"; both
+    # observers report it as empty so their output and fingerprints agree.
+    return "" if value == "missing value" else value
+
+
 def _parse_observation(raw: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     records = [record for record in raw.split(_RECORD_SEPARATOR) if record]
     metadata: Dict[str, Any] = {"windows": []}
@@ -325,16 +332,16 @@ def _parse_observation(raw: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
                 continue
             metadata.setdefault("windows", []).append({
                 "index": _parse_number(fields[1]) or 0,
-                "title": fields[2],
-                "document": fields[3],
-                "identifier": fields[4],
+                "title": _ax_text(fields[2]),
+                "document": _ax_text(fields[3]),
+                "identifier": _ax_text(fields[4]),
                 "position": {
                     "x": _parse_number(fields[5]),
                     "y": _parse_number(fields[6]),
                     "width": _parse_number(fields[7]),
                     "height": _parse_number(fields[8]),
                 },
-                "subrole": fields[9],
+                "subrole": _ax_text(fields[9]),
                 "focused": _parse_bool(fields[10]),
                 "main": _parse_bool(fields[11]),
             })
@@ -350,17 +357,17 @@ def _parse_observation(raw: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         nodes.append({
             "element_id": fields[1],
             "parent_id": fields[2] or None,
-            "role": fields[3],
-            "subrole": fields[4],
-            "title": fields[5],
-            "description": fields[6],
-            "value": fields[7],
+            "role": _ax_text(fields[3]),
+            "subrole": _ax_text(fields[4]),
+            "title": _ax_text(fields[5]),
+            "description": _ax_text(fields[6]),
+            "value": _ax_text(fields[7]),
             "position": {"x": x, "y": y, "width": width, "height": height},
             "enabled": _parse_bool(fields[12]),
             "focused": _parse_bool(fields[13]),
             "actions": actions,
             "child_count": _parse_number(fields[15]) or 0,
-            "identifier": fields[16] if len(fields) > 16 else "",
+            "identifier": _ax_text(fields[16]) if len(fields) > 16 else "",
         })
 
     return metadata, nodes
@@ -602,6 +609,31 @@ set outputText to recordList as text
 set AppleScript's text item delimiters to ""
 return outputText
 '''
+
+
+def _read_native_tree(
+    app: Optional[str],
+    window_index: int,
+    max_depth: int,
+    max_children: int,
+    *,
+    max_nodes: int = 500,
+    app_pid: Optional[int] = None,
+    timeout_s: float = 20,
+) -> Tuple[bool, str, str, str]:
+    """Read observation records natively when possible, else through AppleScript."""
+    native = ax_native.observe(
+        app=app, app_pid=app_pid, window_index=window_index, max_depth=max_depth,
+        max_children=max_children, max_nodes=max_nodes, timeout_s=timeout_s,
+    )
+    if native is not None:
+        ok, raw, error = native
+        return ok, raw, error, "ax_native"
+    ok, raw, error = _run_osascript(
+        _observation_script(app, window_index, max_depth, max_children, max_nodes=max_nodes, app_pid=app_pid),
+        timeout_s=timeout_s,
+    )
+    return ok, raw, error, "applescript"
 
 
 def _image_dimensions(path: str, timeout_s: float = 2.0) -> Tuple[Optional[int], Optional[int]]:
@@ -1202,14 +1234,14 @@ def _parse_fingerprint_observation(raw: str) -> Tuple[Dict[str, Any], List[Dict[
         if fields[0] == "__FPMETA__" and len(fields) >= 15:
             window = {
                 "index": num(fields[3]) or 0,
-                "title": fields[4],
-                "document": fields[5],
-                "identifier": fields[6],
+                "title": _ax_text(fields[4]),
+                "document": _ax_text(fields[5]),
+                "identifier": _ax_text(fields[6]),
                 "position": {
                     "x": num(fields[7]), "y": num(fields[8]),
                     "width": num(fields[9]), "height": num(fields[10]),
                 },
-                "subrole": fields[11],
+                "subrole": _ax_text(fields[11]),
                 "focused": str(fields[12]).lower() == "true",
                 "main": str(fields[13]).lower() == "true",
             }
@@ -1223,13 +1255,13 @@ def _parse_fingerprint_observation(raw: str) -> Tuple[Dict[str, Any], List[Dict[
             nodes.append({
                 "element_id": fields[1],
                 "parent_id": fields[2] or None,
-                "role": fields[3],
-                "subrole": fields[4],
-                "title": fields[5],
-                "value": fields[6],
+                "role": _ax_text(fields[3]),
+                "subrole": _ax_text(fields[4]),
+                "title": _ax_text(fields[5]),
+                "value": _ax_text(fields[6]),
                 "enabled": str(fields[7]).lower() == "true",
                 "focused": str(fields[8]).lower() == "true",
-                "identifier": fields[9],
+                "identifier": _ax_text(fields[9]),
                 "child_count": num(fields[10]) or 0,
             })
     return metadata, nodes
@@ -1246,31 +1278,39 @@ def _probe_native_observation_fingerprint(
 ) -> Tuple[Optional[str], Optional[str]]:
     probe_depth = max(0, min(int(max_depth), _NATIVE_FINGERPRINT_STATE_DEPTH))
     probe_children = max(1, min(int(max_children), _NATIVE_FINGERPRINT_STATE_MAX_CHILDREN))
-    if int(window_index) <= 0:
-        script = _observation_script(
-            app,
-            window_index,
-            probe_depth,
-            probe_children,
-            max_nodes=_NATIVE_FINGERPRINT_STATE_MAX_NODES,
-            app_pid=app_pid,
-        )
-        parser = _parse_observation
-    else:
-        script = _fingerprint_observation_script(
-            app,
-            window_index,
-            probe_depth,
-            probe_children,
-            _NATIVE_FINGERPRINT_STATE_MAX_NODES,
-            app_pid=app_pid,
-        )
-        parser = _parse_fingerprint_observation
-
-    ok, raw, error = _run_osascript(
-        script,
+    native = ax_native.observe(
+        app=app, app_pid=app_pid, window_index=int(window_index), max_depth=probe_depth,
+        max_children=probe_children, max_nodes=_NATIVE_FINGERPRINT_STATE_MAX_NODES,
         timeout_s=_operation_timeout(deadline, 5),
     )
+    if native is not None:
+        ok, raw, error = native
+        parser = _parse_observation
+    else:
+        if int(window_index) <= 0:
+            script = _observation_script(
+                app,
+                window_index,
+                probe_depth,
+                probe_children,
+                max_nodes=_NATIVE_FINGERPRINT_STATE_MAX_NODES,
+                app_pid=app_pid,
+            )
+            parser = _parse_observation
+        else:
+            script = _fingerprint_observation_script(
+                app,
+                window_index,
+                probe_depth,
+                probe_children,
+                _NATIVE_FINGERPRINT_STATE_MAX_NODES,
+                app_pid=app_pid,
+            )
+            parser = _parse_fingerprint_observation
+        ok, raw, error = _run_osascript(
+            script,
+            timeout_s=_operation_timeout(deadline, 5),
+        )
     if not ok:
         return None, error or "native fingerprint probe failed"
     metadata, nodes = parser(str(raw or ""))
@@ -1592,8 +1632,8 @@ def _native_target_error(reason_code: str, message: str, **extra: Any) -> Dict[s
 def _scan_native_windows(
     app: Optional[str], app_pid: Optional[int], deadline: Optional[float] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    ok, raw, error = _run_osascript(
-        _observation_script(app, 0, 0, 1, max_nodes=100, app_pid=app_pid),
+    ok, raw, error, _observer = _read_native_tree(
+        app, 0, 0, 1, max_nodes=100, app_pid=app_pid,
         timeout_s=_operation_timeout(deadline, 15),
     )
     if not ok:
@@ -1749,8 +1789,8 @@ def _collect_observation(
     local_deadline = time.monotonic() + _OBSERVE_BUDGET_S
     if deadline is not None:
         local_deadline = min(local_deadline, deadline)
-    ok, raw, error = _run_osascript(
-        _observation_script(app, window_index, max_depth, max_children, app_pid=app_pid),
+    ok, raw, error, observer = _read_native_tree(
+        app, window_index, max_depth, max_children, app_pid=app_pid,
         timeout_s=_operation_timeout(local_deadline, 20),
     )
     if not ok:
@@ -1855,6 +1895,7 @@ def _collect_observation(
         "telemetry": {
             "ax_traversals": 1,
             "payload_mode": "full",
+            "observer": observer,
         },
         "screenshot": {
             "requested": include_screenshot,
