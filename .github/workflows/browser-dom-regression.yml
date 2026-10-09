@@ -18,7 +18,6 @@ jobs:
       MCP_API_KEY: ci-browser-regression-0123456789abcdef0123456789abcdef
       MAC_MCP_BROWSER_TESTS: "1"
       MAC_MCP_SKIP_MENU_APP_INSTALL: "1"
-      MAC_MCP_TELEMETRY_DIR: ${{ runner.temp }}/mac-mcp-browser-telemetry
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -32,4 +31,6 @@ jobs:
       - name: Install isolated Chromium
         run: python -m playwright install --with-deps chromium
       - name: Run real DOM regressions
+        env:
+          MAC_MCP_TELEMETRY_DIR: ${{ runner.temp }}/mac-mcp-browser-telemetry
         run: python -m unittest discover -s tests -p 'test_browser_*_dom.py' -v
