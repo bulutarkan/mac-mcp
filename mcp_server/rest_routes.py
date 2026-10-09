@@ -34,6 +34,7 @@ from .tools_files import (
     write_file, write_files_batch, read_file, read_multiple_files,
     edit_file, move_file, copy_file, delete_path,
     list_directory, directory_tree, create_directory, get_file_info, find_files,
+    FIND_DEFAULT_LIMIT, LIST_DEFAULT_LIMIT, READ_MULTIPLE_TOTAL_CHARS,
 )
 from .tools_macos import (
     run_applescript, send_notification, clipboard_get, clipboard_set,
@@ -368,6 +369,9 @@ class KillProcessRequest(BaseModel):
 
 class FilesRequest(BaseModel):
     tool: str
+    limit: Optional[int] = None
+    cursor: Optional[str] = None
+    max_total_chars: Optional[int] = None
     path: Optional[str] = None
     content: Optional[str] = None
     paths: Optional[List[str]] = None
@@ -496,6 +500,8 @@ class StopJobRequest(BaseModel):
 
 class ListJobsRequest(BaseModel):
     status_filter: Optional[str] = None
+    limit: Optional[int] = None
+    cursor: Optional[str] = None
 
 class WaitJobsRequest(BaseModel):
     job_ids: List[str]
@@ -608,7 +614,9 @@ def api_jobs_stop(req: StopJobRequest, settings: Settings = Depends(get_settings
 
 @router.post("/jobs/list", operation_id="list_jobs")
 def api_jobs_list(req: ListJobsRequest, request: Request, settings: Settings = Depends(get_settings)) -> Dict[str, Any]:
-    return _filter_rest_result(request, "list_jobs", list_jobs(settings, status_filter=req.status_filter))
+    return _filter_rest_result(request, "list_jobs", list_jobs(
+        settings, status_filter=req.status_filter, limit=req.limit or 50, cursor=req.cursor,
+    ))
 
 
 @router.post("/jobs/wait", operation_id="wait_jobs")
@@ -688,7 +696,8 @@ def api_files(req: FilesRequest, request: Request, settings: Settings = Depends(
     if t == "read_file":
         result = read_file(settings, path=req.path, offset=req.offset or 0, length=req.length)
     elif t == "read_multiple_files":
-        result = read_multiple_files(settings, paths=req.paths or [])
+        result = read_multiple_files(settings, paths=req.paths or [],
+                                     max_total_chars=req.max_total_chars or READ_MULTIPLE_TOTAL_CHARS)
     elif t == "write_file":
         result = write_file(settings, path=req.path, content=req.content or "")
     elif t == "write_files_batch":
@@ -703,7 +712,7 @@ def api_files(req: FilesRequest, request: Request, settings: Settings = Depends(
     elif t == "delete_path":
         result = delete_path(settings, path=req.path, recursive=req.recursive or False)
     elif t == "list_directory":
-        result = list_directory(settings, path=req.path)
+        result = list_directory(settings, path=req.path, limit=req.limit or LIST_DEFAULT_LIMIT, cursor=req.cursor)
     elif t == "directory_tree":
         result = directory_tree(settings, path=req.path, depth=req.depth or 3)
     elif t == "create_directory":
@@ -712,7 +721,8 @@ def api_files(req: FilesRequest, request: Request, settings: Settings = Depends(
         result = get_file_info(settings, path=req.path)
     elif t == "find_files":
         result = find_files(settings, pattern=req.pattern, path=req.path or str(Path.home()),
-                            file_type=req.file_type or "any")
+                            file_type=req.file_type or "any", limit=req.limit or FIND_DEFAULT_LIMIT,
+                            cursor=req.cursor)
     else:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown file tool: {t}")
     return _filter_rest_result(request, t, result)

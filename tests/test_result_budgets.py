@@ -169,3 +169,46 @@ class ListJobsPagingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RestPagingTests(unittest.TestCase):
+    """REST passes limit/cursor/max_total_chars through to the same tools as MCP."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        from starlette.testclient import TestClient
+        from mcp_server.main import create_app
+        cls.client = TestClient(create_app(), base_url="http://127.0.0.1:8765")
+        cls.auth = {"authorization": "Bearer " + os.environ["MCP_API_KEY"]}
+
+    def setUp(self) -> None:
+        patcher = patch.dict(os.environ, {"MAC_MCP_PERMISSION_PROFILE": "trusted"}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_list_directory_and_find_files_page_over_rest(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            for index in range(7):
+                (Path(td) / f"n{index}.txt").write_text("x")
+            first = self.client.post("/api/files", headers=self.auth,
+                                     json={"tool": "list_directory", "path": td, "limit": 3}).json()
+            self.assertEqual(3, first["count"])
+            second = self.client.post("/api/files", headers=self.auth, json={
+                "tool": "list_directory", "path": td, "limit": 3, "cursor": first["page"]["next_cursor"],
+            }).json()
+            self.assertEqual("n3.txt", second["entries"][0]["name"])
+            found = self.client.post("/api/files", headers=self.auth,
+                                     json={"tool": "find_files", "pattern": "*.txt", "path": td, "limit": 2}).json()
+            self.assertEqual(2, found["count"])
+            self.assertTrue(found["page"]["has_more"])
+            read = self.client.post("/api/files", headers=self.auth, json={
+                "tool": "read_multiple_files", "paths": [str(Path(td) / "n0.txt")], "max_total_chars": 5000,
+            }).json()
+            self.assertEqual(5000, read["budget"]["limit_chars"])
+
+    def test_list_jobs_limit_and_bad_cursor_over_rest(self) -> None:
+        page = self.client.post("/api/jobs/list", headers=self.auth, json={"limit": 2}).json()
+        self.assertEqual(2, page["page"]["limit"])
+        response = self.client.post("/api/jobs/list", headers=self.auth, json={"limit": 2, "cursor": "bad"})
+        self.assertEqual(400, response.status_code)
+        self.assertEqual("invalid_cursor", response.json()["error"]["code"])

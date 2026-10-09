@@ -388,6 +388,17 @@
                       "timeout",
                       "killed"
                     ]
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 500,
+                    "default": 50,
+                    "description": "Jobs per page, newest first."
+                  },
+                  "cursor": {
+                    "type": "string",
+                    "description": "page.next_cursor from the previous response, to continue the list."
                   }
                 }
               }
