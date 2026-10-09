@@ -224,13 +224,23 @@ def _run_json_js(
     # second tab scan before executing the side effect.
     b = _norm_browser(browser)
     if prevalidated_target is None:
-        with _tab_lease(b, tab_handle, window_index, tab_index) as target:
-            value = _execute_js_for_target(
-                b,
-                js,
-                target,
-                timeout_s=min(60, settings.max_wait_s),
-            )
+        for attempt in range(2):
+            try:
+                with _tab_lease(b, tab_handle, window_index, tab_index) as target:
+                    value = _execute_js_for_target(
+                        b,
+                        js,
+                        target,
+                        timeout_s=min(60, settings.max_wait_s),
+                    )
+                break
+            except HTTPException as exc:
+                # The identity guard refuses before any JavaScript runs, so one
+                # retry against a freshly resolved tab (for example after Safari
+                # swapped the tab's process on navigation) cannot repeat an effect.
+                if attempt or not tab_handle or not browser_tabs.is_tab_identity_failure(exc):
+                    raise
+                browser_tabs.invalidate_scoped_tab(b, tab_handle)
     else:
         target = prevalidated_target
         if _norm_browser(target.browser) != b:
@@ -262,6 +272,14 @@ def _ensure_visual_companion(
 ) -> bool:
     """Ensure the optional Visual Companion exists once per live tab document."""
     b = _norm_browser(browser)
+    known = browser_tabs.registry_snapshot().get(str(tab_handle or "")) if tab_handle else None
+    if known:
+        # A companion confirmed moments ago for this exact document needs no tab scan.
+        known_key = (b, str(known.get("native_id") or tab_handle), str(known.get("url") or ""))
+        with _VISUAL_ENSURE_LOCK:
+            last = _VISUAL_ENSURE_CACHE.get(known_key, 0.0)
+        if last and time.monotonic() - last < _VISUAL_ENSURE_TTL_S:
+            return True
     try:
         with _tab_lease(b, tab_handle, window_index, tab_index, allow_rebind=True) as target:
             key = (b, str(target.native_id or target.tab_handle), str(target.url or ""))

@@ -224,6 +224,10 @@ def _resolve_tab_target(
 ) -> Tuple[int, Optional[int]]:
     if not tab_handle:
         return window_index, tab_index
+    scoped = browser_tabs.scoped_row(browser, tab_handle)
+    if scoped is not None:
+        # Already resolved by the enclosing lease of this same transaction.
+        return int(scoped["window_index"]), int(scoped["tab_index"])
     try:
         wi, ti, _ = browser_tabs.resolve_tab(browser, tab_handle)
         return wi, ti

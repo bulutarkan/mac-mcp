@@ -24,6 +24,40 @@ from .workspace_arbitration import (
 
 _LOCK = threading.RLock()
 _REGISTRY: Dict[str, Dict[str, Any]] = {}
+# Per-thread record of the tab rows already resolved by an outer tab_lease. Nested
+# helpers in the same transaction reuse it instead of rescanning every tab; each
+# AppleScript still re-checks the tab's native identity before it runs.
+_SCOPE = threading.local()
+
+
+def _scope_entries() -> Dict[Tuple[str, str], Dict[str, Any]]:
+    entries = getattr(_SCOPE, "entries", None)
+    if entries is None:
+        entries = {}
+        _SCOPE.entries = entries
+    return entries
+
+
+def is_tab_identity_failure(exc: BaseException) -> bool:
+    """True when an AppleScript identity guard refused a tab before running anything."""
+    if not isinstance(exc, HTTPException) or exc.status_code != status.HTTP_409_CONFLICT:
+        return False
+    detail = exc.detail
+    if isinstance(detail, dict):
+        return detail.get("error") == "tab_target_closed"
+    return str(detail or "").startswith("Target tab identity changed")
+
+
+def scoped_row(browser: str, tab_handle: str) -> Optional[Dict[str, Any]]:
+    entry = _scope_entries().get((_browser_key(browser), str(tab_handle or "").strip()))
+    row = entry.get("row") if entry else None
+    return dict(row) if row else None
+
+
+def invalidate_scoped_tab(browser: str, tab_handle: str) -> None:
+    entry = _scope_entries().get((_browser_key(browser), str(tab_handle or "").strip()))
+    if entry is not None:
+        entry["row"] = None
 _RESOURCE_LOCKS_LOCK = threading.Lock()
 _RESOURCE_LOCKS: weakref.WeakValueDictionary[Tuple[str, str], threading.RLock] = (
     weakref.WeakValueDictionary()
@@ -823,59 +857,88 @@ def tab_lease(
             },
             headers={"Retry-After": "1"},
         )
+    key = (_browser_key(browser), handle)
+    entries = _scope_entries()
+    entry = entries.get(key)
     try:
-        _, _, row = resolve_tab(browser, handle)
-        if mutation:
-            human = browser_human_takeover(browser, row)
-            if human is not None:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={
-                        "ok": False,
-                        "error": str(human.get("reason_code") or "HUMAN_ACTIVE_RESOURCE").lower(),
-                        "reason_code": human.get("reason_code"),
-                        "retryable": bool(human.get("retryable", True)),
-                        "retry_after_ms": 750,
-                        "human_priority": True,
-                        "yielded": True,
-                        "resource_kind": "browser_tab",
-                        "message": (
-                            "The user is currently on this browser tab. "
-                            "The delegated agent yielded instead of mutating the visible resource."
-                        ),
-                    },
-                    headers={"Retry-After": "1"},
-                )
-            arbitration = claim_delegated_resource(
-                "browser_tab",
-                str(row.get("tab_handle") or handle),
-                mode="write",
-            )
-            if arbitration is not None and not arbitration.get("ok"):
-                reason_code = str(
-                    arbitration.get("reason_code") or "RESOURCE_BUSY"
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={
-                        "ok": False,
-                        "error": reason_code.lower(),
-                        "reason_code": reason_code,
-                        "retryable": bool(arbitration.get("retryable", True)),
-                        "retry_after_ms": 750,
-                        "yielded": True,
-                        "resource_kind": "browser_tab",
-                        "message": (
-                            "Another agent owns this browser tab resource. "
-                            "The delegated action yielded before mutation."
-                        ),
-                    },
-                    headers={"Retry-After": "1"},
-                )
-        lease = _claim_logical_lease(row, allow_rebind=allow_rebind)
-        yield _target_from_row(row, lease)
+        cached = entry.get("row") if entry else None
+        if cached is not None and (entry["mutation_checked"] or not mutation):
+            row, lease = cached, entry["lease"]
+        else:
+            row, lease = _lease_fresh_row(browser, handle, allow_rebind=allow_rebind, mutation=mutation)
+            if entry is None:
+                entry = {"row": row, "lease": lease, "mutation_checked": mutation, "depth": 0}
+                entries[key] = entry
+            else:
+                entry.update(row=row, lease=lease, mutation_checked=entry["mutation_checked"] or mutation)
+        entry["depth"] += 1
+        try:
+            yield _target_from_row(row, lease)
+        except HTTPException as exc:
+            if is_tab_identity_failure(exc):
+                entry["row"] = None
+            raise
+        finally:
+            entry["depth"] -= 1
+            if entry["depth"] <= 0:
+                entries.pop(key, None)
     finally:
         lock.release()
+
+
+def _lease_fresh_row(
+    browser: str, handle: str, *, allow_rebind: bool, mutation: bool,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    _, _, row = resolve_tab(browser, handle)
+    if mutation:
+        human = browser_human_takeover(browser, row)
+        if human is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "ok": False,
+                    "error": str(human.get("reason_code") or "HUMAN_ACTIVE_RESOURCE").lower(),
+                    "reason_code": human.get("reason_code"),
+                    "retryable": bool(human.get("retryable", True)),
+                    "retry_after_ms": 750,
+                    "human_priority": True,
+                    "yielded": True,
+                    "resource_kind": "browser_tab",
+                    "message": (
+                        "The user is currently on this browser tab. "
+                        "The delegated agent yielded instead of mutating the visible resource."
+                    ),
+                },
+                headers={"Retry-After": "1"},
+            )
+        arbitration = claim_delegated_resource(
+            "browser_tab",
+            str(row.get("tab_handle") or handle),
+            mode="write",
+        )
+        if arbitration is not None and not arbitration.get("ok"):
+            reason_code = str(
+                arbitration.get("reason_code") or "RESOURCE_BUSY"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "ok": False,
+                    "error": reason_code.lower(),
+                    "reason_code": reason_code,
+                    "retryable": bool(arbitration.get("retryable", True)),
+                    "retry_after_ms": 750,
+                    "yielded": True,
+                    "resource_kind": "browser_tab",
+                    "message": (
+                        "Another agent owns this browser tab resource. "
+                        "The delegated action yielded before mutation."
+                    ),
+                },
+                headers={"Retry-After": "1"},
+            )
+    lease = _claim_logical_lease(row, allow_rebind=allow_rebind)
+    return row, lease
 
 
 def handle_for_location(browser: str, window_index: int, tab_index: int) -> Optional[str]:

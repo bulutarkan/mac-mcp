@@ -248,7 +248,8 @@ def _native_foreground_self_escalation_blocked() -> bool:
 
 def _workspace_human_priority_contract_present() -> bool:
     tab_signature = inspect.signature(browser_tabs.tab_lease)
-    tab_source = inspect.getsource(browser_tabs.tab_lease)
+    # tab_lease resolves through _lease_fresh_row, which owns the takeover check.
+    tab_source = inspect.getsource(browser_tabs.tab_lease) + inspect.getsource(browser_tabs._lease_fresh_row)
     native_source = inspect.getsource(_delegated_native_human_guard)
     act_source = inspect.getsource(act_ui)
     return (
