@@ -618,7 +618,11 @@ The capability set covers:
 - Agent Skills;
 - safe self-update.
 
-Use MCP tool discovery for the authoritative live schema.
+Use MCP tool discovery for the authoritative live schema. `tool_discover` ranks tools against a plain-words query, says why each matched and pages long results with `next_cursor`.
+
+Listings and multi-file reads report when they stop early: `list_directory`, `find_files` and `list_jobs` return `page.has_more`/`page.next_cursor`, `read_multiple_files` spends one total character budget and lists unread files in `not_read`, and `read_file` gives `next_offset` for the next line.
+
+Failures carry one machine-readable contract on every transport: an MCP error ends with an `error_contract={...}` line and a REST error body has an `error` object next to `detail`, both with `code`, `stage`, `outcome` (`not_executed`, `completed` or `unknown`) and `retry` (`fix_arguments`, `safe_retry`, `observe_again`, `wait_for_user` or `never_retry`). An `unknown` outcome never says `safe_retry`; observe the current state before acting again. A tool that ran and reported failure (for example a non-zero shell exit) is a normal result with `ok: false`, not an error.
 
 ## Updating
 

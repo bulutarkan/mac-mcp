@@ -25,7 +25,8 @@ from . import recipes
 from .host_guard import HostGuard, extra_hosts_from_env
 from .public_endpoint import resolve_public_endpoint
 from .security import BASE_DIR, AuthFailureLimiter, _effective_bind_host, _loopback_host, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
-from .observability import ObservedFastMCP, TelemetryManager, current_security_session
+from .observability import ObservedFastMCP, TelemetryManager, _tool_can_mutate, current_security_session
+from . import error_contract
 from .tool_summaries import ADVANCED_BROWSER_TOOLS, CORE_TOOL_NAMES, CORE_TOOL_SUMMARIES
 from . import tool_discovery
 from .browser_schemas import (
@@ -2397,6 +2398,7 @@ def create_app():
         return await rest_telemetry_middleware(request, call_next, telemetry)
 
     rest_app.include_router(rest_router)
+    error_contract.install_rest_handlers(rest_app, _tool_can_mutate)
     app.mount("/api", rest_app)
 
     # Outermost: refuse DNS-rebinding requests (foreign Host) on every route,

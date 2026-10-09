@@ -32,6 +32,7 @@ from .steering import SteeringManager, attach_steering, preemption_error, steeri
 from . import browser_tabs
 from .tool_summaries import COMPACT_DESCRIPTION_LIMIT, CORE_TOOL_NAMES, CORE_TOOL_SUMMARIES
 from . import audit_chain
+from . import error_contract
 from .security_context import SecurityContextManager, reset_delegated_provenance, set_delegated_provenance
 from .data_guard import contains_direct_secret, redact_sensitive_source_result, redact_sensitive_text, sanitize_tool_arguments
 from .workflow_checkpoints import (
@@ -50,6 +51,7 @@ from .usage_metering import (
 )
 
 from .policy import (
+    Capability,
     PolicyContext,
     annotations_for_tool,
     current_policy_context,
@@ -1046,6 +1048,14 @@ _CORE_TOOL_NAMES = CORE_TOOL_NAMES
 _DELEGATING_TOOLS = frozenset({"spawn_agent", "spawn_agents", "agent_action", "tool_invoke"})
 
 
+def _tool_can_mutate(name: str) -> bool:
+    try:
+        risk = declared_risk(name)
+    except KeyError:
+        return True
+    return bool(risk.destructive or set(risk.capabilities) - {Capability.READ})
+
+
 class ObservedFastMCP(FastMCP):
     """FastMCP with central registration hints, enforcement, telemetry, and optional compact discovery."""
 
@@ -1280,6 +1290,17 @@ class ObservedFastMCP(FastMCP):
             raise
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):
+        try:
+            return await self._call_tool_observed(name, arguments)
+        except Exception as exc:
+            # Give every failure the shared machine contract once; an inner call
+            # (tool_invoke -> target tool) already annotated its own error.
+            if error_contract.has_contract(exc):
+                raise
+            contract = error_contract.describe(exc, tool=name, mutating=_tool_can_mutate(name))
+            raise ToolError(error_contract.annotate(str(exc), contract)) from exc
+
+    async def _call_tool_observed(self, name: str, arguments: dict[str, Any]):
         if name in CHATGPT_PANEL_TOOLS and not is_chatgpt_client(self):
             raise ToolError("ChatGPT-only UI tool unavailable for this client")
         incoming_arguments = dict(arguments or {})
