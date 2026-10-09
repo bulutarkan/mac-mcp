@@ -25,11 +25,18 @@ class ScanLoopTests(unittest.TestCase):
 
     def test_collects_beyond_the_first_render_and_stops_at_the_end(self) -> None:
         result = self._scan([_page("A", "B", "C"), _page("C", "D", "E"), _page("E", "F", at_end=True),
-                             _page("F", at_end=True)])
+                             _page("F", at_end=True), _page("F", at_end=True)])
         self.assertEqual(["A", "B", "C", "D", "E", "F"], [item["text"] for item in result["items"]])
         self.assertEqual("end_of_list", result["stopped"])
         self.assertTrue(result["complete"])
-        self.assertEqual(4, result["steps"])
+        self.assertEqual(5, result["steps"])
+
+    def test_items_loaded_after_reaching_the_bottom_are_still_collected(self) -> None:
+        # Infinite scroll: the page is at its end until the scroll event loads more.
+        result = self._scan([_page("A", at_end=True), _page("A", "B", at_end=True), _page("B", "C", at_end=True),
+                             _page("C", at_end=True), _page("C", at_end=True)])
+        self.assertEqual(["A", "B", "C"], [item["text"] for item in result["items"]])
+        self.assertEqual("end_of_list", result["stopped"])
 
     def test_stalled_loading_stops_after_two_empty_steps(self) -> None:
         result = self._scan([_page("A"), _page("A"), _page("A"), _page("Z")])

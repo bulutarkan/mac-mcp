@@ -3603,13 +3603,31 @@ function scrollable(el){{
 }}
 if(cid){{box=__mcpRecoverElement(cid,s);if(!box)return __mcpB64({{ok:false,error:'stale_element',reason_code:'ELEMENT_DETACHED',observe_again:true}});
   var up=box;while(up&&up!==document.body&&!scrollable(up))up=up.parentElement;if(up&&up!==document.body)box=up;else if(!scrollable(box))box=doc;}}
-else{{var best=null,area=0;document.querySelectorAll('*').forEach(function(el){{if(!scrollable(el))return;var r=el.getBoundingClientRect();
-  var a=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0))*Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));if(a>area){{area=a;best=el;}}}});
-  box=(best&&area>innerWidth*innerHeight*0.15)?best:doc;}}
+var candidates=[];
+function rowsOf(el){{
+  // A list container holds many children of one shape (often under a single sizing wrapper).
+  var parent=el;while(parent.children.length===1)parent=parent.children[0];
+  var shapes={{}},best=0;Array.from(parent.children).forEach(function(c){{var k=c.tagName+'.'+String(c.className||'');shapes[k]=(shapes[k]||0)+1;if(shapes[k]>best)best=shapes[k];}});
+  return best;
+}}
+if(!cid){{
+  document.querySelectorAll('*').forEach(function(el){{if(!scrollable(el))return;var r=el.getBoundingClientRect();
+    var a=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0))*Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));
+    var rows=rowsOf(el);
+    // A list scrolled out of view is still the list; other containers count only when visible.
+    if(a<=0&&rows<3)return;candidates.push({{el:el,area:a,rows:rows}});}});
+  // Prefer the container with the most repeated rows; area breaks ties and decides when nothing repeats.
+  candidates.sort(function(x,y){{var rx=x.rows>=3?x.rows:0,ry=y.rows>=3?y.rows:0;return (ry-rx)||(y.area-x.area);}});
+  var pick=candidates[0];
+  box=(pick&&(pick.rows>=3||pick.area>innerWidth*innerHeight*0.15))?pick.el:doc;
+}}
 var root=(box===doc)?document.body:box, items=[];
 if(sel){{try{{items=Array.from(root.querySelectorAll(sel));}}catch(e){{return __mcpB64({{ok:false,error:'invalid_item_selector'}});}}}}
-if(!items.length)items=Array.from(root.querySelectorAll('[role=listitem],[role=row],[role=article],[role=option],li,tr,article'));
-if(!items.length){{var parent=root;while(parent.children.length===1)parent=parent.children[0];items=Array.from(parent.children);}}
+else{{
+  // Only guess the rows when the caller did not name them; a named selector that matches nothing returns nothing.
+  items=Array.from(root.querySelectorAll('[role=listitem],[role=row],[role=article],[role=option],li,tr,article'));
+  if(!items.length){{var parent=root;while(parent.children.length===1)parent=parent.children[0];items=Array.from(parent.children);}}
+}}
 function clean(v){{return String(v==null?'':v).replace(/\\s+/g,' ').trim();}}
 var out=[];
 for(var i=0;i<items.length&&out.length<400;i++){{var el=items[i],text=clean(el.innerText||el.textContent);if(!text)continue;
@@ -3618,7 +3636,11 @@ for(var i=0;i<items.length&&out.length<400;i++){{var el=items[i],text=clean(el.i
 var top=(box===doc)?scrollY:box.scrollTop, height=(box===doc)?doc.scrollHeight:box.scrollHeight, view=(box===doc)?innerHeight:box.clientHeight;
 var atEnd=top+view>=height-2;
 if(!atEnd){{if(box===doc)scrollBy(0,Math.round(view*0.85));else box.scrollTop=top+Math.round(view*0.85);}}
-return __mcpB64({{ok:true,items:out,at_end:atEnd,container:{{tag:(box===doc)?'document':box.tagName.toLowerCase(),scroll_top:Math.round(top),scroll_height:Math.round(height),viewport:Math.round(view)}}}});
+// Lazy loaders (infinite scroll) fetch more on a scroll event near the end, even when nothing can move.
+try{{(box===doc?window:box).dispatchEvent(new Event('scroll'));}}catch(e){{}}
+var info={{tag:(box===doc)?'document':box.tagName.toLowerCase(),element_id:(box===doc)?null:__mcpId(box,s),scroll_top:Math.round(top),scroll_height:Math.round(height),viewport:Math.round(view)}};
+var others=candidates.filter(function(c){{return c.el!==box;}}).slice(0,4).map(function(c){{return {{element_id:__mcpId(c.el,s),tag:c.el.tagName.toLowerCase(),rows:c.rows,text:clean(c.el.innerText||'').slice(0,60)}};}});
+return __mcpB64({{ok:true,items:out,at_end:atEnd,container:info,other_containers:others}});
 }})()"""
 
 
@@ -3633,9 +3655,11 @@ def _scan_action(
     """Collect a long or virtualized list by scrolling its container in bounded steps.
 
     Each step reads the items currently rendered and scrolls by most of one
-    screen; items are de-duplicated by text (or key_field='href'). It stops at
-    the end of the list, after two steps with nothing new (loading stalled),
-    or at max_items, max_steps, timeout_s or the payload budget, and says which.
+    screen (and fires a scroll event so lazy loaders fetch more); items are
+    de-duplicated by text (or key_field='href'). After two steps with nothing
+    new it stops at end_of_list (at the bottom) or no_new_items (loading
+    stalled midway); max_items, max_steps, timeout_s and the payload budget
+    also stop it, and the result says which.
     """
     max_items = max(1, min(int(action.get("max_items", 100)), _SCAN_MAX_ITEMS))
     max_steps = max(1, min(int(action.get("max_steps", 15)), _SCAN_MAX_STEPS))
@@ -3647,14 +3671,19 @@ def _scan_action(
     seen: Dict[str, Dict[str, Any]] = {}
     stalls = steps = used = 0
     container: Dict[str, Any] = {}
+    alternatives: List[Dict[str, Any]] = []
     stopped = ""
     while not stopped:
         cancellation_checkpoint()
+        # Later steps keep scrolling the container the first step chose.
+        container_id = str(action.get("element_id") or container.get("element_id") or "")
         step = _run_json_js(
-            settings, browser, _scan_step_js(str(action.get("element_id") or ""), selector, key_field),
+            settings, browser, _scan_step_js(container_id, selector, key_field),
             window_index, tab_index, tab_handle,
         )
         steps += 1
+        if steps == 1 and step.get("other_containers"):
+            alternatives = step["other_containers"]
         if not step.get("ok"):
             return {"type": "scan", **step, "items": [seen[k] for k in seen], "steps": steps, "_js_calls": steps}
         container = step.get("container") or container
@@ -3678,10 +3707,9 @@ def _scan_action(
         stalls = 0 if new else stalls + 1
         if stopped:
             break
-        if step.get("at_end") and not new:
-            stopped = "end_of_list"
-        elif stalls >= 2:
-            stopped = "no_new_items"
+        if stalls >= 2:
+            # Two steps with nothing new: the end, or loading that stalled midway.
+            stopped = "end_of_list" if step.get("at_end") else "no_new_items"
         elif steps >= max_steps:
             stopped = "max_steps"
         elif time.perf_counter() - started >= timeout_s:
@@ -3691,6 +3719,7 @@ def _scan_action(
     return {
         "ok": True, "type": "scan", "items": list(seen.values()), "count": len(seen), "stopped": stopped,
         "complete": stopped == "end_of_list", "steps": steps, "key_field": key_field, "container": container,
+        "other_containers": alternatives,
         "duration_ms": int((time.perf_counter() - started) * 1000), "_js_calls": steps,
     }
 
