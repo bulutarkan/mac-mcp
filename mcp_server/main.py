@@ -28,6 +28,9 @@ from .security import BASE_DIR, AuthFailureLimiter, _effective_bind_host, _loopb
 from .observability import ObservedFastMCP, TelemetryManager, current_security_session
 from .tool_summaries import ADVANCED_BROWSER_TOOLS, CORE_TOOL_NAMES, CORE_TOOL_SUMMARIES
 from . import tool_discovery
+from .browser_schemas import (
+    ActReturnState, BrowserActions, DoReturnState, ObserveScope, OptionalBrowserActions, VisualMode,
+)
 from mcp.server.fastmcp.exceptions import ToolError
 from .policy import (
     PROFILES, current_policy_context, declared_risk, environment_policy_context, reset_policy_context,
@@ -1504,8 +1507,8 @@ def create_app():
     )
     def _browser_observe(browser: str, window_index: int = 1, tab_index: Optional[int] = None,
                          tab_handle: Optional[str] = None,
-                         scope: str = "interactive", max_elements: int = 40,
-                         visual: str = "none", element_id: Optional[str] = None,
+                         scope: ObserveScope = "interactive", max_elements: int = 40,
+                         visual: VisualMode = "none", element_id: Optional[str] = None,
                          previous_observation_id: Optional[str] = None) -> Any:
         return _log(
             audit_logger, "browser_observe",
@@ -1551,10 +1554,10 @@ def create_app():
         name="browser_act",
         description=BROWSER_ACT_DESCRIPTION,
     )
-    async def _browser_act(browser: str, actions: List[Dict[str, Any]],
+    async def _browser_act(browser: str, actions: BrowserActions,
                            observation_id: Optional[str] = None, window_index: int = 1,
                            tab_index: Optional[int] = None, tab_handle: Optional[str] = None,
-                           return_state: str = "compact", allow_foreground: bool = False) -> Dict[str, Any]:
+                           return_state: ActReturnState = "compact", allow_foreground: bool = False) -> Dict[str, Any]:
         return await asyncio.to_thread(
             _log, audit_logger, "browser_act",
             lambda: browser_act(settings, browser=browser, actions=actions,
@@ -1574,11 +1577,11 @@ def create_app():
         ),
     )
     async def _browser_do(browser: str, url: Optional[str] = None,
-                          actions: Optional[List[Dict[str, Any]]] = None,
+                          actions: OptionalBrowserActions = None,
                           new_tab: bool = True, background: bool = True,
                           window_index: int = 1, tab_index: Optional[int] = None,
                           tab_handle: Optional[str] = None, wait_after_open: bool = True,
-                          return_state: str = "none", allow_foreground: bool = False,
+                          return_state: DoReturnState = "none", allow_foreground: bool = False,
                           close_after: bool = False, debug: bool = False,
                           extract: Optional[List[str]] = None) -> Dict[str, Any]:
         def work() -> Dict[str, Any]:
