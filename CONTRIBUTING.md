@@ -67,6 +67,22 @@ git diff --check
 
 The GitHub Actions quality gates also run Python correctness checks and security assurance validation.
 
+### Optional browser DOM regressions
+
+Generated browser JavaScript has opt-in tests in an isolated headless Chromium.
+They do not attach to the user’s Chrome or require a signed-in website. Install
+the optional test dependency and browser, then enable these tests explicitly:
+
+```bash
+python -m pip install -e '.[browser-tests]'
+python -m playwright install chromium
+MAC_MCP_BROWSER_TESTS=1 python -m unittest discover -s tests -p 'test_browser_*_dom.py' -v
+```
+
+Use the same test-only MCP environment variables as the normal regression suite.
+The Browser DOM Regression workflow runs this opt-in suite; ordinary unit tests
+skip it when the flag is unset, without requiring Playwright at runtime.
+
 ## Native macOS app changes
 
 For changes under `menu_app/`, build to a temporary output instead of replacing an installed app:

@@ -1,0 +1,36 @@
+name: Browser DOM Regression
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chromium:
+    name: Chromium DOM regressions
+    runs-on: ubuntu-latest
+    env:
+      MCP_API_KEY: ci-browser-regression-0123456789abcdef0123456789abcdef
+      MAC_MCP_BROWSER_TESTS: "1"
+      MAC_MCP_SKIP_MENU_APP_INSTALL: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install package and optional browser test dependency
+        run: python -m pip install -e '.[browser-tests]'
+      - name: Install isolated Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Run real DOM regressions
+        env:
+          MAC_MCP_TELEMETRY_DIR: ${{ runner.temp }}/mac-mcp-browser-telemetry
+        run: python -m unittest discover -s tests -p 'test_browser_*_dom.py' -v

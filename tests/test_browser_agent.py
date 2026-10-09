@@ -59,12 +59,15 @@ class BrowserAgentLayerTests(unittest.TestCase):
         for token in (
             'function __mcpTopBlockingModal', 'function __mcpAssociation', 'function __mcpSemanticVisible',
             'ELEMENT_OUTSIDE_MODAL_SCOPE', 'pointer_events_association_fallback', 'hit_target',
-            'associated_control', 'associated_label', "state==='open'", "state==='closed'", 'structurallyVisible',
+            'associated_control', 'associated_label', 'nativeModal', "state==='closed'", 'structurallyVisible',
         ):
             self.assertIn(token, bootstrap)
         find_script = _find_candidates_js('İş', 'radio', 'İş', 20, actionable_only=True)
         self.assertIn('modal=__mcpTopBlockingModal()', find_script)
-        self.assertIn("__mcpQueryAll('dialog[open],[aria-modal=\"true\"],[role=\"dialog\"]')", bootstrap)
+        self.assertIn("function __mcpOutsideBlocked", bootstrap)
+        self.assertIn("aria!=='false'", bootstrap)
+        self.assertIn("el.matches(':modal')", bootstrap)
+        self.assertIn("aria==='true'||nativeModal", bootstrap)
         self.assertNotIn(',[data-state=\"open\"]', bootstrap)
         self.assertIn("d.association_text||''", find_script)
         self.assertIn('return __mcpSemanticVisible(el)', find_script)
