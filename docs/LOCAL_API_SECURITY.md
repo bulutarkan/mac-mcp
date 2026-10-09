@@ -24,6 +24,8 @@ No dashboard credential is accepted in a query string. This avoids local/access-
 
 Dashboard authentication does not use cookies. State-changing local endpoints require an explicit Bearer header, so a normal cross-origin form/navigation cannot authenticate a write. Cross-origin JavaScript also cannot manufacture the secret Bearer value without already compromising the user's account/process boundary. Loopback checking remains in place before authentication, including forwarded-address checks, so a tunnel/proxy cannot make a remote request appear local.
 
+Dashboard and mobile pairing management accept only direct loopback requests without forwarding headers. Forwarded requests remain remote even when a header claims `127.0.0.1` or Uvicorn has rewritten the client address to loopback. Merely selecting a tunnel and receiving a loopback connection does not identify the sending process. For mobile pairing rate limits, the shared address resolver uses the last appended `X-Forwarded-For` hop in ngrok mode and a single `CF-Connecting-IP` value in Cloudflare mode; it does not use forwarding headers in local-only or custom mode. These addresses never grant local management access. Custom proxies must preserve forwarding markers; stripping every marker makes their requests indistinguishable from direct local traffic.
+
 ## Identity and secret redaction
 
 Telemetry sanitization redacts authorization/API credentials and normalized provider identity fields including OpenAI session, subject, organization, and location metadata. Steering uses hashed logical identities rather than raw provider session/subject values. The dashboard token is never printed by the CLI and should never be copied into telemetry.

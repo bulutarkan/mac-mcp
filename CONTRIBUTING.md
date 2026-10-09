@@ -37,6 +37,14 @@ Never commit API keys, bearer tokens, cookies, `.env` secrets, private keys, das
 
 ## Tests
 
+The server fails closed at import time without an API key, and shell/job tests need shell access enabled. Export the same test-only values CI uses (`.github/workflows/security-regression.yml`) in the terminal you run tests from. The key is a dummy placeholder: never reuse it as a real credential, and do not edit `.env`, settings or runtime state to make tests pass.
+
+```bash
+export MCP_API_KEY="ci-regression-only-0123456789abcdef0123456789abcdef"
+export MCP_ALLOW_NO_AUTH=false
+export MCP_ALLOW_SHELL=true
+```
+
 Run the most relevant targeted tests while developing:
 
 ```bash

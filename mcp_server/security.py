@@ -8,9 +8,11 @@ import secrets
 import socket
 import sys
 import tempfile
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Deque, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -77,7 +79,7 @@ def dashboard_authorized(expected_token: str, authorization: Optional[str]) -> b
     if not expected_token or not authorization or not authorization.lower().startswith("bearer "):
         return False
     supplied = authorization[7:].strip()
-    return bool(supplied) and hmac.compare_digest(supplied, expected_token)
+    return bool(supplied) and _same_secret(supplied, expected_token)
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -225,6 +227,12 @@ def validate_bootstrap_security(
             "secure_bootstrap_missing_api_key: MCP_API_KEY is required when "
             "MCP_ALLOW_NO_AUTH=false. Run the installer or configure a strong API key."
         )
+    if not settings.allow_no_auth and len(settings.api_key) < MIN_API_KEY_LENGTH:
+        raise RuntimeError(
+            "secure_bootstrap_weak_api_key: MCP_API_KEY must be at least "
+            f"{MIN_API_KEY_LENGTH} characters. The installer generates a 64-character key; "
+            "for example use: python3 -c 'import secrets; print(secrets.token_urlsafe(48))'"
+        )
 
     if not settings.allow_no_auth:
         return
@@ -283,23 +291,81 @@ def resolve_path(user_path: str) -> Path:
 
 
 # ── Rate limiter ────────────────────────────────────────────────────────────
+MIN_API_KEY_LENGTH = 32
+_MAX_LIMITER_KEYS = 4096
+
+
+def _prune_hits(hits: Dict[str, Deque[float]], cutoff: float) -> None:
+    """Keep limiter state bounded: drop idle keys, then the stalest ones."""
+    if len(hits) < _MAX_LIMITER_KEYS:
+        return
+    for key in [key for key, q in hits.items() if not q or q[-1] < cutoff]:
+        hits.pop(key, None)
+    if len(hits) >= _MAX_LIMITER_KEYS:
+        for key in sorted(hits, key=lambda item: hits[item][-1])[: len(hits) - _MAX_LIMITER_KEYS + 1]:
+            hits.pop(key, None)
+
+
 class RateLimiter:
     def __init__(self, limit_per_minute: int) -> None:
         self.limit = max(1, limit_per_minute)
         self._hits: Dict[str, Deque[float]] = {}
+        self._lock = threading.Lock()
 
     def check(self, key: str) -> None:
         now = time.time()
-        q = self._hits.setdefault(key, deque())
         cutoff = now - 60.0
-        while q and q[0] < cutoff:
-            q.popleft()
-        if len(q) >= self.limit:
-            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Rate limit exceeded.")
-        q.append(now)
+        with self._lock:
+            if key not in self._hits:
+                _prune_hits(self._hits, cutoff)
+            q = self._hits.setdefault(key, deque())
+            while q and q[0] < cutoff:
+                q.popleft()
+            if len(q) >= self.limit:
+                raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Rate limit exceeded.")
+            q.append(now)
+
+
+class AuthFailureLimiter:
+    """Throttle failed authentication per verified source address.
+
+    It is consulted before any credential lookup, so guessing keys cannot dodge
+    the limiter by presenting a fresh wrong token on every request.
+    """
+
+    def __init__(self, limit_per_minute: int = 20) -> None:
+        self.limit = max(1, int(limit_per_minute))
+        self._failures: Dict[str, Deque[float]] = {}
+        self._lock = threading.Lock()
+
+    def blocked(self, address: str) -> bool:
+        cutoff = time.time() - 60.0
+        with self._lock:
+            q = self._failures.get(address)
+            if not q:
+                return False
+            while q and q[0] < cutoff:
+                q.popleft()
+            return len(q) >= self.limit
+
+    def record_failure(self, address: str) -> None:
+        now = time.time()
+        with self._lock:
+            if address not in self._failures:
+                _prune_hits(self._failures, now - 60.0)
+            self._failures.setdefault(address, deque()).append(now)
+
+
+def auth_failure_response_detail() -> str:
+    return "Too many failed authentication attempts. Retry after 60 seconds."
 
 
 # ── Auth ────────────────────────────────────────────────────────────────────
+def _same_secret(given: str, expected: str) -> bool:
+    # Bytes, because compare_digest rejects non-ASCII str input with TypeError.
+    return hmac.compare_digest(given.encode("utf-8"), expected.encode("utf-8"))
+
+
 def request_authorization(
     settings: Settings,
     authorization: Optional[str],
@@ -319,7 +385,7 @@ def request_authorization(
     if len(query_api_keys) != 1:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid API key.")
     token = query_api_keys[0].strip()
-    if not token or token != settings.api_key:
+    if not token or not _same_secret(token, settings.api_key):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid API key.")
     return f"Bearer {token}"
 
@@ -335,18 +401,9 @@ def authenticate(settings: Settings, authorization: Optional[str]) -> str:
     token = authorization[7:].strip()
     if not token:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Bearer token is empty.")
-    if token != settings.api_key:
+    if not _same_secret(token, settings.api_key):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid API key.")
     return token
-
-
-def client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    if request.client and request.client.host:
-        return request.client.host
-    return "unknown"
 
 
 def rate_limit(limiter: RateLimiter, token: str, ip: str) -> None:
@@ -359,7 +416,14 @@ def setup_audit_logger() -> logging.Logger:
     if logger.handlers:
         return logger
     logger.setLevel(logging.INFO)
-    handler = logging.FileHandler(BASE_DIR / "audit.log")
+    path = BASE_DIR / "audit.log"
+    try:
+        os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600))
+        path.chmod(0o600)
+    except OSError:
+        pass
+    # Bounded: 5 MB per file, three older files kept (tool, outcome and duration only).
+    handler = RotatingFileHandler(path, maxBytes=5 * 1024 * 1024, backupCount=3)
     handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s", "%Y-%m-%d %H:%M:%S"))
     logger.addHandler(handler)
     logger.propagate = False

@@ -984,6 +984,19 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertFalse((runtime / ".mac-mcp-update.json").exists())
         self.assertFalse((runtime / "backups/updates").exists())
 
+    def test_runtime_overlay_commit_does_not_change_repo_git_identity(self):
+        # Worktrees share the repository config, so the overlay commit must not
+        # `git config` an identity that would then sign the user's own commits.
+        _, repo, runtime, _old, _target = self.make_fixture()
+        result = apply_update(repo, runtime, skip_restart=True, skip_deps=True)
+        self.assertTrue(result["updated"])
+        for key in ("user.name", "user.email"):
+            local = subprocess.run(
+                ["git", "-C", str(repo), "config", "--local", "--get", key],
+                text=True, capture_output=True,
+            )
+            self.assertEqual(1, local.returncode, f"{key} leaked into repo config: {local.stdout.strip()}")
+
     def test_single_checkout_update_stays_clean_and_second_check_works(self):
         root, repo, _runtime, _old, target = self.make_fixture()
         # Public install shape: one Git checkout is both source repo and live runtime.

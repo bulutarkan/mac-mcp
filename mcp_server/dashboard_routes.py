@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
+import sqlite3
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 from urllib.parse import urlsplit
 
 from starlette.requests import Request
@@ -30,7 +31,7 @@ from .file_transactions import (
     undo_transaction,
 )
 from .observability import TelemetryManager, sanitize_value
-from .provider_usage import summary as provider_usage_summary
+from .provider_usage import clear as provider_usage_clear, summary as provider_usage_summary
 from .policy import (
     GLOBAL_PROFILE_NAMES,
     RISK_REGISTRY,
@@ -38,7 +39,10 @@ from .policy import (
     is_global_permission_profile,
     permission_semantics,
 )
-from .runtime_settings import update_runtime_setting
+from .runtime_settings import USAGE_RETENTION_CHOICES, update_runtime_setting, usage_privacy
+from .usage_metering import clear_usage
+from . import recipes
+from .request_client import client_address as _client_address, is_direct_local_request, is_loopback as _is_loopback
 from .security import Settings, dashboard_authorized
 from .security_context import SecurityContextManager
 from .steering import (
@@ -156,27 +160,8 @@ REST_TOOL_ALIASES = {
 }
 
 
-def _client_address(request: Request) -> str:
-    # A tunnel/proxy must not be able to make a remote client look local. If a
-    # forwarding header exists, the original first-hop address is authoritative.
-    for header in ("cf-connecting-ip", "x-forwarded-for", "x-real-ip"):
-        raw = request.headers.get(header)
-        if raw:
-            return raw.split(",", 1)[0].strip()
-    return request.client.host if request.client else "unknown"
-
-
-def _is_loopback(address: str) -> bool:
-    if address in {"localhost", "testclient"}:
-        return True
-    try:
-        return ipaddress.ip_address(address).is_loopback
-    except ValueError:
-        return False
-
-
 def _local_only(request: Request) -> Optional[Response]:
-    if _is_loopback(_client_address(request)):
+    if is_direct_local_request(request):
         return None
     if request.url.path.startswith("/dashboard/api/") or request.url.path == "/dashboard/events":
         return JSONResponse({"detail": "The Mac MCP dashboard is available on localhost only."}, status_code=403)
@@ -247,6 +232,7 @@ def _persist_permission_profile(profile: str, env_file: Path = PERMISSION_ENV_FI
 def create_dashboard_routes(
     telemetry: TelemetryManager, settings: Settings, dashboard_token: str,
     steering: Optional[SteeringManager] = None, security_context: Optional[SecurityContextManager] = None,
+    recipe_runner: Optional[Callable[[str, Dict[str, Any]], Awaitable[Dict[str, Any]]]] = None,
 ) -> list[Route]:
     agent_cache: Dict[str, Any] = {"at": 0.0, "limit": 0, "data": None}
     team_summary_cache: Dict[str, Dict[str, Any]] = {}
@@ -605,6 +591,105 @@ def create_dashboard_routes(
             )
         return JSONResponse(payload)
 
+    async def usage_settings(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        updates: Dict[str, Any] = {}
+        if "metering_enabled" in body:
+            if not isinstance(body["metering_enabled"], bool):
+                return JSONResponse({"ok": False, "error": "metering_enabled_must_be_boolean"}, status_code=400)
+            updates["usage_metering"] = body["metering_enabled"]
+        if "retention_days" in body:
+            if body["retention_days"] not in USAGE_RETENTION_CHOICES:
+                return JSONResponse(
+                    {"ok": False, "error": "invalid_retention_days", "allowed": list(USAGE_RETENTION_CHOICES)},
+                    status_code=400,
+                )
+            updates["usage_retention_days"] = int(body["retention_days"])
+        try:
+            for key, value in updates.items():
+                update_runtime_setting("privacy", key, value)
+        except (OSError, RuntimeError, ValueError):
+            return JSONResponse({"ok": False, "error": "usage_settings_persist_failed"}, status_code=500)
+        return JSONResponse({"ok": True, **usage_privacy(fresh=True)})
+
+    async def usage_clear(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {}
+        if not isinstance(body, dict) or body.get("confirm") is not True:
+            return JSONResponse(
+                {"ok": False, "error": "confirmation_required",
+                 "message": "Send {\"confirm\": true} to delete all stored usage aggregates."},
+                status_code=400,
+            )
+        try:
+            tool_rows = clear_usage(telemetry.db_path)
+            provider_rows = provider_usage_clear()
+        except (OSError, sqlite3.Error) as exc:
+            return JSONResponse({"ok": False, "error": str(sanitize_value(exc))}, status_code=500)
+        return JSONResponse({"ok": True, "tool_usage_rows": tool_rows, "provider_usage_rows": provider_rows})
+
+    async def launcher_recipes(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        listing = recipes.list_recipes(include_drafts=False)
+        return JSONResponse({"ok": True, "recipes": [
+            {key: item.get(key) for key in ("recipe_id", "name", "description", "status", "parameters",
+                                            "consequential", "run_count", "last_run")}
+            for item in listing["recipes"]
+        ]})
+
+    async def launcher_run_recipe(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        if recipe_runner is None:
+            return JSONResponse({"ok": False, "error": "recipe_runner_unavailable"}, status_code=503)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=400)
+        recipe_id = str(body.get("recipe_id") or "")
+        values = body.get("values") or {}
+        # Launchers only name an installed recipe and pass plain values; nothing else
+        # (tool names, steps, commands) is accepted here.
+        if not re.fullmatch(r"rcp_[0-9a-f]{12}", recipe_id):
+            return JSONResponse({"ok": False, "error": "invalid_recipe_id"}, status_code=400)
+        if not isinstance(values, dict) or len(values) > 20 or not all(
+            isinstance(key, str) and (value is None or isinstance(value, (str, int, float, bool)))
+            for key, value in values.items()
+        ):
+            return JSONResponse({"ok": False, "error": "invalid_values",
+                                 "message": "values must be an object of up to 20 plain values."}, status_code=400)
+        result = await recipe_runner(recipe_id, values)
+        status_value = result.get("status") or ("completed" if result.get("ok") else "failed")
+        recipe_info = result.get("recipe") if isinstance(result.get("recipe"), dict) else {}
+        return JSONResponse({
+            "ok": bool(result.get("ok")),
+            "status": status_value,
+            "recipe_id": recipe_id,
+            "name": recipe_info.get("name"),
+            "reason_code": result.get("reason_code"),
+            "message": result.get("message") or result.get("error"),
+            "failed_step": result.get("step_id"),
+            "steps_executed": (result.get("plan_stats") or {}).get("steps_executed"),
+        })
+
     async def provider_usage(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -885,7 +970,9 @@ def create_dashboard_routes(
 
         async def generator():
             try:
-                hello = {"kind": "connected", "active": telemetry.active_calls()}
+                # Same browser_context as /dashboard/api/events, so a client can keep
+                # its activity list from the stream instead of polling for it.
+                hello = {"kind": "connected", "active": [_with_browser_context(item) for item in telemetry.active_calls()]}
                 yield "event: telemetry\ndata: " + json.dumps(hello, ensure_ascii=False) + "\n\n"
                 while True:
                     if await request.is_disconnected():
@@ -895,6 +982,8 @@ def create_dashboard_routes(
                     except asyncio.TimeoutError:
                         yield ": keepalive\n\n"
                         continue
+                    if isinstance(event, dict) and event.get("kind") in {"call_started", "call_finished"}:
+                        event = _with_browser_context(event)
                     yield "event: telemetry\ndata: " + json.dumps(event, ensure_ascii=False) + "\n\n"
             finally:
                 telemetry.unsubscribe(queue)
@@ -923,6 +1012,10 @@ def create_dashboard_routes(
         Route("/dashboard/api/security/escalate", security_escalate, methods=["POST"]),
         Route("/dashboard/api/events", events, methods=["GET"]),
         Route("/dashboard/api/usage", usage, methods=["GET"]),
+        Route("/dashboard/api/usage/settings", usage_settings, methods=["POST"]),
+        Route("/dashboard/api/usage/clear", usage_clear, methods=["POST"]),
+        Route("/dashboard/api/recipes", launcher_recipes, methods=["GET"]),
+        Route("/dashboard/api/recipes/run", launcher_run_recipe, methods=["POST"]),
         Route("/dashboard/api/provider-usage", provider_usage, methods=["GET"]),
         Route("/dashboard/api/changes", changes, methods=["GET"]),
         Route("/dashboard/api/transactions", transactions, methods=["GET"]),

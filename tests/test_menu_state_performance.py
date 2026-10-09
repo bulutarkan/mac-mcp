@@ -114,7 +114,7 @@ struct PerfDiffHarness {
             ]
             compile_result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=90)
             self.assertEqual(0, compile_result.returncode, compile_result.stderr)
-            run_env = {**os.environ, "MAC_MCP_SETTINGS_PATH": str(Path(td) / "settings.json"), "MAC_MCP_VOICE_GROQ_KEYCHAIN_SERVICE": "com.bulutarkan.mac-mcp.perf-test", "MAC_MCP_VOICE_GROQ_KEYCHAIN_ACCOUNT": "test"}
+            run_env = {**os.environ, "MAC_MCP_SETTINGS_PATH": str(Path(td) / "settings.json"), "MAC_MCP_VOICE_GROQ_KEYCHAIN_SERVICE": "com.bulutarkan.mac-mcp.perf-test", "MAC_MCP_VOICE_GROQ_KEYCHAIN_ACCOUNT": "test", "MAC_MCP_DECISIONS_KEYCHAIN_SERVICE": "com.bulutarkan.mac-mcp.perf-test", "MAC_MCP_DECISIONS_KEYCHAIN_ACCOUNT": "test"}
             run_result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=20, env=run_env)
             self.assertEqual(0, run_result.returncode, run_result.stderr)
             self.assertIn("SESSION_DIFF_120_PASS", run_result.stdout)

@@ -165,20 +165,27 @@ class DownloadArtifactTests(unittest.TestCase):
             partial = root / "report.pdf.crdownload"
             final.write_bytes(b"half")
             partial.write_bytes(b"still-downloading")
-            def finish():
-                time.sleep(0.35)
-                partial.unlink()
-                time.sleep(0.002)
-                final.write_bytes(b"complete")
-            thread = threading.Thread(target=finish)
-            thread.start()
-            try:
+            # Finish the download only after the waiter has polled several times
+            # with the partial present: long past stable_ms, so a missing partial
+            # guard would already have returned the 4-byte file.
+            real_sleep = time.sleep
+            polls = [0]
+
+            def poll_then_finish(seconds: float) -> None:
+                polls[0] += 1
+                if polls[0] == 5:
+                    partial.unlink()
+                    real_sleep(0.002)
+                    final.write_bytes(b"complete")
+                real_sleep(seconds)
+
+            from mcp_server import tools_browser
+            with patch.object(tools_browser.time, "sleep", side_effect=poll_then_finish):
                 result = browser_wait_for_download(
-                    settings, filename_contains="report", timeout_s=3,
+                    settings, filename_contains="report", timeout_s=10,
                     started_after_epoch_ms=trigger, stable_ms=100,
                 )
-            finally:
-                thread.join(2)
+            self.assertGreaterEqual(polls[0], 5)
             self.assertTrue(result["completed"])
             self.assertEqual(b"complete", final.read_bytes())
             self.assertEqual(8, result["artifact"]["size"])

@@ -29,6 +29,10 @@ _RESOURCE_LOCKS: weakref.WeakValueDictionary[Tuple[str, str], threading.RLock] =
     weakref.WeakValueDictionary()
 )
 _LOGICAL_LEASES: Dict[str, Dict[str, Any]] = {}
+# Safari exposes no stable tab id; its WebContent pid changes when a cross-site
+# navigation commits (process swap), seconds after Mac MCP started it.
+_EXPECTED_NAVIGATIONS: Dict[str, Dict[str, Any]] = {}
+_EXPECTED_NAVIGATION_TTL_S = 20.0
 _LEASE_HISTORY: Dict[str, Dict[str, Any]] = {}
 _LEASE_LOCK = threading.RLock()
 _OWNER_OVERRIDE: contextvars.ContextVar[Optional[tuple[str, Optional[str], Optional[str]]]] = contextvars.ContextVar(
@@ -54,6 +58,11 @@ class TabTarget:
     logical_owner: Optional[str] = None
     lease_rebound: bool = False
     previous_origin: Optional[str] = None
+
+
+_SCAN_ATTEMPTS = 3
+# AppleScript "Invalid index" and "Can't get" errors from a tab list changing mid-scan.
+_SCAN_RACE_ERRORS = ("(-1719)", "(-1728)")
 
 
 def _osascript(script: str) -> str:
@@ -298,7 +307,10 @@ tell application "Safari"
     set wCount to count of windows
     repeat with wi from 1 to wCount
         tell window wi
-            set cur to index of current tab
+            set cur to 0
+            try
+                set cur to index of current tab
+            end try
             set tCount to count of tabs
             repeat with ti from 1 to tCount
                 set t to tab ti
@@ -320,7 +332,10 @@ tell application "Google Chrome"
     set wCount to count of windows
     repeat with wi from 1 to wCount
         tell window wi
-            set cur to active tab index
+            set cur to 0
+            try
+                set cur to active tab index
+            end try
             set tCount to count of tabs
             repeat with ti from 1 to tCount
                 set t to tab ti
@@ -332,8 +347,17 @@ end tell
 return out
 '''
 
+    # The scan walks tabs by position, so a tab opened or closed by another agent
+    # mid-scan surfaces as an index error. Re-reading is side-effect free.
+    for attempt in range(_SCAN_ATTEMPTS):
+        try:
+            raw = _osascript(script)
+            break
+        except RuntimeError as exc:
+            if attempt == _SCAN_ATTEMPTS - 1 or not any(code in str(exc) for code in _SCAN_RACE_ERRORS):
+                raise
     rows: List[Dict[str, Any]] = []
-    for line in _osascript(script).splitlines():
+    for line in raw.splitlines():
         parts = line.split("\t", 5)
         if len(parts) < 6:
             continue
@@ -404,6 +428,76 @@ def _best_existing_safari(row: Dict[str, Any], used: set[str]) -> Optional[str]:
     return None
 
 
+def _site(url: Any) -> Optional[str]:
+    try:
+        host = (urlsplit(str(url or "")).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return None
+    if not host:
+        return None
+    labels = host.split(".")
+    if host.replace(".", "").isdigit() or len(labels) <= 2:
+        return host
+    tail = labels[-2:]
+    # Two-label public suffixes such as com.tr or co.uk keep one more label.
+    if len(tail[0]) <= 3 and len(tail[1]) == 2:
+        return ".".join(labels[-3:])
+    return ".".join(tail)
+
+
+def expect_safari_navigation(tab_handle: Optional[str], *, expected_url: Optional[str] = None) -> None:
+    """Allow one guarded handle rebind if this tab's Safari process swaps soon.
+
+    Called right after Mac MCP itself navigated or mutated the tab. The rebind
+    in list_tabs still requires the same window and position, an unchanged tab
+    count in that window, and the old pid gone from every tab.
+    """
+    handle = str(tab_handle or "").strip()
+    if not handle:
+        return
+    with _LOCK:
+        record = _REGISTRY.get(handle)
+        if not record or record.get("browser") != "Safari":
+            return
+        window_index = int(record.get("window_index") or 0)
+        _EXPECTED_NAVIGATIONS[handle] = {
+            "native_id": str(record.get("native_id") or ""),
+            "window_index": window_index,
+            "tab_index": int(record.get("tab_index") or 0),
+            "window_tab_count": sum(
+                1 for other in _REGISTRY.values()
+                if other.get("browser") == "Safari" and int(other.get("window_index") or 0) == window_index
+            ),
+            "site": _site(expected_url) if expected_url else None,
+            "expires_at": time.monotonic() + _EXPECTED_NAVIGATION_TTL_S,
+        }
+
+
+def _expected_navigation_handle(row: Dict[str, Any], rows: List[Dict[str, Any]], used: set[str]) -> Optional[str]:
+    now = time.monotonic()
+    for handle, marker in list(_EXPECTED_NAVIGATIONS.items()):
+        if float(marker.get("expires_at") or 0) <= now or handle not in _REGISTRY:
+            _EXPECTED_NAVIGATIONS.pop(handle, None)
+    current_pids = {str(item.get("native_id") or "") for item in rows}
+    window_index = int(row.get("window_index") or 0)
+    window_tab_count = sum(1 for item in rows if int(item.get("window_index") or 0) == window_index)
+    row_site = _site(row.get("url"))
+    matches = [
+        handle for handle, marker in _EXPECTED_NAVIGATIONS.items()
+        if handle not in used
+        and marker.get("native_id") not in current_pids
+        and int(marker.get("window_index") or 0) == window_index
+        and int(marker.get("tab_index") or 0) == int(row.get("tab_index") or 0)
+        and int(marker.get("window_tab_count") or 0) == window_tab_count
+        and (not marker.get("site") or marker.get("site") == row_site)
+    ]
+    if len(matches) != 1:
+        return None
+    handle = matches[0]
+    _EXPECTED_NAVIGATIONS[handle]["native_id"] = str(row.get("native_id") or "")
+    return handle
+
+
 def _retire_logical_lease(handle: str) -> None:
     with _LEASE_LOCK:
         lease = _LOGICAL_LEASES.pop(str(handle), None)
@@ -421,7 +515,11 @@ def list_tabs(browser: str) -> List[Dict[str, Any]]:
             if app == "Google Chrome":
                 handle = _chrome_handle(str(row.get("native_id") or ""))
             else:
-                handle = _best_existing_safari(row, used) or _new_safari_handle()
+                handle = (
+                    _best_existing_safari(row, used)
+                    or _expected_navigation_handle(row, rows, used)
+                    or _new_safari_handle()
+                )
             used.add(handle)
             record = dict(row)
             record["tab_handle"] = handle

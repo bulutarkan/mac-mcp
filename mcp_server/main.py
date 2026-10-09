@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 import hashlib
 import json
+import os
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -17,18 +18,27 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, Mount
 
 from mcp.server.transport_security import TransportSecuritySettings
-from .security import RateLimiter, Settings, authenticate, client_ip, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
+from .request_client import client_address
+from .workflow_checkpoints import clear_not_executed
+from .log_retention import start_log_rotation
+from . import recipes
+from .security import BASE_DIR, AuthFailureLimiter, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
 from .observability import ObservedFastMCP, TelemetryManager, current_security_session
-from .policy import PROFILES, current_policy_context, declared_risk, reset_policy_context, set_policy_context
+from mcp.server.fastmcp.exceptions import ToolError
+from .policy import (
+    PROFILES, current_policy_context, declared_risk, environment_policy_context, reset_policy_context,
+    set_policy_context,
+)
 from .policy_scope import ScopeRequest, evaluate_scope
 from .scoped_auth import resolve_request_identity
 from .dashboard_routes import create_dashboard_routes, rest_telemetry_middleware
 from .mobile_routes import create_mobile_routes
+from .chatgpt_panel import register_chatgpt_panel
 from .chrome_background_bridge import create_chrome_background_bridge_routes
 from .tools_terminal import run_command, process_list, kill_process, get_system_info
 from .tools_jobs import (
     start_background_job, get_job_status, get_job_output,
-    stop_job, list_jobs, wait_jobs, run_commands_parallel,
+    stop_job, list_jobs, delete_job, wait_jobs, run_commands_parallel,
 )
 from .tools_agents import (
     AGENTS_DIR, agent_catalog, spawn_agent, spawn_agents, wait_agents,
@@ -49,7 +59,7 @@ from .tools_ui import observe_ui, act_ui
 from .artifact_pipeline import artifact_pipeline
 from .context_handoff import context_handoff
 from .tools_snapshot import unified_read_snapshot
-from .computer_plan import ComputerPlanError, derive_computer_plan_resources, execute_computer_plan
+from .computer_plan import ComputerPlanError, _unwrap_tool_result, derive_computer_plan_resources, execute_computer_plan
 from .app_adapters import mac_app
 from .tools_search import search_files, spotlight_search
 from .tools_http import http_request
@@ -60,12 +70,16 @@ from .tools_browser import (
     browser_screenshot, browser_scroll, browser_press_key,
     browser_coordinate_click, browser_get_snapshot,
 )
-from .tools_browser_agent import browser_observe, browser_find, browser_act, semantic_extract_fields
+from .tools_browser_agent import (
+    browser_observe, browser_find, browser_act, normalize_act_actions, semantic_extract_fields,
+)
 from .tools_interactive import ask_choice, ask_confirmation, ask_user
 from .tools_voice import ask_user_voice
 from .tools_update import mac_mcp_update
 from .tools_memory import memory_add, memory_search, memory_get, memory_update, memory_delete
-from .tools_lessons import lesson_consolidate, lesson_feedback, lesson_record, lesson_search
+from .tools_lessons import (
+    lesson_consolidate, lesson_delete, lesson_export, lesson_feedback, lesson_record, lesson_search,
+)
 from .tools_skills import skill_list, skill_search, skill_get, skill_register, skill_update_index
 from .menu_app_bootstrap import bootstrap_menu_app_and_legacy_state
 from .runtime_settings import tool_activity_setting
@@ -81,6 +95,9 @@ MCP_AGENT_INSTRUCTIONS = (
     "Default home directory is the current user's home. "
     "Routing order: dedicated semantic tool first, then shell/file API, then browser DOM, with native UI only as a fallback. "
     "Use open_app to launch apps, run_command for shell work, and file tools for filesystem work. "
+    "Shell mode: run_command for a short command you wait on; start_background_job for long builds, servers or watchers, "
+    "then get_job_output/wait_jobs and stop_job (use tool_discover if they are not listed); run_commands_parallel only "
+    "for independent commands. "
     "If a dedicated capability is unavailable or policy-denied, do not reproduce the same side effect through Terminal, AppleScript, or generic UI; policy denial is not a fallback reason. "
     "Perception ladder: start with mac_snapshot or semantic browser/native observation; reuse previous_observation_id "
     "for delta/not_modified reads; escalate to targeted element/window visual only when semantic state is insufficient; "
@@ -89,6 +106,11 @@ MCP_AGENT_INSTRUCTIONS = (
     "For form filling and repetitive browser interactions, batch independent actions; never field-by-field unless dependencies require it. "
     "Split browser action groups when an earlier action materially changes later controls, stale-target or human-takeover risk requires re-observation, "
     "or a consequential step needs a separate verification boundary. "
+    "Browser tabs: pass the tab_handle from browser_list_tabs or browser_do on every browser call. "
+    "browser_act and browser_do resolve query/role/within targets themselves; use browser_find only to read, never as a step before acting. "
+    "When every item repeats the same controls (a Reply under each comment, a button on each card), do not browser_find each control: "
+    "send one browser_act whose actions all carry within='a phrase that appears only in that item', e.g. click Reply -> type into role=textbox "
+    "-> click the submit control with role=button -> wait for:text with the posted text. "
     "Prefer the smallest number of tool calls and smallest bounded context that safely completes and verifies the task."
 )
 
@@ -118,7 +140,13 @@ BROWSER_ACT_DESCRIPTION = (
     "so type then key Enter commits search boxes and date fields in the same batch. After an earlier action changes the page, a missing target is awaited "
     "briefly (set wait_s per action to change it), so picker confirm buttons and autocomplete options can follow in the same batch. "
     "Click actions default to background-safe synthetic DOM input; input_mode='trusted' is an explicit Chrome Background Companion-only pointer path and fails closed on Safari "
-    "without foreground/coordinate fallback. No-effect mutations are never automatically replayed. return_state: none, compact, or full."
+    "without foreground/coordinate fallback. No-effect mutations are never automatically replayed. return_state: none, compact, or full. "
+    "When labels repeat (two Continue buttons), add an optional per-action intent such as 'Continue in the Billing section'; "
+    "it is used only to break such ties and never carries typed values. "
+    "When every item repeats the same controls (a Reply under each comment), give each action within='a phrase unique to that item' "
+    "(or within_element_id): matches are limited to that item, nearest first, and a phrase found in several items fails as "
+    "WITHIN_ANCHOR_AMBIGUOUS instead of guessing. Reply flows fit one call: click Reply within X -> type into role=textbox within X "
+    "-> click the submit control within X with role=button (a same-named link may be a bookmark) -> wait for the posted text."
 )
 
 _BROWSER_DO_OUTPUT_BUDGET_BYTES = 8_192
@@ -291,6 +319,7 @@ def create_app():
     settings = load_settings()
     validate_bootstrap_security(settings)
     limiter = RateLimiter(settings.rate_limit_per_minute)
+    auth_failures = AuthFailureLimiter()
     audit_logger = setup_audit_logger()
     telemetry = TelemetryManager()
     dashboard_token = ensure_dashboard_token()
@@ -345,6 +374,13 @@ def create_app():
                     ]
                     request.scope["query_string"] = urlencode(clean_pairs, doseq=True).encode("utf-8")
 
+                # Verified peer address: forwarding headers count only from the
+                # configured tunnel, so spoofed X-Forwarded-For cannot split buckets.
+                ip = client_address(request)
+                if auth_failures.blocked(ip):
+                    return JSONResponse(
+                        {"detail": auth_failure_response_detail()}, status_code=429, headers={"Retry-After": "60"},
+                    )
                 try:
                     authorization = request_authorization(
                         settings,
@@ -352,7 +388,11 @@ def create_app():
                         query_api_keys,
                     )
                     rate_key, policy_context = resolve_request_identity(settings, authorization)
-                    ip = client_ip(request)
+                except HTTPException as exc:
+                    if exc.status_code == 401:
+                        auth_failures.record_failure(ip)
+                    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+                try:
                     rate_limit(limiter, rate_key, ip)
                 except HTTPException as exc:
                     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
@@ -526,10 +566,20 @@ def create_app():
                     lambda: stop_job(settings, job_id=job_id, signal_name=signal))
 
     @mcp.tool(name="list_jobs",
-              description="List background jobs. status_filter can be running, stalled, completed, failed, timeout, killed.")
-    def _list_jobs(status_filter: Optional[str] = None) -> Dict[str, Any]:
+              description=(
+                  "List background jobs, newest first (limit, default 50; total says how many matched). "
+                  "status_filter can be running, stalled, completed, failed, timeout, killed. "
+                  "Finished jobs expire by age, count and size (see retention)."
+              ))
+    def _list_jobs(status_filter: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
         return _log(audit_logger, "list_jobs",
-                    lambda: list_jobs(settings, status_filter=status_filter))
+                    lambda: list_jobs(settings, status_filter=status_filter, limit=limit))
+
+    @mcp.tool(name="delete_job",
+              description="Delete a finished background job: its metadata and both output streams. Stop a running job first.",
+              annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=False))
+    def _delete_job(job_id: str) -> Dict[str, Any]:
+        return _log(audit_logger, "delete_job", lambda: delete_job(settings, job_id=job_id))
 
     @mcp.tool(name="wait_jobs",
               description=(
@@ -621,7 +671,7 @@ def create_app():
             "path/browser claims are scope-checked and file expected_revision fails closed before provider start. ChatGPT accepts project=... "
             "as the team default and task.project overrides. Optional team role or task.role enables bounded role-learning context per child. "
             "Each child produces a versioned typed result envelope; valid structured output is preserved, plain legacy text is "
-            "adapted with explicit legacy_fallback status, and malformed marked envelopes fail closed. Dependency fan-in is deterministic, "
+            "adapted with explicit legacy_fallback status, and malformed marked envelopes fail closed (a read_only non-reviewer child keeps its plain report with contract_status=invalid and no structured claims). Dependency fan-in is deterministic, "
             "provenance-aware, deduplicates evidence/artifacts, flags keyed claim contradictions, and never injects raw provider logs. "
             "Returns immediately with parent-visible budget and global admission/queue state."
         ),
@@ -686,13 +736,15 @@ def create_app():
 
     @mcp.tool(
         name="get_agent",
-        description="Get one delegated agent status and typed final result envelope. The compatibility result field is the structured summary, not raw provider output; bounded envelopes expose truncation.omitted explicitly. Delegated callers may access only themselves or descendants in their persisted lineage; include_logs=true follows the same boundary.",
+        description="Get one delegated agent status and typed final result envelope. result_mode='full' pages the complete final report via result_full (result_offset/result_limit). The compatibility result field is the structured summary, not raw provider output; bounded envelopes expose truncation.omitted explicitly. Delegated callers may access only themselves or descendants in their persisted lineage; include_logs=true follows the same boundary.",
     )
     def _get_agent(agent_id: str, include_logs: bool = False,
-                   tail_lines: int = 40) -> Dict[str, Any]:
+                   tail_lines: int = 40, result_mode: str = "summary",
+                   result_offset: int = 0, result_limit: int = 20000) -> Dict[str, Any]:
         return _log(audit_logger, "get_agent",
                     lambda: get_agent(settings, agent_id=agent_id, include_logs=include_logs,
-                                      tail_lines=tail_lines))
+                                      tail_lines=tail_lines, result_mode=result_mode,
+                                      result_offset=result_offset, result_limit=result_limit))
 
     @mcp.tool(
         name="agent_action",
@@ -731,7 +783,7 @@ def create_app():
                     lambda: read_file(settings, path=path, offset=offset, length=length))
 
     @mcp.tool(name="read_multiple_files",
-              description="Read multiple files in one call. Returns contents keyed by path.")
+              description="Read several text files in one call. Returns files: a list of {path, status, content, truncated} records in request order (50,000 chars max each); a missing file yields status=error without failing the rest.")
     def _read_multiple_files(paths: List[str]) -> Dict[str, Any]:
         return _log(audit_logger, "read_multiple_files",
                     lambda: read_multiple_files(settings, paths=paths))
@@ -1107,9 +1159,17 @@ def create_app():
         name="mac_app",
         title="Use semantic first-party macOS app adapter",
         description=(
-            "Use typed semantic adapters for Finder, Notes, Mail, Calendar, Preview, and System Settings. "
+            "Use typed semantic adapters for Finder, Notes, Mail, Calendar, Reminders, Preview, and System Settings. "
             "Common action=capabilities reports app-specific actions. Finder: selection|select_file. "
-            "Notes: find_notes|open_note. Mail: find_messages|open_message. Calendar: find_events|open_event. "
+            "Notes: find_notes|open_note|create_note (title, optional body/folder/account). "
+            "Mail: find_messages|open_message|create_draft (title as subject, optional body, to/cc as comma-separated "
+            "addresses, account name or address; required when several accounts are enabled). create_draft only saves "
+            "to Drafts and never sends. "
+            "Calendar: find_events|open_event|create_event (title, start, optional end/calendar/location/notes; "
+            "start as YYYY-MM-DD makes an all-day event)|update_event (item_id uid plus fields to change). "
+            "Reminders: list_reminders (query, list_name, include_completed)|complete_reminder (item_id). "
+            "Data actions return the item's stable id and a read-back verification; a replayed create returns the "
+            "existing item instead of a duplicate, and an uncertain result says outcome_unknown and must not be retried blindly. "
             "Preview: list_documents|open_document. System Settings: list_panes|open_pane. "
             "Unsupported apps/actions return an explicit mac_observe/mac_act fallback; no generic AX action runs automatically. "
             "Mutating/open adapter actions preserve the user's current focus by default. preserve_focus=false is foreground intent only and fails closed for normal MCP/model calls; only a trusted local-user foreground capability can authorize it. "
@@ -1131,6 +1191,19 @@ def create_app():
         exact: bool = False,
         preserve_focus: bool = True,
         timeout_s: float = 10.0,
+        title: Optional[str] = None,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+        calendar: Optional[str] = None,
+        location: Optional[str] = None,
+        notes: Optional[str] = None,
+        list_name: Optional[str] = None,
+        include_completed: bool = False,
+        body: Optional[str] = None,
+        folder: Optional[str] = None,
+        account: Optional[str] = None,
+        to: Optional[str] = None,
+        cc: Optional[str] = None,
     ) -> Dict[str, Any]:
         return _log(
             audit_logger,
@@ -1150,6 +1223,19 @@ def create_app():
                 exact=exact,
                 preserve_focus=preserve_focus,
                 timeout_s=timeout_s,
+                title=title,
+                start=start,
+                end=end,
+                calendar=calendar,
+                location=location,
+                notes=notes,
+                list_name=list_name,
+                include_completed=include_completed,
+                body=body,
+                folder=folder,
+                account=account,
+                to=to,
+                cc=cc,
             ),
         )
 
@@ -1199,10 +1285,11 @@ def create_app():
         max_recovery_seconds: float = 12.0,
         max_action_units: int = 24,
         resources: Optional[List[Dict[str, Any]]] = None,
+        save_as_recipe: Optional[str] = None,
     ) -> Dict[str, Any]:
         try:
             normalized_resources = _computer_plan_resources(steps, resources)
-            return await execute_computer_plan(
+            result = await execute_computer_plan(
                 mcp.call_tool,
                 steps=steps,
                 max_seconds=max_seconds,
@@ -1215,6 +1302,87 @@ def create_app():
             )
         except ComputerPlanError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        if save_as_recipe and str(save_as_recipe).strip():
+            # Opt-in capture: only a successful plan is saved, and only as a draft
+            # that must be reviewed and activated before it can run.
+            if not result.get("ok"):
+                result["recipe_draft"] = {"saved": False, "reason": "The plan did not finish successfully."}
+            else:
+                try:
+                    result["recipe_draft"] = recipes.capture_draft(
+                        str(save_as_recipe), steps=steps, plan_version=plan_version,
+                        budgets={"max_seconds": max_seconds, "max_recoveries": max_recoveries,
+                                 "max_recovery_seconds": max_recovery_seconds, "max_action_units": max_action_units},
+                        plan_result=result,
+                    )
+                except recipes.RecipeError as exc:
+                    result["recipe_draft"] = {"saved": False, "reason_code": exc.code, "reason": str(exc)}
+        return result
+
+    @mcp.tool(
+        name="recipe",
+        title="Saved computer_plan recipes",
+        description=(
+            "Reuse a successful computer_plan as a reviewed, parameterized recipe. Capture with "
+            "computer_plan(save_as_recipe='name'), which saves a draft. action=list|inspect|update|activate|run|pause|"
+            "resume|delete. update: name, summary (what the recipe does), parameters {name: {type: string|integer|number|boolean|date|"
+            "datetime, required, default, enum, max_length}} and parameterize [{literal, param}] to turn literal "
+            "values into {{param}} placeholders; edits return the recipe to draft. activate needs confirm=true and "
+            "refuses secret-like literals. run takes values {param: value}; it always executes through computer_plan "
+            "with normal policy and verification. delete needs confirm=true."
+        ),
+        structured_output=False,
+    )
+    async def _recipe(
+        action: str = "list",
+        recipe_id: Optional[str] = None,
+        name: Optional[str] = None,
+        summary: Optional[str] = None,
+        parameters: Optional[Dict[str, Any]] = None,
+        parameterize: Optional[List[Dict[str, Any]]] = None,
+        values: Optional[Dict[str, Any]] = None,
+        confirm: bool = False,
+        include_drafts: bool = True,
+    ) -> Dict[str, Any]:
+        verb = str(action or "list").strip().lower()
+        try:
+            if verb == "list":
+                return recipes.list_recipes(include_drafts=include_drafts)
+            if not recipe_id:
+                raise recipes.RecipeError("RECIPE_ARGUMENT_INVALID", f"action={verb} requires recipe_id.")
+            if verb == "inspect":
+                return recipes.inspect_recipe(recipe_id)
+            if verb == "update":
+                return recipes.update_recipe(recipe_id, name=name, description=summary,
+                                             parameters=parameters, parameterize=parameterize)
+            if verb in {"activate", "resume"}:
+                return recipes.set_status(recipe_id, "active", confirm=confirm)
+            if verb == "pause":
+                return recipes.set_status(recipe_id, "paused")
+            if verb == "delete":
+                return recipes.delete_recipe(recipe_id, confirm=confirm)
+            if verb == "run":
+                prepared = recipes.prepare_run(recipe_id, values)
+                budgets = prepared["budgets"]
+                try:
+                    result = await execute_computer_plan(
+                        mcp.call_tool,
+                        steps=prepared["steps"],
+                        plan_version=prepared["plan_version"],
+                        resources=_computer_plan_resources(prepared["steps"], None),
+                        admission_root=AGENTS_DIR,
+                        **{key: budgets[key] for key in ("max_seconds", "max_recoveries",
+                                                          "max_recovery_seconds", "max_action_units") if key in budgets},
+                    )
+                except ComputerPlanError as exc:
+                    raise recipes.RecipeError("RECIPE_PLAN_INVALID", str(exc)) from exc
+                result["recipe"] = {"recipe_id": recipe_id, "name": prepared["recipe"].get("name"),
+                                    "values": prepared["values"], "last_run": recipes.record_run(recipe_id, result)}
+                return result
+            raise recipes.RecipeError("RECIPE_ARGUMENT_INVALID",
+                                      "action must be list, inspect, update, activate, run, pause, resume or delete.")
+        except recipes.RecipeError as exc:
+            return {"ok": False, "error": exc.code.lower(), "reason_code": exc.code, "message": str(exc), **exc.extra}
 
     # ── Search tools ────────────────────────────────────────────────────────
     @mcp.tool(name="search_files",
@@ -1258,7 +1426,10 @@ def create_app():
                                              window_index=window_index, tab_index=tab_index, tab_handle=tab_handle))
 
     @mcp.tool(name="browser_list_tabs",
-              description="List all open tabs with title, URL, indices, and stable tab_handle values that survive tab index shifts.")
+              description=(
+                  "List all open tabs with title, URL, indices, and stable tab_handle values that survive tab index shifts. "
+                  "For Google Chrome, transport says whether background automation works now and how to fix it."
+              ))
     def _browser_list_tabs(browser: str) -> Dict[str, Any]:
         return _log(audit_logger, "browser_list_tabs",
                     lambda: browser_list_tabs(settings, browser=browser))
@@ -1318,8 +1489,11 @@ def create_app():
         name="browser_find",
         description=(
             "Find a rendered browser element with exact-first ranking and hard role/text constraints. Queries also match input values; role-only lookup is supported. "
-            "Set actionable_only=false to include labels/cards; use best_match with browser_act. "
-            "wait_timeout_s>0 uses the event-driven DOM waiter before the final targeted scan."
+            "Use it to read or inspect a page. To act, do not find first: pass the same query/role/within straight to browser_act, "
+            "which resolves the target itself. Set actionable_only=false to include labels/cards. "
+            "wait_timeout_s>0 uses the event-driven DOM waiter before the final targeted scan. "
+            "within='text unique to one item' (or within_element_id) limits matches to that item, e.g. one comment, "
+            "nearest first; within_levels (default 6) sets how far above the anchor the item may extend."
         ),
     )
     async def _browser_find(browser: str, query: str = "", role: Optional[str] = None,
@@ -1327,14 +1501,19 @@ def create_app():
                             tab_index: Optional[int] = None, tab_handle: Optional[str] = None,
                             max_results: int = 5,
                             actionable_only: bool = False,
-                            wait_timeout_s: float = 0.0) -> Dict[str, Any]:
+                            wait_timeout_s: float = 0.0,
+                            within: Optional[str] = None,
+                            within_element_id: Optional[str] = None,
+                            within_levels: Optional[int] = None) -> Dict[str, Any]:
         return await asyncio.to_thread(
             _log, audit_logger, "browser_find",
             lambda: browser_find(settings, browser=browser, query=query, role=role, text=text,
                                   window_index=window_index, tab_index=tab_index, tab_handle=tab_handle,
                                   max_results=max_results,
                                   actionable_only=actionable_only,
-                                  wait_timeout_s=wait_timeout_s),
+                                  wait_timeout_s=wait_timeout_s,
+                                  within=within, within_element_id=within_element_id,
+                                  within_levels=within_levels),
         )
 
     @mcp.tool(
@@ -1372,7 +1551,8 @@ def create_app():
         def work() -> Dict[str, Any]:
             handle = tab_handle
             opened = None
-            requested_actions = list(actions or [])
+            # Reject a malformed action before the tab is opened or navigated.
+            requested_actions = normalize_act_actions(list(actions)) if actions else []
             work_actions = list(requested_actions)
             semantic_fields = semantic_extract_fields(extract) if extract is not None else None
             automatic_actions = (1 if semantic_fields else 0) + (1 if url and wait_after_open else 0)
@@ -1405,11 +1585,17 @@ def create_app():
                     ],
                     "max_chars": 3000,
                 })
-            result = browser_act(
-                settings, browser=browser, actions=work_actions, window_index=window_index,
-                tab_index=tab_index, tab_handle=handle, return_state=return_state,
-                allow_foreground=allow_foreground,
-            )
+            try:
+                result = browser_act(
+                    settings, browser=browser, actions=work_actions, window_index=window_index,
+                    tab_index=tab_index, tab_handle=handle, return_state=return_state,
+                    allow_foreground=allow_foreground,
+                )
+            except HTTPException as exc:
+                if opened:
+                    # The tab was already opened or navigated, so this call did act.
+                    clear_not_executed(exc)
+                raise
             if opened:
                 result["opened"] = {k: opened.get(k) for k in ("url", "window_index", "tab_index", "tab_handle", "background") if k in opened}
             closed = False
@@ -1444,6 +1630,7 @@ def create_app():
                 "internal_js_calls": result.get("internal_js_calls"),
                 "duration_ms": result.get("duration_ms"),
                 "closed": closed,
+                "mutation_dispatched": bool(result.get("mutation_dispatched") or opened),
             }
             if progress:
                 compact["progress"] = progress
@@ -1771,6 +1958,36 @@ def create_app():
             lambda: lesson_consolidate(role=role, apply=apply, provenance_class=provenance),
         )
 
+    @mcp.tool(
+        name="lesson_delete",
+        description=(
+            "Permanently delete role-learning lessons: one lesson_id, every lesson of a role, or all_lessons=true. "
+            "Without confirm=true it only shows what would be deleted. Deleted lessons never reach a worker prompt again."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=False),
+    )
+    async def _lesson_delete(lesson_id: Optional[str] = None, role: Optional[str] = None,
+                             all_lessons: bool = False, confirm: bool = False) -> Dict[str, Any]:
+        provenance = current_provenance_class()
+        return await asyncio.to_thread(
+            _log, audit_logger, "lesson_delete",
+            lambda: lesson_delete(lesson_id=lesson_id, role=role, all_lessons=all_lessons,
+                                  confirm=confirm, provenance_class=provenance),
+        )
+
+    @mcp.tool(
+        name="lesson_export",
+        description=(
+            "Export every stored role lesson (candidates, active and disabled) with its evidence and the retention period, "
+            "so the user can review what was learned."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    )
+    async def _lesson_export(role: Optional[str] = None, state: Optional[str] = None) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "lesson_export", lambda: lesson_export(role=role, state=state),
+        )
+
     # ── Agent Skills tools ───────────────────────────────────────────────────
     @mcp.tool(
         name="skill_list",
@@ -1965,7 +2182,7 @@ def create_app():
 
     @mcp.tool(
         name="tool_discover",
-        description="Find less-common Mac MCP capabilities allowed by the active permission profile and delegated scope. Returns a small schema summary.",
+        description="Find less-common Mac MCP capabilities allowed by the active permission profile and delegated scope. Returns a small schema summary; include_schema=true adds the full description and input schema.",
     )
     async def _tool_discover(query: str = "", limit: int = 8, include_schema: bool = False) -> Dict[str, Any]:
         q = str(query or "").strip().lower()
@@ -1979,12 +2196,15 @@ def create_app():
                 continue
             params = _tool_input_schema(info)
             properties = params.get("properties") or {}
+            full_description = info.description or ""
             availability = mcp.effective_tool_availability(info.name)
             risk = declared_risk(info.name)
             profile = PROFILES.get(str(availability.get("profile") or ""))
             item = {
                 "name": info.name,
-                "description": (info.description or "")[:180],
+                # include_schema asks for the whole contract, so keep the full text.
+                "description": full_description if include_schema else full_description[:180],
+                "description_truncated": not include_schema and len(full_description) > 180,
                 "required": params.get("required") or [],
                 "parameters": {
                     name: {"type": spec.get("type"), "default": spec.get("default")}
@@ -2021,6 +2241,8 @@ def create_app():
     )
     async def _tool_invoke(tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return await _invoke_registered_tool(mcp, tool_name, arguments)
+
+    register_chatgpt_panel(mcp, telemetry, settings)
 
     # ── App setup ────────────────────────────────────────────────────────────
     app = mcp.streamable_http_app()
@@ -2060,14 +2282,41 @@ def create_app():
 
     app.router.routes.append(Route("/health", health, methods=["GET"]))
     app.router.routes.extend(create_chrome_background_bridge_routes())
-    app.router.routes.extend(create_dashboard_routes(telemetry, settings, dashboard_token, mcp.steering, mcp.security_context))
+    async def run_recipe_for_launcher(recipe_id: str, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Run one saved recipe for Shortcuts, Raycast or the CLI.
+
+        It goes through the normal MCP tool path as the local launcher, so profile,
+        scopes and approval rules apply exactly as they would for an agent.
+        """
+        token = set_policy_context(environment_policy_context(actor="local_launcher"))
+        try:
+            arguments: Dict[str, Any] = {"action": "run", "recipe_id": recipe_id, "values": values}
+            if mcp.intent_descriptions_enabled():
+                arguments["description"] = "Run a saved recipe from a launcher"
+            raw = await mcp.call_tool("recipe", arguments)
+        except ToolError as exc:
+            text = str(exc)
+            needs_approval = "approval_required" in text or "approval" in text.lower()
+            return {"ok": False, "status": "approval_required" if needs_approval else "refused",
+                    "reason_code": "APPROVAL_REQUIRED" if needs_approval else "TOOL_REFUSED", "message": text[:500]}
+        finally:
+            reset_policy_context(token)
+        result = _unwrap_tool_result(raw)
+        return result if isinstance(result, dict) else {"ok": False, "status": "failed", "message": str(result)[:500]}
+
+    app.router.routes.extend(create_dashboard_routes(
+        telemetry, settings, dashboard_token, mcp.steering, mcp.security_context,
+        recipe_runner=run_recipe_for_launcher,
+    ))
     app.router.routes.extend(create_mobile_routes(telemetry, settings, dashboard_token, mcp.steering))
 
     # REST API — FastAPI sub-app mounted at /api
     from fastapi import FastAPI
     from .rest_routes import configure_rest_security, router as rest_router
-    configure_rest_security(mcp.security_context, telemetry, security_approval)
-    rest_app = FastAPI()
+    configure_rest_security(mcp.security_context, telemetry, security_approval, auth_failures=auth_failures)
+    # Runtime API docs would let anyone on the public tunnel enumerate routes
+    # unauthenticated; the integration schema ships as openapi/custom-gpt-actions.json.
+    rest_app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
 
     @rest_app.middleware("http")
     async def _capture_rest_telemetry(request: Request, call_next):
@@ -2080,3 +2329,7 @@ def create_app():
 
 
 app = create_app()
+
+if os.getenv("MAC_MCP_MANAGED_SERVER") == "1":
+    # The CLI-started server owns log upkeep; imports in tests never rotate real logs.
+    start_log_rotation(base_dir=BASE_DIR)

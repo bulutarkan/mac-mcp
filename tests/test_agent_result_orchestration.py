@@ -352,6 +352,116 @@ class TypedResultWorkerTests(unittest.TestCase):
             self.assertEqual("invalid", saved["result_contract_status"])
             self.assertEqual("quality_gate_mismatch", saved["result_contract_error"]["code"])
 
+    def _run_worker(self, root: Path, agent_id: str, text: str, **meta_overrides) -> tuple[int, dict]:
+        self._fixture(root, agent_id)
+        if meta_overrides:
+            agents._update_meta(agent_id, lambda current: current.update(meta_overrides))
+        def fake_attempt(*_args):
+            (root / "agents" / agent_id / "stdout.log").write_text(
+                self._opencode_stdout(text), encoding="utf-8",
+            )
+            return 0, None
+        with patch.object(agents, "_run_provider_attempt", side_effect=fake_attempt):
+            rc = agents._worker(agent_id)
+        return rc, agents._read_meta(agent_id)
+
+    def _isolated(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        for patcher in (
+            patch.dict(os.environ, {"MAC_MCP_STATE_DIR": str(Path(td.name) / "state")}, clear=False),
+            patch.object(agents, "AGENTS_DIR", Path(td.name) / "agents"),
+            patch.object(agents, "TEAMS_DIR", Path(td.name) / "teams"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return Path(td.name)
+
+    MALFORMED = RESULT_ENVELOPE_MARKER + '\n{"schema_version":1,"outcome":"success","summary":"unterminated'
+
+    def test_read_only_report_survives_malformed_envelope_with_warning(self) -> None:
+        root = self._isolated()
+        report = "# Audit report\n\nFinding: the cache is never invalidated."
+        rc, saved = self._run_worker(root, "agt_salvage", report + "\n\n" + self.MALFORMED)
+        self.assertEqual(0, rc)
+        self.assertEqual("completed", saved["status"])
+        self.assertTrue(saved["result_contract_salvaged"])
+        self.assertEqual("invalid", saved["result_contract_status"])
+        self.assertEqual("invalid_json", saved["result_contract_error"]["code"])
+        self.assertIn("malformed", saved["note"])
+        result = agents.get_agent(None, "agt_salvage")
+        envelope = result["result_envelope"]
+        self.assertEqual(report, result["result"])
+        self.assertFalse(result["result_contract"]["valid"])
+        self.assertEqual([], envelope["claims"])
+        self.assertEqual([], envelope["evidence"])
+        self.assertTrue(any("malformed" in warning for warning in envelope["warnings"]))
+
+    def test_malformed_envelope_still_fails_write_tasks_and_quality_gates(self) -> None:
+        root = self._isolated()
+        text = "Complete report body.\n\n" + self.MALFORMED
+        for agent_id, overrides in (
+            ("agt_salvage_write", {"access_mode": "workspace_write"}),
+            ("agt_salvage_reviewer", {"role": "reviewer"}),
+        ):
+            with self.subTest(agent_id=agent_id):
+                rc, saved = self._run_worker(root, agent_id, text, **overrides)
+                self.assertEqual(1, rc)
+                self.assertEqual("failed", saved["status"])
+                self.assertFalse(saved["result_contract_salvaged"])
+                self.assertIn("invalid typed result contract", saved["note"].lower())
+                envelope = agents._read_result_envelope(agent_id, meta=saved, allow_legacy=False)
+                self.assertEqual("failure", envelope["outcome"])
+
+    def test_detailed_report_is_retrievable_in_full_by_paging(self) -> None:
+        root = self._isolated()
+        report = "".join(f"Satır {index:05d}: ölçüm ✓ değer={index * 7}\n" for index in range(1500))
+        self.assertGreater(len(report), 45_000)
+        rc, saved = self._run_worker(root, "agt_full", report, result_style="detailed")
+        self.assertEqual(0, rc)
+        self.assertTrue(saved["result_truncated"])
+        self.assertLessEqual(len((root / "agents" / "agt_full" / "result.txt").read_text(encoding="utf-8")), agents.DETAILED_RESULT_LIMIT)
+        self.assertEqual(len(report.strip()), saved["result_full_chars"])
+
+        pieces, offset, pages = [], 0, 0
+        while offset is not None:
+            page = agents.get_agent(None, "agt_full", result_mode="full", result_offset=offset, result_limit=16_000)["result_full"]
+            self.assertEqual(len(report.strip()), page["total_chars"])
+            self.assertEqual(offset, page["offset"])
+            pieces.append(page["text"])
+            offset = page["next_offset"]
+            pages += 1
+        self.assertEqual(report.strip(), "".join(pieces))
+        self.assertEqual(3, pages)
+
+        past_end = agents.get_agent(None, "agt_full", result_mode="full", result_offset=10**9)["result_full"]
+        self.assertEqual("", past_end["text"])
+        self.assertFalse(past_end["has_more"])
+        self.assertNotIn("result_full", agents.get_agent(None, "agt_full"))
+
+        waited = agents.wait_agents(None, agent_ids=["agt_full"], timeout_s=0)
+        hint = waited["agents"][0]["full_result"]
+        self.assertEqual(len(report.strip()), hint["total_chars"])
+        self.assertIn("result_mode='full'", hint["retrieve"])
+
+    def test_full_report_storage_has_a_hard_cap(self) -> None:
+        root = self._isolated()
+        report = "x" * 600_000
+        rc, saved = self._run_worker(root, "agt_huge", report, result_style="detailed")
+        self.assertEqual(0, rc)
+        self.assertTrue(saved["result_full_truncated"])
+        self.assertEqual(agents.FULL_RESULT_LIMIT, saved["result_full_chars"])
+        self.assertEqual(600_000, saved["result_original_chars"])
+        stored = (root / "agents" / "agt_huge" / "result.full.txt")
+        self.assertTrue(stored.read_text(encoding="utf-8").endswith("[truncated]"))
+        self.assertEqual(0o600, stored.stat().st_mode & 0o777)
+
+    def test_get_agent_rejects_unknown_result_mode(self) -> None:
+        root = self._isolated()
+        self._run_worker(root, "agt_mode", "done")
+        with self.assertRaises(agents.HTTPException):
+            agents.get_agent(None, "agt_mode", result_mode="raw")
+
     def test_plain_text_provider_uses_explicit_legacy_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as td, patch.dict(
             os.environ, {"MAC_MCP_STATE_DIR": str(Path(td) / "state")}, clear=False,

@@ -24,12 +24,46 @@ class ResultContractError(ValueError):
         super().__init__(message)
 
 
-def result_contract_instruction(*, detailed: bool = False) -> str:
+def evidence_policy_for(access_mode: Any, *, integration_required: bool = False) -> str:
+    """Tasks that change files must back a success with evidence; others may omit it."""
+    mode = str(access_mode or "workspace_write").strip().lower()
+    return "required" if integration_required or mode != "read_only" else "optional"
+
+
+def apply_evidence_policy(envelope: Dict[str, Any], policy: str) -> Dict[str, Any]:
+    """Record the policy and downgrade an unsupported success when evidence is required.
+
+    Only a valid typed contract is held to the policy; a legacy text handoff has no
+    structured evidence to check and is already marked as such.
+    """
+    envelope["evidence_policy"] = "required" if policy == "required" else "optional"
+    if (
+        envelope["evidence_policy"] == "required"
+        and envelope.get("contract_status") == "valid"
+        and envelope.get("outcome") == "success"
+        and not envelope.get("evidence")
+    ):
+        envelope["outcome"] = "partial_failure"
+        envelope.setdefault("errors", []).append({
+            "code": "evidence_required",
+            "message": "This task changes files, so a successful result must include evidence "
+                       "(tests, build or checks that were run); none was provided.",
+        })
+    return envelope
+
+
+def result_contract_instruction(*, detailed: bool = False, evidence_required: bool = False) -> str:
     detail = (
         "Use claims/evidence/artifacts generously when they materially support the handoff."
         if detailed
         else "Keep arrays compact and include only material claims/evidence/artifacts."
     )
+    if evidence_required:
+        detail += (
+            " This task can change files: outcome=success requires at least one evidence item for the "
+            "tests, build or checks you ran, linked to the claims it supports; without it the result is "
+            "recorded as partial_failure."
+        )
     return (
         "Return a provider-independent typed handoff. Your final response MUST end with the marker "
         f"{RESULT_ENVELOPE_MARKER} followed by one JSON object (optionally in a json code fence). "
@@ -149,6 +183,33 @@ def _normalize_error(item: Any, index: int) -> Dict[str, Any]:
     return row
 
 
+def _validate_references(envelope: Dict[str, Any]) -> None:
+    for name in ("claims", "evidence", "artifacts"):
+        seen: set[str] = set()
+        for row in envelope[name]:
+            if row["id"] in seen:
+                raise ResultContractError("duplicate_id", f"{name} contains duplicate id {row['id']!r}")
+            seen.add(row["id"])
+    claim_ids = {row["id"] for row in envelope["claims"]}
+    supported: set[str] = set()
+    for row in envelope["evidence"]:
+        for claim_id in row["claim_ids"]:
+            if claim_id not in claim_ids:
+                raise ResultContractError(
+                    "dangling_claim_reference",
+                    f"evidence {row['id']!r} references unknown claim {claim_id!r}",
+                )
+            supported.add(claim_id)
+    # Evidence stays optional, but consumers can see which claims lack support.
+    unsupported = sorted(claim_ids - supported)
+    envelope["evidence_coverage"] = {
+        "claim_count": len(claim_ids),
+        "evidence_count": len(envelope["evidence"]),
+        "unsupported_claim_count": len(unsupported),
+        "unsupported_claim_ids": unsupported[:32],
+    }
+
+
 def normalize_result_envelope(
     raw: Mapping[str, Any],
     *,
@@ -213,6 +274,7 @@ def normalize_result_envelope(
         "quality_gate": None,
         "truncation": {"truncated": False, "omitted": {}},
     }
+    _validate_references(envelope)
     gate = raw.get("quality_gate")
     if gate is not None:
         if not isinstance(gate, Mapping):
@@ -227,10 +289,7 @@ def normalize_result_envelope(
     return envelope
 
 
-def _extract_marked_json(text: str) -> Optional[str]:
-    marker_index = text.rfind(RESULT_ENVELOPE_MARKER)
-    if marker_index < 0:
-        return None
+def _marked_tail(text: str, marker_index: int) -> str:
     tail = text[marker_index + len(RESULT_ENVELOPE_MARKER):].strip()
     if tail.startswith("```"):
         lines = tail.splitlines()
@@ -240,6 +299,30 @@ def _extract_marked_json(text: str) -> Optional[str]:
             lines = lines[:-1]
         tail = "\n".join(lines).strip()
     return tail
+
+
+def _extract_marked_json(text: str) -> Optional[str]:
+    marker_index = text.rfind(RESULT_ENVELOPE_MARKER)
+    if marker_index < 0:
+        return None
+    last_tail = _marked_tail(text, marker_index)
+    # Some providers close the block with the marker too ("MARKER {...} MARKER"),
+    # which leaves nothing after the last marker. Walk back to the nearest marker
+    # whose block is valid JSON once a trailing marker is dropped.
+    index = marker_index
+    while index >= 0:
+        tail = _marked_tail(text, index)
+        if tail.endswith(RESULT_ENVELOPE_MARKER):
+            tail = tail[: -len(RESULT_ENVELOPE_MARKER)].rstrip()
+        if tail.startswith("{"):
+            try:
+                json.loads(tail)
+            except json.JSONDecodeError:
+                pass
+            else:
+                return tail
+        index = text.rfind(RESULT_ENVELOPE_MARKER, 0, index)
+    return last_tail
 
 
 def legacy_result_envelope(

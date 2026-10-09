@@ -119,6 +119,9 @@ struct RelaunchRecoveryHarness {
                 "MAC_MCP_SETTINGS_PATH": str(Path(td) / "settings.json"),
                 "MAC_MCP_VOICE_GROQ_KEYCHAIN_SERVICE": "com.bulutarkan.mac-mcp.relaunch-test",
                 "MAC_MCP_VOICE_GROQ_KEYCHAIN_ACCOUNT": "test",
+                # Never read the owner's real Decisions key: macOS would block on an access prompt.
+                "MAC_MCP_DECISIONS_KEYCHAIN_SERVICE": "com.bulutarkan.mac-mcp.harness-test",
+                "MAC_MCP_DECISIONS_KEYCHAIN_ACCOUNT": "test",
             }
             ran = subprocess.run([str(binary)], capture_output=True, text=True, timeout=20, env=run_env)
             self.assertEqual(0, ran.returncode, ran.stderr)

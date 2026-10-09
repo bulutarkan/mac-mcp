@@ -47,6 +47,7 @@ from .agent_results import (
     RESULT_ENVELOPE_MARKER, RESULT_ENVELOPE_VERSION, ResultContractError,
     bound_result_envelope, legacy_result_envelope, normalize_result_envelope,
     parse_provider_result, reduce_task_results, result_contract_instruction,
+    apply_evidence_policy, evidence_policy_for,
 )
 from .agent_admission import (
     AdmissionError, bind_agent as admission_bind_agent, cancel_queued as admission_cancel_queued,
@@ -69,6 +70,10 @@ DEFAULT_AGENT_TIMEOUT_S = 1800
 MAX_AGENT_TIMEOUT_S = 7200
 DEFAULT_RESULT_LIMIT = 6000
 DETAILED_RESULT_LIMIT = 20000
+# The bounded result.txt preview stays small; the complete final report is kept
+# separately so a parent can page through it with get_agent(result_mode="full").
+FULL_RESULT_LIMIT = 512_000
+MAX_RESULT_PAGE_CHARS = 100_000
 TEAM_RESULT_LIMIT = 2000
 DEFAULT_WAIT_TIMEOUT_S = 30
 MAX_WAIT_TIMEOUT_S = 300
@@ -1005,6 +1010,36 @@ def _team_dependency_satisfied(
 
 def _result_envelope_path(agent_id: str) -> Path:
     return _agent_dir(str(agent_id)) / _RESULT_ENVELOPE_FILENAME
+
+
+def _full_result_path(agent_id: str) -> Path:
+    return _agent_dir(agent_id) / "result.full.txt"
+
+
+def _write_full_result(agent_id: str, text: str) -> None:
+    path = _full_result_path(agent_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=".result-full.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _read_full_result(agent_id: str) -> Optional[str]:
+    for path in (_full_result_path(agent_id), _agent_dir(agent_id) / "result.txt"):
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+    return None
 
 
 def _write_result_envelope(agent_id: str, envelope: Dict[str, Any]) -> None:
@@ -2004,6 +2039,9 @@ _OPENCODE_MODEL_ENV: Dict[str, Tuple[str, ...]] = {
 }
 _SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
 _RESTRICTED_READ_DENY_ROOTS = ("/Users", "/private/tmp", "/private/var/tmp", "/private/var/folders", "/Volumes", "/Network")
+# Git and other CLIs open /dev/null read-write; writing to it grants no
+# filesystem power, so read-only children can still run `git status`.
+_DEV_NULL_WRITE = '(allow file-write-data (literal "/dev/null"))'
 _RESTRICTED_ESCAPE_EXECUTABLES = (
     "/usr/bin/security", "/usr/bin/osascript", "/usr/bin/open", "/usr/bin/shortcuts",
     "/bin/launchctl", "/usr/bin/sudo", "/usr/bin/su",
@@ -2247,6 +2285,7 @@ def _codex_sandbox_profile(agent_id: str, meta: Dict[str, Any]) -> Path:
         f'(allow file-read* (literal "{_sbpl_quote(secret_auth)}")))\n'
         "(deny file-write*)\n"
         f"(allow file-write* {write_specs})\n"
+        f"{_DEV_NULL_WRITE}\n"
         f'(allow file-write* (literal "{_sbpl_quote(result_path)}"))\n'
         f'(allow file-read* (literal "{_sbpl_quote(result_path)}"))\n'
         f"{exec_denies}\n",
@@ -2291,6 +2330,7 @@ def _opencode_sandbox_profile(agent_id: str, meta: Dict[str, Any]) -> Path:
         f"(allow file-read* {read_specs})\n"
         "(deny file-write*)\n"
         f"(allow file-write* {write_specs})\n"
+        f"{_DEV_NULL_WRITE}\n"
         f"{exec_denies}\n",
         encoding="utf-8",
     )
@@ -3665,7 +3705,7 @@ def _resolve_cwd(cwd: Optional[str]) -> Path:
     return workdir
 
 
-def _handoff_instruction(result_style: str) -> str:
+def _handoff_instruction(result_style: str, *, evidence_required: bool = False) -> str:
     if result_style == "detailed":
         prose = (
             "When the work is finished, give the parent AI a clean handoff. Do not narrate routine tool/file steps. "
@@ -3678,7 +3718,9 @@ def _handoff_instruction(result_style: str) -> str:
             "or your thinking process. Include only verified findings/results, material numbers or changes, important caveats, "
             "and the next useful action. Aim for roughly 250 words or less unless the task itself requires more."
         )
-    return prose + "\n\n" + result_contract_instruction(detailed=result_style == "detailed")
+    return prose + "\n\n" + result_contract_instruction(
+        detailed=result_style == "detailed", evidence_required=evidence_required,
+    )
 
 
 def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -3783,7 +3825,10 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "result_contract_error": meta.get("result_contract_error"),
         "result_truncated": bool(meta.get("result_truncated")),
         "result_chars": meta.get("result_chars"),
+        "result_original_chars": meta.get("result_original_chars"),
+        "result_full_chars": meta.get("result_full_chars"),
         "result_envelope_chars": meta.get("result_envelope_chars"),
+        "result_contract_salvaged": bool(meta.get("result_contract_salvaged")),
     }
     public.update(workflow_public_state(agent_id))
     return public
@@ -3830,6 +3875,33 @@ def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
             meta = _read_meta(agent_id)
         except HTTPException:
             pass
+    if meta.get("status") in {"starting", "running"} and not meta.get("worker_pid"):
+        with _WORKERS_LOCK:
+            spawning_here = agent_id in _WORKERS
+        requested_at = float(meta.get("spawn_requested_at") or meta.get("started_at") or 0.0)
+        if not spawning_here and _now() - requested_at >= _STALE_START_S:
+            def mark_never_started(current: Dict[str, Any]) -> Optional[bool]:
+                if current.get("worker_pid") or current.get("status") not in {"starting", "running"}:
+                    return False
+                if not _claim_terminal_transition(current, "failed", phase="worker_never_started"):
+                    return False
+                current["note"] = (
+                    "The agent worker never reported that it started (the server may have stopped "
+                    "while launching it); no provider work ran under this agent."
+                )
+                current["failure_reason"] = "worker_never_started"
+                return True
+
+            meta = _update_meta(agent_id, mark_never_started)
+            if meta.get("status") == "failed" and meta.get("failure_reason") == "worker_never_started":
+                browser_tabs.release_agent_leases(agent_id)
+                _release_agent_admission(agent_id, meta)
+                _converge_workflow_terminal(agent_id, meta)
+                try:
+                    meta = _read_meta(agent_id)
+                except HTTPException:
+                    pass
+            return meta
     if meta.get("status") in {"starting", "running"}:
         worker_pid = meta.get("worker_pid")
         if worker_pid and not _is_pid_alive(worker_pid):
@@ -3863,11 +3935,20 @@ def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     return meta
 
 
-def _spawn_worker_process(agent_id: str, worker_log) -> subprocess.Popen:
+_LAUNCH_NONCE_ENV = "MAC_MCP_AGENT_LAUNCH_NONCE"
+# A start with no worker identity after this long never launched (or died before
+# it could say so); see _normalize.
+_STALE_START_S = 120.0
+
+
+def _spawn_worker_process(agent_id: str, worker_log, launch_nonce: Optional[str] = None) -> subprocess.Popen:
+    env = _base_env()
+    if launch_nonce:
+        env[_LAUNCH_NONCE_ENV] = launch_nonce
     return subprocess.Popen(
         [sys.executable, "-m", "mcp_server.tools_agents", "--worker", agent_id],
         cwd=str(BASE_DIR.parent),
-        env=_base_env(),
+        env=env,
         stdin=subprocess.DEVNULL,
         stdout=worker_log,
         stderr=subprocess.STDOUT,
@@ -4071,7 +4152,12 @@ def _spawn_internal(
         + ("\n\n" + access_instruction if access_instruction else "")
         + "\n\n" + scope_instruction
         + ("\n\n" + role_learning_instruction if role_learning_instruction else "")
-        + "\n\n" + _handoff_instruction(result_style)
+        + "\n\n" + _handoff_instruction(
+            result_style,
+            evidence_required=evidence_policy_for(
+                access_mode, integration_required=bool(integration_instruction),
+            ) == "required",
+        )
     )
     (path / "prompt.txt").write_text(user_prompt, encoding="utf-8")
     (path / "effective_prompt.txt").write_text(effective_prompt, encoding="utf-8")
@@ -4153,6 +4239,7 @@ def _spawn_internal(
         "exit_code": None,
         "started_at": started,
         "spawn_requested_at": started,
+        "launch_nonce": uuid.uuid4().hex,
         "worker_started_at": None,
         "provider_started_at": None,
         "first_event_at": None,
@@ -4244,7 +4331,7 @@ def _spawn_internal(
 
     worker_log = (path / "worker.log").open("a", encoding="utf-8")
     try:
-        proc = _spawn_worker_process(agent_id, worker_log)
+        proc = _spawn_worker_process(agent_id, worker_log, str(meta.get("launch_nonce") or "") or None)
     except OSError as exc:
         worker_log.close()
         spawn_error = str(exc)
@@ -4922,6 +5009,11 @@ def wait_agents(
                     "status": bounded_envelope.get("contract_status"),
                     "valid": bounded_envelope.get("contract_status") != "invalid",
                 }
+                if item.get("result_truncated") or bounded_envelope.get("truncation", {}).get("truncated"):
+                    row["full_result"] = {
+                        "total_chars": item.get("result_full_chars") or item.get("result_original_chars"),
+                        "retrieve": "get_agent(agent_id, result_mode='full', result_offset=0)",
+                    }
         compact.append(row)
     successful_count = int(wait_state.get("successful_count") or 0)
     failure_count = int(wait_state.get("failure_count") or 0)
@@ -4958,15 +5050,40 @@ def wait_agents(
         response["team"] = team_summary or _team_summary(str(team_id))
     return response
 
+def _full_result_page(agent_id: str, offset: int, limit: int) -> Dict[str, Any]:
+    text = _read_full_result(agent_id) or ""
+    total = len(text)
+    start = min(max(0, int(offset)), total)
+    size = min(max(1, int(limit)), MAX_RESULT_PAGE_CHARS)
+    chunk = text[start:start + size]
+    end = start + len(chunk)
+    return {
+        "text": chunk,
+        "offset": start,
+        "returned_chars": len(chunk),
+        "total_chars": total,
+        "has_more": end < total,
+        "next_offset": end if end < total else None,
+    }
+
+
 def get_agent(
     settings: Settings,
     agent_id: str,
     include_logs: bool = False,
     tail_lines: int = 40,
+    result_mode: str = "summary",
+    result_offset: int = 0,
+    result_limit: int = DETAILED_RESULT_LIMIT,
 ) -> Dict[str, Any]:
+    result_mode = str(result_mode or "summary").strip().lower()
+    if result_mode not in {"summary", "full"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "result_mode must be summary or full.")
     meta = _authorize_agent_control(agent_id, "get_agent")
     meta = _normalize(agent_id, meta)
     result: Dict[str, Any] = {"ok": True, **_public_meta(agent_id, meta)}
+    if meta.get("status") in TERMINAL_STATUSES and result_mode == "full":
+        result["result_full"] = _full_result_page(agent_id, result_offset, result_limit)
     if meta.get("status") in TERMINAL_STATUSES:
         limit = DETAILED_RESULT_LIMIT if meta.get("result_style") == "detailed" else DEFAULT_RESULT_LIMIT
         envelope = _public_result_envelope(agent_id, meta, char_limit=limit)
@@ -5587,7 +5704,17 @@ def _extract_codex_session(path: Path) -> Optional[str]:
     return None
 
 
-def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path) -> List[str]:
+def _codex_shell_home_args(access_mode: str, shell_home: Optional[str]) -> List[str]:
+    # Codex shells otherwise see the real home, whose ~/.gitconfig is outside the
+    # Seatbelt read roots, so every git command fails. Point them at the private home.
+    if access_mode == "full" or not shell_home:
+        return []
+    return ["--config", f"shell_environment_policy.set.HOME={json.dumps(str(shell_home))}"]
+
+
+def _build_provider_command(
+    meta: Dict[str, Any], prompt: str, result_path: Path, shell_home: Optional[str] = None,
+) -> List[str]:
     provider = meta["provider"]
     binary = meta["binary"]
     model = meta.get("model")
@@ -5637,6 +5764,7 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
             "--config", 'shell_environment_policy.inherit="none"',
             "--config", 'shell_environment_policy.set.PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"',
         ]
+        cmd += _codex_shell_home_args(access_mode, shell_home)
         cmd += _codex_scoped_mcp_args(meta)
         if model:
             cmd += ["--model", model]
@@ -5658,6 +5786,7 @@ def _build_provider_command(meta: Dict[str, Any], prompt: str, result_path: Path
         ]
     else:
         cmd.append("--dangerously-bypass-approvals-and-sandbox")
+    cmd += _codex_shell_home_args(access_mode, shell_home)
     cmd += _codex_scoped_mcp_args(meta)
     if model:
         cmd += ["--model", model]
@@ -6090,6 +6219,7 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
     stdout_path = path / "stdout.log"
     stderr_path = path / "stderr.log"
     result_path = path / "result.txt"
+    _full_result_path(agent_id).unlink(missing_ok=True)
     if meta.get("provider") == "codex":
         result_path.write_text("", encoding="utf-8")
     marker = f"\n--- provider attempt {attempt_index + 1} ---\n"
@@ -6119,7 +6249,7 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
     env, cleanup_root = _provider_env(agent_id, meta, scoped_token)
     boundary_profile: Optional[Path] = None
     try:
-        cmd = _build_provider_command(meta, prompt, result_path)
+        cmd = _build_provider_command(meta, prompt, result_path, shell_home=env.get("HOME"))
         cmd, boundary_profile = _provider_process_command(agent_id, meta, cmd)
         proc = subprocess.Popen(
             cmd, cwd=meta["cwd"], env=env, stdin=subprocess.DEVNULL,
@@ -6225,17 +6355,30 @@ def _worker(agent_id: str) -> int:
     result_path = path / "result.txt"
     now = _now()
 
+    launch_nonce = os.environ.get(_LAUNCH_NONCE_ENV) or None
+
     def record_worker_start(current: Dict[str, Any]) -> Optional[bool]:
         if current.get("status") == "cancelled":
             return False
+        expected = current.get("launch_nonce")
+        if expected and launch_nonce and expected != launch_nonce:
+            return False  # a different launch owns this agent
+        if current.get("status") in TERMINAL_STATUSES:
+            return False  # already reconciled as never started
         current.update({
             "status": "running", "phase": "worker_starting", "worker_started_at": now,
             "last_activity_at": now, "updated_at": now,
+            # Recorded by the worker itself, so a parent that crashed before
+            # storing the PID still leaves a verifiable worker behind.
+            "worker_pid": current.get("worker_pid") or os.getpid(),
+            "worker_identity": {"pid": os.getpid(), "nonce": launch_nonce, "started_at": now},
         })
         return True
 
     meta = _update_meta(agent_id, record_worker_start)
     if meta.get("status") == "cancelled":
+        return 0
+    if (meta.get("worker_identity") or {}).get("pid") != os.getpid():
         return 0
 
     final_reason: Optional[str] = None
@@ -6443,6 +6586,8 @@ def _worker(agent_id: str) -> int:
 
     legacy_gate = _legacy_gate_from_text(result)
     contract_error: Optional[Dict[str, str]] = None
+    contract_salvaged = False
+    report_text = ""
     try:
         envelope, contract_meta = parse_provider_result(
             result,
@@ -6463,17 +6608,43 @@ def _worker(agent_id: str) -> int:
                 )
     except ResultContractError as exc:
         contract_error = {"code": exc.code, "message": str(exc)}
+        report_text = result[: result.rfind(RESULT_ENVELOPE_MARKER)].strip() if RESULT_ENVELOPE_MARKER in result else ""
+        # A read-only report is still useful when only its trailing typed block is
+        # malformed. Quality gates and write tasks stay fail-closed, and no
+        # structured claims flow downstream: only the human-readable text is kept.
+        contract_salvaged = bool(
+            report_text
+            and legacy_gate is None
+            and str(meta.get("access_mode") or "workspace_write") == "read_only"
+            and str(meta.get("role") or "").strip().lower() != "reviewer"
+        )
+    if contract_error is not None and contract_salvaged:
+        envelope = legacy_result_envelope(
+            report_text, provenance=_result_provenance(agent_id, meta, session_id=session_id),
+        )
+        envelope["contract_status"] = "invalid"
+        envelope["warnings"] = [
+            f"Typed result envelope was malformed ({contract_error['code']}); kept the human-readable report only. "
+            "Structured claims and evidence were discarded."
+        ]
+        contract_meta = {
+            "valid": False,
+            "contract_status": "invalid",
+            "marker_present": True,
+            "error": contract_error,
+        }
+    elif contract_error is not None:
         envelope = normalize_result_envelope(
             {
                 "schema_version": RESULT_ENVELOPE_VERSION,
                 "outcome": "failure",
-                "summary": f"Invalid result contract: {exc.code}",
+                "summary": f"Invalid result contract: {contract_error['code']}",
                 "claims": [],
                 "evidence": [],
                 "artifacts": [],
                 "warnings": [],
                 "confidence": 0.0,
-                "errors": [{"code": exc.code, "message": str(exc)}],
+                "errors": [dict(contract_error)],
                 "provenance": {},
             },
             provenance=_result_provenance(agent_id, meta, session_id=session_id),
@@ -6486,7 +6657,13 @@ def _worker(agent_id: str) -> int:
             "error": contract_error,
         }
 
+    worktree_state = meta.get("worktree") if isinstance(meta.get("worktree"), dict) else {}
+    apply_evidence_policy(envelope, evidence_policy_for(
+        meta.get("access_mode"), integration_required=bool(worktree_state.get("integration_required")),
+    ))
     original_result_chars = len(result)
+    full_result, full_result_truncated = truncate(result, FULL_RESULT_LIMIT)
+    _write_full_result(agent_id, full_result)
     limit = DETAILED_RESULT_LIMIT if meta.get("result_style") == "detailed" else DEFAULT_RESULT_LIMIT
     result, was_truncated = truncate(result, limit)
     result_path.write_text(result, encoding="utf-8")
@@ -6496,7 +6673,7 @@ def _worker(agent_id: str) -> int:
         final_status = "stalled"
     else:
         final_status = "completed" if exit_code == 0 else "failed"
-    if final_status == "completed" and contract_error is not None:
+    if final_status == "completed" and contract_error is not None and not contract_salvaged:
         final_status = "failed"
         final_reason = "invalid_result_contract"
     elif final_status == "completed" and envelope.get("outcome") == "failure":
@@ -6520,6 +6697,9 @@ def _worker(agent_id: str) -> int:
             "session_id": session_id or current.get("resume_session_id"), "usage": usage,
             "result_truncated": was_truncated, "result_chars": len(result),
             "result_original_chars": original_result_chars,
+            "result_full_chars": len(full_result),
+            "result_full_truncated": full_result_truncated,
+            "result_contract_salvaged": contract_salvaged,
             "result_envelope_chars": envelope_chars,
             "result_contract_version": RESULT_ENVELOPE_VERSION,
             "result_contract_status": str(envelope.get("contract_status") or contract_meta.get("contract_status") or "unknown"),
@@ -6531,6 +6711,11 @@ def _worker(agent_id: str) -> int:
             "provider_pid": None,
             "lesson_candidate_ids": lesson_candidate_ids, "lesson_candidate_error": lesson_candidate_error,
         })
+        if final_status == "completed" and contract_salvaged:
+            current["note"] = (
+                f"Typed result envelope was malformed ({(contract_error or {}).get('code') or 'unknown'}); "
+                "kept the human-readable report with a warning."
+            )
         if final_status != "completed":
             if final_reason == "rate_limited":
                 current["note"] = f"ChatGPT remained rate-limited after bounded retries; last provider code {exit_code}."

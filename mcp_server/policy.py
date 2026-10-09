@@ -325,8 +325,17 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     action = str(arguments.get("action") or "capabilities").strip().lower().replace("-", "_")
     read_actions = {
         "capabilities", "selection", "find_notes", "find_messages",
-        "find_events", "list_documents", "list_panes",
+        "find_events", "list_documents", "list_panes", "list_reminders",
     }
+    # Calendar, Reminders, Notes and Mail-draft data changes go through the app's
+    # scripting model, not its UI: a local data write rather than a UI action.
+    # Mail drafts are saved, never sent.
+    if action in {"create_event", "update_event", "complete_reminder", "create_note", "create_draft"}:
+        return RiskOverride(
+            capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE),
+            destructive=False,
+            sensitive=True,
+        )
     if action in read_actions:
         return RiskOverride(
             capabilities=_caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY),
@@ -432,6 +441,24 @@ def _computer_plan_risk(arguments: Mapping[str, Any]) -> RiskOverride:
         destructive=False,
         sensitive=True,
         requested_access_mode=AccessMode.READ_ONLY,
+    )
+
+
+def _recipe_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    action = str(arguments.get("action") or "list").strip().lower()
+    if action in {"list", "inspect", "run"}:
+        # run hands the steps to computer_plan, whose nested calls are each
+        # re-evaluated for profile, scope, egress and receipts.
+        return RiskOverride(
+            capabilities=_caps(Capability.READ),
+            destructive=False,
+            sensitive=True,
+            requested_access_mode=AccessMode.READ_ONLY,
+        )
+    return RiskOverride(
+        capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE),
+        destructive=action == "delete",
+        sensitive=True,
     )
 
 
@@ -547,6 +574,10 @@ def _r(
 
 
 RISK_REGISTRY: dict[str, RiskEntry] = {
+    # OpenAI MCP Apps control center: read-only status, and one validated UI preference.
+    "open_mac_mcp_panel": _r("open_mac_mcp_panel", "control_panel", _caps(Capability.READ), sensitive=True),
+    "mac_mcp_panel_state": _r("mac_mcp_panel_state", "control_panel", _caps(Capability.READ), sensitive=True),
+    "mac_mcp_panel_setting": _r("mac_mcp_panel_setting", "control_panel", _caps(Capability.LOCAL_WRITE), sensitive=True),
     # Terminal and background processes
     "run_command": _r("run_command", "terminal", _caps(Capability.READ, Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.EXTERNAL_SIDE_EFFECT, Capability.NETWORK_ACCESS, Capability.RAW_EXECUTION), destructive=True, sensitive=True),
     "process_list": _r("process_list", "terminal", _caps(Capability.READ), sensitive=True),
@@ -557,6 +588,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "get_job_output": _r("get_job_output", "jobs", _caps(Capability.READ), sensitive=True),
     "stop_job": _r("stop_job", "jobs", _caps(Capability.PROCESS_CONTROL), destructive=True),
     "list_jobs": _r("list_jobs", "jobs", _caps(Capability.READ), sensitive=True),
+    "delete_job": _r("delete_job", "jobs", _caps(Capability.LOCAL_WRITE), destructive=True),
     "wait_jobs": _r("wait_jobs", "jobs", _caps(Capability.READ), sensitive=True),
     "run_commands_parallel": _r("run_commands_parallel", "jobs", _caps(Capability.READ, Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.EXTERNAL_SIDE_EFFECT, Capability.NETWORK_ACCESS, Capability.RAW_EXECUTION), destructive=True, sensitive=True),
     # Delegated agents
@@ -610,6 +642,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "mac_observe": _r("mac_observe", "accessibility", _caps(Capability.READ, Capability.NATIVE_ACCESSIBILITY), sensitive=True),
     "mac_act": _r("mac_act", "accessibility", _caps(Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True, resolver=_mac_act_risk),
     "mac_app": _r("mac_app", "accessibility", _caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY), sensitive=True, resolver=_mac_app_risk),
+    "recipe": _r("recipe", "meta", _caps(Capability.READ, Capability.LOCAL_WRITE), destructive=True, sensitive=True, resolver=_recipe_risk),
     "computer_plan": _r("computer_plan", "meta", _caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True, resolver=_computer_plan_risk),
     # Local search and HTTP
     "search_files": _r("search_files", "search", _caps(Capability.READ), sensitive=True),
@@ -651,6 +684,8 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "lesson_record": _r("lesson_record", "memory", _caps(Capability.LOCAL_WRITE), sensitive=True),
     "lesson_feedback": _r("lesson_feedback", "memory", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
     "lesson_consolidate": _r("lesson_consolidate", "memory", _caps(Capability.READ, Capability.LOCAL_WRITE), destructive=True, sensitive=True),
+    "lesson_delete": _r("lesson_delete", "memory", _caps(Capability.LOCAL_WRITE), destructive=True, sensitive=True),
+    "lesson_export": _r("lesson_export", "memory", _caps(Capability.READ), sensitive=True),
     "skill_list": _r("skill_list", "skills", _caps(Capability.READ), sensitive=True),
     "skill_search": _r("skill_search", "skills", _caps(Capability.READ), sensitive=True),
     "skill_get": _r("skill_get", "skills", _caps(Capability.READ), sensitive=True),

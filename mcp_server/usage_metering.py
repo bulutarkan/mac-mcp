@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional
 
+from .runtime_settings import usage_privacy
+
 TOKENIZER_ID = "mac_mcp_payload_v1"
 MEASUREMENT_CLASS = "canonical_json_text_v1"
 DEFAULT_USAGE_RETENTION_DAYS = 400
@@ -309,7 +311,7 @@ class UsageCollector:
             }
 
     def submit(self, sample: UsageSample) -> bool:
-        if not self.enabled:
+        if not self.enabled or not usage_privacy()["enabled"]:
             return False
         try:
             self._queue.put_nowait(sample)
@@ -453,13 +455,34 @@ class UsageCollector:
                     """,
                     rows,
                 )
-                cutoff = (
-                    datetime.now().astimezone().date()
-                    - timedelta(days=DEFAULT_USAGE_RETENTION_DAYS)
-                ).isoformat()
-                conn.execute("DELETE FROM usage_daily WHERE local_date < ?", (cutoff,))
+                _prune_usage(conn)
         finally:
             conn.close()
+
+
+def _usage_cutoff(retention_days: int) -> str:
+    return (datetime.now().astimezone().date() - timedelta(days=retention_days - 1)).isoformat()
+
+
+def _prune_usage(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "DELETE FROM usage_daily WHERE local_date < ?",
+        (_usage_cutoff(usage_privacy()["retention_days"]),),
+    )
+
+
+def clear_usage(db_path: Path) -> int:
+    """Delete every stored tool-usage aggregate; returns the number of rows removed."""
+    conn = sqlite3.connect(Path(db_path), timeout=5.0)
+    try:
+        conn.execute("PRAGMA secure_delete=ON")
+        with conn:
+            ensure_usage_schema(conn)
+            removed = conn.execute("DELETE FROM usage_daily").rowcount
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return int(removed or 0)
+    finally:
+        conn.close()
 
 
 def _latency_percentile(
@@ -486,7 +509,8 @@ def query_usage_summary(
     actor_class: Optional[str] = None,
     diagnostics: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    bounded_days = max(1, min(int(days or 365), DEFAULT_USAGE_RETENTION_DAYS))
+    privacy = usage_privacy()
+    bounded_days = max(1, min(int(days or 365), privacy["retention_days"]))
     today = datetime.now().astimezone().date()
     start_date = (today - timedelta(days=bounded_days - 1)).isoformat()
 
@@ -495,6 +519,8 @@ def query_usage_summary(
     try:
         with conn:
             ensure_usage_schema(conn)
+            # A shorter retention takes effect at once, not only on the next write.
+            _prune_usage(conn)
         where = ["local_date >= ?"]
         params: list[Any] = [start_date]
         if actor_class in {"primary", "scoped_subagent"}:
@@ -585,6 +611,9 @@ def query_usage_summary(
         "ok": True,
         "days": bounded_days,
         "actor_class": actor_class or "all",
+        "metering_enabled": privacy["enabled"],
+        "retention_days": privacy["retention_days"],
+        "stored_data": "Daily per-tool aggregates only (counts, sizes, latency buckets); no prompts, arguments or results.",
         "available_since": available_since,
         "history_complete_since": available_since,
         "tokenizer_id": TOKENIZER_ID,

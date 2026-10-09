@@ -296,6 +296,22 @@ class PublicEndpointCLITests(unittest.TestCase):
             code = cli.status(argparse.Namespace())
         self.assertEqual(0, code)
 
+    def test_status_is_degraded_when_selected_tunnel_is_missing(self) -> None:
+        missing = ProcessValidation("missing", None, "ngrok", None, "record_missing")
+        public = type("Public", (), {"mode": "cloudflare", "endpoint_url": "https://mac.example.com/mcp"})()
+        for local_only, expected in ((False, 2), (True, 0)):
+            out = StringIO()
+            with self.subTest(local_only=local_only), \
+                 patch.object(cli, "_resolve_server_identity", return_value=(4321, "adopted_listener")), \
+                 patch.object(cli, "_validate_managed_pid", return_value=missing), \
+                 patch.object(cli, "_launchctl_pid", return_value=None), \
+                 patch.object(cli, "CLOUDFLARE_PID_FILE", Path("/nonexistent/mac-mcp/cloudflared.pid")), \
+                 patch.object(cli, "resolve_public_endpoint", return_value=public), \
+                 redirect_stdout(out):
+                code = cli.status(argparse.Namespace(local_only=local_only))
+            self.assertEqual(expected, code)
+            self.assertIn("overall: degraded", out.getvalue())
+
     def test_stop_adopts_existing_mac_mcp_listener_before_stopping(self) -> None:
         args = argparse.Namespace(timeout=5, force=True)
         with patch.object(cli, "_resolve_server_identity", return_value=(4321, "adopted_listener")), \

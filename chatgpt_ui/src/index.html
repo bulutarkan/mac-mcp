@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Mac MCP</title>
+  <style>/* STYLES */</style>
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 64 64" aria-hidden="true">
+          <rect x="2" y="2" width="60" height="60" rx="17" fill="#111318"/>
+          <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="16.25" fill="none" stroke="rgba(255,255,255,.14)" stroke-width="1.5"/>
+          <path d="M21 19.5 34 32 21 44.5" fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M37.5 43.5H45" fill="none" stroke="#9CA4FF" stroke-width="5.5" stroke-linecap="round"/>
+        </svg>
+        <div class="brand-text"><strong>Mac MCP</strong><span class="mono" id="version">—</span></div>
+      </div>
+      <div class="top-actions">
+        <span class="status mono" id="status"><i class="dot"></i><span id="status-text">Connecting</span></span>
+        <button class="icon-button" id="refresh" type="button" aria-label="Refresh" title="Refresh">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v4.5h-4.5"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <nav class="tabs" id="tabs" aria-label="Sections">
+      <button class="tab selected" data-tab="overview" type="button">Overview</button>
+      <button class="tab" data-tab="agents" type="button">Agents<span class="count mono" id="tab-agents" hidden>0</span></button>
+      <button class="tab" data-tab="usage" type="button">Usage</button>
+      <button class="tab" data-tab="settings" type="button">Settings</button>
+    </nav>
+
+    <main class="body">
+      <div class="notice" id="notice" role="status" hidden></div>
+
+      <section data-panel="overview">
+        <div class="stats">
+          <div class="stat"><span class="label mono">Tool calls</span><strong id="calls">—</strong><span class="sub mono">24h</span></div>
+          <div class="stat"><span class="label mono">Active agents</span><strong id="active-agents">—</strong><span class="sub mono">now</span></div>
+          <div class="stat"><span class="label mono">Avg latency</span><strong id="latency">—</strong><span class="sub mono">24h</span></div>
+          <div class="stat"><span class="label mono">Errors</span><strong id="errors">—</strong><span class="sub mono">24h</span></div>
+        </div>
+        <div class="split">
+          <article class="panel">
+            <header class="panel-head"><h2>Agent activity</h2><button class="link mono" data-goto="agents" type="button">View all</button></header>
+            <div class="list" id="overview-agents"><p class="empty">No data yet.</p></div>
+          </article>
+          <article class="panel">
+            <header class="panel-head"><h2>Token usage</h2><span class="meta mono">7d</span></header>
+            <div class="list" id="overview-providers"><p class="empty">No data yet.</p></div>
+          </article>
+        </div>
+      </section>
+
+      <section data-panel="agents" hidden>
+        <article class="panel">
+          <header class="panel-head"><h2>Delegated agents</h2><span class="meta mono">Last 20</span></header>
+          <div class="list" id="agents"><p class="empty">No data yet.</p></div>
+        </article>
+      </section>
+
+      <section data-panel="usage" hidden>
+        <article class="panel">
+          <header class="panel-head"><h2>Provider tokens</h2><span class="meta mono">7d</span></header>
+          <div class="list" id="usage-providers"><p class="empty">No data yet.</p></div>
+          <p class="caption">Provider-reported totals. Missing reports stay unavailable — never estimated.</p>
+        </article>
+        <article class="panel">
+          <header class="panel-head"><h2>MCP server</h2><span class="meta mono">24h</span></header>
+          <dl class="rows">
+            <div><dt>Tool calls</dt><dd class="mono" id="usage-calls">—</dd></div>
+            <div><dt>In flight</dt><dd class="mono" id="usage-active">—</dd></div>
+            <div><dt>Mean latency</dt><dd class="mono" id="usage-latency">—</dd></div>
+            <div><dt>Errors</dt><dd class="mono" id="usage-errors">—</dd></div>
+            <div><dt>Uptime</dt><dd class="mono" id="usage-uptime">—</dd></div>
+          </dl>
+        </article>
+      </section>
+
+      <section data-panel="settings" hidden>
+        <article class="panel wide">
+          <header class="panel-head"><h2>Default agent</h2><button class="link mono" id="agent-edit" type="button" hidden>Edit</button><span class="meta mono" id="agent-mode" hidden>Read-only</span></header>
+          <dl class="rows" id="agent-view">
+            <div><dt>Provider</dt><dd class="mono" id="agent-provider">—</dd></div>
+            <div><dt>Model</dt><dd class="mono" id="agent-model">—</dd></div>
+            <div><dt>Reasoning</dt><dd class="mono" id="agent-reasoning">—</dd></div>
+          </dl>
+          <form class="editor" id="agent-form" hidden>
+            <div class="segmented" id="agent-providers" role="radiogroup" aria-label="Provider"></div>
+            <label class="field-row"><span>Model</span><input class="control mono" id="agent-model-input" list="agent-models" autocomplete="off" spellcheck="false" placeholder="Provider default"></label>
+            <datalist id="agent-models"></datalist>
+            <label class="field-row"><span>Reasoning</span><select class="control mono" id="agent-reasoning-input"></select></label>
+            <p class="caption" id="agent-catalog-note"></p>
+            <div class="actions"><button class="ghost" id="agent-cancel" type="button">Cancel</button><button class="primary" id="agent-save" type="submit">Save</button></div>
+          </form>
+          <p class="caption">Used when ChatGPT delegates without naming a provider. Applies live.</p>
+        </article>
+        <article class="panel">
+          <header class="panel-head"><h2>Notifications</h2><span class="meta mono">Mac app</span></header>
+          <dl class="rows">
+            <div><dt>Agent completion</dt><dd class="mono" id="notify-agents">—</dd></div>
+            <div><dt>Activity bubble</dt><dd class="mono" id="notify-bubble">—</dd></div>
+          </dl>
+          <p class="caption">Changed in the Mac MCP app, which owns macOS notification permission.</p>
+        </article>
+        <article class="panel">
+          <header class="panel-head"><h2>Connection</h2></header>
+          <dl class="rows">
+            <div><dt>Version</dt><dd class="mono" id="conn-version">—</dd></div>
+            <div><dt>Permission profile</dt><dd class="mono" id="conn-profile">—</dd></div>
+            <div><dt>Endpoint</dt><dd class="mono" id="conn-endpoint">—</dd></div>
+          </dl>
+          <p class="caption">Profiles, providers and credentials are managed only on your Mac.</p>
+        </article>
+      </section>
+    </main>
+
+    <footer class="foot mono"><span id="updated">Not loaded</span><span>Local · Private</span></footer>
+  </div>
+  <script>/* SCRIPT */</script>
+</body>
+</html>

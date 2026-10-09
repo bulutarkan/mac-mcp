@@ -7,10 +7,15 @@ import platform
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 _HELPER_BUILD_LOCK = threading.Lock()
+# binary path -> event set when its single in-flight background build finishes.
+_HELPER_BUILDS: Dict[str, threading.Event] = {}
+_HELPER_BUILD_ERRORS: Dict[str, str] = {}
+_HELPER_BUILD_TIMEOUT_S = 60
 _FRAME_TOLERANCE = 4.0
 
 
@@ -25,7 +30,46 @@ def _helper_source() -> Path:
     return Path(__file__).with_name("window_list.swift")
 
 
-def _helper_path() -> Tuple[Optional[Path], Optional[str]]:
+def _build_helper(swiftc: str, target: str, source: Path, binary: Path, cache: Path) -> Optional[str]:
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(
+            [
+                swiftc,
+                "-O",
+                "-target",
+                target,
+                "-framework",
+                "CoreGraphics",
+                str(source),
+                "-o",
+                str(binary),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=_HELPER_BUILD_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "WINDOW_CAPTURE_HELPER_BUILD_FAILED"
+    if proc.returncode != 0:
+        return "WINDOW_CAPTURE_HELPER_BUILD_FAILED"
+    try:
+        binary.chmod(0o700)
+    except OSError:
+        return "WINDOW_CAPTURE_HELPER_PERMISSION_FAILED"
+    return None
+
+
+def _helper_path(timeout_s: Optional[float] = None) -> Tuple[Optional[Path], Optional[str]]:
+    """Return the compiled helper, waiting at most timeout_s for a cold build.
+
+    A cold build runs once in the background and keeps going after the caller
+    gives up, so an observation never outlasts its own deadline and the next
+    request finds the helper ready.
+    """
     source = _helper_source()
     swiftc = shutil.which("swiftc") or "/usr/bin/swiftc"
     if not source.exists():
@@ -42,45 +86,47 @@ def _helper_path() -> Tuple[Optional[Path], Optional[str]]:
     if binary.exists() and os.access(binary, os.X_OK):
         return binary, None
 
+    key = str(binary)
     with _HELPER_BUILD_LOCK:
         if binary.exists() and os.access(binary, os.X_OK):
             return binary, None
-        try:
-            cache.mkdir(parents=True, exist_ok=True)
-            proc = subprocess.run(
-                [
-                    swiftc,
-                    "-O",
-                    "-target",
-                    target,
-                    "-framework",
-                    "CoreGraphics",
-                    str(source),
-                    "-o",
-                    str(binary),
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=60,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None, "WINDOW_CAPTURE_HELPER_BUILD_FAILED"
-        if proc.returncode != 0:
-            return None, "WINDOW_CAPTURE_HELPER_BUILD_FAILED"
-        try:
-            binary.chmod(0o700)
-        except OSError:
-            return None, "WINDOW_CAPTURE_HELPER_PERMISSION_FAILED"
-        return binary, None
+        done = _HELPER_BUILDS.get(key)
+        if done is None or (done.is_set() and key in _HELPER_BUILD_ERRORS):
+            # Start (or retry after a failed attempt) a single background build.
+            _HELPER_BUILD_ERRORS.pop(key, None)
+            done = threading.Event()
+            _HELPER_BUILDS[key] = done
+
+            def build() -> None:
+                error = _build_helper(swiftc, target, source, binary, cache)
+                with _HELPER_BUILD_LOCK:
+                    if error:
+                        _HELPER_BUILD_ERRORS[key] = error
+                    else:
+                        _HELPER_BUILDS.pop(key, None)
+                done.set()
+
+            threading.Thread(target=build, name="window-capture-helper-build", daemon=True).start()
+
+    wait_s = _HELPER_BUILD_TIMEOUT_S if timeout_s is None else max(0.0, float(timeout_s))
+    if not done.wait(wait_s):
+        return None, "WINDOW_CAPTURE_HELPER_WARMING"
+    with _HELPER_BUILD_LOCK:
+        error = _HELPER_BUILD_ERRORS.get(key)
+    if error:
+        return None, error
+    return binary, None
 
 
 def _window_rows(timeout_s: float = 5.0) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
-    helper, error = _helper_path()
+    budget = max(0.1, min(float(timeout_s), 15.0))
+    started = time.monotonic()
+    helper, error = _helper_path(budget)
     if helper is None:
         return None, error or "WINDOW_CAPTURE_HELPER_UNAVAILABLE"
+    remaining = budget - (time.monotonic() - started)
+    if remaining <= 0:
+        return None, "WINDOW_CAPTURE_WINDOW_LIST_TIMEOUT"
     try:
         proc = subprocess.run(
             [str(helper)],
@@ -88,7 +134,7 @@ def _window_rows(timeout_s: float = 5.0) -> Tuple[Optional[List[Dict[str, Any]]]
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=max(0.1, min(float(timeout_s), 15.0)),
+            timeout=max(0.1, remaining),
             check=False,
         )
     except subprocess.TimeoutExpired:

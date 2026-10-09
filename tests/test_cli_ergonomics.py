@@ -63,7 +63,7 @@ class CliErgonomicsTests(unittest.TestCase):
         with redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
             cli.main(["--version"])
         self.assertEqual(0, ctx.exception.code)
-        self.assertEqual("mac-mcp 2.1.8", out.getvalue().strip())
+        self.assertEqual("mac-mcp 2.1.9", out.getvalue().strip())
 
     def test_update_wording_matches_verified_stable_checkpoint_model(self) -> None:
         out = io.StringIO()

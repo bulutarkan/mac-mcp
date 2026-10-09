@@ -101,8 +101,8 @@ class BrowserTargetHardeningTests(unittest.TestCase):
                 new_tab=False, background=True, tab_handle=target_handle,
             )
         script = osa.call_args.args[0]
-        self.assertIn("set targetTab to tab 2", script)
-        self.assertIn('actualNativeId is not "2002"', script)
+        self.assertIn('every tab whose pid is "2002"', script)
+        self.assertIn("set leasedTab to tab 2", script)
         self.assertNotIn("set URL of current tab", script)
         self.assertEqual(target_handle, result["tab_handle"])
         self.assertEqual("https://github.com/example/repo", after[0]["url"])

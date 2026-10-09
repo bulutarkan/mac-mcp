@@ -14,6 +14,16 @@ from mcp_server import tools_agents as agents
 from mcp_server.policy_scope import ResourceScope
 
 
+READ_ONLY_GIT = "git status --short && git log -1 --oneline && git diff --stat && git blame inside.txt"
+
+
+def _init_git_repo(path: Path) -> None:
+    git = ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid"]
+    subprocess.run([*git, "init", "-q"], cwd=path, check=True)
+    subprocess.run([*git, "add", "inside.txt"], cwd=path, check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "init"], cwd=path, check=True)
+
+
 class ProviderEnvironmentTests(unittest.TestCase):
     def test_provider_environment_does_not_inherit_unrelated_server_secrets(self) -> None:
         sentinel = "MAC_MCP_TEST_SENTINEL_SECRET"
@@ -140,6 +150,16 @@ class OpenCodeSeatbeltBoundaryTests(unittest.TestCase):
         self.assertNotEqual(0, write_inside.returncode)
         self.assertEqual("INSIDE", self.inside.read_text(encoding="utf-8"))
 
+    def test_read_only_can_run_read_only_git(self) -> None:
+        _init_git_repo(self.workspace)
+        proc = self._run("read_only", READ_ONLY_GIT)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertIn("init", proc.stdout)
+
+        write_git = self._run("read_only", "touch .git/probe")
+        self.assertNotEqual(0, write_git.returncode)
+        self.assertFalse((self.workspace / ".git" / "probe").exists())
+
     def test_workspace_write_is_scoped_and_nested_children_cannot_widen(self) -> None:
         write_inside = self._run("workspace_write", f'echo OK >> "{self.inside}"')
         self.assertEqual(0, write_inside.returncode, write_inside.stderr)
@@ -258,6 +278,16 @@ class CodexSeatbeltBoundaryTests(unittest.TestCase):
         self.assertNotEqual(0, write_inside.returncode)
         self.assertEqual("INSIDE", self.inside.read_text(encoding="utf-8"))
 
+    def test_read_only_can_run_read_only_git(self) -> None:
+        _init_git_repo(self.workspace)
+        proc = self._run("read_only", READ_ONLY_GIT)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertIn("init", proc.stdout)
+
+        write_git = self._run("read_only", "touch .git/probe")
+        self.assertNotEqual(0, write_git.returncode)
+        self.assertFalse((self.workspace / ".git" / "probe").exists())
+
     def test_workspace_write_is_scoped(self) -> None:
         write_inside = self._run(
             "workspace_write", f'echo OK >> "{self.inside}"'
@@ -364,6 +394,25 @@ class ProviderModeMatrixTests(unittest.TestCase):
         self.assertIn("--dangerously-bypass-approvals-and-sandbox", joined)
         self.assertNotIn("--sandbox read-only", joined)
         self.assertIn('shell_environment_policy.inherit="none"', joined)
+
+    def test_codex_restricted_shell_home_is_private(self) -> None:
+        meta = {
+            "provider": "codex",
+            "binary": "/opt/homebrew/bin/codex",
+            "cwd": "/tmp",
+            "access_mode": "read_only",
+        }
+        home = "/tmp/agents/agt_x/provider_state/codex/home"
+        for resume in (None, "session-1"):
+            with self.subTest(resume=resume):
+                cmd = agents._build_provider_command(
+                    {**meta, "resume_session_id": resume}, "PROMPT", Path("/tmp/result.txt"), shell_home=home,
+                )
+                self.assertIn(f'shell_environment_policy.set.HOME="{home}"', cmd)
+        full = agents._build_provider_command(
+            {**meta, "access_mode": "full"}, "PROMPT", Path("/tmp/result.txt"), shell_home=home,
+        )
+        self.assertFalse(any("set.HOME" in part for part in full))
 
     def test_codex_full_command_still_strips_shell_environment(self) -> None:
         meta = {

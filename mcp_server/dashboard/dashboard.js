@@ -33,10 +33,11 @@
 
   const $ = (id) => document.getElementById(id);
   const els = {
-    connection: $("connectionState"), version: $("versionLabel"), uptime: $("uptimeLabel"),
+    connection: $("connectionState"), connectionText: $("connectionText"),
+    agentsFreshness: $("agentsFreshness"), changesFreshness: $("changesFreshness"), version: $("versionLabel"), uptime: $("uptimeLabel"),
     activeNow: $("activeNow"), lastTool: $("lastTool"), lastLatency: $("lastLatency"), traceBars: $("traceBars"),
     calls: $("metricCalls"), success: $("metricSuccess"), errors: $("metricErrors"), average: $("metricAverage"), p95: $("metricP95"), window: $("metricWindow"),
-    rows: $("eventRows"), empty: $("emptyState"), activeStrip: $("activeStrip"), activeStripCount: $("activeStripCount"), topTools: $("topTools"), sourceMix: $("sourceMix"), agentCount: $("agentCount"), agentList: $("agentList"),
+    rows: $("eventRows"), announcer: $("activityAnnouncer"), empty: $("emptyState"), activeStrip: $("activeStrip"), activeStripCount: $("activeStripCount"), topTools: $("topTools"), sourceMix: $("sourceMix"), agentCount: $("agentCount"), agentList: $("agentList"),
     changeCount: $("changeCount"), changeTaskSwitch: $("changeTaskSwitch"), changeHeadline: $("changeHeadline"), changeList: $("changeList"),
     transactionCount: $("transactionCount"), transactionMessage: $("transactionMessage"), transactionList: $("transactionList"),
     transactionNewer: $("transactionNewer"), transactionOlder: $("transactionOlder"), transactionPage: $("transactionPage"),
@@ -122,9 +123,63 @@
     return data;
   }
 
+  // Last successful refresh per data source; values stay on screen when a refresh
+  // fails, but are labelled stale instead of looking current.
+  const freshness = {summary: 0, agents: 0, changes: 0, offline: false, authRequired: false};
+  const STALE_AFTER_MS = {summary: 20000, agents: 15000, changes: 45000};
+
+  function ago(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 5) return "just now";
+    if (s < 60) return `${s}s ago`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    return `${Math.floor(s / 3600)}h ago`;
+  }
+
+  function renderPanelFreshness(el, key) {
+    if (!el) return;
+    const at = freshness[key];
+    const age = Date.now() - at;
+    if (at && age <= STALE_AFTER_MS[key]) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    el.textContent = at ? `Stale · updated ${ago(age)}` : "Not loaded yet";
+  }
+
+  function renderFreshness() {
+    const conn = els.connection;
+    conn.classList.remove("is-offline", "is-connecting", "is-stale");
+    let text;
+    if (freshness.authRequired) {
+      conn.classList.add("is-offline");
+      text = "Authentication required";
+    } else if (!freshness.summary) {
+      conn.classList.add(freshness.offline ? "is-offline" : "is-connecting");
+      text = freshness.offline ? "Cannot reach Mac MCP · retrying" : "Connecting…";
+    } else {
+      const age = Date.now() - freshness.summary;
+      if (freshness.offline) {
+        conn.classList.add("is-offline");
+        text = `Reconnecting · updated ${ago(age)}`;
+      } else if (age > STALE_AFTER_MS.summary) {
+        conn.classList.add("is-stale");
+        text = `Stale · updated ${ago(age)}`;
+      } else {
+        text = `Live · updated ${ago(age)}`;
+      }
+    }
+    if (els.connectionText.textContent !== text) els.connectionText.textContent = text;
+    renderPanelFreshness(els.agentsFreshness, "agents");
+    renderPanelFreshness(els.changesFreshness, "changes");
+  }
+
   async function refreshSummary() {
     try {
       const data = await fetchJSON(`/dashboard/api/summary?hours=${encodeURIComponent(state.hours)}`);
+      freshness.summary = Date.now();
+      freshness.authRequired = false;
       els.calls.textContent = number(data.total_calls);
       els.success.textContent = `${Number(data.success_rate || 0).toFixed(1).replace(".0", "")}%`;
       els.errors.textContent = `${number(data.error_calls)} ${data.error_calls === 1 ? "error" : "errors"}`;
@@ -138,6 +193,7 @@
       const mix = (data.sources || []).map((item) => `${String(item.source).toUpperCase()} ${item.calls}`).join(" / ");
       els.sourceMix.textContent = mix || "No calls";
       els.agentCount.textContent = `${number(data.active_agents || 0)} active`;
+      markOnline();
     } catch (error) {
       markOffline(error);
     }
@@ -167,9 +223,12 @@
       state.globalAdmission = data.global_admission || null;
       renderAgents(state.agents);
       if (state.changeSets.length) renderChanges();
+      freshness.agents = Date.now();
     } catch (error) {
-      els.agentList.innerHTML = `<div class="no-agents">Agent state is temporarily unavailable.</div>`;
+      // Keep the last agent list on screen; renderFreshness marks it stale.
+      if (!freshness.agents) els.agentList.innerHTML = `<div class="no-agents">Agent state is temporarily unavailable.</div>`;
     }
+    renderFreshness();
   }
 
   function changeSetLabel(changeSet, index) {
@@ -227,9 +286,11 @@
       state.changeSets = data.change_sets || [];
       state.selectedChangeSet = Math.min(state.selectedChangeSet, Math.max(0, state.changeSets.length - 1));
       renderChanges();
+      freshness.changes = Date.now();
     } catch {
-      els.changeHeadline.textContent = "Change receipts are temporarily unavailable.";
+      if (!freshness.changes) els.changeHeadline.textContent = "Change receipts are temporarily unavailable.";
     }
+    renderFreshness();
   }
 
   function scheduleChangesRefresh() {
@@ -515,20 +576,39 @@
     return true;
   }
 
+  function statusLabel(status) {
+    return status === "success" ? "Success" : status === "error" ? "Error" : "Running";
+  }
+
+  // One button per call, labelled in reading order; the visual columns are hidden
+  // from assistive tech so the list is not read as a broken table.
+  function eventRowButton(eventId) {
+    return [...els.rows.querySelectorAll(".event-row")].find((row) => row.dataset.eventId === eventId) || null;
+  }
+
   function renderEvents(newEventId = null) {
+    // Rows are rebuilt on every update; keep keyboard focus on the same call.
+    const focusedId = els.rows.contains(document.activeElement) ? document.activeElement.dataset.eventId : null;
     const events = visibleEvents();
     els.empty.hidden = events.length > 0;
     els.rows.innerHTML = events.map((event) => {
       const status = event.status || "running";
-      return `<button class="event-row${event.event_id === newEventId ? " is-new" : ""}" type="button" role="row" data-event-id="${esc(event.event_id)}" aria-label="Inspect ${esc(event.tool)} call, ${esc(status)}">
-        <span class="event-time" role="cell">${clock(event.started_at || event.timestamp)}</span>
-        <span class="event-tool" role="cell"><strong>${esc(event.tool)}</strong><small>${esc(compactToolDetail(event))}</small></span>
-        <span class="source-chip" role="cell">${esc(event.source || "mcp")}</span>
-        <span class="duration" role="cell">${event.status === "running" ? "live" : duration(event.duration_ms)}</span>
-        <span class="status status-${esc(status)}" role="cell">${status === "success" ? "Success" : status === "error" ? "Error" : "Running"}</span>
-      </button>`;
+      const time = clock(event.started_at || event.timestamp);
+      const took = event.status === "running" ? "still running" : duration(event.duration_ms);
+      const label = `${time}, ${event.tool || "tool"}, ${event.source || "mcp"}, ${took}, ${statusLabel(status)}. Open details`;
+      return `<li><button class="event-row${event.event_id === newEventId ? " is-new" : ""}" type="button" data-event-id="${esc(event.event_id)}" aria-label="${esc(label)}">
+        <span class="event-time" aria-hidden="true">${time}</span>
+        <span class="event-tool" aria-hidden="true"><strong>${esc(event.tool)}</strong><small>${esc(compactToolDetail(event))}</small></span>
+        <span class="source-chip" aria-hidden="true">${esc(event.source || "mcp")}</span>
+        <span class="duration" aria-hidden="true">${event.status === "running" ? "live" : duration(event.duration_ms)}</span>
+        <span class="status status-${esc(status)}" aria-hidden="true">${statusLabel(status)}</span>
+      </button></li>`;
     }).join("");
     els.rows.querySelectorAll(".event-row").forEach((row) => row.addEventListener("click", () => openDrawer(row.dataset.eventId)));
+    if (focusedId) {
+      const row = eventRowButton(focusedId);
+      if (row) row.focus({preventScroll: true});
+    }
   }
 
   function openDrawer(eventId) {
@@ -559,7 +639,10 @@
     els.drawer.classList.remove("is-open");
     els.drawer.setAttribute("aria-hidden", "true");
     window.setTimeout(() => { els.backdrop.hidden = true; }, 240);
-    if (state.restoreFocus && typeof state.restoreFocus.focus === "function") state.restoreFocus.focus();
+    // The row that opened the drawer may have been re-rendered meanwhile.
+    const selectedRow = state.selected ? eventRowButton(state.selected.event_id) : null;
+    const target = state.restoreFocus && state.restoreFocus.isConnected ? state.restoreFocus : selectedRow;
+    if (target && typeof target.focus === "function") target.focus();
     state.selected = null;
   }
 
@@ -618,9 +701,24 @@
     renderActiveStrip();
   }
 
+  // A burst of calls becomes one short status message instead of a re-read list.
+  const announcement = { pending: [], timer: null };
+  function announceActivity(text) {
+    if (!els.announcer) return;
+    announcement.pending.push(text);
+    if (announcement.timer) return;
+    announcement.timer = setTimeout(() => {
+      const items = announcement.pending;
+      announcement.pending = [];
+      announcement.timer = null;
+      els.announcer.textContent = items.length === 1
+        ? items[0]
+        : `${items.length} calls finished. Latest: ${items[items.length - 1]}`;
+    }, 1200);
+  }
+
   function handleTelemetry(event) {
     if (!event || !event.kind) return;
-    markOnline();
     if (event.kind === "connected") {
       state.active = new Map((event.active || []).map((item) => [item.event_id, item]));
       renderEvents();
@@ -643,6 +741,7 @@
       pushTrace(event);
       renderEvents(event.event_id);
       renderActiveCount();
+      announceActivity(`Completed: ${event.tool || "tool"} · ${statusLabel(event.status)}`);
       refreshSummary();
       scheduleChangesRefresh();
       if (transactionJournalMayChange(event.tool)) scheduleTransactionRefresh();
@@ -676,7 +775,6 @@
       });
       if (response.status === 401) { markAuthRequired(); return; }
       if (!response.ok || !response.body) throw new Error(`${response.status} ${response.statusText}`);
-      markOnline();
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -699,16 +797,16 @@
   }
 
   function markOnline() {
-    els.connection.classList.remove("is-offline");
-    els.connection.lastChild.textContent = "Live";
+    freshness.offline = false;
+    renderFreshness();
   }
   function markOffline() {
-    els.connection.classList.add("is-offline");
-    els.connection.lastChild.textContent = "Reconnecting";
+    freshness.offline = true;
+    renderFreshness();
   }
   function markAuthRequired() {
-    els.connection.classList.add("is-offline");
-    els.connection.lastChild.textContent = "Authentication required";
+    freshness.authRequired = true;
+    renderFreshness();
   }
   function formatUptime(seconds) {
     const s = Number(seconds || 0);
@@ -760,6 +858,7 @@
 
   Promise.all([refreshSummary(), refreshEvents(), refreshAgents(), refreshChanges(), refreshTransactions()]).finally(connectStream);
   window.setInterval(refreshSummary, 5000);
+  window.setInterval(renderFreshness, 5000);
   window.setInterval(refreshAgents, 2200);
   window.setInterval(() => { if (!document.hidden) refreshChanges(); }, 10000);
   window.setInterval(() => { if (!document.hidden) refreshTransactions(); }, 10000);

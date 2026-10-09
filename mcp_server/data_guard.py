@@ -31,8 +31,13 @@ _ENV_SECRET_RE = re.compile(
 
 _SOURCE_TOOLS = frozenset({
     "read_file", "read_multiple_files", "clipboard_get", "run_command",
-    "run_commands_parallel", "get_job_output", "wait_jobs",
+    "run_commands_parallel", "get_job_output", "wait_jobs", "search_files",
+    # Other tools that hand host content to the model: AppleScript output, process
+    # command lines, delegated-agent reports and stored memories.
+    "run_applescript", "process_list", "get_agent", "memory_get", "memory_search",
 })
+# grep -rn output: "path:line:content".
+_SEARCH_LINE_RE = re.compile(r"^(?P<path>[^\n:]+):(?P<line>\d+):(?P<content>.*)$")
 _BROWSER_EGRESS_TOOLS = frozenset({
     "browser_open_url", "browser_act", "browser_do", "browser_execute_js",
     "browser_type_selector", "browser_press_key", "browser_upload_artifact", "open_url", "http_request",
@@ -198,10 +203,47 @@ def _result_path(arguments: Mapping[str, Any], result: Any) -> Optional[str]:
     return None
 
 
+def _scan_search_results(result: Any) -> SensitiveSourceScan:
+    """Fingerprint secrets in search matches without keeping any raw value.
+
+    A search can surface an opaque token that matches no direct-secret pattern, so
+    every high-entropy value in a matched line becomes a known fingerprint; a match
+    inside a credential file fingerprints the whole line as well.
+    """
+    if isinstance(result, Mapping) and isinstance(result.get("results"), str):
+        texts = [result["results"]]
+    else:
+        # MCP calls deliver the dict as serialized content; walk it the same way.
+        texts = list(_walk_strings(result))
+    reasons: set[str] = set()
+    fingerprints: set[str] = set()
+    source_class: Optional[str] = None
+    lines = [line for text in texts for line in str(text or "").splitlines()]
+    for raw_line in lines[:5000]:
+        match = _SEARCH_LINE_RE.match(raw_line)
+        path, content = (match.group("path"), match.group("content")) if match else ("", raw_line)
+        path_class = sensitive_path_class(path) if path else None
+        direct = secret_fingerprints(content, include_entropy=False)
+        entropy = secret_fingerprints(content, include_entropy=True).difference(direct)
+        if direct:
+            reasons.add("secret_pattern")
+        if entropy:
+            reasons.add("high_entropy_secret")
+        fingerprints.update(direct)
+        fingerprints.update(entropy)
+        if path_class:
+            source_class = source_class or path_class
+            reasons.add("sensitive_source")
+            fingerprints.update(secret_fingerprints(content, include_entropy=True, include_whole=True))
+    return SensitiveSourceScan(bool(reasons), tuple(sorted(reasons)), frozenset(fingerprints), source_class)
+
+
 def scan_sensitive_source(tool: str, arguments: Mapping[str, Any], result: Any) -> SensitiveSourceScan:
     name = str(tool or "")
     if name not in _SOURCE_TOOLS:
         return SensitiveSourceScan(False)
+    if name == "search_files":
+        return _scan_search_results(result)
 
     source_class = sensitive_path_class(_result_path(arguments, result))
     reasons: set[str] = set()
@@ -522,10 +564,10 @@ def redact_sensitive_source_result(tool: str, arguments: Mapping[str, Any], resu
         if "content" in safe:
             safe["content"] = "[SENSITIVE OUTPUT REDACTED]"
         return safe
-    for key in ("stdout", "stderr", "output", "content", "text", "result"):
+    for key in ("stdout", "stderr", "output", "content", "text", "result", "results"):
         if key in safe and isinstance(safe[key], str):
             safe[key] = "[SENSITIVE OUTPUT REDACTED]"
-    if name in {"run_commands_parallel", "wait_jobs"}:
+    if name in {"run_commands_parallel", "wait_jobs", "process_list", "get_agent", "memory_get", "memory_search"}:
         # Nested command/job outputs can vary by provider; once a result is known
         # sensitive, do not persist nested free-form strings.
         def scrub(value: Any, depth: int = 0) -> Any:

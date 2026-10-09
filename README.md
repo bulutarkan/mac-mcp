@@ -2,7 +2,7 @@
   <img src="assets/screenshots/mac-mcp.png" alt="Mac MCP" width="760">
 </p>
 
-# Mac MCP 2.1.8
+# Mac MCP 2.1.9
 
 Mac MCP is a local macOS control server for AI agents. It exposes your Mac through a native MCP endpoint and a REST/OpenAPI surface, with shell, files, browser automation, macOS UI control, delegated OpenCode/Codex agents, memory, Agent Skills, voice interaction, self-update tooling, and a local operations dashboard. The native MCP endpoint is the full capability surface; REST/OpenAPI intentionally publishes a selected compatibility subset, so some capabilities remain MCP-only.
 
@@ -22,21 +22,32 @@ For example:
 
 **ChatGPT is the conversation. Mac MCP is the execution layer.**
 
+### The Mac MCP panel in ChatGPT
+
+When Mac MCP is connected as a ChatGPT plugin, ChatGPT also shows Mac MCP as an app you can open next to your conversations: from the ChatGPT sidebar in full screen, or as a side panel inside any chat. The panel shows tool activity, delegated agents and token usage at a glance, and lets you choose the default agent ChatGPT delegates to. It refreshes only when you press refresh.
+
+The panel is offered only to ChatGPT; other MCP clients keep their normal tool list. Everything it does goes through the same permission profiles and approvals as any other Mac MCP call, and it never receives API keys, tokens or credentials. To turn it off, set `{"chatgpt_extensions": {"enabled": false}}` in `~/.mac-mcp/settings.json`. See [docs/chatgpt-control-center.md](docs/chatgpt-control-center.md) for details.
+
 This is a powerful combination, not a Mac MCP-only voice feature. ChatGPT provides the natural voice interface and reasoning experience; Mac MCP gives it a local execution layer on macOS. Existing ChatGPT plugin permissions, approvals, and usage limits still apply, and Mac MCP keeps its normal permission, background-control, outcome-safety, and undo boundaries.
 
 > **Security:** Mac MCP can execute commands, read/write files, and control desktop apps. Keep MCP authentication enabled whenever the service is reachable outside localhost and expose it only to clients you trust. The operations dashboard is loopback-only **and** requires a separate per-user dashboard Bearer token; localhost is machine-local transport, not a same-user sandbox.
 
 **Secure bootstrap defaults:** missing configuration fails closed. Without explicit settings, MCP authentication is required, shell execution and HTTP/browser host allowlists are disabled, and the global permission profile defaults to `standard` rather than `trusted`. A normal installer run generates the API key and writes the intended settings explicitly. Deliberate `MCP_ALLOW_NO_AUTH=true` is accepted only on loopback with no managed public endpoint; non-loopback or tunneled no-auth startup is refused.
 
-## What's new in 2.1.8
+## What's new in 2.1.9
 
-2.1.8 focuses on keeping long-running Computer Use lightweight, background-safe, and easier to inspect while making restricted delegated Codex work practical again.
+2.1.9 brings Mac MCP into ChatGPT itself with a native plugin panel, and makes everyday browser work, approvals, updates and restarts more dependable.
 
-- **Low-context perception pipeline:** snapshot, semantic observation, conditional reuse, targeted visuals, and OCR-last fallbacks now form one bounded perception ladder with explicit payload/visual/context telemetry.
-- **Background native Computer Use:** window-scoped capture, zero-focus semantic input, and human/agent workspace arbitration let agents work on specific native windows without unnecessarily taking over the Mac.
-- **Trustworthy Usage visibility:** Settings now separates MCP payload metering from native provider-reported delegated-agent token usage for Codex and OpenCode, with privacy-minimized local aggregates, period filters, exact tooltips, and responsive layout at the minimum Settings window size.
-- **Codex restricted access restored safely:** read_only and scoped workspace_write Codex agents run inside a Mac MCP-enforced macOS Seatbelt boundary instead of relying on provider-native read semantics; workspace-external reads and disallowed writes fail closed.
-- **Dashboard and Settings polish:** the Operations right rail remains scrollable under dense activity, agent cards no longer clip, and the Usage heatmap adapts to available width instead of forcing the Settings window sideways.
+- **Mac MCP panel inside ChatGPT:** ChatGPT now shows Mac MCP as a plugin app. Open it from the ChatGPT sidebar in full screen or as a side panel in any conversation. A compact black-and-white panel, in the same style as the Mac MCP website, shows today's tool activity, running and recent delegated agents, and 7-day token usage for Codex, OpenCode and ChatGPT Web. It refreshes only when you press refresh, so it never polls your Mac in the background.
+- **Choose your default agent from ChatGPT:** the panel's Settings tab lets you pick the provider, model and reasoning level ChatGPT uses when it delegates work. Models come from your own provider accounts, and the server checks every choice before saving. Notifications and connection details are shown read-only; permissions, providers and credentials still live only in the Mac app.
+- **ChatGPT-only and permission-bound:** Claude, Codex, OpenCode and other clients never see the panel. Every action from it passes the same permission profiles and approvals as any other Mac MCP call, and no keys or tokens are sent to it.
+- **See what your agents are doing:** optional activity bubbles on the Mac show what each tool call is for while it runs, even when several run at once, and optional notifications tell you when a delegated agent finishes.
+- **Optional server approvals:** a new Server Approval setting (`Off`, `Critical`, `High Risk`) can ask you to **Allow Once** or **Block** risky actions such as raw commands, update control, or destructive browser and app actions.
+- **Smoother browser work:** agents can finish whole forms in a single step: they can press keys and Enter without bringing the browser to the front and wait for buttons that appear a moment later. Safari tabs stay tracked across site changes and tab shuffling, clicks whose effect appears elsewhere on the page count as working, and page images now work on pages such as Google Sheets.
+- **Better picks between look-alike targets:** Mac MCP now prefers the actual button over the boxes around it. An optional Decision Acceleration layer (off by default, uses your own OpenAI key) can break remaining ties, guided by a short hint from the agent.
+- **Easier setup and history:** `mac-mcp connect-config` prints ready-to-paste connection settings for ChatGPT, Codex and OpenCode; the dashboard adds a safe transaction history view; and memory and Agent Skills can be read over REST.
+- **More dependable updates and restarts:** updates started from inside Mac MCP survive their own restart, `mac-mcp restart` no longer leaves the server stopped, background jobs keep tracking the programs they start, and update operations no longer replace your own Git identity.
+- **Accessibility:** the browser Visual Companion announces activity to screen readers and works with the keyboard.
 
 
 ## Browser automation that doesn't hijack your Mac
@@ -44,15 +55,30 @@ This is a powerful combination, not a Mac MCP-only voice feature. ChatGPT provid
 Mac MCP can inspect and interact with Safari and Chrome tabs in the background while you keep working in another app or browser tab. Here, **background** means a normal, visible Safari/Chrome tab that Mac MCP controls without bringing the browser or tab to the front; it is not a hidden/headless browser session.
 
 - New browser tabs open in the background by default and return a stable `tab_handle`.
-- Stable tab handles survive tab-index changes, so long-running tasks keep targeting the intended Safari or Chrome tab even as other tabs open, close, or move.
+- Stable tab handles survive tab-index changes, so long-running tasks keep targeting the intended Safari or Chrome tab even as other tabs open, close, or move. Each AppleScript step re-resolves the tab by its native identity, so a shift in the middle of a `browser_act` call does not fail it; if the target tab itself closes, the call returns `tab_target_closed` with the actions that already completed and `automatic_retry: false` instead of an HTTP error.
 - `browser_observe` can return compact DOM context plus viewport, element, or full-page visuals without activating the browser, switching tabs, scrolling the user's page, or leaving screenshot files on disk.
 - High-level browser actions can target a specific background tab directly by handle, which makes parallel research and delegated-agent workflows practical without constant focus stealing.
 - Foreground-only fallbacks such as native key presses, absolute coordinate clicks, foreground URL opens, and Safari's native file-picker path are **capability-gated**. A model cannot grant itself focus by sending `allow_foreground=true` or `background=false`.
 - `browser_activate_tab` is treated as user-visible foreground behavior even when it would not raise the browser app, because changing Safari's current tab or Chrome's active tab can interrupt a user already working there. Normal automation should target stable `tab_handle` values directly without activating them.
 - The native menu bar controller surfaces live browser work in **Sessions** and **Latest Tool Usage** with a privacy-minimized browser/site/action summary. URL paths, query strings, page titles, selectors, and page content are intentionally omitted from this compact view.
+- **Settings → Usage → Data & Retention** controls usage history: turn recording off, keep 30, 90 or 365 days (default 365), or clear all stored tool and provider usage. Only daily per-tool aggregates are kept, never prompts, arguments or results; a shorter period removes older days immediately.
 - **Show Tab** is the explicit local-user action: only that trusted UI path receives a short lexical foreground capability and can bring that specific real Safari/Chrome tab to the front.
 
 This is designed for workflows where an AI agent keeps working in one or more background browser tabs while the Mac remains usable normally.
+
+### Faster decisions on look-alike targets with the OpenAI Decisions API
+
+Real pages are full of near-duplicates: a **Continue** button under both Shipping and Billing, **Reply** next to **Reply all**, two **25** cells in a two-month date picker. A typical agent stops there, observes the page again and spends another model round trip choosing. Mac MCP can settle it inside the same `browser_act` call instead.
+
+When Decision Acceleration is on, Mac MCP sends the already-ranked candidates to the [OpenAI Decisions API](https://developers.openai.com/api/docs/guides/decisions), OpenAI's typed-answer endpoint for fast classification and routing (OpenAI describes it as about 10x faster than the Responses API). Mac MCP gives each call a 600 ms budget; a warm call measured under ~330 ms. The agent can add a one-line `intent` hint, such as "the Billing step", and that hint decided our calibration cases:
+
+| Ambiguous target | Without hint | With `intent` |
+|---|---|---|
+| Shipping vs Billing **Continue** | 0.16, kept the first match | Billing, 0.83 |
+| **Reply** vs **Reply all** | Reply | Reply all, 0.93 |
+| Two **25** calendar cells | no answer, 0.28 | November 25, 0.82 |
+
+The layer can only pick from candidates Mac MCP already found, never chooses a risky action such as delete, send or pay over the deterministic match, and falls back to the normal path on any timeout, error or low confidence. It is off by default, uses your own OpenAI key from Keychain, and sends only short redacted labels: no typed values, URLs or page content. Setup and thresholds are under [Optional Decision Acceleration](#optional-decision-acceleration-experimental).
 
 ### Browser Visual Companion (Safari + Chrome)
 
@@ -354,7 +380,9 @@ mac-mcp conformance
 
 The legacy `--ngrok` flag remains supported as an alias for `--public-mode ngrok`. When no CLI override is supplied, `start`/`restart` use the public endpoint mode saved by the native Settings window (or the `MAC_MCP_PUBLIC_*` environment overrides).
 
-`mac-mcp doctor` performs read-only checks for the local runtime, Python/version, disk space, state/settings validity, Accessibility, required/optional helpers, local server health, selected public endpoint health/configuration, dashboard credential file metadata, and Safari/Chrome companion state. Use `--json` for automation. `--support-bundle [PATH]` writes an owner-only (`0600`) structured support report; it intentionally excludes raw `.env`, settings values, logs, credentials, cookies, prompts, and chat content.
+`mac-mcp doctor` performs read-only checks for the local runtime, Python/version, disk space, state/settings validity, Accessibility, required/optional helpers, local server health, selected public endpoint health/configuration, dashboard credential file metadata, and Safari/Chrome companion state. Use `--json` for automation; the JSON reports `local_ok`, `public_endpoint` and `health` (`healthy`, `degraded`, `failed`) separately. A selected public endpoint that cannot be reached makes `doctor` exit 1 and `mac-mcp status` exit 2 (1 means the local server is down); pass `--local-only` to either command to judge only the local runtime. `--support-bundle [PATH]` writes an owner-only (`0600`) structured support report; it intentionally excludes raw `.env`, settings values, logs, credentials, cookies, prompts, and chat content.
+
+`mac-mcp logs [server|cloudflared|ngrok|audit|update] [-n LINES]` prints the last lines of one log with tokens, keys and credential values redacted; `mac-mcp logs --list` shows every log's size and the bounds. Server, `cloudflared` and `ngrok` logs rotate at 10 MB and keep three older files (`MAC_MCP_LOG_MAX_BYTES`, `MAC_MCP_LOG_BACKUPS`); rotation copies and truncates, so the running process keeps writing. The audit log (tool, outcome and duration only, `0600`) rotates at 5 MB with three older files, and only the newest 20 update logs are kept (`MAC_MCP_UPDATE_LOGS_KEPT`).
 
 `mac-mcp conformance` runs the deterministic Computer Use regression lab. Its default suite is CI-safe and verifies contracts such as background browser behavior, explicit foreground fallbacks, stable tab identity, stale-handle rejection, render/element readiness, bounded action batches, and no-effect click handling. `--live` adds read-only checks against this Mac without clicking or typing in the user's applications.
 
@@ -372,6 +400,7 @@ When the switch is off, the key is missing, or OpenAI rejected the key, behavior
 
 - `browser_act` asks Decisions only when the deterministic ranking finds two or more near-equal targets (top scores ≥ 0.60 and within 0.10). Unique targets never trigger a call.
 - `computer_plan` recovery asks Decisions only for an ambiguous browser/native rebind that would otherwise fail closed with `RECOVERY_AMBIGUOUS_TARGET`.
+- `browser_act` actions accept an optional `intent` string (for example "the Billing step") that is added to the Decisions input only when the ranking is ambiguous. It is capped at 120 characters and secrets are redacted; without it the request is unchanged.
 - Decisions may only pick one of the already-ranked candidate IDs. A choice is accepted at confidence ≥ 0.80, or at ≥ 0.65 when it agrees with the deterministic top match. A `none` answer, for example on a true tie, keeps the deterministic choice.
 - A risky alternative (delete, send, pay, …) is never chosen over the deterministic match.
 - Timeouts (600 ms default), errors, rate limits, invalid keys and low confidence all fall back to the existing deterministic path.
@@ -494,7 +523,7 @@ Memory mutation (`memory_add`, `memory_update`, `memory_delete`) and Agent Skill
 
 Mac MCP keeps **workflow lessons** separate from generic factual memory. Delegated agents can opt into a role with `role="coder"`, `role="reviewer"`, or `role="orchestrator"`. At spawn time, only a small top-k set of **approved, relevant** lessons for that role is injected; current task instructions always take priority. Unrelated tasks receive no lesson context.
 
-A worker may emit a compact structured lesson candidate at the end of a run, but candidates are quarantined and **never auto-activate**. `lesson_search` lets the parent review candidates and `lesson_feedback` records `approve`, `success`, `failure`, `disable`, or `enable` outcomes. Repeated failures lower confidence and can disable a lesson; stale low-confidence lessons can be disabled during `lesson_consolidate`. Exact duplicates merge within the same trust domain, while contradictory preferred actions are reported for review instead of silently choosing a winner. Manual candidate creation and consolidation remain available through tool discovery so the compact core tool surface stays small.
+A worker may emit a compact structured lesson candidate at the end of a run, but candidates are quarantined and **never auto-activate**. `lesson_search` lets the parent review candidates and `lesson_feedback` records `approve`, `success`, `failure`, `disable`, or `enable` outcomes. Repeated failures lower confidence and can disable a lesson; stale low-confidence lessons can be disabled during `lesson_consolidate`. Exact duplicates merge within the same trust domain, while contradictory preferred actions are reported for review instead of silently choosing a winner. Manual candidate creation and consolidation remain available through tool discovery so the compact core tool surface stays small. `lesson_export` returns every stored lesson for review, and `lesson_delete` removes one lesson, a role's lessons, or all lessons after `confirm=true` (deleted text is overwritten on disk). Lessons not updated or used for `privacy.lesson_retention_days` (default 365, `0` keeps them until deleted) are removed automatically and never reach a worker prompt.
 
 Role lessons are stored as structured fields and bounded evidence references in `~/.mac-mcp/role-learning/role-lessons.sqlite3`; raw agent transcripts are not stored in the lesson database. Sticky provenance is enforced: a web-tainted session cannot write or approve trusted lessons, tainted children do not receive trusted lesson context, and untrusted candidates are kept in a separate quarantine namespace so they cannot poison an existing trusted lesson.
 
@@ -530,10 +559,13 @@ Set `MAC_MCP_TOOL_PROFILE=full` to advertise every tool allowed by the active pe
 
 The capability set covers:
 
-- terminal/system and background jobs;
+- terminal/system and background jobs (each output stream keeps up to 16 MB, `get_job_output` reads only the requested slice, finished jobs expire after 7 days, 200 jobs or 1 GB, and `delete_job` removes one; override with `MAC_MCP_JOB_STREAM_MAX_BYTES`, `MAC_MCP_JOB_RETENTION_DAYS`, `MAC_MCP_JOB_RETENTION_COUNT`, `MAC_MCP_JOB_RETENTION_BYTES`);
 - delegated OpenCode/Codex agents;
 - file management;
 - macOS automation and Accessibility UI control;
+- saved recipes: `computer_plan(save_as_recipe="name")` keeps a successful plan as a draft in `~/.mac-mcp/recipes` (owner-only); `recipe(action="update", parameterize=[{"literal": "October", "param": "month"}])` turns fixed values into typed parameters, `recipe(action="activate", confirm=true)` makes it runnable after review (secret-like values are refused), and `recipe(action="run", values={...})` validates the values and runs the steps through `computer_plan` with the usual policy and verification; recipes can be listed, inspected, paused, resumed and deleted;
+- recipe launchers outside a chat: `mac-mcp recipe list` and `mac-mcp recipe run rcp_… --param month=November` (exit 0 done, 1 failed, 2 needs approval, 3 server not running) for Raycast script commands or a Shortcuts "Run Shell Script" action, and `macmcp://recipe/run?id=rcp_…&month=November` links for a Shortcuts "Open URL" action. A link always asks for confirmation in Mac MCP before it runs and the result arrives as a notification; launchers can only run activated recipes and pass plain values, never tool names or commands;
+- typed `mac_app` adapters for Finder, Notes, Mail, Calendar, Reminders, Preview and System Settings, including Calendar `create_event`/`update_event`, Reminders `list_reminders`/`complete_reminder`, Notes `create_note` and Mail `create_draft` (saved to Drafts only, never sent; with several Mail accounts the sender must be named): each returns the item's stable id with a read-back check, a repeated create returns the existing item instead of a twin, and an uncertain result is reported as `outcome_unknown` rather than retried;
 - Safari/Chrome browser automation with stable tab handles and background visual observation;
 - HTTP and search;
 - text/choice/confirmation/voice human input;
@@ -545,10 +577,16 @@ Use MCP tool discovery for the authoritative live schema.
 
 ## Updating
 
+**From the app:** click the Mac MCP menu bar icon, open **Settings** (gear icon) → **General** → **Updates**. The card checks the verified release channel when you open it and shows your current version next to the newest verified release. **Check Update** checks again, and **Update Now** installs it while the card lists each step as it runs, from Prepare and Backup through Restart and the final Health check. If an update is interrupted, the same button changes to **Resume Recovery** or **Retry Recovery**. "Blocked by local changes" means the source checkout has uncommitted or untracked files (`git status` in the source checkout lists them): commit, stash or move them, then check again. If anything still looks wrong, `mac-mcp doctor` reports update and recovery state.
+
+**From Terminal**, for automation or if you prefer the CLI:
+
 ```bash
 mac-mcp update --check
 mac-mcp update
 ```
+
+Both paths run the same updater with the same signature, lineage and dirty-repository checks.
 
 The updater scans the first-parent history of `origin/main` and installs the newest cryptographically verified stable release checkpoint, not arbitrary repository HEAD. Development or otherwise unverified commits ahead of that checkpoint are not offered as normal updates. It also blocks on dirty repositories, preserves runtime overlays and private files, creates a runtime backup, restarts the managed service, performs a health check, and rolls back managed runtime files if verification fails.
 

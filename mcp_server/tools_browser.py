@@ -117,6 +117,7 @@ BROWSERS = {
 
 _TAB_IDENTITY_CHANGED = "MAC_MCP_TAB_IDENTITY_CHANGED"
 _TAB_TARGET_NOT_ACTIVE = "MAC_MCP_TAB_TARGET_NOT_ACTIVE"
+_TAB_TARGET_MISSING = "MAC_MCP_TAB_TARGET_MISSING"
 _CHROME_NATIVE_JS_DENIED = False
 _CHROME_BRIDGE_INLINE_LIMIT = 2400
 _CHROME_BACKGROUND_OPEN_LOCK = threading.Lock()
@@ -262,29 +263,43 @@ def _tab_lease(
 
 
 def _tab_identity_guard(target: browser_tabs.TabTarget) -> str:
-    """Resolve and validate the native tab inside the same AppleScript as its action."""
+    """Resolve and validate the native tab inside the same AppleScript as its action.
+
+    The tab is looked up by native identity, not by the index captured at lease
+    time, so another agent opening or closing a tab to its left cannot redirect or
+    break the action. When several tabs share the identity the leased index breaks
+    the tie, and a tab no longer present in the window fails with a distinct marker.
+    """
     native_id = _js_escape(target.native_id)
     url = _js_escape(target.url)
     title = _js_escape(target.title)
-    lines = [f"set targetTab to tab {target.tab_index}"]
     if native_id and native_id != "0":
         native_property = "id" if target.browser == "Google Chrome" else "pid"
-        lines.extend(
-            [
-                'set actualNativeId to ""',
-                f"try\nset actualNativeId to ({native_property} of targetTab) as text\nend try",
-                f'if actualNativeId is not "{native_id}" then error "{_TAB_IDENTITY_CHANGED}"',
-            ]
-        )
+        match_clause = f'every tab whose {native_property} is "{native_id}"'
+        tie_check = f'(({native_property} of leasedTab) as text) is "{native_id}"'
     else:
         title_property = "title" if target.browser == "Google Chrome" else "name"
-        lines.extend(
-            [
-                f'if ((URL of targetTab) as text) is not "{url}" then error "{_TAB_IDENTITY_CHANGED}"',
-                f'if (({title_property} of targetTab) as text) is not "{title}" then error "{_TAB_IDENTITY_CHANGED}"',
-            ]
+        match_clause = f'every tab whose URL is "{url}" and {title_property} is "{title}"'
+        tie_check = (
+            f'((URL of leasedTab) as text) is "{url}" and '
+            f'(({title_property} of leasedTab) as text) is "{title}"'
         )
-    return "\n".join(lines)
+    return "\n".join(
+        [
+            f"set targetMatches to ({match_clause})",
+            f'if (count of targetMatches) is 0 then error "{_TAB_TARGET_MISSING}"',
+            "if (count of targetMatches) is 1 then",
+            "set targetTab to item 1 of targetMatches",
+            "else",
+            "set targetTab to missing value",
+            "try",
+            f"set leasedTab to tab {target.tab_index}",
+            f"if {tie_check} then set targetTab to leasedTab",
+            "end try",
+            f'if targetTab is missing value then error "{_TAB_IDENTITY_CHANGED}"',
+            "end if",
+        ]
+    )
 
 
 def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) -> None:
@@ -337,6 +352,20 @@ def _run_osascript(script: str, timeout_s: int = 30) -> str:
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
                 "Target tab identity changed before the operation; resolve or observe the tab again.",
+            )
+        if _TAB_TARGET_MISSING in msg:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {
+                    "ok": False,
+                    "error": "tab_target_closed",
+                    "reason_code": "TAB_TARGET_CLOSED",
+                    "retryable": True,
+                    "observe_again": True,
+                    "required_action": "browser_list_tabs",
+                    "do_not_fallback_to_active_tab": True,
+                    "message": "The target tab was closed or moved to another window; list tabs before retrying.",
+                },
             )
         if _TAB_TARGET_NOT_ACTIVE in msg:
             raise HTTPException(
@@ -783,6 +812,7 @@ def browser_open_url(
             row["tab_handle"] = target.tab_handle
             if b == "Safari":
                 row = browser_tabs.rebind_safari_handle(target.tab_handle, row)
+                browser_tabs.expect_safari_navigation(target.tab_handle, expected_url=url)
             elif returned_native and returned_native != "0" and str(row.get("native_id") or "") != target.native_id:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -861,6 +891,9 @@ def browser_open_url(
             opened_index = int(created.get("tab_index") or opened_index)
             created_window = int(created.get("window_index") or target_window)
             handle = str(created.get("tab_handle") or "") or None
+            # Mark before any further tab scan: the new tab's Safari process may
+            # swap while the lease claim below is still resolving the handle.
+            browser_tabs.expect_safari_navigation(handle, expected_url=url)
             lease = browser_tabs.claim_created_tab(b, handle) if handle else None
 
         observed_url = _validate_observed_navigation(
@@ -978,7 +1011,12 @@ def browser_list_tabs(settings: Settings, browser: str) -> Dict[str, Any]:
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             f"Could not enumerate browser tabs: {exc}",
         ) from exc
-    return {"ok": True, "browser": b, "tabs": tabs}
+    out: Dict[str, Any] = {"ok": True, "browser": b, "tabs": tabs}
+    if b == "Google Chrome":
+        # Agents list tabs first, so this is where they learn whether background
+        # automation works before they start acting.
+        out["transport"] = chrome_transport_capabilities()
+    return out
 
 
 def browser_activate_tab(
@@ -1013,7 +1051,13 @@ def browser_activate_tab(
                 {"activate" if allow_foreground else ""}
                 tell window {target.window_index}
                     {guard}
-                    set active tab index to {target.tab_index}
+                    set targetTabId to id of targetTab
+                    repeat with candidateIndex from 1 to (count of tabs)
+                        if (id of tab candidateIndex) is targetTabId then
+                            set active tab index to candidateIndex
+                            exit repeat
+                        end if
+                    end repeat
                 end tell
             end tell
             '''
@@ -1332,6 +1376,85 @@ end tell'''
                     ) from exc
                 raise
         raise
+
+
+_CHROME_JS_PROBE_TTL_S = 30.0
+_CHROME_JS_PROBE: Dict[str, Any] = {"at": 0.0, "state": "unknown"}
+_CHROME_JS_DENIED_MARKERS = ("Access not allowed", "Executing JavaScript through AppleScript is turned off")
+
+
+def _probe_chrome_apple_events_js() -> str:
+    """Return allowed/denied/unknown without launching or focusing Chrome.
+
+    The probe evaluates a constant in the front tab, which changes nothing on the
+    page. A short cache keeps tab listings cheap.
+    """
+    global _CHROME_NATIVE_JS_DENIED
+    now = time.monotonic()
+    if now - float(_CHROME_JS_PROBE["at"]) < _CHROME_JS_PROBE_TTL_S:
+        return str(_CHROME_JS_PROBE["state"])
+    state = "unknown"
+    if _chrome_is_running():
+        try:
+            out = _run_osascript(
+                'tell application "Google Chrome"\n'
+                '    if (count of windows) is 0 then return "no_window"\n'
+                '    return (execute active tab of front window javascript "1+1") as text\n'
+                'end tell',
+                timeout_s=4,
+            )
+            state = "allowed" if out.strip() == "2" else "unknown"
+        except HTTPException as exc:
+            detail = str(getattr(exc, "detail", "") or "")
+            state = "denied" if any(marker in detail for marker in _CHROME_JS_DENIED_MARKERS) else "unknown"
+    # The setting can be turned on or off while the server runs; follow the probe.
+    if state == "allowed":
+        _CHROME_NATIVE_JS_DENIED = False
+    elif state == "denied":
+        _CHROME_NATIVE_JS_DENIED = True
+    _CHROME_JS_PROBE.update({"at": now, "state": state})
+    return state
+
+
+def chrome_transport_capabilities(*, probe: bool = True) -> Dict[str, Any]:
+    """Describe which Chrome automation paths work right now, before a task acts."""
+    companion = chrome_background_bridge.is_connected()
+    running = companion or _chrome_is_running()
+    apple_events = "denied" if _CHROME_NATIVE_JS_DENIED else "unknown"
+    if probe and not companion and running:
+        apple_events = _probe_chrome_apple_events_js()
+    if companion:
+        transport, dom = "companion", "background"
+    elif apple_events == "allowed":
+        transport, dom = "apple_events_javascript", "background"
+    elif apple_events == "denied":
+        transport, dom = "url_bridge_foreground_only", "foreground_only"
+    else:
+        transport, dom = "unknown", "unknown"
+    remediation: List[str] = []
+    if not companion:
+        remediation.append(
+            "Install or reconnect the Mac MCP Chrome companion for background DOM automation "
+            "and trusted background pointer input."
+        )
+    if apple_events == "denied" and not companion:
+        remediation.append(
+            "Or enable Chrome View → Developer → Allow JavaScript from Apple Events "
+            "(Chrome requires a real click for this setting)."
+        )
+    return {
+        "browser": "Google Chrome",
+        "chrome_running": running,
+        "active_transport": transport,
+        "dom_automation": dom,
+        "background_dom_automation": dom == "background",
+        "trusted_background_pointer": companion,
+        "companion_connected": companion,
+        "apple_events_javascript": "not_needed" if companion else apple_events,
+        # The URL bridge brings Chrome forward, so it never runs without authorization.
+        "focus_change_requires_authorization": True,
+        "remediation": remediation,
+    }
 
 
 def _browser_execute_js_mode(
@@ -2114,7 +2237,7 @@ def browser_press_key(
         if b == "Safari":
             active_guard = f'if (current tab) is not targetTab then error "{_TAB_TARGET_NOT_ACTIVE}"'
         else:
-            active_guard = f'if active tab index is not {target.tab_index} then error "{_TAB_TARGET_NOT_ACTIVE}"'
+            active_guard = f'if (id of active tab) is not (id of targetTab) then error "{_TAB_TARGET_NOT_ACTIVE}"'
 
         script = f'''
 tell application "{b}"

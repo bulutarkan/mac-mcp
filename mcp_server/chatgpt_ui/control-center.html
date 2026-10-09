@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Mac MCP</title>
+  <style>:root{
+  --bg:#08090b;
+  --surface:#0e1013;
+  --surface-2:#14161a;
+  --line:rgba(255,255,255,.08);
+  --line-strong:rgba(255,255,255,.14);
+  --text:#f6f7f9;
+  --muted:#a0a6b0;
+  --muted-2:#6b717c;
+  --green:#65d8a7;
+  --red:#ff786d;
+  --mono:"SFMono-Regular",ui-monospace,Menlo,Consolas,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text)}
+body{
+  font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Inter,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;min-width:280px;
+}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:1.5px solid var(--text);outline-offset:2px}
+[hidden]{display:none!important}
+.mono{font-family:var(--mono)}
+.app{min-height:100vh;display:flex;flex-direction:column;max-width:960px;margin:0 auto;padding:var(--safe-top,0) var(--safe-right,0) var(--safe-bottom,0) var(--safe-left,0)}
+
+/* Header */
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px 12px}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+.logo{width:26px;height:26px;flex:none}
+.brand-text{display:flex;align-items:baseline;gap:8px;min-width:0}
+.brand-text strong{font-size:14px;font-weight:650;letter-spacing:-.02em;white-space:nowrap}
+.brand-text span{font-size:10px;color:var(--muted-2)}
+.top-actions{display:flex;align-items:center;gap:10px}
+.status{display:inline-flex;align-items:center;gap:7px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;white-space:nowrap}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--muted-2);flex:none}
+.status.online .dot{background:var(--green);box-shadow:0 0 0 3px rgba(101,216,167,.14)}
+.status.offline .dot{background:var(--red)}
+.icon-button{
+  width:30px;height:30px;display:grid;place-items:center;padding:0;border-radius:9px;
+  border:1px solid var(--line);background:var(--surface);color:var(--muted);
+  transition:color .15s,border-color .15s,background .15s;
+}
+.icon-button:hover:not(:disabled){color:var(--text);border-color:var(--line-strong);background:var(--surface-2)}
+.icon-button:disabled{cursor:default;opacity:.55}
+.icon-button svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.icon-button.spinning svg{animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Tabs */
+.tabs{display:flex;gap:2px;padding:0 12px;border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{
+  position:relative;display:inline-flex;align-items:center;gap:6px;padding:9px 8px 11px;border:0;background:none;
+  color:var(--muted-2);font-size:12px;font-weight:550;white-space:nowrap;transition:color .15s;
+}
+.tab:hover{color:var(--muted)}
+.tab.selected{color:var(--text)}
+.tab.selected::after{content:"";position:absolute;left:8px;right:8px;bottom:-1px;height:1.5px;background:var(--text);border-radius:2px}
+.count{font-size:9.5px;line-height:1;padding:3px 5px;border-radius:5px;background:var(--surface-2);border:1px solid var(--line);color:var(--muted)}
+
+/* Body */
+.body{flex:1;padding:14px 16px 18px;display:flex;flex-direction:column;gap:12px}
+section{display:flex;flex-direction:column;gap:12px}
+.notice{padding:9px 12px;border-radius:10px;border:1px solid var(--line-strong);background:var(--surface);font-size:12px;color:var(--muted)}
+.notice.error{border-color:rgba(255,120,109,.32);color:#ffb3ab;background:rgba(255,120,109,.06)}
+
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.stat{background:var(--surface);padding:12px 13px 11px;display:grid;grid-template-columns:1fr auto;grid-template-areas:"label sub" "value value";row-gap:6px;min-width:0}
+.label{grid-area:label;font-size:9.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sub{grid-area:sub;font-size:9.5px;color:var(--muted-2);opacity:.75}
+.stat strong{grid-area:value;font-size:22px;font-weight:600;letter-spacing:-.03em;line-height:1.1;font-variant-numeric:tabular-nums}
+
+.split{display:grid;grid-template-columns:1fr;gap:12px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 13px 13px;min-width:0}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+.panel-head h2{margin:0;font-size:12.5px;font-weight:600;letter-spacing:-.01em}
+.meta{font-size:9.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);white-space:nowrap}
+.link{border:0;background:none;padding:0;font-size:9.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+.link:hover{color:var(--text)}
+
+.list{display:flex;flex-direction:column}
+.row{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line);min-width:0}
+.row:first-child{border-top:0}
+.row .dot{margin:0 2px}
+.row .dot.active{background:var(--text);box-shadow:0 0 0 3px rgba(255,255,255,.1);animation:pulse 1.8s ease-in-out infinite}
+.row .dot.done{background:var(--muted-2)}
+.row .dot.failed{background:var(--red)}
+@keyframes pulse{50%{opacity:.45}}
+.row-main{flex:1;min-width:0}
+.row-main strong{display:block;font-size:12.5px;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row-main small{display:block;margin-top:2px;font:10.5px/1.3 var(--mono);color:var(--muted-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row-end{font:10.5px/1 var(--mono);color:var(--muted);white-space:nowrap}
+.row-end.big{font-size:12px;color:var(--text);font-variant-numeric:tabular-nums}
+.bar{height:2px;border-radius:2px;background:var(--surface-2);margin-top:7px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--text);opacity:.85;border-radius:2px}
+.provider{padding:9px 0}
+.provider .row-main{display:block}
+.provider-line{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.empty{margin:0;padding:18px 0;text-align:center;font-size:11.5px;color:var(--muted-2)}
+.caption{margin:10px 0 0;font-size:10.5px;line-height:1.5;color:var(--muted-2)}
+.copy{margin:0;font-size:12px;line-height:1.55;color:var(--muted)}
+
+.rows{margin:0}
+.rows div{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid var(--line);font-size:12px}
+.rows div:first-child{border-top:0}
+.rows dt{color:var(--muted)}
+.rows dd{margin:0;font-size:11.5px;font-variant-numeric:tabular-nums}
+
+/* Settings */
+.editor{display:flex;flex-direction:column;gap:8px;margin-top:4px;max-width:560px}
+.segmented{display:flex;gap:2px;padding:2px;border:1px solid var(--line);border-radius:9px;background:var(--bg)}
+.segmented button{flex:1;height:26px;border:0;border-radius:7px;background:none;color:var(--muted-2);font-size:11.5px;font-weight:550}
+.segmented button:hover{color:var(--muted)}
+.segmented button[aria-checked="true"]{background:var(--surface-2);color:var(--text);box-shadow:inset 0 0 0 1px var(--line-strong)}
+.field-row{display:grid;grid-template-columns:72px minmax(0,1fr);align-items:center;gap:10px;font-size:11.5px;color:var(--muted)}
+.control{width:100%;min-width:0;height:30px;padding:0 9px;border-radius:8px;border:1px solid var(--line-strong);background:var(--bg);color:var(--text);font-size:11.5px;outline:0;transition:border-color .15s}
+.control:focus{border-color:rgba(255,255,255,.32)}
+.control::placeholder{color:var(--muted-2)}
+select.control{appearance:none;-webkit-appearance:none;cursor:pointer;background-image:linear-gradient(45deg,transparent 50%,var(--muted-2) 50%),linear-gradient(135deg,var(--muted-2) 50%,transparent 50%);background-position:calc(100% - 13px) 50%,calc(100% - 9px) 50%;background-size:4px 4px;background-repeat:no-repeat}
+.actions{display:flex;justify-content:flex-end;gap:6px}
+.primary,.ghost{height:28px;padding:0 13px;border-radius:8px;font-size:11.5px;font-weight:600;transition:opacity .15s,border-color .15s,color .15s}
+.primary{border:1px solid #fff;background:#f6f7f9;color:#08090b}
+.primary:disabled{opacity:.35;cursor:not-allowed}
+.ghost{border:1px solid var(--line-strong);background:none;color:var(--muted)}
+.ghost:hover{color:var(--text)}
+.on{color:var(--text)}
+.off{color:var(--muted-2)}
+
+/* Footer */
+.foot{display:flex;justify-content:space-between;gap:12px;padding:10px 16px 14px;border-top:1px solid var(--line);font-size:9.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2)}
+
+/* Wider surfaces (fullscreen) */
+@media (min-width:640px){
+  .top{padding:20px 24px 14px}
+  .tabs{padding:0 20px}
+  .body{padding:20px 24px 24px;gap:14px}
+  .foot{padding:12px 24px 16px}
+  .stats{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .stat{padding:14px 16px 13px}
+  .stat strong{font-size:24px}
+  .panel{padding:14px 16px 15px}
+  .split{grid-template-columns:minmax(0,1.25fr) minmax(0,1fr)}
+  section[data-panel="usage"],section[data-panel="settings"]{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);align-items:start}
+  section[data-panel="settings"]{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .panel.wide{grid-column:1/-1}
+  /* Keep the last rows scrollable above a floating host composer when no inset is reported. */
+  .app{padding-bottom:max(var(--safe-bottom,0px),88px)}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 64 64" aria-hidden="true">
+          <rect x="2" y="2" width="60" height="60" rx="17" fill="#111318"/>
+          <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="16.25" fill="none" stroke="rgba(255,255,255,.14)" stroke-width="1.5"/>
+          <path d="M21 19.5 34 32 21 44.5" fill="none" stroke="#fff" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M37.5 43.5H45" fill="none" stroke="#9CA4FF" stroke-width="5.5" stroke-linecap="round"/>
+        </svg>
+        <div class="brand-text"><strong>Mac MCP</strong><span class="mono" id="version">—</span></div>
+      </div>
+      <div class="top-actions">
+        <span class="status mono" id="status"><i class="dot"></i><span id="status-text">Connecting</span></span>
+        <button class="icon-button" id="refresh" type="button" aria-label="Refresh" title="Refresh">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v4.5h-4.5"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <nav class="tabs" id="tabs" aria-label="Sections">
+      <button class="tab selected" data-tab="overview" type="button">Overview</button>
+      <button class="tab" data-tab="agents" type="button">Agents<span class="count mono" id="tab-agents" hidden>0</span></button>
+      <button class="tab" data-tab="usage" type="button">Usage</button>
+      <button class="tab" data-tab="settings" type="button">Settings</button>
+    </nav>
+
+    <main class="body">
+      <div class="notice" id="notice" role="status" hidden></div>
+
+      <section data-panel="overview">
+        <div class="stats">
+          <div class="stat"><span class="label mono">Tool calls</span><strong id="calls">—</strong><span class="sub mono">24h</span></div>
+          <div class="stat"><span class="label mono">Active agents</span><strong id="active-agents">—</strong><span class="sub mono">now</span></div>
+          <div class="stat"><span class="label mono">Avg latency</span><strong id="latency">—</strong><span class="sub mono">24h</span></div>
+          <div class="stat"><span class="label mono">Errors</span><strong id="errors">—</strong><span class="sub mono">24h</span></div>
+        </div>
+        <div class="split">
+          <article class="panel">
+            <header class="panel-head"><h2>Agent activity</h2><button class="link mono" data-goto="agents" type="button">View all</button></header>
+            <div class="list" id="overview-agents"><p class="empty">No data yet.</p></div>
+          </article>
+          <article class="panel">
+            <header class="panel-head"><h2>Token usage</h2><span class="meta mono">7d</span></header>
+            <div class="list" id="overview-providers"><p class="empty">No data yet.</p></div>
+          </article>
+        </div>
+      </section>
+
+      <section data-panel="agents" hidden>
+        <article class="panel">
+          <header class="panel-head"><h2>Delegated agents</h2><span class="meta mono">Last 20</span></header>
+          <div class="list" id="agents"><p class="empty">No data yet.</p></div>
+        </article>
+      </section>
+
+      <section data-panel="usage" hidden>
+        <article class="panel">
+          <header class="panel-head"><h2>Provider tokens</h2><span class="meta mono">7d</span></header>
+          <div class="list" id="usage-providers"><p class="empty">No data yet.</p></div>
+          <p class="caption">Provider-reported totals. Missing reports stay unavailable — never estimated.</p>
+        </article>
+        <article class="panel">
+          <header class="panel-head"><h2>MCP server</h2><span class="meta mono">24h</span></header>
+          <dl class="rows">
+            <div><dt>Tool calls</dt><dd class="mono" id="usage-calls">—</dd></div>
+            <div><dt>In flight</dt><dd class="mono" id="usage-active">—</dd></div>
+            <div><dt>Mean latency</dt><dd class="mono" id="usage-latency">—</dd></div>
+            <div><dt>Errors</dt><dd class="mono" id="usage-errors">—</dd></div>
+            <div><dt>Uptime</dt><dd class="mono" id="usage-uptime">—</dd></div>
+          </dl>
+        </article>
+      </section>
+
+      <section data-panel="settings" hidden>
+        <article class="panel wide">
+          <header class="panel-head"><h2>Default agent</h2><button class="link mono" id="agent-edit" type="button" hidden>Edit</button><span class="meta mono" id="agent-mode" hidden>Read-only</span></header>
+          <dl class="rows" id="agent-view">
+            <div><dt>Provider</dt><dd class="mono" id="agent-provider">—</dd></div>
+            <div><dt>Model</dt><dd class="mono" id="agent-model">—</dd></div>
+            <div><dt>Reasoning</dt><dd class="mono" id="agent-reasoning">—</dd></div>
+          </dl>
+          <form class="editor" id="agent-form" hidden>
+            <div class="segmented" id="agent-providers" role="radiogroup" aria-label="Provider"></div>
+            <label class="field-row"><span>Model</span><input class="control mono" id="agent-model-input" list="agent-models" autocomplete="off" spellcheck="false" placeholder="Provider default"></label>
+            <datalist id="agent-models"></datalist>
+            <label class="field-row"><span>Reasoning</span><select class="control mono" id="agent-reasoning-input"></select></label>
+            <p class="caption" id="agent-catalog-note"></p>
+            <div class="actions"><button class="ghost" id="agent-cancel" type="button">Cancel</button><button class="primary" id="agent-save" type="submit">Save</button></div>
+          </form>
+          <p class="caption">Used when ChatGPT delegates without naming a provider. Applies live.</p>
+        </article>
+        <article class="panel">
+          <header class="panel-head"><h2>Notifications</h2><span class="meta mono">Mac app</span></header>
+          <dl class="rows">
+            <div><dt>Agent completion</dt><dd class="mono" id="notify-agents">—</dd></div>
+            <div><dt>Activity bubble</dt><dd class="mono" id="notify-bubble">—</dd></div>
+          </dl>
+          <p class="caption">Changed in the Mac MCP app, which owns macOS notification permission.</p>
+        </article>
+        <article class="panel">
+          <header class="panel-head"><h2>Connection</h2></header>
+          <dl class="rows">
+            <div><dt>Version</dt><dd class="mono" id="conn-version">—</dd></div>
+            <div><dt>Permission profile</dt><dd class="mono" id="conn-profile">—</dd></div>
+            <div><dt>Endpoint</dt><dd class="mono" id="conn-endpoint">—</dd></div>
+          </dl>
+          <p class="caption">Profiles, providers and credentials are managed only on your Mac.</p>
+        </article>
+      </section>
+    </main>
+
+    <footer class="foot mono"><span id="updated">Not loaded</span><span>Local · Private</span></footer>
+  </div>
+  <script>(()=>{var v=class{constructor({name:t,version:n}){this.name=t,this.version=n,this.nextId=1,this.pending=new Map,this.ontoolresult=null,this.onhostcontext=null,window.addEventListener("message",i=>{if(i.source!==window.parent)return;let a=i.data;if(!(!a||a.jsonrpc!=="2.0"))if(a.id!==void 0&&this.pending.has(a.id)){let{resolve:r,reject:g}=this.pending.get(a.id);this.pending.delete(a.id),a.error?g(new Error(a.error.message||"Host request failed")):r(a.result)}else a.method==="ui/notifications/tool-result"?this.ontoolresult?.(a.params):a.method==="ui/notifications/host-context-changed"&&this.onhostcontext?.(a.params||{})})}request(t,n){let i=this.nextId++;return new Promise((a,r)=>{this.pending.set(i,{resolve:a,reject:r}),window.parent.postMessage({jsonrpc:"2.0",id:i,method:t,params:n},"*")})}notify(t,n={}){window.parent.postMessage({jsonrpc:"2.0",method:t,params:n},"*")}async connect(){let t=await this.request("ui/initialize",{appInfo:{name:this.name,version:this.version},appCapabilities:{},protocolVersion:"2026-01-26"});return this.notify("ui/notifications/initialized"),t?.hostContext&&this.onhostcontext?.(t.hostContext),t}callServerTool({name:t,arguments:n}){return this.request("tools/call",{name:t,arguments:n??{}})}};var o=e=>document.getElementById(e),p=e=>Array.from(document.querySelectorAll(e)),m=e=>e!=null&&e!==""&&Number.isFinite(Number(e)),c=e=>m(e)?new Intl.NumberFormat("en-US").format(Number(e)):"\u2014",_=e=>m(e)?new Intl.NumberFormat("en-US",{notation:"compact",maximumFractionDigits:1}).format(Number(e)):"n/a",S=e=>m(e)?e>=1e3?`${(e/1e3).toFixed(1)}s`:`${Math.round(e)}ms`:"\u2014",h={codex:"Codex",opencode:"OpenCode",chatgpt:"ChatGPT Web"},T=new Set(["running","starting"]),q=new Set(["failed","error","cancelled","canceled","timeout","killed"]),s={data:null,connected:!1,busy:!1,editing:!1,catalog:null};function l(e,t,n){let i=document.createElement(e);return t&&(i.className=t),n!=null&&(i.textContent=String(n)),i}function d(e,...t){return t.forEach(n=>e.appendChild(n)),e}function j(e){if(!m(e))return"\u2014";let t=Number(e),n=Math.floor(t/86400),i=Math.floor(t%86400/3600),a=Math.floor(t%3600/60);return n?`${n}d ${i}h`:i?`${i}h ${a}m`:`${a}m`}function w(e){s.connected=e==="online",o("status").classList.toggle("online",e==="online"),o("status").classList.toggle("offline",e==="offline"),o("status-text").textContent={online:"Online",offline:"Offline"}[e]||"Connecting",u()}function u(){o("refresh").disabled=!s.connected||s.busy,o("refresh").classList.toggle("spinning",s.busy),o("agent-save").disabled=!s.connected||s.busy||!s.catalog}function f(e,t=!1){let n=o("notice");n.hidden=!e,n.textContent=e||"",n.classList.toggle("error",!!t)}function P(e){p("[data-panel]").some(t=>t.dataset.panel===e)&&(p("[data-tab]").forEach(t=>t.classList.toggle("selected",t.dataset.tab===e)),p("[data-panel]").forEach(t=>{t.hidden=t.dataset.panel!==e}))}p("[data-tab]").forEach(e=>e.addEventListener("click",()=>P(e.dataset.tab)));p("[data-goto]").forEach(e=>e.addEventListener("click",()=>P(e.dataset.goto)));function M(e,t,n){let i=o(t);if(i.replaceChildren(),!e.length){d(i,l("p","empty","No delegated agents yet."));return}for(let a of e.slice(0,n)){let r=String(a.status||"unknown").toLowerCase(),g=T.has(r)?"active":q.has(r)?"failed":"done",y=d(l("div","row-main"),l("strong",null,a.role||"Agent"),l("small",null,`${h[a.provider]||a.provider||"unknown"} \xB7 ${a.model||"default"}`));d(i,d(l("div","row"),l("i",`dot ${g}`),y,l("span","row-end",r)))}}function N(e,t,n){let i=o(t);if(i.replaceChildren(),!e.length){d(i,l("p","empty","No provider usage reported."));return}let a=Math.max(1,...e.map(r=>Number(r.total_tokens)||0));for(let r of e){let g=m(r.total_tokens)?Number(r.total_tokens):null,y=d(l("div","provider-line"),l("strong",null,h[r.name]||r.name||"Unknown"),l("span","row-end big",_(g))),F=n?`${c(r.turns||0)} turns \xB7 in ${_(r.input_tokens)} \xB7 out ${_(r.output_tokens)}`:`${c(r.turns||0)} turns`,k=d(l("div","bar"),l("i"));k.firstChild.style.width=`${g?Math.max(2,g/a*100):0}%`,d(i,d(l("div","row provider"),d(l("div","row-main"),y,l("small",null,F),k)))}}function x(e){if(!e||e.ok!==!0||!e.stats)return!1;s.data=e;let t=e.stats;o("version").textContent=e.version?`v${e.version}`:"\u2014",o("calls").textContent=c(t.calls),o("active-agents").textContent=c(e.active_agents),o("latency").textContent=S(t.latency_ms),o("errors").textContent=c(t.errors),o("usage-calls").textContent=c(t.calls),o("usage-active").textContent=c(t.active_calls),o("usage-latency").textContent=S(t.latency_ms),o("usage-errors").textContent=c(t.errors),o("usage-uptime").textContent=j(t.uptime_seconds);let n=Number(e.active_agents)||0;o("tab-agents").hidden=n===0,o("tab-agents").textContent=String(n);let i=Array.isArray(e.agents)?e.agents:[],a=Array.isArray(e.providers)?e.providers:[];return M(i,"overview-agents",4),M(i,"agents",20),N(a,"overview-providers",!1),N(a,"usage-providers",!0),O(e),o("updated").textContent=`Updated ${new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`,w("online"),!0}function I(e){if(e?.isError)throw new Error(e.content?.find(n=>n.type==="text")?.text||"MCP tool failed");if(e?.structuredContent)return e.structuredContent;let t=e?.content?.find(n=>n.type==="text")?.text;if(!t)return e;try{return JSON.parse(t)}catch{return e}}var C=new v({name:"Mac MCP",version:"0.2.1"});C.onhostcontext=e=>{let t=e.safeAreaInsets;if(t)for(let n of["top","right","bottom","left"]){let i=Number(t[n]);Number.isFinite(i)&&i>=0&&document.documentElement.style.setProperty(`--safe-${n}`,`${i}px`)}e.displayMode&&(document.documentElement.dataset.mode=String(e.displayMode))};C.ontoolresult=e=>{try{x(I(e))}catch(t){f(String(t.message||t),!0)}};async function b(e,t={}){let n={mac_mcp_panel_state:"Refresh Mac MCP Control Center status and usage",mac_mcp_panel_setting:"Save Mac MCP default agent from the Control Center"},i=await C.callServerTool({name:e,arguments:n[e]?{...t,description:n[e]}:t});return I(i)}async function D(){if(!(!s.connected||s.busy)){s.busy=!0,u();try{x(await b("mac_mcp_panel_state")),f("")}catch(e){f(`Refresh failed: ${e.message||e}`,!0)}finally{s.busy=!1,u()}}}o("refresh").addEventListener("click",D);var L=(e,t)=>{e.textContent=t?"On":"Off",e.className=`mono ${t?"on":"off"}`};function O(e){let t=e.settings||{},n=t.default_agent||{};o("agent-provider").textContent=n.provider?h[n.provider]||n.provider:"Not set",o("agent-model").textContent=n.model||"Provider default",o("agent-reasoning").textContent=n.reasoning||"Default";let i=!!e.settings_writable&&(t.enabled_providers||[]).length>0;o("agent-edit").hidden=!i||s.editing,o("agent-mode").hidden=i,!i&&s.editing&&E(),L(o("notify-agents"),t.notifications?.agent_completion),L(o("notify-bubble"),t.notifications?.activity_bubble);let a=t.connection||{};o("conn-version").textContent=e.version?`v${e.version}`:"\u2014",o("conn-profile").textContent=a.profile||"\u2014",o("conn-endpoint").textContent=a.public_host?`${a.endpoint_mode} \xB7 ${a.public_host}`:a.endpoint_mode||"local"}function $(){return o("agent-providers").querySelector('[aria-checked="true"]')?.dataset.provider||null}function R(){let e=s.catalog?.models.find(a=>a.id===o("agent-model-input").value.trim()),t=e?e.reasoning:s.catalog?.reasoning||[],n=s.pendingReasoning??o("agent-reasoning-input").value,i=e?.default_reasoning?`Default (${e.default_reasoning})`:"Default";o("agent-reasoning-input").replaceChildren(l("option",null,i),...t.map(a=>{let r=l("option",null,a);return r.value=a,r})),o("agent-reasoning-input").firstChild.value="",o("agent-reasoning-input").value=t.includes(n)?n:"",o("agent-reasoning-input").disabled=t.length===0}async function U(e){s.catalog=null,o("agent-models").replaceChildren(),o("agent-catalog-note").textContent="Loading models\u2026",u();try{let t=await b("mac_mcp_panel_state",{models_for:e});if($()!==e)return;s.catalog=t,o("agent-models").replaceChildren(...t.models.map(n=>{let i=l("option");return i.value=n.id,n.label&&(i.label=n.label),i})),o("agent-catalog-note").textContent=t.models.length?t.truncated?`Showing ${c(t.models.length)} of ${c(t.total)} models \u2014 type an exact id for others.`:`${c(t.models.length)} models discovered.`:"No models discovered; the provider default will be used."}catch(t){o("agent-catalog-note").textContent=`Models unavailable: ${t.message||t}`}R(),s.pendingReasoning=null,u()}function A(e,t=!1){p("#agent-providers button").forEach(n=>n.setAttribute("aria-checked",String(n.dataset.provider===e))),t||(o("agent-model-input").value="",o("agent-reasoning-input").value="",s.pendingReasoning=null),U(e)}function B(){let e=s.data?.settings||{},t=e.enabled_providers||[],n=t.includes(e.default_agent?.provider)?e.default_agent.provider:t[0];o("agent-providers").replaceChildren(...t.map(a=>{let r=l("button",null,h[a]||a);return Object.assign(r,{type:"button"}),r.dataset.provider=a,r.setAttribute("role","radio"),r.addEventListener("click",()=>{$()!==a&&A(a)}),r}));let i=n===e.default_agent?.provider;o("agent-model-input").value=i&&e.default_agent?.model||"",s.pendingReasoning=i&&e.default_agent?.reasoning||"",o("agent-reasoning-input").replaceChildren(),s.editing=!0,o("agent-view").hidden=!0,o("agent-form").hidden=!1,o("agent-edit").hidden=!0,A(n,!0)}function E(){s.editing=!1,s.catalog=null,o("agent-form").hidden=!0,o("agent-view").hidden=!1,s.data&&O(s.data)}o("agent-edit").addEventListener("click",B);o("agent-cancel").addEventListener("click",E);o("agent-model-input").addEventListener("input",R);o("agent-form").addEventListener("submit",async e=>{if(e.preventDefault(),s.busy||!s.connected||!s.catalog)return;let t=$(),n=o("agent-model-input").value.trim();if(n&&!s.catalog.truncated&&!s.catalog.models.some(a=>a.id===n)){f("Pick a model from the discovered list, or leave it empty.",!0);return}let i=o("agent-reasoning-input").value;s.busy=!0,u();try{await b("mac_mcp_panel_setting",{name:"default_agent",value:{provider:t,model:n||null,reasoning:i||null}}),E(),x(await b("mac_mcp_panel_state")),f(`Default agent set to ${h[t]||t}${n?` \xB7 ${n}`:""}.`)}catch(a){f(`Not saved: ${a.message||a}`,!0)}finally{s.busy=!1,u()}});C.connect().then(()=>{w("online"),setTimeout(()=>{s.data||D()},1500)}).catch(e=>{w("offline"),f(`MCP Apps bridge unavailable: ${e.message||e}`,!0)});u();})();
+</script>
+</body>
+</html>

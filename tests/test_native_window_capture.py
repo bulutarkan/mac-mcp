@@ -252,5 +252,60 @@ class NativeObserveWindowCaptureRoutingTests(unittest.TestCase):
         capture_screen.assert_called_once()
 
 
+
+
+class HelperWarmupDeadlineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = patch.dict("os.environ", {"MAC_MCP_WINDOW_CAPTURE_CACHE_DIR": self.tmp.name})
+        env.start()
+        self.addCleanup(env.stop)
+        native_window_capture._HELPER_BUILDS.clear()
+        native_window_capture._HELPER_BUILD_ERRORS.clear()
+
+    def test_cold_build_cannot_outlast_the_caller_deadline(self) -> None:
+        import threading
+        import time
+        from pathlib import Path
+
+        builds = []
+        release = threading.Event()
+
+        def slow_build(_swiftc, _target, _source, binary: Path, _cache):
+            builds.append(binary)
+            release.wait(5)
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            binary.write_text("#!/bin/sh\necho '[]'\n", encoding="utf-8")
+            binary.chmod(0o700)
+            return None
+
+        with patch.object(native_window_capture, "_build_helper", side_effect=slow_build):
+            started = time.monotonic()
+            first = native_window_capture._window_rows(timeout_s=0.3)
+            second = native_window_capture._window_rows(timeout_s=0.2)
+            elapsed = time.monotonic() - started
+            self.assertEqual((None, "WINDOW_CAPTURE_HELPER_WARMING"), first)
+            self.assertEqual((None, "WINDOW_CAPTURE_HELPER_WARMING"), second)
+            self.assertLess(elapsed, 1.5)
+            self.assertEqual(1, len(builds))
+
+            release.set()
+            for _ in range(50):
+                if builds[0].exists() and not native_window_capture._HELPER_BUILDS:
+                    break
+                time.sleep(0.05)
+            self.assertEqual(([], None), native_window_capture._window_rows(timeout_s=2))
+        self.assertEqual(1, len(builds))
+
+    def test_failed_build_is_reported_and_retried_later(self) -> None:
+        with patch.object(native_window_capture, "_build_helper", return_value="WINDOW_CAPTURE_HELPER_BUILD_FAILED") as build:
+            self.assertEqual((None, "WINDOW_CAPTURE_HELPER_BUILD_FAILED"), native_window_capture._window_rows(timeout_s=2))
+            self.assertEqual((None, "WINDOW_CAPTURE_HELPER_BUILD_FAILED"), native_window_capture._window_rows(timeout_s=2))
+        self.assertEqual(2, build.call_count)
+
+
 if __name__ == "__main__":
     unittest.main()
