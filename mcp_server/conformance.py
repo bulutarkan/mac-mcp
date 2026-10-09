@@ -188,7 +188,10 @@ def _activate_tab_always_user_visible() -> bool:
 
 
 def _batch_action_limit_present() -> bool:
-    source = inspect.getsource(browser_act)
+    # browser_act is a thin frame-aware wrapper; the bound lives in its implementation.
+    from .tools_browser_agent import _browser_act_impl
+
+    source = inspect.getsource(_browser_act_impl)
     return "_MAX_ACTIONS" in source and "non-empty list" in source
 
 

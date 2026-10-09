@@ -173,7 +173,9 @@ BROWSER_ACT_DESCRIPTION = (
     "text; answer it only with {type:'dialog', decision:'accept'|'dismiss'} (prompt_text for prompt()). "
     "Canvas apps (observe reports canvas.canvas_heavy): click/double_click/hover with x,y in viewport CSS px from a "
     "visual='viewport' observation (pass its observation_id; a scrolled or resized page is refused as stale_coordinates), "
-    "and key with input_mode='trusted' for real key events (Chrome)."
+    "and key with input_mode='trusted' for real key events (Chrome). "
+    "Cross-origin frames (observe lists them under frames): pass frame='<part of the frame URL>' to browser_observe, "
+    "browser_find and browser_act to work inside that frame with its own element ids (Chrome); results carry frame."
 )
 
 _BROWSER_DO_OUTPUT_BUDGET_BYTES = 8_192
@@ -1524,14 +1526,15 @@ def create_app():
                          tab_handle: Optional[str] = None,
                          scope: ObserveScope = "interactive", max_elements: int = 40,
                          visual: VisualMode = "none", element_id: Optional[str] = None,
-                         previous_observation_id: Optional[str] = None) -> Any:
+                         previous_observation_id: Optional[str] = None,
+                         frame: Optional[str] = None) -> Any:
         return _log(
             audit_logger, "browser_observe",
             lambda: browser_observe(settings, browser=browser, window_index=window_index,
                                     tab_index=tab_index, tab_handle=tab_handle,
                                     scope=scope, max_elements=max_elements,
                                     visual=visual, element_id=element_id,
-                                    previous_observation_id=previous_observation_id),
+                                    previous_observation_id=previous_observation_id, frame=frame),
         )
 
     @mcp.tool(
@@ -1591,7 +1594,7 @@ def create_app():
                             wait_timeout_s: float = 0.0,
                             within: Optional[str] = None,
                             within_element_id: Optional[str] = None,
-                            within_levels: Optional[int] = None) -> Dict[str, Any]:
+                            within_levels: Optional[int] = None, frame: Optional[str] = None) -> Dict[str, Any]:
         return await asyncio.to_thread(
             _log, audit_logger, "browser_find",
             lambda: browser_find(settings, browser=browser, query=query, role=role, text=text,
@@ -1600,7 +1603,7 @@ def create_app():
                                   actionable_only=actionable_only,
                                   wait_timeout_s=wait_timeout_s,
                                   within=within, within_element_id=within_element_id,
-                                  within_levels=within_levels),
+                                  within_levels=within_levels, frame=frame),
         )
 
     @mcp.tool(
@@ -1610,13 +1613,14 @@ def create_app():
     async def _browser_act(browser: str, actions: BrowserActions,
                            observation_id: Optional[str] = None, window_index: int = 1,
                            tab_index: Optional[int] = None, tab_handle: Optional[str] = None,
-                           return_state: ActReturnState = "compact", allow_foreground: bool = False) -> Dict[str, Any]:
+                           return_state: ActReturnState = "compact", allow_foreground: bool = False,
+                           frame: Optional[str] = None) -> Dict[str, Any]:
         return await asyncio.to_thread(
             _log, audit_logger, "browser_act",
             lambda: browser_act(settings, browser=browser, actions=actions,
                                  observation_id=observation_id, window_index=window_index,
                                  tab_index=tab_index, tab_handle=tab_handle,
-                                 return_state=return_state, allow_foreground=allow_foreground),
+                                 return_state=return_state, allow_foreground=allow_foreground, frame=frame),
         )
 
     @mcp.tool(

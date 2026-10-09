@@ -7,7 +7,7 @@ const PORT = Number(CONFIG.port || 0);
 const TOKEN = String(CONFIG.token || '');
 const RECONNECT_MS = Math.max(250, Math.min(Number(CONFIG.reconnect_ms || 1000), 10000));
 // Capabilities the server may rely on; an older companion simply does not list them.
-const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory', 'dialog_session_hold', 'keys'];
+const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory', 'dialog_session_hold', 'keys', 'frames'];
 const MAX_GESTURE_STEPS = 80;
 const DIALOG_TEXT_LIMIT = 300;
 let socket = null;
@@ -163,6 +163,55 @@ function enablePage(target) {
   ]);
 }
 
+async function resolveFrame(target, selector) {
+  // Finds one child frame whose URL contains the selector and returns where to evaluate in it:
+  // a same-process frame's default Runtime context, or a cross-site (out-of-process) frame's session.
+  const needle = String(selector || '').toLowerCase();
+  const contexts = [];
+  const attached = [];
+  const listener = (source, method, params) => {
+    if (!source || source.tabId !== target.tabId) return;
+    if (method === 'Runtime.executionContextCreated' && !source.sessionId) contexts.push(params.context || {});
+    if (method === 'Target.attachedToTarget') attached.push(params || {});
+  };
+  chrome.debugger.onEvent.addListener(listener);
+  let tree = null;
+  try {
+    await debuggerCommand(target, 'Runtime.enable', {});
+    tree = await debuggerCommand(target, 'Page.getFrameTree', {});
+    await debuggerCommand(target, 'Target.setAutoAttach', {autoAttach: true, waitForDebuggerOnStart: false, flatten: true});
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  } finally {
+    chrome.debugger.onEvent.removeListener(listener);
+  }
+  const frames = [];
+  (function walk(node) {
+    if (!node) return;
+    if (node.frame && node.frame.parentId) frames.push({id: node.frame.id, url: String(node.frame.url || '')});
+    (node.childFrames || []).forEach(walk);
+  })(tree && tree.frameTree);
+  const remote = attached.filter((item) => item.targetInfo && item.targetInfo.type === 'iframe')
+    .map((item) => ({sessionId: item.sessionId, url: String(item.targetInfo.url || ''), frameId: item.targetInfo.targetId}));
+  const remoteIds = new Set(remote.map((item) => item.frameId));
+  const candidates = remote.filter((item) => item.url.toLowerCase().includes(needle))
+    .concat(frames.filter((item) => !remoteIds.has(item.id) && item.url.toLowerCase().includes(needle)));
+  if (candidates.length !== 1) {
+    const known = remote.map((item) => item.url).concat(frames.filter((item) => !remoteIds.has(item.id)).map((item) => item.url));
+    const error = new Error(candidates.length ? 'frame_ambiguous' : 'frame_not_found');
+    error.frames = known.slice(0, 10).map((url) => url.slice(0, 200));
+    throw error;
+  }
+  const pick = candidates[0];
+  if (pick.sessionId) return {evalTarget: {tabId: target.tabId, sessionId: pick.sessionId}, url: pick.url, process: 'out_of_process'};
+  const context = contexts.find((ctx) => ctx.auxData && ctx.auxData.frameId === pick.id && ctx.auxData.isDefault);
+  if (!context) {
+    const error = new Error('frame_context_unavailable');
+    error.frames = [pick.url.slice(0, 200)];
+    throw error;
+  }
+  return {evalTarget: target, contextId: context.id, url: pick.url, process: 'same_process'};
+}
+
 function dialogWatcher(tabId) {
   // Resolves when the page shows (or already shows) a native alert/confirm/prompt/beforeunload dialog.
   let listener = null;
@@ -219,9 +268,27 @@ async function handleExecuteJs(message) {
       if (state === 'blocked') { keepSession = true; send(dialogResult(requestId, tabId, known)); return; }
       releaseSession(tabId);
     }
-    const evaluation = debuggerCommand(target, 'Runtime.evaluate', {
-      expression: js, returnByValue: true, awaitPromise: true, userGesture: false
-    }).then((out) => ({out}));
+    let evalTarget = target;
+    const evalParams = {expression: js, returnByValue: true, awaitPromise: true, userGesture: false};
+    let frameInfo = null;
+    if (typeof message.frame === 'string' && message.frame) {
+      try {
+        const resolved = await resolveFrame(target, message.frame);
+        evalTarget = resolved.evalTarget;
+        if (resolved.contextId != null) evalParams.contextId = resolved.contextId;
+        frameInfo = {url: resolved.url.slice(0, 500), process: resolved.process};
+      } catch (error) {
+        const code = String(error && error.message || 'frame_not_found');
+        send({
+          type: 'result', request_id: requestId, ok: false,
+          error: /^frame_/.test(code) ? code : 'frame_resolution_failed',
+          message: /^frame_/.test(code) ? 'No single child frame matches that frame selector.' : code,
+          frames: error && error.frames ? error.frames : []
+        });
+        return;
+      }
+    }
+    const evaluation = debuggerCommand(evalTarget, 'Runtime.evaluate', evalParams).then((out) => ({out}));
     const first = await Promise.race([evaluation, watcher.promise.then((dialog) => ({dialog}))]);
     if (first.dialog) {
       evaluation.catch(() => {});
@@ -240,7 +307,7 @@ async function handleExecuteJs(message) {
     if (value === undefined || value === null) value = '';
     else if (typeof value === 'object') value = JSON.stringify(value);
     else value = String(value);
-    send({type: 'result', request_id: requestId, ok: true, result: value, chrome_tab_id: tabId});
+    send({type: 'result', request_id: requestId, ok: true, result: value, chrome_tab_id: tabId, frame: frameInfo});
   } catch (error) {
     send({type: 'result', request_id: requestId, ok: false, error: 'chrome_debugger_evaluate_failed', message: String(error && error.message || error || 'unknown')});
   } finally {

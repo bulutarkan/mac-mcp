@@ -69,7 +69,7 @@ class HelperInstallOnceTests(unittest.TestCase):
             for index in range(5):
                 target = browser_tabs.TabTarget(**{**TARGET.__dict__, "native_id": str(index)})
                 agent._execute_js_for_target("Safari", js, target, 5)
-        self.assertEqual([("Safari", "2"), ("Safari", "3"), ("Safari", "4")], list(agent._WARM_DOCUMENTS))
+        self.assertEqual([("Safari", "2", ""), ("Safari", "3", ""), ("Safari", "4", "")], list(agent._WARM_DOCUMENTS))
 
     def test_transport_metrics_separate_sent_bytes_and_injections(self) -> None:
         js = agent._light_state_js()

@@ -246,7 +246,7 @@ class ChromeBackgroundBridge:
                     "retryable": error != "browser_dialog_open",
                     "message": str(response.get("message") or "Chrome background browser request failed."),
                 }
-                for key in ("dialog", "steps_done"):
+                for key in ("dialog", "steps_done", "frames"):
                     if key in response:
                         detail[key] = response[key]
                 if error == "browser_dialog_open":
@@ -263,12 +263,14 @@ class ChromeBackgroundBridge:
     def request_open_tab(self, url: str, *, timeout_s: float = 6.0) -> Dict[str, Any]:
         return self._request("open_tab", {"url": str(url)}, timeout_s=timeout_s)
 
-    def request_execute_js(self, chrome_tab_id: str | int, js: str, *, timeout_s: float = 20.0) -> str:
-        response = self._request(
-            "execute_js",
-            {"chrome_tab_id": int(chrome_tab_id), "js": str(js)},
-            timeout_s=timeout_s,
-        )
+    def request_execute_js(
+        self, chrome_tab_id: str | int, js: str, *, timeout_s: float = 20.0, frame: Optional[str] = None,
+    ) -> str:
+        payload: Dict[str, Any] = {"chrome_tab_id": int(chrome_tab_id), "js": str(js)}
+        if frame:
+            self.require("frames")
+            payload["frame"] = str(frame)[:300]
+        response = self._request("execute_js", payload, timeout_s=timeout_s)
         return str(response.get("result") or "")
 
     def request_dispatch_mouse(

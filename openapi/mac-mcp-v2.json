@@ -3085,6 +3085,18 @@
                     "default": null,
                     "title": "Previous Observation Id"
                   },
+                  "frame": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Frame"
+                  },
                   "description": {
                     "type": "string",
                     "minLength": 3,
@@ -3234,6 +3246,18 @@
                     "default": null,
                     "title": "Within Levels"
                   },
+                  "frame": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Frame"
+                  },
                   "description": {
                     "type": "string",
                     "minLength": 3,
@@ -3368,7 +3392,7 @@
                           "type": "string"
                         },
                         "query": {
-                          "description": "Words for the target, e.g. 'Email field', 'Continue'.",
+                          "description": "Target words, e.g. 'Continue'.",
                           "type": "string"
                         },
                         "role": {
@@ -3380,7 +3404,7 @@
                           "type": "string"
                         },
                         "within": {
-                          "description": "Phrase unique to one repeated item.",
+                          "description": "Unique phrase of one item.",
                           "type": "string"
                         },
                         "within_element_id": {
@@ -3395,7 +3419,7 @@
                           "type": "string"
                         },
                         "handoff_id": {
-                          "description": "type/paste: context_handoff id instead of text.",
+                          "description": "context_handoff id instead of text.",
                           "type": "string"
                         },
                         "option": {
@@ -3571,6 +3595,18 @@
                     "default": false,
                     "title": "Allow Foreground",
                     "type": "boolean"
+                  },
+                  "frame": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Frame"
                   },
                   "idempotency_key": {
                     "type": "string",

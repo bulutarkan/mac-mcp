@@ -31,6 +31,8 @@ from .tool_cancellation import cancellable_sleep, cancellation_checkpoint
 from .workspace_arbitration import delegated_agent_identity
 from .workflow_checkpoints import mark_not_executed
 from .tools_browser import (
+    current_frame_scope,
+    frame_scope,
     _execute_js_for_target as _raw_execute_js_for_target,
     _norm_browser,
     _require_stable_handle_for_mutation,
@@ -275,6 +277,8 @@ def _ensure_visual_companion(
     tab_handle: Optional[str] = None,
 ) -> bool:
     """Ensure the optional Visual Companion exists once per live tab document."""
+    if current_frame_scope():
+        return False  # the companion overlay belongs to the top-level page, not a child frame
     b = _norm_browser(browser)
     known = browser_tabs.registry_snapshot().get(str(tab_handle or "")) if tab_handle else None
     if known:
@@ -877,8 +881,9 @@ def _with_binding_only(js: str) -> Optional[str]:
     return "".join(out)
 
 
-def _document_key(browser: str, target: browser_tabs.TabTarget) -> Tuple[str, str]:
-    return (str(browser), str(target.native_id or target.tab_handle or ""))
+def _document_key(browser: str, target: browser_tabs.TabTarget) -> Tuple[str, str, str]:
+    # A child frame is a separate document with its own copy of the helper library.
+    return (str(browser), str(target.native_id or target.tab_handle or ""), current_frame_scope() or "")
 
 
 def _note_transport(sent: int, received: int, injected: bool) -> None:
@@ -1372,12 +1377,21 @@ var canvasHint=(function(){{var vw=innerWidth*innerHeight,best=null,area=0;
   return {{canvas_heavy:true,element_id:__mcpId(best,s),rect:{{x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)}},coverage:Math.round(area/vw*100)/100,
     hint:'Controls are drawn in a canvas: observe with visual=viewport, then browser_act click/hover with x,y (viewport CSS px) and this observation_id; keys with input_mode=trusted.'}};}})();
 var metrics={{screenX:screenX,screenY:screenY,outerWidth:outerWidth,outerHeight:outerHeight,innerWidth:innerWidth,innerHeight:innerHeight,devicePixelRatio:devicePixelRatio}};
+// Child frames: same-origin ones are already walked above; cross-origin ones are named so they are not silently missing.
+var frameList=(function(){{var out=[];Array.from(document.querySelectorAll('iframe,frame')).slice(0,30).forEach(function(f){{
+  if(out.length>=15||!__mcpVisible(f))return;var r=f.getBoundingClientRect(),src=String(f.src||''),same=false;
+  try{{same=!!(f.contentDocument&&f.contentDocument.documentElement);}}catch(e){{same=false;}}
+  var origin='';try{{origin=src?new URL(src,location.href).origin:'';}}catch(e){{}}
+  out.push({{element_id:__mcpId(f,s),origin:origin,src:src.slice(0,160),title:String(f.title||f.name||'').slice(0,80),
+    rect:{{x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)}},same_origin:same,
+    hint:same?undefined:'Cross-origin frame: observe/act inside it with frame=<part of its URL> (Chrome).'}});}});
+  return out.length?out:undefined;}})();
 return __mcpB64({{
   ok:true, observation_id:obs, dom_revision:s.mutationRevision,
   url:location.href,title:document.title,scroll:{{x:scrollX,y:scrollY}},
   viewport:{{w:innerWidth,h:innerHeight}},window_metrics:metrics,
   scope:scope,modal_scope:(function(){{var m=__mcpTopBlockingModal();return m?{{active:true,element_id:__mcpId(m,s),role:__mcpRole(m),text:__mcpText(m).slice(0,120)}}:{{active:false}};}})(),element_count:elements.length,elements:elements,
-  canvas:canvasHint
+  canvas:canvasHint,frames:frameList
 }});
 }})()'''
 
@@ -1528,7 +1542,7 @@ def _format_observation(payload: Dict[str, Any], image_data: Optional[bytes]) ->
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
-def browser_observe(
+def _browser_observe_impl(
     settings: Settings,
     browser: str,
     window_index: int = 1,
@@ -2036,7 +2050,7 @@ return __mcpB64({{ok:true,observation_id:obs,dom_revision:s.mutationRevision,url
 }})()'''
 
 
-def browser_find(
+def _browser_find_impl(
     settings: Settings,
     browser: str,
     query: str,
@@ -2875,6 +2889,10 @@ def _verified_dom_action(
                 "activation_mode": "trusted_requested", "automatic_retry": False,
                 "foreground_fallback": False, "readiness": readiness, "_js_calls": js_calls,
             }
+        if current_frame_scope():
+            return {**{"ok": False, "type": typ, "error": "trusted_input_in_frame_unsupported", "reason_code": "TRUSTED_INPUT_IN_FRAME",
+                "message": "Trusted pointer input uses top-level page coordinates; inside a frame use DOM actions (the default).",
+                "_js_calls": 0}, "element_id": element_id or None, "_js_calls": js_calls}
         if not chrome_background_bridge.is_connected():
             return {
                 "ok": False, "type": typ, "element_id": element_id or None,
@@ -3684,6 +3702,10 @@ def _point_action(
     typ = str(action["type"])
     x, y = float(action["x"]), float(action["y"])
     base: Dict[str, Any] = {"type": typ, "x": x, "y": y}
+    if current_frame_scope():
+        return {**base, **{"ok": False, "type": typ, "error": "trusted_input_in_frame_unsupported", "reason_code": "TRUSTED_INPUT_IN_FRAME",
+                "message": "Trusted pointer input uses top-level page coordinates; inside a frame use DOM actions (the default).",
+                "_js_calls": 0}}
     if _norm_browser(browser) != "Google Chrome":
         return {**base, "ok": False, "error": "point_input_unsupported", "reason_code": "POINT_INPUT_UNSUPPORTED_SAFARI",
                 "message": "Coordinate input needs Chrome with the Mac MCP companion; Safari has no background pointer.",
@@ -3764,6 +3786,10 @@ def _gesture_action(
 ) -> Dict[str, Any]:
     """Trusted pointer gestures (Chrome): hover moves the real pointer; drag presses, moves and releases."""
     base: Dict[str, Any] = {"type": typ, "element_id": work_action.get("element_id")}
+    if current_frame_scope():
+        return {**base, **{"ok": False, "type": typ, "error": "trusted_input_in_frame_unsupported", "reason_code": "TRUSTED_INPUT_IN_FRAME",
+                "message": "Trusted pointer input uses top-level page coordinates; inside a frame use DOM actions (the default).",
+                "_js_calls": 0}}
     if _norm_browser(browser) != "Google Chrome":
         return {**base, "ok": False, "error": "gesture_unsupported", "reason_code": "GESTURE_UNSUPPORTED_SAFARI",
                 "message": "Safari has no background pointer; hover and drag need Chrome with the Mac MCP companion.",
@@ -4375,7 +4401,7 @@ def _tab_loss_detail(exc: HTTPException) -> Optional[Dict[str, Any]]:
     return None
 
 
-def browser_act(
+def _browser_act_impl(
     settings: Settings,
     browser: str,
     actions: List[Dict[str, Any]],
@@ -4422,8 +4448,8 @@ def browser_act(
                 if failed is not None:
                     out.update(error=failed.get("error"), observe_again=True)
                 return out
-            rest = browser_act(settings, b, actions, None, window_index, tab_index, tab_handle,
-                               return_state, allow_foreground)
+            rest = _browser_act_impl(settings, b, actions, None, window_index, tab_index, tab_handle,
+                                     return_state, allow_foreground)
             rest["actions"] = answered + list(rest.get("actions") or [])
             rest["action_count"] = len(rest["actions"])
             rest["mutation_dispatched"] = True
@@ -5030,3 +5056,53 @@ def _browser_act_locked(
         # The last action may itself have closed the tab; the actions still completed.
         response["state_error"] = state_lost["error"]
     return response
+
+
+def _in_frame(frame: Optional[str], call: Callable[[], Any]) -> Any:
+    """Run one browser operation inside a child frame and say which frame answered."""
+    if not str(frame or "").strip():
+        return call()
+    with frame_scope(frame):
+        out = call()
+    if isinstance(out, dict):
+        out["frame"] = {"selector": str(frame).strip(), "url": out.get("url")}
+    return out
+
+
+def browser_observe(settings: Settings, browser: str, window_index: int = 1, tab_index: Optional[int] = None,
+                    tab_handle: Optional[str] = None, scope: str = "interactive",
+                    max_elements: int = _DEFAULT_OBSERVE_ELEMENTS, visual: str = "none",
+                    element_id: Optional[str] = None, previous_observation_id: Optional[str] = None,
+                    frame: Optional[str] = None) -> Any:
+    """Compact DOM observation; frame='<url part>' observes inside that child frame (Chrome)."""
+    if frame and str(visual or "none").lower() != "none":
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {
+            "error": "frame_visual_unsupported",
+            "message": "Visual capture is of the whole page; observe the frame with visual='none'.",
+        })
+    return _in_frame(frame, lambda: _browser_observe_impl(
+        settings, browser, window_index, tab_index, tab_handle, scope, max_elements, visual, element_id,
+        previous_observation_id,
+    ))
+
+
+def browser_find(settings: Settings, browser: str, query: str, role: Optional[str] = None, text: Optional[str] = None,
+                 window_index: int = 1, tab_index: Optional[int] = None, tab_handle: Optional[str] = None,
+                 max_results: int = 5, actionable_only: bool = False, wait_timeout_s: float = 0.0,
+                 within: Optional[str] = None, within_element_id: Optional[str] = None,
+                 within_levels: Optional[int] = None, frame: Optional[str] = None) -> Dict[str, Any]:
+    """Find a rendered target; frame='<url part>' searches inside that child frame (Chrome)."""
+    return _in_frame(frame, lambda: _browser_find_impl(
+        settings, browser, query, role, text, window_index, tab_index, tab_handle, max_results, actionable_only,
+        wait_timeout_s, within, within_element_id, within_levels,
+    ))
+
+
+def browser_act(settings: Settings, browser: str, actions: List[Dict[str, Any]], observation_id: Optional[str] = None,
+                window_index: int = 1, tab_index: Optional[int] = None, tab_handle: Optional[str] = None,
+                return_state: str = "compact", allow_foreground: bool = False,
+                frame: Optional[str] = None) -> Dict[str, Any]:
+    """Batched actions; frame='<url part>' acts inside that child frame with its element ids (Chrome)."""
+    return _in_frame(frame, lambda: _browser_act_impl(
+        settings, browser, actions, observation_id, window_index, tab_index, tab_handle, return_state, allow_foreground,
+    ))

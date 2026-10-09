@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 import uuid
+import contextvars
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -1346,6 +1347,25 @@ end tell'''
             pass
 
 
+# The child frame (URL substring) the current browser operation works inside, if any.
+_FRAME_SCOPE: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("mac_mcp_browser_frame", default=None)
+
+
+@contextmanager
+def frame_scope(frame: Optional[str]) -> Iterator[None]:
+    """Run page scripts of this operation inside one child frame (Chrome companion only)."""
+    value = str(frame or "").strip() or None
+    token = _FRAME_SCOPE.set(value)
+    try:
+        yield
+    finally:
+        _FRAME_SCOPE.reset(token)
+
+
+def current_frame_scope() -> Optional[str]:
+    return _FRAME_SCOPE.get()
+
+
 def _is_debugger_detached_error(exc: HTTPException) -> bool:
     detail = exc.detail if isinstance(exc.detail, dict) else {"message": exc.detail}
     return "Debugger is not attached" in str(detail.get("message") or "")
@@ -1364,6 +1384,15 @@ def _execute_js_for_target(
     timeout_s: int,
 ) -> str:
     global _CHROME_NATIVE_JS_DENIED
+    frame = _FRAME_SCOPE.get()
+    if frame:
+        # Cross-origin frames are reachable only through the companion's debugger frame contexts.
+        if browser != "Google Chrome" or not chrome_background_bridge.is_connected() or not target.native_id:
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "ok": False, "error": "frame_unsupported", "retryable": False,
+                "message": "Working inside a child frame needs Chrome with the Mac MCP companion connected.",
+            })
+        return chrome_background_bridge.request_execute_js(target.native_id, js, timeout_s=timeout_s, frame=frame)
     if browser == "Google Chrome" and chrome_background_bridge.is_connected() and target.native_id:
         try:
             try:
