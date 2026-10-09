@@ -3339,7 +3339,8 @@
                             "key",
                             "keyboard",
                             "shortcut",
-                            "extract"
+                            "extract",
+                            "scan"
                           ],
                           "type": "string"
                         },
@@ -3433,6 +3434,28 @@
                             "type": "string"
                           },
                           "type": "array"
+                        },
+                        "item_selector": {
+                          "description": "scan: CSS selector for one list item (default: list rows/items in the container).",
+                          "type": "string"
+                        },
+                        "key_field": {
+                          "description": "scan: de-duplicate items by text or link.",
+                          "enum": [
+                            "text",
+                            "href"
+                          ],
+                          "type": "string"
+                        },
+                        "max_items": {
+                          "maximum": 500,
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        "max_steps": {
+                          "maximum": 50,
+                          "minimum": 1,
+                          "type": "integer"
                         }
                       },
                       "required": [
@@ -3582,7 +3605,8 @@
                                 "key",
                                 "keyboard",
                                 "shortcut",
-                                "extract"
+                                "extract",
+                                "scan"
                               ],
                               "type": "string"
                             }

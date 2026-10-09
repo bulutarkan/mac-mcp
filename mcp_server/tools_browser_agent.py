@@ -3586,6 +3586,115 @@ def _extract_action(
     return out
 
 
+_SCAN_MAX_ITEMS = 500
+_SCAN_MAX_STEPS = 50
+_SCAN_PAYLOAD_BYTES = 48_000
+
+
+def _scan_step_js(container_id: str, item_selector: str, key_field: str) -> str:
+    """Read the items rendered in a scroll container, then scroll it by most of one screen."""
+    cid, sel, field = json.dumps(container_id), json.dumps(item_selector), json.dumps(key_field)
+    return f"""(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var s=__mcpState(), cid={cid}, sel={sel}, field={field}, box=null, doc=document.scrollingElement||document.documentElement;
+function scrollable(el){{
+  try{{var st=getComputedStyle(el);return /(auto|scroll|overlay)/.test(st.overflowY)&&el.scrollHeight>el.clientHeight+20;}}catch(e){{return false;}}
+}}
+if(cid){{box=__mcpRecoverElement(cid,s);if(!box)return __mcpB64({{ok:false,error:'stale_element',reason_code:'ELEMENT_DETACHED',observe_again:true}});
+  var up=box;while(up&&up!==document.body&&!scrollable(up))up=up.parentElement;if(up&&up!==document.body)box=up;else if(!scrollable(box))box=doc;}}
+else{{var best=null,area=0;document.querySelectorAll('*').forEach(function(el){{if(!scrollable(el))return;var r=el.getBoundingClientRect();
+  var a=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0))*Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));if(a>area){{area=a;best=el;}}}});
+  box=(best&&area>innerWidth*innerHeight*0.15)?best:doc;}}
+var root=(box===doc)?document.body:box, items=[];
+if(sel){{try{{items=Array.from(root.querySelectorAll(sel));}}catch(e){{return __mcpB64({{ok:false,error:'invalid_item_selector'}});}}}}
+if(!items.length)items=Array.from(root.querySelectorAll('[role=listitem],[role=row],[role=article],[role=option],li,tr,article'));
+if(!items.length){{var parent=root;while(parent.children.length===1)parent=parent.children[0];items=Array.from(parent.children);}}
+function clean(v){{return String(v==null?'':v).replace(/\\s+/g,' ').trim();}}
+var out=[];
+for(var i=0;i<items.length&&out.length<400;i++){{var el=items[i],text=clean(el.innerText||el.textContent);if(!text)continue;
+  var link=el.matches('a[href]')?el:el.querySelector('a[href]'),href=link?String(link.href||''):'';
+  var key=field==='href'?href:text.toLowerCase();if(!key)continue;out.push({{key:key.slice(0,300),text:text.slice(0,200),href:href.slice(0,500)}});}}
+var top=(box===doc)?scrollY:box.scrollTop, height=(box===doc)?doc.scrollHeight:box.scrollHeight, view=(box===doc)?innerHeight:box.clientHeight;
+var atEnd=top+view>=height-2;
+if(!atEnd){{if(box===doc)scrollBy(0,Math.round(view*0.85));else box.scrollTop=top+Math.round(view*0.85);}}
+return __mcpB64({{ok:true,items:out,at_end:atEnd,container:{{tag:(box===doc)?'document':box.tagName.toLowerCase(),scroll_top:Math.round(top),scroll_height:Math.round(height),viewport:Math.round(view)}}}});
+}})()"""
+
+
+def _scan_action(
+    settings: Settings,
+    browser: str,
+    action: Dict[str, Any],
+    window_index: int,
+    tab_index: Optional[int],
+    tab_handle: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Collect a long or virtualized list by scrolling its container in bounded steps.
+
+    Each step reads the items currently rendered and scrolls by most of one
+    screen; items are de-duplicated by text (or key_field='href'). It stops at
+    the end of the list, after two steps with nothing new (loading stalled),
+    or at max_items, max_steps, timeout_s or the payload budget, and says which.
+    """
+    max_items = max(1, min(int(action.get("max_items", 100)), _SCAN_MAX_ITEMS))
+    max_steps = max(1, min(int(action.get("max_steps", 15)), _SCAN_MAX_STEPS))
+    timeout_s = max(1.0, min(float(action.get("timeout_s", 20)), 60.0))
+    settle_s = max(0.1, min(float(action.get("settle_ms", 400)) / 1000.0, 3.0))
+    key_field = "href" if str(action.get("key_field") or "").lower() == "href" else "text"
+    selector = str(action.get("item_selector") or "")[:300]
+    started = time.perf_counter()
+    seen: Dict[str, Dict[str, Any]] = {}
+    stalls = steps = used = 0
+    container: Dict[str, Any] = {}
+    stopped = ""
+    while not stopped:
+        cancellation_checkpoint()
+        step = _run_json_js(
+            settings, browser, _scan_step_js(str(action.get("element_id") or ""), selector, key_field),
+            window_index, tab_index, tab_handle,
+        )
+        steps += 1
+        if not step.get("ok"):
+            return {"type": "scan", **step, "items": [seen[k] for k in seen], "steps": steps, "_js_calls": steps}
+        container = step.get("container") or container
+        new = 0
+        for item in step.get("items") or []:
+            key = str(item.get("key") or "")
+            if not key or key in seen:
+                continue
+            record = {"text": item.get("text") or ""}
+            if item.get("href"):
+                record["href"] = item["href"]
+            used += len(json.dumps(record, ensure_ascii=False))
+            seen[key] = record
+            new += 1
+            if len(seen) >= max_items:
+                stopped = "max_items"
+                break
+            if used >= _SCAN_PAYLOAD_BYTES:
+                stopped = "payload_budget"
+                break
+        stalls = 0 if new else stalls + 1
+        if stopped:
+            break
+        if step.get("at_end") and not new:
+            stopped = "end_of_list"
+        elif stalls >= 2:
+            stopped = "no_new_items"
+        elif steps >= max_steps:
+            stopped = "max_steps"
+        elif time.perf_counter() - started >= timeout_s:
+            stopped = "timeout"
+        else:
+            cancellable_sleep(settle_s)
+    return {
+        "ok": True, "type": "scan", "items": list(seen.values()), "count": len(seen), "stopped": stopped,
+        "complete": stopped == "end_of_list", "steps": steps, "key_field": key_field, "container": container,
+        "duration_ms": int((time.perf_counter() - started) * 1000), "_js_calls": steps,
+    }
+
+
 def _wait_action_polling(
     settings: Settings,
     browser: str,
@@ -3932,7 +4041,7 @@ def _has_locator(action: Dict[str, Any]) -> bool:
     return any(action.get(key) for key in _LOCATOR_KEYS)
 _ACT_TYPES = (
     "click", "double_click", "type", "type_text", "paste", "select", "scroll", "focus",
-    "wait", "key", "keyboard", "shortcut", "extract",
+    "wait", "key", "keyboard", "shortcut", "extract", "scan",
 )
 # Agents often name the action kind "action" instead of "type"; accept it.
 _ACT_TYPE_ALIASES = ("action", "kind", "op")
@@ -4248,13 +4357,15 @@ def _browser_act_locked(
             in_flight = []
             resolved_target: Optional[Dict[str, Any]] = None
             work_action = dict(action)
-            if typ not in {"wait", "key", "keyboard", "shortcut", "extract"}:
+            if typ not in {"wait", "key", "keyboard", "shortcut", "extract", "scan"} or (
+                typ == "scan" and not action.get("element_id") and _has_locator(action)
+            ):
                 work_action, resolved_target = resolve_target(action)
                 if isinstance(resolved_target, dict) and resolved_target.get("ok") is False:
                     results.append({"type": typ, **resolved_target})
                     break
 
-            if typ in {"wait", "key", "keyboard", "shortcut", "select", "extract", "click", "double_click", "type", "type_text", "paste"}:
+            if typ in {"wait", "key", "keyboard", "shortcut", "select", "extract", "scan", "click", "double_click", "type", "type_text", "paste"}:
                 if not flush_pending():
                     break
                 in_flight = [typ]
@@ -4316,6 +4427,15 @@ def _browser_act_locked(
                     if not action_result.get("ok"):
                         break
                     current_observation_id = None
+                elif typ == "scan":
+                    scan_result = _scan_action(
+                        settings, browser, work_action, window_index, tab_index, tab_handle,
+                    )
+                    internal_js_calls += int(scan_result.pop("_js_calls", 0))
+                    results.append(scan_result)
+                    current_observation_id = None
+                    if not scan_result.get("ok"):
+                        break
                 elif typ == "extract":
                     extract_result = _extract_action(
                         settings, browser, action, window_index, tab_index, tab_handle,

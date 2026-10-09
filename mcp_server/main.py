@@ -161,7 +161,10 @@ BROWSER_ACT_DESCRIPTION = (
     "WITHIN_ANCHOR_AMBIGUOUS instead of guessing. Reply flows fit one call: click Reply within X -> type into role=textbox within X "
     "-> click the submit control within X with role=button (a same-named link may be a bookmark) -> wait for the posted text. "
     "A click that opens a popup or target=_blank tab: follow it with wait for='new_tab' (optional url_contains); it returns "
-    "the new tab_handle without activating it, or ambiguous_new_tabs / NO_NEW_TAB."
+    "the new tab_handle without activating it, or ambiguous_new_tabs / NO_NEW_TAB. "
+    "Long or virtualized lists (feeds, results, virtual tables): one {type:'scan'} action scrolls the list's container "
+    "(element_id/query, or the largest scrollable area) in bounded steps and returns de-duplicated items "
+    "(key_field text|href, item_selector optional) with stopped=end_of_list|no_new_items|max_items|max_steps|timeout|payload_budget."
 )
 
 _BROWSER_DO_OUTPUT_BUDGET_BYTES = 8_192
