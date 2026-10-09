@@ -180,6 +180,10 @@ class CompanionSourceTests(unittest.TestCase):
         self.assertIn("openDialogs.get(tabId)", source)
         self.assertIn("DIALOG_PROBE_MS", source)
         self.assertIn("function enablePage", source)
+        # Only the session that saw the dialog can answer it: it is held, not detached, until then.
+        self.assertIn("holdSession(tabId, first.dialog)", source)
+        self.assertIn("if (heldSessions.has(target.tabId)) return Promise.resolve();", source)
+        self.assertIn("chrome.tabs.onRemoved.addListener((tabId) => releaseSession(tabId))", source)
 
     def test_draggable_elements_are_actionable_targets(self) -> None:
         self.assertIn("getAttribute('draggable')==='true'", agent._bootstrap_functions_source())

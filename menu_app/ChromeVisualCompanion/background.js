@@ -7,7 +7,7 @@ const PORT = Number(CONFIG.port || 0);
 const TOKEN = String(CONFIG.token || '');
 const RECONNECT_MS = Math.max(250, Math.min(Number(CONFIG.reconnect_ms || 1000), 10000));
 // Capabilities the server may rely on; an older companion simply does not list them.
-const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory'];
+const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory', 'dialog_session_hold'];
 const MAX_GESTURE_STEPS = 80;
 const DIALOG_TEXT_LIMIT = 300;
 let socket = null;
@@ -100,6 +100,8 @@ function debuggerAttach(target) {
 }
 
 function debuggerDetach(target) {
+  // A session held for an unanswered dialog stays; detaching it would lose the dialog.
+  if (heldSessions.has(target.tabId)) return Promise.resolve();
   return new Promise((resolve) => {
     // A tab showing a native dialog can hold a detach; never let that block the next request.
     const timer = setTimeout(resolve, 1500);
@@ -112,7 +114,10 @@ function debuggerDetach(target) {
   });
 }
 
-chrome.debugger.onDetach.addListener((source) => { if (source && source.tabId != null) ourSessions.delete(source.tabId); });
+chrome.debugger.onDetach.addListener((source) => {
+  if (source && source.tabId != null) { ourSessions.delete(source.tabId); releaseSession(source.tabId); }
+});
+chrome.tabs.onRemoved.addListener((tabId) => releaseSession(tabId));
 
 function debuggerCommand(target, method, params) {
   return new Promise((resolve, reject) => {
@@ -128,6 +133,27 @@ function debuggerCommand(target, method, params) {
 // new session, so later calls probe briefly instead of hanging behind the dialog.
 const openDialogs = new Map();
 const DIALOG_PROBE_MS = 700;
+// Only the debugger session that saw a dialog open can answer it, so that session stays
+// attached until the dialog is answered, the tab goes away, or this cap passes.
+const DIALOG_SESSION_CAP_MS = 30 * 60 * 1000;
+const heldSessions = new Map();
+
+function holdSession(tabId, params) {
+  openDialogs.set(tabId, params);
+  if (heldSessions.has(tabId)) return;
+  heldSessions.set(tabId, setTimeout(() => {
+    heldSessions.delete(tabId);
+    openDialogs.delete(tabId);
+    void debuggerDetach({tabId});
+  }, DIALOG_SESSION_CAP_MS));
+}
+
+function releaseSession(tabId) {
+  const timer = heldSessions.get(tabId);
+  if (timer) clearTimeout(timer);
+  heldSessions.delete(tabId);
+  openDialogs.delete(tabId);
+}
 
 function enablePage(target) {
   // Bounded: a page held by a dialog must not stall the request before it can be reported.
@@ -172,6 +198,7 @@ async function handleExecuteJs(message) {
   }
   const target = {tabId};
   let attached = false;
+  let keepSession = false;
   const watcher = dialogWatcher(tabId);
   try {
     const tab = await chrome.tabs.get(tabId);
@@ -189,8 +216,8 @@ async function handleExecuteJs(message) {
         watcher.promise.then(() => 'blocked'),
         new Promise((resolve) => setTimeout(() => resolve('blocked'), DIALOG_PROBE_MS))
       ]);
-      if (state === 'blocked') { send(dialogResult(requestId, tabId, known)); return; }
-      openDialogs.delete(tabId);
+      if (state === 'blocked') { keepSession = true; send(dialogResult(requestId, tabId, known)); return; }
+      releaseSession(tabId);
     }
     const evaluation = debuggerCommand(target, 'Runtime.evaluate', {
       expression: js, returnByValue: true, awaitPromise: true, userGesture: false
@@ -198,7 +225,8 @@ async function handleExecuteJs(message) {
     const first = await Promise.race([evaluation, watcher.promise.then((dialog) => ({dialog}))]);
     if (first.dialog) {
       evaluation.catch(() => {});
-      openDialogs.set(tabId, first.dialog);
+      keepSession = true;
+      holdSession(tabId, first.dialog);
       send(dialogResult(requestId, tabId, first.dialog));
       return;
     }
@@ -217,7 +245,7 @@ async function handleExecuteJs(message) {
     send({type: 'result', request_id: requestId, ok: false, error: 'chrome_debugger_evaluate_failed', message: String(error && error.message || error || 'unknown')});
   } finally {
     watcher.stop();
-    if (attached) { try { await debuggerDetach(target); } catch (_) {} }
+    if (attached && !keepSession) { try { await debuggerDetach(target); } catch (_) {} }
   }
 }
 
@@ -242,7 +270,7 @@ async function handleDialog(message) {
     if (typeof message.prompt_text === 'string') params.promptText = message.prompt_text.slice(0, 2000);
     await debuggerCommand(target, 'Page.handleJavaScriptDialog', params);
     const answered = seen || openDialogs.get(tabId) || null;
-    openDialogs.delete(tabId);
+    releaseSession(tabId);
     send({
       type: 'result', request_id: requestId, ok: true, chrome_tab_id: tabId, accepted: message.accept,
       dialog: answered ? {
@@ -252,7 +280,7 @@ async function handleDialog(message) {
     });
   } catch (error) {
     const text = String(error && error.message || error || 'unknown');
-    if (/no dialog/i.test(text)) openDialogs.delete(tabId);
+    if (/no dialog/i.test(text)) releaseSession(tabId);
     send({
       type: 'result', request_id: requestId, ok: false,
       error: /no dialog/i.test(text) ? 'no_dialog_open' : 'chrome_dialog_failed', message: text
