@@ -56,11 +56,16 @@ class DescribeTests(unittest.TestCase):
 
     def test_tab_guard_refusals_are_not_executed(self) -> None:
         for code, retry in (("tab_rebind_required", "observe_again"), ("tab_busy", "safe_retry"),
-                            ("tab_owned_by_other_agent", "never_retry")):
+                            ("tab_owned_by_other_agent", "safe_retry")):
             with self.subTest(code=code):
                 contract = error_contract.describe(HTTPException(409, {"error": code}), tool="browser_close_tab")
-                self.assertEqual(("preflight" if code != "tab_owned_by_other_agent" else "policy", "not_executed", retry),
+                self.assertEqual(("preflight", "not_executed", retry),
                                  (contract["stage"], contract["outcome"], contract["retry"]))
+        # Seen live: the guard says when to retry, and the contract carries it.
+        owned = error_contract.describe(HTTPException(409, {
+            "error": "tab_owned_by_other_agent", "retryable": True, "retry_after_ms": 1000,
+        }), tool="browser_close_tab")
+        self.assertEqual(1000, owned["retry_after_ms"])
 
     def test_annotate_and_parse_round_trip(self) -> None:
         contract = error_contract.describe(HTTPException(404, "File not found"), tool="read_file", mutating=False)

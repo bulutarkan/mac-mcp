@@ -69,7 +69,8 @@ REGISTRY: Dict[str, ErrorSpec] = {
     "stale_tab_lease": ErrorSpec("preflight", "not_executed", "observe_again", 409),
     "unknown_tab_handle": ErrorSpec("preflight", "not_executed", "observe_again", 404),
     "tab_busy": ErrorSpec("preflight", "not_executed", "safe_retry", 409),
-    "tab_owned_by_other_agent": ErrorSpec("policy", "not_executed", "never_retry", 409),
+    # Another agent holds the tab's lease; it ends when that agent finishes or the lease expires.
+    "tab_owned_by_other_agent": ErrorSpec("preflight", "not_executed", "safe_retry", 409),
     "stable_tab_handle_required": _VALIDATION,
     "tab_target_required": _VALIDATION,
     "provider_incompatible": ErrorSpec("preflight", "not_executed", "never_retry", 409),
@@ -173,6 +174,10 @@ def describe(exc: BaseException, *, tool: Optional[str] = None, mutating: bool =
         "code": code, "stage": spec.stage, "outcome": outcome, "retry": retry,
         "http_status": status or spec.http_status, "message": _message(http or exc)[:500],
     }
+    if http is not None and isinstance(http.detail, dict):
+        delay = http.detail.get("retry_after_ms")
+        if isinstance(delay, int) and delay >= 0 and retry == "safe_retry":
+            contract["retry_after_ms"] = delay
     if tool:
         contract["tool"] = tool
     return contract
