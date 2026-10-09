@@ -26,6 +26,8 @@ from .host_guard import HostGuard, extra_hosts_from_env
 from .public_endpoint import resolve_public_endpoint
 from .security import BASE_DIR, AuthFailureLimiter, _effective_bind_host, _loopback_host, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
 from .observability import ObservedFastMCP, TelemetryManager, current_security_session
+from .tool_summaries import ADVANCED_BROWSER_TOOLS, CORE_TOOL_NAMES, CORE_TOOL_SUMMARIES
+from . import tool_discovery
 from mcp.server.fastmcp.exceptions import ToolError
 from .policy import (
     PROFILES, current_policy_context, declared_risk, environment_policy_context, reset_policy_context,
@@ -110,6 +112,9 @@ MCP_AGENT_INSTRUCTIONS = (
     "For form filling and repetitive browser interactions, batch independent actions; never field-by-field unless dependencies require it. "
     "Split browser action groups when an earlier action materially changes later controls, stale-target or human-takeover risk requires re-observation, "
     "or a consequential step needs a separate verification boundary. "
+    "Browser routes: interactive work on a page is browser_observe -> one batched browser_act -> verify; a bounded one-shot "
+    "workflow (open a URL, optionally act, extract fields, optionally close) is a single browser_do. Selector and coordinate "
+    "browser tools are advanced compatibility tools reached through tool_discover; use them only when browser_act cannot. "
     "Browser tabs: pass the tab_handle from browser_list_tabs or browser_do on every browser call. "
     "browser_act and browser_do resolve query/role/within targets themselves; use browser_find only to read, never as a step before acting. "
     "When every item repeats the same controls (a Reply under each comment, a button on each card), do not browser_find each control: "
@@ -1543,8 +1548,10 @@ def create_app():
     @mcp.tool(
         name="browser_do",
         description=(
-            "Preferred one-call browser transaction. For research use extract=['price','cancellation','parking','rating'] "
-            "for compact semantic reads. Leave return_state='none' normally; debug=true can expose raw/full state. "
+            "One-shot browser workflow in one call: open a URL (or reuse tab_handle) -> wait -> optional actions -> extract -> "
+            "optional close_after. For research use extract=['price','cancellation','parking','rating'] for compact semantic reads. "
+            "For interactive, multi-step work on a page use browser_observe -> batched browser_act -> verify instead. "
+            "Leave return_state='none' normally; debug=true can expose raw/full state. "
             "Existing actions and selector-based extract remain supported."
         ),
     )
@@ -2204,33 +2211,47 @@ def create_app():
 
     @mcp.tool(
         name="tool_discover",
-        description="Find less-common Mac MCP capabilities allowed by the active permission profile and delegated scope. Returns a small schema summary; include_schema=true adds the full description and input schema.",
+        description=(
+            "Find which Mac MCP tool to use, including less-common ones, among those the active permission profile and delegated "
+            "scope allow. Query in plain words ('read several files', 'run long command'); results are ranked with a reason, a "
+            "complete short description, required fields and parameter bounds. has_more + next_cursor page the rest; "
+            "include_schema=true adds the full description and input schema."
+        ),
     )
-    async def _tool_discover(query: str = "", limit: int = 8, include_schema: bool = False) -> Dict[str, Any]:
-        q = str(query or "").strip().lower()
-        limit = max(1, min(int(limit), 100))
+    async def _tool_discover(query: str = "", limit: int = tool_discovery.DEFAULT_LIMIT, include_schema: bool = False,
+                             cursor: Optional[str] = None) -> Dict[str, Any]:
+        limit = max(1, min(int(limit), tool_discovery.MAX_LIMIT))
+        try:
+            offset = tool_discovery.decode_cursor(cursor, query)
+        except tool_discovery.CursorError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        infos = {
+            info.name: info for info in await mcp.list_available_tools(compact=False)
+            if info.name not in {"tool_discover", "tool_invoke"}
+        }
+        ranked = tool_discovery.rank(
+            ((name, info.description or "") for name, info in infos.items()), query,
+            core=CORE_TOOL_NAMES, demoted=ADVANCED_BROWSER_TOOLS,
+        )
+        page = ranked[offset: offset + limit]
         matches = []
-        for info in await mcp.list_available_tools(compact=False):
-            if info.name in {"tool_discover", "tool_invoke"}:
-                continue
-            hay = f"{info.name} {info.description or ''}".lower()
-            if q and all(token not in hay for token in q.split()):
-                continue
+        for match in page:
+            info = infos[match.name]
             params = _tool_input_schema(info)
             properties = params.get("properties") or {}
             full_description = info.description or ""
+            short, truncated = tool_discovery.short_description(full_description, CORE_TOOL_SUMMARIES.get(info.name))
             availability = mcp.effective_tool_availability(info.name)
             risk = declared_risk(info.name)
             profile = PROFILES.get(str(availability.get("profile") or ""))
             item = {
                 "name": info.name,
                 # include_schema asks for the whole contract, so keep the full text.
-                "description": full_description if include_schema else full_description[:180],
-                "description_truncated": not include_schema and len(full_description) > 180,
+                "description": full_description if include_schema else short,
+                "description_truncated": not include_schema and truncated,
                 "required": params.get("required") or [],
                 "parameters": {
-                    name: {"type": spec.get("type"), "default": spec.get("default")}
-                    for name, spec in properties.items()
+                    name: tool_discovery.parameter_summary(spec) for name, spec in properties.items()
                 },
                 "policy": {
                     "profile": availability.get("profile"),
@@ -2250,12 +2271,22 @@ def create_app():
                     ),
                 },
             }
+            if str(query or "").strip():
+                item["score"] = round(match.score, 1)
+                item["why"] = "; ".join(match.reasons) or "related words"
+            preferred = ADVANCED_BROWSER_TOOLS.get(info.name)
+            if preferred:
+                item["tier"] = "advanced_compat"
+                item["prefer"] = preferred
             if include_schema:
                 item["input_schema"] = params
             matches.append(item)
-            if len(matches) >= limit:
-                break
-        return {"ok": True, "query": query, "count": len(matches), "tools": matches}
+        has_more = offset + len(page) < len(ranked)
+        return {
+            "ok": True, "query": query, "count": len(matches), "total": len(ranked), "has_more": has_more,
+            "next_cursor": tool_discovery.encode_cursor(query, offset + len(page)) if has_more else None,
+            "tools": matches,
+        }
 
     @mcp.tool(
         name="tool_invoke",

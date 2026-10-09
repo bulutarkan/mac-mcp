@@ -25,6 +25,20 @@ CORE_TOOL_NAMES = frozenset({
     "tool_discover", "tool_invoke",
 })
 
+# Low-level browser primitives kept registered for compatibility. They stay out
+# of the default catalog; tool_discover labels them and names the tool to prefer.
+ADVANCED_BROWSER_TOOLS: Dict[str, str] = {
+    "browser_click_selector": "browser_act",
+    "browser_type_selector": "browser_act",
+    "browser_wait_for_selector": "browser_act",
+    "browser_scroll": "browser_act",
+    "browser_press_key": "browser_act",
+    "browser_coordinate_click": "browser_act",
+    "browser_get_html": "browser_observe",
+    "browser_get_snapshot": "browser_observe",
+    "browser_open_url": "browser_do",
+}
+
 CORE_TOOL_SUMMARIES: Dict[str, str] = {
     "run_command": (
         "Run a short shell command in zsh and wait for it (full access unless scoped); long builds or servers belong in "
@@ -87,12 +101,16 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "Custom dropdowns: select. Targets: query/role/text_match +intent/within, no find first. Split only for dependencies."
     ),
     "browser_do": (
-        "Preferred one-call browser transaction: open/act/extract in one call, e.g. extract=['price','rating'] for compact reads. "
-        "Leave return_state='none' normally; debug=true exposes raw state."
+        "One-shot workflow: open URL -> wait -> optional actions -> extract -> optional close_after, e.g. "
+        "extract=['price','rating']. Interactive multi-step page work: observe -> browser_act instead."
     ),
     "browser_upload_artifact": (
         "Select a registered artifact (artifact_id + matching path) into an input[type=file] and verify it. Selects only, "
         "never submits the form; Safari needs foreground capability and fails closed rather than stealing focus."
+    ),
+    "tool_discover": (
+        "Find which tool to use, including less-common ones the profile allows: plain-word query, ranked results with why, "
+        "short description, required fields and bounds; next_cursor pages more; include_schema=true: full schema."
     ),
     "ask_user": (
         "Ask the local user a question in a native macOS dialog and return their typed answer; skip or timeout returns "
