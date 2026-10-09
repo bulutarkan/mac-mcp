@@ -344,6 +344,9 @@ struct MenuBarView: View {
                     } else if let duration = agent.durationMS {
                         Text(compactDuration(duration)).font(.caption2).foregroundStyle(.tertiary)
                     }
+                    if agent.isActive {
+                        agentStopButton(agent)
+                    }
                 }
 
                 HStack(spacing: 6) {
@@ -403,6 +406,26 @@ struct MenuBarView: View {
                 }
             }
         }.padding(.vertical, 5)
+    }
+
+    @ViewBuilder
+    private func agentStopButton(_ agent: AgentInfo) -> some View {
+        if state.cancellingAgentIDs.contains(agent.agentID) {
+            ProgressView().controlSize(.mini).frame(width: 16, height: 16)
+                .accessibilityLabel("Stopping \(agent.title ?? "agent")")
+        } else {
+            Button { Task { await state.cancelAgent(agent) } } label: {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16, height: 16)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Stop this agent")
+            .accessibilityLabel("Stop \(agent.title ?? "agent")")
+        }
     }
 
     private var activityCard: some View {

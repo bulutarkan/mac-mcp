@@ -55,7 +55,7 @@ from .steering import (
     SteeringIdempotencyExpired,
     SteeringManager,
 )
-from .tools_agents import agent_catalog, dashboard_team_summary, list_agents, provider_overview
+from .tools_agents import agent_action, agent_catalog, dashboard_team_summary, list_agents, provider_overview
 from .tools_browser import browser_activate_tab
 from .version import __version__
 
@@ -712,6 +712,31 @@ def create_dashboard_routes(
             return JSONResponse({"ok": False, "error": str(sanitize_value(exc))}, status_code=500)
         return JSONResponse({"ok": True, "tool_usage_rows": tool_rows, "provider_usage_rows": provider_rows})
 
+    async def agent_cancel(request: Request) -> Response:
+        """The owner stops a delegated agent from the app or dashboard (recorded as cancelled by the user)."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            body = {}
+        agent_id = str((body or {}).get("agent_id") or "").strip() if isinstance(body, dict) else ""
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", agent_id):
+            return JSONResponse({"ok": False, "error": "invalid_agent_id"}, status_code=400)
+        try:
+            result = await asyncio.to_thread(
+                agent_action, settings, action="cancel", agent_id=agent_id, requested_by="user",
+            )
+        except HTTPException as exc:
+            return JSONResponse({"ok": False, "error": sanitize_value(exc.detail)}, status_code=exc.status_code)
+        agent_cache["data"] = None  # the next list shows the new state
+        cancellation = result.get("cancellation") or {}
+        return JSONResponse({
+            "ok": True, "agent_id": agent_id, "status": result.get("status"),
+            "cancellation": cancellation, "message": result.get("message") or cancellation.get("message"),
+        })
+
     async def launcher_recipes(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -1086,6 +1111,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/usage", usage, methods=["GET"]),
         Route("/dashboard/api/usage/settings", usage_settings, methods=["POST"]),
         Route("/dashboard/api/usage/clear", usage_clear, methods=["POST"]),
+        Route("/dashboard/api/agents/cancel", agent_cancel, methods=["POST"]),
         Route("/dashboard/api/memory", memory_view, methods=["GET"]),
         Route("/dashboard/api/memory/export", memory_export, methods=["GET"]),
         Route("/dashboard/api/memory/clear", memory_clear_route, methods=["POST"]),

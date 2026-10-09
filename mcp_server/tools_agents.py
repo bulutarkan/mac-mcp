@@ -3886,6 +3886,7 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "attempt": meta.get("attempt", 1),
         "exit_code": meta.get("exit_code"),
         "note": meta.get("note"),
+        "cancellation": _cancellation_public(meta),
         "usage": usage,
         "output_tokens": usage.get("output") if usage else None,
         "result_contract_version": meta.get("result_contract_version"),
@@ -3900,6 +3901,150 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     }
     public.update(workflow_public_state(agent_id))
     return public
+
+
+_CANCEL_GRACE_S = 3.0
+_CANCEL_KILL_WAIT_S = 2.0
+_CANCEL_REQUESTERS = {"user": "the user (Mac MCP app or dashboard)", "orchestrator": "the orchestrating agent"}
+
+
+def _process_state(pid: int) -> tuple[Optional[str], Optional[float]]:
+    """(ps state, start time) of a process, or (None, None) when ps cannot tell."""
+    try:
+        raw = subprocess.run(
+            ["/bin/ps", "-p", str(int(pid)), "-o", "stat=,lstart="], capture_output=True, text=True, timeout=3,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None, None
+    if not raw:
+        return None, None
+    state, _, started = raw.partition(" ")
+    try:
+        return state, time.mktime(time.strptime(" ".join(started.split()), "%a %b %d %H:%M:%S %Y"))
+    except ValueError:
+        return state, None
+
+
+def _owned_process_alive(pid: Optional[int], started_at: Optional[float]) -> bool:
+    """True while this agent's process runs; a zombie or a PID reused by a later process does not count."""
+    if not pid or not _is_pid_alive(pid):
+        return False
+    state, began = _process_state(int(pid))
+    if state is None:
+        return _is_pid_alive(pid)
+    if state.startswith("Z"):
+        return False
+    if started_at and began is not None:
+        # Our process started before we recorded it (ps reports whole seconds).
+        return began <= float(started_at) + 5.0
+    return True
+
+
+def _live_agent_processes(meta: Dict[str, Any]) -> List[str]:
+    return [
+        name for name in ("provider", "worker")
+        if _owned_process_alive(meta.get(f"{name}_pid"), meta.get(f"{name}_started_at"))
+    ]
+
+
+def _signal_agent_processes(meta: Dict[str, Any], sig: int, names: List[str]) -> None:
+    for name in names:
+        _kill_group(meta.get(f"{name}_pid"), sig)
+
+
+def _stop_agent_processes(agent_id: str, meta: Dict[str, Any], sig_name: str) -> List[str]:
+    """Signal provider then worker, escalate to KILL after a grace period; return what still runs."""
+    allowed = {"TERM": signal_module.SIGTERM, "KILL": signal_module.SIGKILL, "INT": signal_module.SIGINT}
+    provider_signal = allowed[sig_name]
+    if meta.get("provider") == "chatgpt" and sig_name == "TERM":
+        provider_signal = signal_module.SIGINT
+    if "provider" in _live_agent_processes(meta):
+        _signal_agent_processes(meta, provider_signal, ["provider"])
+        if provider_signal == signal_module.SIGINT:
+            time.sleep(0.5)
+    if "worker" in _live_agent_processes(meta):
+        _signal_agent_processes(meta, allowed[sig_name], ["worker"])
+    with _WORKERS_LOCK:
+        worker_proc = _WORKERS.get(agent_id)
+    for wait_s, escalate in ((_CANCEL_GRACE_S, True), (_CANCEL_KILL_WAIT_S, False)):
+        deadline = time.monotonic() + wait_s
+        remaining = _live_agent_processes(meta)
+        while remaining and time.monotonic() < deadline:
+            if worker_proc is not None:
+                worker_proc.poll()
+            time.sleep(0.1)
+            remaining = _live_agent_processes(meta)
+        if not remaining or not escalate:
+            break
+        _signal_agent_processes(meta, signal_module.SIGKILL, remaining)
+    if worker_proc is not None:
+        try:
+            worker_proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            pass
+    return _live_agent_processes(meta)
+
+
+def _cancellation_pending(meta: Dict[str, Any]) -> bool:
+    state = (meta.get("cancellation") or {}).get("state") if isinstance(meta.get("cancellation"), dict) else None
+    return meta.get("status") == "cancelled" and state in {"stopping", "unconfirmed"}
+
+
+def _settle_cancellation(agent_id: str, still_running: List[str]) -> Dict[str, Any]:
+    """Record whether the cancelled agent's processes stopped; release capacity only once they did."""
+    def settle(current: Dict[str, Any]) -> Optional[bool]:
+        cancellation = dict(current.get("cancellation") or {})
+        if still_running:
+            cancellation.update(state="unconfirmed", still_running=list(still_running), checked_at=_now())
+        else:
+            cancellation.update(state="confirmed", confirmed_at=_now())
+            cancellation.pop("still_running", None)
+        current["cancellation"] = cancellation
+        current["updated_at"] = _now()
+        return True
+
+    meta = _update_meta(agent_id, settle)
+    if not still_running:
+        _release_agent_admission(agent_id, meta)
+        try:
+            _refresh_agent_worktree(agent_id)
+            meta = _read_meta(agent_id)
+        except Exception:
+            pass
+        try:
+            _wake_global_admission_queue(exclude_team_id=str(meta.get("team_id") or "") or None)
+        except Exception:
+            pass
+    return meta
+
+
+def _reconcile_cancellation(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Finish a cancellation a crash or a stubborn process left open (no waiting on reads)."""
+    remaining = _live_agent_processes(meta)
+    if remaining:
+        requested = float((meta.get("cancellation") or {}).get("requested_at") or 0)
+        sig = signal_module.SIGKILL if _now() - requested >= _CANCEL_GRACE_S else signal_module.SIGTERM
+        _signal_agent_processes(meta, sig, remaining)
+    return _settle_cancellation(agent_id, remaining)
+
+
+def _cancellation_public(meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    cancellation = meta.get("cancellation") if isinstance(meta.get("cancellation"), dict) else None
+    if not cancellation:
+        return None
+    requested_by = str(cancellation.get("requested_by") or "orchestrator")
+    return {
+        "state": cancellation.get("state"),
+        "requested_by": requested_by,
+        "requested_at": cancellation.get("requested_at"),
+        "confirmed_at": cancellation.get("confirmed_at"),
+        "still_running": cancellation.get("still_running") or [],
+        "message": (
+            f"Cancelled by {_CANCEL_REQUESTERS.get(requested_by, requested_by)}"
+            + ("." if cancellation.get("state") == "confirmed"
+               else "; its processes have not been confirmed stopped yet.")
+        ),
+    }
 
 
 def _claim_terminal_transition(
@@ -3937,6 +4082,9 @@ def _converge_workflow_terminal(agent_id: str, meta: Dict[str, Any]) -> Optional
 def _normalize(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
     if meta.get("status") in TERMINAL_STATUSES:
         _converge_workflow_terminal(agent_id, meta)
+    if _cancellation_pending(meta):
+        # Capacity stays held until the cancelled processes are confirmed gone.
+        return _reconcile_cancellation(agent_id, meta)
     if meta.get("status") in TERMINAL_STATUSES and meta.get("admission_lease_id"):
         _release_agent_admission(agent_id, meta)
         try:
@@ -5060,6 +5208,16 @@ def wait_agents(
                 else None
             ),
         }
+        cancellation = item.get("cancellation")
+        if cancellation:
+            row["cancellation"] = cancellation
+            if cancellation.get("requested_by") == "user":
+                # Tell the orchestrator plainly: a person stopped this, not a failure to work around.
+                row["failure_reason"] = "cancelled_by_user"
+                row["note"] = (
+                    "The user cancelled this agent from Mac MCP. Do not start it again unless they ask; "
+                    "continue with the other results or tell them what is left."
+                )
         if include_results and item.get("status") in TERMINAL_STATUSES:
             try:
                 item_meta = _read_meta(str(item.get("agent_id") or ""))
@@ -5222,6 +5380,7 @@ def _agent_action_single(
     action: str,
     message: Optional[str] = None,
     signal: str = "TERM",
+    requested_by: str = "orchestrator",
 ) -> Dict[str, Any]:
     action = action.lower().strip()
     if action not in {"cancel", "message", "retry", "resume", "despawn", "apply", "discard"}:
@@ -5278,6 +5437,10 @@ def _agent_action_single(
         return {"ok": True, "action": "discard", **_public_meta(agent_id, latest)}
 
     if action == "cancel":
+        if _cancellation_pending(meta):
+            meta = _reconcile_cancellation(agent_id, meta)
+            return {"ok": True, **_public_meta(agent_id, meta),
+                    "message": (_cancellation_public(meta) or {}).get("message")}
         if meta.get("status") in TERMINAL_STATUSES:
             _converge_workflow_terminal(agent_id, meta)
             _release_agent_admission(agent_id, meta)
@@ -5288,18 +5451,24 @@ def _agent_action_single(
                 pass
             return {"ok": True, **_public_meta(agent_id, meta), "message": "Agent is already finished."}
         sig_name = signal.upper()
-        allowed = {"TERM": signal_module.SIGTERM, "KILL": signal_module.SIGKILL, "INT": signal_module.SIGINT}
-        if sig_name not in allowed:
+        if sig_name not in {"TERM", "KILL", "INT"}:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "signal must be TERM, KILL, or INT.")
+        requester = requested_by if requested_by in _CANCEL_REQUESTERS else "orchestrator"
+
         def mark_cancelled(current: Dict[str, Any]) -> Optional[bool]:
+            # Claimed first so the worker cannot record another result; the
+            # cancellation stays "stopping" until the processes are gone.
             if not _claim_terminal_transition(current, "cancelled", phase="cancelled"):
                 return False
-            current["note"] = f"Cancelled with {sig_name}."
+            current["note"] = f"Cancelled by {_CANCEL_REQUESTERS[requester]} ({sig_name})."
+            current["cancellation"] = {
+                "state": "stopping", "signal": sig_name, "requested_by": requester, "requested_at": _now(),
+            }
             return True
 
         meta = _update_meta(agent_id, mark_cancelled)
         _converge_workflow_terminal(agent_id, meta)
-        if meta.get("status") != "cancelled":
+        if meta.get("status") != "cancelled" or not _cancellation_pending(meta):
             _release_agent_admission(agent_id, meta)
             try:
                 _wake_global_admission_queue(exclude_team_id=str(meta.get("team_id") or "") or None)
@@ -5312,35 +5481,12 @@ def _agent_action_single(
             }
         get_scoped_credential_store().revoke_agent(agent_id)
         browser_tabs.release_agent_leases(agent_id)
-        provider_signal = allowed[sig_name]
-        if meta.get("provider") == "chatgpt" and sig_name == "TERM":
-            provider_signal = signal_module.SIGINT
-        _kill_group(meta.get("provider_pid"), provider_signal)
-        if meta.get("provider") == "chatgpt" and provider_signal == signal_module.SIGINT:
-            time.sleep(0.5)
-        _kill_group(meta.get("worker_pid"), allowed[sig_name])
-        with _WORKERS_LOCK:
-            worker_proc = _WORKERS.get(agent_id)
-        if worker_proc is not None:
-            try:
-                worker_proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                _kill_group(meta.get("worker_pid"), signal_module.SIGKILL)
-                try:
-                    worker_proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
-        _release_agent_admission(agent_id, meta)
-        try:
-            _refresh_agent_worktree(agent_id)
-            meta = _read_meta(agent_id)
-        except Exception:
-            pass
-        try:
-            _wake_global_admission_queue(exclude_team_id=str(meta.get("team_id") or "") or None)
-        except Exception:
-            pass
-        return {"ok": True, **_public_meta(agent_id, meta)}
+        still_running = _stop_agent_processes(agent_id, meta, sig_name)
+        meta = _settle_cancellation(agent_id, still_running)
+        result = {"ok": True, **_public_meta(agent_id, meta)}
+        if still_running:
+            result["message"] = (_cancellation_public(meta) or {}).get("message")
+        return result
 
     if action == "despawn":
         if meta.get("status") not in TERMINAL_STATUSES:
@@ -5528,11 +5674,13 @@ def agent_action(
     team_id: Optional[str] = None,
     message: Optional[str] = None,
     signal: str = "TERM",
+    requested_by: str = "orchestrator",
 ) -> Dict[str, Any]:
     if bool(agent_id) == bool(team_id):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Provide exactly one of agent_id or team_id.")
     if agent_id:
-        return _agent_action_single(settings, agent_id=agent_id, action=action, message=message, signal=signal)
+        return _agent_action_single(settings, agent_id=agent_id, action=action, message=message, signal=signal,
+                                    requested_by=requested_by)
 
     normalized_action = action.lower().strip()
     team = _authorize_team_control(str(team_id), f"agent_action:{normalized_action}")
@@ -5557,7 +5705,7 @@ def agent_action(
         results = []
         for child_id in ids:
             try:
-                results.append(_agent_action_single(settings, child_id, "cancel", signal=signal))
+                results.append(_agent_action_single(settings, child_id, "cancel", signal=signal, requested_by=requested_by))
             except HTTPException as exc:
                 results.append({"agent_id": child_id, "ok": False, "error": str(exc.detail)})
         team["updated_at"] = _now()

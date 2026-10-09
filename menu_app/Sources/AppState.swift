@@ -211,6 +211,16 @@ struct MemoryClearResult: Decodable, Equatable {
     let newest: String?
 }
 
+struct AgentCancelEnvelope: Decodable, Equatable {
+    struct Cancellation: Decodable, Equatable {
+        let state: String?
+    }
+
+    let ok: Bool
+    let status: String?
+    let cancellation: Cancellation?
+}
+
 struct UsageClearEnvelope: Decodable, Equatable {
     let ok: Bool
     let toolUsageRows: Int
@@ -1501,6 +1511,8 @@ final class AppState: ObservableObject {
     @Published var steeringSending = false
     @Published var busyAction: String?
     @Published var actionNotice: ActionNotice?
+    /// Agents whose Stop button was pressed and whose cancellation is still being confirmed.
+    @Published var cancellingAgentIDs: Set<String> = []
     @Published private(set) var updateCheckInfo: UpdateCheckInfo?
     @Published private(set) var updateProgress: UpdateStateSnapshot?
     @Published private(set) var updateTransactionActive = false
@@ -2197,6 +2209,28 @@ final class AppState: ObservableObject {
             setIfChanged(\.usageDataNotice, "Could not save usage settings: \(Self.issueText(for: error))")
         }
         await refreshUsage()
+    }
+
+    /// Stops a delegated agent on the user's behalf; the orchestrator sees it as cancelled by the user.
+    func cancelAgent(_ agent: AgentInfo) async {
+        guard !cancellingAgentIDs.contains(agent.agentID),
+              let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        cancellingAgentIDs.insert(agent.agentID)
+        defer { cancellingAgentIDs.remove(agent.agentID) }
+        let name = agent.title ?? "the agent"
+        do {
+            let result: AgentCancelEnvelope = try await post(
+                base.appendingPathComponent("dashboard/api/agents/cancel"), body: ["agent_id": agent.agentID], timeout: 15.0
+            )
+            if result.cancellation?.state == "unconfirmed" {
+                showNotice(ActionNotice(kind: .error, message: "Stopped \(name), but it has not exited yet; Mac MCP keeps trying."))
+            } else {
+                showNotice(ActionNotice(kind: .success, message: "Stopped \(name)."))
+            }
+        } catch {
+            showNotice(ActionNotice(kind: .error, message: "Couldn’t stop \(name): \(Self.issueText(for: error))"))
+        }
+        await refresh()
     }
 
     func clearUsage() async {
