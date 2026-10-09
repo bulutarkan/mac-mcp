@@ -74,6 +74,41 @@ class DialogActionTests(unittest.TestCase):
         answer.assert_called_once_with("7", False, None)
 
 
+class LeadingDialogTests(unittest.TestCase):
+    def test_leading_dialog_is_answered_before_any_page_script(self) -> None:
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+
+        @contextmanager
+        def lease(*args, **kwargs):
+            yield SimpleNamespace(tab_handle="t", browser="Google Chrome", window_index=1, tab_index=1, native_id="7")
+
+        with patch.object(agent, "_tab_lease", lease), \
+                patch.object(agent, "_require_stable_handle_for_mutation"), \
+                patch.object(agent, "_ensure_visual_companion", side_effect=AssertionError("page touched")), \
+                patch.object(agent, "_dialog_action", return_value={"type": "dialog", "ok": True}) as answer:
+            result = agent.browser_act(None, "Google Chrome", [{"type": "dialog", "decision": "dismiss"}], tab_handle="t")
+        self.assertTrue(result["ok"])
+        answer.assert_called_once()
+
+    def test_failed_answer_stops_the_batch(self) -> None:
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+
+        @contextmanager
+        def lease(*args, **kwargs):
+            yield SimpleNamespace(tab_handle="t")
+
+        with patch.object(agent, "_tab_lease", lease), \
+                patch.object(agent, "_require_stable_handle_for_mutation"), \
+                patch.object(agent, "_dialog_action", return_value={"type": "dialog", "ok": False, "error": "no_dialog_open"}):
+            result = agent.browser_act(None, "Google Chrome", [{"type": "dialog", "decision": "accept"},
+                                                               {"type": "click", "query": "Next"}], tab_handle="t")
+        self.assertFalse(result["ok"])
+        self.assertEqual("no_dialog_open", result["error"])
+        self.assertEqual(1, result["action_count"])
+
+
 class GestureActionTests(unittest.TestCase):
     def _run(self, typ, action, centers, **kwargs):
         seq = iter(centers)
@@ -141,6 +176,10 @@ class CompanionSourceTests(unittest.TestCase):
         # Requests on one tab run one at a time, and a held detach cannot block the next one.
         self.assertIn("withTab(Number(message.chrome_tab_id)", source)
         self.assertIn("setTimeout(resolve, 1500)", source)
+        # A remembered dialog is re-checked with a short probe instead of hanging the next call.
+        self.assertIn("openDialogs.get(tabId)", source)
+        self.assertIn("DIALOG_PROBE_MS", source)
+        self.assertIn("function enablePage", source)
 
     def test_draggable_elements_are_actionable_targets(self) -> None:
         self.assertIn("getAttribute('draggable')==='true'", agent._bootstrap_functions_source())

@@ -7,7 +7,7 @@ const PORT = Number(CONFIG.port || 0);
 const TOKEN = String(CONFIG.token || '');
 const RECONNECT_MS = Math.max(250, Math.min(Number(CONFIG.reconnect_ms || 1000), 10000));
 // Capabilities the server may rely on; an older companion simply does not list them.
-const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue'];
+const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory'];
 const MAX_GESTURE_STEPS = 80;
 const DIALOG_TEXT_LIMIT = 300;
 let socket = null;
@@ -124,6 +124,19 @@ function debuggerCommand(target, method, params) {
   });
 }
 
+// Dialogs seen and not yet answered, per tab. Chrome does not repeat the opening event to a
+// new session, so later calls probe briefly instead of hanging behind the dialog.
+const openDialogs = new Map();
+const DIALOG_PROBE_MS = 700;
+
+function enablePage(target) {
+  // Bounded: a page held by a dialog must not stall the request before it can be reported.
+  return Promise.race([
+    debuggerCommand(target, 'Page.enable', {}).catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, 500))
+  ]);
+}
+
 function dialogWatcher(tabId) {
   // Resolves when the page shows (or already shows) a native alert/confirm/prompt/beforeunload dialog.
   let listener = null;
@@ -166,13 +179,26 @@ async function handleExecuteJs(message) {
     await debuggerAttach(target);
     attached = true;
     // Page.enable also reports a dialog that was already open before we attached.
-    try { await debuggerCommand(target, 'Page.enable', {}); } catch (_) {}
+    await enablePage(target);
+    const known = openDialogs.get(tabId);
+    if (known) {
+      // A trivial script answers at once unless the dialog still blocks the page.
+      const probe = debuggerCommand(target, 'Runtime.evaluate', {expression: '1', returnByValue: true});
+      const state = await Promise.race([
+        probe.then(() => 'clear', () => 'clear'),
+        watcher.promise.then(() => 'blocked'),
+        new Promise((resolve) => setTimeout(() => resolve('blocked'), DIALOG_PROBE_MS))
+      ]);
+      if (state === 'blocked') { send(dialogResult(requestId, tabId, known)); return; }
+      openDialogs.delete(tabId);
+    }
     const evaluation = debuggerCommand(target, 'Runtime.evaluate', {
       expression: js, returnByValue: true, awaitPromise: true, userGesture: false
     }).then((out) => ({out}));
     const first = await Promise.race([evaluation, watcher.promise.then((dialog) => ({dialog}))]);
     if (first.dialog) {
       evaluation.catch(() => {});
+      openDialogs.set(tabId, first.dialog);
       send(dialogResult(requestId, tabId, first.dialog));
       return;
     }
@@ -210,17 +236,23 @@ async function handleDialog(message) {
     await chrome.tabs.get(tabId);
     await debuggerAttach(target);
     attached = true;
-    try { await debuggerCommand(target, 'Page.enable', {}); } catch (_) {}
+    await enablePage(target);
     const seen = await Promise.race([watcher.promise, new Promise((resolve) => setTimeout(() => resolve(null), 400))]);
     const params = {accept: message.accept};
     if (typeof message.prompt_text === 'string') params.promptText = message.prompt_text.slice(0, 2000);
     await debuggerCommand(target, 'Page.handleJavaScriptDialog', params);
+    const answered = seen || openDialogs.get(tabId) || null;
+    openDialogs.delete(tabId);
     send({
       type: 'result', request_id: requestId, ok: true, chrome_tab_id: tabId, accepted: message.accept,
-      dialog: seen ? {dialog_type: String(seen.type || ''), message: String(seen.message || '').slice(0, DIALOG_TEXT_LIMIT)} : null
+      dialog: answered ? {
+        dialog_type: String(answered.type || answered.dialog_type || ''),
+        message: String(answered.message || '').slice(0, DIALOG_TEXT_LIMIT)
+      } : null
     });
   } catch (error) {
     const text = String(error && error.message || error || 'unknown');
+    if (/no dialog/i.test(text)) openDialogs.delete(tabId);
     send({
       type: 'result', request_id: requestId, ok: false,
       error: /no dialog/i.test(text) ? 'no_dialog_open' : 'chrome_dialog_failed', message: text

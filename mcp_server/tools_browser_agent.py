@@ -4290,6 +4290,34 @@ def browser_act(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")
         b = _norm_browser(browser)
         _require_stable_handle_for_mutation(b, tab_handle, window_index, "browser_act")
+        if actions[0]["type"] == "dialog":
+            # An open dialog blocks every page script, including the batch's own setup,
+            # so leading dialog answers run first, before anything touches the page.
+            leading: List[Dict[str, Any]] = []
+            while actions and actions[0]["type"] == "dialog":
+                leading.append(actions.pop(0))
+            with _tab_lease(b, tab_handle, window_index, tab_index, mutation=True) as target:
+                started = True
+                answered = []
+                for item in leading:
+                    answered.append(_dialog_action(b, item, target.tab_handle))
+                    if not answered[-1].get("ok"):
+                        break
+            failed = next((item for item in answered if not item.get("ok")), None)
+            if failed is not None or not actions:
+                out: Dict[str, Any] = {
+                    "ok": failed is None, "actions": answered, "action_count": len(answered),
+                    "mutation_dispatched": any(item.get("ok") for item in answered),
+                }
+                if failed is not None:
+                    out.update(error=failed.get("error"), observe_again=True)
+                return out
+            rest = browser_act(settings, b, actions, None, window_index, tab_index, tab_handle,
+                               return_state, allow_foreground)
+            rest["actions"] = answered + list(rest.get("actions") or [])
+            rest["action_count"] = len(rest["actions"])
+            rest["mutation_dispatched"] = True
+            return rest
         _ensure_visual_companion(settings, b, window_index, tab_index, tab_handle)
         with _measure_transport() as transport, _tab_lease(b, tab_handle, window_index, tab_index, mutation=True) as target:
             started = True
