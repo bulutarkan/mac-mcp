@@ -21,7 +21,7 @@ class SupervisorPassTests(unittest.TestCase):
         self.calls: list[list[str]] = []
         self.health = [False]
 
-    def run_pass(self, *, present=False, update=False, cli_codes=None, now=None):
+    def run_pass(self, *, present=False, update=False, cli_codes=None, now=None, ngrok=False, ngrok_alive=True):
         codes = iter(cli_codes or [0, 0])
 
         def fake_cli(args):
@@ -36,6 +36,7 @@ class SupervisorPassTests(unittest.TestCase):
             healthy=lambda port: self.health[-1],
             process_present=lambda root, port: present,
             cli=fake_cli, update_lock_held=lambda: update,
+            tunnel_selected=lambda args: ngrok, tunnel_alive=lambda root, port: ngrok_alive,
         )
 
     def intend(self, desired: str) -> None:
@@ -88,6 +89,36 @@ class SupervisorPassTests(unittest.TestCase):
         self.assertEqual(supervisor.RECOVERY_LIMIT, len(self.calls))
         state = self.run_pass(cli_codes=[0], now=now + supervisor.RECOVERY_WINDOW_S + 5)
         self.assertEqual("recovered", state["last_result"], "the window passed, so it tries again")
+
+    def test_an_exited_ngrok_is_restarted_without_touching_a_healthy_server(self) -> None:
+        self.intend("running")
+        self.health = [True]
+        state = self.run_pass(ngrok=True, ngrok_alive=False)
+        self.assertEqual("tunnel_recovered", state["last_result"])
+        self.assertEqual([["start", "--host", "127.0.0.1", "--port", "8877"]], self.calls)
+        self.assertEqual("recovered", state["last_tunnel_recovery"]["result"])
+        self.assertNotIn("last_recovery", state, "the server itself was not recovered")
+
+    def test_ngrok_that_runs_but_cannot_reach_its_route_is_degraded(self) -> None:
+        self.intend("running")
+        self.health = [True]
+        state = self.run_pass(ngrok=True, ngrok_alive=False, cli_codes=[3])
+        self.assertEqual("tunnel_recovery_failed", state["last_result"])
+        self.assertEqual("degraded", state["last_tunnel_recovery"]["result"])
+
+    def test_tunnel_recovery_backs_off_and_a_live_tunnel_is_left_alone(self) -> None:
+        self.intend("running")
+        self.health = [True]
+        for attempt in range(supervisor.RECOVERY_LIMIT):
+            self.run_pass(ngrok=True, ngrok_alive=False, cli_codes=[1], now=5000.0 + attempt)
+        self.assertEqual("tunnel_backoff", self.run_pass(ngrok=True, ngrok_alive=False, now=5100.0)["last_result"])
+        self.assertEqual(supervisor.RECOVERY_LIMIT, len(self.calls))
+        self.assertEqual("healthy", self.run_pass(ngrok=True, ngrok_alive=True)["last_result"])
+
+    def test_tunnel_selection_reads_the_recorded_flags(self) -> None:
+        self.assertTrue(supervisor.ngrok_selected(["--public-mode", "ngrok"]))
+        self.assertTrue(supervisor.ngrok_selected(["--ngrok"]))
+        self.assertFalse(supervisor.ngrok_selected(["--public-mode", "cloudflare"]))
 
     def test_kill_switch(self) -> None:
         self.intend("running")

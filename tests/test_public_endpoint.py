@@ -250,11 +250,28 @@ class PublicEndpointCLITests(unittest.TestCase):
              patch.object(cli, "process_snapshot", return_value=snap), \
              patch.object(cli, "matches_role", return_value=True), \
              patch.object(cli, "write_process_record"), \
+             patch.object(cli, "_public_route_ready", return_value=True) as ready, \
              patch.object(cli.time, "sleep"):
             code = cli._start_ngrok(args)
         self.assertEqual(0, code)
         cmd = popen.call_args.args[0]
         self.assertEqual(["/tmp/ngrok", "http", "--url", "https://example.ngrok-free.dev", "8765"], cmd)
+        self.assertEqual("https://example.ngrok-free.dev/health", ready.call_args.args[0])
+
+        # A live process whose public route never answers is degraded, not started.
+        out = StringIO()
+        with patch.object(cli, "_validate_managed_pid", return_value=missing), \
+             patch.object(cli, "_resolve_ngrok_binary", return_value="/tmp/ngrok"), \
+             patch.object(cli, "ngrok_http_endpoint_flag", return_value="--url"), \
+             patch.object(cli.subprocess, "Popen", return_value=FakeProc()), \
+             patch.object(cli, "process_snapshot", return_value=snap), \
+             patch.object(cli, "matches_role", return_value=True), \
+             patch.object(cli, "write_process_record"), \
+             patch.object(cli, "_public_route_ready", return_value=False), \
+             patch.object(cli.time, "sleep"), \
+             redirect_stdout(out):
+            self.assertEqual(3, cli._start_ngrok(args))
+        self.assertIn("public endpoint degraded", out.getvalue())
 
     def test_legacy_ngrok_flag_still_starts_ngrok(self) -> None:
         with patch.object(cli, "_start_server", return_value=0), \
@@ -313,6 +330,29 @@ class PublicEndpointCLITests(unittest.TestCase):
                 code = cli.status(argparse.Namespace(local_only=local_only))
             self.assertEqual(expected, code)
             self.assertIn("overall: degraded", out.getvalue())
+
+    def test_status_probes_the_public_route_of_a_running_tunnel(self) -> None:
+        live = ProcessValidation("valid", 5151, "ngrok", "json", "role_match")
+        public = type("Public", (), {"mode": "ngrok", "endpoint_url": "https://x.ngrok-free.dev/mcp"})()
+        for route, expected_code, expected_state in (("ok", 0, "healthy"), ("unreachable", 2, "degraded")):
+            out = StringIO()
+            with self.subTest(route=route), \
+                 patch.object(cli, "_resolve_server_identity", return_value=(4321, "pid_record")), \
+                 patch.object(cli, "_validate_managed_pid", return_value=live), \
+                 patch.object(cli, "_launchctl_pid", return_value=None), \
+                 patch.object(cli, "_server_health", return_value="ok"), \
+                 patch.object(cli, "CLOUDFLARE_PID_FILE", Path("/nonexistent/mac-mcp/cloudflared.pid")), \
+                 patch.object(cli, "resolve_public_endpoint", return_value=public), \
+                 patch.object(cli, "_probe_public_route", return_value=route) as probe, \
+                 patch.object(cli, "supervisor_report", return_value={"enabled": True, "loaded": False}), \
+                 redirect_stdout(out):
+                code = cli.status(argparse.Namespace(local_only=False, json=True))
+            report = json.loads(out.getvalue())
+            self.assertEqual(expected_code, code)
+            self.assertEqual(expected_state, report["state"])
+            self.assertEqual(route, report["public_endpoint"]["route"])
+            self.assertTrue(report["public_endpoint"]["tunnel_running"])
+            probe.assert_called_once_with("https://x.ngrok-free.dev/health")
 
     def test_stop_adopts_existing_mac_mcp_listener_before_stopping(self) -> None:
         args = argparse.Namespace(timeout=5, force=True)

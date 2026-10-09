@@ -429,6 +429,12 @@ def _check_server_supervisor() -> CheckResult:
         return result("server.supervisor", "server", WARN, "SUPERVISOR_NOT_LOADED",
                       "The server is not supervised: if it crashes, nothing restarts it.", started=started,
                       remediation="Run `mac-mcp start` (or restart) to load the crash supervisor.", details=details)
+    details["last_tunnel_recovery"] = state.get("last_tunnel_recovery")
+    if state.get("last_result") in {"tunnel_backoff", "tunnel_recovery_failed"}:
+        return result("server.supervisor", "server", WARN, "SUPERVISOR_TUNNEL_FAILING",
+                      "The server is up, but the supervisor could not bring the ngrok tunnel back.", started=started,
+                      remediation="Check `mac-mcp logs ngrok` and the network, then `mac-mcp restart`.",
+                      details=details)
     if state.get("last_result") in {"backoff", "recovery_failed"}:
         return result("server.supervisor", "server", WARN, "SUPERVISOR_RECOVERY_FAILING",
                       "The supervisor could not bring the server back; it is backing off.", started=started,

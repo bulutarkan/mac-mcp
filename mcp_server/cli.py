@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.error import URLError
 from urllib.parse import quote
-from urllib.request import urlopen
+from urllib.request import Request as UrlRequest, urlopen
 
 from dotenv import load_dotenv
 
@@ -24,6 +24,7 @@ from .security import dashboard_token_path, load_settings, validate_bootstrap_se
 from .public_endpoint import (
     PublicEndpointError,
     inspect_cloudflare_credential,
+    public_health_url,
     remove_cloudflare_token,
     resolve_public_endpoint,
     write_cloudflare_token,
@@ -635,7 +636,8 @@ def supervisor_report() -> dict:
         "last_recovery": {
             key: value for key, value in (state.get("last_recovery") or {}).items() if key != "log_tail"
         } or None,
-        "backoff_until": state.get("backoff_until") if state.get("last_result") == "backoff" else None,
+        "last_tunnel_recovery": state.get("last_tunnel_recovery"),
+        "backoff_until": state.get("backoff_until") if state.get("last_result") in {"backoff", "tunnel_backoff"} else None,
     }
 
 
@@ -1128,7 +1130,38 @@ def _start_ngrok(args: argparse.Namespace) -> int:
 
     print(f"ngrok tunnel started: {public_url} -> {_local_url(args.host, port)} (pid {proc.pid}).")
     print(f"ngrok log: {NGROK_LOG_FILE}")
-    return 0
+    # A live ngrok process is not yet a working public endpoint.
+    if _public_route_ready(f"{public_url}/health", timeout_s=NGROK_READY_TIMEOUT_S):
+        print(f"public endpoint verified: {public_url}/health answers.")
+        return 0
+    print(
+        f"ngrok is running, but {public_url}/health does not answer yet (public endpoint degraded). "
+        "Check the ngrok log and your network; mac-mcp status rechecks it."
+    )
+    return 3
+
+
+NGROK_READY_TIMEOUT_S = 15.0
+
+
+def _probe_public_route(url: str, timeout_s: float = 4.0) -> str:
+    """'ok' when the public /health answers 200, else 'unreachable'."""
+    request = UrlRequest(url, headers={"User-Agent": "mac-mcp-status"})
+    try:
+        with urlopen(request, timeout=timeout_s) as response:
+            return "ok" if response.status == 200 else "unreachable"
+    except Exception:
+        return "unreachable"
+
+
+def _public_route_ready(url: str, *, timeout_s: float) -> bool:
+    deadline = time.monotonic() + max(0.5, timeout_s)
+    while True:
+        if _probe_public_route(url, timeout_s=min(4.0, max(0.5, deadline - time.monotonic()))) == "ok":
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(1.0)
 
 
 def start(args: argparse.Namespace) -> int:
@@ -1420,6 +1453,14 @@ def status(args: argparse.Namespace) -> int:
         (public.mode == "cloudflare" and not cloudflare_running)
         or (public.mode == "ngrok" and not ngrok_running)
     )
+    # A running tunnel process is not proof of a working route: probe it.
+    public_route: str | None = None
+    if server_running and health != "unreachable" and public is not None and not tunnel_missing \
+            and public.mode in {"cloudflare", "ngrok", "custom"}:
+        route_url = public_health_url(public)
+        public_route = _probe_public_route(route_url) if route_url else None
+        if public_route == "unreachable":
+            say(f"public endpoint {route_url} does not answer (the tunnel process is running).")
     remediation: list[str] = []
     if not server_running:
         state = {"not_running": "stopped", "foreign_listener": "port_conflict"}.get(server_source, "ownership_unverified")
@@ -1432,17 +1473,21 @@ def status(args: argparse.Namespace) -> int:
     elif health == "unreachable":
         state, code = "unresponsive", 1
         remediation.append("Run mac-mcp restart; if it keeps failing, check mac-mcp logs server.")
-    elif public is None or tunnel_missing:
+    elif public is None or tunnel_missing or public_route == "unreachable":
         state = "config_error" if public is None else "degraded"
         say("overall: degraded (local server running; selected public endpoint unavailable)")
         # Exit 2 keeps scripts from reading a missing tunnel as healthy;
         # --local-only restores the local-server-only verdict.
         code = 0 if getattr(args, "local_only", False) else 2
-        remediation.append(
-            "Fix the public endpoint settings; mac-mcp doctor shows the details."
-            if public is None
-            else f"Run mac-mcp restart to start the {public.mode} tunnel, or use --local-only to ignore it."
-        )
+        if public is None:
+            remediation.append("Fix the public endpoint settings; mac-mcp doctor shows the details.")
+        elif tunnel_missing:
+            remediation.append(f"Run mac-mcp restart to start the {public.mode} tunnel, or use --local-only to ignore it.")
+        else:
+            remediation.append(
+                f"The {public.mode} endpoint is configured but its public /health does not answer; "
+                "check the network and the tunnel log (mac-mcp logs), or use --local-only to ignore it."
+            )
     else:
         state, code = "healthy", 0
 
@@ -1478,6 +1523,7 @@ def status(args: argparse.Namespace) -> int:
                     if public is not None and public.mode in {"cloudflare", "ngrok"} else None
                 ),
                 "tunnel_pid": tunnel_pid,
+                "route": public_route,
                 "error": public_error,
             },
             "stray_processes": stray,

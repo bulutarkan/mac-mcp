@@ -119,6 +119,29 @@ def _server_process_present(root: Path, port: int) -> bool:
     return bool(listener_pids(port))
 
 
+def ngrok_selected(start_args: list[str]) -> bool:
+    """Whether the recorded start uses an ngrok tunnel (Cloudflare has its own launchd KeepAlive)."""
+    if "--ngrok" in start_args:
+        return True
+    if "--public-mode" in start_args:
+        try:
+            return start_args[start_args.index("--public-mode") + 1] == "ngrok"
+        except IndexError:
+            return False
+    try:
+        from .public_endpoint import resolve_public_endpoint
+
+        return resolve_public_endpoint().mode == "ngrok"
+    except Exception:
+        return False
+
+
+def _ngrok_alive(root: Path, port: int) -> bool:
+    from .managed_process import validate_process_record
+
+    return bool(validate_process_record(root / "ngrok.pid", "ngrok", port=port).valid)
+
+
 def _log_tail(root: Path) -> str:
     from .log_retention import tail_log
 
@@ -148,6 +171,8 @@ def run_once(
     process_present: Optional[Callable[[Path, int], bool]] = None,
     cli: Callable[[list[str]], int] = _cli,
     update_lock_held: Callable[[], bool] = _update_lock_held,
+    tunnel_selected: Callable[[list[str]], bool] = ngrok_selected,
+    tunnel_alive: Callable[[Path, int], bool] = _ngrok_alive,
 ) -> dict[str, Any]:
     root = root or state_dir()
     now = time.time() if now is None else now
@@ -174,6 +199,8 @@ def run_once(
         return finish("skipped_restart")
     if healthy(port):
         state["unhealthy_passes"] = 0
+        if tunnel_selected(start_args) and not tunnel_alive(root, port):
+            return _recover_tunnel(state, start_args, now, cli, finish)
         return finish("healthy")
 
     present = process_present(root, port)
@@ -208,6 +235,23 @@ def run_once(
         },
     })
     return finish("recovered" if recovered else "recovery_failed")
+
+
+def _recover_tunnel(state, start_args, now, cli, finish) -> dict[str, Any]:
+    """The server is fine but its ngrok tunnel exited: start it again (the server is only adopted)."""
+    attempts = [float(at) for at in state.get("tunnel_recovery_attempts") or [] if now - float(at) < RECOVERY_WINDOW_S]
+    if len(attempts) >= RECOVERY_LIMIT:
+        state["tunnel_recovery_attempts"] = attempts
+        return finish("tunnel_backoff", backoff_until=min(attempts) + RECOVERY_WINDOW_S)
+    code = cli(["start", *start_args])
+    attempts.append(now)
+    # Exit 3 from start: ngrok runs but its public route does not answer yet.
+    result = "recovered" if code == 0 else ("degraded" if code == 3 else "failed")
+    state.update({
+        "tunnel_recovery_attempts": attempts,
+        "last_tunnel_recovery": {"at": now, "tunnel": "ngrok", "result": result, "exit_code": code},
+    })
+    return finish("tunnel_recovered" if code == 0 else "tunnel_recovery_failed")
 
 
 def _port_from_args(args: list[str]) -> int:
