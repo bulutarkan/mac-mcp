@@ -6,10 +6,10 @@ enum SettingsSearchIndex {
     static let terms: [String: String] = [
         "general": "general overview update version status notifications alerts completion attention agents macos permission",
         "agents": "agents subagents provider codex opencode chatgpt model reasoning thinking default agent",
-        "usage": "usage tokens payload calls errors latency heatmap activity input output top tools retention record history clear privacy data",
+        "usage": "usage tokens payload calls errors latency heatmap activity input output top tools retention record history clear privacy data memory memories export delete",
         "permissions": "permissions safety approvals security profile read only trusted access",
         "connections": "connections browser safari chrome mobile iphone ipad pairing public endpoint ngrok cloudflare tunnel https remote",
-        "voice": "voice audio microphone speaker groq language",
+        "voice": "voice audio microphone speaker groq language consent recording transcription",
         "advanced": "advanced developer runtime server port cli command decision acceleration openai decisions api key ambiguity",
         "help": "help diagnostics doctor troubleshoot problem support report bundle logs log bug issue security vulnerability version copy permissions accessibility screen recording automation microphone port conflict tunnel restart",
     ]

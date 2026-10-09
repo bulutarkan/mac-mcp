@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import threading
 import unicodedata
 import uuid
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException, status
+from .runtime_settings import memory_privacy
 from . import embedding_manager as embeddings
 
 try:
@@ -100,11 +102,21 @@ def _now() -> datetime:
     return datetime.now(_tz())
 
 
+def _private(path: Path, mode: int) -> None:
+    """Tighten a memory path to owner-only; a custom root must not stay world-readable."""
+    try:
+        if path.exists() and (path.stat().st_mode & 0o777) != mode:
+            path.chmod(mode)
+    except OSError:
+        pass
+
+
 def _memory_root() -> Path:
     raw = os.getenv("MAC_MCP_MEMORY_DIR", "").strip()
     root = Path(raw).expanduser() if raw else (Path.home() / ".mac-mcp" / "memory")
     root = root.resolve()
     root.mkdir(parents=True, exist_ok=True)
+    _private(root, 0o700)
     return root
 
 
@@ -170,6 +182,8 @@ def _day_path(root: Path, day: str) -> Path:
     parsed = _parse_date(day, "date")
     path = root / f"{parsed.year:04d}" / f"{parsed.month:02d}" / f"{day}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
+    _private(path.parent.parent, 0o700)
+    _private(path.parent, 0o700)
     return path
 
 
@@ -257,9 +271,34 @@ def _atomic_write(path: Path, text: str) -> None:
     temp = Path(temp_name)
     try:
         temp.write_text(text, encoding="utf-8")
+        temp.chmod(0o600)
         os.replace(temp, path)
     finally:
         temp.unlink(missing_ok=True)
+
+
+def _write_day(root: Path, path: Path, day: str, entries: Sequence[MemoryEntry]) -> None:
+    """Rewrite a day file, or remove it (and empty folders) once its last memory is gone."""
+    if entries:
+        _atomic_write(path, _render_day(day, entries))
+        return
+    path.unlink(missing_ok=True)
+    for folder in (path.parent, path.parent.parent):
+        if folder != root:
+            try:
+                folder.rmdir()
+            except OSError:
+                break
+
+
+def _compact_index(conn: sqlite3.Connection) -> None:
+    """Drop deleted text from the FTS segments and the WAL, not just from query results."""
+    try:
+        conn.execute("INSERT INTO memory_fts(memory_fts) VALUES('optimize')")
+        conn.commit()
+    except sqlite3.DatabaseError:
+        pass
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def _normalize(text: Any) -> str:
@@ -341,12 +380,14 @@ def _content_hash(entry: MemoryEntry) -> str:
 
 
 def _connect(root: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(_index_path(root)))
+    index = _index_path(root)
+    conn = sqlite3.connect(str(index))
     conn.row_factory = sqlite3.Row
     conn.executescript(
         """
         PRAGMA journal_mode=WAL;
         PRAGMA synchronous=NORMAL;
+        PRAGMA secure_delete=ON;
         CREATE TABLE IF NOT EXISTS memories (
             memory_id TEXT PRIMARY KEY,
             date TEXT NOT NULL,
@@ -378,6 +419,14 @@ def _connect(root: Path) -> sqlite3.Connection:
         );
         """
     )
+    try:
+        # Deleted rows leave no tokens behind in the full-text index (SQLite 3.44+).
+        conn.execute("INSERT INTO memory_fts(memory_fts, rank) VALUES('secure-delete', 1)")
+        conn.commit()
+    except sqlite3.DatabaseError:
+        pass
+    for suffix in ("", "-wal", "-shm"):
+        _private(Path(str(index) + suffix), 0o600)
     return conn
 
 
@@ -394,6 +443,11 @@ def _index_file(conn: sqlite3.Connection, root: Path, path: Path) -> None:
     for memory_id in old_ids:
         conn.execute("DELETE FROM memory_fts WHERE memory_id=?", (memory_id,))
     conn.execute("DELETE FROM memories WHERE file_path=?", (rel,))
+    if not path.exists():
+        conn.execute("DELETE FROM indexed_files WHERE file_path=?", (rel,))
+        conn.commit()
+        return
+    _private(path, 0o600)
     vector_texts = [" ".join([entry.content, " ".join(entry.tags), entry.source or ""]) for entry in entries]
     vector_backend, _, vectors = _semantic_vectors(root, vector_texts, allow_download=False) if entries else (FEATURE_VECTOR_BACKEND, FEATURE_VECTOR_DIMS, [])
     for entry, vector in zip(entries, vectors):
@@ -435,6 +489,7 @@ def _sync_index(root: Path, conn: sqlite3.Connection) -> Dict[str, int]:
             removed += 1
     conn.commit()
     for rel, path in current.items():
+        _private(path, 0o600)
         stat = path.stat()
         row = indexed.get(rel)
         if row and int(row["mtime_ns"]) == stat.st_mtime_ns and int(row["size"]) == stat.st_size:
@@ -563,6 +618,7 @@ def memory_add(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "source must be at most 120 characters.")
 
     root = _memory_root()
+    _apply_retention(root)
     now = _now()
     day = now.date().isoformat()
     path = _day_path(root, day)
@@ -598,6 +654,7 @@ def memory_search(
     limit = max(1, min(int(limit), 100))
     q = str(query or "").strip()
     root = _memory_root()
+    _apply_retention(root)
     with closing(_connect(root)) as conn:
         sync = _sync_index(root, conn)
 
@@ -793,7 +850,113 @@ def memory_delete(
             "memory": entry.public(),
         }
     del entries[idx]
-    _atomic_write(path, _render_day(entry.date, entries))
+    _write_day(root, path, entry.date, entries)
     with closing(_connect(root)) as conn:
         _index_file(conn, root, path)
+        _compact_index(conn)
     return {"ok": True, "action": "deleted", "memory_id": entry.memory_id, "date": entry.date, "time": entry.time, "file_path": entry.file_path}
+
+
+_RETENTION_CHECK_INTERVAL_S = 3600.0
+_last_retention_check: Dict[str, float] = {}
+_KEPT_IMPORTANCE = {"high", "critical"}
+
+
+def _day_files(root: Path) -> List[Path]:
+    return sorted(root.glob("[0-9][0-9][0-9][0-9]/[0-9][0-9]/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].md"))
+
+
+def _apply_retention(root: Path, *, force: bool = False) -> int:
+    """Remove memories older than the chosen period; returns how many were removed."""
+    policy = memory_privacy()
+    days = int(policy["retention_days"])
+    if days <= 0:
+        return 0
+    key = str(root)
+    now = time.monotonic()
+    if not force and now - _last_retention_check.get(key, -_RETENTION_CHECK_INTERVAL_S) < _RETENTION_CHECK_INTERVAL_S:
+        return 0
+    _last_retention_check[key] = now
+    cutoff = (_now().date() - timedelta(days=days)).isoformat()
+    removed = 0
+    for path in _day_files(root):
+        if path.stem >= cutoff:
+            continue
+        entries = _parse_day_file(root, path)
+        kept = [e for e in entries if policy["keep_important"] and e.importance in _KEPT_IMPORTANCE]
+        if len(kept) == len(entries):
+            continue
+        removed += len(entries) - len(kept)
+        _write_day(root, path, path.stem, kept)
+    if removed:
+        with closing(_connect(root)) as conn:
+            _sync_index(root, conn)
+            _compact_index(conn)
+    return removed
+
+
+def memory_overview() -> Dict[str, Any]:
+    """Counts and policy for the local controls; no memory text."""
+    root = _memory_root()
+    _apply_retention(root)
+    with closing(_connect(root)) as conn:
+        _sync_index(root, conn)
+        row = conn.execute("SELECT COUNT(*) AS n, MIN(date) AS oldest, MAX(date) AS newest FROM memories").fetchone()
+        important = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE importance IN ('high','critical')"
+        ).fetchone()[0]
+    size = sum(p.stat().st_size for p in root.rglob("*") if p.is_file())
+    policy = memory_privacy()
+    return {
+        "ok": True,
+        "count": int(row["n"] or 0),
+        "important_count": int(important or 0),
+        "oldest": row["oldest"],
+        "newest": row["newest"],
+        "bytes_on_disk": size,
+        "retention_days": policy["retention_days"],
+        "keep_important": policy["keep_important"],
+        "stored_as": "Markdown day files plus a local SQLite search index (text, full-text and vector rows).",
+    }
+
+
+def memory_export_all() -> Dict[str, Any]:
+    """Every memory with its metadata, for the local user to save."""
+    root = _memory_root()
+    entries = [entry.public() for path in _day_files(root) for entry in _parse_day_file(root, path)]
+    return {
+        "kind": "mac-mcp-memory-export",
+        "exported_at": _now().isoformat(timespec="seconds"),
+        "count": len(entries),
+        "memories": entries,
+    }
+
+
+def memory_clear(*, confirm: bool = False, date_from: Optional[str] = None, date_to: Optional[str] = None) -> Dict[str, Any]:
+    """Preview, then delete, every memory in a date range (all when no range)."""
+    root = _memory_root()
+    start = _parse_date(date_from, "date_from").isoformat() if date_from else None
+    end = _parse_date(date_to, "date_to").isoformat() if date_to else None
+    if start and end and start > end:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "date_from must be on or before date_to.")
+    files = [p for p in _day_files(root) if (not start or p.stem >= start) and (not end or p.stem <= end)]
+    entries = [entry for path in files for entry in _parse_day_file(root, path)]
+    preview = {
+        "count": len(entries),
+        "oldest": min((e.date for e in entries), default=None),
+        "newest": max((e.date for e in entries), default=None),
+        "sample": [
+            {"memory_id": e.memory_id, "date": e.date, "time": e.time, "preview": e.content[:80]}
+            for e in entries[:10]
+        ],
+    }
+    if not confirm:
+        return {"ok": False, "confirmation_required": True, "action": "clear", **preview,
+                "message": "Nothing was deleted. Confirm to permanently delete these memories."}
+    for path in files:
+        _write_day(root, path, path.stem, [])
+    with closing(_connect(root)) as conn:
+        _sync_index(root, conn)
+        _compact_index(conn)
+    return {"ok": True, "action": "cleared", "deleted": len(entries),
+            "note": "Deleted from the Markdown files and the search index. This is not a forensic disk wipe."}

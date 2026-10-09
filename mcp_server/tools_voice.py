@@ -10,13 +10,15 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import httpx
 
-from .runtime_settings import keychain_password, tool_enabled, voice_setting
+from .runtime_settings import keychain_password, tool_enabled, update_runtime_setting, voice_setting
 from .security import Settings
-from .tools_interactive import _DIALOG_LOCK, _normalize_timeout, _validate_question_and_sender
+from .tools_interactive import (
+    _DIALOG_LOCK, _escape_applescript_text, _normalize_timeout, _run_native_script, _validate_question_and_sender,
+)
 
 
 _DEFAULT_VOICE = "tr-TR-AhmetNeural"
@@ -349,6 +351,52 @@ def _transcribe_audio(audio_path: Path, language: str, api_key: str) -> str:
     return text
 
 
+_CONSENT_TIMEOUT_S = 60
+_CONSENT_ALWAYS = "always"
+
+
+def _consent_text(sender: str) -> str:
+    return (
+        f"{sender} wants to ask you something out loud.\n\n"
+        "To do that, Mac MCP sends the question text to Microsoft's online text-to-speech service, "
+        f"then records your spoken answer and uploads the audio to Groq ({_GROQ_TRANSCRIPTION_MODEL}) to turn it into text. "
+        "Groq's own data retention applies; the recording is deleted from this Mac afterwards.\n\n"
+        "Nothing is recorded or sent unless you choose Record."
+    )
+
+
+def _ask_consent(sender: str) -> str:
+    """Return record_once, always, declined or timed_out; nothing is captured before this."""
+    if str(voice_setting("transcription_consent", "ask") or "ask") == _CONSENT_ALWAYS:
+        return _CONSENT_ALWAYS
+    script = f"""
+try
+    set reply to display dialog "{_escape_applescript_text(_consent_text(sender))}" ¬
+        with title "Mac MCP — Voice question" ¬
+        buttons {{"Don't Record", "Always Allow", "Record"}} ¬
+        default button "Record" cancel button "Don't Record" ¬
+        giving up after {_CONSENT_TIMEOUT_S}
+    if gave up of reply then return "timed_out"
+    if button returned of reply is "Always Allow" then return "always"
+    if button returned of reply is "Record" then return "record_once"
+    return "declined"
+on error number -128
+    return "declined"
+end try
+"""
+    result = _run_native_script(script, _CONSENT_TIMEOUT_S + 5)
+    answer = str(result.get("output") or "").strip() if result.get("ok") else ""
+    if result.get("timed_out"):
+        return "timed_out"
+    if answer == _CONSENT_ALWAYS:
+        try:
+            update_runtime_setting("voice", "transcription_consent", _CONSENT_ALWAYS)
+        except (OSError, RuntimeError, ValueError):
+            pass  # still allowed for this call; the next call asks again
+        return _CONSENT_ALWAYS
+    return answer if answer in {"record_once", "timed_out"} else "declined"
+
+
 def _is_skip_response(response: str) -> bool:
     normalized = response.strip().lower().strip(".!?,;:\"' ")
     return normalized in _SKIP_WORDS
@@ -360,9 +408,11 @@ def ask_user_voice(
     sender: str = "AI",
     timeout_s: Optional[int] = None,
     voice: Optional[str] = None,
+    on_egress: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """Speak a short question, record the local user's answer, and return its transcript."""
-    if not tool_enabled("ask_user_voice", default=True):
+    # Voice sends audio to third parties, so it stays off until the person turns it on.
+    if not tool_enabled("ask_user_voice", default=False):
         return {
             "ok": False,
             "error": "experimental_tool_disabled",
@@ -386,22 +436,39 @@ def ask_user_voice(
         return {"ok": False, "error": "voice must be a non-empty string"}
     voice = effective_voice.strip()[:100]
 
-    if not _DIALOG_LOCK.acquire(blocking=False):
-        return {
-            "ok": False,
-            "error": "prompt_busy",
-            "message": "Another interactive prompt is already active; answer or close it before asking again.",
-        }
-
     api_key = _resolve_groq_api_key()
     if not api_key:
-        _DIALOG_LOCK.release()
         return {
             "ok": False,
             "error": (
                 "Voice transcription needs a Groq API key. Set MAC_MCP_VOICE_GROQ_API_KEY, GROQ_API_KEY, "
                 "or MAC_MCP_VOICE_GROQ_DEFAULTS_DOMAIN to reuse an existing macOS app preference."
             ),
+        }
+
+    def ledger(consent: str, outcome: str) -> None:
+        # Metadata only: never the question, the audio or the transcript.
+        if on_egress is not None:
+            try:
+                on_egress({"provider": "groq", "model": _GROQ_TRANSCRIPTION_MODEL, "tts": "edge_tts",
+                           "consent": consent, "outcome": outcome})
+            except Exception:
+                pass
+
+    consent = _ask_consent(sender_display)
+    if consent not in {"record_once", _CONSENT_ALWAYS}:
+        ledger(consent, "not_recorded")
+        return {
+            "ok": True, "response": None, "skipped": True, "timed_out": consent == "timed_out",
+            "consent": consent, "fallback_tool": "ask_user",
+            "message": "The user did not allow recording; nothing was recorded or sent. Use ask_user to ask in text.",
+        }
+
+    if not _DIALOG_LOCK.acquire(blocking=False):
+        return {
+            "ok": False,
+            "error": "prompt_busy",
+            "message": "Another interactive prompt is already active; answer or close it before asking again.",
         }
 
     language = str(voice_setting("language", os.getenv("MAC_MCP_VOICE_LANGUAGE", _DEFAULT_LANGUAGE)) or _DEFAULT_LANGUAGE).strip() or _DEFAULT_LANGUAGE
@@ -429,6 +496,7 @@ def ask_user_voice(
             if not recorded.get("ok"):
                 return {"ok": False, "error": recorded.get("error", "Voice recording failed")}
             if recorded.get("timed_out"):
+                ledger(consent, "no_answer")
                 return {
                     "ok": True,
                     "response": None,
@@ -448,7 +516,9 @@ def ask_user_voice(
             try:
                 response = _transcribe_audio(audio_path, language, api_key)
             except Exception as exc:
+                ledger(consent, "upload_failed")
                 return {"ok": False, "error": str(exc)}
+            ledger(consent, "transcribed")
 
             skipped = _is_skip_response(response)
             return {

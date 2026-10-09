@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
 from urllib.parse import urlsplit
 
+from fastapi import HTTPException
 from starlette.requests import Request
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
@@ -40,7 +41,8 @@ from .policy import (
     is_global_permission_profile,
     permission_semantics,
 )
-from .runtime_settings import USAGE_RETENTION_CHOICES, update_runtime_setting, usage_privacy
+from .runtime_settings import MEMORY_RETENTION_CHOICES, USAGE_RETENTION_CHOICES, update_runtime_setting, usage_privacy
+from .tools_memory import memory_clear, memory_export_all, memory_overview
 from .usage_metering import clear_usage
 from . import recipes
 from .request_client import client_address as _client_address, is_direct_local_request, is_loopback as _is_loopback
@@ -628,6 +630,67 @@ def create_dashboard_routes(
             return JSONResponse({"ok": False, "error": "usage_settings_persist_failed"}, status_code=500)
         return JSONResponse({"ok": True, **usage_privacy(fresh=True)})
 
+    async def _json_body(request: Request) -> Dict[str, Any]:
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return {}
+        return body if isinstance(body, dict) else {}
+
+    async def memory_view(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        try:
+            return JSONResponse(await asyncio.to_thread(memory_overview))
+        except Exception:
+            return JSONResponse({"ok": False, "error": "memory_unavailable"}, status_code=503)
+
+    async def memory_export(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        payload = await asyncio.to_thread(memory_export_all)
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+    async def memory_clear_route(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        body = await _json_body(request)
+        try:
+            result = await asyncio.to_thread(
+                memory_clear, confirm=body.get("confirm") is True,
+                date_from=body.get("date_from") or None, date_to=body.get("date_to") or None,
+            )
+        except HTTPException as exc:
+            return JSONResponse({"ok": False, "error": "invalid_request", "message": str(exc.detail)}, status_code=400)
+        return JSONResponse(result)
+
+    async def memory_settings(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        body = await _json_body(request)
+        updates: Dict[str, Any] = {}
+        if "retention_days" in body:
+            if body["retention_days"] not in MEMORY_RETENTION_CHOICES or isinstance(body["retention_days"], bool):
+                return JSONResponse(
+                    {"ok": False, "error": "invalid_retention_days", "allowed": list(MEMORY_RETENTION_CHOICES)},
+                    status_code=400,
+                )
+            updates["memory_retention_days"] = int(body["retention_days"])
+        if "keep_important" in body:
+            if not isinstance(body["keep_important"], bool):
+                return JSONResponse({"ok": False, "error": "keep_important_must_be_boolean"}, status_code=400)
+            updates["memory_keep_important"] = body["keep_important"]
+        try:
+            for key, value in updates.items():
+                update_runtime_setting("privacy", key, value)
+        except (OSError, RuntimeError, ValueError):
+            return JSONResponse({"ok": False, "error": "memory_settings_persist_failed"}, status_code=500)
+        return JSONResponse(await asyncio.to_thread(memory_overview))
+
     async def usage_clear(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -1023,6 +1086,10 @@ def create_dashboard_routes(
         Route("/dashboard/api/usage", usage, methods=["GET"]),
         Route("/dashboard/api/usage/settings", usage_settings, methods=["POST"]),
         Route("/dashboard/api/usage/clear", usage_clear, methods=["POST"]),
+        Route("/dashboard/api/memory", memory_view, methods=["GET"]),
+        Route("/dashboard/api/memory/export", memory_export, methods=["GET"]),
+        Route("/dashboard/api/memory/clear", memory_clear_route, methods=["POST"]),
+        Route("/dashboard/api/memory/settings", memory_settings, methods=["POST"]),
         Route("/dashboard/api/recipes", launcher_recipes, methods=["GET"]),
         Route("/dashboard/api/recipes/run", launcher_run_recipe, methods=["POST"]),
         Route("/dashboard/api/provider-usage", provider_usage, methods=["GET"]),

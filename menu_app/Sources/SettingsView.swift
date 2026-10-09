@@ -3,6 +3,7 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general
@@ -128,6 +129,7 @@ struct SettingsView: View {
     @MacMCPState private var selection: SettingsSection = .general
     @MacMCPState private var notice = ""
     @MacMCPState private var confirmClearUsage = false
+    @MacMCPState private var memoryClearPreview: MemoryClearResult?
     @MacMCPState private var groqKey = ""
     @MacMCPState private var decisionsKey = ""
     @MacMCPState private var cloudflareToken = ""
@@ -629,6 +631,81 @@ struct SettingsView: View {
         }
     }
 
+    private var memoryControls: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 9) {
+                if let memory = state.memoryOverview {
+                    Text(memory.count == 0
+                         ? "No memories are stored."
+                         : "\(memory.count) memories (\(memory.importantCount) high or critical), \(memory.oldest ?? "?") to \(memory.newest ?? "?"), \(ByteCountFormatter.string(fromByteCount: Int64(memory.bytesOnDisk), countStyle: .file)) on disk.")
+                        .font(.caption)
+                }
+                HStack(spacing: 16) {
+                    Picker(
+                        "Keep for",
+                        selection: Binding(
+                            get: { state.memoryOverview?.retentionDays ?? 0 },
+                            set: { value in Task { await state.updateMemoryRetention(days: value) } }
+                        )
+                    ) {
+                        Text("Until deleted").tag(0)
+                        Text("90 days").tag(90)
+                        Text("180 days").tag(180)
+                        Text("1 year").tag(365)
+                        Text("2 years").tag(730)
+                    }
+                    .frame(width: 210)
+                    Toggle(
+                        "Keep high and critical",
+                        isOn: Binding(
+                            get: { state.memoryOverview?.keepImportant ?? true },
+                            set: { value in Task { await state.updateMemoryRetention(keepImportant: value) } }
+                        )
+                    )
+                    .disabled((state.memoryOverview?.retentionDays ?? 0) == 0)
+                    Spacer(minLength: 8)
+                }
+                HStack(spacing: 8) {
+                    Button("Export Memories…") { exportMemories() }
+                    Button("Delete All Memories…", role: .destructive) {
+                        Task { memoryClearPreview = await state.clearMemory(confirm: false) }
+                    }
+                    .disabled((state.memoryOverview?.count ?? 0) == 0)
+                    Spacer()
+                }
+                Text("Agents save memories as Markdown day files plus a local search index; both are owner-only. Deleting removes the text from both, which is not a forensic disk wipe.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let notice = state.memoryNotice {
+                    Text(notice).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        } label: {
+            Label("Memory", systemImage: "brain")
+        }
+        .task { await state.refreshMemory() }
+        .confirmationDialog(
+            "Delete \(memoryClearPreview?.count ?? 0) memories?",
+            isPresented: Binding(get: { memoryClearPreview != nil }, set: { if !$0 { memoryClearPreview = nil } })
+        ) {
+            Button("Delete \(memoryClearPreview?.count ?? 0) Memories", role: .destructive) {
+                Task { _ = await state.clearMemory(confirm: true) }
+            }
+        } message: {
+            Text("Every memory from \(memoryClearPreview?.oldest ?? "?") to \(memoryClearPreview?.newest ?? "?") will be removed from this Mac. Export them first if you may need them. This cannot be undone.")
+        }
+    }
+
+    private func exportMemories() {
+        let panel = NSSavePanel()
+        let stamp = ISO8601DateFormatter().string(from: Date()).prefix(10)
+        panel.nameFieldStringValue = "mac-mcp-memories-\(stamp).json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task { await state.exportMemory(to: url) }
+    }
+
     private var usagePane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -681,6 +758,7 @@ struct SettingsView: View {
                 }
 
                 usageDataControls
+                memoryControls
 
                 if let usage = state.usageSummary {
                     GroupBox {
@@ -1600,11 +1678,33 @@ struct SettingsView: View {
                 Toggle(isOn: $settings.voiceEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Ask User Voice").font(.subheadline.weight(.semibold))
-                        Text("Falls back to ask_user when disabled.")
+                        Text("Off by default. Agents fall back to a text question (ask_user) when this is off or you decline a recording.")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
                 .onChange(of: settings.voiceEnabled) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
+
+                Label {
+                    Text("Each voice question sends its text to Microsoft's online text-to-speech, and your recorded answer to Groq for transcription; Groq's own retention applies. The recording is deleted from this Mac afterwards and the transcript is not kept in Mac MCP's activity history.")
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "network")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                Toggle(isOn: $settings.voiceAskEveryTime) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Ask before every recording").font(.subheadline.weight(.medium))
+                        Text(settings.voiceAskEveryTime
+                             ? "A dialog asks you to Record, Always Allow or decline before anything is recorded or sent."
+                             : "Recordings are sent without asking because you chose Always Allow. Turn this on to be asked again.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .disabled(!settings.voiceEnabled)
+                .onChange(of: settings.voiceAskEveryTime) { _ in persistSettings(scope: .voice, success: "Saved · applies live") }
 
                 Divider()
 

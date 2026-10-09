@@ -186,6 +186,31 @@ struct UsagePrivacyEnvelope: Decodable, Equatable {
     }
 }
 
+struct MemoryOverview: Decodable, Equatable {
+    let count: Int
+    let importantCount: Int
+    let oldest: String?
+    let newest: String?
+    let bytesOnDisk: Int
+    let retentionDays: Int
+    let keepImportant: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case count, oldest, newest
+        case importantCount = "important_count"
+        case bytesOnDisk = "bytes_on_disk"
+        case retentionDays = "retention_days"
+        case keepImportant = "keep_important"
+    }
+}
+
+struct MemoryClearResult: Decodable, Equatable {
+    let count: Int?
+    let deleted: Int?
+    let oldest: String?
+    let newest: String?
+}
+
 struct UsageClearEnvelope: Decodable, Equatable {
     let ok: Bool
     let toolUsageRows: Int
@@ -1435,6 +1460,8 @@ final class AppState: ObservableObject {
     @Published private(set) var usageIssue: String?
     @Published private(set) var usagePrivacy: UsagePrivacyEnvelope?
     @Published private(set) var usageDataNotice: String?
+    @Published private(set) var memoryOverview: MemoryOverview?
+    @Published private(set) var memoryNotice: String?
     @Published private(set) var providerUsageSummary: ProviderUsageSummaryEnvelope?
     @Published private(set) var providerUsageLoading = false
     @Published private(set) var providerUsageIssue: String?
@@ -2187,6 +2214,64 @@ final class AppState: ObservableObject {
         }
         await refreshUsage()
         await refreshProviderUsage()
+    }
+
+    func refreshMemory() async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        do {
+            let overview: MemoryOverview = try await fetch(base.appendingPathComponent("dashboard/api/memory"), query: [:], timeout: 6.0)
+            setIfChanged(\.memoryOverview, overview)
+        } catch {
+            setIfChanged(\.memoryNotice, "Could not read memory: \(Self.issueText(for: error))")
+        }
+    }
+
+    func updateMemoryRetention(days: Int? = nil, keepImportant: Bool? = nil) async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        var body: [String: Any] = [:]
+        if let days { body["retention_days"] = days }
+        if let keepImportant { body["keep_important"] = keepImportant }
+        do {
+            let overview: MemoryOverview = try await post(base.appendingPathComponent("dashboard/api/memory/settings"), body: body, timeout: 8.0)
+            setIfChanged(\.memoryOverview, overview)
+            setIfChanged(\.memoryNotice, nil)
+        } catch {
+            setIfChanged(\.memoryNotice, "Could not save memory settings: \(Self.issueText(for: error))")
+        }
+    }
+
+    /// Without confirm this only counts what would be deleted.
+    func clearMemory(confirm: Bool) async -> MemoryClearResult? {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return nil }
+        do {
+            let result: MemoryClearResult = try await post(base.appendingPathComponent("dashboard/api/memory/clear"), body: ["confirm": confirm], timeout: 20.0)
+            if confirm {
+                setIfChanged(\.memoryNotice, "Deleted \(result.deleted ?? 0) memories from the Markdown files and the search index.")
+                await refreshMemory()
+            }
+            return result
+        } catch {
+            setIfChanged(\.memoryNotice, "Could not clear memory: \(Self.issueText(for: error))")
+            return nil
+        }
+    }
+
+    func exportMemory(to destination: URL) async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        var request = URLRequest(url: base.appendingPathComponent("dashboard/api/memory/export"))
+        request.timeoutInterval = 30
+        authorizeDashboardRequest(&request)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                throw URLError(.badServerResponse)
+            }
+            try data.write(to: destination, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+            setIfChanged(\.memoryNotice, "Exported memories to \(destination.lastPathComponent).")
+        } catch {
+            setIfChanged(\.memoryNotice, "Could not export memory: \(Self.issueText(for: error))")
+        }
     }
 
     func verifyDecisionsKey() async {

@@ -451,6 +451,8 @@ Mac MCP does not replace or modify ChatGPT Voice. It provides the execution laye
 
 `ask_user_voice` is a separate Mac MCP capability. It lets the agent speak a short prompt through the Mac, record the local answer, transcribe it with Groq Whisper, and continue the task with the returned transcript.
 
+Voice is **off until you turn it on**, because it sends data to third parties: the question text goes to Microsoft's online text-to-speech (`edge_tts`) and the recorded answer goes to Groq for transcription, where Groq's own retention applies. Before every recording Mac MCP shows a dialog to **Record**, **Always Allow** or decline; nothing is recorded or sent before that choice, and a declined or unanswered dialog returns `skipped` with `fallback_tool: ask_user`. **Always Allow** can be revoked in **Settings → Voice → Ask before every recording**. The recording is deleted from the Mac afterwards, the transcript is replaced with `[voice transcript not stored]` in activity history, and each decision is logged as a `voice_egress` security event with only provider, model, consent and outcome.
+
 The menu app manages:
 
 - experimental enable/disable toggle;
@@ -538,6 +540,8 @@ Normalized work outcomes are `running`, `completed`, `partial_failure`, `failed`
 ## Memory and Agent Skills API surface
 
 The native MCP endpoint remains the full Memory and Agent Skills surface. REST/OpenAPI intentionally exposes only the read-oriented compatibility subset: `memory_search`, `memory_get`, `skill_list`, `skill_search`, and name-based `skill_get`. These routes use the same server authentication, permission profile, scoped tool-family authorization, and security-context gate as the rest of the published REST surface.
+
+Memories are stored as Markdown day files under `~/.mac-mcp/memory` (or `MAC_MCP_MEMORY_DIR`) plus a local SQLite search index; the folder, files and index are kept owner-only even for a custom location. Deleting a memory removes it from the Markdown file (and the file itself once a day has no memories left) and from the index, its full-text and vector rows, with SQLite secure-delete and a WAL checkpoint so the text does not linger in the database; this is not a forensic disk wipe. **Settings → Usage → Memory** shows how many memories exist, exports them all as JSON, deletes them all after showing how many will go, and sets an optional retention period (until deleted by default; 90 days to 2 years), which keeps high and critical memories unless you turn that off.
 
 Memory mutation (`memory_add`, `memory_update`, `memory_delete`) and Agent Skill registration/index mutation (`skill_register`, `skill_update_index`) remain **MCP-only**. REST `skill_get` accepts an exact skill name but deliberately does not accept a `SKILL.md` path because MCP path lookup may register an external skill. Public REST responses also omit local-only filesystem/index metadata such as memory file paths, skill roots/directories/absolute resource paths, and index-sync diagnostics.
 

@@ -2074,8 +2074,9 @@ def create_app():
             "transcribe it, and return the response without opening a text dialog. "
             "Prefer one concise conversational sentence (roughly 15 words or fewer). "
             "The default Turkish neural voice is tr-TR-AhmetNeural; saying 'atla', 'iptal', 'boşver', or 'vazgeç' skips. "
-            "This tool is experimental and the local user can disable it at runtime; if it returns "
-            "experimental_tool_disabled, immediately fall back to ask_user. "
+            "Off until the local user enables it; before every recording Mac MCP asks the user to allow sending the "
+            "question to online text-to-speech and the recorded answer to Groq for transcription. If it returns "
+            "experimental_tool_disabled or consent was declined (skipped with fallback_tool), use ask_user instead. "
             "Use this when hands-free human input is useful during an autonomous task."
         ),
         annotations=ToolAnnotations(
@@ -2102,7 +2103,20 @@ def create_app():
                 sender=sender,
                 timeout_s=timeout_s,
                 voice=voice,
+                on_egress=_record_voice_egress,
             ),
+        )
+
+    def _record_voice_egress(event: Dict[str, Any]) -> None:
+        # A local ledger of what left the Mac: provider, consent and outcome only.
+        consent = str(event.get("consent") or "")
+        telemetry.record_security_event(
+            session_id=None, event_type="voice_egress", tool="ask_user_voice", tool_class="voice",
+            origin=str(event.get("provider") or "groq"),
+            decision="allowed" if consent in {"record_once", "always"} else "declined",
+            reason_code=f"voice_consent_{consent or 'unknown'}",
+            profile=None, actor="local_user", agent_id=None,
+            target_summary=f"provider=groq; model={event.get('model')}; tts={event.get('tts')}; outcome={event.get('outcome')}",
         )
 
     @mcp.tool(

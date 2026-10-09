@@ -112,6 +112,24 @@ def privacy_setting(name: str, default: Any = None) -> Any:
     return privacy.get(name, default)
 
 
+# 0 keeps memories until they are deleted; memory is user-curated, so nothing
+# expires unless the person picks a period.
+MEMORY_RETENTION_CHOICES = (0, 90, 180, 365, 730)
+
+
+def memory_privacy() -> dict[str, Any]:
+    try:
+        days = int(privacy_setting("memory_retention_days", 0) or 0)
+    except (TypeError, ValueError):
+        days = 0
+    if days not in MEMORY_RETENTION_CHOICES:
+        days = min(MEMORY_RETENTION_CHOICES, key=lambda choice: abs(choice - days))
+    return {
+        "retention_days": days,
+        "keep_important": privacy_setting("memory_keep_important", True) is not False,
+    }
+
+
 USAGE_RETENTION_CHOICES = (30, 90, 365)
 DEFAULT_USAGE_RETENTION_DAYS = 365
 _USAGE_PRIVACY_TTL_S = 2.0

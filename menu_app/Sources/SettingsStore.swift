@@ -10,6 +10,8 @@ struct MenuSettings: Codable {
         var tts_rate: String
         var timeout_s: Int
         var voice: String
+        /// "ask" before every recording, or "always" once the person chose Always Allow.
+        var transcription_consent: String?
     }
     struct Server: Codable {
         var port: Int
@@ -64,8 +66,8 @@ struct MenuSettings: Codable {
 
     static func defaults() -> MenuSettings {
         MenuSettings(
-            experimental_tools: ["ask_user_voice": ExperimentalTool(enabled: true)],
-            voice: Voice(language: "auto", input_device: "auto", output_device: "system", tts_rate: "-5%", timeout_s: 45, voice: "tr-TR-AhmetNeural"),
+            experimental_tools: ["ask_user_voice": ExperimentalTool(enabled: false)],
+            voice: Voice(language: "auto", input_device: "auto", output_device: "system", tts_rate: "-5%", timeout_s: 45, voice: "tr-TR-AhmetNeural", transcription_consent: "ask"),
             server: Server(port: 8000, cli_path: "", ngrok_on_start: false, public_endpoint_mode: "none", public_url: "", cloudflare_tunnel: ""),
             steering: Steering(session_ttl_minutes: 10),
             tool_activity: ToolActivity(show_bubble: false, require_descriptions: false),
@@ -85,7 +87,11 @@ struct MenuSettings: Codable {
 
 @MainActor
 final class SettingsStore: ObservableObject {
-    @Published var voiceEnabled = true
+    @Published var voiceEnabled = false
+    @Published var voiceAskEveryTime = true
+    /// The value read from disk; the server may change it (Always Allow in the
+    /// voice dialog), so only a change made here is written back.
+    private var loadedVoiceAskEveryTime = true
     @Published var language = "auto"
     @Published var inputDevice = "auto"
     @Published var outputDevice = "system"
@@ -162,7 +168,9 @@ final class SettingsStore: ObservableObject {
             settingsLoadIssue = "settings.json is missing. Delegated providers are disabled until settings are saved."
         }
 
-        voiceEnabled = current.experimental_tools["ask_user_voice"]?.enabled ?? true
+        voiceEnabled = current.experimental_tools["ask_user_voice"]?.enabled ?? false
+        voiceAskEveryTime = (current.voice.transcription_consent ?? "ask") != "always"
+        loadedVoiceAskEveryTime = voiceAskEveryTime
         language = current.voice.language
         inputDevice = current.voice.input_device
         outputDevice = current.voice.output_device
@@ -214,7 +222,7 @@ final class SettingsStore: ObservableObject {
         }
         let payload = MenuSettings(
             experimental_tools: ["ask_user_voice": .init(enabled: voiceEnabled)],
-            voice: .init(language: language, input_device: inputDevice, output_device: outputDevice, tts_rate: ttsRate, timeout_s: timeoutSeconds, voice: voiceName),
+            voice: .init(language: language, input_device: inputDevice, output_device: outputDevice, tts_rate: ttsRate, timeout_s: timeoutSeconds, voice: voiceName, transcription_consent: voiceAskEveryTime == loadedVoiceAskEveryTime ? nil : (voiceAskEveryTime ? "ask" : "always")),
             server: .init(
                 port: serverPort,
                 cli_path: cliPath,
@@ -268,6 +276,7 @@ final class SettingsStore: ObservableObject {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
         settingsLoadIssue = ""
         providerSettingsLocked = false
+        loadedVoiceAskEveryTime = voiceAskEveryTime
     }
 
     private static func deepMerge(_ base: [String: Any], _ overlay: [String: Any]) -> [String: Any] {

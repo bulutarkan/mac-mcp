@@ -151,6 +151,20 @@ def _looks_encoded_blob(text: str) -> bool:
     return len(compact) >= 768 and bool(_BASE64_RE.fullmatch(compact))
 
 
+_TRANSCRIPT_PLACEHOLDER = "[voice transcript not stored]"
+
+
+def _omit_private_answers(tool: str, arguments: Any, result: Any) -> Any:
+    """Keep voice transcripts out of telemetry; the caller still receives them."""
+    if tool == "tool_invoke" and isinstance(arguments, dict) and arguments.get("tool_name") == "ask_user_voice":
+        if isinstance(result, dict) and isinstance(result.get("result"), dict):
+            return {**result, "result": _omit_private_answers("ask_user_voice", {}, result["result"])}
+        return result
+    if tool == "ask_user_voice" and isinstance(result, dict) and result.get("response"):
+        return {**result, "response": _TRANSCRIPT_PLACEHOLDER}
+    return result
+
+
 def sanitize_value(value: Any, *, key: Optional[str] = None, preview_chars: int = DEFAULT_PREVIEW_CHARS,
                    depth: int = 0) -> Any:
     """Return a JSON-safe, bounded, secret-aware representation for dashboard telemetry."""
@@ -577,12 +591,12 @@ class TelemetryManager:
             usage_arguments = self._usage_arguments.pop(event_id, None)
         if started_event is None:
             return {"event_id": event_id, "status": "unknown"}
-        telemetry_result = result
+        telemetry_result = _omit_private_answers(str(started_event.get("tool") or ""), started_event.get("arguments") or {}, result)
         if error is None:
             telemetry_result = redact_sensitive_source_result(
                 str(started_event.get("tool") or ""),
                 started_event.get("arguments") or {},
-                result,
+                telemetry_result,
             )
         safe_result = None if error is not None else sanitize_value(telemetry_result, preview_chars=self.preview_chars)
         safe_error = None

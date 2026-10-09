@@ -11,6 +11,10 @@ class VoiceToolTests(unittest.TestCase):
         self.tool_enabled_patcher = patch.object(tools_voice, "tool_enabled", return_value=True)
         self.tool_enabled_patcher.start()
         self.addCleanup(self.tool_enabled_patcher.stop)
+        # Never show the real consent dialog from a test.
+        self.consent_patcher = patch.object(tools_voice, "_ask_consent", return_value="record_once")
+        self.consent_patcher.start()
+        self.addCleanup(self.consent_patcher.stop)
 
     def tearDown(self):
         if tools_voice._DIALOG_LOCK.locked():
