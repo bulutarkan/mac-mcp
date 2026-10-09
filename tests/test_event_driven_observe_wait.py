@@ -429,6 +429,88 @@ class NativeConditionalObserveTests(unittest.TestCase):
         fingerprint.assert_not_called()
         collect.assert_called_once()
 
+    def _aged_with_token(self, age_s: float, token: str | None = "s:7") -> str:
+        obs, _ = self._previous()
+        with tools_ui._OBSERVATIONS_LOCK:
+            tools_ui._OBSERVATIONS[obs]["full_refresh_at"] = time.time() - age_s
+            tools_ui._OBSERVATIONS[obs]["change_token"] = token
+        return obs
+
+    def _observe_after(self, obs: str, *, token: str | None, fingerprint_ok: bool = True):
+        stored = tools_ui._OBSERVATIONS[obs]["fingerprint"]
+        with patch(
+            "mcp_server.tools_ui._resolve_registered_native_target",
+            return_value=("DemoApp", 123, None, None, None),
+        ), patch.object(tools_ui.ax_watch, "change_token", return_value=token) as watch, patch(
+            "mcp_server.tools_ui._probe_native_observation_fingerprint",
+            return_value=(stored if fingerprint_ok else "different", None),
+        ) as fingerprint, patch(
+            "mcp_server.tools_ui._collect_observation",
+            return_value=({"ok": False, "error": "fixture"}, None),
+        ) as collect:
+            raw = tools_ui.observe_ui(MagicMock(), app="DemoApp", window_index=1, previous_observation_id=obs)
+        return json.loads(raw), watch, fingerprint, collect
+
+    def test_unchanged_change_token_skips_the_full_walk_after_the_short_window(self) -> None:
+        obs = self._aged_with_token(10)
+        payload, watch, fingerprint, collect = self._observe_after(obs, token="s:7")
+        self.assertTrue(payload["not_modified"])
+        self.assertEqual("ax_notifications", payload["cache_validation"])
+        self.assertEqual(0, payload["telemetry"]["ax_traversals"])
+        watch.assert_called_once_with(123)
+        fingerprint.assert_called_once()
+        collect.assert_not_called()
+
+    def test_reported_change_forces_a_full_walk(self) -> None:
+        payload, _, fingerprint, collect = self._observe_after(self._aged_with_token(10), token="s:8")
+        fingerprint.assert_not_called()
+        collect.assert_called_once()
+
+    def test_unavailable_watcher_forces_a_full_walk(self) -> None:
+        _, _, fingerprint, collect = self._observe_after(self._aged_with_token(10), token=None)
+        fingerprint.assert_not_called()
+        collect.assert_called_once()
+
+    def test_fingerprint_disagreement_wins_over_a_quiet_watcher(self) -> None:
+        _, _, fingerprint, collect = self._observe_after(self._aged_with_token(10), token="s:7", fingerprint_ok=False)
+        fingerprint.assert_called_once()
+        collect.assert_called_once()
+
+    def test_overdue_or_tokenless_observations_always_walk(self) -> None:
+        overdue = self._aged_with_token(tools_ui._OBSERVATION_EVENT_MAX_AGE_S + 1)
+        _, watch, fingerprint, collect = self._observe_after(overdue, token="s:7")
+        watch.assert_not_called()
+        collect.assert_called_once()
+        _, watch, fingerprint, collect = self._observe_after(self._aged_with_token(10, token=None), token="s:7")
+        fingerprint.assert_not_called()
+        collect.assert_called_once()
+
+    def test_full_walk_stores_a_token_taken_before_the_walk_for_the_same_pid(self) -> None:
+        order: list[str] = []
+        record = "\x1e".join([
+            "\x1f".join(["__META__", "DemoApp", "true", "1", "Demo", "123", "demo.app"]),
+            "\x1f".join(["__WINDOW__", "1", "Demo", "", "win", "10", "20", "500", "400", "AXStandardWindow", "true", "true"]),
+        ])
+
+        def token(pid):
+            order.append(f"token:{pid}")
+            return "s:1"
+
+        def walk(*args, **kwargs):
+            order.append("walk")
+            return True, record, "", "ax_native"
+
+        settings = MagicMock()
+        with patch.object(tools_ui.ax_watch, "change_token", side_effect=token), \
+             patch.object(tools_ui, "_read_native_tree", side_effect=walk):
+            payload, _ = tools_ui._collect_observation(settings, "DemoApp", 1, 5, 30, False, False, watch_pid=123)
+            same = tools_ui._OBSERVATIONS[payload["observation_id"]]["change_token"]
+            payload, _ = tools_ui._collect_observation(settings, "DemoApp", 1, 5, 30, False, False, watch_pid=999)
+            other = tools_ui._OBSERVATIONS[payload["observation_id"]]["change_token"]
+        self.assertEqual(["token:123", "walk", "token:999", "walk"], order)
+        self.assertEqual("s:1", same)
+        self.assertIsNone(other, "a token for another process must not be trusted")
+
 
 
 class ObserveContractAndBenchmarkTests(unittest.TestCase):

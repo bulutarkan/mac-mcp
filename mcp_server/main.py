@@ -75,7 +75,7 @@ from .tools_browser_agent import (
 )
 from .tools_interactive import ask_choice, ask_confirmation, ask_user
 from .tools_voice import ask_user_voice
-from . import applescript_host, ax_native
+from . import applescript_host, ax_native, ax_watch
 from .tools_update import mac_mcp_update
 from .tools_memory import memory_add, memory_search, memory_get, memory_update, memory_delete
 from .tools_lessons import (
@@ -2352,3 +2352,5 @@ if os.getenv("MAC_MCP_MANAGED_SERVER") == "1":
     applescript_host.enable()
     # Native Accessibility observer (the AppleScript observer stays the fallback).
     ax_native.enable()
+    # Accessibility change watcher that lets unchanged windows skip full walks.
+    ax_watch.enable()

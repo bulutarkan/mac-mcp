@@ -40,7 +40,7 @@ from .native_targets import (
     window_handle_map as _window_handle_map,
 )
 from .native_window_capture import resolve_window_id as _resolve_native_window_id
-from . import ax_native
+from . import ax_native, ax_watch
 from .security import Settings, truncate
 from .computer_use_perf import record_computer_use_sample
 from .perception import finalize_perception_telemetry, refresh_perception_size
@@ -66,6 +66,9 @@ _RECORD_SEPARATOR = chr(30)
 _ELEMENT_ID_RE = re.compile(r"^w[1-9][0-9]*(?:/[1-9][0-9]*)*$")
 _OBSERVATION_TTL_S = 300
 _OBSERVATION_CONDITIONAL_MAX_AGE_S = 0.75
+# With an unchanged Accessibility change token, a full walk is still forced
+# this long after the last one, for changes an app does not announce.
+_OBSERVATION_EVENT_MAX_AGE_S = 30.0
 _OBSERVATION_DELTA_MAX_CHANGED = 12
 _NATIVE_FINGERPRINT_STATE_DEPTH = 2
 _NATIVE_FINGERPRINT_STATE_MAX_CHILDREN = 24
@@ -1416,6 +1419,7 @@ def _save_observation(
     max_children: int = 30,
     fingerprint: Optional[str] = None,
     tree_revision: Optional[str] = None,
+    change_token: Optional[str] = None,
 ) -> str:
     observation_id = f"obs_{uuid.uuid4().hex}"
     now = time.time()
@@ -1438,6 +1442,7 @@ def _save_observation(
                 _native_fingerprint_components(metadata, nodes, window_index)
             ),
             "tree_revision": tree_revision or _native_tree_revision(metadata, nodes, window_index),
+            "change_token": change_token,
             "nodes": {node["element_id"]: node for node in nodes},
         }
         expired = [
@@ -1785,10 +1790,14 @@ def _collect_observation(
     ocr: bool,
     deadline: Optional[float] = None,
     app_pid: Optional[int] = None,
+    watch_pid: Optional[int] = None,
 ) -> Tuple[Dict[str, Any], Optional[bytes]]:
     local_deadline = time.monotonic() + _OBSERVE_BUDGET_S
     if deadline is not None:
         local_deadline = min(local_deadline, deadline)
+    # Taken before the walk: any change during or after it moves the token.
+    watched_pid = app_pid or watch_pid
+    change_token = ax_watch.change_token(watched_pid) if watched_pid else None
     ok, raw, error, observer = _read_native_tree(
         app, window_index, max_depth, max_children, app_pid=app_pid,
         timeout_s=_operation_timeout(local_deadline, 20),
@@ -1830,6 +1839,7 @@ def _collect_observation(
         active_app, window_index, nodes, metadata,
         max_depth=max_depth, max_children=max_children,
         fingerprint=fingerprint, tree_revision=tree_revision,
+        change_token=change_token if int(metadata.get("pid") or 0) == int(watched_pid or -1) else None,
     )
 
     selected_handle = selected_window.get("window_handle") if selected_window else None
@@ -2026,7 +2036,18 @@ def observe_ui(
         started = time.perf_counter()
         if compatible_previous and not include_screenshot and not ocr:
             full_age = time.time() - float(previous.get("full_refresh_at") or previous.get("created_at") or 0)
+            validation = None
             if full_age < _OBSERVATION_CONDITIONAL_MAX_AGE_S:
+                validation = "bounded_child_state_fingerprint"
+            elif (
+                full_age < _OBSERVATION_EVENT_MAX_AGE_S
+                and previous.get("change_token")
+                and ax_watch.change_token(int(previous.get("app_pid") or 0)) == previous.get("change_token")
+            ):
+                # The app reported no Accessibility change since the full walk;
+                # the bounded fingerprint still has to agree.
+                validation = "ax_notifications"
+            if validation:
                 fingerprint, _fingerprint_error = _probe_native_observation_fingerprint(
                     resolved_app,
                     int(window_index),
@@ -2039,7 +2060,7 @@ def observe_ui(
                     compact = _native_not_modified_payload(
                         str(previous_observation_id),
                         previous,
-                        validation="bounded_child_state_fingerprint",
+                        validation=validation,
                         ax_traversals=0,
                         duration_ms=int((time.perf_counter() - started) * 1000),
                     )
@@ -2055,6 +2076,7 @@ def observe_ui(
             bool(ocr),
             deadline=deadline,
             app_pid=resolved_pid,
+            watch_pid=int(previous.get("app_pid") or 0) if compatible_previous else None,
         )
         if not payload.get("ok") or not compatible_previous or include_screenshot or ocr:
             if previous_observation_id:
