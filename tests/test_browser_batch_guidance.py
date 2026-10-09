@@ -35,10 +35,13 @@ class BrowserBatchGuidanceTests(unittest.TestCase):
         description = BROWSER_ACT_DESCRIPTION
         self.assertTrue(description.startswith("BATCH-FIRST:"))
         self.assertIn(
-            "one browser_observe -> one batched browser_act -> one browser_observe verification",
+            "one browser_observe -> one batched browser_act -> verify from its returned changes",
             description,
         )
         self.assertIn("instead of one call per field", description)
+        self.assertNotIn("browser_observe verification", description)  # act returns changes; no default re-observe
+        self.assertIn("a missed target returns near_matches", description)
+        self.assertIn("Off-screen targets are scrolled into view", description)
         self.assertIn("type/select/click/scroll", description)
         self.assertIn("custom dropdowns can use select", description)
         for target in ("query", "role", "text_match"):
@@ -66,7 +69,7 @@ class BrowserBatchGuidanceTests(unittest.TestCase):
         self.assertIn("observe once", act)
         self.assertIn("one browser_act", act)
         self.assertIn("type/select/click/scroll", act)
-        self.assertIn("observe verify", act)
+        self.assertIn("verify from its changes", act)
         self.assertIn("Custom dropdowns: select", act)
         self.assertIn("query/role/text_match", act)
         self.assertIn("Split only for dependencies", act)
@@ -74,7 +77,7 @@ class BrowserBatchGuidanceTests(unittest.TestCase):
         observe = compact(BROWSER_OBSERVE_DESCRIPTION)
         self.assertIn("BATCH-FIRST HINT", observe)
         self.assertIn("one browser_act", observe)
-        self.assertIn("verify once", observe)
+        self.assertIn("verify from its changes", observe)
         self.assertIn("dependency/rerender", observe)
         self.assertIn("stale/takeover", observe)
         self.assertIn("consequential verification", observe)

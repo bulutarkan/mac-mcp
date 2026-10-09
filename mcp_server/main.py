@@ -133,7 +133,7 @@ MCP_AGENT_INSTRUCTIONS = (
 )
 
 BROWSER_OBSERVE_DESCRIPTION = (
-    "BATCH-FIRST HINT: multiple independent controls -> one browser_act for all follow-ups -> verify once. "
+    "BATCH-FIRST HINT: multiple independent controls -> one browser_act for all follow-ups -> verify from its changes. "
     "Re-observe only for dependency/rerender, stale/takeover risk, or consequential verification. "
     "High-level browser observation. Returns compact DOM with stable e1/e2 IDs; optional JPEG visuals keep the DOM list in the same response. "
     "When multiple independent actionable form controls are present or discoverable, follow this observation with one browser_act "
@@ -146,10 +146,12 @@ BROWSER_OBSERVE_DESCRIPTION = (
 )
 
 BROWSER_ACT_DESCRIPTION = (
-    "BATCH-FIRST: forms observe once -> one browser_act with independent type/select/click/scroll -> observe verify. "
+    "BATCH-FIRST: observe once -> one browser_act with independent type/select/click/scroll -> verify from its changes. "
     "Custom dropdowns: select. Targets: element_id or query/role/text_match. Split only for dependencies. "
     "Prefer one browser_act call containing all independent actions instead of one call per field. "
-    "Recommended workflow: one browser_observe -> one batched browser_act -> one browser_observe verification. "
+    "Recommended workflow: one browser_observe -> one batched browser_act -> verify from its returned changes (url/title change, "
+    "new controls with ids, messages, invalid fields, an open modal); observe again only when changes do not answer it. "
+    "Off-screen targets are scrolled into view; a missed target returns near_matches. "
     "Combine independent type/select/click/scroll actions in the same actions list; custom dropdowns can use select. "
     "Targets may use stable element_id or semantic query/role/text_match, so element IDs are not always required. "
     "Split into separate action groups only when an earlier action materially changes later controls, stale-target or human-takeover risk requires re-observation, "

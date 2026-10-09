@@ -55,11 +55,11 @@ class CoreCatalogDescriptionTests(unittest.TestCase):
                 self.assertIn(name, observability._CORE_TOOL_NAMES)
 
         act = compact["browser_act"]
-        for phrase in ("BATCH-FIRST:", "observe once", "one browser_act", "type/select/click/scroll", "observe verify",
+        for phrase in ("BATCH-FIRST:", "observe once", "one browser_act", "type/select/click/scroll", "verify from its changes",
                        "Custom dropdowns: select", "query/role/text_match", "+intent", "Split only for dependencies"):
             self.assertIn(phrase, act)
         observe = compact["browser_observe"]
-        for phrase in ("BATCH-FIRST HINT", "one browser_act", "verify once", "dependency/rerender", "stale/takeover",
+        for phrase in ("BATCH-FIRST HINT", "one browser_act", "verify from its changes", "dependency/rerender", "stale/takeover",
                        "consequential verification"):
             self.assertIn(phrase, observe)
         self.assertIn("fail closed", compact["mac_act"])

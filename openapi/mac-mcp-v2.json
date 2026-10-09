@@ -2994,7 +2994,7 @@
       "post": {
         "operationId": "browser_observe",
         "summary": "browser_observe",
-        "description": "BATCH-FIRST HINT: multiple independent controls -> one browser_act for all follow-ups -> verify once. Re-observe only for dependency/rerender, stale/takeover risk, or consequential verification. High-level browser observation. Returns compact DOM with stable e1/e2 IDs; optional JPEG visuals keep the",
+        "description": "BATCH-FIRST HINT: multiple independent controls -> one browser_act for all follow-ups -> verify from its changes. Re-observe only for dependency/rerender, stale/takeover risk, or consequential verification. High-level browser observation. Returns compact DOM with stable e1/e2 IDs; optional JPEG visu",
         "requestBody": {
           "required": true,
           "content": {
@@ -3287,7 +3287,7 @@
       "post": {
         "operationId": "browser_act",
         "summary": "browser_act",
-        "description": "BATCH-FIRST: forms observe once -> one browser_act with independent type/select/click/scroll -> observe verify. Custom dropdowns: select. Targets: element_id or query/role/text_match. Split only for dependencies. Prefer one browser_act call containing all independent actions instead of one call per ",
+        "description": "BATCH-FIRST: observe once -> one browser_act with independent type/select/click/scroll -> verify from its changes. Custom dropdowns: select. Targets: element_id or query/role/text_match. Split only for dependencies. Prefer one browser_act call containing all independent actions instead of one call p",
         "requestBody": {
           "required": true,
           "content": {

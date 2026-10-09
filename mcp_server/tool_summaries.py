@@ -90,15 +90,15 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "window_index/tab_index still works for a single tab."
     ),
     "browser_observe": (
-        "BATCH-FIRST HINT: observe once -> one browser_act for all independent controls -> verify once. Re-observe only for "
-        "dependency/rerender, stale/takeover risk, or consequential verification. Returns DOM element IDs."
+        "BATCH-FIRST HINT: observe once -> one browser_act for all independent controls -> verify from its changes. Re-observe "
+        "only for dependency/rerender, stale/takeover risk, or consequential verification. Returns element IDs."
     ),
     "browser_find": (
         "Read-only: find a rendered element by query/role/text; within='text in one item' limits it to that item. "
         "Not needed before acting: browser_act takes the same query/role/within and resolves the target itself."
     ),
     "browser_act": (
-        "BATCH-FIRST: forms observe once -> one browser_act with type/select/click/scroll -> observe verify. "
+        "BATCH-FIRST: observe once -> one browser_act with type/select/click/scroll -> verify from its changes. "
         "Custom dropdowns: select. Targets: query/role/text_match +intent/within, no find first. Split only for dependencies."
     ),
     "browser_do": (
