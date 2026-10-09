@@ -9,6 +9,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -74,6 +75,9 @@ _NATIVE_FINGERPRINT_STATE_DEPTH = 2
 _NATIVE_FINGERPRINT_STATE_MAX_CHILDREN = 24
 _NATIVE_FINGERPRINT_STATE_MAX_NODES = 80
 _MAX_OBSERVATIONS = 64
+# Estimated memory the cached observations may retain; least recently used
+# entries are evicted first, and the newest one is always kept.
+_OBSERVATION_CACHE_MAX_BYTES = 32 * 1024 * 1024
 _MAX_ACTIONS = 20
 _MAX_TEXT_CHARS = 100_000
 _OBSERVE_BUDGET_S = 30
@@ -1444,17 +1448,46 @@ def _save_observation(
             "tree_revision": tree_revision or _native_tree_revision(metadata, nodes, window_index),
             "change_token": change_token,
             "nodes": {node["element_id"]: node for node in nodes},
+            "used_at": now,
+            "retained_bytes": _OBSERVATION_OVERHEAD_BYTES + sum(_approx_bytes(node) for node in nodes),
         }
-        expired = [
-            key for key, value in _OBSERVATIONS.items()
-            if now - float(value.get("created_at", now)) > _OBSERVATION_TTL_S
-        ]
-        for key in expired:
-            _OBSERVATIONS.pop(key, None)
-        while len(_OBSERVATIONS) > _MAX_OBSERVATIONS:
-            oldest = min(_OBSERVATIONS, key=lambda key: _OBSERVATIONS[key].get("created_at", now))
-            _OBSERVATIONS.pop(oldest, None)
+        _prune_observations_locked(now, keep=observation_id)
     return observation_id
+
+
+# Fixed per-observation estimate for everything except the node records.
+_OBSERVATION_OVERHEAD_BYTES = 4096
+
+
+def _approx_bytes(value: Any) -> int:
+    """Estimate the memory a cached node record holds (overestimates shared values)."""
+    if isinstance(value, dict):
+        return sys.getsizeof(value) + sum(_approx_bytes(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return sys.getsizeof(value) + sum(_approx_bytes(item) for item in value)
+    return sys.getsizeof(value)
+
+
+def _prune_observations_locked(now: float, *, keep: str) -> None:
+    """Drop expired observations, then least recently used ones over the count or byte budget."""
+    expired = [
+        key for key, value in _OBSERVATIONS.items()
+        if now - float(value.get("created_at", now)) > _OBSERVATION_TTL_S
+    ]
+    for key in expired:
+        _OBSERVATIONS.pop(key, None)
+    # Each entry counts all its nodes even when a derived entry shares them
+    # with its base, so the real total never exceeds this estimate.
+    total = sum(int(value.get("retained_bytes") or 0) for value in _OBSERVATIONS.values())
+    while len(_OBSERVATIONS) > 1 and (
+        len(_OBSERVATIONS) > _MAX_OBSERVATIONS or total > _OBSERVATION_CACHE_MAX_BYTES
+    ):
+        candidates = [key for key in _OBSERVATIONS if key != keep]
+        oldest = min(
+            candidates,
+            key=lambda key: float(_OBSERVATIONS[key].get("used_at") or _OBSERVATIONS[key].get("created_at") or 0),
+        )
+        total -= int(_OBSERVATIONS.pop(oldest).get("retained_bytes") or 0)
 
 
 def _get_observation(observation_id: str) -> Optional[Dict[str, Any]]:
@@ -1465,9 +1498,11 @@ def _get_observation(observation_id: str) -> Optional[Dict[str, Any]]:
         owner_key = str(observation.get("owner_key") or "local")
         if owner_key != _observation_owner_key():
             return None
-        if time.time() - float(observation.get("created_at", 0)) > _OBSERVATION_TTL_S:
+        now = time.time()
+        if now - float(observation.get("created_at", 0)) > _OBSERVATION_TTL_S:
             _OBSERVATIONS.pop(observation_id, None)
             return None
+        observation["used_at"] = now
         return observation
 
 
@@ -1541,27 +1576,28 @@ def _store_derived_observation(
             return None, None
         if str(base.get("owner_key") or "local") != _observation_owner_key():
             return None, None
-        derived = copy.deepcopy(base)
-        nodes = dict(derived.get("nodes") or {})
+        # Cached node records are never modified in place, so the derived
+        # entry shares unchanged nodes with its base instead of copying them.
+        derived = {key: copy.deepcopy(value) for key, value in base.items() if key != "nodes"}
+        nodes = dict(base.get("nodes") or {})
+        retained = int(base.get("retained_bytes") or 0)
         for element_id, node in updates.items():
-            if node is None:
-                nodes.pop(element_id, None)
-            else:
+            previous_node = nodes.pop(element_id, None)
+            if previous_node is not None:
+                retained -= _approx_bytes(previous_node)
+            if node is not None:
                 nodes[element_id] = copy.deepcopy(node)
+                retained += _approx_bytes(nodes[element_id])
         observation_id = f"obs_{uuid.uuid4().hex}"
         derived["created_at"] = now
+        derived["used_at"] = now
         derived["nodes"] = nodes
+        derived["retained_bytes"] = max(_OBSERVATION_OVERHEAD_BYTES, retained)
         _OBSERVATIONS[observation_id] = derived
-        expired = [
-            key for key, value in _OBSERVATIONS.items()
-            if now - float(value.get("created_at", now)) > _OBSERVATION_TTL_S
-        ]
-        for key in expired:
-            _OBSERVATIONS.pop(key, None)
-        while len(_OBSERVATIONS) > _MAX_OBSERVATIONS:
-            oldest = min(_OBSERVATIONS, key=lambda key: _OBSERVATIONS[key].get("created_at", now))
-            _OBSERVATIONS.pop(oldest, None)
-        return observation_id, copy.deepcopy(derived)
+        _prune_observations_locked(now, keep=observation_id)
+        result = {key: copy.deepcopy(value) for key, value in derived.items() if key != "nodes"}
+        result["nodes"] = dict(nodes)
+        return observation_id, result
 
 
 def _diff_observation_nodes(
