@@ -1345,6 +1345,12 @@ end tell'''
             pass
 
 
+def _is_foreign_extension_frame_error(exc: HTTPException) -> bool:
+    detail = exc.detail if isinstance(exc.detail, dict) else {"message": exc.detail}
+    text = str(detail.get("message") or "")
+    return "chrome-extension://" in text and "different extension" in text
+
+
 def _execute_js_for_target(
     browser: str,
     js: str,
@@ -1353,7 +1359,14 @@ def _execute_js_for_target(
 ) -> str:
     global _CHROME_NATIVE_JS_DENIED
     if browser == "Google Chrome" and chrome_background_bridge.is_connected() and target.native_id:
-        return chrome_background_bridge.request_execute_js(target.native_id, js, timeout_s=timeout_s)
+        try:
+            return chrome_background_bridge.request_execute_js(target.native_id, js, timeout_s=timeout_s)
+        except HTTPException as exc:
+            # Chrome refuses a debugger on a tab that holds another extension's frame
+            # (password managers on sign-in pages). Apple Events JavaScript still runs
+            # in the background there, so use it when the user allowed it.
+            if not _is_foreign_extension_frame_error(exc) or _CHROME_NATIVE_JS_DENIED:
+                raise
     if browser == "Google Chrome" and _CHROME_NATIVE_JS_DENIED:
         return _chrome_execute_js_via_url_bridge(js, target, timeout_s)
     js_escaped = _js_escape(js)
