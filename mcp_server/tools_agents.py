@@ -1321,6 +1321,12 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
             _release_task_admission(task)
             task["active_agent_id"] = None
             changed = True
+            if agent_status == "cancelled":
+                # A stopped task is cancelled, not failed; say who stopped it.
+                requested_by = (agent_meta.get("cancellation") or {}).get("requested_by")
+                task["state"] = "cancelled"
+                task["failure_reason"] = "cancelled_by_user" if requested_by == "user" else "agent_cancelled"
+                continue
             if agent_status != "completed":
                 task["state"] = "failed"
                 task["failure_reason"] = f"agent_{agent_status}"
@@ -4124,8 +4130,16 @@ def _settle_cancellation(agent_id: str, still_running: List[str]) -> Dict[str, A
             meta = _read_meta(agent_id)
         except Exception:
             pass
+        team_id = str(meta.get("team_id") or "").strip()
+        if team_id:
+            # The killed worker never reached its own exit-time team update, so the
+            # team would keep showing this task as running.
+            try:
+                _team_tick(team_id)
+            except Exception:
+                pass
         try:
-            _wake_global_admission_queue(exclude_team_id=str(meta.get("team_id") or "") or None)
+            _wake_global_admission_queue(exclude_team_id=team_id or None)
         except Exception:
             pass
     return meta

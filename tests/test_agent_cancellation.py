@@ -163,5 +163,31 @@ class DashboardCancelRouteTests(unittest.TestCase):
         self.assertEqual("agt_0123abcd", action.call_args.kwargs["agent_id"])
 
 
+class CancelUpdatesTeamTests(unittest.TestCase):
+    def test_a_confirmed_cancel_updates_the_team_task(self) -> None:
+        from tests.test_agent_team_outcome import TeamFixture
+
+        class Case(TeamFixture, unittest.TestCase):
+            def runTest(self) -> None:
+                team_id = "team_cancel_tick"
+                agent_id = self.agent("agt_tick", "running", team_id=team_id, task_id="t1")
+                self.team(team_id, [{"id": "t1", "state": "running", "agent_ids": [agent_id],
+                                     "active_agent_id": agent_id, "latest_agent_id": agent_id}], [agent_id])
+                with patch.object(tools_agents, "_release_agent_admission"), \
+                     patch.object(tools_agents, "_refresh_agent_worktree"), \
+                     patch.object(tools_agents, "_wake_global_admission_queue"):
+                    tools_agents.agent_action(MagicMock(), action="cancel", agent_id=agent_id, requested_by="user")
+                summary = tools_agents.dashboard_team_summary(team_id)
+                self.assertEqual(0, summary["pending_count"])
+                self.assertEqual("cancelled", summary["tasks"][0]["state"])
+                self.assertEqual("cancelled_by_user", summary["tasks"][0]["failure_reason"])
+                self.assertEqual("cancelled", summary["outcome"])
+                self.assertEqual(1, len(tools_agents._read_team(team_id)["agent_ids"]), "not started again")
+
+        result = unittest.TestResult()
+        Case().run(result)
+        self.assertEqual([], result.failures + result.errors)
+
+
 if __name__ == "__main__":
     unittest.main()
