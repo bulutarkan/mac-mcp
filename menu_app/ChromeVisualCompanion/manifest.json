@@ -25,6 +25,7 @@
     "https://*/*"
   ],
   "permissions": [
-    "debugger"
+    "debugger",
+    "alarms"
   ]
 }

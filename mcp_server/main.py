@@ -167,7 +167,10 @@ BROWSER_ACT_DESCRIPTION = (
     "the new tab_handle without activating it, or ambiguous_new_tabs / NO_NEW_TAB. "
     "Long or virtualized lists (feeds, results, virtual tables): one {type:'scan'} action scrolls the list's container "
     "(element_id/query, or the largest scrollable area) in bounded steps and returns de-duplicated items "
-    "(key_field text|href, item_selector optional) with stopped=end_of_list|no_new_items|max_items|max_steps|timeout|payload_budget."
+    "(key_field text|href, item_selector optional) with stopped=end_of_list|no_new_items|max_items|max_steps|timeout|payload_budget. "
+    "Chrome: hover moves the real pointer onto a target (CSS :hover menus); drag presses, moves and releases from the "
+    "target to to_element_id / to_query / dx,dy. A native alert/confirm/prompt surfaces as browser_dialog_open with its "
+    "text; answer it only with {type:'dialog', decision:'accept'|'dismiss'} (prompt_text for prompt())."
 )
 
 _BROWSER_DO_OUTPUT_BUDGET_BYTES = 8_192

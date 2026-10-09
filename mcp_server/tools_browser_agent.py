@@ -3586,6 +3586,143 @@ def _extract_action(
     return out
 
 
+def _chrome_native_id(browser: str, tab_handle: Optional[str], target: Any = None) -> Optional[str]:
+    if target is not None and getattr(target, "native_id", None):
+        return str(target.native_id)
+    try:
+        _, _, row = browser_tabs.resolve_tab(browser, str(tab_handle or ""))
+    except KeyError:
+        return None
+    return str(row.get("native_id") or "") or None
+
+
+def _dialog_action(browser: str, action: Dict[str, Any], tab_handle: Optional[str]) -> Dict[str, Any]:
+    """Answer an open native dialog with the caller's explicit accept/dismiss decision."""
+    decision = str(action.get("decision") or "").strip().lower()
+    base = {"type": "dialog", "decision": decision or None}
+    if decision not in {"accept", "dismiss"}:
+        return {**base, "ok": False, "error": "invalid_dialog_decision",
+                "message": "dialog needs decision='accept' or 'dismiss'; nothing is answered by default."}
+    if _norm_browser(browser) != "Google Chrome":
+        return {**base, "ok": False, "error": "dialog_unsupported", "reason_code": "DIALOG_UNSUPPORTED_SAFARI",
+                "message": "Safari dialogs cannot be answered in the background; ask the user to answer it in Safari."}
+    native_id = _chrome_native_id(browser, tab_handle)
+    if not native_id:
+        return {**base, "ok": False, "error": "stale_tab_handle", "reason_code": "STALE_TAB_HANDLE", "observe_again": True}
+    prompt = action.get("prompt_text")
+    try:
+        out = chrome_background_bridge.request_handle_dialog(
+            native_id, decision == "accept", str(prompt) if isinstance(prompt, str) else None,
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+        return {**base, "ok": False, "error": str(detail.get("error") or "chrome_dialog_failed"),
+                "message": str(detail.get("message") or ""), "observe_again": True}
+    return {**base, "ok": True, "answered": True, "dialog": out.get("dialog"), "observe_again": True}
+
+
+def _element_center_js(element_id: str, scroll_into_view: bool) -> str:
+    eid = json.dumps(str(element_id or ""))
+    scroll = "true" if scroll_into_view else "false"
+    return f"""(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var s=__mcpState(), el=__mcpRecoverElement({eid},s);
+if(!el)return __mcpB64({{ok:false,error:'stale_element',reason_code:'ELEMENT_DETACHED',observe_again:true}});
+if({scroll}){{try{{el.scrollIntoView({{block:'center',inline:'center'}});}}catch(e){{}}}}
+var r=el.getBoundingClientRect();
+return __mcpB64({{ok:true,x:r.left+r.width/2,y:r.top+r.height/2,w:r.width,h:r.height,
+  in_view:r.width>0&&r.height>0&&r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth}});
+}})()"""
+
+
+_DRAG_STEPS = 10
+
+
+def _gesture_action(
+    settings: Settings,
+    browser: str,
+    typ: str,
+    work_action: Dict[str, Any],
+    action: Dict[str, Any],
+    window_index: int,
+    tab_index: Optional[int],
+    tab_handle: Optional[str],
+    *,
+    resolve_target: Callable[[Dict[str, Any]], Tuple[Dict[str, Any], Any]],
+    native_target: Any = None,
+) -> Dict[str, Any]:
+    """Trusted pointer gestures (Chrome): hover moves the real pointer; drag presses, moves and releases."""
+    base: Dict[str, Any] = {"type": typ, "element_id": work_action.get("element_id")}
+    if _norm_browser(browser) != "Google Chrome":
+        return {**base, "ok": False, "error": "gesture_unsupported", "reason_code": "GESTURE_UNSUPPORTED_SAFARI",
+                "message": "Safari has no background pointer; hover and drag need Chrome with the Mac MCP companion.",
+                "_js_calls": 0}
+    js_calls = 0
+
+    def center(element_id: str, scroll: bool) -> Dict[str, Any]:
+        nonlocal js_calls
+        js_calls += 1
+        return _run_json_js(settings, browser, _element_center_js(element_id, scroll), window_index, tab_index, tab_handle)
+
+    if not work_action.get("element_id"):
+        return {**base, "ok": False, "error": "target_required", "message": f"{typ} needs element_id or query/role.",
+                "_js_calls": 0}
+    source = center(str(work_action["element_id"]), typ == "hover")
+    if not source.get("ok") or not source.get("in_view"):
+        return {**base, "ok": False, "error": source.get("error") or "endpoint_offscreen", "observe_again": True,
+                "message": "The source is not visible in the viewport; scroll it into view first.", "_js_calls": js_calls}
+    sx, sy = float(source["x"]), float(source["y"])
+    hold_ms = max(0, min(int(action.get("hold_ms", 300)), 3000))
+    if typ == "hover":
+        steps = [{"type": "move", "x": sx, "y": sy, "delay_ms": hold_ms}]
+        destination = None
+    else:
+        to_id = action.get("to_element_id")
+        if not to_id and (action.get("to_query") or action.get("to_role")):
+            found, resolved = resolve_target({"type": "drag", "query": action.get("to_query") or "",
+                                              "role": action.get("to_role"), "within": action.get("to_within")})
+            if isinstance(resolved, dict) and resolved.get("ok") is False:
+                return {**base, **resolved, "type": typ, "endpoint": "destination", "_js_calls": js_calls}
+            to_id = found.get("element_id")
+        if to_id:
+            dest = center(str(to_id), False)
+            if not dest.get("ok") or not dest.get("in_view"):
+                return {**base, "ok": False, "error": dest.get("error") or "endpoint_offscreen", "observe_again": True,
+                        "endpoint": "destination", "message": "The drop target is not visible in the viewport.",
+                        "_js_calls": js_calls}
+            dx_, dy_ = float(dest["x"]), float(dest["y"])
+        elif action.get("dx") is not None or action.get("dy") is not None:
+            dx_, dy_ = sx + float(action.get("dx") or 0), sy + float(action.get("dy") or 0)
+        else:
+            return {**base, "ok": False, "error": "destination_required",
+                    "message": "drag needs to_element_id, to_query/to_role or dx/dy.", "_js_calls": js_calls}
+        dx_, dy_ = max(0.0, dx_), max(0.0, dy_)
+        steps = [{"type": "move", "x": sx, "y": sy, "delay_ms": 60}, {"type": "down", "x": sx, "y": sy, "delay_ms": 120}]
+        for index in range(1, _DRAG_STEPS + 1):
+            ratio = index / _DRAG_STEPS
+            steps.append({"type": "move", "x": sx + (dx_ - sx) * ratio, "y": sy + (dy_ - sy) * ratio, "delay_ms": 25})
+        steps += [{"type": "move", "x": dx_, "y": dy_, "delay_ms": 120}, {"type": "up", "x": dx_, "y": dy_}]
+        destination = {"x": round(dx_, 1), "y": round(dy_, 1)}
+    native_id = _chrome_native_id(browser, tab_handle, native_target)
+    if not native_id:
+        return {**base, "ok": False, "error": "stale_tab_handle", "reason_code": "STALE_TAB_HANDLE",
+                "observe_again": True, "_js_calls": js_calls}
+    try:
+        out = chrome_background_bridge.request_gesture(native_id, steps)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+        return {**base, "ok": False, "error": str(detail.get("error") or "chrome_gesture_failed"),
+                "message": str(detail.get("message") or ""), "steps_done": detail.get("steps_done", 0),
+                "automatic_retry": False, "observe_again": True, "_js_calls": js_calls}
+    result = {**base, "ok": True, "input_trust": "trusted", "activation_mode": "trusted_chrome_cdp",
+              "from": {"x": round(sx, 1), "y": round(sy, 1)}, "steps_done": out.get("steps_done"),
+              "verification": "dispatched", "observe_again": True, "_js_calls": js_calls}
+    if destination is not None:
+        result["to"] = destination
+    return result
+
+
 _SCAN_MAX_ITEMS = 500
 _SCAN_MAX_STEPS = 50
 _SCAN_PAYLOAD_BYTES = 48_000
@@ -4070,7 +4207,7 @@ def _has_locator(action: Dict[str, Any]) -> bool:
     return any(action.get(key) for key in _LOCATOR_KEYS)
 _ACT_TYPES = (
     "click", "double_click", "type", "type_text", "paste", "select", "scroll", "focus",
-    "wait", "key", "keyboard", "shortcut", "extract", "scan",
+    "wait", "key", "keyboard", "shortcut", "extract", "scan", "dialog", "hover", "drag",
 )
 # Agents often name the action kind "action" instead of "type"; accept it.
 _ACT_TYPE_ALIASES = ("action", "kind", "op")
@@ -4386,7 +4523,7 @@ def _browser_act_locked(
             in_flight = []
             resolved_target: Optional[Dict[str, Any]] = None
             work_action = dict(action)
-            if typ not in {"wait", "key", "keyboard", "shortcut", "extract", "scan"} or (
+            if typ not in {"wait", "key", "keyboard", "shortcut", "extract", "scan", "dialog"} or (
                 typ == "scan" and not action.get("element_id") and _has_locator(action)
             ):
                 work_action, resolved_target = resolve_target(action)
@@ -4394,7 +4531,8 @@ def _browser_act_locked(
                     results.append({"type": typ, **resolved_target})
                     break
 
-            if typ in {"wait", "key", "keyboard", "shortcut", "select", "extract", "scan", "click", "double_click", "type", "type_text", "paste"}:
+            if typ in {"wait", "key", "keyboard", "shortcut", "select", "extract", "scan", "dialog", "hover", "drag",
+                       "click", "double_click", "type", "type_text", "paste"}:
                 if not flush_pending():
                     break
                 in_flight = [typ]
@@ -4456,6 +4594,30 @@ def _browser_act_locked(
                     if not action_result.get("ok"):
                         break
                     current_observation_id = None
+                elif typ == "dialog":
+                    dialog_result = _dialog_action(browser, action, tab_handle)
+                    results.append(dialog_result)
+                    current_observation_id = None
+                    if dialog_result.get("ok"):
+                        mutation_dispatched = True
+                    else:
+                        break
+                elif typ in {"hover", "drag"}:
+                    gesture_target, blocked = revalidate_mutation(typ)
+                    if blocked is not None:
+                        results.append(blocked)
+                        break
+                    gesture_result = _gesture_action(
+                        settings, browser, typ, work_action, action, window_index, tab_index, tab_handle,
+                        resolve_target=resolve_target, native_target=gesture_target,
+                    )
+                    internal_js_calls += int(gesture_result.pop("_js_calls", 0))
+                    if gesture_result.get("steps_done"):
+                        mutation_dispatched = True
+                    results.append(gesture_result)
+                    current_observation_id = None
+                    if not gesture_result.get("ok"):
+                        break
                 elif typ == "scan":
                     scan_result = _scan_action(
                         settings, browser, work_action, window_index, tab_index, tab_handle,

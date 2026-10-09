@@ -127,7 +127,7 @@ class BrowserActNotExecutedTests(unittest.TestCase):
         from mcp_server.workflow_checkpoints import exception_not_executed
 
         for actions in (
-            [{"type": "click", "query": "Reply"}, {"type": "hover", "query": "Save"}],
+            [{"type": "click", "query": "Reply"}, {"type": "teleport", "query": "Save"}],
             [{"query": "Reply"}],
         ):
             with self.subTest(actions=actions), \

@@ -152,6 +152,7 @@ class ChromeBackgroundBridge:
         self._websocket: Optional[WebSocket] = None
         self._connection_id: Optional[str] = None
         self._pending: Dict[str, _Pending] = {}
+        self._features: frozenset = frozenset()
 
     def configured_token(self) -> str:
         configured = str(os.getenv("MAC_MCP_CHROME_BRIDGE_TOKEN", "") or "").strip()
@@ -161,13 +162,32 @@ class ChromeBackgroundBridge:
         with self._lock:
             return self._loop is not None and self._websocket is not None
 
-    def _attach(self, websocket: WebSocket, loop: asyncio.AbstractEventLoop) -> str:
+    def _attach(self, websocket: WebSocket, loop: asyncio.AbstractEventLoop, features: Any = None) -> str:
         connection_id = uuid.uuid4().hex
+        names = features if isinstance(features, list) else []
         with self._lock:
             self._loop = loop
             self._websocket = websocket
             self._connection_id = connection_id
+            self._features = frozenset(str(name)[:40] for name in names[:20])
         return connection_id
+
+    def supports(self, feature: str) -> bool:
+        with self._lock:
+            return feature in self._features
+
+    def require(self, feature: str) -> None:
+        """Refuse before sending when the loaded companion predates a capability."""
+        if self.is_connected() and not self.supports(feature):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "ok": False, "error": "chrome_companion_update_required", "retryable": False,
+                    "feature": feature,
+                    "message": "The loaded Mac MCP Chrome Companion is older than this server. Reload it once at "
+                               "chrome://extensions (Mac MCP Chrome Companion -> reload) and retry.",
+                },
+            )
 
     def _detach(self, connection_id: str) -> None:
         with self._lock:
@@ -219,14 +239,21 @@ class ChromeBackgroundBridge:
                 )
             response = dict(pending.response or {})
             if not response.get("ok"):
+                error = str(response.get("error") or "chrome_background_transport_failed")
+                detail = {
+                    "ok": False,
+                    "error": error,
+                    "retryable": error != "browser_dialog_open",
+                    "message": str(response.get("message") or "Chrome background browser request failed."),
+                }
+                for key in ("dialog", "steps_done"):
+                    if key in response:
+                        detail[key] = response[key]
+                if error == "browser_dialog_open":
+                    detail["required_action"] = "browser_act with {type: 'dialog', decision: 'accept' or 'dismiss'}"
                 raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail={
-                        "ok": False,
-                        "error": str(response.get("error") or "chrome_background_transport_failed"),
-                        "retryable": True,
-                        "message": str(response.get("message") or "Chrome background browser request failed."),
-                    },
+                    status_code=status.HTTP_409_CONFLICT if error == "browser_dialog_open" else status.HTTP_502_BAD_GATEWAY,
+                    detail=detail,
                 )
             return response
         finally:
@@ -263,6 +290,21 @@ class ChromeBackgroundBridge:
             },
             timeout_s=timeout_s,
         )
+
+    def request_handle_dialog(
+        self, chrome_tab_id: str | int, accept: bool, prompt_text: Optional[str] = None, *, timeout_s: float = 8.0,
+    ) -> Dict[str, Any]:
+        self.require("dialogs")
+        payload: Dict[str, Any] = {"chrome_tab_id": int(chrome_tab_id), "accept": bool(accept)}
+        if prompt_text is not None:
+            payload["prompt_text"] = str(prompt_text)[:2000]
+        return self._request("handle_dialog", payload, timeout_s=timeout_s)
+
+    def request_gesture(
+        self, chrome_tab_id: str | int, steps: list, *, timeout_s: float = 15.0,
+    ) -> Dict[str, Any]:
+        self.require("gestures")
+        return self._request("gesture", {"chrome_tab_id": int(chrome_tab_id), "steps": list(steps)}, timeout_s=timeout_s)
 
     def request_set_file_input(
         self, chrome_tab_id: str | int, css_selector: str, file_path: str, *, timeout_s: float = 20.0,
@@ -321,7 +363,7 @@ async def chrome_background_bridge_websocket(websocket: WebSocket) -> None:
         return
 
     loop = asyncio.get_running_loop()
-    connection_id = chrome_background_bridge._attach(websocket, loop)
+    connection_id = chrome_background_bridge._attach(websocket, loop, hello.get("features"))
     await websocket.send_json({"type": "hello_ack"})
     try:
         while True:

@@ -58,7 +58,7 @@ class BrowserSchemaTests(unittest.TestCase):
             ("browser_observe", {"browser": "Safari", "visual": "huge"}),
             ("browser_act", {"browser": "Safari", "actions": [{"type": "click"}], "return_state": "verbose"}),
             ("browser_act", {"browser": "Safari", "actions": []}),
-            ("browser_act", {"browser": "Safari", "actions": [{"type": "hover", "query": "x"}]}),
+            ("browser_act", {"browser": "Safari", "actions": [{"type": "teleport", "query": "x"}]}),
             ("browser_act", {"browser": "Safari", "actions": [{"type": "type", "query": "Email"}]}),
             ("browser_act", {"browser": "Safari", "actions": [{"type": "key"}]}),
             ("browser_act", {"browser": "Safari", "actions": [{"type": "click"}] * 21}),

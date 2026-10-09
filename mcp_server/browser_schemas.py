@@ -57,6 +57,11 @@ def validate_action(index: int, action: Any) -> Dict[str, Any]:
         raise ValueError(f"actions[{index}] ({typ}) needs text (or handoff_id from context_handoff)")
     if typ in _KEY_TYPES and not action.get("key"):
         raise ValueError(f"actions[{index}] ({typ}) needs key, e.g. 'Enter', 'Escape', 'a'")
+    if typ == "dialog" and str(action.get("decision") or "").lower() not in {"accept", "dismiss"}:
+        raise ValueError(f"actions[{index}] (dialog) needs decision='accept' or 'dismiss'")
+    if typ == "drag" and not (action.get("to_element_id") or action.get("to_query") or action.get("to_role")
+                              or action.get("dx") is not None or action.get("dy") is not None):
+        raise ValueError(f"actions[{index}] (drag) needs to_element_id, to_query/to_role or dx/dy")
     return action
 
 
@@ -82,33 +87,38 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
         "type": {"type": "string", "enum": list(_ACT_TYPES)},
-        "element_id": _str("Id from browser_observe/browser_find; or describe the target with query/role/text_match."),
+        "element_id": _str("From observe/find; or use query/role/text_match."),
         "query": _str("Words for the target, e.g. 'Email field', 'Continue'."),
         "role": _str("ARIA role, e.g. button, link, textbox, combobox."),
         "text_match": _str("Visible text the target contains."),
-        "within": _str("Phrase unique to one repeated item; limits matching to it."),
+        "within": _str("Phrase unique to one repeated item."),
         "within_element_id": {"type": "string"},
         "intent": _str("Optional; only breaks ties between equal targets."),
         "text": _str("type/type_text/paste: text to enter. wait for=text: text to wait for."),
-        "handoff_id": _str("type/paste: sealed handoff from context_handoff instead of text."),
+        "handoff_id": _str("type/paste: context_handoff id instead of text."),
         "option": _str("select: option label or value."),
         "key": _str("key/keyboard/shortcut: Enter, Escape, Tab, ArrowDown or one character."),
         "modifiers": {"type": "array", "items": {"type": "string"}},
         "input_mode": {"type": "string", "enum": ["auto", "dom", "trusted"]},
         "dx": {"type": "number"},
         "dy": {"type": "number"},
-        "for": _str("wait: selector (default), text, element_removed, url_change, network_idle, dom_stable, "
-                    "new_tab (a tab the page opened; returns its tab_handle)."),
-        "url_contains": _str("wait for=new_tab: only a new tab whose URL contains this."),
+        "for": _str("wait: selector (default), text, element_removed, url_change, network_idle, dom_stable, new_tab."),
+        "url_contains": _str("wait for=new_tab: URL filter."),
         "selector": {"type": "string"},
         "timeout_s": {"type": "number", "minimum": 0},
         "wait_s": {"type": "number", "minimum": 0},
         "required": {"type": "boolean"},
         "fields": {"type": "array", "items": {"type": "string"}},
-        "item_selector": _str("scan: CSS selector for one list item (default: list rows/items in the container)."),
-        "key_field": {"type": "string", "enum": ["text", "href"], "description": "scan: de-duplicate items by text or link."},
+        "item_selector": _str("scan: CSS for one row (default: guessed rows)."),
+        "key_field": {"type": "string", "enum": ["text", "href"]},
         "max_items": {"type": "integer", "minimum": 1, "maximum": 500},
         "max_steps": {"type": "integer", "minimum": 1, "maximum": 50},
+        "decision": {"type": "string", "enum": ["accept", "dismiss"]},
+        "prompt_text": {"type": "string"},
+        "to_element_id": _str("drag: drop target (or to_query/to_role, dx/dy)."),
+        "to_query": {"type": "string"},
+        "to_role": {"type": "string"},
+        "hold_ms": {"type": "integer", "minimum": 0, "maximum": 3000},
     },
     "required": ["type"],
     "additionalProperties": True,
@@ -116,6 +126,7 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
         {"if": {"properties": {"type": {"enum": list(_TEXT_TYPES)}}},
          "then": {"anyOf": [{"required": ["text"]}, {"required": ["handoff_id"]}]}},
         {"if": {"properties": {"type": {"enum": list(_KEY_TYPES)}}}, "then": {"required": ["key"]}},
+        {"if": {"properties": {"type": {"enum": ["dialog"]}}}, "then": {"required": ["decision"]}},
     ],
 }
 

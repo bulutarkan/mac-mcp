@@ -6,6 +6,10 @@ const CONFIG = globalThis.MAC_MCP_CHROME_BRIDGE || {};
 const PORT = Number(CONFIG.port || 0);
 const TOKEN = String(CONFIG.token || '');
 const RECONNECT_MS = Math.max(250, Math.min(Number(CONFIG.reconnect_ms || 1000), 10000));
+// Capabilities the server may rely on; an older companion simply does not list them.
+const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect'];
+const MAX_GESTURE_STEPS = 80;
+const DIALOG_TEXT_LIMIT = 300;
 let socket = null;
 let reconnectTimer = null;
 let pingTimer = null;
@@ -93,6 +97,31 @@ function debuggerCommand(target, method, params) {
   });
 }
 
+function dialogWatcher(tabId) {
+  // Resolves when the page shows (or already shows) a native alert/confirm/prompt/beforeunload dialog.
+  let listener = null;
+  const promise = new Promise((resolve) => {
+    listener = (source, method, params) => {
+      if (source.tabId === tabId && method === 'Page.javascriptDialogOpening') resolve(params || {});
+    };
+    chrome.debugger.onEvent.addListener(listener);
+  });
+  return {promise, stop: () => { if (listener) chrome.debugger.onEvent.removeListener(listener); }};
+}
+
+function dialogResult(requestId, tabId, params) {
+  return {
+    type: 'result', request_id: requestId, ok: false, error: 'browser_dialog_open', chrome_tab_id: tabId,
+    message: 'A native browser dialog is open on this tab; nothing else can run until it is answered.',
+    dialog: {
+      dialog_type: String(params.type || 'alert'),
+      message: String(params.message || '').slice(0, DIALOG_TEXT_LIMIT),
+      default_prompt: String(params.defaultPrompt || '').slice(0, DIALOG_TEXT_LIMIT),
+      url: String(params.url || '').slice(0, 500)
+    }
+  };
+}
+
 async function handleExecuteJs(message) {
   const requestId = String(message.request_id || '');
   const tabId = Number(message.chrome_tab_id);
@@ -103,14 +132,24 @@ async function handleExecuteJs(message) {
   }
   const target = {tabId};
   let attached = false;
+  const watcher = dialogWatcher(tabId);
   try {
     const tab = await chrome.tabs.get(tabId);
     if (tab.active === true) { /* active is allowed; transport itself never activates it */ }
     await debuggerAttach(target);
     attached = true;
-    const out = await debuggerCommand(target, 'Runtime.evaluate', {
+    // Page.enable also reports a dialog that was already open before we attached.
+    try { await debuggerCommand(target, 'Page.enable', {}); } catch (_) {}
+    const evaluation = debuggerCommand(target, 'Runtime.evaluate', {
       expression: js, returnByValue: true, awaitPromise: true, userGesture: false
-    });
+    }).then((out) => ({out}));
+    const first = await Promise.race([evaluation, watcher.promise.then((dialog) => ({dialog}))]);
+    if (first.dialog) {
+      evaluation.catch(() => {});
+      send(dialogResult(requestId, tabId, first.dialog));
+      return;
+    }
+    const out = first.out;
     if (out.exceptionDetails) {
       const detail = out.exceptionDetails.exception && out.exceptionDetails.exception.description;
       throw new Error(detail || out.exceptionDetails.text || 'runtime_evaluate_failed');
@@ -124,7 +163,107 @@ async function handleExecuteJs(message) {
   } catch (error) {
     send({type: 'result', request_id: requestId, ok: false, error: 'chrome_debugger_evaluate_failed', message: String(error && error.message || error || 'unknown')});
   } finally {
+    watcher.stop();
     if (attached) { try { await debuggerDetach(target); } catch (_) {} }
+  }
+}
+
+async function handleDialog(message) {
+  // Answers an open dialog only on an explicit accept/dismiss decision from the caller.
+  const requestId = String(message.request_id || '');
+  const tabId = Number(message.chrome_tab_id);
+  if (!requestId || !Number.isInteger(tabId) || tabId < 0 || typeof message.accept !== 'boolean') {
+    send({type: 'result', request_id: requestId, ok: false, error: 'invalid_dialog_request'});
+    return;
+  }
+  const target = {tabId};
+  let attached = false;
+  const watcher = dialogWatcher(tabId);
+  try {
+    await chrome.tabs.get(tabId);
+    await debuggerAttach(target);
+    attached = true;
+    try { await debuggerCommand(target, 'Page.enable', {}); } catch (_) {}
+    const seen = await Promise.race([watcher.promise, new Promise((resolve) => setTimeout(() => resolve(null), 400))]);
+    const params = {accept: message.accept};
+    if (typeof message.prompt_text === 'string') params.promptText = message.prompt_text.slice(0, 2000);
+    await debuggerCommand(target, 'Page.handleJavaScriptDialog', params);
+    send({
+      type: 'result', request_id: requestId, ok: true, chrome_tab_id: tabId, accepted: message.accept,
+      dialog: seen ? {dialog_type: String(seen.type || ''), message: String(seen.message || '').slice(0, DIALOG_TEXT_LIMIT)} : null
+    });
+  } catch (error) {
+    const text = String(error && error.message || error || 'unknown');
+    send({
+      type: 'result', request_id: requestId, ok: false,
+      error: /no dialog/i.test(text) ? 'no_dialog_open' : 'chrome_dialog_failed', message: text
+    });
+  } finally {
+    watcher.stop();
+    if (attached) { try { await debuggerDetach(target); } catch (_) {} }
+  }
+}
+
+async function handleGesture(message) {
+  // A trusted pointer sequence (hover, drag); the button is always released, even on failure.
+  const requestId = String(message.request_id || '');
+  const tabId = Number(message.chrome_tab_id);
+  const steps = Array.isArray(message.steps) ? message.steps : [];
+  const valid = steps.length > 0 && steps.length <= MAX_GESTURE_STEPS && steps.every((step) =>
+    step && ['move', 'down', 'up'].includes(step.type) && Number.isFinite(Number(step.x)) && Number.isFinite(Number(step.y))
+    && Number(step.x) >= 0 && Number(step.y) >= 0);
+  if (!requestId || !Number.isInteger(tabId) || tabId < 0 || !valid) {
+    send({type: 'result', request_id: requestId, ok: false, error: 'invalid_gesture_request'});
+    return;
+  }
+  const target = {tabId};
+  let attached = false;
+  let pressed = null;
+  let done = 0;
+  try {
+    await chrome.tabs.get(tabId);
+    await debuggerAttach(target);
+    attached = true;
+    await debuggerCommand(target, 'Emulation.setFocusEmulationEnabled', {enabled: true});
+    for (const step of steps) {
+      const x = Number(step.x), y = Number(step.y);
+      if (step.type === 'move') {
+        await debuggerCommand(target, 'Input.dispatchMouseEvent', {
+          type: 'mouseMoved', x, y, button: pressed ? 'left' : 'none', buttons: pressed ? 1 : 0, pointerType: 'mouse'
+        });
+      } else if (step.type === 'down') {
+        await debuggerCommand(target, 'Input.dispatchMouseEvent', {
+          type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1, pointerType: 'mouse'
+        });
+        pressed = {x, y};
+      } else {
+        await debuggerCommand(target, 'Input.dispatchMouseEvent', {
+          type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1, pointerType: 'mouse'
+        });
+        pressed = null;
+      }
+      done += 1;
+      const delay = Math.max(0, Math.min(Number(step.delay_ms || 0), 1000));
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    send({type: 'result', request_id: requestId, ok: true, chrome_tab_id: tabId, steps_done: done});
+  } catch (error) {
+    send({
+      type: 'result', request_id: requestId, ok: false, error: 'chrome_gesture_failed', steps_done: done,
+      message: String(error && error.message || error || 'unknown')
+    });
+  } finally {
+    if (attached) {
+      if (pressed) {
+        try {
+          await debuggerCommand(target, 'Input.dispatchMouseEvent', {
+            type: 'mouseReleased', x: pressed.x, y: pressed.y, button: 'left', buttons: 0, clickCount: 1, pointerType: 'mouse'
+          });
+        } catch (_) {}
+      }
+      try { await debuggerCommand(target, 'Emulation.setFocusEmulationEnabled', {enabled: false}); } catch (_) {}
+      try { await debuggerDetach(target); } catch (_) {}
+    }
   }
 }
 
@@ -222,7 +361,7 @@ function connect() {
   const ws = new WebSocket(`ws://127.0.0.1:${PORT}/chrome-background-bridge`);
   socket = ws;
   ws.addEventListener('open', () => {
-    send({type: 'hello', token: TOKEN});
+    send({type: 'hello', token: TOKEN, features: FEATURES, version: chrome.runtime.getManifest().version});
     pingTimer = setInterval(() => send({type: 'ping'}), 20000);
   });
   ws.addEventListener('message', (event) => {
@@ -232,6 +371,8 @@ function connect() {
     else if (message && message.type === 'execute_js') void handleExecuteJs(message);
     else if (message && message.type === 'dispatch_mouse') void handleDispatchMouse(message);
     else if (message && message.type === 'set_file_input') void handleSetFileInput(message);
+    else if (message && message.type === 'handle_dialog') void handleDialog(message);
+    else if (message && message.type === 'gesture') void handleGesture(message);
   });
   ws.addEventListener('close', () => {
     if (socket === ws) socket = null;
@@ -245,6 +386,12 @@ function connect() {
 
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
+// A restarted server closes the socket while Chrome may have no page loading to wake this
+// worker; a periodic alarm wakes it so it reconnects on its own.
+if (chrome.alarms) {
+  chrome.alarms.create('mac-mcp-reconnect', {periodInMinutes: 0.5});
+  chrome.alarms.onAlarm.addListener((alarm) => { if (alarm && alarm.name === 'mac-mcp-reconnect') connect(); });
+}
 chrome.runtime.onMessage.addListener((message) => {
   if (message && message.type === 'mac_mcp_bridge_wake') connect();
 });

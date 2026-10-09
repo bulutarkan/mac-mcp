@@ -75,6 +75,10 @@ REGISTRY: Dict[str, ErrorSpec] = {
     "tab_target_required": _VALIDATION,
     # The Chrome companion is disconnected: the request was never sent.
     "chrome_background_transport_unavailable": ErrorSpec("preflight", "not_executed", "safe_retry", 409),
+    "chrome_companion_update_required": ErrorSpec("preflight", "not_executed", "wait_for_user", 409),
+    # A native dialog opened (often by the action itself); answer it with browser_act type=dialog.
+    "browser_dialog_open": ErrorSpec("execution", "unknown", "observe_again", 409),
+    "no_dialog_open": ErrorSpec("execution", "not_executed", "observe_again", 409),
     "provider_incompatible": ErrorSpec("preflight", "not_executed", "never_retry", 409),
     "outcome_unknown": ErrorSpec("execution", "unknown", "observe_again", 409),
     "timeout": ErrorSpec("execution", "unknown", "observe_again", 504),
