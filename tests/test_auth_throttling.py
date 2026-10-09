@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tests._state_isolation  # noqa: F401  (must precede mcp_server imports)
 import os
 import time
 import unittest
