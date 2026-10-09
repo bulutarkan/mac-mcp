@@ -138,6 +138,12 @@ class CompanionSourceTests(unittest.TestCase):
         self.assertIn('"alarms"', (EXTENSION / "manifest.json").read_text(encoding="utf-8"))
         # Dialogs are reported, never answered on their own.
         self.assertNotIn("handleJavaScriptDialog', {accept: true", source)
+        # Requests on one tab run one at a time, and a held detach cannot block the next one.
+        self.assertIn("withTab(Number(message.chrome_tab_id)", source)
+        self.assertIn("setTimeout(resolve, 1500)", source)
+
+    def test_draggable_elements_are_actionable_targets(self) -> None:
+        self.assertIn("getAttribute('draggable')==='true'", agent._bootstrap_functions_source())
 
 
 if __name__ == "__main__":

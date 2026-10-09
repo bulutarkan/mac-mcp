@@ -7,7 +7,7 @@ const PORT = Number(CONFIG.port || 0);
 const TOKEN = String(CONFIG.token || '');
 const RECONNECT_MS = Math.max(250, Math.min(Number(CONFIG.reconnect_ms || 1000), 10000));
 // Capabilities the server may rely on; an older companion simply does not list them.
-const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect'];
+const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue'];
 const MAX_GESTURE_STEPS = 80;
 const DIALOG_TEXT_LIMIT = 300;
 let socket = null;
@@ -71,21 +71,48 @@ async function handleOpenTab(message) {
 }
 
 
+// Tabs this companion currently holds a debugger session on.
+const ourSessions = new Set();
+// One operation per tab at a time: a new request waits until the previous one has detached,
+// so it never meets this companion's own session ("Another debugger is already attached").
+const tabQueues = new Map();
+
+function withTab(tabId, work) {
+  const previous = tabQueues.get(tabId) || Promise.resolve();
+  const run = previous.catch(() => {}).then(work);
+  const tail = run.catch(() => {});
+  tabQueues.set(tabId, tail);
+  tail.then(() => { if (tabQueues.get(tabId) === tail) tabQueues.delete(tabId); });
+  return run;
+}
+
 function debuggerAttach(target) {
   return new Promise((resolve, reject) => {
     chrome.debugger.attach(target, '1.3', () => {
       const err = chrome.runtime.lastError;
-      if (err) reject(new Error(err.message || 'debugger_attach_failed'));
-      else resolve();
+      if (!err) { ourSessions.add(target.tabId); resolve(); return; }
+      const text = String(err.message || 'debugger_attach_failed');
+      // Our own session survived an earlier call (e.g. a detach that a dialog held up): reuse it.
+      if (/already attached/i.test(text) && ourSessions.has(target.tabId)) resolve();
+      else reject(new Error(text));
     });
   });
 }
 
 function debuggerDetach(target) {
   return new Promise((resolve) => {
-    chrome.debugger.detach(target, () => resolve());
+    // A tab showing a native dialog can hold a detach; never let that block the next request.
+    const timer = setTimeout(resolve, 1500);
+    chrome.debugger.detach(target, () => {
+      void chrome.runtime.lastError;
+      ourSessions.delete(target.tabId);
+      clearTimeout(timer);
+      resolve();
+    });
   });
 }
+
+chrome.debugger.onDetach.addListener((source) => { if (source && source.tabId != null) ourSessions.delete(source.tabId); });
 
 function debuggerCommand(target, method, params) {
   return new Promise((resolve, reject) => {
@@ -367,12 +394,13 @@ function connect() {
   ws.addEventListener('message', (event) => {
     let message = null;
     try { message = JSON.parse(String(event.data || '')); } catch (_) { return; }
-    if (message && message.type === 'open_tab') void handleOpenTab(message);
-    else if (message && message.type === 'execute_js') void handleExecuteJs(message);
-    else if (message && message.type === 'dispatch_mouse') void handleDispatchMouse(message);
-    else if (message && message.type === 'set_file_input') void handleSetFileInput(message);
-    else if (message && message.type === 'handle_dialog') void handleDialog(message);
-    else if (message && message.type === 'gesture') void handleGesture(message);
+    if (message && message.type === 'open_tab') { void handleOpenTab(message); return; }
+    const handlers = {
+      execute_js: handleExecuteJs, dispatch_mouse: handleDispatchMouse, set_file_input: handleSetFileInput,
+      handle_dialog: handleDialog, gesture: handleGesture
+    };
+    const handler = message && handlers[message.type];
+    if (handler) void withTab(Number(message.chrome_tab_id), () => handler(message));
   });
   ws.addEventListener('close', () => {
     if (socket === ws) socket = null;

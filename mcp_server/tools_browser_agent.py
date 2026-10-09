@@ -1020,7 +1020,7 @@ function __mcpActionable(el){
   var tag=(el.tagName||'').toLowerCase(),role=(el.getAttribute('role')||'').toLowerCase();
   if(['a','button','input','textarea','select','summary','details','label'].indexOf(tag)>=0)return true;
   if(['button','link','checkbox','radio','tab','menuitem','option','combobox','textbox','searchbox','switch','slider','listbox'].indexOf(role)>=0)return true;
-  if(el.isContentEditable||el.hasAttribute('onclick'))return true;var cls=String(el.className||'');if(/collapseTitle|collapse-title|dropdown-toggle|select-trigger|clickable|toggle/i.test(cls))return true;
+  if(el.isContentEditable||el.hasAttribute('onclick')||el.getAttribute('draggable')==='true')return true;var cls=String(el.className||'');if(/collapseTitle|collapse-title|dropdown-toggle|select-trigger|clickable|toggle/i.test(cls))return true;
   try{
     if(__mcpStyle(el).cursor==='pointer'){
       var parent=__mcpParent(el),parentPointer=false;try{parentPointer=!!parent&&__mcpStyle(parent).cursor==='pointer';}catch(_){}
@@ -1204,7 +1204,7 @@ function __mcpActivationTarget(el){
     if(__mcpVisible(assoc.control))return assoc.control;
   }
   if(__mcpActionable(el))return el;
-  var selector='button,a,input,textarea,select,summary,label,[role="button"],[role="link"],[role="combobox"],[role="option"],[role="menuitem"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[tabindex]';
+  var selector='button,a,input,textarea,select,summary,label,[role="button"],[role="link"],[role="combobox"],[role="option"],[role="menuitem"],[role="tab"],[role="checkbox"],[role="radio"],[role="switch"],[tabindex],[draggable="true"]';
   try{var child=el.querySelector(selector);if(child&&__mcpVisible(child))return child;}catch(e){}var p=__mcpParent(el),n=0;while(p&&n++<4){if(__mcpActionable(p))return p;p=__mcpParent(p);}return el;
 }
 function __mcpScrollIntoView(el){if(!el)return;try{el.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}var win=__mcpOwnerWindow(el),guard=0;while(win&&win!==window&&guard++<10){var frame=null;try{frame=win.frameElement;}catch(e){}if(!frame)break;try{frame.scrollIntoView({block:'center',inline:'nearest'});}catch(e){}win=__mcpOwnerWindow(frame);}}
