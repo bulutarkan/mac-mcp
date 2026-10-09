@@ -2501,6 +2501,24 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Runs the Mac MCP CLI with this app's settings (used by Help & Diagnostics).
+    func runCLICommand(_ args: [String]) async -> (code: Int32, output: String) {
+        await Self.runCLI(args: args, configuredPath: settings.cliPath, settingsPath: settings.path.path)
+    }
+
+    /// Restarts like the menu's Restart action but lets the caller wait to recheck.
+    func restartServerAndWait() async -> Bool {
+        guard busyAction == nil else { return false }
+        busyAction = "Restarting"
+        actionNotice = nil
+        let args = lifecycleArgs("restart")
+        let result = await Self.runCLI(args: args, configuredPath: settings.cliPath, settingsPath: settings.path.path)
+        busyAction = nil
+        showNotice(Self.notice(for: args, result: result))
+        await refresh()
+        return result.code == 0
+    }
+
     func startServer() { runAction(title: "Starting", args: lifecycleArgs("start")) }
     func stopServer() { runAction(title: "Stopping", args: ["stop"]) }
     func restartServer() { runAction(title: "Restarting", args: lifecycleArgs("restart")) }

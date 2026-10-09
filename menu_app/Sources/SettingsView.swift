@@ -12,6 +12,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     case connections
     case voice
     case advanced
+    case help
 
     var id: String { rawValue }
 
@@ -24,6 +25,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .connections: return "Connections"
         case .voice: return "Voice"
         case .advanced: return "Advanced"
+        case .help: return "Help & Diagnostics"
         }
     }
 
@@ -36,6 +38,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .connections: return "network"
         case .voice: return "waveform.and.mic"
         case .advanced: return "wrench.and.screwdriver"
+        case .help: return "lifepreserver"
         }
     }
 
@@ -121,6 +124,7 @@ struct SettingsView: View {
     @ObservedObject var state: AppState
     @ObservedObject var settings: SettingsStore
     @StateObject private var audio = AudioDeviceStore()
+    @StateObject private var diagnostics = DiagnosticsCenter()
     @MacMCPState private var selection: SettingsSection = .general
     @MacMCPState private var notice = ""
     @MacMCPState private var confirmClearUsage = false
@@ -515,6 +519,11 @@ struct SettingsView: View {
         case .connections: connectionsPane
         case .voice: voicePane
         case .advanced: advancedPane
+        case .help:
+            HelpDiagnosticsPane(state: state, settings: settings, center: diagnostics) { pane in
+                selection = pane == "advanced" ? .advanced : .connections
+                notice = ""
+            }
         }
     }
 

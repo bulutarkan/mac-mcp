@@ -11,6 +11,7 @@ enum SettingsSearchIndex {
         "connections": "connections browser safari chrome mobile iphone ipad pairing public endpoint ngrok cloudflare tunnel https remote",
         "voice": "voice audio microphone speaker groq language",
         "advanced": "advanced developer runtime server port cli command decision acceleration openai decisions api key ambiguity",
+        "help": "help diagnostics doctor troubleshoot problem support report bundle logs log bug issue security vulnerability version copy permissions accessibility screen recording automation microphone port conflict tunnel restart",
     ]
 
     static func tokens(_ text: String) -> [String] {
