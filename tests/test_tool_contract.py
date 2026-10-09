@@ -37,8 +37,15 @@ class CatalogContractTests(unittest.TestCase):
         )
 
     def test_runs_against_isolated_state(self) -> None:
-        self.assertTrue(os.environ["MAC_MCP_STATE_DIR"].startswith(_state_isolation.ROOT))
-        self.assertTrue(os.environ["MAC_MCP_TELEMETRY_DIR"].startswith(_state_isolation.ROOT))
+        # Either our throwaway directory or one the caller (e.g. CI) chose, never the real state.
+        real = [Path.home() / ".mac-mcp", Path.home() / ".local" / "bin"]
+        for name, default in _state_isolation.DEFAULTS.items():
+            if not name.endswith(("_DIR", "_PATH", "_FILE")):
+                continue
+            with self.subTest(name=name):
+                value = Path(os.environ[name]).expanduser().resolve()
+                for forbidden in real:
+                    self.assertFalse(value == forbidden.resolve() or forbidden.resolve() in value.parents, value)
 
     def test_registered_catalog_meets_its_contract(self) -> None:
         problems = tool_manifest.contract_problems(
