@@ -1217,7 +1217,9 @@ def create_app():
         title="Use semantic first-party macOS app adapter",
         description=(
             "Use typed semantic adapters for Finder, Notes, Mail, Calendar, Reminders, Preview, and System Settings. "
-            "Common action=capabilities reports app-specific actions. Finder: selection|select_file. "
+            "Common action=capabilities reports app-specific actions; app='all' lists every app's support, including "
+            "Messages, Xcode, Slack and VS Code, which have no adapter yet and name the reliable path per task. "
+            "Finder: selection|select_file. "
             "Notes: find_notes|open_note|create_note (title, optional body/folder/account). "
             "Mail: find_messages|open_message|create_draft (title as subject, optional body, to/cc as comma-separated "
             "addresses, account name or address; required when several accounts are enabled). create_draft only saves "

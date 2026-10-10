@@ -65,6 +65,70 @@ _READ_ACTIONS = {
 _DATA_WRITE_ACTIONS = {"create_event", "update_event", "complete_reminder", "create_note", "create_draft"}
 
 
+# Apps people ask for that have no first-party adapter yet (#129). Each entry
+# says why and which path is reliable today, so capability discovery never
+# implies support that does not exist. Generic AX means mac_observe + mac_act.
+_SUPPORT_MATRIX: Dict[str, Dict[str, Any]] = {
+    "Messages": {
+        "aliases": ("messages", "imessage", "imessages"),
+        "bundle_paths": ("/System/Applications/Messages.app",),
+        "native_api": "AppleScript dictionary (chats, send); it does not expose message text, and Mac MCP "
+                      "does not wrap it yet",
+        "tasks": {
+            "find_conversation": "generic_ax: mac_observe the sidebar, then mac_act on the conversation row",
+            "read_conversation": "generic_ax: the open transcript is exposed as AX text",
+            "send_message": "generic_ax with allow_risky=true; sending is consequential and not automated here",
+        },
+    },
+    "Xcode": {
+        "aliases": ("xcode",),
+        "bundle_paths": ("/Applications/Xcode.app",),
+        "native_api": "AppleScript dictionary (workspace documents, schemes) not wrapped yet; xcodebuild is the "
+                      "stable command-line path",
+        "tasks": {
+            "inspect_project": "run_command: xcodebuild -list -project/-workspace <path>",
+            "build_or_test": "run_command or start_background_job: xcodebuild build/test",
+            "inspect_window": "generic_ax: mac_observe the project window and navigator",
+        },
+    },
+    "Slack": {
+        "aliases": ("slack",),
+        "bundle_paths": ("/Applications/Slack.app",),
+        "native_api": "none (Electron app without a scripting dictionary); slack:// links need team and channel ids",
+        "tasks": {
+            "find_conversation": "generic_ax: mac_observe the sidebar, then mac_act on the channel or DM",
+            "read_conversation": "generic_ax: messages are exposed as AX text in the open channel",
+        },
+    },
+    "Visual Studio Code": {
+        "aliases": ("visual studio code", "vscode", "vs code", "code"),
+        "bundle_paths": ("/Applications/Visual Studio Code.app",),
+        "native_api": "none (Electron app without a scripting dictionary); the `code` CLI opens files and folders "
+                      "when installed",
+        "tasks": {
+            "inspect_editor": "generic_ax: mac_observe the window; editor tabs and panels are AX groups",
+            "open_file": "run_command: code -g <path>:<line> when the CLI is installed, else generic_ax",
+        },
+    },
+}
+
+
+def _matrix_entry(app: str) -> Optional[tuple[str, Dict[str, Any]]]:
+    key = str(app or "").strip().lower()
+    for name, entry in _SUPPORT_MATRIX.items():
+        if key == name.lower() or key in entry["aliases"]:
+            return name, entry
+    return None
+
+
+def support_matrix() -> Dict[str, Any]:
+    """Which apps have first-party adapters and which rely on generic AX, with the reason."""
+    rows = {name: {"support": "first_party", "actions": list(actions)} for name, actions in _ACTIONS.items()}
+    for name, entry in _SUPPORT_MATRIX.items():
+        rows[name] = {"support": "generic_ax", "native_api": entry["native_api"], "tasks": dict(entry["tasks"])}
+    return rows
+
+
 class AppAdapterError(RuntimeError):
     def __init__(self, code: str, message: str, **extra: Any) -> None:
         super().__init__(message)
@@ -1585,7 +1649,23 @@ def mac_app(
 ) -> Dict[str, Any]:
     canonical = normalize_app_name(app)
     normalized_action = _normalized_action(action)
+    if canonical is None and str(app or "").strip().lower() in {"all", "*"} and normalized_action == "capabilities":
+        return {"ok": True, "adapter_version": _ADAPTER_VERSION, "action": normalized_action, "apps": support_matrix()}
     if canonical is None:
+        listed = _matrix_entry(app)
+        if listed is not None:
+            name, entry = listed
+            if normalized_action == "capabilities":
+                return {
+                    "ok": True, "supported": False, "adapter": "generic_ax_fallback",
+                    "adapter_version": _ADAPTER_VERSION, "app": name, "action": normalized_action,
+                    "installed": any(Path(path).exists() for path in entry["bundle_paths"]),
+                    "actions": [], "native_api": entry["native_api"], "tasks": dict(entry["tasks"]),
+                    "generic_fallback": {"observe": "mac_observe", "act": "mac_act", "automatic": False},
+                }
+            unsupported = _fallback(name, normalized_action, f"{name} has no first-party adapter; see tasks for the reliable path.")
+            unsupported["tasks"] = dict(entry["tasks"])
+            return unsupported
         return _fallback(str(app or "").strip(), normalized_action, "No first-party adapter is registered for this app.")
 
     if normalized_action == "capabilities":
