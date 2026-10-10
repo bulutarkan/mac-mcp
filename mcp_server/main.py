@@ -51,9 +51,10 @@ from .tools_jobs import (
 from .tools_agents import (
     inherited_provenance_for,
     AGENTS_DIR, agent_catalog, spawn_agent, spawn_agents, wait_agents,
-    list_agents, get_agent, agent_action,
+    list_agents, get_agent, agent_action, start_agent_history_expiry,
 )
 from .file_transactions import prune_transactions
+from .private_storage import secure_content_stores
 from .tools_files import (
     write_file, write_files_batch, read_file, read_multiple_files,
     edit_file, move_file, copy_file, delete_path, file_transaction_batch, undo_file_transaction,
@@ -2512,3 +2513,7 @@ if os.getenv("MAC_MCP_MANAGED_SERVER") == "1":
     ax_native.enable()
     # Accessibility change watcher that lets unchanged windows skip full walks.
     ax_watch.enable()
+    # Finished agents' local files expire per Settings > Subagents (default 30 days).
+    start_agent_history_expiry()
+    # Owner-only store directories (agents, teams, jobs, telemetry, memory, lessons).
+    secure_content_stores([AGENTS_DIR, AGENTS_DIR.parent / "agent_teams", AGENTS_DIR.parent / "jobs"])

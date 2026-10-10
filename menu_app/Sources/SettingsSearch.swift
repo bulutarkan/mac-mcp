@@ -5,7 +5,7 @@ import Foundation
 enum SettingsSearchIndex {
     static let terms: [String: String] = [
         "general": "general overview update version status notifications alerts completion attention agents macos permission",
-        "agents": "agents subagents provider codex opencode chatgpt model reasoning thinking default agent",
+        "agents": "agents subagents provider codex opencode chatgpt model reasoning thinking default agent history retention delete keep",
         "usage": "usage tokens payload calls errors latency heatmap activity input output top tools retention record history clear privacy data memory memories export delete",
         "permissions": "permissions safety approvals security profile read only trusted access",
         "apps": "apps mail messages imessage email send confirm confirmation ask before sending xcode notes calendar",

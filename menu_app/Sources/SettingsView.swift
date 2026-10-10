@@ -561,6 +561,8 @@ struct SettingsView: View {
 
                 concurrencyCard
 
+                retentionCard
+
                 Text("PROVIDERS")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.tertiary)
@@ -2743,6 +2745,56 @@ struct SettingsView: View {
             }
             .padding(4)
         }
+    }
+
+    private var retentionCard: some View {
+        GroupBox {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Agent History")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Prompts, provider output, results and provider state of finished agents are deleted from this Mac after this time. Running agents, agents in a running team and agents with an open worktree are kept. Each provider keeps its own copy under its own policy.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                Picker("Keep for", selection: retentionBinding) {
+                    Text("7 days").tag(7)
+                    Text("30 days").tag(30)
+                    Text("90 days").tag(90)
+                    Text("1 year").tag(365)
+                    Text("Never delete").tag(0)
+                }
+                .labelsHidden()
+                .frame(width: 140)
+                .accessibilityLabel("Keep finished agents for")
+            }
+            .padding(4)
+        }
+    }
+
+    private var retentionBinding: Binding<Int> {
+        Binding(
+            get: { settings.agentRetentionDays },
+            set: { value in
+                settings.agentRetentionDays = value
+                do {
+                    try settings.save()
+                    saveFeedback = SettingsSaveFeedback(
+                        scope: .agents,
+                        message: value == 0 ? "Finished agents are kept until you delete them"
+                            : "Finished agents are deleted after \(value) days",
+                        isError: false
+                    )
+                } catch {
+                    settings.load()
+                    saveFeedback = SettingsSaveFeedback(
+                        scope: .agents, message: "Could not save agent history: \(error.localizedDescription)", isError: true
+                    )
+                }
+            }
+        )
     }
 
     private var maxActiveBinding: Binding<Int> {

@@ -25,7 +25,8 @@ from .policy_scope import (
 )
 from .scoped_auth import get_scoped_credential_store
 from .security import BASE_DIR, Settings, truncate
-from .runtime_settings import load_runtime_settings_state, provider_enabled, provider_setting
+from .private_storage import make_private
+from .runtime_settings import load_runtime_settings, load_runtime_settings_state, provider_enabled, provider_setting
 from .tools_lessons import (
     VALID_ROLES, TAINTED_PROVENANCE, extract_lesson_candidates, lesson_candidate_instruction,
     lesson_context, lesson_record_agent_candidate,
@@ -257,6 +258,8 @@ def _read_team_unlocked(team_id: str) -> Dict[str, Any]:
 def _write_team_unlocked(team_id: str, meta: Dict[str, Any]) -> None:
     path = _team_meta_path(team_id)
     path.parent.mkdir(parents=True, exist_ok=True)
+    make_private(TEAMS_DIR)
+    make_private(path.parent)
     fd, tmp_name = tempfile.mkstemp(prefix=".team.", suffix=".tmp", dir=path.parent)
     tmp = Path(tmp_name)
     try:
@@ -3806,6 +3809,143 @@ def _maybe_expire_agent_worktrees() -> None:
     threading.Thread(target=sweep, name="agent-worktree-expiry", daemon=True).start()
 
 
+# Finished agents' local files (prompts, provider output, results, provider state
+# snapshots) are deleted after Settings > Subagents' retention (subagents.retention_days,
+# 0 = never; default 30 days). Provider-side retention is governed by each provider.
+DEFAULT_AGENT_RETENTION_DAYS = 30
+_HISTORY_SWEEP_INTERVAL_S = 3600.0
+_HISTORY_SWEEP_FIRST_DELAY_S = 180.0
+_HISTORY_SWEEP = {"last": 0.0, "running": False, "timer": False}
+_HISTORY_SWEEP_LOCK = threading.Lock()
+_WORKTREE_GONE = {"cleaned", "discarded", "missing"}
+
+
+def agent_retention_days() -> int:
+    """Days a finished agent's local files are kept; 0 keeps them until deleted by hand."""
+    raw: Any = os.getenv("MAC_MCP_AGENT_RETENTION_DAYS", "").strip()
+    if not raw:
+        raw = (load_runtime_settings().get("subagents") or {}).get("retention_days", DEFAULT_AGENT_RETENTION_DAYS)
+    try:
+        days = int(float(raw))
+    except (TypeError, ValueError):
+        days = DEFAULT_AGENT_RETENTION_DAYS
+    return max(0, min(days, 3650))
+
+
+def _agent_finished_at(meta: Dict[str, Any], meta_path: Path) -> float:
+    for key in ("ended_at", "updated_at"):
+        try:
+            value = float(meta.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0:
+            return value
+    try:
+        return meta_path.stat().st_mtime
+    except OSError:
+        return time.time()
+
+
+def expire_agent_history(*, now: Optional[float] = None) -> Dict[str, Any]:
+    """Delete the local files of finished agents (and their teams) past the retention.
+
+    Kept regardless of age: agents that have not finished, agents whose worktree still
+    exists (it may hold changes to review), and every member of a team that still has
+    an unfinished agent.
+    """
+    days = agent_retention_days()
+    if days <= 0:
+        return {"status": "disabled", "removed": [], "removed_teams": []}
+    now = time.time() if now is None else now
+    cutoff = now - days * 86400
+    metas: Dict[str, Dict[str, Any]] = {}
+    for meta_path in AGENTS_DIR.glob("*/meta.json"):
+        try:
+            metas[meta_path.parent.name] = {"meta": json.loads(meta_path.read_text(encoding="utf-8")), "path": meta_path}
+        except (OSError, ValueError):
+            continue
+    teams: Dict[str, Dict[str, Any]] = {}
+    for team_meta in TEAMS_DIR.glob("*/meta.json"):
+        try:
+            teams[team_meta.parent.name] = {"meta": json.loads(team_meta.read_text(encoding="utf-8")), "path": team_meta}
+        except (OSError, ValueError):
+            continue
+    busy_teams = {
+        team_id for team_id, team in teams.items()
+        if any(str((metas.get(str(aid)) or {}).get("meta", {}).get("status") or "") not in TERMINAL_STATUSES
+               and str(aid) in metas for aid in (team["meta"].get("agent_ids") or []))
+    }
+    removed: List[str] = []
+    for agent_id, entry in sorted(metas.items()):
+        meta = entry["meta"]
+        worktree = meta.get("worktree") if isinstance(meta.get("worktree"), dict) else {}
+        if (
+            meta.get("status") not in TERMINAL_STATUSES
+            or _agent_finished_at(meta, entry["path"]) > cutoff
+            or (worktree.get("enabled") and worktree.get("status") not in _WORKTREE_GONE)
+            or str(meta.get("team_id") or "") in busy_teams
+        ):
+            continue
+        try:
+            shutil.rmtree(_agent_dir(agent_id))
+            removed.append(agent_id)
+        except (OSError, HTTPException):
+            continue
+    removed_teams: List[str] = []
+    for team_id, team in sorted(teams.items()):
+        members = [str(aid) for aid in (team["meta"].get("agent_ids") or [])]
+        if team_id in busy_teams or any((AGENTS_DIR / aid).exists() for aid in members if aid):
+            continue
+        updated = float(team["meta"].get("updated_at") or team["meta"].get("created_at") or 0) or now
+        if updated > cutoff:
+            continue
+        try:
+            shutil.rmtree(_team_dir(team_id))
+            removed_teams.append(team_id)
+        except (OSError, HTTPException):
+            continue
+    return {"status": "ok", "retention_days": days, "removed": removed, "removed_teams": removed_teams}
+
+
+def _maybe_expire_agent_history() -> None:
+    """Run the history expiry at most hourly, off the caller's thread (managed server only)."""
+    if os.getenv("MAC_MCP_MANAGED_SERVER") != "1":
+        return
+    with _HISTORY_SWEEP_LOCK:
+        if _HISTORY_SWEEP["running"] or time.time() - _HISTORY_SWEEP["last"] < _HISTORY_SWEEP_INTERVAL_S:
+            return
+        _HISTORY_SWEEP.update(running=True, last=time.time())
+
+    def sweep() -> None:
+        try:
+            expire_agent_history()
+        except Exception:
+            pass
+        finally:
+            with _HISTORY_SWEEP_LOCK:
+                _HISTORY_SWEEP["running"] = False
+
+    threading.Thread(target=sweep, name="agent-history-expiry", daemon=True).start()
+
+
+def start_agent_history_expiry() -> None:
+    """Sweep shortly after the managed server starts and then hourly, even when no agent is spawned."""
+    if os.getenv("MAC_MCP_MANAGED_SERVER") != "1":
+        return
+    with _HISTORY_SWEEP_LOCK:
+        if _HISTORY_SWEEP["timer"]:
+            return
+        _HISTORY_SWEEP["timer"] = True
+
+    def loop() -> None:
+        time.sleep(_HISTORY_SWEEP_FIRST_DELAY_S)
+        while True:
+            _maybe_expire_agent_history()
+            time.sleep(_HISTORY_SWEEP_INTERVAL_S)
+
+    threading.Thread(target=loop, name="agent-history-expiry-timer", daemon=True).start()
+
+
 def _ensure_integration_resolved(agent_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
     current = dict(state or {})
     if not current.get("integration_required"):
@@ -4466,6 +4606,8 @@ def _spawn_internal(
     path = _agent_dir(agent_id)
     try:
         path.mkdir(parents=True, exist_ok=False)
+        make_private(AGENTS_DIR)
+        make_private(path)
     except Exception:
         if worktree_created:
             try:
@@ -4776,6 +4918,7 @@ def spawn_agent(
     git_isolation: str = "auto",
 ) -> Dict[str, Any]:
     _maybe_expire_agent_worktrees()
+    _maybe_expire_agent_history()
     selection = _resolve_agent_selection(provider, model, reasoning)
     provider = str(selection["provider"])
     model = selection.get("model")

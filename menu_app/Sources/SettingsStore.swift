@@ -59,11 +59,14 @@ struct MenuSettings: Codable {
         var defaultAgent: DefaultAgent?
         /// Most delegated agents running at once (the server's default is 8).
         var maxActive: Int?
+        /// Days a finished agent's local files are kept; 0 keeps them (the server's default is 30).
+        var retentionDays: Int?
 
         enum CodingKeys: String, CodingKey {
             case providers
             case defaultAgent = "default"
             case maxActive = "max_active"
+            case retentionDays = "retention_days"
         }
     }
 
@@ -136,7 +139,9 @@ final class SettingsStore: ObservableObject {
     @Published var defaultAgentModel = ""
     @Published var defaultAgentReasoning = ""
     static let defaultMaxActiveAgents = 8
+    static let defaultAgentRetentionDays = 30
     @Published var maxActiveAgents = SettingsStore.defaultMaxActiveAgents
+    @Published var agentRetentionDays = SettingsStore.defaultAgentRetentionDays
     @Published var hasGroqKey = false
     @Published var decisionAccelerationEnabled = false
     @Published var decisionAccelerationScope = "both"
@@ -242,6 +247,7 @@ final class SettingsStore: ObservableObject {
         defaultAgentModel = current.subagents?.defaultAgent?.model ?? ""
         defaultAgentReasoning = current.subagents?.defaultAgent?.reasoning ?? ""
         maxActiveAgents = min(16, max(1, current.subagents?.maxActive ?? Self.defaultMaxActiveAgents))
+        agentRetentionDays = min(3650, max(0, current.subagents?.retentionDays ?? Self.defaultAgentRetentionDays))
         if cliPath.isEmpty { cliPath = defaultCLIPath() }
     }
 
@@ -280,7 +286,8 @@ final class SettingsStore: ObservableObject {
                 defaultAgent: defaultAgentProvider.nilIfEmpty.map {
                     .init(provider: $0, model: defaultAgentModel.nilIfEmpty, reasoning: defaultAgentReasoning.nilIfEmpty)
                 },
-                maxActive: min(16, max(1, maxActiveAgents))
+                maxActive: min(16, max(1, maxActiveAgents)),
+                retentionDays: min(3650, max(0, agentRetentionDays))
             ),
             apps: .init(mail: .init(confirm_send: mailConfirmSend), messages: .init(confirm_send: messagesConfirmSend))
         )
