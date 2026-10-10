@@ -95,6 +95,7 @@ _VISUAL_ENSURE_TTL_S = 12.0
 _DOM_RASTERIZER_PATH = Path(__file__).resolve().parent / "vendor" / "html2canvas.min.js"
 _DOM_CAPTURE_STATE_PREFIX = "__macMcpVisualCapture"
 _DOM_RASTERIZER_GLOBAL = "__macMcpHtml2Canvas"
+_CLONE_INTERACTIVE_GRACE_MS = 1000
 # html2canvas writes two fixed strings into DOM sinks. Pages that enforce Trusted
 # Types (Google Sheets, Docs) reject plain strings there, so both sinks go through
 # a Mac MCP policy that accepts only those two strings. The helper is a page
@@ -113,6 +114,22 @@ _TRUSTED_TYPES_SINK_PATCHES = (
     (
         """if(void 0===t)throw new Error('Attempting to parse an unsupported color function "'+e.name+'"');""",
         "if(void 0===t)return __macMcpUnsupportedColor(e);",
+    ),
+    # html2canvas waits for the cloned document's onload before it starts polling
+    # for "complete". On some pages (Medium) that load never fires and the clone
+    # stays "interactive", and a background Safari tab throttles timers to about a
+    # tick per second, so the capture hung until its 18 s timeout. The check reads
+    # the live clone document, accepts a settled "interactive" clone after a grace
+    # period, and is exposed as __macMcpClonePump so every status call drives it
+    # regardless of timer throttling.
+    (
+        't.onload=B.onload=function(){t.onload=B.onload=null;var A=setInterval(function(){0<r.body.childNodes.length&&"complete"===r.readyState&&(clearInterval(A),e(B))},50)}',
+        'var __mcpT0=Date.now(),A=null,__mcpDone=!1,__mcpCheck=function(){if(__mcpDone)return!0;'
+        'var d=B.contentWindow&&B.contentWindow.document||r,s=d&&d.readyState;'
+        'return d&&d.body&&0<d.body.childNodes.length&&("complete"===s||"interactive"===s&&Date.now()-__mcpT0>'
+        + str(_CLONE_INTERACTIVE_GRACE_MS)
+        + ')?(__mcpDone=!0,A&&clearInterval(A),window.__macMcpClonePump=null,e(B),!0):!1};'
+        'window.__macMcpClonePump=__mcpCheck;t.onload=B.onload=function(){t.onload=B.onload=null;A||(A=setInterval(__mcpCheck,50))}',
     ),
 )
 _TRUSTED_TYPES_PRELUDE = r"""var __macMcpTrustedHTML=(function(){
@@ -624,7 +641,7 @@ def _dom_capture_status_js(state_key: str, wait_ms: int = 0) -> str:
     promise that settles once the capture leaves "running" or the wait runs out."""
     return f'''(function(){{
 var key={json.dumps(state_key)};
-function pack(){{var s=window[key];if(!s)return {{status:"missing"}};
+function pack(){{try{{window.__macMcpClonePump&&window.__macMcpClonePump();}}catch(e){{}}var s=window[key];if(!s)return {{status:"missing"}};
   var o={{status:s.status,error:s.error||"",meta:s.meta||{{}}}};if(s.status==="done")o.data=s.data||"";return o;}}
 var first=pack(),waitMs={max(0, int(wait_ms))};
 if(first.status!=="running"||!waitMs)return JSON.stringify(first);

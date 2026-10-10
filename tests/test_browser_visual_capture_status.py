@@ -73,3 +73,33 @@ class CaptureStatusTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CloneLoaderPatchTests(unittest.TestCase):
+    """#159: the clone wait is driven by status calls, not by onload or page timers."""
+
+    def test_rasterizer_waits_on_the_live_clone_and_exposes_a_pump(self) -> None:
+        source = agent._dom_rasterizer_source()
+        self.assertNotIn('var A=setInterval(function(){0<r.body.childNodes.length&&"complete"===r.readyState', source)
+        self.assertEqual(1, source.count("window.__macMcpClonePump=__mcpCheck"))
+        self.assertIn("B.contentWindow&&B.contentWindow.document||r", source)
+        self.assertIn('"interactive"===s&&Date.now()-__mcpT0>%d' % agent._CLONE_INTERACTIVE_GRACE_MS, source)
+        # The pump is released once the clone resolves so a later capture installs its own.
+        self.assertIn("window.__macMcpClonePump=null,e(B)", source)
+
+    def test_every_status_call_drives_the_clone_wait(self) -> None:
+        for wait_ms in (0, 5000):
+            js = agent._dom_capture_status_js("__macMcpVisualCapture_x", wait_ms)
+            self.assertIn("window.__macMcpClonePump&&window.__macMcpClonePump()", js)
+            self.assertLess(js.index("__macMcpClonePump()"), js.index("var s=window[key]"))
+
+    def test_a_changed_vendor_build_fails_loudly(self) -> None:
+        original = agent._DOM_RASTERIZER_RUNTIME.copy()
+        agent._DOM_RASTERIZER_RUNTIME.clear()
+        try:
+            with patch.object(agent._DOM_RASTERIZER_PATH.__class__, "read_text", return_value="(function(){})()"):
+                with self.assertRaises(Exception):
+                    agent._dom_rasterizer_source()
+        finally:
+            agent._DOM_RASTERIZER_RUNTIME.clear()
+            agent._DOM_RASTERIZER_RUNTIME.update(original)
