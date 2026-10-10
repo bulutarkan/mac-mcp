@@ -147,6 +147,9 @@ _ELEMENT_READINESS_POLL_S = 0.06
 _ELEMENT_READINESS_STABLE_MS = 300
 _ACTION_VERIFY_TIMEOUT_S = 0.55
 _ACTION_VERIFY_POLL_S = 0.07
+_TYPE_VERIFY_TIMEOUT_S = 1.0
+_TYPE_VERIFY_POLL_S = 0.05
+_TYPE_FOCUS_SETTLE_S = 0.05
 # A DOM mutation after a click counts as its effect only when the page was quiet
 # this long before the click, so background animation cannot fake an effect.
 _DOM_EFFECT_QUIET_MS = 250
@@ -1330,10 +1333,53 @@ function __mcpKeyboardActivate(el){
   var win=__mcpOwnerWindow(el);function fire(type){try{el.dispatchEvent(new win.KeyboardEvent(type,{bubbles:true,cancelable:true,composed:true,key:key,code:key===' '?'Space':key}));}catch(e){}}
   fire('keydown');fire('keypress');fire('keyup');return key;
 }
-function __mcpSetText(el,value,clearFirst){
-  if(!el)throw new Error('element_not_found');if(el.disabled===true||el.getAttribute('aria-disabled')==='true')throw new Error('element_disabled');if(el.readOnly===true||el.getAttribute('readonly')!==null)throw new Error('element_readonly');__mcpScrollIntoView(el);try{el.focus({preventScroll:true});}catch(e){try{el.focus();}catch(_){}}
-  value=String(value==null?'':value);var tag=String(el.tagName||'').toLowerCase(),editable=(tag==='input'||tag==='textarea'||tag==='select'),before=__mcpInputEvent(el,'beforeinput',value,'insertText',true);if(before)try{el.dispatchEvent(before);}catch(e){}
-  if(editable){if(clearFirst!==false)__mcpNativeValueSetter(el,'');__mcpNativeValueSetter(el,value);}else if(el.isContentEditable||['textbox','searchbox'].indexOf(String(el.getAttribute('role')||'').toLowerCase())>=0){try{el.textContent=value;}catch(e){}}else{if(!__mcpNativeValueSetter(el,value))try{el.textContent=value;}catch(e){}}
+function __mcpEditableText(el){try{return String(el.innerText!=null?el.innerText:el.textContent||'');}catch(e){return String(el.textContent||'');}}
+function __mcpTextMatches(actual,value){var n=function(v){return String(v||'').replace(/[\s\u00a0\u200b]+/g,' ').trim();};return n(actual)===n(value);}
+/* Rich-text editors (Draft.js, Lexical, ProseMirror, the Medium composer) keep their own
+   model and ignore or mis-read text written straight into the DOM (Draft even crashes
+   when the browser edits its blocks underneath it), so a contenteditable gets text the
+   way a person pasting it would: the selection is announced (selectionchange, which
+   React-based editors read their selection from) and a paste carrying the text is
+   offered to the editor. A field that does not handle paste gets execCommand, which
+   fires the same trusted beforeinput/input as typing. Assigning textContent is the last
+   resort and is reported as such.
+   (No apostrophes here: _top_level_function_names tracks quotes, not comments.) */
+function __mcpSelectEditable(el,clearFirst){var doc=el.ownerDocument||document,win=__mcpOwnerWindow(el);
+  /* A background tab gets no focus events, so React keeps the previous field as active and drops the new selection. */
+  try{if(!doc.hasFocus()){el.dispatchEvent(new win.FocusEvent('focus',{relatedTarget:null}));el.dispatchEvent(new win.FocusEvent('focusin',{bubbles:true,relatedTarget:null}));}}catch(e){}
+  var sel=win.getSelection(),range=doc.createRange();range.selectNodeContents(el);if(clearFirst===false)range.collapse(false);sel.removeAllRanges();sel.addRange(range);try{doc.dispatchEvent(new win.Event('selectionchange'));}catch(e){}}
+function __mcpExecInsert(el,value,clearFirst){
+  var doc=el.ownerDocument||document,ok=true;
+  try{if(!value)return clearFirst===false?true:doc.execCommand('delete',false,null);var lines=value.split(/\r\n|\r|\n/);
+    for(var i=0;i<lines.length&&ok;i++){if(i>0)ok=doc.execCommand('insertParagraph',false,null);if(ok&&lines[i])ok=doc.execCommand('insertText',false,lines[i]);}}catch(e){return false;}
+  return !!ok;
+}
+function __mcpPasteInsert(el,value){
+  var win=__mcpOwnerWindow(el);try{var dt=new win.DataTransfer();dt.setData('text/plain',value);
+    var ev=new win.ClipboardEvent('paste',{bubbles:true,cancelable:true,composed:true,clipboardData:dt});return !el.dispatchEvent(ev);}catch(e){return false;}
+}
+function __mcpSetText(el,value,clearFirst,focusSettled){
+  if(!el)throw new Error('element_not_found');if(el.disabled===true||el.getAttribute('aria-disabled')==='true')throw new Error('element_disabled');if(el.readOnly===true||el.getAttribute('readonly')!==null)throw new Error('element_readonly');var wasActive=false;try{wasActive=(el.ownerDocument||document).activeElement===el;}catch(e){}__mcpScrollIntoView(el);try{el.focus({preventScroll:true});}catch(e){try{el.focus();}catch(_){}}
+  value=String(value==null?'':value);var s=__mcpState(),tag=String(el.tagName||'').toLowerCase(),editable=(tag==='input'||tag==='textarea'||tag==='select');
+  var rich=!editable&&(el.isContentEditable||['textbox','searchbox'].indexOf(String(el.getAttribute('role')||'').toLowerCase())>=0);
+  if(rich&&el.isContentEditable){
+    var expected=clearFirst===false?__mcpEditableText(el)+value:value,start=__mcpEditableText(el);
+    /* Once one path is accepted no other runs, so text is never entered twice. Editors that
+       apply input to their model first (Lexical) render it a moment later: "_async" asks the
+       server to confirm the text before reporting success. */
+    var settle=function(method){var now=__mcpEditableText(el);s.lastInputMethod=__mcpTextMatches(now,expected)?method:(now===start?method+'_async':'input_partial');return el;};
+    /* Replacing text in a field that was not focused: focusing it makes editors such as Draft update their
+       state and ignore selection changes until they re-render, so the text would land at the old caret.
+       Focus and select now; the server runs the same action again once the editor has settled. */
+    if(!wasActive&&!focusSettled&&clearFirst!==false&&start.trim()){try{__mcpSelectEditable(el,clearFirst);}catch(e){}s.lastInputMethod='focus_settling';return el;}
+    var selected=true;try{__mcpSelectEditable(el,clearFirst);}catch(e){selected=false;}
+    if(selected&&value&&__mcpPasteInsert(el,value))return settle('paste_event');
+    if(selected&&__mcpEditableText(el)===start&&__mcpExecInsert(el,value,clearFirst))return settle('exec_command');
+    if(__mcpEditableText(el)!==start){s.lastInputMethod='input_partial';return el;}
+  }
+  s.lastInputMethod=rich?'dom_text':'value_setter';
+  if(!rich){var before=__mcpInputEvent(el,'beforeinput',value,'insertText',true);if(before)try{el.dispatchEvent(before);}catch(e){}}
+  if(editable){if(clearFirst!==false)__mcpNativeValueSetter(el,'');__mcpNativeValueSetter(el,value);}else if(rich){try{el.textContent=value;}catch(e){}}else{if(!__mcpNativeValueSetter(el,value))try{el.textContent=value;}catch(e){}}
   var input=__mcpInputEvent(el,'input',value,'insertText',false);if(input)try{el.dispatchEvent(input);}catch(e){}try{el.dispatchEvent(new (__mcpOwnerWindow(el).Event)('change',{bubbles:true,composed:true}));}catch(e){}try{var ku=new (__mcpOwnerWindow(el).KeyboardEvent)('keyup',{bubbles:true,cancelable:true,composed:true,key:value.slice(-1)||'Unidentified'});el.dispatchEvent(ku);}catch(e){}return el;
 }'''
 
@@ -2297,10 +2343,17 @@ for(var i=0;i<actions.length;i++){
     } else if(type==='type'||type==='type_text'||type==='paste'){
       if(!el) throw new Error('element_id is required');
       var value=String(a.text==null?'':a.text);
-      __mcpSetText(el,value,a.clear!==false);__mcpFlushMutations(s);
-      var actual='';try{actual=('value' in el)?String(el.value||''):String(el.textContent||'');}catch(e){}
-      var applied=actual===value;
-      var typed={index:i,type:type,element_id:a.element_id,ok:applied,value:actual.slice(0,200),effect_observed:applied,verification:applied?'value_applied':'input_not_applied',observe_again:!applied};
+      var priorText=('value' in el)?'':__mcpEditableText(el);
+      __mcpSetText(el,value,a.clear!==false,a._focus_settled===true);__mcpFlushMutations(s);
+      if(s.lastInputMethod==='focus_settling'){results.push({index:i,type:type,element_id:a.element_id,ok:true,effect_observed:false,verification:'focus_settling',input_method:'focus_settling'});break;}
+      var hasValue=('value' in el),actual='';try{actual=hasValue?String(el.value||''):__mcpEditableText(el);}catch(e){}
+      var method=s.lastInputMethod||'',expectedText=a.clear===false&&!hasValue?priorText+value:value,pending=/_async$/.test(method);
+      var applied=pending||(hasValue?actual===value:(method!=='input_partial'&&__mcpTextMatches(actual,expectedText)));
+      var verification=pending?'editor_pending':(!applied?'input_not_applied':(method==='dom_text'?'dom_text_only':'value_applied'));
+      var typed={index:i,type:type,element_id:a.element_id,ok:applied,value:actual.slice(0,200),effect_observed:applied&&!pending,verification:verification,input_method:method.replace(/_async$/,''),observe_again:!applied};
+      if(pending)typed._verify_text=expectedText;
+      /* Text written only into the DOM may never reach the model of a rich editor (its submit stays disabled). */
+      if(verification==='dom_text_only'){typed.editor_state_unverified=true;typed.observe_again=true;}
       if(!applied)typed.error='input_not_applied';results.push(typed);if(!applied)break;
     } else if(type==='select'){
       if(!el) throw new Error('element_id is required');
@@ -3102,6 +3155,24 @@ def _verified_dom_action(
             js_calls += 1
             phases["action_ms"] = int((_phase_clock() - action_started) * 1000)
         result = dict((out.get("actions") or [out])[0])
+        if typ in {"type", "type_text", "paste"} and result.get("verification") == "focus_settling":
+            # The field took focus and its editor is re-rendering; nothing was typed yet.
+            # Type once more after it settles (the second call never re-prepares).
+            cancellable_sleep(_TYPE_FOCUS_SETTLE_S)
+            settle_target = None
+            if mutation_revalidator is not None:
+                settle_target, blocked = mutation_revalidator(typ)
+                if blocked is not None:
+                    return {"type": typ, "element_id": element_id or None,
+                            "readiness": readiness, "_js_calls": js_calls, **blocked}
+            out = _run_json_js(
+                settings, browser, _batch_js([{**action, "_focus_settled": True}], None),
+                window_index, tab_index, tab_handle,
+                prevalidated_target=settle_target,
+            )
+            js_calls += 1
+            result = dict((out.get("actions") or [out])[0])
+            result["focus_settled"] = True
         if typ in {"click", "double_click"}:
             result.setdefault("activation_mode", "synthetic_dom")
             trace = result.get("activation_trace") if isinstance(result.get("activation_trace"), dict) else {}
@@ -3212,6 +3283,32 @@ def _verified_dom_action(
                 "verification": "no_effect_after_bounded_wait",
                 "observe_again": True,
                 "automatic_retry": False,
+            })
+
+    expected_text = result.pop("_verify_text", None)
+    if result.get("verification") == "editor_pending" and typ in {"type", "type_text", "paste"}:
+        # The editor accepted the input into its model and renders it shortly; confirm the
+        # text arrived (read-only, bounded) instead of reporting success on faith.
+        wanted = re.sub(r"[\s ​]+", "", str(expected_text or ""))
+        deadline = time.perf_counter() + _TYPE_VERIFY_TIMEOUT_S
+        seen = ""
+        while time.perf_counter() < deadline:
+            cancellable_sleep(_TYPE_VERIFY_POLL_S)
+            post = _run_json_js(
+                settings, browser, _element_effect_state_js(element_id),
+                window_index, tab_index, tab_handle,
+            )
+            js_calls += 1
+            seen = str(post.get("value") or post.get("text") or "")
+            if re.sub(r"[\s ​]+", "", seen) == wanted:
+                result.update({"effect_observed": True, "verification": "value_applied_async", "value": seen[:200]})
+                result.pop("observe_again", None)
+                compact_state = post
+                break
+        else:
+            result.update({
+                "ok": False, "error": "input_not_applied", "reason_code": "INPUT_NOT_APPLIED",
+                "verification": "editor_did_not_accept", "value": seen[:200], "observe_again": True,
             })
 
     phases["verify_ms"] = int((_phase_clock() - verify_started) * 1000)
