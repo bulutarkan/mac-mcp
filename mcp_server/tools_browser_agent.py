@@ -137,6 +137,8 @@ _DOM_CAPTURE_VIEWPORT_TIMEOUT_S = 18.0
 _DOM_CAPTURE_FULL_PAGE_TIMEOUT_S = 30.0
 _DOM_CAPTURE_MAX_CSS_HEIGHT = 20_000
 _DOM_CAPTURE_MAX_DATA_URL_CHARS = 1_800_000
+_DOM_CAPTURE_STATUS_WAIT_S = 8.0
+_DOM_CAPTURE_STATUS_POLL_S = 0.12
 _RENDER_READINESS_TIMEOUT_S = 1.5
 _RENDER_READINESS_POLL_S = 0.08
 _RENDER_READINESS_STABLE_MS = 120
@@ -614,6 +616,20 @@ return JSON.stringify({{ok:true,status:"running",mode:mode,source_width:sourceW,
 }})()'''
 
 
+def _dom_capture_status_js(state_key: str, wait_ms: int = 0) -> str:
+    """Capture status; when finished it carries the data URL. With wait_ms it returns a
+    promise that settles once the capture leaves "running" or the wait runs out."""
+    return f'''(function(){{
+var key={json.dumps(state_key)};
+function pack(){{var s=window[key];if(!s)return {{status:"missing"}};
+  var o={{status:s.status,error:s.error||"",meta:s.meta||{{}}}};if(s.status==="done")o.data=s.data||"";return o;}}
+var first=pack(),waitMs={max(0, int(wait_ms))};
+if(first.status!=="running"||!waitMs)return JSON.stringify(first);
+return new Promise(function(resolve){{var until=Date.now()+waitMs;(function tick(){{var o=pack();
+  if(o.status!=="running"||Date.now()>=until)resolve(JSON.stringify(o));else setTimeout(tick,40);}})();}});
+}})()'''
+
+
 def _capture_dom_visual(
     browser: str,
     mode: str,
@@ -699,24 +715,31 @@ def _capture_dom_visual_locked(
             else _DOM_CAPTURE_VIEWPORT_TIMEOUT_S
         )
         deadline = time.monotonic() + timeout_s
-        status_js = (
-            f"(function(){{var s=window[{state_key_js}];"
-            "return JSON.stringify(s?{status:s.status,error:s.error||'',meta:s.meta||{},data_length:s.data?s.data.length:0}:{status:'missing'});})()"
-        )
+        # The Chrome companion awaits a returned promise, so one status call can wait in
+        # the page until the capture settles; other transports poll. Either way the
+        # finished status carries the image, so no separate read follows.
+        awaits = browser == "Google Chrome" and chrome_background_bridge.is_connected()
         finished: Dict[str, Any] = {}
+        meta["status_calls"] = 0
         while time.monotonic() < deadline:
+            wait_ms = int(min(_DOM_CAPTURE_STATUS_WAIT_S, max(0.0, deadline - time.monotonic() - 1.0)) * 1000) if awaits else 0
             raw = _execute_js_unbounded(
                 browser,
-                status_js,
+                _dom_capture_status_js(state_key, wait_ms),
                 window_index=window_index,
                 tab_index=tab_index,
                 tab_handle=tab_handle,
-                timeout_s=10,
+                timeout_s=10 + wait_ms // 1000,
             )
+            meta["status_calls"] += 1
             try:
                 finished = json.loads(raw or "{}")
             except json.JSONDecodeError:
                 finished = {}
+            if not isinstance(finished, dict):
+                finished = {}
+            if awaits and not finished:
+                awaits = False  # the call fell back to a transport that cannot await; poll instead
             state = str(finished.get("status") or "")
             if state == "done":
                 break
@@ -729,20 +752,14 @@ def _capture_dom_visual_locked(
                         "Use semantic observe or browser_find instead."
                     )
                 return None, message, meta
-            cancellable_sleep(0.12)
+            if not awaits:
+                cancellable_sleep(_DOM_CAPTURE_STATUS_POLL_S)
         else:
             return None, f"DOM screenshot timed out after {timeout_s:.0f}s.", meta
 
         if isinstance(finished.get("meta"), dict):
             meta.update(finished["meta"])
-        data_url = _execute_js_unbounded(
-            browser,
-            f"(window[{state_key_js}]&&window[{state_key_js}].data)||''",
-            window_index=window_index,
-            tab_index=tab_index,
-            tab_handle=tab_handle,
-            timeout_s=30,
-        )
+        data_url = str(finished.get("data") or "")
         prefix = "data:image/jpeg;base64,"
         if not data_url.startswith(prefix):
             return None, "DOM screenshot did not return a JPEG data URL.", meta
