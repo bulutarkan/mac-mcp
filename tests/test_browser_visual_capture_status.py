@@ -103,3 +103,14 @@ class CloneLoaderPatchTests(unittest.TestCase):
         finally:
             agent._DOM_RASTERIZER_RUNTIME.clear()
             agent._DOM_RASTERIZER_RUNTIME.update(original)
+
+
+class CompanionExclusionTests(unittest.TestCase):
+    def test_the_visual_companion_overlay_is_never_captured(self) -> None:
+        # Its full-screen host painted a gray box over Medium and its badge hid page controls.
+        for mode in ("viewport", "full_page", "element"):
+            js = agent._dom_capture_start_js(mode, "e1" if mode == "element" else None, "k")
+            ignore = js[js.index("ignoreElements:function(el){"):]
+            self.assertLess(ignore.index('el.id==="mac-mcp-visual-companion-root"'), ignore.index('if(mode!=="viewport")'))
+        visual = (agent.Path(agent.__file__).resolve().parents[1] / "menu_app/BrowserVisualCompanion/visual.js").read_text()
+        self.assertIn("const HOST_ID = 'mac-mcp-visual-companion-root';", visual)

@@ -595,6 +595,9 @@ var opts={{
   scrollX:mode==="full_page"?0:window.scrollX,
   scrollY:mode==="full_page"?0:window.scrollY,
   ignoreElements:function(el){{
+    /* The Visual Companion overlay is Mac MCP UI, not page content: its full-screen host
+       came out as a gray box over the page and its badge and frame in every capture. */
+    if(el.id==="mac-mcp-visual-companion-root") return true;
     if(mode!=="viewport") return false;
     try{{
       var r=el.getBoundingClientRect();
