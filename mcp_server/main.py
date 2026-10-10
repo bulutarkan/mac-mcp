@@ -1216,9 +1216,11 @@ def create_app():
         name="mac_app",
         title="Use semantic first-party macOS app adapter",
         description=(
-            "Use typed semantic adapters for Finder, Notes, Mail, Calendar, Reminders, Preview, and System Settings. "
-            "Common action=capabilities reports app-specific actions; app='all' lists every app's support, including "
-            "Messages, Xcode, Slack and VS Code, which have no adapter yet and name the reliable path per task. "
+            "Use typed semantic adapters for Finder, Notes, Mail, Calendar, Reminders, Preview, System Settings, Messages and Xcode. "
+            "Common action=capabilities reports app-specific actions; app='all' lists every app's support with the "
+            "reliable path per task (Slack and VS Code use generic AX). Messages: find_chats (query matches chat name, "
+            "person or handle; message text is not exposed). Xcode: list_workspaces (projects, schemes, targets). "
+            "Neither launches its app; a closed app returns APP_NOT_RUNNING. "
             "Finder: selection|select_file. "
             "Notes: find_notes|open_note|create_note (title, optional body/folder/account). "
             "Mail: find_messages|open_message|create_draft (title as subject, optional body, to/cc as comma-separated "

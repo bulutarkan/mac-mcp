@@ -37,6 +37,10 @@ _APP_ALIASES = {
     "settings": "System Settings",
     "system settings": "System Settings",
     "system preferences": "System Settings",
+    "messages": "Messages",
+    "imessage": "Messages",
+    "imessages": "Messages",
+    "xcode": "Xcode",
 }
 
 _ACTIONS = {
@@ -47,6 +51,8 @@ _ACTIONS = {
     "Reminders": ("list_reminders", "complete_reminder"),
     "Preview": ("list_documents", "open_document"),
     "System Settings": ("list_panes", "open_pane"),
+    "Messages": ("find_chats",),
+    "Xcode": ("list_workspaces",),
 }
 
 _READ_ACTIONS = {
@@ -58,6 +64,8 @@ _READ_ACTIONS = {
     "list_documents",
     "list_panes",
     "list_reminders",
+    "find_chats",
+    "list_workspaces",
 }
 
 # Change app data through the app's own scripting model; they never drive the UI,
@@ -72,10 +80,9 @@ _SUPPORT_MATRIX: Dict[str, Dict[str, Any]] = {
     "Messages": {
         "aliases": ("messages", "imessage", "imessages"),
         "bundle_paths": ("/System/Applications/Messages.app",),
-        "native_api": "AppleScript dictionary (chats, send); it does not expose message text, and Mac MCP "
-                      "does not wrap it yet",
+        "native_api": "AppleScript dictionary (chats, participants, send); it does not expose message text",
         "tasks": {
-            "find_conversation": "generic_ax: mac_observe the sidebar, then mac_act on the conversation row",
+            "find_conversation": "first_party: find_chats (query matches chat name, participant name or handle)",
             "read_conversation": "generic_ax: the open transcript is exposed as AX text",
             "send_message": "generic_ax with allow_risky=true; sending is consequential and not automated here",
         },
@@ -83,10 +90,10 @@ _SUPPORT_MATRIX: Dict[str, Dict[str, Any]] = {
     "Xcode": {
         "aliases": ("xcode",),
         "bundle_paths": ("/Applications/Xcode.app",),
-        "native_api": "AppleScript dictionary (workspace documents, schemes) not wrapped yet; xcodebuild is the "
-                      "stable command-line path",
+        "native_api": "AppleScript dictionary (workspace documents, schemes, targets); xcodebuild is the stable "
+                      "command-line path for builds",
         "tasks": {
-            "inspect_project": "run_command: xcodebuild -list -project/-workspace <path>",
+            "inspect_project": "first_party: list_workspaces (open projects, schemes, active scheme, targets)",
             "build_or_test": "run_command or start_background_job: xcodebuild build/test",
             "inspect_window": "generic_ax: mac_observe the project window and navigator",
         },
@@ -123,9 +130,14 @@ def _matrix_entry(app: str) -> Optional[tuple[str, Dict[str, Any]]]:
 
 def support_matrix() -> Dict[str, Any]:
     """Which apps have first-party adapters and which rely on generic AX, with the reason."""
-    rows = {name: {"support": "first_party", "actions": list(actions)} for name, actions in _ACTIONS.items()}
+    rows: Dict[str, Any] = {name: {"support": "first_party", "actions": list(actions)} for name, actions in _ACTIONS.items()}
     for name, entry in _SUPPORT_MATRIX.items():
-        rows[name] = {"support": "generic_ax", "native_api": entry["native_api"], "tasks": dict(entry["tasks"])}
+        extra = {"native_api": entry["native_api"], "tasks": dict(entry["tasks"])}
+        if name in rows:
+            # Some tasks are first-party, the rest keep their generic path.
+            rows[name].update(support="partial_first_party", **extra)
+        else:
+            rows[name] = {"support": "generic_ax", **extra}
     return rows
 
 
@@ -1535,6 +1547,120 @@ def _preview_open(path: str, *, preserve_focus: bool, timeout_s: float) -> Dict[
     return result
 
 
+_NOT_RUNNING = "__MAC_MCP_NOT_RUNNING__"
+
+
+def _not_running(app: str, alternative: str) -> AppAdapterError:
+    # Reading never launches the app: opening it is a visible side effect the caller should choose.
+    return AppAdapterError(
+        "APP_NOT_RUNNING", f"{app} is not running; open it first (open_app) or {alternative}.", retryable=False,
+    )
+
+
+def _messages_find_chats(query: Optional[str], *, limit: int, timeout_s: float) -> Dict[str, Any]:
+    """Locate conversations by chat name, participant name or handle. Message text is not exposed."""
+    script = f'''set rs to ASCII character 30
+set us to ASCII character 31
+if application "Messages" is not running then return "{_NOT_RUNNING}"
+tell application "Messages"
+    set chatIds to id of every chat
+    set chatNames to name of every chat
+    set peopleNames to name of participants of every chat
+    set peopleHandles to handle of participants of every chat
+end tell
+set AppleScript's text item delimiters to "; "
+set outText to ""
+repeat with i from 1 to count of chatIds
+    set rowText to (item i of chatIds as text) & us & (item i of chatNames as text) & us & ¬
+        ((item i of peopleNames) as text) & us & ((item i of peopleHandles) as text)
+    if outText is not "" then set outText to outText & rs
+    set outText to outText & rowText
+end repeat
+set AppleScript's text item delimiters to ""
+return outText'''
+    raw = _run(script, timeout_s=timeout_s, code="MESSAGES_LIST_FAILED")
+    if raw == _NOT_RUNNING:
+        raise _not_running("Messages", "use mac_observe on its window once it is open")
+    needle = " ".join(str(query or "").split()).lower()
+    chats = []
+    for row in _parse_records(raw, ("chat_id", "name", "participants", "handles")):
+        name = "" if row["name"] == "missing value" else row["name"]
+        people = [item for item in row["participants"].split("; ") if item and item != "missing value"]
+        handles = [item for item in row["handles"].split("; ") if item and item != "missing value"]
+        haystack = " ".join([name, *people, *handles]).lower()
+        if needle and needle not in haystack:
+            continue
+        chats.append({"chat_id": row["chat_id"], "name": name or ", ".join(people or handles),
+                      "participants": people, "handles": handles})
+    return {
+        "ok": True, "count": len(chats[:limit]), "matched": len(chats), "chats": chats[:limit],
+        "truncated": len(chats) > limit,
+        "note": "Messages scripting does not expose message text; open the conversation and read it with mac_observe.",
+    }
+
+
+def _xcode_list_workspaces(*, limit: int, timeout_s: float) -> Dict[str, Any]:
+    """Open Xcode projects and workspaces with their schemes and targets."""
+    script = f'''set rs to ASCII character 30
+set us to ASCII character 31
+if application "Xcode" is not running then return "{_NOT_RUNNING}"
+set AppleScript's text item delimiters to "; "
+set outText to ""
+tell application "Xcode"
+    set activeName to ""
+    try
+        set activeName to name of active workspace document
+    end try
+    set rowCount to 0
+    repeat with d in workspace documents
+        if rowCount ≥ {limit} then exit repeat
+        set docPath to ""
+        set schemeNames to ""
+        set activeScheme to ""
+        set targetNames to ""
+        set isLoaded to "false"
+        set isActive to "false"
+        if (name of d as text) is activeName then set isActive to "true"
+        try
+            set docPath to path of d as text
+        end try
+        try
+            set isLoaded to loaded of d as text
+        end try
+        try
+            set schemeNames to (name of every scheme of d) as text
+        end try
+        try
+            set activeScheme to name of active scheme of d
+        end try
+        try
+            repeat with proj in projects of d
+                if targetNames is not "" then set targetNames to targetNames & "; "
+                set targetNames to targetNames & ((name of every target of proj) as text)
+            end repeat
+        end try
+        set rowText to (name of d as text) & us & docPath & us & isLoaded & us & ¬
+            isActive & us & schemeNames & us & activeScheme & us & targetNames
+        if outText is not "" then set outText to outText & rs
+        set outText to outText & rowText
+        set rowCount to rowCount + 1
+    end repeat
+end tell
+set AppleScript's text item delimiters to ""
+return outText'''
+    raw = _run(script, timeout_s=timeout_s, code="XCODE_LIST_FAILED")
+    if raw == _NOT_RUNNING:
+        raise _not_running("Xcode", "inspect the project with run_command: xcodebuild -list")
+    split = lambda text: [item for item in text.split("; ") if item]  # noqa: E731
+    workspaces = [
+        {"name": row["name"], "path": row["path"] or None, "loaded": row["loaded"] == "true",
+         "active": row["active"] == "true", "schemes": split(row["schemes"]),
+         "active_scheme": row["active_scheme"] or None, "targets": split(row["targets"])}
+        for row in _parse_records(raw, ("name", "path", "loaded", "active", "schemes", "active_scheme", "targets"))
+    ]
+    return {"ok": True, "count": len(workspaces), "workspaces": workspaces, "truncated": len(workspaces) >= limit}
+
+
 def _settings_list(*, limit: int, timeout_s: float) -> Dict[str, Any]:
     script = f'''set rs to ASCII character 30
 set us to ASCII character 31
@@ -1669,10 +1795,12 @@ def mac_app(
         return _fallback(str(app or "").strip(), normalized_action, "No first-party adapter is registered for this app.")
 
     if normalized_action == "capabilities":
+        listed = _SUPPORT_MATRIX.get(canonical)
         return {
             **_base(canonical, normalized_action),
             "ok": True,
             "actions": list(_ACTIONS[canonical]),
+            **({"native_api": listed["native_api"], "tasks": dict(listed["tasks"])} if listed else {}),
             "generic_fallback": {
                 "observe": "mac_observe",
                 "act": "mac_act",
@@ -1809,6 +1937,10 @@ def mac_app(
                 if normalized_action == "list_documents"
                 else _preview_open(str(path or ""), preserve_focus=preserve_focus, timeout_s=timeout)
             )
+        elif canonical == "Messages":
+            payload = _messages_find_chats(query, limit=bounded, timeout_s=timeout)
+        elif canonical == "Xcode":
+            payload = _xcode_list_workspaces(limit=bounded, timeout_s=timeout)
         elif canonical == "System Settings":
             payload = (
                 _settings_list(limit=bounded, timeout_s=timeout)

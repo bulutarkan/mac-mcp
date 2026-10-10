@@ -78,8 +78,8 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "foreground-only input and risky clicks fail closed unless explicitly authorized."
     ),
     "mac_app": (
-        "Typed adapters: Finder, Notes (incl. create_note), Mail (incl. create_draft, never sends), Calendar "
-        "(create/update_event), Reminders (list/complete), Preview, System Settings; action=capabilities lists actions."
+        "Typed adapters: Finder, Notes, Mail (create_draft never sends), Calendar, Reminders, Preview, System Settings, "
+        "Messages (find_chats), Xcode (list_workspaces); action=capabilities lists actions."
     ),
     "computer_plan": (
         "Run a bounded closed-loop macOS/browser plan in one call: waits, branches, bounded retries and target rebind. "
