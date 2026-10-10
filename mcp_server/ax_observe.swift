@@ -86,6 +86,7 @@ func attributes(_ element: AXUIElement, _ names: [String]) -> [String: AnyObject
 let nodeAttributes = [
     "AXRole", "AXSubrole", "AXTitle", "AXDescription", "AXRoleDescription", "AXValue",
     "AXPosition", "AXSize", "AXEnabled", "AXFocused", "AXChildren", "AXIdentifier",
+    "AXSelected", "AXPlaceholderValue", "AXHelp",
 ]
 
 var records: [String] = []
@@ -117,6 +118,9 @@ func walk(_ element: AXUIElement, id: String, parent: String, depth: Int, maxDep
         "__NODE__", clean(id), clean(parent), clean(role), clean(subrole), clean(text(a["AXTitle"])),
         clean(description), clean(value), x, y, w, h, bool(a["AXEnabled"]), bool(a["AXFocused"]),
         clean(actions), String(children.count), clean(text(a["AXIdentifier"])),
+        // Empty when the element has no AXSelected at all, so "unsupported" differs from "false".
+        a["AXSelected"] == nil ? "" : bool(a["AXSelected"]),
+        clean(text(a["AXPlaceholderValue"])), clean(text(a["AXHelp"])),
     ])
     if depth >= maxDepth { return }
     for (index, child) in children.enumerated() {

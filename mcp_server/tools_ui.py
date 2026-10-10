@@ -323,6 +323,44 @@ def _ax_text(value: str) -> str:
     return "" if value == "missing value" else value
 
 
+_NATIVE_SELECTABLE_ROLES = frozenset({
+    "AXRow", "AXCell", "AXTab", "AXRadioButton", "AXMenuItem", "AXOutlineRow", "AXStaticText", "AXButton",
+})
+
+
+def _add_node_cues(node: Dict[str, Any], fields: List[str]) -> None:
+    """Optional cues (#126), present only when the app reports them: an absent key means unsupported."""
+    # "false" matters only where a choice is made; groups report it everywhere and add noise.
+    if len(fields) > 17 and _ax_text(fields[17]) in {"true", "false"}:
+        if fields[17] == "true" or node.get("role") in _NATIVE_SELECTABLE_ROLES:
+            node["selected"] = fields[17] == "true"
+    for key, index in (("placeholder", 18), ("help", 19)):
+        if len(fields) > index:
+            cue = " ".join(_ax_text(fields[index]).split())[:200]
+            if cue:
+                node[key] = cue
+
+
+def _mark_out_of_window(metadata: Dict[str, Any], nodes: List[Dict[str, Any]]) -> None:
+    """Flag nodes that lie wholly outside their window (scrolled away, hidden panes) (#126)."""
+    frames = {}
+    for window in metadata.get("windows") or []:
+        rect = window.get("position") or {}
+        if all(isinstance(rect.get(key), (int, float)) for key in ("x", "y", "width", "height")) and rect["width"] > 0:
+            frames[f"w{int(window.get('index') or 0)}"] = rect
+    for node in nodes:
+        frame = frames.get(str(node.get("element_id") or "").split("/", 1)[0])
+        box = node.get("position") or {}
+        if not frame or not all(isinstance(box.get(key), (int, float)) for key in ("x", "y", "width", "height")):
+            continue
+        if box["width"] <= 0 or box["height"] <= 0:
+            continue
+        inside = (box["x"] < frame["x"] + frame["width"] and box["x"] + box["width"] > frame["x"]
+                  and box["y"] < frame["y"] + frame["height"] and box["y"] + box["height"] > frame["y"])
+        if not inside:
+            node["visible_in_window"] = False
+
+
 def _parse_observation(raw: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     records = [record for record in raw.split(_RECORD_SEPARATOR) if record]
     metadata: Dict[str, Any] = {"windows": []}
@@ -395,7 +433,9 @@ def _parse_observation(raw: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
             "child_count": _parse_number(fields[15]) or 0,
             "identifier": _ax_text(fields[16]) if len(fields) > 16 else "",
         })
+        _add_node_cues(nodes[-1], fields)
 
+    _mark_out_of_window(metadata, nodes)
     return metadata, nodes
 
 
@@ -455,6 +495,9 @@ on nodeRecord(nodeRef, nodeId, parentId, fs, rs)
     set actionText to ""
     set childCountText to "0"
     set identifierText to ""
+    set selectedText to ""
+    set placeholderText to ""
+    set helpText to ""
 
     tell application "System Events"
         try
@@ -499,6 +542,22 @@ on nodeRecord(nodeRef, nodeId, parentId, fs, rs)
         try
             set identifierText to value of attribute "AXIdentifier" of nodeRef as text
         end try
+        -- Extra cues only where they tell controls apart; each read is an Apple Event.
+        if roleText is in {{"AXRow", "AXCell", "AXTab", "AXRadioButton", "AXMenuItem", "AXOutlineRow", "AXStaticText", "AXButton"}} then
+            try
+                set selectedText to (selected of nodeRef) as text
+            end try
+        end if
+        if roleText is in {{"AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"}} then
+            try
+                set placeholderText to value of attribute "AXPlaceholderValue" of nodeRef as text
+            end try
+        end if
+        if (titleText is "" or titleText is "missing value") and roleText is in {{"AXButton", "AXCheckBox", "AXPopUpButton", "AXMenuButton", "AXRadioButton", "AXImage"}} then
+            try
+                set helpText to help of nodeRef as text
+            end try
+        end if
     end tell
 
     return "__NODE__" & fs & my cleanText(nodeId, fs, rs) & fs & my cleanText(parentId, fs, rs) & fs & ¬
@@ -508,7 +567,9 @@ on nodeRecord(nodeRef, nodeId, parentId, fs, rs)
         my cleanText(yText, fs, rs) & fs & my cleanText(widthText, fs, rs) & fs & ¬
         my cleanText(heightText, fs, rs) & fs & my cleanText(enabledText, fs, rs) & fs & ¬
         my cleanText(focusedText, fs, rs) & fs & my cleanText(actionText, fs, rs) & fs & ¬
-        my cleanText(childCountText, fs, rs) & fs & my cleanText(identifierText, fs, rs)
+        my cleanText(childCountText, fs, rs) & fs & my cleanText(identifierText, fs, rs) & fs & ¬
+        my cleanText(selectedText, fs, rs) & fs & my cleanText(placeholderText, fs, rs) & fs & ¬
+        my cleanText(helpText, fs, rs)
 end nodeRecord
 
 on walkNode(nodeRef, nodeId, parentId, depth, maxDepth, maxChildren, maxNodes, recordList, counter, fs, rs)
