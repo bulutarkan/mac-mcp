@@ -35,6 +35,9 @@ from .native_action_verification import (
     observed_geometry_matches as _native_observed_geometry_matches,
     observed_subtree_labels as _native_observed_subtree_labels,
     readiness_reason as _native_readiness_reason,
+    SCROLL_VERIFY_POLL_S as _NATIVE_SCROLL_VERIFY_POLL_S,
+    SCROLL_VERIFY_TIMEOUT_S as _NATIVE_SCROLL_VERIFY_TIMEOUT_S,
+    scroll_outcome as _native_scroll_outcome,
     verification_required as _native_verification_required,
 )
 from .native_targets import (
@@ -3859,6 +3862,122 @@ def _scroll(
     return True, "key-based scroll completed"
 
 
+def _native_scroll_state_script(app: str, element_id: str, app_pid: Optional[int] = None) -> str:
+    """Read-only: the nearest scroll area's scroll bar values and where its first rows sit."""
+    expression = _element_expression(_validate_element_id(element_id))
+    selection = (
+        f"set p to first application process whose unix id is {int(app_pid)}"
+        if app_pid is not None
+        else f"set p to first application process whose name is {_apple_string(app)}"
+    )
+    return f'''set fs to character id 31
+set foundText to "false"
+set vText to ""
+set hText to ""
+set anchorText to ""
+tell application "System Events"
+    {selection}
+    try
+        tell p
+            set targetElement to {expression}
+        end tell
+        set areaRef to missing value
+        set cur to targetElement
+        repeat 9 times
+            try
+                if (role of cur as text) is "AXScrollArea" then
+                    set areaRef to cur
+                    exit repeat
+                end if
+                set cur to value of attribute "AXParent" of cur
+            on error
+                exit repeat
+            end try
+        end repeat
+        set baseRef to targetElement
+        if areaRef is not missing value then
+            set foundText to "true"
+            set baseRef to areaRef
+            try
+                set vText to value of (value of attribute "AXVerticalScrollBar" of areaRef) as text
+            end try
+            try
+                set hText to value of (value of attribute "AXHorizontalScrollBar" of areaRef) as text
+            end try
+        end if
+        try
+            set contentRef to UI element 1 of baseRef
+            repeat with i from 1 to 3
+                try
+                    set pos to position of UI element i of contentRef
+                    set anchorText to anchorText & (item 1 of pos as text) & "," & (item 2 of pos as text) & ";"
+                on error
+                    exit repeat
+                end try
+            end repeat
+        end try
+    end try
+end tell
+return "__SCROLL__" & fs & foundText & fs & vText & fs & hText & fs & anchorText
+'''
+
+
+def _parse_native_scroll_state(raw: str) -> Dict[str, Any]:
+    fields = str(raw or "").strip().split(_FIELD_SEPARATOR)
+    if len(fields) < 5 or fields[0] != "__SCROLL__":
+        return {}
+
+    def ratio(text: str) -> Optional[float]:
+        try:
+            return float(str(text).strip().replace(",", "."))
+        except ValueError:
+            return None
+
+    anchors = []
+    for item in fields[4].split(";"):
+        parts = item.split(",")
+        if len(parts) == 2:
+            try:
+                anchors.append((float(parts[0]), float(parts[1])))
+            except ValueError:
+                pass
+    return {"scroll_area": fields[1] == "true", "vertical": ratio(fields[2]),
+            "horizontal": ratio(fields[3]), "anchors": anchors}
+
+
+def _probe_native_scroll_state(
+    app: str, element_id: str, *, app_pid: Optional[int] = None, deadline: Optional[float] = None,
+) -> Dict[str, Any]:
+    ok, stdout, _ = _run_osascript(
+        _native_scroll_state_script(app, element_id, app_pid=app_pid),
+        timeout_s=_operation_timeout(deadline, 6),
+    )
+    return _parse_native_scroll_state(stdout) if ok else {}
+
+
+def _wait_for_native_scroll(
+    app: str, action: Dict[str, Any], before: Dict[str, Any], *,
+    app_pid: Optional[int] = None, deadline: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Watch the scroll signal briefly; never repeats the scroll itself."""
+    direction = str(action.get("direction", "down")).lower().replace("-", "_")
+    started = time.perf_counter()
+    until = started + _NATIVE_SCROLL_VERIFY_TIMEOUT_S
+    if deadline is not None:
+        until = min(until, started + max(0.0, deadline - time.monotonic()))
+    attempts = 0
+    while True:
+        after = _probe_native_scroll_state(app, str(action.get("element_id")), app_pid=app_pid, deadline=deadline)
+        attempts += 1
+        outcome = _native_scroll_outcome(before, after, direction)
+        # Movement and a start at the edge are final; otherwise allow a late scroll.
+        if outcome.get("effect_observed") or outcome.get("at_boundary") or time.perf_counter() >= until:
+            break
+        time.sleep(_NATIVE_SCROLL_VERIFY_POLL_S)
+    outcome.update(attempts=attempts, duration_ms=int((time.perf_counter() - started) * 1000), automatic_retry=False)
+    return outcome
+
+
 def _accessibility_action(
     app: str,
     action: Dict[str, Any],
@@ -4666,6 +4785,7 @@ def act_ui(
             foreground_required_exc: Optional[NativeForegroundRequiredError] = None
             dialog_details: Optional[Dict[str, Any]] = None
             handoff_details: Optional[Dict[str, Any]] = None
+            scroll_before: Optional[Dict[str, Any]] = None
             try:
                 if action_type == "handoff_mail_text":
                     if handoff_id:
@@ -4709,6 +4829,11 @@ def act_ui(
                 else:
                     if handoff_id:
                         mark_handoff_consumed(handoff_id, consumer=f"mac_act:{action_type}")
+                    if action_type == "scroll" and resolved_element_id is not None:
+                        scroll_before = _probe_native_scroll_state(
+                            str(target.get("app") or ""), resolved_element_id,
+                            app_pid=int(target["pid"]) if target.get("pid") else None, deadline=deadline,
+                        )
                     ok, message = _perform_action(
                         str(target.get("app") or ""),
                         resolved_action,
@@ -4915,6 +5040,22 @@ def act_ui(
                         if result["reason_code"] == "ACTION_NO_EFFECT"
                         else "action executed but its effect could not be verified safely"
                     )
+            elif result.get("ok") and scroll_before is not None:
+                scroll = _wait_for_native_scroll(
+                    str(target.get("app") or ""), resolved_action, scroll_before,
+                    app_pid=int(target["pid"]) if target.get("pid") else None, deadline=deadline,
+                )
+                result["verification"] = scroll["verification"]
+                result["effect_observed"] = scroll.get("effect_observed")
+                result["scroll"] = {k: v for k, v in scroll.items() if k not in {"verification", "effect_observed"}}
+                delta_structural_refresh = True
+                delta_refresh_reasons.append("scroll_effect")
+                if scroll["verification"] == "scroll_not_observed":
+                    result.update({
+                        "ok": False, "error": "action_no_effect", "reason_code": "ACTION_NO_EFFECT",
+                        "automatic_retry": False, "observe_again": True,
+                        "message": "scroll was accepted but the scroll position did not move and is not at an edge",
+                    })
             elif result.get("ok") and handoff_details is not None and handoff_details.get("verified"):
                 result["verification"] = "semantic_handoff_verified"
                 result["effect_observed"] = True

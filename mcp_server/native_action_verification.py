@@ -228,3 +228,41 @@ def effect_changed(before: Dict[str, Any], after: Dict[str, Any], action: Dict[s
     if _different(before, after, window_keys):
         return True, "window_state_changed"
     return False, "state_unchanged"
+
+
+# Scrolls (#45). A scroll area's scroll bar value (0 at the top/left, 1 at the
+# bottom/right) shows movement and the boundary; without one, the positions of
+# the first content rows show movement but not whether an edge was reached.
+SCROLL_VERIFY_TIMEOUT_S = 0.8
+SCROLL_VERIFY_POLL_S = 0.1
+_SCROLL_EPSILON = 0.001
+
+
+def scroll_axis(direction: str) -> str:
+    return "horizontal" if str(direction or "").lower() in {"left", "right"} else "vertical"
+
+
+def scroll_outcome(before: Dict[str, Any], after: Dict[str, Any], direction: str) -> Dict[str, Any]:
+    """Compare two scroll probes: scrolled, already at the edge, no movement, or unverifiable."""
+    axis = scroll_axis(direction)
+    forward = str(direction or "down").lower() in {"down", "right"}
+    start, end = before.get(axis), after.get(axis)
+    base = {"axis": axis, "direction": str(direction or "down").lower()}
+    if isinstance(start, (int, float)) and isinstance(end, (int, float)):
+        base.update(offset_before=round(float(start), 4), offset_after=round(float(end), 4), signal="scroll_bar")
+        if abs(float(end) - float(start)) > _SCROLL_EPSILON:
+            return {**base, "verification": "scroll_observed", "effect_observed": True}
+        at_edge = float(start) >= 1 - _SCROLL_EPSILON if forward else float(start) <= _SCROLL_EPSILON
+        if at_edge:
+            return {**base, "verification": "scroll_at_boundary", "effect_observed": False, "at_boundary": True}
+        return {**base, "verification": "scroll_not_observed", "effect_observed": False,
+                "reason_code": "ACTION_NO_EFFECT"}
+    coordinate = 0 if axis == "horizontal" else 1
+    pairs = list(zip(before.get("anchors") or [], after.get("anchors") or []))
+    if pairs:
+        base["signal"] = "content_position"
+        if any(abs(a[coordinate] - b[coordinate]) >= 1 for a, b in pairs):
+            return {**base, "verification": "scroll_observed", "effect_observed": True}
+        # Unmoved content may simply be at its edge: say so instead of "no effect".
+        return {**base, "verification": "scroll_unverified", "effect_observed": None, "content_moved": False}
+    return {**base, "signal": "none", "verification": "scroll_unverified", "effect_observed": None}
