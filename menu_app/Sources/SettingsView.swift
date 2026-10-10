@@ -10,6 +10,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     case agents
     case usage
     case permissions
+    case apps
     case connections
     case voice
     case advanced
@@ -23,6 +24,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .agents: return "Agents"
         case .usage: return "Usage"
         case .permissions: return "Permissions & Safety"
+        case .apps: return "Apps"
         case .connections: return "Connections"
         case .voice: return "Voice"
         case .advanced: return "Advanced"
@@ -36,6 +38,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .agents: return "cpu"
         case .usage: return "chart.bar.xaxis"
         case .permissions: return "checkmark.shield"
+        case .apps: return "square.grid.2x2"
         case .connections: return "network"
         case .voice: return "waveform.and.mic"
         case .advanced: return "wrench.and.screwdriver"
@@ -521,6 +524,7 @@ struct SettingsView: View {
         case .agents: subagentsPane
         case .usage: usagePane
         case .permissions: permissionsPane
+        case .apps: appsPane
         case .connections: connectionsPane
         case .voice: voicePane
         case .advanced: advancedPane
@@ -2875,6 +2879,97 @@ struct SettingsView: View {
             get: { settings.agentCompletionNotificationsEnabled },
             set: { enabled in
                 state.setAgentCompletionNotificationsEnabled(enabled)
+            }
+        )
+    }
+
+    private var appsPane: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                paneHeader(
+                    "Apps",
+                    subtitle: "What agents may do in your Mac apps through Mac MCP. Settings for more apps will appear here."
+                )
+
+                GroupBox("Sending") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        appSendRow(
+                            bundleId: "com.apple.mail",
+                            title: "Ask before sending email",
+                            detail: "Agents can send email with Mail. When on, each email waits in a confirmation panel showing the sender, recipients, subject and full text, and goes out only when you click Send.",
+                            isOn: confirmSendBinding(\.mailConfirmSend, app: "Mail")
+                        )
+                        Divider()
+                        appSendRow(
+                            bundleId: "com.apple.MobileSMS",
+                            title: "Ask before sending messages",
+                            detail: "Agents can send a message to an existing Messages conversation. When on, each message waits in the same confirmation panel until you click Send.",
+                            isOn: confirmSendBinding(\.messagesConfirmSend, app: "Messages")
+                        )
+                    }
+                    .padding(.top, 5)
+                }
+
+                GroupBox("When confirmation is off") {
+                    Text("Agents send without asking. Cancel, closing the panel or letting it time out never sends, so leave these on unless you trust every agent connected to this Mac.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 5)
+                }
+
+                GroupBox("Other apps") {
+                    Text("Finder, Notes, Calendar, Reminders, Preview, System Settings, Messages search and Xcode only read or change data on this Mac and have no settings yet. Mail drafts are saved, never sent.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 5)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(20)
+        }
+    }
+
+    private func appSendRow(bundleId: String, title: String, detail: String, isOn: Binding<Bool>) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(nsImage: appIcon(bundleId))
+                .resizable()
+                .frame(width: 32, height: 32)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+        }
+    }
+
+    private func appIcon(_ bundleId: String) -> NSImage {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
+            return NSWorkspace.shared.icon(forFile: url.path)
+        }
+        return NSImage(systemSymbolName: "app", accessibilityDescription: nil) ?? NSImage()
+    }
+
+    private func confirmSendBinding(_ keyPath: ReferenceWritableKeyPath<SettingsStore, Bool>, app: String) -> Binding<Bool> {
+        Binding(
+            get: { settings[keyPath: keyPath] },
+            set: { enabled in
+                settings[keyPath: keyPath] = enabled
+                persistSettings(
+                    success: enabled
+                        ? "\(app): agents will ask before sending."
+                        : "\(app): agents send without asking."
+                )
             }
         )
     }

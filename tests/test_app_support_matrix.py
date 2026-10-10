@@ -33,7 +33,7 @@ class SupportMatrixTests(unittest.TestCase):
     def test_partial_apps_list_their_actions_and_remaining_tasks(self) -> None:
         result = mac_app(SETTINGS, app="iMessage", action="capabilities")
         self.assertEqual("Messages", result["app"])
-        self.assertEqual(["find_chats"], result["actions"])
+        self.assertEqual(["find_chats", "send_message"], result["actions"])
         self.assertIn("read_conversation", result["tasks"])
 
     def test_aliases_resolve_to_the_same_entry(self) -> None:
@@ -55,7 +55,7 @@ class SupportMatrixTests(unittest.TestCase):
         for app in GENERIC:
             self.assertEqual("generic_ax", result["apps"][app]["support"])
         self.assertEqual("partial_first_party", result["apps"]["Messages"]["support"])
-        self.assertEqual(["find_chats"], result["apps"]["Messages"]["actions"])
+        self.assertEqual(["find_chats", "send_message"], result["apps"]["Messages"]["actions"])
         self.assertEqual(["list_workspaces"], result["apps"]["Xcode"]["actions"])
         self.assertEqual("first_party", result["apps"]["Notes"]["support"])
         self.assertIn("create_note", result["apps"]["Notes"]["actions"])
@@ -66,7 +66,8 @@ class SupportMatrixTests(unittest.TestCase):
             self.assertNotIn("actions", matrix[app])
             self.assertEqual((), app_adapters.supported_actions(app))
         # Tasks without an adapter action keep their generic path.
-        self.assertTrue(matrix["Messages"]["tasks"]["send_message"].startswith("generic_ax"))
+        self.assertTrue(matrix["Messages"]["tasks"]["read_conversation"].startswith("generic_ax"))
+        self.assertIn("confirms", matrix["Messages"]["tasks"]["send_message"])
         self.assertTrue(matrix["Xcode"]["tasks"]["build_or_test"].startswith("run_command"))
 
     def test_apps_outside_the_matrix_keep_the_generic_fallback(self) -> None:

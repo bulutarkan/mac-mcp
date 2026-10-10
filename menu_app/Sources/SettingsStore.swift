@@ -31,6 +31,15 @@ struct MenuSettings: Codable {
     struct Notifications: Codable {
         var agent_completion: Bool
     }
+    /// Per-app settings for what agents may do in Mac apps (Settings > Apps).
+    struct AppSend: Codable {
+        /// Ask in a native panel before every send; the server treats anything but false as on.
+        var confirm_send: Bool
+    }
+    struct Apps: Codable {
+        var mail: AppSend?
+        var messages: AppSend?
+    }
     struct DecisionAcceleration: Codable {
         var enabled: Bool
         var scope: String?
@@ -66,6 +75,7 @@ struct MenuSettings: Codable {
     var notifications: Notifications?
     var decision_acceleration: DecisionAcceleration?
     var subagents: Subagents?
+    var apps: Apps?
 
     static func defaults() -> MenuSettings {
         MenuSettings(
@@ -83,7 +93,8 @@ struct MenuSettings: Codable {
                     "chatgpt": Provider(enabled: false, binary_path: nil, default_project: nil),
                 ],
                 defaultAgent: nil
-            )
+            ),
+            apps: Apps(mail: AppSend(confirm_send: true), messages: AppSend(confirm_send: true))
         )
     }
 }
@@ -112,6 +123,8 @@ final class SettingsStore: ObservableObject {
     @Published var showToolActivity = false
     @Published var requireToolDescriptions = false
     @Published var agentCompletionNotificationsEnabled = false
+    @Published var mailConfirmSend = true
+    @Published var messagesConfirmSend = true
     @Published var opencodeEnabled = false
     @Published var codexEnabled = false
     @Published var chatgptEnabled = false
@@ -212,6 +225,8 @@ final class SettingsStore: ObservableObject {
             showToolActivity = false
         }
         agentCompletionNotificationsEnabled = current.notifications?.agent_completion ?? false
+        mailConfirmSend = current.apps?.mail?.confirm_send ?? true
+        messagesConfirmSend = current.apps?.messages?.confirm_send ?? true
         decisionAccelerationEnabled = current.decision_acceleration?.enabled ?? false
         let rawDecisionScope = current.decision_acceleration?.scope?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         decisionAccelerationScope = ["off", "browser", "native", "both"].contains(rawDecisionScope) ? rawDecisionScope : "both"
@@ -266,7 +281,8 @@ final class SettingsStore: ObservableObject {
                     .init(provider: $0, model: defaultAgentModel.nilIfEmpty, reasoning: defaultAgentReasoning.nilIfEmpty)
                 },
                 maxActive: min(16, max(1, maxActiveAgents))
-            )
+            ),
+            apps: .init(mail: .init(confirm_send: mailConfirmSend), messages: .init(confirm_send: messagesConfirmSend))
         )
         let payloadData = try JSONEncoder.pretty.encode(payload)
         guard let payloadObject = try JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import os
 import re
 import subprocess
 import time
@@ -10,8 +11,9 @@ from typing import Any, Dict, Optional
 
 from .security import Settings
 from .foreground_guard import current_foreground_authorization
+from .send_approval import request_send_approval
 from .workspace_arbitration import (
-    claim_delegated_resource, native_app_human_takeover, native_app_resource_id,
+    claim_delegated_resource, delegated_agent_identity, native_app_human_takeover, native_app_resource_id,
 )
 from .tools_ui import (
     _apple_string,
@@ -46,12 +48,12 @@ _APP_ALIASES = {
 _ACTIONS = {
     "Finder": ("selection", "select_file"),
     "Notes": ("find_notes", "open_note", "create_note"),
-    "Mail": ("find_messages", "open_message", "create_draft"),
+    "Mail": ("find_messages", "open_message", "create_draft", "send_mail"),
     "Calendar": ("find_events", "open_event", "create_event", "update_event"),
     "Reminders": ("list_reminders", "complete_reminder"),
     "Preview": ("list_documents", "open_document"),
     "System Settings": ("list_panes", "open_pane"),
-    "Messages": ("find_chats",),
+    "Messages": ("find_chats", "send_message"),
     "Xcode": ("list_workspaces",),
 }
 
@@ -71,6 +73,9 @@ _READ_ACTIONS = {
 # Change app data through the app's own scripting model; they never drive the UI,
 # so a person using the app's window does not block them.
 _DATA_WRITE_ACTIONS = {"create_event", "update_event", "complete_reminder", "create_note", "create_draft"}
+# Reach other people through the app's scripting model; the person confirms each
+# one in a native panel unless they turned that off (send_approval).
+_SEND_ACTIONS = {"send_mail", "send_message"}
 
 
 # Apps people ask for that have no first-party adapter yet (#129). Each entry
@@ -84,7 +89,7 @@ _SUPPORT_MATRIX: Dict[str, Dict[str, Any]] = {
         "tasks": {
             "find_conversation": "first_party: find_chats (query matches chat name, participant name or handle)",
             "read_conversation": "generic_ax: the open transcript is exposed as AX text",
-            "send_message": "generic_ax with allow_risky=true; sending is consequential and not automated here",
+            "send_message": "first_party: send_message to an existing chat; the person confirms it first by default",
         },
     },
     "Xcode": {
@@ -1345,16 +1350,8 @@ _MAIL_ERRORS = {
 }
 
 
-def _mail_create_draft(
-    subject: Optional[str], body: Optional[str], *, to: Optional[str], cc: Optional[str],
-    account: Optional[str], timeout_s: float,
-) -> Dict[str, Any]:
-    title = _single_line(subject, "title", 300)
-    if not title:
-        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Mail create_draft requires title (the subject).")
-    text = _plain_text(body, "body", 20000)
-    to_list = _addresses(to, "to")
-    cc_list = _addresses(cc, "cc")
+def _mail_account_pick(account: Optional[str]) -> tuple[list[str], str]:
+    """AppleScript lines that set targetAccount, and the sender address expression."""
     chosen = _single_line(account, "account", 254)
     if chosen:
         pick = [
@@ -1368,23 +1365,35 @@ def _mail_create_draft(
             '    if (count of accountMatches) > 1 then return "ACCOUNT_NOT_UNIQUE"',
             "    set targetAccount to item 1 of accountMatches",
         ]
-        address = _apple_string(chosen) if "@" in chosen else "(item 1 of senderAddresses)"
-    else:
-        # With several accounts the sender is never guessed.
-        pick = [
-            "    set enabledAccounts to accounts whose enabled is true",
-            '    if (count of enabledAccounts) is 0 then return "NO_ACCOUNT"',
-            "    if (count of enabledAccounts) > 1 then",
-            '        set accountNames to ""',
-            "        repeat with a in enabledAccounts",
-            '            if accountNames is not "" then set accountNames to accountNames & us',
-            "            set accountNames to accountNames & (name of a as text)",
-            "        end repeat",
-            '        return "ACCOUNT_REQUIRED" & us & accountNames',
-            "    end if",
-            "    set targetAccount to item 1 of enabledAccounts",
-        ]
-        address = "(item 1 of senderAddresses)"
+        return pick, (_apple_string(chosen) if "@" in chosen else "(item 1 of senderAddresses)")
+    # With several accounts the sender is never guessed.
+    pick = [
+        "    set enabledAccounts to accounts whose enabled is true",
+        '    if (count of enabledAccounts) is 0 then return "NO_ACCOUNT"',
+        "    if (count of enabledAccounts) > 1 then",
+        '        set accountNames to ""',
+        "        repeat with a in enabledAccounts",
+        '            if accountNames is not "" then set accountNames to accountNames & us',
+        "            set accountNames to accountNames & (name of a as text)",
+        "        end repeat",
+        '        return "ACCOUNT_REQUIRED" & us & accountNames',
+        "    end if",
+        "    set targetAccount to item 1 of enabledAccounts",
+    ]
+    return pick, "(item 1 of senderAddresses)"
+
+
+def _mail_create_draft(
+    subject: Optional[str], body: Optional[str], *, to: Optional[str], cc: Optional[str],
+    account: Optional[str], timeout_s: float,
+) -> Dict[str, Any]:
+    title = _single_line(subject, "title", 300)
+    if not title:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Mail create_draft requires title (the subject).")
+    text = _plain_text(body, "body", 20000)
+    to_list = _addresses(to, "to")
+    cc_list = _addresses(cc, "cc")
+    pick, address = _mail_account_pick(account)
     readback = (
         "(message id of d as text) & us & (subject of d as text) & us & (name of targetAccount as text) & us & senderText"
     )
@@ -1455,6 +1464,171 @@ def _mail_create_draft(
                               outcome_unknown=True, automatic_retry=False)
     return {"ok": True, "created": True, "sent": False, "verified": True, "verification": "drafts_mailbox",
             "draft": dict(zip(_DRAFT_FIELDS, parts[1:])), "to": to_list, "cc": cc_list}
+
+
+def _send_dry_run() -> bool:
+    # Test servers only: everything up to and including the confirmation runs, the send itself does not.
+    return os.getenv("MAC_MCP_SEND_DRY_RUN", "").strip() == "1"
+
+
+def _requester() -> str:
+    identity = delegated_agent_identity()
+    actor = str((identity or {}).get("actor") or "").strip()
+    return f"{actor} through Mac MCP" if actor else "an AI agent through Mac MCP"
+
+
+def _not_sent(approval: Dict[str, Any]) -> Dict[str, Any]:
+    decision = approval.get("decision")
+    code = {"cancel": "SEND_CANCELLED", "timeout": "SEND_CONFIRMATION_TIMED_OUT"}.get(
+        str(decision), "SEND_CONFIRMATION_UNAVAILABLE")
+    return {
+        "ok": False, "sent": False, "reason_code": code, "confirmation": approval, "automatic_retry": False,
+        "message": {"SEND_CANCELLED": "The person chose not to send it; do not try again unless they ask.",
+                    "SEND_CONFIRMATION_TIMED_OUT": "Nobody confirmed in time; nothing was sent."}.get(
+            code, "No confirmation could be shown, so nothing was sent."),
+    }
+
+
+def _mail_send(
+    settings: Settings, subject: Optional[str], body: Optional[str], *, to: Optional[str], cc: Optional[str],
+    account: Optional[str], timeout_s: float,
+) -> Dict[str, Any]:
+    """Send an email after the person confirms it, then look for it in Sent."""
+    title = _single_line(subject, "title", 300)
+    if not title:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Mail send_mail requires title (the subject).")
+    text = _plain_text(body, "body", 20000)
+    to_list = _addresses(to, "to")
+    cc_list = _addresses(cc, "cc")
+    if not to_list:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Mail send_mail requires at least one to address.")
+    pick, address = _mail_account_pick(account)
+    head = [
+        "set us to ASCII character 31",
+        'tell application "Mail"',
+        *pick,
+        "    set senderAddresses to email addresses of targetAccount",
+        '    if (count of senderAddresses) is 0 then return "NO_ADDRESS"',
+        f"    set senderText to (full name of targetAccount) & \" <\" & {address} & \">\"",
+    ]
+    # Read-only: who it would come from, for the person to see before anything exists.
+    raw = _run("\n".join(head + ['    return "OK" & us & (name of targetAccount as text) & us & senderText', "end tell"]),
+               timeout_s=max(timeout_s, 15.0), code="MAIL_SEND_FAILED")
+    parts = raw.split(_US)
+    if parts[0] in _MAIL_ERRORS:
+        code, message = _MAIL_ERRORS[parts[0]]
+        raise AppAdapterError(code, message.replace("created", "sent"))
+    if parts[0] == "ACCOUNT_REQUIRED":
+        raise AppAdapterError("MAIL_ACCOUNT_REQUIRED",
+                              "Several Mail accounts are enabled; pass account (its name or address). Nothing was sent.",
+                              accounts=parts[1:])
+    account_name, sender = (parts + ["", ""])[1:3]
+    approval = request_send_approval(
+        settings, app="mail", app_bundle_id="com.apple.mail", title="Send this email?",
+        fields=[{"label": "From", "value": sender}, {"label": "To", "value": ", ".join(to_list)},
+                {"label": "Cc", "value": ", ".join(cc_list)}, {"label": "Subject", "value": title}],
+        body=text, requester=_requester(),
+    )
+    if not approval["approved"]:
+        return {**_not_sent(approval), "to": to_list, "cc": cc_list, "subject": title}
+    if _send_dry_run():
+        return {"ok": True, "sent": False, "dry_run": True, "confirmation": approval, "to": to_list, "subject": title}
+    send = head + [
+        "    set m to make new outgoing message with properties "
+        f"{{subject:{_apple_string(title)}, content:{_apple_string(text)}, sender:senderText, visible:false}}",
+        "    tell m",
+        *[f"        make new to recipient at end of to recipients with properties {{address:{_apple_string(item)}}}"
+          for item in to_list],
+        *[f"        make new cc recipient at end of cc recipients with properties {{address:{_apple_string(item)}}}"
+          for item in cc_list],
+        "    end tell",
+        "    if (send m) then return \"SENT\"",
+        '    return "NOT_SENT"',
+        "end tell",
+    ]
+    try:
+        status = _run("\n".join(send), timeout_s=max(timeout_s, 20.0), code="MAIL_SEND_FAILED")
+    except AppAdapterError as exc:
+        if exc.extra.get("not_executed"):
+            raise
+        raise AppAdapterError(exc.code, f"{exc} The email may or may not have gone out; check Sent before trying again.",
+                              outcome_unknown=True, automatic_retry=False) from exc
+    if status != "SENT":
+        raise AppAdapterError("MAIL_SEND_REFUSED", "Mail did not accept the message for sending; nothing was sent.")
+    # Mail sends in the background; look for it in Sent for a short while.
+    check = "\n".join([
+        'tell application "Mail"',
+        "    set cutoff to (current date) - 300",
+        f"    return count of (messages of sent mailbox whose subject is {_apple_string(title)} and date sent > cutoff)",
+        "end tell",
+    ])
+    in_sent = False
+    for _ in range(8):
+        try:
+            in_sent = int(_run(check, timeout_s=10, code="MAIL_SENT_CHECK_FAILED") or 0) > 0
+        except (AppAdapterError, ValueError):
+            in_sent = False
+        if in_sent:
+            break
+        time.sleep(1.5)
+    return {
+        "ok": True, "sent": True, "verified": in_sent, "verification": "sent_mailbox" if in_sent else "accepted_by_mail",
+        "confirmation": approval, "account": account_name, "from": sender, "to": to_list, "cc": cc_list, "subject": title,
+        "automatic_retry": False,
+    }
+
+
+def _messages_send(
+    settings: Settings, chat_id: Optional[str], query: Optional[str], body: Optional[str], *, timeout_s: float,
+) -> Dict[str, Any]:
+    """Send a message to one existing conversation after the person confirms it."""
+    text = _plain_text(body, "body", 5000).strip()
+    if not text:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Messages send_message requires body (the message text).")
+    wanted = str(chat_id or "").strip()
+    if not wanted and not str(query or "").strip():
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID",
+                              "Pass item_id (a chat_id from find_chats) or a query that matches exactly one chat.")
+    found = _messages_find_chats(None if wanted else query, limit=_MAX_LIMIT, timeout_s=timeout_s)
+    chats = [chat for chat in found["chats"] if chat["chat_id"] == wanted] if wanted else found["chats"]
+    if not chats:
+        raise AppAdapterError("MESSAGES_CHAT_NOT_FOUND", "No conversation matches; nothing was sent. Use find_chats.")
+    if len(chats) > 1 or (not wanted and found["truncated"]):
+        raise AppAdapterError("MESSAGES_CHAT_AMBIGUOUS",
+                              "More than one conversation matches; pass item_id from find_chats. Nothing was sent.",
+                              candidates=chats[:10])
+    chat = chats[0]
+    approval = request_send_approval(
+        settings, app="messages", app_bundle_id="com.apple.MobileSMS", title="Send this message?",
+        fields=[{"label": "To", "value": chat["name"]},
+                {"label": "Address", "value": ", ".join(chat["handles"])}],
+        body=text, requester=_requester(),
+    )
+    if not approval["approved"]:
+        return {**_not_sent(approval), "chat": chat}
+    if _send_dry_run():
+        return {"ok": True, "sent": False, "dry_run": True, "confirmation": approval, "chat": chat}
+    script = "\n".join([
+        f'if application "Messages" is not running then return "{_NOT_RUNNING}"',
+        'tell application "Messages"',
+        f"    send {_apple_string(text)} to chat id {_apple_string(chat['chat_id'])}",
+        "end tell",
+        'return "SENT"',
+    ])
+    try:
+        status = _run(script, timeout_s=max(timeout_s, 15.0), code="MESSAGES_SEND_FAILED")
+    except AppAdapterError as exc:
+        if exc.extra.get("not_executed"):
+            raise
+        raise AppAdapterError(exc.code, f"{exc} The message may or may not have gone out; check the conversation "
+                              "with mac_observe before trying again.", outcome_unknown=True, automatic_retry=False) from exc
+    if status == _NOT_RUNNING:
+        raise _not_running("Messages", "use mac_observe once it is open")
+    return {
+        "ok": True, "sent": True, "verified": False, "verification": "accepted_by_messages",
+        "confirmation": approval, "chat": chat, "automatic_retry": False,
+        "note": "Messages scripting cannot read the conversation back; look at it with mac_observe to confirm delivery.",
+    }
 
 
 def _preview_list(*, limit: int, timeout_s: float) -> Dict[str, Any]:
@@ -1814,7 +1988,7 @@ def mac_app(
             f"{canonical} adapter does not support action '{normalized_action}'.",
         )
 
-    if normalized_action not in _READ_ACTIONS and normalized_action not in _DATA_WRITE_ACTIONS:
+    if normalized_action not in _READ_ACTIONS | _DATA_WRITE_ACTIONS | _SEND_ACTIONS:
         human_guard = native_app_human_takeover(canonical)
         if human_guard is not None:
             reason_code = str(
@@ -1906,6 +2080,8 @@ def mac_app(
                 payload = _mail_find(query, sender, mailbox=mailbox, exact=exact, limit=bounded, timeout_s=timeout)
             elif normalized_action == "create_draft":
                 payload = _mail_create_draft(title, body, to=to, cc=cc, account=account, timeout_s=timeout)
+            elif normalized_action == "send_mail":
+                payload = _mail_send(settings, title, body, to=to, cc=cc, account=account, timeout_s=timeout)
             else:
                 payload = _mail_open(str(item_id or ""), mailbox=mailbox, preserve_focus=preserve_focus, timeout_s=timeout)
         elif canonical == "Calendar":
@@ -1938,7 +2114,11 @@ def mac_app(
                 else _preview_open(str(path or ""), preserve_focus=preserve_focus, timeout_s=timeout)
             )
         elif canonical == "Messages":
-            payload = _messages_find_chats(query, limit=bounded, timeout_s=timeout)
+            payload = (
+                _messages_send(settings, item_id, query, body, timeout_s=timeout)
+                if normalized_action == "send_message"
+                else _messages_find_chats(query, limit=bounded, timeout_s=timeout)
+            )
         elif canonical == "Xcode":
             payload = _xcode_list_workspaces(limit=bounded, timeout_s=timeout)
         elif canonical == "System Settings":

@@ -326,7 +326,17 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     read_actions = {
         "capabilities", "selection", "find_notes", "find_messages",
         "find_events", "list_documents", "list_panes", "list_reminders",
+        "find_chats", "list_workspaces",
     }
+    # Sending reaches other people. The person confirms each send in a native
+    # panel (unless turned off in Settings > Apps), so it is not escalated to the
+    # server-wide approval as well: one question per send, not two.
+    if action in {"send_mail", "send_message"}:
+        return RiskOverride(
+            capabilities=_caps(Capability.READ, Capability.EXTERNAL_SIDE_EFFECT),
+            destructive=False,
+            sensitive=True,
+        )
     # Calendar, Reminders, Notes and Mail-draft data changes go through the app's
     # scripting model, not its UI: a local data write rather than a UI action.
     # Mail drafts are saved, never sent.
