@@ -121,6 +121,12 @@ _TAB_TARGET_NOT_ACTIVE = "MAC_MCP_TAB_TARGET_NOT_ACTIVE"
 _TAB_TARGET_MISSING = "MAC_MCP_TAB_TARGET_MISSING"
 _CHROME_NATIVE_JS_DENIED = False
 _CHROME_BRIDGE_INLINE_LIMIT = 2400
+# The degraded URL bridge reads a result through the tab title, one javascript: URL
+# per 3,000-character chunk; one osascript reads a batch of chunks. Results larger
+# than the cap are refused before any chunk is read (the companion has no such cap).
+_CHROME_BRIDGE_CHUNK_CHARS = 3000
+_CHROME_BRIDGE_CHUNKS_PER_SCRIPT = 25
+_CHROME_BRIDGE_MAX_ENCODED_CHARS = 1_000_000
 _CHROME_BACKGROUND_OPEN_LOCK = threading.Lock()
 _SAFARI_NEW_TAB_LOCK_GUARD = threading.Lock()
 _SAFARI_NEW_TAB_LOCKS: Dict[int, threading.Lock] = {}
@@ -1325,7 +1331,15 @@ end tell'''
         # In that narrow window Chrome can discard a javascript: URL with the old
         # document. Retry against the same native tab identity after navigation.
         for bridge_attempt in range(3):
-            ready = _run_osascript(stage_script, timeout_s=max(3, min(timeout_s, 10)))
+            try:
+                ready = _run_osascript(stage_script, timeout_s=max(3, min(timeout_s, 10)))
+            except HTTPException as exc:
+                # Current Chrome treats a javascript: URL set over Apple Events as Apple Events
+                # JavaScript, so the bridge meets the same setting that sent the call here.
+                if not any(marker_text in str(exc.detail) for marker_text in _CHROME_JS_DENIED_MARKERS):
+                    raise
+                ready = ""
+                break
             if ready.startswith(prefix) or ready.startswith(inline_prefix):
                 break
             if bridge_attempt < 2:
@@ -1346,35 +1360,62 @@ end tell'''
                 encoded_len = int(ready[len(prefix):])
             except ValueError as exc:
                 raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Chrome JavaScript bridge returned an invalid length.") from exc
-            if encoded_len < 0 or encoded_len > 8_000_000:
-                raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, "Chrome JavaScript bridge result exceeded the safety limit.")
+            if encoded_len < 0:
+                raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Chrome JavaScript bridge returned an invalid length.")
+            if encoded_len > _CHROME_BRIDGE_MAX_ENCODED_CHARS:
+                raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, {
+                    "ok": False, "error": "chrome_bridge_result_too_large", "retryable": False,
+                    "encoded_chars": encoded_len, "limit_chars": _CHROME_BRIDGE_MAX_ENCODED_CHARS,
+                    "message": "This result is too large for Chrome's fallback JavaScript bridge. Connect the "
+                               "Mac MCP Chrome companion, or ask for less (a smaller max_chars, scope or visual).",
+                })
 
-        chunk_size = 3000
         chunks: list[str] = []
-        for start in range(0 if not encoded else encoded_len, encoded_len, chunk_size):
-            end = min(start + chunk_size, encoded_len)
-            chunk_js = (
-                "javascript:(()=>{try{"
-                f"document.title='{marker}CHUNK:'+String(window.__macMcpBridgeResult||'').slice({start},{end});"
-                "}catch(_){}})();void(0)"
+        starts = list(range(0 if not encoded else encoded_len, encoded_len, _CHROME_BRIDGE_CHUNK_CHARS))
+        for batch_at in range(0, len(starts), _CHROME_BRIDGE_CHUNKS_PER_SCRIPT):
+            batch = starts[batch_at:batch_at + _CHROME_BRIDGE_CHUNKS_PER_SCRIPT]
+            # Each title carries its own offset, so a title left by the previous chunk never passes as this one.
+            # (The marker is [A-Za-z0-9_], so the javascript: URL needs no AppleScript escaping.)
+            chunk_url = (
+                f'"javascript:(()=>{{try{{document.title=\'{marker}CHUNK:" & chunkStart & ":\''
+                '+String(window.__macMcpBridgeResult||\'\').slice(" & chunkStart & "," & chunkEnd & ");'
+                '}catch(_){}})();void(0)"'
             )
             chunk_script = f'''tell application "Google Chrome"
     tell window {target.window_index}
         {guard}
-        set URL of targetTab to "{_js_escape(chunk_js)}"
-        repeat with attempt from 1 to 40
-            delay 0.015
-            set bridgeTitle to (title of targetTab) as text
-            if bridgeTitle starts with "{marker}CHUNK:" then return bridgeTitle
+        set chunkStarts to {{{", ".join(str(start) for start in batch)}}}
+        set parts to {{}}
+        repeat with i from 1 to count of chunkStarts
+            set chunkStart to item i of chunkStarts
+            set chunkEnd to chunkStart + {_CHROME_BRIDGE_CHUNK_CHARS}
+            if chunkEnd > {encoded_len} then set chunkEnd to {encoded_len}
+            set chunkPrefix to "{marker}CHUNK:" & chunkStart & ":"
+            set URL of targetTab to {chunk_url}
+            set bridgeTitle to ""
+            repeat with attempt from 1 to 40
+                delay 0.015
+                set bridgeTitle to (title of targetTab) as text
+                if bridgeTitle starts with chunkPrefix then exit repeat
+            end repeat
+            if bridgeTitle does not start with chunkPrefix then return "{marker}TIMEOUT:" & chunkStart
+            set end of parts to text ((length of chunkPrefix) + 1) thru -1 of bridgeTitle
         end repeat
-        return "{marker}TIMEOUT"
+        set AppleScript's text item delimiters to linefeed
+        set joined to parts as text
+        set AppleScript's text item delimiters to ""
+        return "{marker}CHUNKS:" & joined
     end tell
 end tell'''
-            row = _run_osascript(chunk_script, timeout_s=max(2, min(timeout_s, 10)))
-            chunk_prefix = f"{marker}CHUNK:"
-            if not row.startswith(chunk_prefix):
+            row = _run_osascript(chunk_script, timeout_s=max(4, min(timeout_s, 20)))
+            batch_prefix = f"{marker}CHUNKS:"
+            if not row.startswith(batch_prefix):
                 raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Chrome JavaScript bridge timed out while reading a result chunk.")
-            chunks.append(row[len(chunk_prefix):])
+            parts = row[len(batch_prefix):].split("\n")
+            expected = [min(_CHROME_BRIDGE_CHUNK_CHARS, encoded_len - start) for start in batch]
+            if [len(part) for part in parts] != expected:
+                raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Chrome JavaScript bridge returned an incomplete result.")
+            chunks.extend(parts)
 
         if not encoded:
             encoded = "".join(chunks)

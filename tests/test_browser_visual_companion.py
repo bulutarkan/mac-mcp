@@ -185,8 +185,8 @@ class BrowserVisualCompanionTests(unittest.TestCase):
         source = inspect.getsource(_chrome_execute_js_via_url_bridge)
         self.assertIn("javascript:", source)
         self.assertIn("btoa(unescape(encodeURIComponent", source)
-        self.assertIn("chunk_size = 3000", source)
-        self.assertIn("8_000_000", source)
+        self.assertIn("_CHROME_BRIDGE_CHUNK_CHARS", source)
+        self.assertIn("_CHROME_BRIDGE_MAX_ENCODED_CHARS", source)
         self.assertIn("for bridge_attempt in range(3)", source)
         self.assertIn("__macMcpBridgeOriginalTitle", source)
         self.assertIn("delete window.__macMcpBridgeResult", source)
@@ -212,7 +212,7 @@ class BrowserVisualCompanionTests(unittest.TestCase):
              patch("mcp_server.tools_browser._run_osascript", side_effect=[
                  marker + "TIMEOUT",
                  marker + "READY:4",
-                 marker + "CHUNK:T0s=",
+                 marker + "CHUNKS:T0s=",
                  "",
              ]) as run:
             out = _chrome_execute_js_via_url_bridge("(function(){return 'OK';})()", Target(), 6)
