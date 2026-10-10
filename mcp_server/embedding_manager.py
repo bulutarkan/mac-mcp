@@ -9,7 +9,9 @@ import select
 import subprocess
 import sys
 import threading
+import time
 import unicodedata
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -23,6 +25,10 @@ APPLE_VECTOR_BACKEND = "apple_nl_en_v1"
 _WORKER: Optional[subprocess.Popen[str]] = None
 _WORKER_CACHE: Optional[str] = None
 WORKER_LOCK = threading.RLock()
+# Measured retention: how long searches wait on a cold model versus a warm one, and
+# why the worker left (embedding_worker.py exit codes: 0 idle, 3 memory pressure).
+_EXIT_REASONS = {0: "idle", 3: "memory_pressure"}
+_STATS: Dict[str, Any] = {"starts": 0, "exits": {}, "cold_ms": deque(maxlen=20), "warm_ms": deque(maxlen=100)}
 
 
 def embedding_mode() -> str:
@@ -53,6 +59,14 @@ def idle_seconds() -> float:
     except (TypeError, ValueError):
         value = 60.0
     return max(0.0, min(value, 3600.0))
+
+
+def busy_idle_seconds() -> float:
+    try:
+        value = float(os.getenv("MAC_MCP_EMBEDDING_BUSY_IDLE_SECONDS", "180").strip())
+    except (TypeError, ValueError):
+        value = 180.0
+    return max(idle_seconds(), min(value, 3600.0))
 
 
 def normalize(text: Any) -> str:
@@ -124,10 +138,19 @@ def discard_worker_locked(*, terminate: bool = False) -> None:
     _close_worker_pipes(proc)
 
 
+def _record_exit(returncode: Optional[int]) -> None:
+    if returncode is None:
+        return
+    reason = _EXIT_REASONS.get(returncode, "error")
+    _STATS["exits"][reason] = _STATS["exits"].get(reason, 0) + 1
+
+
 def _live_worker_locked(cache_key: str) -> Optional[subprocess.Popen[str]]:
     proc = _WORKER
     if proc is None:
         return None
+    if proc.poll() is not None:
+        _record_exit(proc.returncode)
     if proc.poll() is not None or _WORKER_CACHE != cache_key:
         discard_worker_locked(terminate=proc.poll() is None)
         return None
@@ -147,6 +170,7 @@ def _start_worker_locked() -> Optional[subprocess.Popen[str]]:
     env = os.environ.copy()
     env["MAC_MCP_EMBEDDING_MODEL_CACHE"] = cache_key
     env["MAC_MCP_EMBEDDING_IDLE_SECONDS"] = str(idle_seconds())
+    env["MAC_MCP_EMBEDDING_BUSY_IDLE_SECONDS"] = str(busy_idle_seconds())
     env["MAC_MCP_EMBEDDING_MODEL"] = MULTILINGUAL_MODEL
     env["MAC_MCP_EMBEDDING_MODEL_DIMS"] = str(MULTILINGUAL_DIMS)
     env.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
@@ -164,6 +188,7 @@ def _start_worker_locked() -> Optional[subprocess.Popen[str]]:
         return None
     _WORKER = proc
     _WORKER_CACHE = cache_key
+    _STATS["starts"] += 1
     return proc
 
 
@@ -175,7 +200,9 @@ def worker_vectors(texts: Sequence[str], *, allow_start: bool) -> Optional[List[
         return None
     try:
         cache_key = str(model_cache())
+        started = time.perf_counter()
         proc = _live_worker_locked(cache_key)
+        cold = proc is None
         if proc is None:
             if not allow_start:
                 return None
@@ -201,11 +228,13 @@ def worker_vectors(texts: Sequence[str], *, allow_start: bool) -> Optional[List[
                 normalized = [normalize_vector(vector) for vector in vectors if isinstance(vector, list)]
                 if len(normalized) != len(texts) or any(len(vector) != MULTILINGUAL_DIMS for vector in normalized):
                     return None
+                _STATS["cold_ms" if cold else "warm_ms"].append((time.perf_counter() - started) * 1000)
                 return normalized
             except Exception:
                 discard_worker_locked(terminate=True)
                 if not allow_start or attempt > 0:
                     return None
+                cold = True
                 proc = _start_worker_locked()
                 if proc is None or proc.stdin is None or proc.stdout is None:
                     return None
@@ -287,6 +316,22 @@ def semantic_vectors(texts: Sequence[str], *, allow_start: bool = False) -> Tupl
     return FEATURE_VECTOR_BACKEND, FEATURE_VECTOR_DIMS, vectors
 
 
+def _percentiles(values: Sequence[float]) -> Dict[str, Any]:
+    ordered = sorted(values)
+    if not ordered:
+        return {"n": 0}
+    pick = lambda q: round(ordered[min(len(ordered) - 1, int(round(q * (len(ordered) - 1))))], 1)  # noqa: E731
+    return {"n": len(ordered), "p50": pick(0.5), "p95": pick(0.95)}
+
+
+def _rss_mb(pid: int) -> Optional[float]:
+    try:
+        out = subprocess.run(["/bin/ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True, timeout=2).stdout
+        return round(int(out.strip()) / 1024, 1)
+    except Exception:
+        return None
+
+
 def worker_status() -> Dict[str, Any]:
     with WORKER_LOCK:
         proc = _WORKER
@@ -294,7 +339,12 @@ def worker_status() -> Dict[str, Any]:
         return {
             "alive": alive,
             "pid": proc.pid if alive and proc else None,
+            "rss_mb": _rss_mb(proc.pid) if alive and proc else None,
             "cache": str(model_cache()),
             "idle_seconds": idle_seconds(),
+            "busy_idle_seconds": busy_idle_seconds(),
             "model": MULTILINGUAL_MODEL,
+            "starts": _STATS["starts"],
+            "exits": dict(_STATS["exits"]),
+            "latency_ms": {"cold": _percentiles(_STATS["cold_ms"]), "warm": _percentiles(_STATS["warm_ms"])},
         }
