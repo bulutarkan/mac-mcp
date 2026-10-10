@@ -25,9 +25,15 @@ from .native_action_verification import (
     READINESS_POLL_S as _NATIVE_READINESS_POLL_S,
     READINESS_STABLE_MS as _NATIVE_READINESS_STABLE_MS,
     READINESS_TIMEOUT_S as _NATIVE_READINESS_TIMEOUT_S,
+    SUBTREE_CHILD_LIMIT as _NATIVE_SUBTREE_CHILD_LIMIT,
+    SUBTREE_LABEL_LIMIT as _NATIVE_SUBTREE_LABEL_LIMIT,
+    SUBTREE_VISIT_LIMIT as _NATIVE_SUBTREE_VISIT_LIMIT,
     effect_changed as _native_effect_changed,
     geometry_signature as _native_geometry_signature,
+    identity_basis as _native_identity_basis,
+    normalize_label as _native_normalize_label,
     observed_geometry_matches as _native_observed_geometry_matches,
+    observed_subtree_labels as _native_observed_subtree_labels,
     readiness_reason as _native_readiness_reason,
     verification_required as _native_verification_required,
 )
@@ -2669,6 +2675,10 @@ def _parse_native_action_state(raw: str) -> Dict[str, Any]:
         "popover_covers_target": _parse_optional_bool(fields[34]),
         "process_visible": _parse_optional_bool(fields[35]),
     }
+    if len(fields) > 37:
+        state["identifier"] = _ax_text(fields[36])
+        labels = [_native_normalize_label(item) for item in fields[37].split(_RECORD_SEPARATOR)]
+        state["subtree_labels"] = [item for item in labels if item]
     state["modal_sheet_blocks_target"] = bool(
         (state.get("sheet_count") or 0) > 0 and state.get("in_sheet") is not True
     )
@@ -2680,7 +2690,81 @@ def _native_action_state_script(
     element_id: str,
     *,
     app_pid: Optional[int] = None,
+    label_child_limit: int = _NATIVE_SUBTREE_CHILD_LIMIT,
+    label_limit: int = 0,
 ) -> str:
+    child_limit = max(1, min(int(label_child_limit), _NATIVE_SUBTREE_CHILD_LIMIT))
+    # Each label costs several Apple Events, so read only as many as the
+    # observation recorded, and none when nothing needs telling apart.
+    label_limit = max(0, min(int(label_limit), _NATIVE_SUBTREE_LABEL_LIMIT))
+    label_handler = label_walk = ""
+    if label_limit:
+        label_handler = '''using terms from application "System Events"
+-- Same rule as native_action_verification.node_label: title, description, then text value.
+on axLabel(r)
+    set lbl to ""
+    set rr to ""
+    set sr to ""
+    try
+        set rr to role of r as text
+    end try
+    try
+        set sr to subrole of r as text
+    end try
+    try
+        set lbl to title of r as text
+    end try
+    if lbl is "missing value" then set lbl to ""
+    if lbl is "" then
+        try
+            set lbl to description of r as text
+        end try
+        if lbl is "missing value" then set lbl to ""
+    end if
+    if lbl is "" and (rr is "AXStaticText" or rr is "AXTextField") and sr does not contain "Secure" then
+        try
+            set lbl to value of r as text
+        end try
+        if lbl is "missing value" then set lbl to ""
+    end if
+    if (length of lbl) > 200 then set lbl to text 1 thru 200 of lbl
+    return lbl
+end axLabel
+end using terms from
+'''
+        label_walk = f'''            -- Labels two levels down, pre-order, bounded like the observation.
+            set labelCount to 0
+            set visitCount to 0
+            try
+                set kids to UI elements of targetElement
+                set kidIndex to 0
+                repeat with k1 in kids
+                    set kidIndex to kidIndex + 1
+                    if kidIndex > {child_limit} or labelCount ≥ {label_limit} or visitCount ≥ {_NATIVE_SUBTREE_VISIT_LIMIT} then exit repeat
+                    set k1Ref to contents of k1
+                    set visitCount to visitCount + 1
+                    set l1 to my axLabel(k1Ref)
+                    if l1 is not "" then
+                        set subtreeText to subtreeText & l1 & rs
+                        set labelCount to labelCount + 1
+                    end if
+                    try
+                        set grandIndex to 0
+                        repeat with k2 in (UI elements of k1Ref)
+                            set grandIndex to grandIndex + 1
+                            if grandIndex > {child_limit} or labelCount ≥ {label_limit} or visitCount ≥ {_NATIVE_SUBTREE_VISIT_LIMIT} then exit repeat
+                            set visitCount to visitCount + 1
+                            set l2 to my axLabel(contents of k2)
+                            if l2 is not "" then
+                                set subtreeText to subtreeText & l2 & rs
+                                set labelCount to labelCount + 1
+                            end if
+                        end repeat
+                    end try
+                end repeat
+            end try
+
+'''
     expression = _element_expression(_validate_element_id(element_id))
     window_index = _element_window_index(element_id) or 1
     selection = (
@@ -2706,8 +2790,12 @@ on cleanStateText(v, fs)
     return t
 end cleanStateText
 
+{label_handler}
 set fs to character id 31
+set rs to character id 30
 set connectedText to "false"
+set identifierText to ""
+set subtreeText to ""
 set roleText to ""
 set subroleText to ""
 set titleText to ""
@@ -2847,8 +2935,10 @@ tell application "System Events"
             try
                 set actionText to name of actions of targetElement as text
             end try
-
-            set hasOverlay to false
+            try
+                set identifierText to value of attribute "AXIdentifier" of targetElement as text
+            end try
+{label_walk}            set hasOverlay to false
             try
                 if (sheetCountText as integer) > 0 then set hasOverlay to true
             end try
@@ -2913,7 +3003,8 @@ return "__STATE__" & fs & connectedText & fs & ¬
     my cleanStateText(windowChildCountText, fs) & fs & my cleanStateText(sheetCountText, fs) & fs & ¬
     my cleanStateText(popoverCountText, fs) & fs & my cleanStateText(menuCountText, fs) & fs & ¬
     my cleanStateText(inSheetText, fs) & fs & my cleanStateText(inPopoverText, fs) & fs & ¬
-    my cleanStateText(popoverCoversText, fs) & fs & my cleanStateText(processVisibleText, fs)
+    my cleanStateText(popoverCoversText, fs) & fs & my cleanStateText(processVisibleText, fs) & fs & ¬
+    my cleanStateText(identifierText, fs) & fs & my cleanStateText(subtreeText, fs)
 '''
 
 
@@ -2923,9 +3014,13 @@ def _probe_native_action_state(
     *,
     app_pid: Optional[int] = None,
     deadline: Optional[float] = None,
+    label_child_limit: int = _NATIVE_SUBTREE_CHILD_LIMIT,
+    label_limit: int = 0,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     ok, stdout, stderr = _run_osascript(
-        _native_action_state_script(app, element_id, app_pid=app_pid),
+        _native_action_state_script(
+            app, element_id, app_pid=app_pid, label_child_limit=label_child_limit, label_limit=label_limit,
+        ),
         timeout_s=_operation_timeout(deadline, 8),
     )
     if not ok:
@@ -2946,6 +3041,42 @@ def _compact_readiness_state(state: Dict[str, Any]) -> Dict[str, Any]:
         )
         if state.get(key) is not None
     }
+
+
+def _native_identity_node(
+    stored: Optional[Dict[str, Any]], node: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """The observed node plus what tells it apart from its siblings (#42)."""
+    if not stored or not node:
+        return node
+    nodes = stored.get("nodes") or {}
+    max_depth = int(stored.get("max_depth") or 5)
+    max_children = int(stored.get("max_children") or 30)
+
+    def with_labels(item: Dict[str, Any]) -> Dict[str, Any]:
+        labels = _native_observed_subtree_labels(
+            nodes, str(item.get("element_id") or ""), max_depth=max_depth, max_children=max_children,
+        )
+        return {**item, "subtree_labels": labels} if labels else dict(item)
+
+    identity = dict(node)
+    if node.get("identifier"):
+        identity["identity_basis"] = _native_identity_basis(identity)
+        return identity
+    # Only a sibling that looks the same (role, subrole, title, description) could
+    # take this path after a reorder; then the labels below decide.
+    look = lambda item: (item.get("role"), item.get("subrole"), item.get("title"), item.get("description"))  # noqa: E731
+    parent = node.get("parent_id")
+    twins = [
+        other for other in nodes.values()
+        if other is not node and parent and other.get("parent_id") == parent and look(other) == look(node)
+    ]
+    if twins:
+        identity = with_labels(node)
+        identity["subtree_child_limit"] = min(max_children, _NATIVE_SUBTREE_CHILD_LIMIT)
+        twins = [with_labels(other) for other in twins]
+    identity["identity_basis"] = _native_identity_basis(identity, twins)
+    return identity
 
 
 def _wait_for_native_readiness(
@@ -2973,6 +3104,9 @@ def _wait_for_native_readiness(
     while True:
         state, probe_error = _probe_native_action_state(
             app, element_id, app_pid=app_pid, deadline=local_deadline,
+            label_child_limit=int((observed_node or {}).get("subtree_child_limit") or _NATIVE_SUBTREE_CHILD_LIMIT),
+            # Labels settle the target's identity once; later polls only watch readiness.
+            label_limit=len((observed_node or {}).get("subtree_labels") or ()) if attempts == 0 else 0,
         )
         attempts += 1
         now = time.perf_counter()
@@ -4338,11 +4472,12 @@ def act_ui(
             readiness: Optional[Dict[str, Any]] = None
             before_state: Optional[Dict[str, Any]] = None
             if resolved_element_id is not None and action_type != "handoff_mail_text":
+                identity_node = _native_identity_node(stored, node)
                 try:
                     readiness = _wait_for_native_readiness(
                         str(target.get("app") or ""),
                         resolved_action,
-                        node,
+                        identity_node,
                         app_pid=int(target["pid"]) if target.get("pid") else None,
                         deadline=deadline,
                     )
@@ -4352,6 +4487,8 @@ def act_ui(
                         "reason_code": "READINESS_TIMEOUT", "error": str(exc),
                         "retryable": True,
                     }
+                if identity_node and identity_node.get("identity_basis"):
+                    readiness["identity_basis"] = identity_node["identity_basis"]
                 before_state = readiness.get("state") if isinstance(readiness.get("state"), dict) else None
                 if not readiness.get("ready"):
                     public_readiness = {k: v for k, v in readiness.items() if k != "state"}
