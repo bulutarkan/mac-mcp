@@ -1167,6 +1167,8 @@ def create_app():
             "Text input is background-first: type/type_text uses AXValue for exact replacement and AXSelectedText for insertion; paste uses AXSelectedText, without keyboard or clipboard focus stealing when supported. "
             "Foreground-required input (keyboard shortcuts, drag, double-click/global pointer, file dialogs, or input_mode='foreground') fails closed for normal MCP/model calls; only a trusted local-user foreground capability can authorize it. "
             "preserve_focus controls restoration after an already-authorized foreground action and cannot grant foreground access. Background actions remain focus-guarded even when preserve_focus=false. "
+            "Pointer x/y are desktop points; set coordinate_space='image' to give pixels of the screenshot returned with observation_id "
+            "(see its coordinate_frame). Points outside that image or on no display fail before any input. "
             "Screenshots are omitted after actions unless include_screenshot=true. The legacy return_state boolean remains supported. "
             "The complete action batch has a 60-second safety budget."
         ),

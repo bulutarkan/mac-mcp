@@ -119,14 +119,43 @@ def _helper_path(timeout_s: Optional[float] = None) -> Tuple[Optional[Path], Opt
 
 
 def _window_rows(timeout_s: float = 5.0) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    rows, _displays, error = _window_list(timeout_s)
+    return rows, error
+
+
+def displays(timeout_s: float = 5.0) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Active displays in global desktop points (main display top-left is 0,0; y grows down)."""
+    _rows, found, error = _window_list(timeout_s)
+    return found, error
+
+
+def display_for_frame(found: Optional[List[Dict[str, Any]]], frame: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The display holding the largest part of a frame, or None when it is on no display."""
+    best, best_area = None, 0.0
+    fx, fy = _number(frame.get("x")), _number(frame.get("y"))
+    fw, fh = _number(frame.get("width")), _number(frame.get("height"))
+    if None in (fx, fy, fw, fh):
+        return None
+    for display in found or []:
+        dx, dy = _number(display.get("x")) or 0.0, _number(display.get("y")) or 0.0
+        dw, dh = _number(display.get("width")) or 0.0, _number(display.get("height")) or 0.0
+        area = max(0.0, min(fx + fw, dx + dw) - max(fx, dx)) * max(0.0, min(fy + fh, dy + dh) - max(fy, dy))
+        if area > best_area:
+            best, best_area = display, area
+    return best
+
+
+def _window_list(
+    timeout_s: float = 5.0,
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[List[Dict[str, Any]]], Optional[str]]:
     budget = max(0.1, min(float(timeout_s), 15.0))
     started = time.monotonic()
     helper, error = _helper_path(budget)
     if helper is None:
-        return None, error or "WINDOW_CAPTURE_HELPER_UNAVAILABLE"
+        return None, None, error or "WINDOW_CAPTURE_HELPER_UNAVAILABLE"
     remaining = budget - (time.monotonic() - started)
     if remaining <= 0:
-        return None, "WINDOW_CAPTURE_WINDOW_LIST_TIMEOUT"
+        return None, None, "WINDOW_CAPTURE_WINDOW_LIST_TIMEOUT"
     try:
         proc = subprocess.run(
             [str(helper)],
@@ -138,18 +167,22 @@ def _window_rows(timeout_s: float = 5.0) -> Tuple[Optional[List[Dict[str, Any]]]
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return None, "WINDOW_CAPTURE_WINDOW_LIST_TIMEOUT"
+        return None, None, "WINDOW_CAPTURE_WINDOW_LIST_TIMEOUT"
     except (OSError, subprocess.SubprocessError):
-        return None, "WINDOW_CAPTURE_WINDOW_LIST_FAILED"
+        return None, None, "WINDOW_CAPTURE_WINDOW_LIST_FAILED"
     if proc.returncode != 0:
-        return None, "WINDOW_CAPTURE_WINDOW_LIST_FAILED"
+        return None, None, "WINDOW_CAPTURE_WINDOW_LIST_FAILED"
     try:
         payload = json.loads(proc.stdout or "[]")
     except json.JSONDecodeError:
-        return None, "WINDOW_CAPTURE_WINDOW_LIST_INVALID"
+        return None, None, "WINDOW_CAPTURE_WINDOW_LIST_INVALID"
+    found_displays: List[Dict[str, Any]] = []
+    if isinstance(payload, dict):
+        found_displays = [row for row in payload.get("displays") or [] if isinstance(row, dict)]
+        payload = payload.get("windows")
     if not isinstance(payload, list):
-        return None, "WINDOW_CAPTURE_WINDOW_LIST_INVALID"
-    return [row for row in payload if isinstance(row, dict)], None
+        return None, None, "WINDOW_CAPTURE_WINDOW_LIST_INVALID"
+    return [row for row in payload if isinstance(row, dict)], found_displays, None
 
 
 def _number(value: Any) -> Optional[float]:
@@ -190,8 +223,9 @@ def resolve_window_id(
         return None, "WINDOW_CAPTURE_FRAME_UNAVAILABLE", {}
 
     source_rows = rows
+    found_displays: Optional[List[Dict[str, Any]]] = None
     if source_rows is None:
-        source_rows, error = _window_rows(timeout_s)
+        source_rows, found_displays, error = _window_list(timeout_s)
         if source_rows is None:
             return None, error or "WINDOW_CAPTURE_WINDOW_LIST_FAILED", {}
 
@@ -232,8 +266,16 @@ def resolve_window_id(
     if window_id <= 0:
         return None, "WINDOW_CAPTURE_ID_INVALID", {}
 
-    return window_id, None, {
+    frame = {key: _number(match.get(key)) for key in ("x", "y", "width", "height")}
+    details: Dict[str, Any] = {
         "candidate_count": 1,
         "match_basis": "pid+frame+title" if title else "pid+frame",
         "on_screen": bool(match.get("onScreen", False)),
+        "frame": frame,
     }
+    if found_displays is not None:
+        display = display_for_frame(found_displays, frame)
+        details["display"] = display
+        if display is None:
+            details["on_screen"] = False
+    return window_id, None, details

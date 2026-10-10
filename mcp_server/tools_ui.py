@@ -49,7 +49,11 @@ from .native_targets import (
     window_by_handle as _window_by_handle,
     window_handle_map as _window_handle_map,
 )
-from .native_window_capture import resolve_window_id as _resolve_native_window_id
+from .native_window_capture import (
+    display_for_frame as _display_for_frame,
+    displays as _native_displays,
+    resolve_window_id as _resolve_native_window_id,
+)
 from .permission_probe import explain_failure as _explain_permission_failure
 from . import ax_native, ax_watch
 from .security import Settings, truncate
@@ -773,6 +777,56 @@ def _image_dimensions(path: str, timeout_s: float = 2.0) -> Tuple[Optional[int],
     return width, height
 
 
+def _image_size(data: bytes) -> Tuple[Optional[int], Optional[int]]:
+    """Pixel size of a JPEG or PNG read from its header, without decoding it."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+        return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    if data[:2] != b"\xff\xd8":
+        return None, None
+    i = 2
+    while i + 9 < len(data):
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker in (0xD8, 0x01, 0xFF) or 0xD0 <= marker <= 0xD7:
+            i += 1 if marker == 0xFF else 2
+            continue
+        if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+            return int.from_bytes(data[i + 7:i + 9], "big"), int.from_bytes(data[i + 5:i + 7], "big")
+        i += 2 + int.from_bytes(data[i + 2:i + 4], "big")
+    return None, None
+
+
+def _coordinate_frame(
+    frame: Optional[Dict[str, Any]], image_size: Tuple[Optional[int], Optional[int]], *, source: str,
+) -> Optional[Dict[str, Any]]:
+    """How a pixel in a returned image maps to the desktop points cliclick and AX use (#44).
+
+    Desktop points: origin at the main display's top-left, y grows down; a
+    display left of or above it has negative coordinates. Retina capture and
+    the resize to fit the client both change pixels per point, so the factor
+    is measured from the captured frame and the image actually returned.
+    """
+    width, height = image_size
+    if not frame or not width or not height:
+        return None
+    try:
+        fx, fy, fw, fh = (float(frame[key]) for key in ("x", "y", "width", "height"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if fw <= 0 or fh <= 0:
+        return None
+    return {
+        "space": "desktop_points", "source": source,
+        "image_size": {"width": int(width), "height": int(height)},
+        "image_origin": {"x": fx, "y": fy},
+        "points_per_pixel": {"x": round(fw / width, 6), "y": round(fh / height, 6)},
+        "use": "desktop = image_origin + image_pixel * points_per_pixel, or pass coordinate_space='image' "
+               "with this observation_id to mac_act",
+    }
+
+
 def _capture_screen(timeout_s: float = 15) -> Tuple[Optional[bytes], Optional[str]]:
     fd, path = tempfile.mkstemp(prefix="mac-mcp-screen-", suffix=".jpg")
     os.close(fd)
@@ -844,6 +898,10 @@ def _capture_window(
         "match_basis": resolution.get("match_basis"),
         "on_screen": resolution.get("on_screen"),
     }
+    if resolution.get("frame"):
+        metadata["frame"] = resolution["frame"]
+    if "display" in resolution:
+        metadata["display"] = resolution["display"]
     if window_id is None:
         metadata["reason_code"] = reason_code or "WINDOW_CAPTURE_TARGET_UNAVAILABLE"
         return None, metadata["reason_code"], metadata
@@ -1930,6 +1988,121 @@ def _native_context_truncated(
     return False
 
 
+_COORDINATE_SPACES = {"desktop", "desktop_points", "screen", "image"}
+
+
+def _action_points(action: Dict[str, Any]) -> List[Tuple[str, Any, Any]]:
+    if str(action.get("type") or "").lower() == "drag":
+        points = []
+        for name in ("from", "to"):
+            raw = action.get(name)
+            if isinstance(raw, dict):
+                points.append((name, raw.get("x"), raw.get("y")))
+            else:
+                points.append((name, action.get(f"{name}_x"), action.get(f"{name}_y")))
+        return points
+    return [("point", action.get("x"), action.get("y"))]
+
+
+def _map_action_coordinates(
+    action: Dict[str, Any], stored: Optional[Dict[str, Any]], deadline: Optional[float],
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Turn image or desktop coordinates into checked desktop points before any input (#44).
+
+    coordinate_space='image' reads pixels of the screenshot returned with
+    observation_id; the default is desktop points. A point outside the image
+    or on no display fails here, before the pointer moves.
+    """
+    space = str(action.get("coordinate_space") or "desktop").strip().lower()
+    if space not in _COORDINATE_SPACES:
+        return action, None, {"reason_code": "COORDINATE_SPACE_INVALID",
+                              "message": "coordinate_space must be 'desktop' (points) or 'image' (screenshot pixels)."}
+    points = _action_points(action)
+    if any(x is None or y is None for _, x, y in points):
+        return action, None, None  # the action reports its own missing-coordinate error
+    try:
+        values = [(name, float(x), float(y)) for name, x, y in points]
+    except (TypeError, ValueError):
+        return action, None, None
+    mapping: Dict[str, Any] = {"space": "image" if space == "image" else "desktop_points"}
+    if space == "image":
+        frame = (stored or {}).get("capture_frame")
+        if not frame:
+            return action, None, {
+                "reason_code": "COORDINATE_FRAME_UNAVAILABLE",
+                "message": "Image coordinates need the observation_id of a mac_observe call that returned a screenshot "
+                           "with coordinate_frame.",
+            }
+        size, origin, scale = frame["image_size"], frame["image_origin"], frame["points_per_pixel"]
+        mapped = []
+        for name, x, y in values:
+            if not (0 <= x < size["width"] and 0 <= y < size["height"]):
+                return action, None, {
+                    "reason_code": "COORDINATE_OUTSIDE_IMAGE",
+                    "message": f"({x:g}, {y:g}) is outside the {size['width']}x{size['height']} screenshot.",
+                    "image_size": size,
+                }
+            mapped.append((name, origin["x"] + x * scale["x"], origin["y"] + y * scale["y"]))
+        mapping["image_points"] = {name: {"x": x, "y": y} for name, x, y in values}
+        values = mapped
+    found, _ = _native_displays(_operation_timeout(deadline, 3))
+    if found:
+        for name, x, y in values:
+            if _display_for_frame(found, {"x": x, "y": y, "width": 1, "height": 1}) is None:
+                return action, None, {
+                    "reason_code": "COORDINATE_OFF_DISPLAY",
+                    "message": f"Desktop point ({x:g}, {y:g}) is on no display; nothing would receive the input.",
+                    "displays": [{key: row.get(key) for key in ("x", "y", "width", "height", "main")} for row in found],
+                }
+        mapping["display_check"] = "on_display"
+    else:
+        mapping["display_check"] = "unavailable"
+    mapped_action = {key: value for key, value in action.items() if key != "coordinate_space"}
+    desktop = {name: (int(round(x)), int(round(y))) for name, x, y in values}
+    if "point" in desktop:
+        mapped_action["x"], mapped_action["y"] = desktop["point"]
+    else:
+        for name in ("from", "to"):
+            mapped_action[name] = {"x": desktop[name][0], "y": desktop[name][1]}
+            mapped_action.pop(f"{name}_x", None)
+            mapped_action.pop(f"{name}_y", None)
+    mapping["desktop_points"] = {name: {"x": x, "y": y} for name, (x, y) in desktop.items()}
+    return mapped_action, mapping, None
+
+
+def _describe_capture_geometry(
+    observation_id: str, details: Dict[str, Any], image_data: bytes, deadline: Optional[float],
+) -> None:
+    """Say where a capture sits on the desktop and whether it shows the current screen (#44, #128)."""
+    size = _image_size(image_data)
+    if details.get("scope") == "screen":
+        # screencapture with one output file records the main display.
+        found, _ = _native_displays(_operation_timeout(deadline, 3))
+        main = next((row for row in found or [] if row.get("main")), None)
+        frame = {key: main.get(key) for key in ("x", "y", "width", "height")} if main else None
+        if main:
+            details["display"] = main
+        details["visual_state"] = "current"
+    else:
+        frame = details.get("frame")
+        if details.get("on_screen") is False:
+            # Minimized, on another Space or off every display: the image is the last
+            # rendering, not what the screen shows now.
+            details["visual_state"] = "not_on_screen"
+            details["visual_note"] = ("The window is not on screen (minimized, on another Space or off every "
+                                      "display); this image is its last rendering, not the current screen.")
+        else:
+            details["visual_state"] = "current"
+    coordinate_frame = _coordinate_frame(frame, size, source=str(details.get("scope") or "screen"))
+    details["coordinate_frame"] = coordinate_frame
+    details["coordinates_calibrated"] = coordinate_frame is not None
+    if coordinate_frame is not None:
+        with _OBSERVATIONS_LOCK:
+            stored = _OBSERVATIONS.get(observation_id)
+            if stored is not None:
+                stored["capture_frame"] = coordinate_frame
+
+
 def _annotate_screenshot_failure(payload: Dict[str, Any], error: str) -> None:
     """A missing screenshot keeps the semantic observation; say why and what is degraded."""
     if str(error).startswith("WINDOW_CAPTURE_IDENTITY") or "connector safety limit" in str(error):
@@ -2049,6 +2222,7 @@ def _collect_observation(
         )
         if image_data:
             screenshot_details.setdefault("encoded_bytes", len(image_data))
+            _describe_capture_geometry(observation_id, screenshot_details, image_data, local_deadline)
 
     payload: Dict[str, Any] = {
         "ok": True,
@@ -4723,6 +4897,18 @@ def act_ui(
                         retryable=False, **exc.extra,
                     )
 
+            coordinate_mapping: Optional[Dict[str, Any]] = None
+            if resolved_element_id is None and action_type in {"click", "double_click", "drag"}:
+                resolved_action, coordinate_mapping, mapping_error = _map_action_coordinates(
+                    resolved_action, stored, deadline,
+                )
+                if mapping_error is not None:
+                    return _native_target_error(
+                        mapping_error["reason_code"], mapping_error["message"], actions=results,
+                        failed_action_index=index, retryable=False, observe_again=True,
+                        **{key: value for key, value in mapping_error.items() if key not in {"reason_code", "message"}},
+                    )
+
             readiness: Optional[Dict[str, Any]] = None
             before_state: Optional[Dict[str, Any]] = None
             if resolved_element_id is not None and action_type != "handoff_mail_text":
@@ -5073,6 +5259,8 @@ def act_ui(
                 if failure.get("permission") is True:
                     result.update({key: value for key, value in failure.items() if key != "permission"})
                     result["automatic_retry"] = False
+            if coordinate_mapping is not None:
+                result["coordinate_mapping"] = coordinate_mapping
             if foreground_grant is not None and focus_required:
                 result["foreground_authorization_source"] = foreground_grant.source
             if foreground_required_exc is not None:

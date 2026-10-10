@@ -106,8 +106,8 @@ class NativeWindowIdResolutionTests(unittest.TestCase):
     def test_window_list_failure_is_propagated(self) -> None:
         with patch.object(
             native_window_capture,
-            "_window_rows",
-            return_value=(None, "WINDOW_CAPTURE_WINDOW_LIST_FAILED"),
+            "_window_list",
+            return_value=(None, None, "WINDOW_CAPTURE_WINDOW_LIST_FAILED"),
         ):
             window_id, error, _ = native_window_capture.resolve_window_id(
                 111, ax_window()
