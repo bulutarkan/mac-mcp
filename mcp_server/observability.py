@@ -99,6 +99,8 @@ _PROVIDER_IDENTITY_KEYS = {
     "openai_session", "openai_subject", "openai_organization", "openai_org", "openai_location",
 }
 TELEMETRY_SANITIZER_VERSION = 2
+# Version 3: stored arguments/results reduced to metadata (see metadata_value).
+TELEMETRY_METADATA_VERSION = 3
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
 _QUERY_SECRET_RE = re.compile(
     r"(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret)\s*[=:]\s*)([^\s&;,]+)"
@@ -244,6 +246,90 @@ def sanitize_value(value: Any, *, key: Optional[str] = None, preview_chars: int 
         return _redact_text(str(value))[:preview_chars]
 
 
+# Telemetry is operational metadata by default: what ran, how it ended, how long it
+# took and what it changed. Page text, accessibility labels, shell output, file and
+# clipboard contents, typed text and transcripts are reduced to their size. Only
+# strings under these keys are kept (redacted, short); numbers and booleans always.
+# MAC_MCP_TELEMETRY_CONTENT=preview restores bounded content previews for debugging.
+TELEMETRY_CONTENT_ENV = "MAC_MCP_TELEMETRY_CONTENT"
+_METADATA_TEXT_LIMIT = 300
+_METADATA_LIST_LIMIT = 20
+_METADATA_TEXT_KEYS = {
+    "ok", "status", "state", "error", "error_code", "code", "reason_code", "verification", "outcome",
+    "stage", "retry", "phase", "kind", "type", "mode", "method", "input_method", "action", "action_type",
+    "operation", "tool", "tool_name", "browser", "app", "app_name", "application", "adapter", "provider",
+    "model", "transport", "capture_method", "decision", "ui", "mime_type", "mimetype", "level", "profile",
+    "policy_decision", "description",
+    # Identifiers and what changed (change summaries and the dashboard read these).
+    "path", "file", "files", "destination", "source", "cwd", "written", "url", "origin", "tab_handle",
+    "element_id", "observation_id", "job_id", "transaction_id", "agent_id", "team_id", "request_id",
+    "event_id", "chat_id", "item_id",
+}
+# Arguments additionally keep what was run; their typed text, bodies and scripts are sized.
+_METADATA_ARGUMENT_TEXT_KEYS = _METADATA_TEXT_KEYS | {"command", "commands", "app_name", "role", "key"}
+_URL_KEYS = {"url", "origin"}
+# Markers left by the redaction layers say what was deliberately removed; keep them.
+_REDACTION_MARKER_RE = re.compile(r"^\[[A-Za-z][A-Za-z ._-]{0,60}(?:REDACTED|not stored|omitted)\]$")
+
+
+def telemetry_content_preview_enabled() -> bool:
+    return os.getenv(TELEMETRY_CONTENT_ENV, "").strip().lower() == "preview"
+
+
+def _strip_url_details(text: str) -> str:
+    match = re.match(r"^([a-zA-Z][a-zA-Z0-9+.-]*://[^/?#\s]*)([^?#\s]*)", text)
+    return (match.group(1) + match.group(2)) if match else text
+
+
+def metadata_value(value: Any, *, key: Optional[str] = None, arguments: bool = False, depth: int = 0) -> Any:
+    """Telemetry form of a tool argument or result: structure, sizes and operational fields only."""
+    if _is_secret_key(key):
+        return "[REDACTED]"
+    if depth > 8:
+        return "[nested value omitted]"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, bytes):
+        return f"[binary · {len(value):,} bytes]"
+    if isinstance(value, Path):
+        value = str(value)
+    if isinstance(value, str):
+        if _REDACTION_MARKER_RE.match(value):
+            return value
+        normalized = _normalized_key(key)
+        kept = _METADATA_ARGUMENT_TEXT_KEYS if arguments else _METADATA_TEXT_KEYS
+        if normalized in kept and not _looks_encoded_blob(value):
+            safe = _redact_text(value)
+            if normalized in _URL_KEYS:
+                safe = _strip_url_details(safe)
+            if len(safe) <= _METADATA_TEXT_LIMIT:
+                return safe
+            return safe[:_METADATA_TEXT_LIMIT] + f"… [{len(safe) - _METADATA_TEXT_LIMIT:,} chars omitted]"
+        return f"[text · {len(value):,} chars]" if value else ""
+    if hasattr(value, "model_dump"):
+        try:
+            return metadata_value(value.model_dump(), key=key, arguments=arguments, depth=depth + 1)
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        return {
+            str(child_key): metadata_value(child, key=str(child_key), arguments=arguments, depth=depth + 1)
+            for child_key, child in value.items()
+            if not _is_provider_identity_key(str(child_key))
+        }
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+        # List items inherit their key, so a list of written paths stays a list of paths.
+        out = [metadata_value(item, key=key, arguments=arguments, depth=depth + 1) for item in items[:_METADATA_LIST_LIMIT]]
+        if len(items) > _METADATA_LIST_LIMIT:
+            out.append(f"[{len(items) - _METADATA_LIST_LIMIT:,} more items]")
+        return out
+    try:
+        return metadata_value(vars(value), key=key, arguments=arguments, depth=depth + 1)
+    except Exception:
+        return f"[{type(value).__name__}]"
+
+
 def _json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
@@ -325,17 +411,21 @@ def normalize_result_status(result: Any, error: Optional[BaseException | str] = 
 
 def _resanitize_stored_json(
     raw: Optional[str], *, preview_chars: int, tool: Optional[str] = None, arguments: bool = False,
+    metadata_only: bool = False,
 ) -> Optional[str]:
     if raw is None:
         return None
     parsed = _parse_json(raw)
     if arguments and isinstance(parsed, dict):
         parsed = sanitize_tool_arguments(str(tool or ""), parsed)
+    if metadata_only:
+        return _json_text(metadata_value(parsed, arguments=arguments))
     return _json_text(sanitize_value(parsed, preview_chars=preview_chars))
 
 
 def _migrate_sensitive_telemetry(
-    conn: sqlite3.Connection, *, preview_chars: int, target_version: int = TELEMETRY_SANITIZER_VERSION
+    conn: sqlite3.Connection, *, preview_chars: int, target_version: int = TELEMETRY_SANITIZER_VERSION,
+    metadata_only: bool = False,
 ) -> bool:
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
     if current >= target_version:
@@ -345,9 +435,11 @@ def _migrate_sensitive_telemetry(
         "SELECT event_id, tool, arguments_json, result_json, error FROM tool_events"
     ).fetchall()
     for row in rows:
-        arguments_json = _resanitize_stored_json(row["arguments_json"], preview_chars=preview_chars, tool=row["tool"], arguments=True)
-        result_json = _resanitize_stored_json(row["result_json"], preview_chars=preview_chars)
-        error = None if row["error"] is None else str(sanitize_value(row["error"], preview_chars=preview_chars))
+        arguments_json = _resanitize_stored_json(
+            row["arguments_json"], preview_chars=preview_chars, tool=row["tool"], arguments=True, metadata_only=metadata_only,
+        )
+        result_json = _resanitize_stored_json(row["result_json"], preview_chars=preview_chars, metadata_only=metadata_only)
+        error = None if row["error"] is None else str(sanitize_value(row["error"], preview_chars=600 if metadata_only else preview_chars))
         if (arguments_json, result_json, error) != (row["arguments_json"], row["result_json"], row["error"]):
             conn.execute(
                 "UPDATE tool_events SET arguments_json=?, result_json=?, error=? WHERE event_id=?",
@@ -382,6 +474,9 @@ class TelemetryManager:
         self.preview_chars = preview_chars or _env_int(
             "MAC_MCP_TELEMETRY_PREVIEW_CHARS", DEFAULT_PREVIEW_CHARS, 256, 40_000
         )
+        # Metadata-only unless content previews were explicitly turned on for debugging.
+        self.content_preview = telemetry_content_preview_enabled()
+        self._error_chars = self.preview_chars if self.content_preview else 600
         self._active: Dict[str, Dict[str, Any]] = {}
         self._usage_arguments: Dict[str, Any] = {}
         self._recent: deque[Dict[str, Any]] = deque(maxlen=RECENT_MEMORY_EVENTS)
@@ -403,6 +498,17 @@ class TelemetryManager:
         if self._async_writes:
             atexit.register(self.wait_events_idle, 2.0)
         self._load_recent()
+
+    def _telemetry_arguments(self, tool: str, arguments: Any) -> Any:
+        cleaned = sanitize_tool_arguments(tool, arguments) if isinstance(arguments, dict) else arguments
+        if self.content_preview:
+            return sanitize_value(cleaned, preview_chars=self.preview_chars)
+        return metadata_value(cleaned, arguments=True)
+
+    def _telemetry_result(self, result: Any) -> Any:
+        if self.content_preview:
+            return sanitize_value(result, preview_chars=self.preview_chars)
+        return metadata_value(result)
 
     def _connect(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -488,6 +594,12 @@ class TelemetryManager:
         with closing(self._connect()) as conn, conn:
             self._ensure_schema(conn)
             migrated = _migrate_sensitive_telemetry(conn, preview_chars=self.preview_chars)
+            if not self.content_preview:
+                # One-time scrub of content stored before telemetry became metadata-only.
+                migrated = _migrate_sensitive_telemetry(
+                    conn, preview_chars=self.preview_chars,
+                    target_version=TELEMETRY_METADATA_VERSION, metadata_only=True,
+                ) or migrated
         if migrated:
             # Remove superseded pages/WAL content after the one-time sanitizer
             # migration so legacy provider identity values are not recoverable
@@ -498,6 +610,17 @@ class TelemetryManager:
                 conn.execute("VACUUM")
             finally:
                 conn.close()
+        self._restrict_permissions()
+
+    def _restrict_permissions(self) -> None:
+        """Telemetry describes what agents did on this Mac: owner-only, like the other state files."""
+        # SQLite gives the -wal/-shm files the database file's mode when it creates them.
+        for path in (self.db_path, Path(f"{self.db_path}-wal"), Path(f"{self.db_path}-shm")):
+            try:
+                if path.exists():
+                    os.chmod(path, 0o600)
+            except OSError:
+                pass
 
     def _load_recent(self) -> None:
         with closing(self._connect()) as conn, conn:
@@ -574,7 +697,7 @@ class TelemetryManager:
             "tool": str(tool or "unknown"),
             "status": "running",
             "started_at": now,
-            "arguments": sanitize_value(sanitize_tool_arguments(str(tool or ""), arguments or {}), preview_chars=self.preview_chars),
+            "arguments": self._telemetry_arguments(str(tool or ""), arguments or {}),
         }
         for field in _TELEMETRY_METADATA_COLUMNS:
             event[field] = sanitize_value((metadata or {}).get(field), preview_chars=self.preview_chars)
@@ -590,9 +713,7 @@ class TelemetryManager:
             event = self._active.get(event_id)
             if event is not None:
                 tool = str(event.get("tool") or "")
-                event["arguments"] = sanitize_value(
-                    sanitize_tool_arguments(tool, arguments), preview_chars=self.preview_chars
-                )
+                event["arguments"] = self._telemetry_arguments(tool, arguments)
                 if str(event.get("source") or "") == "mcp":
                     self._usage_arguments[event_id] = arguments
 
@@ -684,16 +805,19 @@ class TelemetryManager:
                 started_event.get("arguments") or {},
                 telemetry_result,
             )
-        safe_result = None if error is not None else sanitize_value(telemetry_result, preview_chars=self.preview_chars)
+        safe_result = None if error is not None else self._telemetry_result(telemetry_result)
         safe_error = None
         if error is not None:
             if isinstance(error, BaseException):
-                safe_error = sanitize_value(
-                    f"{error.__class__.__name__}: {error}", preview_chars=self.preview_chars
-                )
+                safe_error = sanitize_value(f"{error.__class__.__name__}: {error}", preview_chars=self._error_chars)
             else:
-                safe_error = sanitize_value(str(error), preview_chars=self.preview_chars)
+                safe_error = sanitize_value(str(error), preview_chars=self._error_chars)
         result_text = _json_text(safe_result) if safe_result is not None else ""
+        if safe_result is not None and not self.content_preview:
+            try:  # the stored form is a summary; report the size of what the tool returned
+                result_text = _json_text(telemetry_result)
+            except Exception:
+                pass
         event = {
             "kind": "call_finished",
             "event_id": event_id,

@@ -54,7 +54,8 @@ class AsyncTelemetryWriteTests(unittest.TestCase):
         self.manager._ensure_finish_worker()
         self.manager.wait_events_idle(5)
         row = next(row for row in self.manager.query_events(hours=1) if row["event_id"] == event_id)
-        self.assertEqual({"ok": True, "items": ["before"]}, row["result"])
+        # Stored as metadata: one item of six characters, and nothing added after the return.
+        self.assertEqual({"ok": True, "items": ["[text · 6 chars]"]}, row["result"])
 
     def test_a_full_queue_writes_inline_instead_of_dropping(self) -> None:
         with patch.object(self.manager, "_ensure_finish_worker"):

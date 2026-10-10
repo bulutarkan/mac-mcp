@@ -121,7 +121,7 @@ class TelemetryTests(unittest.TestCase):
             ).fetchone())
             version = con.execute("PRAGMA user_version").fetchone()[0]
             con.close()
-            self.assertEqual(2, version)
+            self.assertEqual(3, version)  # v2 scrub, then the v3 metadata-only reduction
             self.assertNotIn("openai/", raw.lower())
             self.assertNotIn("legacy-session-value", raw)
             raw_bytes = db.read_bytes().lower()
@@ -163,7 +163,7 @@ class TelemetryTests(unittest.TestCase):
             ).fetchone()[0])
             version = con.execute("PRAGMA user_version").fetchone()[0]
             con.close()
-            self.assertEqual(2, version)
+            self.assertEqual(3, version)  # v2 scrub, then the v3 metadata-only reduction
             self.assertNotIn(secret, raw)
             self.assertIn("BROWSER INPUT REDACTED", raw)
             self.assertNotIn(secret.encode(), db.read_bytes())
