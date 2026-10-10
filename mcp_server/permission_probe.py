@@ -196,3 +196,55 @@ def probe_permissions() -> Dict[str, Any]:
             ),
         },
     }
+
+
+# Tool failures (#47): name the permission behind an error so the user is sent
+# to the right Privacy & Security pane, and say plainly when it is not one.
+REASON_CODES = {
+    "accessibility": "ACCESSIBILITY_NOT_ALLOWED",
+    "automation": "AUTOMATION_NOT_ALLOWED",
+    "screen_recording": "SCREEN_RECORDING_NOT_ALLOWED",
+}
+_APPLE_EVENTS_DENIED = ("(-1743)", "not authorized to send apple events", "not allowed to send apple events")
+_ASSISTIVE_DENIED = ("(-25211)", "assistive access")
+
+
+def explain_failure(capability: str, error: str, *, check_state: bool = True) -> Dict[str, Any]:
+    """Classify a failed Accessibility, Apple Events or screen capture call.
+
+    The error text decides first (Apple Events and assistive-access refusals
+    name themselves); otherwise, when check_state is set, the process's own
+    read-only permission state for that capability does. Returns reason_code
+    plus remediation for a permission, or permission=False when the
+    permission is granted (an app error), or "unknown" when it cannot be told.
+    """
+    text = str(error or "").lower()
+    key: Optional[str] = None
+    if any(marker in text for marker in _APPLE_EVENTS_DENIED):
+        key = "automation"
+    elif any(marker in text for marker in _ASSISTIVE_DENIED):
+        key = "accessibility"
+    state = UNKNOWN
+    if key is None and check_state and capability in {"accessibility", "screen_recording"}:
+        state = accessibility_state() if capability == "accessibility" else screen_recording_state()
+        if state == DENIED:
+            key = capability
+    if key is None:
+        return {"permission": False if state == GRANTED else "unknown", "capability": capability}
+    meta = PERMISSIONS[key]
+    listed_as = process_identity()["listed_as"]
+    if key == "automation":
+        target = ""
+        marker = "send apple events to "
+        if marker in text:
+            start = text.index(marker) + len(marker)
+            target = str(error)[start:].split(".")[0].split("(")[0].strip()
+        remediation = (f"In {meta['settings_path']}, expand “{listed_as}” and turn on "
+                       f"{target or 'the app it needs to control'}.")
+    else:
+        remediation = f"In {meta['settings_path']}, turn on “{listed_as}”."
+    return {
+        "permission": True, "capability": key, "reason_code": REASON_CODES[key],
+        "remediation": remediation, "settings_path": meta["settings_path"], "settings_url": meta["settings_url"],
+        "degraded_features": list(meta["features"]),
+    }

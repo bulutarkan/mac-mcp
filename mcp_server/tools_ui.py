@@ -50,6 +50,7 @@ from .native_targets import (
     window_handle_map as _window_handle_map,
 )
 from .native_window_capture import resolve_window_id as _resolve_native_window_id
+from .permission_probe import explain_failure as _explain_permission_failure
 from . import ax_native, ax_watch
 from .security import Settings, truncate
 from .computer_use_perf import record_computer_use_sample
@@ -1825,6 +1826,18 @@ def _native_context_truncated(
     return False
 
 
+def _annotate_screenshot_failure(payload: Dict[str, Any], error: str) -> None:
+    """A missing screenshot keeps the semantic observation; say why and what is degraded."""
+    if str(error).startswith("WINDOW_CAPTURE_IDENTITY") or "connector safety limit" in str(error):
+        return
+    failure = _explain_permission_failure("screen_recording", error)
+    if failure.get("permission") is True:
+        payload["screenshot"].update(
+            {key: value for key, value in failure.items() if key not in {"permission", "capability"}}
+        )
+        payload["degraded"] = sorted(set(payload.get("degraded") or []) | {"screenshot", "ocr"})
+
+
 def _collect_observation(
     settings: Settings,
     app: Optional[str],
@@ -1848,11 +1861,18 @@ def _collect_observation(
         timeout_s=_operation_timeout(local_deadline, 20),
     )
     if not ok:
-        return {
-            "ok": False,
-            "error": error or "Could not read macOS Accessibility state.",
-            "hint": "Grant Accessibility permission to the process running mac-mcp in System Settings > Privacy & Security > Accessibility.",
-        }, None
+        failure = _explain_permission_failure("accessibility", error)
+        out: Dict[str, Any] = {"ok": False, "error": error or "Could not read macOS Accessibility state."}
+        if failure.get("permission") is True:
+            out.update({key: value for key, value in failure.items() if key != "permission"}, hint=failure["remediation"])
+        elif failure.get("permission") is False:
+            out.update(reason_code="APP_ACCESSIBILITY_ERROR", hint=(
+                "Accessibility is allowed; the app did not answer this request (busy, quitting, or no such window). "
+                "Retry, or observe another window."))
+        else:
+            out.update(reason_code="ACCESSIBILITY_READ_FAILED", hint=(
+                "If this keeps happening, check System Settings > Privacy & Security > Accessibility for the process running mac-mcp."))
+        return out, None
 
     metadata, nodes = _parse_observation(raw)
     metadata = _decorate_native_metadata(metadata)
@@ -1963,6 +1983,7 @@ def _collect_observation(
         payload["targeting_reason"] = "WINDOW_IDENTITY_AMBIGUOUS_OR_UNAVAILABLE"
     if screenshot_error:
         payload["screenshot"]["error"] = screenshot_error
+        _annotate_screenshot_failure(payload, screenshot_error)
 
     if ocr:
         if semantic_text_available:
@@ -4932,6 +4953,12 @@ def act_ui(
                 "preserve_focus": bool(preserve_focus),
                 "focus_guard_active": bool(focus_guard_active),
             }
+            if not ok and not result.get("reason_code"):
+                # Name a refused permission from the error text alone; never guess from state here.
+                failure = _explain_permission_failure("accessibility", message, check_state=False)
+                if failure.get("permission") is True:
+                    result.update({key: value for key, value in failure.items() if key != "permission"})
+                    result["automatic_retry"] = False
             if foreground_grant is not None and focus_required:
                 result["foreground_authorization_source"] = foreground_grant.source
             if foreground_required_exc is not None:
@@ -5188,6 +5215,7 @@ def act_ui(
                     })
                     if screenshot_error:
                         payload["screenshot"]["error"] = screenshot_error
+                        _annotate_screenshot_failure(payload, screenshot_error)
                 return _format_result(payload, image_data)
             delta_structural_refresh = True
             delta_refresh_reasons.append("base_observation_expired")
