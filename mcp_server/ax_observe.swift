@@ -90,11 +90,13 @@ let nodeAttributes = [
 
 var records: [String] = []
 var counter = 0
+// Set when the node budget, not depth or the child limit, stopped the walk.
+var budgetHit = false
 
 func record(_ fields: [String]) { records.append(fields.joined(separator: fieldSeparator)) }
 
 func walk(_ element: AXUIElement, id: String, parent: String, depth: Int, maxDepth: Int, maxChildren: Int, maxNodes: Int) {
-    if counter >= maxNodes { return }
+    if counter >= maxNodes { budgetHit = true; return }
     counter += 1
     let a = attributes(element, nodeAttributes)
     let role = text(a["AXRole"]), subrole = text(a["AXSubrole"])
@@ -118,7 +120,8 @@ func walk(_ element: AXUIElement, id: String, parent: String, depth: Int, maxDep
     ])
     if depth >= maxDepth { return }
     for (index, child) in children.enumerated() {
-        if index >= maxChildren || counter >= maxNodes { break }
+        if index >= maxChildren { break }
+        if counter >= maxNodes { budgetHit = true; break }
         walk(child, id: "\(id)/\(index + 1)", parent: id, depth: depth + 1, maxDepth: maxDepth, maxChildren: maxChildren, maxNodes: maxNodes)
     }
 }
@@ -193,10 +196,22 @@ record([
     "__META__", clean(processName(app)), app.isActive ? "true" : "false", String(windows.count),
     clean(names.joined(separator: " || ")), String(app.processIdentifier), clean(app.bundleIdentifier ?? ""),
 ])
+// Each walked window gets an equal share of what is left, so a large first
+// window cannot starve the rest; a small one leaves its unused share to later ones.
+var usedNodes = 0
+var remainingWindows = windowRecords.filter { windowIndex == 0 || $0.0 == windowIndex }.count
 for (wi, window, fields) in windowRecords {
     record(fields)
     if windowIndex == 0 || wi == windowIndex {
-        walk(window, id: "w\(wi)", parent: "", depth: 0, maxDepth: maxDepth, maxChildren: maxChildren, maxNodes: maxNodes)
+        let budget = max(0, (maxNodes - usedNodes) / max(1, remainingWindows))
+        counter = 0
+        budgetHit = budget == 0
+        if budget > 0 {
+            walk(window, id: "w\(wi)", parent: "", depth: 0, maxDepth: maxDepth, maxChildren: maxChildren, maxNodes: budget)
+        }
+        usedNodes += counter
+        remainingWindows -= 1
+        record(["__BUDGET__", String(wi), String(counter), String(budget), budgetHit ? "true" : "false"])
     }
 }
 FileHandle.standardOutput.write(records.joined(separator: recordSeparator).data(using: .utf8)!)

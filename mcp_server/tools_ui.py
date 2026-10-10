@@ -363,6 +363,15 @@ def _parse_observation(raw: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
                 "main": _parse_bool(fields[11]),
             })
             continue
+        if fields[0] == "__BUDGET__":
+            if len(fields) >= 5:
+                metadata.setdefault("node_budget", []).append({
+                    "window_index": _parse_number(fields[1]) or 0,
+                    "nodes": _parse_number(fields[2]) or 0,
+                    "budget": _parse_number(fields[3]) or 0,
+                    "truncated": _parse_bool(fields[4]),
+                })
+            continue
         if fields[0] != "__NODE__" or len(fields) < 16:
             continue
 
@@ -503,7 +512,11 @@ on nodeRecord(nodeRef, nodeId, parentId, fs, rs)
 end nodeRecord
 
 on walkNode(nodeRef, nodeId, parentId, depth, maxDepth, maxChildren, maxNodes, recordList, counter, fs, rs)
-    if (item 1 of counter) is greater than or equal to maxNodes then return
+    -- item 2 records that the node budget, not depth or the child limit, stopped the walk.
+    if (item 1 of counter) is greater than or equal to maxNodes then
+        set item 2 of counter to true
+        return
+    end if
     set item 1 of counter to ((item 1 of counter) + 1)
     set end of recordList to my nodeRecord(nodeRef, nodeId, parentId, fs, rs)
     if depth is greater than or equal to maxDepth then return
@@ -514,7 +527,10 @@ on walkNode(nodeRef, nodeId, parentId, depth, maxDepth, maxChildren, maxNodes, r
             set childIndex to 1
             repeat with childItem in children
                 if childIndex is greater than maxChildren then exit repeat
-                if (item 1 of counter) is greater than or equal to maxNodes then exit repeat
+                if (item 1 of counter) is greater than or equal to maxNodes then
+                    set item 2 of counter to true
+                    exit repeat
+                end if
                 set childRef to contents of childItem
                 my walkNode(childRef, nodeId & "/" & childIndex, nodeId, depth + 1, maxDepth, maxChildren, maxNodes, recordList, counter, fs, rs)
                 set childIndex to childIndex + 1
@@ -531,7 +547,8 @@ set maxDepth to {max_depth}
 set maxChildren to {max_children}
 set maxNodes to {max_nodes}
 set recordList to {{}}
-set counter to {{0}}
+set counter to {{0, false}}
+set usedNodes to 0
 
 tell application "System Events"
     {app_selection}
@@ -549,6 +566,8 @@ tell application "System Events"
         set isFrontmost to frontmost of p
     end try
     set windowCount to count of windows of p
+    set remainingWindows to 1
+    if windowIndex is 0 then set remainingWindows to windowCount
     set windowNames to ""
     repeat with wi from 1 to windowCount
         try
@@ -615,7 +634,13 @@ tell application "System Events"
                 my cleanText(windowFocused, fs, rs) & fs & my cleanText(windowMain, fs, rs)
             set end of recordList to windowRecord
             {window_condition}
-                my walkNode(w, "w" & wi, "", 0, maxDepth, maxChildren, maxNodes, recordList, counter, fs, rs)
+                -- An equal share of what is left, so a large first window cannot starve the rest.
+                set budget to (maxNodes - usedNodes) div remainingWindows
+                set counter to {{0, budget is 0}}
+                if budget > 0 then my walkNode(w, "w" & wi, "", 0, maxDepth, maxChildren, budget, recordList, counter, fs, rs)
+                set usedNodes to usedNodes + (item 1 of counter)
+                if remainingWindows > 1 then set remainingWindows to remainingWindows - 1
+                set end of recordList to "__BUDGET__" & fs & (wi as text) & fs & ((item 1 of counter) as text) & fs & (budget as text) & fs & ((item 2 of counter) as text)
             end if
         end try
     end repeat
@@ -1809,6 +1834,24 @@ def _native_ocr_coverage(nodes: List[Dict[str, Any]]) -> Tuple[bool, str]:
     return False, "no_semantic_text"
 
 
+_NATIVE_MAX_NODES = 500
+
+
+def _native_node_budget(metadata: Dict[str, Any], max_nodes: int = _NATIVE_MAX_NODES) -> Optional[Dict[str, Any]]:
+    """How the node budget was shared between windows and which windows it cut short (#95)."""
+    rows = [row for row in metadata.get("node_budget") or [] if isinstance(row, dict)]
+    if not rows:
+        return None
+    cut = [int(row["window_index"]) for row in rows if row.get("truncated")]
+    return {
+        "max_nodes": int(max_nodes),
+        "allocation": "equal_share_of_remaining_per_window" if len(rows) > 1 else "single_window",
+        "windows": rows,
+        "truncated_windows": cut,
+        "omitted_windows": [int(row["window_index"]) for row in rows if int(row.get("budget") or 0) == 0],
+    }
+
+
 def _native_context_truncated(
     nodes: List[Dict[str, Any]],
     *,
@@ -2029,8 +2072,18 @@ def _collect_observation(
         max_depth=max_depth,
         max_children=max_children,
     )
+    node_budget = _native_node_budget(metadata)
+    if node_budget is not None and (node_budget["truncated_windows"] or len(node_budget["windows"]) > 1):
+        payload["node_budget"] = node_budget
     expand_hint = None
-    if context_truncated:
+    if node_budget is not None and node_budget["truncated_windows"]:
+        context_truncated = True
+        expand_hint = (
+            f"The {node_budget['max_nodes']}-node budget cut window(s) "
+            + ", ".join(str(index) for index in node_budget["truncated_windows"])
+            + " short; observe one of them with its window_index to give it the whole budget."
+        )
+    elif context_truncated:
         expand_hint = (
             "Target the specific window/element or increase max_depth/max_children within bounded limits."
         )
