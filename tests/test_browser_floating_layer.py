@@ -90,6 +90,40 @@ class SettleHiddenTests(unittest.TestCase):
         self.assertIn("__mcpSettleHidden();var s=__mcpState(),meta=", agent._changes_js("obs"))
 
 
+_ANIMATING_HARNESS = r"""
+__FUNCTIONS__
+function anim(state, end, local){return {playState:state,effect:{getComputedTiming:()=>({endTime:end,localTime:local})}};}
+globalThis.document={visibilityState:'visible',getAnimations:()=>[anim('running',200,50),anim('running',Infinity,10),anim('running',9000,0),anim('paused',300,0)]};
+const visible=__mcpAnimatingMs();
+document.visibilityState='hidden';
+console.log(JSON.stringify({visible,hidden:__mcpAnimatingMs()}));
+"""
+
+
+class ChangesBaselineTests(unittest.TestCase):
+    """An act's changes compare like with like, and wait for a panel that is still opening."""
+
+    def test_observe_records_every_visible_control_as_the_baseline(self) -> None:
+        js = agent._observe_js("interactive", 20)
+        self.assertIn("ids:__mcpVisibleControls(s).map(function(x){return x.id;})", js)
+        self.assertIn("s.lastSeen={ids:s.observationMeta[obs].ids", js)
+        changes = agent._changes_js("obs")
+        self.assertIn("var now=__mcpVisibleControls(s)", changes)
+
+    def test_a_running_animation_keeps_the_baseline_and_is_read_again(self) -> None:
+        changes = agent._changes_js("obs")
+        self.assertIn("if(animating)out.animating_ms=animating;", changes)
+        self.assertIn("if(!animating)s.lastSeen=", changes)
+        import inspect
+        act = inspect.getsource(agent._browser_act_locked)
+        self.assertIn("cancellable_sleep(min(animating_ms, 600) / 1000 + 0.03)", act)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_only_short_running_animations_in_a_visible_page_count(self) -> None:
+        out = _node(_ANIMATING_HARNESS.replace("__FUNCTIONS__", _functions("__mcpAnimatingMs")))
+        self.assertEqual({"visible": 150, "hidden": 0}, out)
+
+
 class NamingTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_rich_editor_host_is_one_named_textbox(self) -> None:

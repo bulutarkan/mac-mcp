@@ -1070,6 +1070,19 @@ function __mcpRememberTarget(el,id,s){if(!el||!id)return;try{s.targetFp[id]=__mc
 function __mcpSettleHidden(){try{if(document.visibilityState!=='hidden'||!document.getAnimations)return 0;var n=0;
   document.getAnimations().forEach(function(a){try{if(a.playState!=='running')return;var t=a.effect&&a.effect.getComputedTiming&&a.effect.getComputedTiming();
     if(!t||!isFinite(t.endTime)||t.endTime>5000)return;a.finish();n++;}catch(e){}});return n;}catch(e){return 0;}}
+/* The visible controls that the "changes" of an act are measured against; observe records the same set,
+   so a small max_elements does not make everything it left out look new afterwards. */
+function __mcpVisibleControls(s){
+  var sel='button,a[href],input,textarea,select,summary,[role=button],[role=link],[role=option],[role=menuitem],[role=menuitemradio],[role=menuitemcheckbox],[role=tab],[role=checkbox],[role=radio],[role=combobox],[role=switch],[contenteditable=true],[draggable=true]';
+  var now=[],seen=Object.create(null),nodes=__mcpQueryAll(sel);
+  for(var i=0;i<nodes.length&&now.length<500;i++){var el=nodes[i];if(!__mcpVisible(el))continue;var id=__mcpId(el,s);if(seen[id])continue;seen[id]=1;now.push({id:id,el:el});}
+  return now;
+}
+/* Milliseconds left on short UI animations still running in a visible page (a panel opening). */
+function __mcpAnimatingMs(){try{if(document.visibilityState==='hidden'||!document.getAnimations)return 0;var left=0;
+  document.getAnimations().forEach(function(a){try{if(a.playState!=='running')return;var t=a.effect.getComputedTiming();
+    if(!isFinite(t.endTime)||t.endTime>2000)return;left=Math.max(left,t.endTime-(t.localTime||0));}catch(e){}});
+  return Math.max(0,Math.min(1000,Math.round(left)));}catch(e){return 0;}}
 function __mcpVisible(el){if(!el||el.nodeType!==1)return false;var st=__mcpStyle(el);if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0)return false;var r=__mcpTopRect(el);if(r.width<1||r.height<1)return false;return r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}
 function __mcpActionable(el){
   var tag=(el.tagName||'').toLowerCase(),role=(el.getAttribute('role')||'').toLowerCase();
@@ -1548,8 +1561,8 @@ for(var pi=0;pi<picked.length;pi++){{
 var obs='bobs_'+s.pageToken+'_'+Date.now().toString(36);
 s.observations[obs]=s.mutationRevision;
 s.observationMeta[obs]={{scope:scope,max_elements:{max_elements},view:{{sx:scrollX,sy:scrollY,w:innerWidth,h:innerHeight}},
-  ids:elements.map(function(e){{return e.element_id;}}),url:location.href}};
-s.lastSeen={{ids:elements.map(function(e){{return e.element_id;}}),url:location.href,title:document.title}};
+  ids:__mcpVisibleControls(s).map(function(x){{return x.id;}}),url:location.href}};
+s.lastSeen={{ids:s.observationMeta[obs].ids,url:location.href,title:document.title}};
 // Canvas apps draw their controls: say so, and where, instead of returning an empty-looking page.
 var canvasHint=(function(){{var vw=innerWidth*innerHeight,best=null,area=0;
   Array.from(document.querySelectorAll('canvas')).forEach(function(c){{if(!__mcpVisible(c))return;var r=c.getBoundingClientRect();
@@ -2692,10 +2705,9 @@ def _changes_js(observation_id: Optional[str]) -> str:
 {_browser_state_bootstrap()}
 function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
 __mcpSettleHidden();var s=__mcpState(),meta=(s.observationMeta||{{}})[{obs}],base=(meta&&meta.ids)?meta:s.lastSeen;
-var sel='button,a[href],input,textarea,select,summary,[role=button],[role=link],[role=option],[role=menuitem],[role=menuitemradio],[role=menuitemcheckbox],[role=tab],[role=checkbox],[role=radio],[role=combobox],[role=switch],[contenteditable=true],[draggable=true]';
-var now=[],seen=Object.create(null),nodes=__mcpQueryAll(sel);
-for(var i=0;i<nodes.length&&now.length<500;i++){{var el=nodes[i];if(!__mcpVisible(el))continue;var id=__mcpId(el,s);if(seen[id])continue;seen[id]=1;now.push({{id:id,el:el}});}}
+var now=__mcpVisibleControls(s),seen=Object.create(null);now.forEach(function(x){{seen[x.id]=1;}});
 var out={{ok:true,url:location.href,title:document.title,dom_revision:s.mutationRevision}};
+var animating=__mcpAnimatingMs();if(animating)out.animating_ms=animating;
 if(base){{
   var had=Object.create(null);(base.ids||[]).forEach(function(id){{had[id]=1;}});
   var appeared=now.filter(function(x){{return !had[x.id];}});
@@ -2722,7 +2734,8 @@ var modal=__mcpTopBlockingModal();
 if(alerts.length||invalid.length||modal){{out.changes=out.changes||{{}};
   if(alerts.length)out.changes.messages=alerts;if(invalid.length)out.changes.invalid_fields=invalid;
   if(modal)out.changes.modal={{element_id:__mcpId(modal,s),text:__mcpText(modal).slice(0,200)}};}}
-s.lastSeen={{ids:now.map(function(x){{return x.id;}}),url:location.href,title:document.title}};
+// While a panel is still animating open, keep the baseline: the caller reads again once it settles.
+if(!animating)s.lastSeen={{ids:now.map(function(x){{return x.id;}}),url:location.href,title:document.title}};
 return __mcpB64(out);
 }})()'''
 
@@ -5332,6 +5345,14 @@ def _browser_act_locked(
                 settings, browser, _changes_js(observation_id), window_index, tab_index, tab_handle,
             )
             response["internal_js_calls"] += 1
+            animating_ms = int(summary.get("animating_ms") or 0)
+            if animating_ms:
+                # A panel the batch opened is still animating in; its controls are not laid out yet.
+                cancellable_sleep(min(animating_ms, 600) / 1000 + 0.03)
+                summary = _run_json_js(
+                    settings, browser, _changes_js(observation_id), window_index, tab_index, tab_handle,
+                )
+                response["internal_js_calls"] += 1
             if isinstance(summary.get("changes"), dict):
                 response["changes"] = summary["changes"]
         if return_state == "compact":
