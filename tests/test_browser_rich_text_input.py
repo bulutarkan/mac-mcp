@@ -251,7 +251,8 @@ class VerificationTests(unittest.TestCase):
 
     def test_input_and_textarea_keep_the_value_setter_path(self) -> None:
         source = agent._bootstrap_functions_source()
-        self.assertIn("if(editable){if(clearFirst!==false)__mcpNativeValueSetter(el,'');__mcpNativeValueSetter(el,value);}", source)
+        self.assertIn("if(editable){var keep=clearFirst===false?String(el.value==null?'':el.value):'';"
+                      "if(clearFirst!==false)__mcpNativeValueSetter(el,'');__mcpNativeValueSetter(el,keep+value);}", source)
 
 
 if __name__ == "__main__":

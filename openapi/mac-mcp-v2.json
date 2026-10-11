@@ -3415,7 +3415,7 @@
                           "type": "string"
                         },
                         "text": {
-                          "description": "type/type_text/paste: text to enter. wait for=text: text to wait for.",
+                          "description": "type/type_text/paste: text; clear:false appends. wait for=text: text to wait for.",
                           "type": "string"
                         },
                         "handoff_id": {

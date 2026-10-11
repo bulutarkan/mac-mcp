@@ -94,7 +94,7 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
         "within": _str("Unique phrase of one item."),
         "within_element_id": {"type": "string"},
         "intent": _str("Only breaks ties."),
-        "text": _str("type/type_text/paste: text to enter. wait for=text: text to wait for."),
+        "text": _str("type/type_text/paste: text; clear:false appends. wait for=text: text to wait for."),
         "handoff_id": _str("context_handoff id instead of text."),
         "option": _str("select: option label or value."),
         "key": _str("key/keyboard/shortcut: Enter, Escape, Tab, ArrowDown or one character."),

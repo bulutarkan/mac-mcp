@@ -1394,6 +1394,7 @@ function __mcpPasteInsert(el,value){
     var handled;try{handled=!el.dispatchEvent(ev);}finally{el.removeEventListener('beforeinput',note,true);el.removeEventListener('input',note,true);}
     if(handled&&!announced&&!__mcpModelEditor(el))s.lastPasteUnconfirmed=true;return handled;}catch(e){return false;}
 }
+function __mcpAppendable(el){var tag=String(el.tagName||'').toLowerCase();if(tag==='textarea')return true;if(tag!=='input')return false;return ['text','search','url','tel','email','password'].indexOf(String(el.type||'text').toLowerCase())>=0;}
 function __mcpSetText(el,value,clearFirst,focusSettled){
   if(!el)throw new Error('element_not_found');if(el.disabled===true||el.getAttribute('aria-disabled')==='true')throw new Error('element_disabled');if(el.readOnly===true||el.getAttribute('readonly')!==null)throw new Error('element_readonly');var wasActive=false;try{wasActive=(el.ownerDocument||document).activeElement===el;}catch(e){}__mcpScrollIntoView(el);try{el.focus({preventScroll:true});}catch(e){try{el.focus();}catch(_){}}
   value=String(value==null?'':value);var s=__mcpState(),tag=String(el.tagName||'').toLowerCase(),editable=(tag==='input'||tag==='textarea'||tag==='select');
@@ -1418,7 +1419,9 @@ function __mcpSetText(el,value,clearFirst,focusSettled){
   }
   s.lastInputMethod=rich?'dom_text':'value_setter';
   if(!rich){var before=__mcpInputEvent(el,'beforeinput',value,'insertText',true);if(before)try{el.dispatchEvent(before);}catch(e){}}
-  if(editable){if(clearFirst!==false)__mcpNativeValueSetter(el,'');__mcpNativeValueSetter(el,value);}else if(rich){try{el.textContent=value;}catch(e){}}else{if(!__mcpNativeValueSetter(el,value))try{el.textContent=value;}catch(e){}}
+  /* clear=false appends, as it does in rich editors. Only text-like fields can hold appended text. */
+  if(editable&&clearFirst===false&&!__mcpAppendable(el))throw new Error('append_unsupported: clear=false needs a text field; this '+(tag==='input'?String(el.type||'text').toLowerCase()+' input':tag)+' can only be replaced');
+  if(editable){var keep=clearFirst===false?String(el.value==null?'':el.value):'';if(clearFirst!==false)__mcpNativeValueSetter(el,'');__mcpNativeValueSetter(el,keep+value);}else if(rich){try{el.textContent=value;}catch(e){}}else{if(!__mcpNativeValueSetter(el,value))try{el.textContent=value;}catch(e){}}
   var input=__mcpInputEvent(el,'input',value,'insertText',false);if(input)try{el.dispatchEvent(input);}catch(e){}try{el.dispatchEvent(new (__mcpOwnerWindow(el).Event)('change',{bubbles:true,composed:true}));}catch(e){}try{var ku=new (__mcpOwnerWindow(el).KeyboardEvent)('keyup',{bubbles:true,cancelable:true,composed:true,key:value.slice(-1)||'Unidentified'});el.dispatchEvent(ku);}catch(e){}return el;
 }'''
 
@@ -2382,12 +2385,12 @@ for(var i=0;i<actions.length;i++){
     } else if(type==='type'||type==='type_text'||type==='paste'){
       if(!el) throw new Error('element_id is required');
       var value=String(a.text==null?'':a.text);
-      var priorText=('value' in el)?'':__mcpEditableText(el);
+      var priorText=('value' in el)?String(el.value==null?'':el.value):__mcpEditableText(el);
       __mcpSetText(el,value,a.clear!==false,a._focus_settled===true);__mcpFlushMutations(s);
       if(s.lastInputMethod==='focus_settling'){results.push({index:i,type:type,element_id:a.element_id,ok:true,effect_observed:false,verification:'focus_settling',input_method:'focus_settling'});break;}
       var hasValue=('value' in el),actual='';try{actual=hasValue?String(el.value||''):__mcpEditableText(el);}catch(e){}
-      var method=s.lastInputMethod||'',expectedText=a.clear===false&&!hasValue?priorText+value:value,pending=/_async$/.test(method);
-      var applied=pending||(hasValue?actual===value:(method!=='input_partial'&&__mcpTextMatches(actual,expectedText)));
+      var method=s.lastInputMethod||'',expectedText=a.clear===false?priorText+value:value,pending=/_async$/.test(method);
+      var applied=pending||(hasValue?actual===expectedText:(method!=='input_partial'&&__mcpTextMatches(actual,expectedText)));
       var unconfirmed=/^paste_event/.test(method)&&s.lastPasteUnconfirmed===true;
       var verification=pending?'editor_pending':(!applied?'input_not_applied':(method==='dom_text'?'dom_text_only':(unconfirmed?'editor_model_unconfirmed':'value_applied')));
       var typed={index:i,type:type,element_id:a.element_id,ok:applied,value:actual.slice(0,200),effect_observed:applied&&!pending,verification:verification,input_method:method.replace(/_async$/,''),observe_again:!applied};

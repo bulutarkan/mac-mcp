@@ -1758,8 +1758,8 @@ def browser_type_selector(
         "(function(){"
         f"var el=document.querySelector({sel}); if(!el) return 'NOT_FOUND';"
         "try{el.focus();}catch(e){}"
-        f"if({clr}) el.value='';"
-        f"el.value = {txt};"
+        # clear=false keeps what the field holds and appends, as the tool describes.
+        f"el.value = ({clr} ? '' : String(el.value == null ? '' : el.value)) + {txt};"
         "el.dispatchEvent(new Event('input', {bubbles:true}));"
         "el.dispatchEvent(new Event('change', {bubbles:true}));"
         "return 'OK';"
