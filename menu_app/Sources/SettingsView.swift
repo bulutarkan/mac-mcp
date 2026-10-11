@@ -1060,7 +1060,7 @@ struct SettingsView: View {
                 Spacer()
                 if let usage, usage.available != false {
                     Text(providerSourceLabel(usage.source))
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 3)
@@ -1135,7 +1135,7 @@ struct SettingsView: View {
     private func providerUsageMetric(_ title: String, _ value: Int?) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
-                .font(.system(size: 9))
+                .font(.caption2)
                 .foregroundStyle(.tertiary)
             Text(providerTokenText(value))
                 .font(.caption.weight(.medium).monospacedDigit())
@@ -2038,7 +2038,7 @@ struct SettingsView: View {
                                     }
                                     Spacer()
                                     Text("Read-only")
-                                        .font(.system(size: 9, weight: .semibold))
+                                        .font(.caption2.weight(.semibold))
                                         .padding(.horizontal, 6)
                                         .padding(.vertical, 2)
                                         .background(.quaternary, in: Capsule())
@@ -2607,7 +2607,7 @@ struct SettingsView: View {
                     }
                     Spacer()
                     Label(status.label, systemImage: status.symbol)
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(status.color)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
@@ -2976,7 +2976,7 @@ struct SettingsView: View {
                     HStack(spacing: 7) {
                         Text(title).font(.subheadline.weight(.semibold))
                         Text(detectionLabel)
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(.caption2.weight(.semibold))
                             .foregroundStyle(detectionColor)
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .background(.quaternary, in: Capsule())

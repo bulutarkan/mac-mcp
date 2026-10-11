@@ -13,6 +13,9 @@ struct MenuBarView: View {
     @MacMCPState private var showSecurity = false
     @MacMCPState private var sessionMinutesText = ""
     @MacMCPState private var lastActiveAgentID: String? = nil
+    // Follow the user's text size: glyph sizes and the scroll viewports' row heights scale with it.
+    @ScaledMetric(relativeTo: .caption2) private var glyphScale: CGFloat = 1
+    @ScaledMetric(relativeTo: .caption) private var rowScale: CGFloat = 1
 
     var body: some View {
         ScrollView {
@@ -56,7 +59,7 @@ struct MenuBarView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .shadow(radius: 3, y: 1)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Mac MCP").font(.system(size: 17, weight: .semibold))
+                Text("Mac MCP").font(.title2.weight(.semibold))
                 HStack(spacing: 6) {
                     Circle().fill(connectionColor).frame(width: 7, height: 7)
                     Text(state.connectionStatusText)
@@ -252,7 +255,7 @@ struct MenuBarView: View {
                                 }
                             }
                         }
-                        .frame(height: CGFloat(min(max(sessionGroups.totalItemCount, 1), 5)) * 42 + CGFloat(sessionGroups.sectionCount) * 20)
+                        .frame(height: (CGFloat(min(max(sessionGroups.totalItemCount, 1), 5)) * 42 + CGFloat(sessionGroups.sectionCount) * 20) * rowScale)
                     }
 
                     HStack(spacing: 7) {
@@ -311,7 +314,7 @@ struct MenuBarView: View {
                             }
                         }
                     }
-                    .frame(height: CGFloat(min(max(state.agents.count, 1), 3)) * 61)
+                    .frame(height: CGFloat(min(max(state.agents.count, 1), 3)) * 61 * rowScale)
                     .onAppear {
                         lastActiveAgentID = firstActiveAgentID
                         if let id = firstActiveAgentID { proxy.scrollTo(id, anchor: .top) }
@@ -341,7 +344,7 @@ struct MenuBarView: View {
                 Text(team.progressText).font(.caption2).foregroundStyle(
                     (team.unresolvedConflictCount ?? 0) > 0 ? Color.orange : Color.secondary
                 ).lineLimit(1)
-                Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+                Image(systemName: "chevron.right").font(.system(size: 8 * glyphScale, weight: .semibold)).foregroundStyle(.tertiary)
             }
             .contentShape(Rectangle())
         }
@@ -378,8 +381,8 @@ struct MenuBarView: View {
                     Text(modelName(agent.model)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     if let reasoning = agent.reasoning, !reasoning.isEmpty {
                         HStack(spacing: 3) {
-                            Image(systemName: "brain").font(.system(size: 8, weight: .semibold))
-                            Text(reasoningBadge(reasoning)).font(.system(size: 9, weight: .semibold))
+                            Image(systemName: "brain").font(.system(size: 8 * glyphScale, weight: .semibold))
+                            Text(reasoningBadge(reasoning)).font(.caption2.weight(.semibold))
                         }
                         .padding(.horizontal, 5).padding(.vertical, 2)
                         .background(.quaternary, in: Capsule())
@@ -387,7 +390,7 @@ struct MenuBarView: View {
                     }
                     if let capabilityProfile = agent.capabilityProfile, capabilityProfile != "legacy", !capabilityProfile.isEmpty {
                         Text(profileDisplayName(capabilityProfile))
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 5).padding(.vertical, 2)
                             .background(.quaternary, in: Capsule())
                             .help("Agent capability profile: \(profileDisplayName(capabilityProfile))")
@@ -412,18 +415,18 @@ struct MenuBarView: View {
                         Text(agent.isActive ? "Waiting for first tool" : "No tool calls").font(.caption2).foregroundStyle(.tertiary)
                     }
                     Spacer()
-                    Image(systemName: "wrench.and.screwdriver.fill").font(.system(size: 8)).foregroundStyle(.tertiary)
+                    Image(systemName: "wrench.and.screwdriver.fill").font(.system(size: 8 * glyphScale)).foregroundStyle(.tertiary)
                     Text("\(agent.toolCallCount ?? 0)").font(.caption2).foregroundStyle(.secondary)
                     if let checkpoints = agent.checkpointCount, checkpoints > 0 {
-                        Image(systemName: "arrow.trianglehead.branch").font(.system(size: 8)).foregroundStyle(.secondary)
+                        Image(systemName: "arrow.trianglehead.branch").font(.system(size: 8 * glyphScale)).foregroundStyle(.secondary)
                         Text("\(checkpoints)").font(.caption2).foregroundStyle(.secondary)
                     }
                     if let throttles = agent.throttleCount, throttles > 0 {
-                        Image(systemName: "gauge.with.dots.needle.33percent").font(.system(size: 8)).foregroundStyle(.orange)
+                        Image(systemName: "gauge.with.dots.needle.33percent").font(.system(size: 8 * glyphScale)).foregroundStyle(.orange)
                         Text("\(throttles)").font(.caption2).foregroundStyle(.orange)
                     }
                     if let retries = agent.retryCount, retries > 0 {
-                        Image(systemName: "arrow.clockwise").font(.system(size: 8)).foregroundStyle(.orange)
+                        Image(systemName: "arrow.clockwise").font(.system(size: 8 * glyphScale)).foregroundStyle(.orange)
                         Text("\(retries)").font(.caption2).foregroundStyle(.orange)
                     }
                 }
@@ -434,14 +437,14 @@ struct MenuBarView: View {
     @ViewBuilder
     private func agentStopButton(_ agent: AgentInfo) -> some View {
         if state.cancellingAgentIDs.contains(agent.agentID) {
-            ProgressView().controlSize(.mini).frame(width: 16, height: 16)
+            ProgressView().controlSize(.mini).frame(width: 16 * glyphScale, height: 16 * glyphScale)
                 .accessibilityLabel("Stopping \(agent.title ?? "agent")")
         } else {
             Button { Task { await state.cancelAgent(agent) } } label: {
                 Image(systemName: "stop.fill")
-                    .font(.system(size: 7, weight: .bold))
+                    .font(.system(size: 7 * glyphScale, weight: .bold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 16, height: 16)
+                    .frame(width: 16 * glyphScale, height: 16 * glyphScale)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
                     .contentShape(Rectangle())
             }
@@ -478,7 +481,7 @@ struct MenuBarView: View {
                                         HStack(spacing: 5) {
                                             Text(cleanToolName(event.tool)).font(.caption.weight(.medium)).lineLimit(1)
                                             if event.status.lowercased() == "running" {
-                                                Text("LIVE").font(.system(size: 8, weight: .bold))
+                                                Text("LIVE").font(.caption2.weight(.bold))
                                                     .padding(.horizontal, 4).padding(.vertical, 1)
                                                     .background(.quaternary, in: Capsule())
                                             }
@@ -507,9 +510,9 @@ struct MenuBarView: View {
                             }
                         }
                     }
-                    .frame(height: CGFloat(min(max(displayActivityEvents.count, 1), 5)) * 39)
+                    .frame(height: CGFloat(min(max(displayActivityEvents.count, 1), 5)) * 39 * rowScale)
                     if !state.browserActionStatus.isEmpty {
-                        Text(state.browserActionStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        Text(state.browserActionStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                     }
                 }
             }
@@ -1035,9 +1038,9 @@ struct MenuBarView: View {
 
     private func sessionSectionHeader(_ title: String, count: Int, symbol: String, color: Color) -> some View {
         HStack(spacing: 5) {
-            Image(systemName: symbol).font(.system(size: 9, weight: .semibold)).foregroundStyle(color)
+            Image(systemName: symbol).font(.system(size: 9 * glyphScale, weight: .semibold)).foregroundStyle(color)
             Text(title).font(.caption2.weight(.semibold)).foregroundStyle(color)
-            Text("\(count)").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+            Text("\(count)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
             Spacer()
         }
         .padding(.top, 2)
@@ -1049,7 +1052,7 @@ struct MenuBarView: View {
                 Image(systemName: state.selectedSteeringSessionID == session.sessionID ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(state.selectedSteeringSessionID == session.sessionID ? Color.accentColor : Color.secondary)
                 Text("Agent \(session.flowNumber)")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.caption2.weight(.semibold))
                     .padding(.horizontal, 5).padding(.vertical, 2)
                     .background(.quaternary, in: Capsule())
                 VStack(alignment: .leading, spacing: 1) {
