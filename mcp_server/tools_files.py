@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import os
 import shutil
 import stat as stat_module
@@ -7,7 +8,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from fastapi import HTTPException, status
 
@@ -18,7 +19,7 @@ from .policy_scope import AccessMode, ResourceScope, ScopeRequest, evaluate_scop
 from .scoped_fs import (
     ScopedFilesystemError, scope_needs_path_guard, scoped_copy, scoped_create_directory,
     scoped_delete, scoped_directory_tree, scoped_find, scoped_get_info, scoped_list_directory,
-    scoped_move, scoped_read_text, scoped_stat, scoped_write_text_atomic,
+    scoped_iter_bytes, scoped_move, scoped_read_text, scoped_stat, scoped_write_text_atomic,
 )
 from .file_transactions import (
     FileTransactionError, TransactionConflict, TransactionExpired, TransactionIrreversible,
@@ -340,35 +341,119 @@ def _file_transaction_batch_locked(settings: Settings, actions: List[Dict[str, A
 
 # ── Read ─────────────────────────────────────────────────────────────────────
 
+_READ_CHUNK_CHARS = 1024 * 1024
+# The characters str.splitlines() breaks on; "\r" may still be the first half of "\r\n".
+_LINE_BREAKS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
+
+
+def _text_chunks(target: Path, scope: Optional[ResourceScope]) -> Iterator[str]:
+    """The file's text in chunks, decoded exactly as the whole-file reads did."""
+    if scope is not None:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        for block in scoped_iter_bytes(scope, target, _READ_CHUNK_CHARS):
+            text = decoder.decode(block)
+            if text:
+                yield text
+        tail = decoder.decode(b"", final=True)
+        if tail:
+            yield tail
+        return
+    # Same as Path.read_text(): universal newlines.
+    with open(target, encoding="utf-8", errors="replace") as handle:
+        while True:
+            text = handle.read(_READ_CHUNK_CHARS)
+            if not text:
+                return
+            yield text
+
+
+def _text_window(chunks: Iterator[str], offset: int, end: Optional[int], cap: int) -> Dict[str, Any]:
+    """Scan text once, keeping only the first `cap` characters of lines [offset, end).
+
+    Peak memory follows the chunk size and `cap`, not the file size, even for a file
+    with no line breaks. Line counting matches str.splitlines().
+    """
+    head: List[str] = []
+    head_len = window_chars = window_lines = line = 0
+    open_line = False
+    carry = ""
+
+    def take(piece: str, terminated: bool) -> None:
+        nonlocal head_len, window_chars, window_lines, line, open_line
+        if line >= offset and (end is None or line < end):
+            window_chars += len(piece)
+            if head_len < cap:
+                part = piece[: cap - head_len]
+                head.append(part)
+                head_len += len(part)
+            if terminated:
+                window_lines += 1
+        if terminated:
+            line += 1
+            open_line = False
+        else:
+            open_line = True
+
+    for chunk in chunks:
+        text = carry + chunk
+        carry = ""
+        if text.endswith("\r"):
+            carry, text = "\r", text[:-1]
+        for piece in text.splitlines(keepends=True):
+            take(piece, piece[-1] in _LINE_BREAKS)
+    if carry:
+        take(carry, True)
+    if open_line:
+        # A last line without a break still counts, as in str.splitlines().
+        if line >= offset and (end is None or line < end):
+            window_lines += 1
+        line += 1
+    return {"head": "".join(head), "window_chars": window_chars, "window_lines": window_lines, "total_lines": line}
+
+
+def _text_head(chunks: Iterator[str], cap: int) -> tuple[str, int]:
+    """The first `cap` characters and the total character count, without holding the rest."""
+    head: List[str] = []
+    head_len = chars = 0
+    for chunk in chunks:
+        chars += len(chunk)
+        if head_len < cap:
+            part = chunk[: cap - head_len]
+            head.append(part)
+            head_len += len(part)
+    return "".join(head), chars
+
+
 def read_file(settings: Settings, path: str, offset: int = 0, length: Optional[int] = None) -> Dict[str, Any]:
     target = resolve_path(path)
     scope = _current_path_scope()
-    if scope is not None:
-        content = _scoped_call(lambda: scoped_read_text(scope, target, errors="replace"))
-    else:
-        if not target.exists() or not target.is_file():
-            raise HTTPException(status.HTTP_404_NOT_FOUND, f"File not found: {path}")
-        content = target.read_text(encoding="utf-8", errors="replace")
+    if scope is None and (not target.exists() or not target.is_file()):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"File not found: {path}")
     offset = max(0, int(offset or 0))
-    lines = None
-    if offset or length is not None:
-        lines = content.splitlines(keepends=True)
-        sliced = lines[offset: offset + length if length else None]
-        content = "".join(sliced)
-    bounded, truncated = truncate(content, MAX_READ_CHARS)
+    sliced = bool(offset) or length is not None
+    end = offset + length if length else None
+    start = offset
+    if end is not None and end < 0:
+        # A negative end counts from the last line, as list slicing did: count lines first.
+        total = _scoped_call(lambda: _text_window(_text_chunks(target, scope), 0, 0, 0))["total_lines"]
+        start, end, _ = slice(offset, end).indices(total)
+    window = _scoped_call(lambda: _text_window(_text_chunks(target, scope), start, end, MAX_READ_CHARS + 1))
+    head = window["head"]
+    truncated = window["window_chars"] > MAX_READ_CHARS
+    bounded = truncate(head, MAX_READ_CHARS)[0] if truncated else head
     try:
         revision = path_revision(target, scope)
     except FileTransactionError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.code, "message": str(exc)}) from exc
     result = {"ok": True, "path": str(target), "content": bounded, "truncated": truncated, "revision": revision}
-    if truncated or lines is not None:
+    if truncated or sliced:
         # Say exactly where to continue: the first line not returned in full.
-        total_lines = len(lines) if lines is not None else len(content.splitlines())
+        total_lines = window["total_lines"]
         if truncated:
-            kept = content[: len(bounded) - len(_TRUNCATION_SUFFIX)]
+            kept = head[: len(bounded) - len(_TRUNCATION_SUFFIX)]
             next_offset = offset + kept.count("\n")
         else:
-            next_offset = offset + len(content.splitlines())
+            next_offset = offset + window["window_lines"]
         result["total_lines"] = total_lines
         result["truncation"] = {"truncated": truncated, "reason": "max_chars" if truncated else None,
                                 "limit_chars": MAX_READ_CHARS}
@@ -397,16 +482,19 @@ def read_multiple_files(settings: Settings, paths: List[str],
     results = []
     not_read: List[str] = []
 
-    def add_content(path: str, content: str) -> None:
+    def add_content(path: str, target: Path, scope: Optional[ResourceScope]) -> None:
         nonlocal used
         limit = min(READ_MULTIPLE_PER_FILE_CHARS, budget - used)
-        bounded, was_truncated = truncate(content, limit)
+        # Keep only what can be returned; the rest of the file is counted, not held.
+        head, chars = _text_head(_text_chunks(target, scope), limit + 1)
+        was_truncated = chars > limit
+        bounded = truncate(head, limit)[0] if was_truncated else head
         used += len(bounded)
         record: Dict[str, Any] = {"path": path, "content": bounded, "truncated": was_truncated, "status": "ok",
-                                  "chars": len(content)}
+                                  "chars": chars}
         if was_truncated:
             reason = "per_file_limit" if limit == READ_MULTIPLE_PER_FILE_CHARS else "aggregate_budget"
-            kept = content[: len(bounded) - len(_TRUNCATION_SUFFIX)]
+            kept = head[: len(bounded) - len(_TRUNCATION_SUFFIX)]
             record["truncation"] = {"reason": reason, "limit_chars": limit}
             record["continue"] = {"tool": "read_file", "path": path, "offset": kept.count("\n")}
         results.append(record)
@@ -421,15 +509,14 @@ def read_multiple_files(settings: Settings, paths: List[str],
             scope = _current_path_scope()
             if scope is not None:
                 try:
-                    content = scoped_read_text(scope, target, errors="replace")
+                    add_content(path, target, scope)
                 except ScopedFilesystemError as exc:
                     if exc.reason not in {"path_missing"}:
                         raise _scoped_http_error(exc) from exc
                     results.append({"path": path, "error": "Not found", "status": "error"})
                     continue
-                add_content(path, content)
             elif target.exists() and target.is_file():
-                add_content(path, target.read_text(encoding="utf-8", errors="replace"))
+                add_content(path, target, None)
             else:
                 results.append({"path": path, "error": "Not found", "status": "error"})
         except HTTPException:

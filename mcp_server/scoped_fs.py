@@ -249,6 +249,26 @@ def scoped_read_bytes(scope: ResourceScope, path: Path) -> bytes:
             os.close(fd)
 
 
+def scoped_iter_bytes(scope: ResourceScope, path: Path, chunk_size: int = 1024 * 1024) -> Iterator[bytes]:
+    """scoped_read_bytes in chunks, so a caller can stop holding what it no longer needs."""
+    with guarded_parent(scope, path, access_mode=AccessMode.READ_ONLY) as guarded:
+        try:
+            fd = os.open(guarded.name, _file_read_flags(), dir_fd=guarded.parent_fd)
+        except OSError as exc:
+            raise _translate_open_error(exc) from exc
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise ScopedFilesystemError("not_regular_file", "Scoped read target is not a regular file.")
+            while True:
+                chunk = os.read(fd, chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            os.close(fd)
+
+
 def scoped_read_text(scope: ResourceScope, path: Path, *, errors: str = "replace") -> str:
     return scoped_read_bytes(scope, path).decode("utf-8", errors=errors)
 
