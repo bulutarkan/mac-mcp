@@ -4,8 +4,10 @@ from __future__ import annotations
 import base64
 import csv
 import json
+import logging
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -18,6 +20,7 @@ from fastapi import HTTPException
 from mcp_server import browser_sign_in as sign_in
 from mcp_server import login_vault, tools_browser
 from mcp_server import tools_browser_agent as agent
+from mcp_server.observability import TelemetryManager
 from mcp_server.security import load_settings
 
 SECRET = "Pa55-w0rd!sentinel"
@@ -219,10 +222,6 @@ class SignInTests(VaultCase):
 
     def test_telemetry_and_logs_never_hold_the_secret(self) -> None:
         # #81 acceptance: the telemetry row and every log line of a sign-in carry no secret bytes.
-        import logging
-        import sqlite3
-        from mcp_server.observability import TelemetryManager
-
         login_vault.add_login("github.com", "ada@example.com", SECRET)
         arguments = {"browser": "Safari", "tab_handle": "btab_safari_x", "submit": True, "description": "Sign in"}
         records: list = []
