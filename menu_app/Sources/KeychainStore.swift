@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 enum KeychainStore {
@@ -35,9 +36,24 @@ enum KeychainStore {
         try remove(service: decisionsService, account: decisionsAccount)
     }
 
+    /// Whether the item exists, without reading the secret. Reading it needs the keychain's
+    /// permission for this exact build, and a rebuilt app would otherwise block at launch on an
+    /// access prompt nobody may be there to answer.
     private static func hasValue(service: String, account: String) -> Bool {
-        guard let value = try? read(service: service, account: account) else { return false }
-        return !value.isEmpty
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationContext as String: context,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        // Present but locked behind a prompt still counts as configured.
+        return status == errSecSuccess || status == errSecInteractionNotAllowed
     }
 
     private static func read(service: String, account: String) throws -> String {
