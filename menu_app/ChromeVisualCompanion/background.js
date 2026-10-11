@@ -6,6 +6,8 @@ const CONFIG = globalThis.MAC_MCP_CHROME_BRIDGE || {};
 const PORT = Number(CONFIG.port || 0);
 const TOKEN = String(CONFIG.token || '');
 const RECONNECT_MS = Math.max(250, Math.min(Number(CONFIG.reconnect_ms || 1000), 10000));
+// While the server is down, wait longer after each failed attempt, up to the alarm period.
+const MAX_RECONNECT_MS = 30000;
 // Capabilities the server may rely on; an older companion simply does not list them.
 const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory', 'dialog_session_hold', 'keys', 'frames'];
 const MAX_GESTURE_STEPS = 80;
@@ -13,6 +15,7 @@ const DIALOG_TEXT_LIMIT = 300;
 let socket = null;
 let reconnectTimer = null;
 let pingTimer = null;
+let failedAttempts = 0;
 
 function clearTimers() {
   if (reconnectTimer) clearTimeout(reconnectTimer);
@@ -21,12 +24,18 @@ function clearTimers() {
   pingTimer = null;
 }
 
+function reconnectDelay() {
+  const ceiling = Math.min(RECONNECT_MS * 2 ** Math.min(failedAttempts, 10), MAX_RECONNECT_MS);
+  // Jitter keeps several Chrome profiles from retrying in lockstep.
+  return Math.round(ceiling * (0.5 + Math.random() * 0.5));
+}
+
 function scheduleReconnect() {
   if (!PORT || !TOKEN || reconnectTimer) return;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    connect();
-  }, RECONNECT_MS);
+    connect('timer');
+  }, reconnectDelay());
 }
 
 function send(payload) {
@@ -523,11 +532,14 @@ async function handleSetFileInput(message) {
   }
 }
 
-function connect() {
+function connect(trigger) {
   if (!PORT || !TOKEN) return;
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+  // An alarm or page wake during a backoff wait leaves the retry to the pending timer.
+  if (trigger !== 'timer' && reconnectTimer) return;
   clearTimers();
   const ws = new WebSocket(`ws://127.0.0.1:${PORT}/chrome-background-bridge`);
+  let accepted = false;
   socket = ws;
   ws.addEventListener('open', () => {
     send({type: 'hello', token: TOKEN, features: FEATURES, version: chrome.runtime.getManifest().version});
@@ -536,6 +548,8 @@ function connect() {
   ws.addEventListener('message', (event) => {
     let message = null;
     try { message = JSON.parse(String(event.data || '')); } catch (_) { return; }
+    // Only a server that accepted the token resets the backoff.
+    if (message && message.type === 'hello_ack') { accepted = true; failedAttempts = 0; return; }
     if (message && message.type === 'open_tab') { void handleOpenTab(message); return; }
     const handlers = {
       execute_js: handleExecuteJs, dispatch_mouse: handleDispatchMouse, set_file_input: handleSetFileInput,
@@ -546,6 +560,7 @@ function connect() {
   });
   ws.addEventListener('close', () => {
     if (socket === ws) socket = null;
+    if (!accepted) failedAttempts += 1;
     clearTimers();
     scheduleReconnect();
   });
