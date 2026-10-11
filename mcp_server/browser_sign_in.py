@@ -22,11 +22,16 @@ _LOOPBACK = {"localhost", "127.0.0.1", "::1"}
 # that belongs to it (or, on a username-first step, a clearly named username field).
 _FIELDS_JS = r"""
 function vis(el){if(!el||el.disabled||el.readOnly)return false;var r=el.getBoundingClientRect(),s=getComputedStyle(el);return r.width>1&&r.height>1&&s.visibility!=='hidden'&&s.display!=='none';}
+/* Login fields often sit inside web components (Reddit faceplate-text-input): look into open shadow roots too. */
+function deep(root,sel,out){out=out||[];Array.prototype.forEach.call(root.querySelectorAll(sel),function(e){out.push(e);});
+  Array.prototype.forEach.call(root.querySelectorAll('*'),function(e){if(e.shadowRoot)deep(e.shadowRoot,sel,out);});return out;}
+/* The form a field belongs to, also when the field lives inside a component in that form. */
+function formOf(el){var node=el;while(node){if(node.form)return node.form;var f=node.closest&&node.closest('form');if(f)return f;var r=node.getRootNode&&node.getRootNode();node=r&&r.host?r.host:null;}return null;}
 function fields(){
-  var pws=Array.prototype.filter.call(document.querySelectorAll('input[type=password]'),vis);
+  var pws=deep(document,'input[type=password]').filter(vis);
   var pw=pws.find(function(e){return /current-password/.test(e.autocomplete||'');})||pws.find(function(e){return !/new-password/.test(e.autocomplete||'');})||pws[0]||null;
-  var scope=(pw&&pw.form)||document;
-  var texts=Array.prototype.filter.call(scope.querySelectorAll('input'),function(e){return vis(e)&&/^(text|email|tel)$/.test(String(e.getAttribute('type')||'text').toLowerCase());});
+  var form=pw&&formOf(pw);
+  var texts=deep(document,'input').filter(function(e){return vis(e)&&/^(text|email|tel)$/.test(String(e.getAttribute('type')||'text').toLowerCase())&&(!form||formOf(e)===form);});
   var score=function(e){var hint=((e.autocomplete||'')+' '+(e.name||'')+' '+(e.id||'')+' '+(e.getAttribute('aria-label')||'')+' '+(e.placeholder||'')).toLowerCase(),n=0;
     if(/username|email/.test(e.autocomplete||''))n+=10;if(String(e.type).toLowerCase()==='email')n+=6;if(/user|email|e-mail|login|account|mail|kullan|posta/.test(hint))n+=4;
     if(pw&&(e.compareDocumentPosition(pw)&Node.DOCUMENT_POSITION_FOLLOWING))n+=2;return n;};
@@ -59,7 +64,14 @@ function put(el,v){{var proto=Object.getPrototypeOf(el),d=Object.getOwnPropertyD
 if(user!==null&&f.user)out.username=put(f.user,user);
 if(pass!==null&&f.pw)out.password=put(f.pw,pass);
 user=null;pass=null;
-if(submit&&out.password){{var form=f.pw.form;if(form){{try{{if(form.requestSubmit)form.requestSubmit();else form.submit();out.submitted=true;}}catch(e){{}}}}}}
+if(submit&&out.password){{var form=formOf(f.pw);
+  /* Press the page's own sign-in button first: many sites (Reddit) sign in from its click handler,
+     and a type=button control ignores a programmatic form submit. */
+  var isSignIn=function(b){{return String(b.type).toLowerCase()==='submit'||/^\\s*(log ?in|sign ?in|continue|giriş( yap)?|oturum aç)\\s*$/i.test(b.textContent||b.value||'');}};
+  var pick=function(root){{return deep(root,'button,[role=button],input[type=submit]').filter(vis).find(isSignIn);}};
+  var btn=(form&&pick(form))||pick(document);
+  try{{if(btn&&!btn.disabled){{btn.click();out.submitted=true;}}
+    else if(form){{if(form.requestSubmit)form.requestSubmit();else form.submit();out.submitted=true;}}}}catch(e){{}}}}
 return b64(out);
 }})()"""
 

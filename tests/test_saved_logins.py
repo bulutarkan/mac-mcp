@@ -227,6 +227,20 @@ class SignInTests(VaultCase):
         self.assertEqual("page_changed", result["error"])
 
 
+class ShadowDomTests(unittest.TestCase):
+    def test_fields_and_submit_reach_into_open_shadow_roots(self) -> None:
+        # Reddit renders its login inputs inside faceplate-text-input shadow roots.
+        script = sign_in._fill_js("www.reddit.com", "u", "p", True)
+        self.assertIn("if(e.shadowRoot)deep(e.shadowRoot,sel,out)", script)
+        self.assertIn("deep(document,'input[type=password]')", script)
+        self.assertIn("var form=formOf(f.pw)", script)
+        self.assertIn("node=r&&r.host?r.host:null", script)
+        self.assertIn("/^\\s*(log ?in|sign ?in", script)
+        if shutil.which("node"):
+            out = subprocess.run(["node", "-e", f"new Function({json.dumps(script)})"], capture_output=True, text=True)
+            self.assertEqual(0, out.returncode, out.stderr)
+
+
 class PageScriptTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_password_fields_never_report_their_value(self) -> None:
