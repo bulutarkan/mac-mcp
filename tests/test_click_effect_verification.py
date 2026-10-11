@@ -83,7 +83,10 @@ class ClickScriptTests(unittest.TestCase):
         bootstrap = agent._browser_state_bootstrap()
         self.assertIn("function __mcpInternalMutation(rec)", bootstrap)
         self.assertIn("__mcpInternalHost(rec.target)", bootstrap)
-        source = open(agent.__file__, encoding="utf-8").read()
+        # The page scripts live in the module and in its browser_js assets.
+        from pathlib import Path
+        parts = [Path(agent.__file__)] + sorted((Path(agent.__file__).parent / "browser_js").glob("*.js"))
+        source = "".join(part.read_text(encoding="utf-8") for part in parts)
         self.assertNotIn("rec.attributeName==='data-mac-mcp-visual-event')continue", source)
         self.assertEqual(3, source.count("if(__mcpInternalMutation(rec))continue;"))
 

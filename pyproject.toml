@@ -51,4 +51,4 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 
 [tool.setuptools.package-data]
-mcp_server = ["*.swift", "vendor/*.js", "dashboard/*.html", "dashboard/*.css", "dashboard/*.js", "mobile/*.html", "mobile/*.css", "mobile/*.js", "mobile/*.json", "chatgpt_ui/*.html", "release_trusted_signers.txt"]
+mcp_server = ["*.swift", "vendor/*.js", "browser_js/*.js", "dashboard/*.html", "dashboard/*.css", "dashboard/*.js", "mobile/*.html", "mobile/*.css", "mobile/*.js", "mobile/*.json", "chatgpt_ui/*.html", "release_trusted_signers.txt"]

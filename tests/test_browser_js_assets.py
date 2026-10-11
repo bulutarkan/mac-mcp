@@ -1,0 +1,53 @@
+"""#107: authored page scripts live in mcp_server/browser_js as .js assets."""
+from __future__ import annotations
+
+import re
+import shutil
+import subprocess
+import unittest
+from pathlib import Path
+
+from mcp_server import tools_browser_agent as agent
+
+ROOT = Path(__file__).resolve().parents[1]
+ASSETS = ROOT / "mcp_server" / "browser_js"
+# Templates take their data through these placeholders; the values only fill them for parsing.
+PLACEHOLDERS = {"__BOOTSTRAP__": "", "__SPEC__": "{}", "__QUIET_MS__": "50", "__OBS__": "null", "__ACTIONS__": "[]"}
+
+
+class BrowserJsAssetTests(unittest.TestCase):
+    def test_every_referenced_asset_exists_and_is_packaged(self) -> None:
+        source = (ROOT / "mcp_server" / "tools_browser_agent.py").read_text(encoding="utf-8")
+        referenced = set(re.findall(r'_browser_js\("([^"]+)"\)', source)) | {"agent_helpers.js"}
+        self.assertEqual(referenced, {path.name for path in ASSETS.glob("*.js")})
+        # Installed builds must ship the assets (tomllib is not available on Python 3.10).
+        package_data = re.search(r"^mcp_server = \[(.*)\]$", (ROOT / "pyproject.toml").read_text(), re.M)
+        self.assertIsNotNone(package_data)
+        self.assertIn('"browser_js/*.js"', package_data.group(1))
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_assets_parse_as_javascript(self) -> None:
+        for path in sorted(ASSETS.glob("*.js")):
+            text = path.read_text(encoding="utf-8")
+            for name, value in PLACEHOLDERS.items():
+                text = text.replace(name, value)
+            with self.subTest(asset=path.name):
+                proc = subprocess.run(["node", "-e", "new Function(require('fs').readFileSync(0,'utf8'))"],
+                                      input=text, capture_output=True, text=True, timeout=30, check=False)
+                self.assertEqual(0, proc.returncode, proc.stderr)
+
+    def test_data_is_filled_in_after_the_library_so_it_is_never_re_substituted(self) -> None:
+        # Values that look like placeholders stay literal data in the generated script.
+        batch = agent._batch_js([{"type": "type", "element_id": "e1", "text": "__OBS__ __BOOTSTRAP__"}], "bobs__ACTIONS__")
+        self.assertIn('"text": "__OBS__ __BOOTSTRAP__"', batch)
+        self.assertIn('var expected="bobs__ACTIONS__";', batch)
+        wait = agent._event_wait_js({"for": "selector", "selector": "#__SPEC__"}, "https://e.test/", 2.0)
+        self.assertIn('"selector": "#__SPEC__"', wait)
+
+    def test_the_helper_library_comes_from_its_asset(self) -> None:
+        self.assertEqual((ASSETS / "agent_helpers.js").read_text(encoding="utf-8"), agent._bootstrap_functions_source())
+        self.assertIn(agent._bootstrap_functions_source().strip()[:120], agent._agent_api()["full"])
+
+
+if __name__ == "__main__":
+    unittest.main()
