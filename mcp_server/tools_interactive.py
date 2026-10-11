@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
-import signal
 import subprocess
 import threading
 from typing import Any, Dict, List, Optional
 
+from .process_supervision import terminate_process_group
 from .security import Settings
 
 
@@ -117,24 +116,8 @@ def _validate_choices(
 
 
 def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except OSError:
-        pass
-
-    try:
-        proc.wait(timeout=1)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass
-        try:
-            proc.wait(timeout=1)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-    except OSError:
-        pass
+    # A dialog gets a longer grace period, and is reaped after SIGKILL.
+    terminate_process_group(proc, grace_s=1.0, reap_s=1.0)
 
 
 def _run_native_script(script: str, total_timeout: int) -> Dict[str, Any]:

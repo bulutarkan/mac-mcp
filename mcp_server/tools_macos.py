@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-import os
-import signal
 import subprocess
-import time
 from typing import Any, Dict, List, Optional
 
+from .process_supervision import terminate_process_group as _terminate_process_group
 from .security import Settings, truncate
 from .clipboard_guard import ClipboardBusyError, clipboard_guard
 from .tool_cancellation import (
@@ -15,21 +13,6 @@ from .tool_cancellation import (
 )
 
 
-def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) -> None:
-    if proc.poll() is not None:
-        return
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    deadline = time.monotonic() + grace_s
-    while proc.poll() is None and time.monotonic() < deadline:
-        time.sleep(0.05)
-    if proc.poll() is None:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
 
 
 def _run_apple(

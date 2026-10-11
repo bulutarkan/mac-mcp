@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-import signal
 import subprocess
 import threading
 import time
@@ -15,6 +14,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from fastapi import HTTPException, status
 
+from .process_supervision import terminate_process_group as _terminate_process_group
 from .security import Settings, truncate, validate_browser_url as _validate_browser_destination
 from . import applescript_host, browser_tabs
 from .chrome_background_bridge import chrome_background_bridge
@@ -313,21 +313,6 @@ def _tab_identity_guard(target: browser_tabs.TabTarget) -> str:
     )
 
 
-def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) -> None:
-    if proc.poll() is not None:
-        return
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    deadline = time.monotonic() + grace_s
-    while proc.poll() is None and time.monotonic() < deadline:
-        time.sleep(0.05)
-    if proc.poll() is None:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
 
 
 def _run_osascript(script: str, timeout_s: int = 30) -> str:

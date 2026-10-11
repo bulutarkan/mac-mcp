@@ -7,7 +7,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -19,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from mcp.server.fastmcp.utilities.types import Image
 
+from .process_supervision import terminate_process_group as _terminate_process_group
 from .native_action_verification import (
     ACTION_VERIFY_POLL_S as _NATIVE_ACTION_VERIFY_POLL_S,
     ACTION_VERIFY_TIMEOUT_S as _NATIVE_ACTION_VERIFY_TIMEOUT_S,
@@ -192,21 +192,6 @@ def _operation_timeout(deadline: Optional[float], fallback_s: float) -> float:
     return max(0.1, min(float(fallback_s), remaining))
 
 
-def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) -> None:
-    if proc.poll() is not None:
-        return
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    deadline = time.monotonic() + grace_s
-    while proc.poll() is None and time.monotonic() < deadline:
-        time.sleep(0.05)
-    if proc.poll() is None:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
 
 
 def _resize_screenshot(path: str, timeout_s: float) -> Optional[str]:

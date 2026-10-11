@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-import os
-import signal
 import subprocess
 import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
 
+from .process_supervision import terminate_process_group as _terminate_process_group
 from .security import Settings, require_shell_enabled, truncate
 from .workspace_sandbox import shell_execution_plan
 from .shell_transactions import (
@@ -26,22 +25,6 @@ def _timeout(settings: Settings, timeout_s: Optional[int]) -> int:
     return min(max(1, int(timeout_s)), settings.max_command_timeout_s)
 
 
-def _terminate_process_group(proc: subprocess.Popen[str], grace_s: float = 0.5) -> None:
-    """Stop the shell and any descendants after a command timeout."""
-    if proc.poll() is not None:
-        return
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    deadline = time.monotonic() + grace_s
-    while proc.poll() is None and time.monotonic() < deadline:
-        time.sleep(0.05)
-    if proc.poll() is None:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
 
 
 def run_command(

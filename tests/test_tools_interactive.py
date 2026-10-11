@@ -3,7 +3,7 @@ import subprocess
 import unittest
 from unittest.mock import patch
 
-from mcp_server import tools_interactive
+from mcp_server import process_supervision, tools_interactive
 
 
 class FakeProcess:
@@ -18,6 +18,9 @@ class FakeProcess:
         if self.timeout:
             raise subprocess.TimeoutExpired("osascript", timeout)
         return self.output, ""
+
+    def poll(self):
+        return None if self.timeout and self.wait_calls < 2 else self.returncode
 
     def wait(self, timeout=None):
         self.wait_calls += 1
@@ -106,7 +109,7 @@ class InteractiveToolTests(unittest.TestCase):
     def test_timeout_is_fail_closed_and_terminates_process_group(self):
         process = FakeProcess(timeout=True)
         with patch.object(tools_interactive.subprocess, "Popen", return_value=process), patch.object(
-            tools_interactive.os, "killpg"
+            process_supervision.os, "killpg"
         ) as killpg:
             result = tools_interactive.ask_confirmation(None, "Proceed?", timeout_s=2)
 
