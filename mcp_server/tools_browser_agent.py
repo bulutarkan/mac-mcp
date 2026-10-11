@@ -282,7 +282,9 @@ def _run_json_js(
             target,
             timeout_s=min(60, settings.max_wait_s),
         )
-    value, truncated = truncate(value, settings.max_js_result_chars)
+    # These payloads are read by the server, which bounds what reaches the caller by the
+    # perception budget; the raw browser_execute_js cap would cut an observe at ~30 elements.
+    value, truncated = truncate(value, max(settings.max_js_result_chars, _AGENT_PAYLOAD_MAX_CHARS))
     return _decode_js_payload({
         "ok": True,
         "browser": b,
@@ -831,6 +833,8 @@ def _b64_return(expression: str) -> str:
 _BOOT_BEGIN = "/*__MAC_MCP_BOOT_BEGIN__*/"
 _BOOT_END = "/*__MAC_MCP_BOOT_END__*/"
 _AGENT_API_MISSING = "__MAC_MCP_AGENT_API_MISSING__"
+# Base64 of a full perception-budget payload (64 KB of JSON) plus headroom.
+_AGENT_PAYLOAD_MAX_CHARS = 96_000
 _AGENT_API_NONCE = secrets.token_hex(4)
 _AGENT_API_LOCK = threading.Lock()
 _AGENT_API_CACHE: Dict[str, Any] = {}
@@ -1060,12 +1064,19 @@ function __mcpTargetFp(el){
   return {route:__mcpRoute(),role:role,tag:tag,name:__mcpNorm(label).replace(/[0-9]+/g,'#').slice(0,120)};
 }
 function __mcpRememberTarget(el,id,s){if(!el||!id)return;try{s.targetFp[id]=__mcpTargetFp(el);}catch(e){}}
+/* A background tab does not advance CSS transitions, so a composer or dialog that opens
+   there stays at its first frame (height 2px, controls clipped) until the tab is shown.
+   Finish short running UI transitions in a hidden document so its controls are laid out. */
+function __mcpSettleHidden(){try{if(document.visibilityState!=='hidden'||!document.getAnimations)return 0;var n=0;
+  document.getAnimations().forEach(function(a){try{if(a.playState!=='running')return;var t=a.effect&&a.effect.getComputedTiming&&a.effect.getComputedTiming();
+    if(!t||!isFinite(t.endTime)||t.endTime>5000)return;a.finish();n++;}catch(e){}});return n;}catch(e){return 0;}}
 function __mcpVisible(el){if(!el||el.nodeType!==1)return false;var st=__mcpStyle(el);if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0)return false;var r=__mcpTopRect(el);if(r.width<1||r.height<1)return false;return r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth;}
 function __mcpActionable(el){
   var tag=(el.tagName||'').toLowerCase(),role=(el.getAttribute('role')||'').toLowerCase();
   if(['a','button','input','textarea','select','summary','details','label'].indexOf(tag)>=0)return true;
-  if(['button','link','checkbox','radio','tab','menuitem','option','combobox','textbox','searchbox','switch','slider','listbox'].indexOf(role)>=0)return true;
-  if(el.isContentEditable||el.hasAttribute('onclick')||el.getAttribute('draggable')==='true')return true;var cls=String(el.className||'');if(/collapseTitle|collapse-title|dropdown-toggle|select-trigger|clickable|toggle/i.test(cls))return true;
+  if(['button','link','checkbox','radio','tab','menuitem','menuitemradio','menuitemcheckbox','option','combobox','textbox','searchbox','switch','slider','listbox'].indexOf(role)>=0)return true;
+  /* Only the editing host: the paragraphs inside a rich editor are not separate controls. */
+  if((el.isContentEditable&&!__mcpEditableChild(el))||el.hasAttribute('onclick')||el.getAttribute('draggable')==='true')return true;var cls=String(el.className||'');if(/collapseTitle|collapse-title|dropdown-toggle|select-trigger|clickable|toggle/i.test(cls))return true;
   try{
     if(__mcpStyle(el).cursor==='pointer'){
       var parent=__mcpParent(el),parentPointer=false;try{parentPointer=!!parent&&__mcpStyle(parent).cursor==='pointer';}catch(_){}
@@ -1201,8 +1212,14 @@ function __mcpElementReadinessOnce(el,kind,minStableMs){
   }catch(e){base.reason_code='ELEMENT_HIT_TEST_FAILED';return base;}
   base.ready=true;base.reason_code=null;return base;
 }
-function __mcpText(el){var aria=el.getAttribute('aria-label')||'',ph=el.getAttribute('placeholder')||'',title=el.getAttribute('title')||'',txt='';try{txt=(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim();}catch(e){}return(aria||ph||title||txt).slice(0,240);}
-function __mcpRole(el){var role=el.getAttribute('role');if(role)return role;var tag=(el.tagName||'').toLowerCase();if(tag==='a')return'link';if(tag==='button')return'button';if(tag==='select')return'combobox';if(tag==='textarea')return'textbox';if(tag==='input'){var t=(el.type||'text').toLowerCase();if(t==='checkbox')return'checkbox';if(t==='radio')return'radio';if(['button','submit','reset'].indexOf(t)>=0)return'button';return'textbox';}return'';}
+/* Rich editors (ProseMirror, Tiptap) put their placeholder on the empty first paragraph, not on the editable itself. */
+function __mcpPlaceholder(el){try{var v=el.getAttribute('placeholder')||el.getAttribute('aria-placeholder')||el.getAttribute('data-placeholder')||'';if(v||!el.isContentEditable)return String(v);
+  var c=el.querySelector('[data-placeholder]');return c&&!String(c.textContent||'').trim()?String(c.getAttribute('data-placeholder')||''):'';}catch(e){return '';}}
+function __mcpText(el){var aria=el.getAttribute('aria-label')||'',ph=__mcpPlaceholder(el),title=el.getAttribute('title')||'',txt='';try{txt=(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim();}catch(e){}
+  /* Short visible text names a control before its tooltip (a 'Create Topic' button titled 'Or press Cmd Enter'). */
+  return(aria||ph||(txt.length<=80?txt:'')||title||txt).slice(0,240);}
+function __mcpRole(el){var role=el.getAttribute('role');if(role)return role;var tag=(el.tagName||'').toLowerCase();if(tag==='a')return'link';if(tag==='button')return'button';if(tag==='select')return'combobox';if(tag==='textarea')return'textbox';if(tag==='input'){var t=(el.type||'text').toLowerCase();if(t==='checkbox')return'checkbox';if(t==='radio')return'radio';if(['button','submit','reset'].indexOf(t)>=0)return'button';return'textbox';}if(el.isContentEditable&&!__mcpEditableChild(el))return'textbox';return'';}
+function __mcpEditableChild(el){try{var p=__mcpParent(el);return !!p&&!!p.isContentEditable;}catch(e){return false;}}
 function __mcpContext(el){
   try{
     var own=__mcpText(el),p=__mcpParent(el),depth=0;
@@ -1242,7 +1259,7 @@ function __mcpDescribe(el,s){
   if(assoc.ambiguous)out.association_ambiguous=true;
   if(out.actionable){var rd=__mcpElementReadiness(el,'observe',0);out.ready=!!rd.ready;if(rd.reason_code)out.readiness_reason=rd.reason_code;if(rd.hit_target)out.hit_target=rd.hit_target;}
   var context=__mcpContext(el);if(context)out.context=context;
-  var aria=el.getAttribute('aria-label')||'',ph=el.getAttribute('placeholder')||'',name=el.getAttribute('name')||'',title=el.getAttribute('title')||'';if(aria)out.aria_label=aria.slice(0,120);if(ph)out.placeholder=ph.slice(0,100);if(name)out.name=name.slice(0,100);if(title)out.title=title.slice(0,100);if(tag==='a'&&el.href)out.href=String(el.href).slice(0,220);if(el.disabled===true||el.getAttribute('aria-disabled')==='true')out.enabled=false;
+  var aria=el.getAttribute('aria-label')||'',ph=__mcpPlaceholder(el),name=el.getAttribute('name')||'',title=el.getAttribute('title')||'';if(aria)out.aria_label=aria.slice(0,120);if(ph)out.placeholder=ph.slice(0,100);if(name)out.name=name.slice(0,100);if(title)out.title=title.slice(0,100);if(tag==='a'&&el.href)out.href=String(el.href).slice(0,220);if(el.disabled===true||el.getAttribute('aria-disabled')==='true')out.enabled=false;
   try{if(el.ownerDocument&&el.ownerDocument.activeElement===el)out.focused=true;}catch(e){}if(['input','textarea','select'].indexOf(tag)>=0)out.value=__mcpSafeValue(el).slice(0,160);if(tag==='input'&&el.type)out.input_type=String(el.type);if(typeof el.checked==='boolean'&&el.checked)out.checked=true;if(tag==='select')out.options=Array.from(el.options||[]).slice(0,24).map(function(o){return{text:String(o.text||'').slice(0,90),value:String(o.value||'').slice(0,90),selected:!!o.selected};});return out;
 }
 function __mcpParent(el){if(!el)return null;if(el.parentElement)return el.parentElement;try{var root=el.getRootNode&&el.getRootNode();return root&&root.host?root.host:null;}catch(e){return null;}}
@@ -1454,14 +1471,30 @@ function __mcpContentCandidate(el,actionable){{
   return false;
 }}
 var s=__mcpState();
+__mcpSettleHidden();
 __mcpStartMutationWatch(s,5000);
 __mcpVisual('Inspecting',null,'',1800);
 Object.keys(s.elements).forEach(function(k){{var e=s.elements[k];if(!e||!e.isConnected){{delete s.elements[k];delete s.targetFp[k];}}}});
 var scope={scope_js};
 var all=__mcpQueryAll('*');
-var elements=[];
-for(var i=0;i<all.length && elements.length<{max_elements};i++){{
+var elements=[],picked=[];
+/* Interactive and visible scopes rank what the user is working in ahead of page order: a floating
+   composer, drawer or popover is usually appended last, so a DOM-order cut drops it behind hundreds
+   of links further down the page. Order: the layer holding focus, other fixed/sticky layers (the
+   one later in the page first, as overlays are appended after the header), the viewport, then the
+   rest; within each group fields and text buttons come before icon-only buttons, and nameless
+   controls (empty wrappers) go after every named one. Content scopes keep reading order. The scan
+   is bounded in time and size. */
+var ranked=(scope==='interactive'||scope==='visible'),eligible=0,scanComplete=true,scanStart=Date.now();
+var layerMemo=new Map(),layerOrder=new Map();
+function __mcpLayer(el){{var chain=[],cur=el,res=null,guard=0;
+  while(cur&&cur.nodeType===1&&guard++<60){{if(layerMemo.has(cur)){{res=layerMemo.get(cur);break;}}chain.push(cur);
+    var pos='';try{{pos=__mcpStyle(cur).position;}}catch(e){{}}if(pos==='fixed'||pos==='sticky'){{res=cur;break;}}cur=__mcpParent(cur);}}
+  for(var c=0;c<chain.length;c++)layerMemo.set(chain[c],res);return res;}}
+var focusEl=document.activeElement,focusLayer=(ranked&&focusEl&&focusEl!==document.body&&focusEl!==document.documentElement)?__mcpLayer(focusEl):null;
+for(var i=0;i<all.length && (ranked || picked.length<{max_elements});i++){{
   var el=all[i];
+  if(ranked&&(picked.length>=1500||Date.now()-scanStart>400)){{scanComplete=false;break;}}
   if(!__mcpSemanticVisible(el)) continue;
   var modalScope=__mcpModalScope(el);if(modalScope.active&&!modalScope.inside)continue;
   var actionable=__mcpActionable(el);
@@ -1471,6 +1504,22 @@ for(var i=0;i<all.length && elements.length<{max_elements};i++){{
     if(!txt || txt.length<2) continue;
   }}
   if((scope==='content'||scope==='leaf') && !__mcpContentCandidate(el,actionable)) continue;
+  var rank=0;
+  if(ranked){{
+    var layer=__mcpLayer(el),rect=el.getBoundingClientRect();
+    var inView=rect.width>0&&rect.height>0&&rect.bottom>0&&rect.right>0&&rect.top<innerHeight&&rect.left<innerWidth;
+    rank=(focusLayer&&layer===focusLayer)?0:(layer?1:(inView?2:3));
+    if(layer&&!layerOrder.has(layer))layerOrder.set(layer,i);
+    var label=String(el.getAttribute('aria-label')||el.getAttribute('title')||__mcpPlaceholder(el)||'');
+    if(!/^(input|textarea|select)$/i.test(el.tagName||'')&&!el.isContentEditable&&!String(el.textContent||'').replace(/[\\s\\u200b\\u00a0]+/g,''))rank+=label?0.25:4;
+  }}
+  picked.push({{el:el,actionable:actionable,rank:rank,order:i,layer:Math.floor(rank)%4===1?layerOrder.get(layer):0}});
+}}
+eligible=picked.length;
+if(ranked)picked.sort(function(a,b){{return a.rank-b.rank||b.layer-a.layer||a.order-b.order;}});
+picked=picked.slice(0,{max_elements});
+for(var pi=0;pi<picked.length;pi++){{
+  var el=picked[pi].el,actionable=picked[pi].actionable;
   var desc=__mcpDescribe(el,s);
   __mcpRememberTarget(el,desc.element_id,s);
   if((scope==='content'||scope==='leaf') && !actionable){{
@@ -1516,6 +1565,8 @@ return __mcpB64({{
   url:location.href,title:document.title,scroll:{{x:scrollX,y:scrollY}},
   viewport:{{w:innerWidth,h:innerHeight}},window_metrics:metrics,
   scope:scope,modal_scope:(function(){{var m=__mcpTopBlockingModal();return m?{{active:true,element_id:__mcpId(m,s),role:__mcpRole(m),text:__mcpText(m).slice(0,120)}}:{{active:false}};}})(),element_count:elements.length,elements:elements,
+  ordering:ranked?'foreground_first':'document',eligible_count:ranked?eligible:undefined,omitted_count:ranked&&eligible>elements.length?eligible-elements.length:undefined,
+  scan_complete:ranked&&!scanComplete?false:undefined,
   canvas:canvasHint,frames:frameList
 }});
 }})()'''
@@ -2147,7 +2198,7 @@ function level(actual,wanted){{
   if(w.length>=4&&a.indexOf(w)>=0)return 2;
   return 0;
 }}
-var s=__mcpState(), q={q_js}, wantedRole={role_js}, wantedText={text_js}, actionableOnly={actionable_js};
+__mcpSettleHidden();var s=__mcpState(), q={q_js}, wantedRole={role_js}, wantedText={text_js}, actionableOnly={actionable_js};
 __mcpVisual('Finding',null,'',1600);
 var out=[],els=[],modal=__mcpTopBlockingModal();
 var all=__mcpQueryAll('*');
@@ -2356,6 +2407,7 @@ for(var i=0;i<actions.length;i++){
   // must not be acted on; nothing has run for this action yet.
   var fpWas=(a.element_id&&type!=='scroll'&&s.targetFp)?s.targetFp[a.element_id]:null;
   if(fpWas&&fpWas.route!==__mcpRoute()){results.push({index:i,type:type,element_id:a.element_id,ok:false,error:'stale_target',reason_code:'ROUTE_CHANGED',observe_again:true,no_side_effect:true});break;}
+  __mcpSettleHidden();
   var el=a.element_id?target(a):null;
   if(a.element_id && !el){results.push({index:i,type:type,element_id:a.element_id,ok:false,error:'stale_element',observe_again:true});break;}
   if(fpWas&&el){var fpNow=__mcpTargetFp(el);if(fpNow.role!==fpWas.role||fpNow.tag!==fpWas.tag||fpNow.name!==fpWas.name){results.push({index:i,type:type,element_id:a.element_id,ok:false,error:'stale_target',reason_code:'TARGET_CHANGED',observe_again:true,no_side_effect:true});break;}}
@@ -2622,14 +2674,21 @@ def _changes_js(observation_id: Optional[str]) -> str:
     return f'''(function(){{
 {_browser_state_bootstrap()}
 function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
-var s=__mcpState(),meta=(s.observationMeta||{{}})[{obs}],base=(meta&&meta.ids)?meta:s.lastSeen;
-var sel='button,a[href],input,textarea,select,summary,[role=button],[role=link],[role=option],[role=menuitem],[role=tab],[role=checkbox],[role=radio],[role=combobox],[role=switch],[contenteditable=true],[draggable=true]';
+__mcpSettleHidden();var s=__mcpState(),meta=(s.observationMeta||{{}})[{obs}],base=(meta&&meta.ids)?meta:s.lastSeen;
+var sel='button,a[href],input,textarea,select,summary,[role=button],[role=link],[role=option],[role=menuitem],[role=menuitemradio],[role=menuitemcheckbox],[role=tab],[role=checkbox],[role=radio],[role=combobox],[role=switch],[contenteditable=true],[draggable=true]';
 var now=[],seen=Object.create(null),nodes=document.querySelectorAll(sel);
 for(var i=0;i<nodes.length&&now.length<500;i++){{var el=nodes[i];if(!__mcpVisible(el))continue;var id=__mcpId(el,s);if(seen[id])continue;seen[id]=1;now.push({{id:id,el:el}});}}
 var out={{ok:true,url:location.href,title:document.title,dom_revision:s.mutationRevision}};
 if(base){{
   var had=Object.create(null);(base.ids||[]).forEach(function(id){{had[id]=1;}});
   var appeared=now.filter(function(x){{return !had[x.id];}});
+  /* List what just opened in a floating layer (composer, dropdown, drawer) first, and its fields and
+     text buttons before its icon toolbar; page content that scrolled into view comes after. */
+  var layered=function(e){{for(var c=e,g=0;c&&c.nodeType===1&&g<40;c=__mcpParent(c),g++){{var p='';try{{p=__mcpStyle(c).position;}}catch(_){{}}if(p==='fixed'||p==='sticky')return true;}}return false;}};
+  var weight=function(e){{var base=layered(e)?0:3;if(/^(input|textarea|select)$/i.test(e.tagName)||e.isContentEditable)return base;
+    return base+(String(e.textContent||'').replace(/[\\s\\u200b\\u00a0]+/g,'')?0:(e.getAttribute('aria-label')||e.getAttribute('title')?1:2));}};
+  appeared.forEach(function(x){{x.w=weight(x.el);}});
+  appeared.sort(function(x,y){{return x.w-y.w;}});
   out.changes={{baseline:meta&&meta.ids?'observation':'previous_act',
     url_changed:base.url?base.url!==location.href:undefined,
     appeared_count:appeared.length,
