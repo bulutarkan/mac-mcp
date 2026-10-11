@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 from urllib.parse import urlsplit
 
-from .observability import sanitize_value
+from .telemetry_sanitize import sanitize_value
 
 _SIDE_EFFECT_CAPS = {
     "local_write", "ui_action", "external_side_effect", "update_control", "agent_delegation",
