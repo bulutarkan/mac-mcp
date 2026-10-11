@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from . import native_focus
 from .process_supervision import run_osascript
 from .tool_cancellation import ToolCancelledError
 
@@ -474,8 +475,7 @@ def preview_save_as(
         raise ArtifactError("DESTINATION_EXISTS", "Destination already exists and overwrite=false.", destination=str(dest))
     focus_context = None
     if preserve_focus:
-        from .tools_ui import _capture_focus_context
-        focus_context, focus_error = _capture_focus_context()
+        focus_context, focus_error = native_focus.capture_focus_context()
         if focus_context is None:
             raise ArtifactError("FOCUS_SNAPSHOT_FAILED", focus_error or "Could not capture current focus before Preview Save As.")
     try:
@@ -504,8 +504,7 @@ end tell''', timeout_s=5)
         return result
     finally:
         if preserve_focus and focus_context is not None:
-            from .tools_ui import _restore_focus_context
-            _restore_focus_context(focus_context)
+            native_focus.restore_focus_context(focus_context)
 
 
 def artifact_pipeline(

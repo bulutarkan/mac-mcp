@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -16,7 +17,7 @@ from fastapi import HTTPException, status
 
 from .process_supervision import run_osascript
 from .security import Settings, truncate, validate_browser_url as _validate_browser_destination
-from . import applescript_host, browser_tabs
+from . import applescript_host, browser_tabs, context_handoff, native_focus
 from .chrome_background_bridge import chrome_background_bridge
 from .artifact_pipeline import (
     ArtifactError, drive_native_file_dialog, register_artifact, resolve_artifact, wait_for_file_dialog,
@@ -2105,10 +2106,9 @@ def browser_upload_artifact(
 
         # Safari permits a file-input click through AppleScript JavaScript, but the actual file
         # selection is still performed by the native NSOpenPanel using exact artifact identity.
-        from .tools_ui import _capture_focus_context, _post_action_focus_decision, _restore_focus_context
         focus_context = None
         if preserve_focus:
-            focus_context, focus_error = _capture_focus_context()
+            focus_context, focus_error = native_focus.capture_focus_context()
             if focus_context is None:
                 raise HTTPException(status.HTTP_409_CONFLICT, {
                     "ok": False, "error": "focus_snapshot_failed", "message": focus_error,
@@ -2194,12 +2194,14 @@ def browser_upload_artifact(
             if safari_tab_state is not None:
                 safari_tab_restore = _restore_safari_upload_tab(safari_tab_state)
             if preserve_focus and focus_context is not None:
-                decision, _ = _post_action_focus_decision(
+                decision, _ = native_focus.post_action_focus_decision(
                     focus_context, {"pid": safari_pid, "window_index": target.window_index}
                 )
                 if decision == "restore":
                     focus_restore_attempted = True
-                    focus_restore_ok, focus_restore_message, focus_restore_exact = _restore_focus_context(focus_context)
+                    focus_restore_ok, focus_restore_message, focus_restore_exact = native_focus.restore_focus_context(
+                        focus_context
+                    )
                 elif decision == "user_changed":
                     focus_user_changed = True
                 else:
@@ -2631,3 +2633,7 @@ def browser_get_snapshot(
         return data
     except json.JSONDecodeError as e:
         return {"ok": False, "error": f"JSON parse error: {e}", "raw": result_str[:500]}
+
+
+# context_handoff reads through this module without importing it (it is imported by it).
+context_handoff.register_reader("browser", sys.modules[__name__])

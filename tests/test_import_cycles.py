@@ -14,11 +14,10 @@ from pathlib import Path
 
 PACKAGE = Path(__file__).resolve().parents[1] / "mcp_server"
 
-# The browser/native layer: artifact_pipeline and tools_browser reach tools_ui for focus
-# capture/restore, and context_handoff reaches tools_browser/tools_snapshot for readers.
-KNOWN = [
-    frozenset({"artifact_pipeline", "context_handoff", "tools_browser", "tools_snapshot", "tools_ui"}),
-]
+# No cycle is allowed any more. Lower layers reach upper ones through providers the upper
+# module registers when it loads (native_focus for tools_ui, context_handoff readers for
+# tools_browser and tools_snapshot).
+KNOWN: list[frozenset[str]] = []
 
 
 def import_graph() -> dict[str, set[str]]:
@@ -97,6 +96,25 @@ class ImportCycleTests(unittest.TestCase):
         self.assertEqual([frozenset({"a", "b", "c"})], cycles(graph))
         # change_summary no longer needs observability (sanitize_value moved to a leaf module).
         self.assertNotIn("observability", import_graph()["change_summary"])
+
+
+class ProviderRegistrationTests(unittest.TestCase):
+    def test_upper_modules_register_their_providers_when_they_load(self) -> None:
+        from mcp_server import context_handoff, native_focus, tools_browser, tools_snapshot, tools_ui
+
+        self.assertIs(tools_ui, native_focus._provider)
+        self.assertIs(tools_browser, context_handoff._READERS["browser"])
+        self.assertIs(tools_snapshot, context_handoff._READERS["snapshot"])
+
+    def test_a_missing_provider_is_a_clear_error(self) -> None:
+        from unittest.mock import patch
+
+        from mcp_server import context_handoff, native_focus
+
+        with patch.object(native_focus, "_provider", None), self.assertRaises(RuntimeError):
+            native_focus.capture_focus_context()
+        with patch.dict(context_handoff._READERS, {}, clear=True), self.assertRaises(context_handoff.HandoffError):
+            context_handoff._reader("browser", "_browser_execute_js_read")
 
 
 if __name__ == "__main__":

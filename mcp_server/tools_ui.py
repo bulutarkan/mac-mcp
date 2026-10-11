@@ -55,7 +55,7 @@ from .native_window_capture import (
     resolve_window_id as _resolve_native_window_id,
 )
 from .permission_probe import explain_failure as _explain_permission_failure
-from . import ax_native, ax_watch
+from . import ax_native, ax_watch, native_focus
 from .security import Settings, truncate
 from .computer_use_perf import record_computer_use_sample
 from .perception import finalize_perception_telemetry, refresh_perception_size
@@ -5549,3 +5549,7 @@ def act_ui(
         return {"ok": False, "error": str(exc)}
     except Exception as exc:
         return {"ok": False, "error": f"Could not act on macOS UI: {exc}"}
+
+
+# artifact_pipeline and tools_browser reach the focus helpers above through native_focus.
+native_focus.provide(sys.modules[__name__])

@@ -23,6 +23,23 @@ _LOCK = threading.RLock()
 _HANDOFFS: Dict[str, Dict[str, Any]] = {}
 
 
+# The browser and Finder readers live in tools_browser and tools_snapshot, which import this
+# module; they register themselves here when they load instead of being imported from here.
+# Lookups happen at call time, so patches of their module attributes apply.
+_READERS: Dict[str, Any] = {}
+
+
+def register_reader(name: str, module: Any) -> None:
+    _READERS[name] = module
+
+
+def _reader(name: str, attribute: str) -> Any:
+    module = _READERS.get(name)
+    if module is None:
+        raise HandoffError("HANDOFF_READER_UNAVAILABLE", f"The {name} reader is not loaded.")
+    return getattr(module, attribute)
+
+
 class HandoffError(RuntimeError):
     def __init__(self, code: str, message: str, **extra: Any) -> None:
         super().__init__(message)
@@ -315,8 +332,7 @@ def create_browser_text_handoff(
         target_element_id=target_element_id, clear=clear,
     )
     source = _browser_source(browser, tab_handle)
-    from .tools_browser import _browser_execute_js_read
-    result = _browser_execute_js_read(
+    result = _reader("browser", "_browser_execute_js_read")(
         settings, browser=browser, tab_handle=tab_handle,
         js=(
             "JSON.stringify({selection:String(window.getSelection?window.getSelection().toString():''),"
@@ -360,8 +376,7 @@ def create_artifact_handoff(
 ) -> Dict[str, Any]:
     source_kind = str(source_type or "").strip().lower().replace("-", "_")
     if source_kind == "finder":
-        from .tools_snapshot import _read_selected_context
-        selected = _read_selected_context(settings, selected_file_limit=30)
+        selected = _reader("snapshot", "_read_selected_context")(settings, selected_file_limit=30)
         canonical = str(Path(path).expanduser().resolve(strict=True))
         selected_paths = {str(Path(item).expanduser().resolve(strict=False)) for item in selected.get("selected_paths") or []}
         if canonical not in selected_paths:

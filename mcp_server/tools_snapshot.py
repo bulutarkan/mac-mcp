@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional
 
+from . import context_handoff
 from .process_supervision import run_osascript
 from .security import Settings
 from .tools_browser import browser_list_tabs
@@ -394,3 +396,7 @@ def unified_read_snapshot(
             fitted = _fit_snapshot(fitted, max_output_bytes)
     _stabilize_snapshot_sizes(fitted)
     return fitted
+
+
+# context_handoff reads through this module without importing it (it is imported by it).
+context_handoff.register_reader("snapshot", sys.modules[__name__])
