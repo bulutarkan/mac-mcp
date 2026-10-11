@@ -275,21 +275,13 @@ class TeamBudgetSchedulerTests(unittest.TestCase):
         self.assertEqual(1, summary["budget"]["retries_used"])
         self.assertEqual("retry_budget", summary["last_retry_block_reason"])
 
-    def test_budget_validation_and_chatgpt_token_fail_closed(self) -> None:
+    def test_budget_validation_fails_closed(self) -> None:
         with self.assertRaises(HTTPException) as ctx:
             self.spawn_team([{"prompt": "x"}], team_timeout_s=30)
         self.assertEqual(400, ctx.exception.status_code)
         with self.assertRaises(HTTPException) as ctx:
             self.spawn_team([{"prompt": "x"}], max_team_retries=31)
         self.assertEqual(400, ctx.exception.status_code)
-        with patch.object(agents, "_find_binary", return_value="/tmp/fake-chatgpt"):
-            with self.assertRaises(HTTPException) as ctx:
-                agents.spawn_agents(
-                    settings=None, tasks=[{"prompt": "x"}], provider="chatgpt", cwd=str(self.root),
-                    access_mode="read_only", admission_token_budget=1000,
-                )
-        self.assertEqual(400, ctx.exception.status_code)
-        self.assertIn("does not expose reliable token usage", str(ctx.exception.detail))
 
 
 class AdaptiveRetryWorkerTests(unittest.TestCase):

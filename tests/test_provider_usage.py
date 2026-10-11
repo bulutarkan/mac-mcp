@@ -356,17 +356,6 @@ class ProviderUsageStoreTests(unittest.TestCase):
             ]
             self.assertEqual([], forbidden)
 
-    def test_chatgpt_is_unavailable_not_estimated(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            summary = provider_usage.ProviderUsageStore(
-                Path(td) / "provider.sqlite3"
-            ).summary(days=1)
-            row = summary["providers"]["chatgpt"]
-            self.assertFalse(row["available"])
-            self.assertIsNone(row["total_tokens"])
-            self.assertIsNone(row["source"])
-            self.assertIn("No reliable provider-native tokenizer", summary["fallback_policy"])
-
 
 class ProviderUsageAgentIntegrationTests(unittest.TestCase):
     def meta(self, provider: str, *, session: str | None = None) -> dict:

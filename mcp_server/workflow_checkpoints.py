@@ -356,18 +356,40 @@ def _provider_cursor_kind(provider: str, event: Mapping[str, Any]) -> Optional[s
             part = event.get("part") if isinstance(event.get("part"), Mapping) else {}
             tool = str(part.get("tool") or "")
             return "mcp_tool_event" if tool.startswith("mac-mcp_") else "native_tool_event"
-    elif provider == "chatgpt":
-        mapping = {
-            "job_started": "session_started",
-            "turn_started": "turn_started",
-            "turn_completed": "turn_completed",
-            "tool_start": "provider_tool_started",
-            "tool_end": "provider_tool_completed",
-            "interrupted": "interrupted",
-            "final": "final",
-        }
-        return mapping.get(event_type)
+    elif provider == "claude":
+        if event_type == "system" and str(event.get("subtype") or "") == "init":
+            return "session_started"
+        if event_type == "result":
+            return "turn_completed"
+        if event_type == "assistant":
+            tools = _claude_tool_names(event)
+            if tools:
+                return "mcp_tool_event" if all(_is_mac_mcp_claude_tool(name) for name in tools) else "native_tool_event"
+            return "agent_message"
     return None
+
+
+# Claude Code tools that only read or plan. Every other native tool (Bash,
+# Edit, Write, NotebookEdit, Task subagents, Skill, unknown or new tools) can
+# change state outside Mac MCP's receipts, so a run that used one cannot be
+# replayed automatically.
+CLAUDE_READ_ONLY_TOOLS = frozenset({
+    "Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "TodoWrite", "TodoRead",
+    "ToolSearch", "ExitPlanMode", "BashOutput", "CronList", "ListMcpResourcesTool", "ReadMcpResourceTool",
+})
+
+
+def _claude_tool_names(event: Mapping[str, Any]) -> list:
+    message = event.get("message") if isinstance(event.get("message"), Mapping) else {}
+    content = message.get("content") if isinstance(message.get("content"), list) else []
+    return [
+        str(item.get("name") or "") for item in content
+        if isinstance(item, Mapping) and item.get("type") == "tool_use"
+    ]
+
+
+def _is_mac_mcp_claude_tool(name: str) -> bool:
+    return name.startswith("mcp__mac-mcp__")
 
 
 def _record_provider_cursor(agent_id: str, provider: str, event: Mapping[str, Any]) -> None:
@@ -410,8 +432,11 @@ def note_provider_event(agent_id: str, provider: str, event: Mapping[str, Any]) 
         tool = str(part.get("tool") or "")
         if tool and not tool.startswith("mac-mcp_"):
             mark_checkpoint_unknown(agent_id, "unverified_provider_native_activity", tool=tool, event_type=event_type)
-    elif provider == "chatgpt" and event_type == "tool_start":
-        mark_checkpoint_unknown(agent_id, "opaque_provider_tool_activity", tool="provider_tool", event_type=event_type)
+    elif provider == "claude" and event_type == "assistant":
+        for tool in _claude_tool_names(event):
+            if tool and not _is_mac_mcp_claude_tool(tool) and tool not in CLAUDE_READ_ONLY_TOOLS:
+                mark_checkpoint_unknown(agent_id, "unverified_provider_native_activity", tool=tool, event_type=event_type)
+                break
 
 
 _NOT_EXECUTED_ATTR = "mac_mcp_not_executed"

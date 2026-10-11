@@ -19,14 +19,14 @@ class DefaultAgentPresetTests(unittest.TestCase):
         *,
         default: dict | None = None,
         codex_enabled: bool = True,
-        chatgpt_enabled: bool = True,
+        claude_enabled: bool = True,
         opencode_enabled: bool = True,
     ) -> Path:
         path = root / "settings.json"
         subagents: dict = {
             "providers": {
                 "codex": {"enabled": codex_enabled},
-                "chatgpt": {"enabled": chatgpt_enabled},
+                "claude": {"enabled": claude_enabled},
                 "opencode": {"enabled": opencode_enabled},
             }
         }
@@ -86,9 +86,9 @@ class DefaultAgentPresetTests(unittest.TestCase):
                 default={"provider": "codex", "model": "gpt-6-luna", "reasoning": "max"},
             )
             with self._env(path):
-                resolved = agents._resolve_agent_selection("chatgpt", None, None)
+                resolved = agents._resolve_agent_selection("claude", None, None)
 
-        self.assertEqual("chatgpt", resolved["provider"])
+        self.assertEqual("claude", resolved["provider"])
         self.assertIsNone(resolved["model"])
         self.assertIsNone(resolved["reasoning"])
         self.assertEqual("provider_default", resolved["model_source"])

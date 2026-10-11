@@ -201,7 +201,7 @@ class InstallerPublicEndpointTests(unittest.TestCase):
             state.mkdir()
             proc = self.run_bash(
                 f'STATE_DIR="{state}"; PYTHON_BIN=/usr/bin/python3; '
-                'CHATGPT_PROVIDER_ENABLED=0; CHATGPT_CLI_BINARY=""; RUNTIME_SETTINGS_BROKEN=0; '
+                'RUNTIME_SETTINGS_BROKEN=0; '
                 'configure_subagent_provider_settings >/dev/null; printf "%s" "$RUNTIME_SETTINGS_BROKEN"'
             )
             self.assertEqual(0, proc.returncode, proc.stderr)
@@ -211,7 +211,8 @@ class InstallerPublicEndpointTests(unittest.TestCase):
             providers = data["subagents"]["providers"]
             self.assertTrue(providers["opencode"]["enabled"])
             self.assertTrue(providers["codex"]["enabled"])
-            self.assertFalse(providers["chatgpt"]["enabled"])
+            self.assertTrue(providers["claude"]["enabled"])
+            self.assertNotIn("chatgpt", providers)
             self.assertEqual(0o600, stat.S_IMODE(settings.stat().st_mode))
 
     def test_installer_preserves_corrupt_settings_and_skips_later_public_write(self) -> None:
@@ -223,7 +224,7 @@ class InstallerPublicEndpointTests(unittest.TestCase):
             settings.write_text(original, encoding="utf-8")
             proc = self.run_bash(
                 f'STATE_DIR="{state}"; PYTHON_BIN=/usr/bin/python3; '
-                'CHATGPT_PROVIDER_ENABLED=0; CHATGPT_CLI_BINARY=""; RUNTIME_SETTINGS_BROKEN=0; '
+                'RUNTIME_SETTINGS_BROKEN=0; '
                 'configure_subagent_provider_settings >/dev/null 2>&1; '
                 'PUBLIC_ENDPOINT_MODE=none; configure_public_endpoint >/dev/null 2>&1; '
                 'printf "%s" "$RUNTIME_SETTINGS_BROKEN"'
@@ -261,7 +262,7 @@ class InstallerTargetPreflightTests(unittest.TestCase):
             f'{name}() {{ echo "CALLED {name}"; }}'
             for name in (
                 "print_header", "ensure_required_tools", "choose_public_endpoint_mode",
-                "install_selected_public_provider", "handle_optional_helpers", "handle_optional_chatgpt_cli",
+                "install_selected_public_provider", "handle_optional_helpers",
                 "clone_source_and_runtime",
             )
         )
@@ -292,5 +293,5 @@ class InstallerTargetPreflightTests(unittest.TestCase):
                     self.assertIn("CALLED ensure_required_tools", output)
                     self.assertIn("already exists", output)
                     for later in ("choose_public_endpoint_mode", "install_selected_public_provider",
-                                  "handle_optional_helpers", "handle_optional_chatgpt_cli", "clone_source_and_runtime"):
+                                  "handle_optional_helpers", "clone_source_and_runtime"):
                         self.assertNotIn(f"CALLED {later}", output)

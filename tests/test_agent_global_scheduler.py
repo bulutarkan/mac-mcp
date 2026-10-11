@@ -35,6 +35,7 @@ class CrossTeamGlobalSchedulerTests(unittest.TestCase):
             patch.object(agents, "provider_enabled", return_value=True),
             patch.object(agents, "_find_binary", return_value="/tmp/fake-opencode"),
             patch.object(agents, "_validate_provider_access_mode", return_value=None),
+            patch.object(agents, "_require_provider_sign_in", return_value=None),
             patch.object(agents, "_spawn_internal", side_effect=self.fake_spawn),
         ]
         for item in self.patches:
@@ -52,7 +53,7 @@ class CrossTeamGlobalSchedulerTests(unittest.TestCase):
                    cwd=None, timeout_s=None, title=None, result_style="concise", access_mode="workspace_write",
                    scope=None, permission_profile="developer", capability_profile="legacy",
                    parent_agent_id=None, resume_session_id=None, attempt=1, team_id=None,
-                   team_task_id=None, idle_timeout_s=None, retries=0, project=None, role=None,
+                   team_task_id=None, idle_timeout_s=None, retries=0, role=None,
                    provenance_class="local", **kwargs):
         self.counter += 1
         agent_id = f"agt_global_{self.counter}"
@@ -140,20 +141,6 @@ class CrossTeamGlobalSchedulerTests(unittest.TestCase):
         self.assertEqual("resource_busy", self.task(two["team_id"])["queued_reason"])
         self.assertEqual("running", self.task(three["team_id"])["state"])
 
-    def test_chatgpt_reduced_window_admits_only_one_cross_team(self) -> None:
-        now = time.time()
-        state_path = agents.AGENTS_DIR / ".chatgpt-provider-state.json"
-        state_path.write_text(
-            '{"cooldown_until":0,"reduced_until":' + str(now + 120) + ',"next_allowed_at":0}',
-            encoding="utf-8",
-        )
-        one = self.spawn_team("chat-one", cwd=self.workspace("chat-one"), provider="chatgpt")
-        two = self.spawn_team("chat-two", cwd=self.workspace("chat-two"), provider="chatgpt")
-        self.assertEqual("running", self.task(one["team_id"])["state"])
-        self.assertEqual("queued", self.task(two["team_id"])["state"])
-        self.assertEqual("provider_capacity", self.task(two["team_id"])["queued_reason"])
-        self.assertEqual(1, self.task(two["team_id"])["queued_details"]["provider_limit"])
-
     def test_native_window_and_browser_tab_claims_match_global_ownership(self) -> None:
         one = self.spawn_team(
             "native-one", cwd=self.workspace("n1"), provider="opencode",
@@ -171,7 +158,7 @@ class CrossTeamGlobalSchedulerTests(unittest.TestCase):
             resources=[{"kind":"browser_tab","id":"tab_51","mode":"write"}],
         )
         four = self.spawn_team(
-            "browser-two", cwd=self.workspace("browser2"), provider="chatgpt",
+            "browser-two", cwd=self.workspace("browser2"), provider="claude",
             scope={"browser_tabs":["tab_51"], "path_roots":[str(self.workspace("browser2"))]},
             resources=[{"kind":"browser_tab","id":"tab_51","mode":"write"}],
         )

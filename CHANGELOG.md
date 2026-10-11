@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Subagents
+- Added Claude Code as a delegated-agent provider (`provider=claude`, Settings → Subagents). It runs the `claude` CLI headless with stream-json events, model aliases (`fable`, `opus`, `sonnet`, `haiku`) or full ids, `--effort` reasoning levels, session resume, provider-reported token usage and cost, and the scoped Mac MCP server only.
+- Sandboxed Claude Code agents (`read_only`, `workspace_write`) run inside the Mac MCP Seatbelt boundary with a private config directory and only the short-lived access token of the owner's sign-in; tools that outlive the agent (schedules, remote triggers, push notifications, cross-session messages, uploads, workflows, worktrees) are removed in every mode.
+- Removed the ChatGPT Web CLI provider, its installer step, turn-budget checkpointing, rate-limit cooldown gate and the ChatGPT-only `project` parameter of `spawn_agent`/`spawn_agents`.
+
 ## [2.1.9] - 2026-10-08
 
 ### ChatGPT plugin panel (MCP Apps)

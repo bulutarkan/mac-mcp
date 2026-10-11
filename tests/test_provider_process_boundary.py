@@ -33,21 +33,24 @@ class ProviderEnvironmentTests(unittest.TestCase):
                 sentinel: "must-not-cross-provider-boundary",
                 "OPENROUTER_API_KEY": "required-openrouter-key",
                 "OPENAI_API_KEY": "required-codex-key",
-                "CHATGPT_CLI_IDLE_SECONDS": "777",
+                "ANTHROPIC_API_KEY": "must-not-reach-claude",
+                "CLAUDE_CONFIG_DIR": "/tmp/claude-config",
             },
             clear=False,
         ), patch.object(agents, "_keychain_secret", return_value=None):
             open_env = agents._minimal_provider_env("opencode", {"model": "openrouter/example/model"})
             codex_env = agents._minimal_provider_env("codex", {"model": "gpt-test"})
-            chat_env = agents._minimal_provider_env("chatgpt", {})
+            claude_env = agents._minimal_provider_env("claude", {})
         self.assertNotIn(sentinel, open_env)
         self.assertNotIn(sentinel, codex_env)
-        self.assertNotIn(sentinel, chat_env)
+        self.assertNotIn(sentinel, claude_env)
         self.assertEqual("required-openrouter-key", open_env["OPENROUTER_API_KEY"])
         self.assertEqual("required-codex-key", codex_env["OPENAI_API_KEY"])
         self.assertNotIn("OPENROUTER_API_KEY", codex_env)
-        self.assertNotIn("OPENAI_API_KEY", chat_env)
-        self.assertEqual("777", chat_env["CHATGPT_CLI_IDLE_SECONDS"])
+        self.assertNotIn("OPENAI_API_KEY", claude_env)
+        self.assertNotIn("ANTHROPIC_API_KEY", claude_env)
+        self.assertEqual("/tmp/claude-config", claude_env["CLAUDE_CONFIG_DIR"])
+        self.assertEqual("1", claude_env["DISABLE_AUTOUPDATER"])
 
     def test_opencode_restricted_environment_uses_private_synthetic_home(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -346,12 +349,16 @@ class CodexSeatbeltBoundaryTests(unittest.TestCase):
 
 
 class ProviderModeMatrixTests(unittest.TestCase):
-    def test_chatgpt_restricted_modes_fail_closed(self) -> None:
-        for mode in ("read_only", "workspace_write"):
-            with self.subTest(mode=mode), self.assertRaises(HTTPException) as ctx:
-                agents._validate_provider_access_mode("chatgpt", mode)
-            self.assertEqual(409, ctx.exception.status_code)
-        agents._validate_provider_access_mode("chatgpt", "full")
+    def test_claude_restricted_modes_need_the_seatbelt_boundary(self) -> None:
+        with patch.object(agents, "_sandbox_exec_available", return_value=False):
+            for mode in ("read_only", "workspace_write"):
+                with self.subTest(mode=mode), self.assertRaises(HTTPException) as ctx:
+                    agents._validate_provider_access_mode("claude", mode)
+                self.assertEqual(409, ctx.exception.status_code)
+            agents._validate_provider_access_mode("claude", "full")
+        with patch.object(agents, "_sandbox_exec_available", return_value=True):
+            agents._validate_provider_access_mode("claude", "read_only")
+            self.assertTrue(agents._access_mode_info("claude", "workspace_write")["enforced"])
 
     def test_opencode_restricted_mode_reports_hard_boundary_on_macos(self) -> None:
         info = agents._access_mode_info("opencode", "read_only")

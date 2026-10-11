@@ -152,7 +152,7 @@ class ChatGPTPanelTests(unittest.TestCase):
             path.write_text(json.dumps({"subagents": {"providers": {"codex": {"enabled": True}}}}))
             with patch.dict(os.environ, {"MAC_MCP_SETTINGS_PATH": str(path)}):
                 result = panel_model_catalog(Mock(), "codex")
-                for provider in ("opencode", "chatgpt", "nope"):
+                for provider in ("opencode", "claude", "chatgpt", "nope"):
                     with self.assertRaises(ValueError):
                         panel_model_catalog(Mock(), provider)
         self.assertEqual(120, len(result["models"][0]["id"]))

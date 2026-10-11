@@ -1047,7 +1047,7 @@ def snapshot(root: Path) -> Dict[str, Any]:
             "configured_limit": configured_global_limit(),
             "memory_pressure": memory_pressure(),
             "provider_active": by_provider,
-            "provider_limits": {provider: provider_limit(provider) for provider in sorted(set(by_provider) | {"opencode", "codex", "chatgpt"})},
+            "provider_limits": {provider: provider_limit(provider) for provider in sorted(set(by_provider) | {"opencode", "codex", "claude"})},
             "queued_count": len(queued),
             "queued": queued,
             "leases": leases,

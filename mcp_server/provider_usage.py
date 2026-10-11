@@ -18,6 +18,7 @@ SOURCE_NATIVE_TOKENIZER = "native_tokenizer"
 SOURCE_ESTIMATE = "estimate"
 RETENTION_DAYS = 400
 COMPONENTS = ("input", "output", "reasoning", "cache_read", "cache_write", "total")
+REPORTING_PROVIDERS = frozenset({"codex", "opencode", "claude"})
 
 
 def db_path() -> Path:
@@ -93,6 +94,28 @@ def normalize_codex_usage(usage: Any) -> NormalizedUsage:
         if input_tokens is not None and output_tokens is not None
         else None
     )
+    return NormalizedUsage(
+        input_tokens, output_tokens, reasoning, cache_read, cache_write,
+        total, True, False,
+    )
+
+
+def normalize_claude_usage(usage: Any) -> NormalizedUsage:
+    if not isinstance(usage, Mapping):
+        return NormalizedUsage(None, None, None, None, None, None, False, False)
+    known = {"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"}
+    if not (known & set(usage.keys())):
+        return NormalizedUsage(None, None, None, None, None, None, False, False)
+    details = usage.get("output_tokens_details") if isinstance(usage.get("output_tokens_details"), Mapping) else {}
+    input_tokens = _nonnegative_int(usage.get("input_tokens"))
+    output_tokens = _nonnegative_int(usage.get("output_tokens"))
+    reasoning = _nonnegative_int(details.get("thinking_tokens"))
+    cache_read = _nonnegative_int(usage.get("cache_read_input_tokens"))
+    cache_write = _nonnegative_int(usage.get("cache_creation_input_tokens"))
+    # Claude input_tokens exclude cached and cache-creation tokens, which are
+    # billed separately; thinking tokens are a breakdown of output.
+    parts = (input_tokens, output_tokens, cache_read, cache_write)
+    total = sum(int(value or 0) for value in parts) if input_tokens is not None and output_tokens is not None else None
     return NormalizedUsage(
         input_tokens, output_tokens, reasoning, cache_read, cache_write,
         total, True, False,
@@ -312,7 +335,7 @@ class ProviderUsageStore:
         if not usage_privacy()["enabled"]:
             return False
         provider = str(record.provider or "").strip().lower()
-        if provider not in {"codex", "opencode"}:
+        if provider not in REPORTING_PROVIDERS:
             return False
         event_key = str(record.event_key or "").strip()
         session_id = str(record.session_id or "").strip()
@@ -560,23 +583,6 @@ class ProviderUsageStore:
                 payload[f"{component}_known_turns"] = known
             providers[provider] = payload
 
-        providers.setdefault("chatgpt", {
-            "provider": "chatgpt",
-            "available": False,
-            "reason": "provider_usage_unavailable",
-            "turns": 0,
-            "agents": 0,
-            "source": None,
-            "sources": [],
-            "schema_version": SCHEMA_VERSION,
-            "input_tokens": None,
-            "output_tokens": None,
-            "reasoning_tokens": None,
-            "cache_read_tokens": None,
-            "cache_write_tokens": None,
-            "total_tokens": None,
-            "models": [],
-        })
         return {
             "ok": True,
             "days": bounded,

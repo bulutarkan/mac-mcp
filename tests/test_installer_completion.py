@@ -46,7 +46,7 @@ class InstallerCompletionTests(unittest.TestCase):
             f'SOURCE_DIR="{runtime}/source"; CLI_PATH="{runtime}/bin/mac-mcp"; '
             f'APP_PATH="{runtime}/Applications/Mac MCP.app"; BIN_DIR="{runtime}/bin"; '
             'VERIFIED_RELEASE_ID=stable-test; VERIFIED_RELEASE_VERSION=2.1.6; '
-            'CHATGPT_PROVIDER_ENABLED=0; print_completion'
+            'print_completion'
         )
 
     def test_completion_hides_secret_and_uses_default_endpoint(self) -> None:

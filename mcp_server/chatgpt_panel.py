@@ -34,7 +34,7 @@ PANEL_ICON = Icon(
     mimeType="image/svg+xml", sizes=["20x20"],
 )
 PANEL_HTML = Path(__file__).resolve().parent / "chatgpt_ui" / "control-center.html"
-PANEL_PROVIDERS = ("codex", "opencode", "chatgpt")
+PANEL_PROVIDERS = ("codex", "opencode", "claude")
 _MODEL_LIMIT = 600
 
 
@@ -115,7 +115,7 @@ def panel_snapshot(telemetry: Any, settings: Any) -> dict[str, Any]:
             "output_tokens": row.get("output_tokens"),
             "total_tokens": row.get("total_tokens"),
         }
-        for name in ("codex", "opencode", "chatgpt")
+        for name in ("codex", "opencode", "claude")
         for row in [provider_data.get(name, {})]
     ]
     agent_items = [

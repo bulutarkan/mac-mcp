@@ -47,7 +47,6 @@ struct MenuSettings: Codable {
     struct Provider: Codable {
         var enabled: Bool
         var binary_path: String?
-        var default_project: String?
     }
     struct DefaultAgent: Codable {
         var provider: String
@@ -91,9 +90,9 @@ struct MenuSettings: Codable {
             decision_acceleration: DecisionAcceleration(enabled: false, scope: "both"),
             subagents: Subagents(
                 providers: [
-                    "opencode": Provider(enabled: false, binary_path: nil, default_project: nil),
-                    "codex": Provider(enabled: false, binary_path: nil, default_project: nil),
-                    "chatgpt": Provider(enabled: false, binary_path: nil, default_project: nil),
+                    "opencode": Provider(enabled: false, binary_path: nil),
+                    "codex": Provider(enabled: false, binary_path: nil),
+                    "claude": Provider(enabled: false, binary_path: nil),
                 ],
                 defaultAgent: nil
             ),
@@ -130,11 +129,10 @@ final class SettingsStore: ObservableObject {
     @Published var messagesConfirmSend = true
     @Published var opencodeEnabled = false
     @Published var codexEnabled = false
-    @Published var chatgptEnabled = false
+    @Published var claudeEnabled = false
     @Published var opencodeBinaryPath = ""
     @Published var codexBinaryPath = ""
-    @Published var chatgptBinaryPath = ""
-    @Published var chatgptDefaultProject = ""
+    @Published var claudeBinaryPath = ""
     @Published var defaultAgentProvider = ""
     @Published var defaultAgentModel = ""
     @Published var defaultAgentReasoning = ""
@@ -238,11 +236,10 @@ final class SettingsStore: ObservableObject {
         let providers = current.subagents?.providers ?? [:]
         opencodeEnabled = providerConfigValid ? (providers["opencode"]?.enabled ?? false) : false
         codexEnabled = providerConfigValid ? (providers["codex"]?.enabled ?? false) : false
-        chatgptEnabled = providerConfigValid ? (providers["chatgpt"]?.enabled ?? false) : false
+        claudeEnabled = providerConfigValid ? (providers["claude"]?.enabled ?? false) : false
         opencodeBinaryPath = providers["opencode"]?.binary_path ?? ""
         codexBinaryPath = providers["codex"]?.binary_path ?? ""
-        chatgptBinaryPath = providers["chatgpt"]?.binary_path ?? ""
-        chatgptDefaultProject = providers["chatgpt"]?.default_project ?? ""
+        claudeBinaryPath = providers["claude"]?.binary_path ?? ""
         defaultAgentProvider = current.subagents?.defaultAgent?.provider ?? ""
         defaultAgentModel = current.subagents?.defaultAgent?.model ?? ""
         defaultAgentReasoning = current.subagents?.defaultAgent?.reasoning ?? ""
@@ -279,9 +276,9 @@ final class SettingsStore: ObservableObject {
             decision_acceleration: .init(enabled: decisionAccelerationEnabled, scope: decisionAccelerationScope),
             subagents: .init(
                 providers: [
-                    "opencode": .init(enabled: opencodeEnabled, binary_path: opencodeBinaryPath.nilIfEmpty, default_project: nil),
-                    "codex": .init(enabled: codexEnabled, binary_path: codexBinaryPath.nilIfEmpty, default_project: nil),
-                    "chatgpt": .init(enabled: chatgptEnabled, binary_path: chatgptBinaryPath.nilIfEmpty, default_project: chatgptDefaultProject.nilIfEmpty),
+                    "opencode": .init(enabled: opencodeEnabled, binary_path: opencodeBinaryPath.nilIfEmpty),
+                    "codex": .init(enabled: codexEnabled, binary_path: codexBinaryPath.nilIfEmpty),
+                    "claude": .init(enabled: claudeEnabled, binary_path: claudeBinaryPath.nilIfEmpty),
                 ],
                 defaultAgent: defaultAgentProvider.nilIfEmpty.map {
                     .init(provider: $0, model: defaultAgentModel.nilIfEmpty, reasoning: defaultAgentReasoning.nilIfEmpty)
@@ -338,7 +335,7 @@ final class SettingsStore: ObservableObject {
         switch id {
         case "opencode": return opencodeEnabled
         case "codex": return codexEnabled
-        case "chatgpt": return chatgptEnabled
+        case "claude": return claudeEnabled
         default: return false
         }
     }
@@ -347,7 +344,7 @@ final class SettingsStore: ObservableObject {
         switch id {
         case "opencode": opencodeEnabled = enabled
         case "codex": codexEnabled = enabled
-        case "chatgpt": chatgptEnabled = enabled
+        case "claude": claudeEnabled = enabled
         default: return
         }
     }

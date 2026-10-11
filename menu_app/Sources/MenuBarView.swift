@@ -891,7 +891,7 @@ struct MenuBarView: View {
         switch provider?.lowercased() {
         case "opencode": return "OpenCode"
         case "codex": return "Codex"
-        case "chatgpt": return "ChatGPT"
+        case "claude": return "Claude Code"
         case .some(let value): return value.capitalized
         case .none: return "AI"
         }

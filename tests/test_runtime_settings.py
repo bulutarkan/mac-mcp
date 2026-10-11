@@ -57,7 +57,7 @@ class RuntimeSettingsTests(unittest.TestCase):
                 self.assertEqual("missing", missing.status)
                 self.assertFalse(runtime_settings.provider_enabled("opencode"))
                 self.assertFalse(runtime_settings.provider_enabled("codex"))
-                self.assertFalse(runtime_settings.provider_enabled("chatgpt"))
+                self.assertFalse(runtime_settings.provider_enabled("claude"))
 
                 path.write_text("not-json")
                 invalid = runtime_settings.load_runtime_settings_state()
@@ -79,19 +79,17 @@ class RuntimeSettingsTests(unittest.TestCase):
                         "providers": {
                             "opencode": {"enabled": False},
                             "codex": {"enabled": True},
-                            "chatgpt": {
+                            "claude": {
                                 "enabled": True,
-                                "binary_path": "/tmp/chatgpt-web",
-                                "default_project": "Subagents",
+                                "binary_path": "/tmp/claude",
                             },
                         }
                     }
                 }))
                 self.assertFalse(runtime_settings.provider_enabled("opencode"))
                 self.assertTrue(runtime_settings.provider_enabled("codex"))
-                self.assertTrue(runtime_settings.provider_enabled("chatgpt"))
-                self.assertEqual("/tmp/chatgpt-web", runtime_settings.provider_setting("chatgpt", "binary_path"))
-                self.assertEqual("Subagents", runtime_settings.provider_setting("chatgpt", "default_project"))
+                self.assertTrue(runtime_settings.provider_enabled("claude"))
+                self.assertEqual("/tmp/claude", runtime_settings.provider_setting("claude", "binary_path"))
 
     def test_provider_settings_fail_closed_when_settings_cannot_be_read(self):
         with tempfile.TemporaryDirectory() as td:

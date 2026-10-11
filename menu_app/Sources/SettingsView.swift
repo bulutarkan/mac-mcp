@@ -570,11 +570,7 @@ struct SettingsView: View {
 
                 providerRow(id: "opencode", title: "OpenCode", subtitle: "External OpenCode CLI provider")
                 providerRow(id: "codex", title: "Codex", subtitle: "External Codex CLI provider")
-                providerRow(
-                    id: "chatgpt",
-                    title: "ChatGPT Web CLI",
-                    subtitle: "Experimental authenticated chatgpt.com browser provider. Use it at your own risk."
-                )
+                providerRow(id: "claude", title: "Claude Code", subtitle: "External Claude Code CLI provider (your Claude sign-in)")
 
                 Text("Disabled providers are hidden from the agent catalog and cannot be spawned. Changes apply live to new agent requests.")
                     .font(.caption2)
@@ -936,6 +932,11 @@ struct SettingsView: View {
                                         title: "OpenCode",
                                         symbol: "chevron.left.forwardslash.chevron.right",
                                         usage: state.providerUsageSummary?.providers["opencode"]
+                                    )
+                                    providerUsageCard(
+                                        title: "Claude Code",
+                                        symbol: "sparkles",
+                                        usage: state.providerUsageSummary?.providers["claude"]
                                     )
                                 }
                             }
@@ -2589,7 +2590,7 @@ struct SettingsView: View {
         if !current.isEmpty && !values.contains(current) {
             values.append(current)
         }
-        let order = ["opencode", "codex", "chatgpt"]
+        let order = ["opencode", "codex", "claude"]
         return values.sorted {
             (order.firstIndex(of: $0) ?? 99) < (order.firstIndex(of: $1) ?? 99)
         }
@@ -3171,7 +3172,7 @@ struct SettingsView: View {
         switch id {
         case "opencode": return "OpenCode"
         case "codex": return "Codex"
-        case "chatgpt": return "ChatGPT Web CLI"
+        case "claude": return "Claude Code"
         default: return id
         }
     }

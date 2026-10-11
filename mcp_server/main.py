@@ -644,7 +644,7 @@ def create_app():
     # ── Agent delegation tools ──────────────────────────────────────────────
     @mcp.tool(
         name="agent_catalog",
-        description="List available OpenCode, Codex, and ChatGPT Web CLI providers, models, reasoning options, and ChatGPT project configuration without starting an agent.",
+        description="List available OpenCode, Codex, and Claude Code providers, models, reasoning options and supported access modes without starting an agent.",
     )
     async def _agent_catalog(provider: Optional[str] = None, model_filter: Optional[str] = None,
                              free_only: bool = False, limit: int = 80) -> Dict[str, Any]:
@@ -657,17 +657,15 @@ def create_app():
     @mcp.tool(
         name="spawn_agent",
         description=(
-            "Delegate one task to OpenCode, Codex, or ChatGPT Web CLI in a non-blocking background process. "
+            "Delegate one task to OpenCode, Codex, or Claude Code (provider=claude) in a non-blocking background process. "
             "When provider/model/reasoning are omitted, Mac MCP resolves the saved Settings > Subagents Default Agent preset; "
             "explicit fields always override saved values and model/reasoning never cross provider boundaries. "
-            "ChatGPT accepts project=...; when omitted it uses CHATGPT_SUBAGENT_PROJECT if locally configured, "
-            "otherwise it starts a normal new chat. ChatGPT long turns use bounded checkpoint/continue and "
-            "rate-limit cooldown/resume protection; reasoning defaults to high unless explicitly overridden. "
+            "Claude Code takes a model alias (fable, opus, sonnet, haiku) or a claude-... id and reasoning=low|medium|high|xhigh|max. "
             "Supports idle timeout and bounded retries. workspace_write Git tasks default to git_isolation=auto, which uses an "
             "ephemeral per-agent worktree when it can be scope-confined; git_isolation=required fails closed if isolation cannot be "
             "enforced, and off preserves the original cwd. Optional role=coder|reviewer|orchestrator injects only relevant, approved "
             "role lessons with bounded context; candidates never auto-activate. "
-            "Codex enforces access_mode; OpenCode read_only is refused; ChatGPT access_mode is behavioral."
+            "read_only and workspace_write run every provider inside a macOS Seatbelt filesystem boundary; full is unrestricted."
         ),
     )
     def _spawn_agent(prompt: str, provider: Optional[str] = None, model: Optional[str] = None,
@@ -677,7 +675,7 @@ def create_app():
                      idle_timeout_s: Optional[int] = None, retries: int = 0,
                      scope: Optional[Dict[str, Any]] = None,
                      capability_profile: Optional[str] = None,
-                     project: Optional[str] = None, role: Optional[str] = None,
+                     role: Optional[str] = None,
                      git_isolation: str = "auto") -> Dict[str, Any]:
         context = current_policy_context()
         return _log(audit_logger, "spawn_agent",
@@ -686,7 +684,7 @@ def create_app():
                                         title=title, result_style=result_style, access_mode=access_mode,
                                         idle_timeout_s=idle_timeout_s, retries=retries, scope=scope,
                                         parent_scope=context.scope, parent_profile=context.profile,
-                                        capability_profile=capability_profile, project=project, role=role,
+                                        capability_profile=capability_profile, role=role,
                                         provenance_class=current_provenance_class(), git_isolation=git_isolation))
 
     @mcp.tool(
@@ -705,8 +703,8 @@ def create_app():
             "access_mode and git_isolation. workspace_write Git children default to separate ephemeral worktrees; task revisions reuse the "
             "same isolated worktree while sibling tasks remain separated. A task may add resources=[{kind,id,mode,expected_revision?}] "
             "for global cross-team admission of workspace/path/file, browser_tab, native_app/window, process or clipboard resources; "
-            "path/browser claims are scope-checked and file expected_revision fails closed before provider start. ChatGPT accepts project=... "
-            "as the team default and task.project overrides. Optional team role or task.role enables bounded role-learning context per child. "
+            "path/browser claims are scope-checked and file expected_revision fails closed before provider start. "
+            "Optional team role or task.role enables bounded role-learning context per child. "
             "Each child produces a versioned typed result envelope; valid structured output is preserved, plain legacy text is "
             "adapted with explicit legacy_fallback status, and malformed marked envelopes fail closed (a read_only non-reviewer child keeps its plain report with contract_status=invalid and no structured claims). Dependency fan-in is deterministic, "
             "provenance-aware, deduplicates evidence/artifacts, flags keyed claim contradictions, and never injects raw provider logs. "
@@ -722,7 +720,7 @@ def create_app():
                       access_mode: str = "read_only", title: Optional[str] = None,
                       scope: Optional[Dict[str, Any]] = None,
                       capability_profile: Optional[str] = None,
-                      project: Optional[str] = None, role: Optional[str] = None,
+                      role: Optional[str] = None,
                       max_parallel: Optional[int] = None, max_revisions: int = 1,
                       team_timeout_s: Optional[int] = None, max_team_retries: Optional[int] = None,
                       admission_tool_call_budget: Optional[int] = None,
@@ -736,7 +734,7 @@ def create_app():
                                          idle_timeout_s=idle_timeout_s, retries=retries,
                                          result_style=result_style, access_mode=access_mode, title=title,
                                          scope=scope, parent_scope=context.scope, parent_profile=context.profile,
-                                         capability_profile=capability_profile, project=project, role=role,
+                                         capability_profile=capability_profile, role=role,
                                          provenance_class=current_provenance_class(), max_parallel=max_parallel,
                                          max_revisions=max_revisions, team_timeout_s=team_timeout_s,
                                          max_team_retries=max_team_retries,

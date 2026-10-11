@@ -63,6 +63,7 @@ from .provider_usage import (
     SOURCE_REPORT as PROVIDER_USAGE_SOURCE_REPORT,
     UsageRecord as ProviderUsageRecord,
     get_store as get_provider_usage_store,
+    normalize_claude_usage,
     normalize_codex_usage,
     normalize_opencode_usage,
 )
@@ -82,12 +83,6 @@ TEAM_RESULT_LIMIT = 2000
 DEFAULT_WAIT_TIMEOUT_S = 30
 MAX_WAIT_TIMEOUT_S = 300
 MAX_TEAM_SIZE = 10
-DEFAULT_CHATGPT_TURN_BUDGET_S = 900
-DEFAULT_CHATGPT_HARD_TOOL_BUDGET_S = 1200
-DEFAULT_CHATGPT_RATE_LIMIT_BACKOFF_S = 90
-MAX_CHATGPT_RATE_LIMIT_BACKOFF_S = 600
-DEFAULT_CHATGPT_REDUCED_CONCURRENCY_S = 900
-DEFAULT_CHATGPT_START_SPACING_S = 15
 DEFAULT_TEAM_TIMEOUT_FLOOR_S = 3600
 MAX_TEAM_TIMEOUT_S = 86400
 MAX_TEAM_RETRY_BUDGET = 30
@@ -96,7 +91,8 @@ MAX_TEAM_TOKEN_BUDGET = 100000000
 TEAM_RETRY_START_SPACING_S = 0.75
 MAX_GENERIC_RETRY_BACKOFF_S = 30.0
 
-_PROVIDER_NAMES = {"opencode", "codex", "chatgpt"}
+_PROVIDER_LABELS = {"opencode": "OpenCode", "codex": "Codex", "claude": "Claude Code"}
+_PROVIDER_NAMES = set(_PROVIDER_LABELS)
 _ACCESS_MODES = {"read_only", "workspace_write", "full"}
 _RESULT_STYLES = {"concise", "detailed"}
 _WAIT_MODES = {"all", "any", "majority"}
@@ -660,8 +656,8 @@ def _team_budget_snapshot(team: Dict[str, Any], *, now: Optional[float] = None) 
         "tool_calls_overshoot": tool_overshoot,
         "admission_token_budget": token_limit,
         "total_tokens_used": usage["total_tokens"],
-        # Agents whose provider does not report usage (for example ChatGPT):
-        # their tokens are not in total_tokens_used, so it is a lower bound.
+        # Agents whose provider reported no usage: their tokens are not in
+        # total_tokens_used, so it is a lower bound.
         "total_tokens_complete": not usage["token_usage_unknown_agents"],
         "token_usage_unknown_agents": usage["token_usage_unknown_agents"][:20],
         "total_tokens_remaining": tokens_remaining,
@@ -794,36 +790,6 @@ def _team_reviewer_map(team: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         if review_of:
             result[review_of] = task
     return result
-
-
-def _chatgpt_admission_state() -> Dict[str, Any]:
-    state_path = _chatgpt_provider_state_path()
-    if not state_path.exists():
-        return {}
-    lock_path = AGENTS_DIR / ".chatgpt-provider-state.lock"
-    AGENTS_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        with lock_path.open("a", encoding="utf-8") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH)
-            try:
-                payload = json.loads(state_path.read_text(encoding="utf-8"))
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _chatgpt_admission_cooldown_until(state: Optional[Dict[str, Any]] = None) -> Optional[float]:
-    payload = state if isinstance(state, dict) else _chatgpt_admission_state()
-    until = float(payload.get("cooldown_until") or 0.0)
-    return until if until > _now() else None
-
-
-def _chatgpt_admission_limit_override(state: Optional[Dict[str, Any]] = None) -> Optional[int]:
-    payload = state if isinstance(state, dict) else _chatgpt_admission_state()
-    reduced_until = float(payload.get("reduced_until") or 0.0)
-    return 1 if reduced_until > _now() else None
 
 
 def _git_scope_isolated_for_admission(team: Dict[str, Any], scope: ResourceScope) -> bool:
@@ -1440,23 +1406,13 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
             task["admission_request_id"] = request_id
             try:
                 resource_claims = _task_admission_claims(team, task)
-                provider_name = str(team["provider"])
-                chatgpt_state = (
-                    _chatgpt_admission_state() if provider_name.lower() == "chatgpt" else {}
-                )
                 admission = request_admission(
                     AGENTS_DIR,
                     request_id=request_id,
                     team_id=team_id,
                     task_id=str(task["id"]),
-                    provider=provider_name,
+                    provider=str(team["provider"]),
                     resources=resource_claims,
-                    provider_blocked_until=(
-                        _chatgpt_admission_cooldown_until(chatgpt_state) if chatgpt_state else None
-                    ),
-                    provider_limit_override=(
-                        _chatgpt_admission_limit_override(chatgpt_state) if chatgpt_state else None
-                    ),
                 )
             except AdmissionError as exc:
                 _release_task_admission(task)
@@ -1518,7 +1474,6 @@ def _team_tick(team_id: str) -> Dict[str, Any]:
                     team_task_id=str(task["id"]),
                     idle_timeout_s=team.get("idle_timeout_s"),
                     retries=int(team.get("retries") or 0),
-                    project=task.get("project"),
                     role=task.get("role"),
                     provenance_class=str(team.get("provenance_class") or "local"),
                     git_isolation=str(team.get("git_isolation") or "auto"),
@@ -1820,7 +1775,6 @@ def _team_summary(team_id: str, meta: Optional[Dict[str, Any]] = None) -> Dict[s
         "provider": team.get("provider"),
         "model": team.get("model"),
         "reasoning": team.get("reasoning"),
-        "project": team.get("project"),
         "access_mode": team.get("access_mode"),
         "permission_profile": team.get("permission_profile"),
         "scope": team.get("scope"),
@@ -1945,6 +1899,13 @@ def _adaptive_retry_decision(
         return {"retryable": True, "reason": "rate_limited", "backoff_s": min(MAX_GENERIC_RETRY_BACKOFF_S, delay)}
     if reason in {"resume_required", "outcome_unknown"}:
         return {"retryable": False, "reason": reason, "backoff_s": 0.0}
+    if str(meta.get("provider") or "").lower() == "claude":
+        # Claude Code reports the API status itself; tool output in the stream
+        # (file contents, command output) must not be mistaken for an error.
+        classified = _claude_failure_reason(stdout_path, stdout_offset)
+        if classified:
+            reason_code, retryable, backoff = classified
+            return {"retryable": retryable, "reason": reason_code, "backoff_s": backoff}
 
     def attempt_tail(path: Path, offset: int) -> str:
         if not path.exists():
@@ -2098,17 +2059,9 @@ def _base_env() -> Dict[str, str]:
     return env
 
 
-def _chatgpt_env() -> Dict[str, str]:
-    env = _base_env()
-    # This provider drives an authenticated interactive web browser. CI=1 changes
-    # browser/automation behavior and can prevent ChatGPT UI controls from hydrating.
-    env.pop("CI", None)
-    return env
-
-
 _PROVIDER_ENV_PASSTHROUGH: Dict[str, Tuple[str, ...]] = {
-    "chatgpt": ("CHATGPT_CLI_PROFILE", "CHATGPT_CLI_CHROME", "CHATGPT_CLI_IDLE_SECONDS"),
     "codex": ("CODEX_HOME", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID"),
+    "claude": ("CLAUDE_CONFIG_DIR",),
 }
 _OPENCODE_MODEL_ENV: Dict[str, Tuple[str, ...]] = {
     "openrouter": ("OPENROUTER_API_KEY",),
@@ -2144,6 +2097,7 @@ def _minimal_provider_env(provider: str, meta: Dict[str, Any]) -> Dict[str, str]
         "LANG": "en_US.UTF-8",
         "LC_ALL": "en_US.UTF-8",
         "NO_COLOR": "1",
+        "CI": "1",
         "HOMEBREW_NO_AUTO_UPDATE": "1",
         "PATH": ":".join((
             str(home / ".opencode" / "bin"), str(home / ".npm-global" / "bin"),
@@ -2151,12 +2105,13 @@ def _minimal_provider_env(provider: str, meta: Dict[str, Any]) -> Dict[str, str]
             "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin",
         )),
     }
-    if provider != "chatgpt":
-        env["CI"] = "1"
     for key in _PROVIDER_ENV_PASSTHROUGH.get(provider, ()):
         value = os.getenv(key)
         if value:
             env[key] = value
+    if provider == "claude":
+        # Parallel agents must not race the CLI's self-updater.
+        env["DISABLE_AUTOUPDATER"] = "1"
     if provider == "opencode":
         env.update({
             "OPENCODE_DISABLE_AUTOUPDATE": "1",
@@ -2443,6 +2398,72 @@ def _opencode_sandbox_profile(agent_id: str, meta: Dict[str, Any]) -> Path:
     return profile
 
 
+def _restricted_claude_state(agent_id: str, meta: Dict[str, Any]) -> Path:
+    # Resumed agents share their first agent's state so the CLI finds the transcript.
+    owner_id = _codex_state_owner_agent_id(agent_id, meta)
+    root = _agent_dir(owner_id) / "provider_state" / "claude"
+    for path in (root, root / "home", root / "config", root / "tmp"):
+        path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.chmod(0o700)
+        except OSError:
+            pass
+    return root
+
+
+def _claude_install_roots(binary: str) -> List[Path]:
+    """Directories the CLI must read to start: its launcher and its resolved install."""
+    roots: List[Path] = []
+    raw = Path(binary).expanduser()
+    for path in (raw.parent, raw.resolve(strict=False).parent):
+        if path not in roots:
+            roots.append(path)
+    return roots
+
+
+def _claude_sandbox_profile(agent_id: str, meta: Dict[str, Any]) -> Path:
+    if not _sandbox_exec_available():
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Claude Code restricted access requires macOS sandbox-exec; this host cannot enforce the requested process boundary.",
+        )
+    scope = ResourceScope.from_dict(meta.get("scope"))
+    access_mode = str(meta.get("access_mode") or "workspace_write")
+    state_root = _restricted_claude_state(agent_id, meta).resolve()
+    allowed_read = {
+        state_root, (_agent_dir(agent_id) / "provider_config").resolve(strict=False),
+        *_claude_install_roots(str(meta.get("binary") or "claude")),
+    }
+    for raw in scope.path_roots or ():
+        allowed_read.add(Path(raw).expanduser().resolve(strict=False))
+    metadata_paths = _boundary_metadata_ancestors(sorted(allowed_read, key=str))
+    deny_specs = " ".join(f'(subpath "{_sbpl_quote(root)}")' for root in _RESTRICTED_READ_DENY_ROOTS)
+    read_specs = " ".join(f'(subpath "{_sbpl_quote(root)}")' for root in sorted(allowed_read, key=str))
+    metadata_specs = " ".join(f'(literal "{_sbpl_quote(path)}")' for path in metadata_paths)
+    write_roots = {state_root}
+    if access_mode == "workspace_write":
+        write_roots.update(Path(raw).expanduser().resolve(strict=False) for raw in (scope.path_roots or ()))
+    write_specs = " ".join(f'(subpath "{_sbpl_quote(root)}")' for root in sorted(write_roots, key=str))
+    exec_denies = "\n".join(
+        f'(deny process-exec (literal "{_sbpl_quote(path)}"))' for path in _RESTRICTED_ESCAPE_EXECUTABLES
+    )
+    profile = _agent_dir(agent_id) / "provider-boundary.sb"
+    profile.write_text(
+        "(version 1)\n"
+        "(allow default)\n"
+        f"(deny file-read* {deny_specs})\n"
+        f"(allow file-read* {read_specs})\n"
+        f"(allow file-read-metadata {metadata_specs})\n"
+        "(deny file-write*)\n"
+        f"(allow file-write* {write_specs})\n"
+        f"{_DEV_NULL_WRITE}\n"
+        f"{exec_denies}\n",
+        encoding="utf-8",
+    )
+    profile.chmod(0o600)
+    return profile
+
+
 def _provider_process_command(agent_id: str, meta: Dict[str, Any], cmd: List[str]) -> Tuple[List[str], Optional[Path]]:
     provider = str(meta.get("provider") or "").lower()
     access_mode = str(meta.get("access_mode") or "workspace_write")
@@ -2452,6 +2473,9 @@ def _provider_process_command(agent_id: str, meta: Dict[str, Any], cmd: List[str
             return [str(_SANDBOX_EXEC), "-f", str(profile), *cmd], profile
         if provider == "codex":
             profile = _codex_sandbox_profile(agent_id, meta)
+            return [str(_SANDBOX_EXEC), "-f", str(profile), *cmd], profile
+        if provider == "claude":
+            profile = _claude_sandbox_profile(agent_id, meta)
             return [str(_SANDBOX_EXEC), "-f", str(profile), *cmd], profile
     return cmd, None
 
@@ -2471,6 +2495,26 @@ def _provider_env(agent_id: str, meta: Dict[str, Any], scoped_token: str) -> Tup
             "CODEX_HOME": str(state_root / "codex-home"),
             "TMPDIR": str(state_root / "tmp"),
         })
+    if provider == "claude" and str(meta.get("access_mode") or "workspace_write") != "full":
+        token, reason = _claude_sandbox_token(str(meta.get("binary") or "") or None)
+        if not token:
+            raise _claude_sign_in_error(reason)
+        state_root = _restricted_claude_state(agent_id, meta)
+        env.pop("CLAUDE_CONFIG_DIR", None)
+        env.update({
+            "HOME": str(state_root / "home"),
+            "CLAUDE_CONFIG_DIR": str(state_root / "config"),
+            "TMPDIR": str(state_root / "tmp"),
+            # Otherwise the CLI keeps sockets and temp files in the shared /tmp/claude-<uid>.
+            "CLAUDE_CODE_TMPDIR": str(state_root / "tmp"),
+            "CLAUDE_CODE_OAUTH_TOKEN": token,
+            # Keep the token out of the agent's Bash, hook and MCP child processes.
+            "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        })
+        _write_claude_mcp_config(agent_id, meta, scoped_token)
+        env.pop("MAC_MCP_AGENT_TOKEN", None)
+        cleanup_root = _agent_dir(agent_id) / "provider_config"
     if provider == "opencode":
         if str(meta.get("access_mode") or "workspace_write") != "full":
             state_root = _restricted_provider_state(agent_id)
@@ -2575,14 +2619,15 @@ def _find_binary(provider: str) -> Optional[str]:
             "/usr/local/bin/codex",
             str(home / ".npm-global" / "bin" / "codex"),
         ]
-    elif provider == "chatgpt":
+    elif provider == "claude":
         candidates = [
-            provider_setting("chatgpt", "binary_path", ""),
-            os.getenv("CHATGPT_WEB_CLI_BINARY"),
-            os.getenv("CHATGPT_CLI_BINARY"),
-            shutil.which("chatgpt-web"),
-            shutil.which("chatgpt"),
-            str(home / "Projects" / "chatgpt-web-cli" / "bin" / "chatgpt"),
+            provider_setting("claude", "binary_path", ""),
+            os.getenv("CLAUDE_CODE_BINARY"),
+            shutil.which("claude"),
+            str(home / ".local" / "bin" / "claude"),
+            str(home / ".claude" / "local" / "claude"),
+            "/opt/homebrew/bin/claude",
+            "/usr/local/bin/claude",
         ]
     else:
         return None
@@ -2747,348 +2792,151 @@ def _codex_known_models() -> Tuple[List[str], Optional[str], Optional[str]]:
     )
 
 
-def _chatgpt_cached_models(binary: str) -> Tuple[List[str], Optional[str]]:
-    try:
-        root = Path(binary).resolve().parent.parent
-        payload = json.loads((root / "state.json").read_text(encoding="utf-8"))
-        rows = payload.get("modelCache") if isinstance(payload, dict) else None
-        if not isinstance(rows, list):
-            return [], None
-        models: List[str] = []
-        selected: Optional[str] = None
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            name = str(row.get("name") or "").strip()
-            if not name:
-                continue
-            models.append(name)
-            if row.get("selected"):
-                selected = name
-        return models, selected
-    except Exception:
-        return [], None
+# Claude Code has no model-listing command. Its aliases always resolve to the
+# newest model of each family, so this catalog cannot go stale; a full model
+# id (claude-...) is passed through to the CLI, which rejects unknown ones.
+_CLAUDE_MODEL_ALIASES = (
+    ("fable", "Fable (latest)"), ("opus", "Opus (latest)"),
+    ("sonnet", "Sonnet (latest)"), ("haiku", "Haiku (latest)"),
+)
+_CLAUDE_MODEL_ID_RE = re.compile(r"^claude-[a-z0-9][a-z0-9.-]{1,80}(\[1m\])?$")
+_CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# Claude Code tools whose effects outlive the agent or leave Mac MCP's control:
+# schedules and cloud routines, phone notifications, messages to other Claude
+# sessions, uploads, its own multi-agent workflows and git worktrees (Mac MCP
+# owns isolation). Cancel and despawn must stop all of an agent's work, so
+# these are removed in every access mode. The CLI ignores names it lacks.
+_CLAUDE_LIFECYCLE_TOOLS = (
+    "CronCreate", "CronDelete", "RemoteTrigger", "ScheduleWakeup", "PushNotification",
+    "SendMessage", "ListAgents", "ShareOnboardingGuide", "DesignSync", "Workflow",
+    "EnterWorktree", "ExitWorktree",
+)
+# In-process file writers; read_only removes them (Seatbelt also denies the writes).
+_CLAUDE_WRITE_TOOLS = ("Edit", "MultiEdit", "Write", "NotebookEdit")
+# Scrubbing the token from child processes makes the CLI drop bypassPermissions,
+# so a sandboxed agent names the tools it may use without a prompt instead.
+# Anything else (a tool a newer CLI adds) is refused rather than prompted.
+_CLAUDE_SANDBOX_ALLOWED_TOOLS = (
+    "Bash", "BashOutput", "KillShell", "Read", "Glob", "Grep", "LS", "Edit", "MultiEdit", "Write",
+    "NotebookEdit", "WebFetch", "WebSearch", "TodoWrite", "Task", "Agent", "ToolSearch", "Skill",
+    "LSP", "Monitor", "TaskStop", "mcp__mac-mcp",
+)
+_CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
+_CLAUDE_TOKEN_MIN_REMAINING_S = 120.0
 
 
-def _chatgpt_models(binary: str) -> Tuple[List[str], Optional[str]]:
-    # Catalog/model discovery should not generate browser traffic on every MCP call.
-    # A successful `chatgpt models` run persists this cache; use it first and only
-    # touch the live web UI when no cache exists yet.
-    cached_models, cached_selected = _chatgpt_cached_models(binary)
-    if cached_models:
-        return cached_models, cached_selected
+def _claude_config_dir() -> Path:
+    return Path(os.getenv("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude")).expanduser()
+
+
+def _claude_user_defaults() -> Tuple[Optional[str], Optional[str]]:
+    """(model, effort) from the owner's Claude Code settings.json, when set."""
     try:
-        proc = subprocess.run([binary, "models", "--json"], capture_output=True, text=True, timeout=40, env=_chatgpt_env())
-        if proc.returncode == 0:
-            rows = json.loads(proc.stdout or "[]")
-            if isinstance(rows, list):
-                models: List[str] = []
-                selected: Optional[str] = None
-                for row in rows:
-                    if not isinstance(row, dict):
-                        continue
-                    name = str(row.get("name") or "").strip()
-                    if not name:
-                        continue
-                    models.append(name)
-                    if row.get("selected"):
-                        selected = name
-                if models:
-                    return models, selected
-    except Exception:
+        payload = json.loads((_claude_config_dir() / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    model = str(payload.get("model") or "").strip() or None
+    effort = str(payload.get("effortLevel") or "").strip().lower() or None
+    return model, (effort if effort in _CLAUDE_EFFORTS else None)
+
+
+def _claude_model_catalog() -> Dict[str, Any]:
+    default_model, default_effort = _claude_user_defaults()
+    items = [
+        {
+            "id": alias,
+            "display_name": label,
+            "visibility": "list",
+            "reasoning_values": list(_CLAUDE_EFFORTS),
+            "reasoning_options": [{"value": value, "description": ""} for value in _CLAUDE_EFFORTS],
+            "default_reasoning": default_effort,
+            "source": "claude_code_aliases",
+        }
+        for alias, label in _CLAUDE_MODEL_ALIASES
+    ]
+    return {"model_items": items, "default_model": default_model, "default_reasoning": default_effort}
+
+
+def _claude_oauth_records() -> List[Dict[str, Any]]:
+    """The owner's Claude Code sign-in: its Keychain item, then its credentials file."""
+    texts: List[str] = []
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/security", "find-generic-password", "-s", _CLAUDE_KEYCHAIN_SERVICE, "-w"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, timeout=5, check=False,
+        )
+        texts.append(proc.stdout or "")
+    except (OSError, subprocess.SubprocessError):
         pass
-    return [], None
-
-
-def _chatgpt_effort(value: Optional[str]) -> Optional[str]:
-    raw = str(value or "").strip().lower().replace("_", "-").replace(" ", "-")
-    if not raw or raw == "none":
-        return None
-    aliases = {
-        "low": "low", "medium": "medium", "high": "high",
-        "xhigh": "extra-high", "extra-high": "extra-high", "extrahigh": "extra-high", "max": "extra-high",
-    }
-    return aliases.get(raw)
-
-
-def _chatgpt_default_project() -> Optional[str]:
-    configured = provider_setting("chatgpt", "default_project", "")
-    value = str(configured or os.getenv("CHATGPT_SUBAGENT_PROJECT", "") or "").strip()
-    return value or None
-
-
-def _chatgpt_int_setting(name: str, env_name: str, default: int, minimum: int, maximum: int) -> int:
-    raw = os.getenv(env_name)
-    if raw is None or not str(raw).strip():
-        raw = provider_setting("chatgpt", name, default)
     try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        value = default
-    return min(maximum, max(minimum, value))
-
-
-def _chatgpt_budget_config() -> Tuple[int, int]:
-    soft = _chatgpt_int_setting(
-        "turn_budget_s", "CHATGPT_PROVIDER_TURN_BUDGET_S",
-        DEFAULT_CHATGPT_TURN_BUDGET_S, 60, 3600,
-    )
-    hard = _chatgpt_int_setting(
-        "hard_tool_budget_s", "CHATGPT_PROVIDER_HARD_TOOL_BUDGET_S",
-        DEFAULT_CHATGPT_HARD_TOOL_BUDGET_S, 120, 7200,
-    )
-    return soft, max(soft, hard)
-
-
-def _chatgpt_rate_limit_reason_text(text: str) -> Optional[str]:
-    normalized = str(text or "").lower().replace("’", "'")
-    patterns = (
-        ("requesting_too_fast", r"you(?:'re| are) (?:making )?requests too (?:quickly|fast)"),
-        ("temporarily_limited", r"temporarily limited access to your conversations"),
-        ("provider_rate_limited", r"chatgpt(?:_web)?_rate_limited|temporarily rate-limited"),
-        ("too_many_requests", r"too many requests|http\s*429|\b429\b"),
-        ("rate_limit", r"rate[- ]?limit(?:ed|ing)?"),
-    )
-    for reason, pattern in patterns:
-        if re.search(pattern, normalized, re.IGNORECASE):
-            return reason
-    return None
-
-
-def _log_text_since(path: Path, offset: int = 0, max_chars: int = 8000) -> str:
-    try:
-        with path.open("rb") as handle:
-            handle.seek(max(0, int(offset)))
-            data = handle.read(max_chars * 4)
+        texts.append((_claude_config_dir() / ".credentials.json").read_text(encoding="utf-8"))
     except OSError:
-        return ""
-    return data.decode("utf-8", errors="replace")[-max_chars:]
-
-
-def _chatgpt_rate_limit_reason(
-    stdout_path: Path,
-    stderr_path: Path,
-    stdout_offset: int = 0,
-    stderr_offset: int = 0,
-) -> Optional[str]:
-    text = _log_text_since(stdout_path, stdout_offset) + "\n" + _log_text_since(stderr_path, stderr_offset)
-    return _chatgpt_rate_limit_reason_text(text)
-
-
-def _chatgpt_cooldown_seconds(throttle_count: int) -> int:
-    base = _chatgpt_int_setting(
-        "rate_limit_backoff_s", "CHATGPT_PROVIDER_RATE_LIMIT_BACKOFF_S",
-        DEFAULT_CHATGPT_RATE_LIMIT_BACKOFF_S, 5, 600,
-    )
-    cap = _chatgpt_int_setting(
-        "rate_limit_backoff_cap_s", "CHATGPT_PROVIDER_RATE_LIMIT_BACKOFF_CAP_S",
-        MAX_CHATGPT_RATE_LIMIT_BACKOFF_S, base, 1800,
-    )
-    exponent = max(0, min(6, int(throttle_count) - 1))
-    return min(cap, base * (2 ** exponent))
-
-
-def _chatgpt_provider_state_path() -> Path:
-    return AGENTS_DIR / ".chatgpt-provider-state.json"
-
-
-def _update_chatgpt_provider_state(update: Callable[[Dict[str, Any]], None]) -> Dict[str, Any]:
-    AGENTS_DIR.mkdir(parents=True, exist_ok=True)
-    lock_path = AGENTS_DIR / ".chatgpt-provider-state.lock"
-    state_path = _chatgpt_provider_state_path()
-    with lock_path.open("a", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        pass
+    records: List[Dict[str, Any]] = []
+    for text in texts:
         try:
-            try:
-                state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
-            except (OSError, json.JSONDecodeError):
-                state = {}
-            update(state)
-            fd, tmp_name = tempfile.mkstemp(prefix=".chatgpt-provider-state.", suffix=".tmp", dir=AGENTS_DIR)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    handle.write(json.dumps(state, ensure_ascii=False, sort_keys=True))
-                    handle.flush(); os.fsync(handle.fileno())
-                os.replace(tmp_name, state_path)
-            finally:
-                Path(tmp_name).unlink(missing_ok=True)
-            return state
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            payload = json.loads(text)
+        except ValueError:
+            continue
+        oauth = payload.get("claudeAiOauth") if isinstance(payload, dict) else None
+        if isinstance(oauth, dict) and str(oauth.get("accessToken") or "").strip():
+            records.append(oauth)
+    return records
 
 
-def _record_chatgpt_shared_throttle(cooldown_until: float, reason: str, now: Optional[float] = None) -> Dict[str, Any]:
-    current = float(now if now is not None else _now())
-    reduced_for = _chatgpt_int_setting(
-        "reduced_concurrency_s", "CHATGPT_PROVIDER_REDUCED_CONCURRENCY_S",
-        DEFAULT_CHATGPT_REDUCED_CONCURRENCY_S, 60, 3600,
-    )
-    def mutate(state: Dict[str, Any]) -> None:
-        state["throttle_count"] = int(state.get("throttle_count") or 0) + 1
-        state["last_throttled_at"] = current
-        state["last_throttle_reason"] = reason
-        state["cooldown_until"] = max(float(state.get("cooldown_until") or 0), float(cooldown_until))
-        state["reduced_until"] = max(float(state.get("reduced_until") or 0), current + reduced_for)
-        state["next_allowed_at"] = max(float(state.get("next_allowed_at") or 0), float(cooldown_until))
-    return _update_chatgpt_provider_state(mutate)
-
-
-def _reserve_chatgpt_provider_start(now: Optional[float] = None) -> float:
-    current = float(now if now is not None else _now())
-    spacing = _chatgpt_int_setting(
-        "post_throttle_start_spacing_s", "CHATGPT_PROVIDER_POST_THROTTLE_SPACING_S",
-        DEFAULT_CHATGPT_START_SPACING_S, 1, 120,
-    )
-    delay = 0.0
-    def mutate(state: Dict[str, Any]) -> None:
-        nonlocal delay
-        cooldown_until = float(state.get("cooldown_until") or 0)
-        reduced_until = float(state.get("reduced_until") or 0)
-        if current >= reduced_until and current >= cooldown_until:
-            state["next_allowed_at"] = current
-            delay = 0.0
-            return
-        reserved = max(current, cooldown_until, float(state.get("next_allowed_at") or 0))
-        state["next_allowed_at"] = reserved + spacing
-        delay = max(0.0, reserved - current)
-    _update_chatgpt_provider_state(mutate)
-    return delay
-
-
-def _wait_chatgpt_provider_gate(agent_id: str) -> bool:
-    delay = _reserve_chatgpt_provider_start()
-    if delay <= 0:
-        return True
-    def mark_waiting(current: Dict[str, Any]) -> Optional[bool]:
-        if current.get("status") == "cancelled":
-            return False
-        current["phase"] = "throttled"
-        current["note"] = f"ChatGPT provider cooldown active; next safe start in about {int(delay)}s."
-        current["updated_at"] = _now()
-        return True
-    _update_meta(agent_id, mark_waiting)
-    deadline = time.monotonic() + delay
-    while time.monotonic() < deadline:
+def _claude_freshest_access_token() -> Tuple[Optional[str], float]:
+    best: Tuple[Optional[str], float] = (None, 0.0)
+    for oauth in _claude_oauth_records():
         try:
-            if _read_meta(agent_id).get("status") == "cancelled":
-                return False
-        except HTTPException:
-            return False
-        time.sleep(min(0.5, max(0.05, deadline - time.monotonic())))
-    def mark_ready(current: Dict[str, Any]) -> Optional[bool]:
-        if current.get("status") == "cancelled":
-            return False
-        current["phase"] = "retrying" if int(current.get("retry_count") or 0) > 0 else "provider_starting"
-        current["updated_at"] = _now()
-        return True
-    _update_meta(agent_id, mark_ready)
-    return True
+            expires_at = float(oauth.get("expiresAt") or 0) / 1000.0
+        except (TypeError, ValueError):
+            expires_at = 0.0
+        if best[0] is None or expires_at > best[1]:
+            best = (str(oauth["accessToken"]).strip(), expires_at)
+    return best
 
 
-def _chatgpt_turn_budget_action(meta: Dict[str, Any], now: Optional[float] = None) -> Optional[str]:
-    if str(meta.get("provider") or "").lower() != "chatgpt" or meta.get("checkpoint_pending"):
-        return None
-    current = float(now if now is not None else _now())
-    turn_started = float(meta.get("turn_started_at") or meta.get("provider_started_at") or current)
-    soft = int(meta.get("turn_budget_s") or DEFAULT_CHATGPT_TURN_BUDGET_S)
-    hard = int(meta.get("hard_tool_budget_s") or DEFAULT_CHATGPT_HARD_TOOL_BUDGET_S)
-    active_tool_started = meta.get("active_tool_started_at")
-    if active_tool_started:
-        if current - float(active_tool_started) >= hard:
-            return "hard_tool_budget"
-        if current - turn_started >= soft:
-            return "wait_for_tool"
-        return None
-    if current - turn_started >= soft:
-        return "turn_budget"
-    return None
+def _claude_sandbox_token(binary: Optional[str] = None) -> Tuple[Optional[str], str]:
+    """(access token, "ok") for a sandboxed Claude Code agent, else (None, reason).
+
+    A sandboxed agent gets its own config directory, so it cannot read the
+    owner's sign-in. It is handed only the short-lived access token of that
+    sign-in: the refresh token stays in Claude Code's own store, so an agent
+    can never rotate it and sign the owner out. A token that is about to
+    expire is renewed first by `claude auth status` in the owner's normal
+    environment. MAC_MCP_CLAUDE_CODE_OAUTH_TOKEN (a `claude setup-token`
+    token) takes precedence when configured.
+    """
+    explicit = str(os.getenv("MAC_MCP_CLAUDE_CODE_OAUTH_TOKEN") or "").strip()
+    if explicit:
+        return explicit, "ok"
+    token, expires_at = _claude_freshest_access_token()
+    if token and expires_at and expires_at - _now() < _CLAUDE_TOKEN_MIN_REMAINING_S and binary:
+        try:
+            subprocess.run(
+                [binary, "auth", "status"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, timeout=30, check=False, env=_minimal_provider_env("claude", {}),
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        token, expires_at = _claude_freshest_access_token()
+    if not token:
+        return None, "claude_not_signed_in"
+    if expires_at and expires_at - _now() < _CLAUDE_TOKEN_MIN_REMAINING_S:
+        return None, "claude_sign_in_expired"
+    return token, "ok"
 
 
-def _chatgpt_checkpoint_prompt(reason: str) -> str:
-    detail = "the current tool exceeded the hard safety budget" if reason == "hard_tool_budget" else "the current turn reached its budget"
-    return (
-        "Continue the same delegated task from the current conversation state. This is an automatic checkpoint because "
-        f"{detail}. Do not repeat completed work or duplicate external side effects. Reconcile the latest visible tool/results "
-        "first, then continue toward the original goal and finish with the requested handoff when complete."
+def _claude_sign_in_error(reason: str) -> HTTPException:
+    return HTTPException(
+        status.HTTP_409_CONFLICT,
+        f"{reason}: a sandboxed Claude Code agent needs the Claude Code sign-in on this Mac, and it is "
+        "missing or expired. Run `claude` once (or `claude auth login`) on this Mac, then try again; "
+        "access_mode=full uses the normal sign-in directly.",
     )
-
-
-def _chatgpt_checkpoint_command(meta: Dict[str, Any], reason: str) -> Optional[List[str]]:
-    target = str(meta.get("provider_job_id") or meta.get("session_id") or "").strip()
-    binary = str(meta.get("binary") or "").strip()
-    if not target or not binary:
-        return None
-    cmd = [binary, "interrupt", target]
-    model = str(meta.get("model") or "").strip()
-    if model:
-        cmd += ["--model", model]
-    effort = _chatgpt_effort(meta.get("reasoning"))
-    if effort:
-        cmd += ["--effort", effort]
-    cmd.append(_chatgpt_checkpoint_prompt(reason))
-    return cmd
-
-
-def _request_chatgpt_checkpoint(agent_id: str, meta: Dict[str, Any], reason: str) -> bool:
-    cmd = _chatgpt_checkpoint_command(meta, reason)
-    if not cmd:
-        return False
-    requested_at = _now()
-    def mark_pending(current: Dict[str, Any]) -> Optional[bool]:
-        if current.get("status") == "cancelled" or current.get("checkpoint_pending"):
-            return False
-        current.update({
-            "checkpoint_pending": True, "phase": "checkpointing", "last_checkpoint_reason": reason,
-            "last_checkpoint_requested_at": requested_at,
-            "note": "ChatGPT turn budget reached; checkpointing into a fresh turn.", "updated_at": requested_at,
-        })
-        return True
-    latest = _update_meta(agent_id, mark_pending)
-    if not latest.get("checkpoint_pending"):
-        return False
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20, env=_chatgpt_env())
-    except (OSError, subprocess.SubprocessError) as exc:
-        proc = None
-        error = str(exc)
-    else:
-        error = (proc.stderr or proc.stdout or "").strip()
-    if proc is None or proc.returncode != 0:
-        def mark_failed(current: Dict[str, Any]) -> None:
-            current["checkpoint_pending"] = False
-            current["checkpoint_failures"] = int(current.get("checkpoint_failures") or 0) + 1
-            current["phase"] = "tool" if current.get("active_tool_started_at") else "reasoning"
-            current["note"] = "Automatic ChatGPT checkpoint failed; continuing current turn without duplicate retry."
-            current["last_checkpoint_error"] = str(error or "checkpoint request failed")[-500:]
-            current["updated_at"] = _now()
-        _update_meta(agent_id, mark_failed)
-        return False
-    def mark_requested(current: Dict[str, Any]) -> None:
-        current["checkpoint_count"] = int(current.get("checkpoint_count") or 0) + 1
-        current["last_checkpoint_at"] = _now()
-        current["updated_at"] = _now()
-    _update_meta(agent_id, mark_requested)
-    return True
-
-
-def _chatgpt_session_for_job(meta: Dict[str, Any]) -> Optional[str]:
-    existing = str(meta.get("session_id") or "").strip()
-    if existing:
-        return existing
-    job_id = str(meta.get("provider_job_id") or "").strip()
-    binary = str(meta.get("binary") or "").strip()
-    if not job_id or not binary:
-        return None
-    try:
-        proc = subprocess.run([binary, "jobs", "--all", "--json"], capture_output=True, text=True, timeout=10, env=_chatgpt_env())
-        rows = json.loads(proc.stdout or "[]") if proc.returncode == 0 else []
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        return None
-    for row in rows if isinstance(rows, list) else []:
-        if isinstance(row, dict) and str(row.get("id") or "") == job_id:
-            session_id = str(row.get("sessionId") or row.get("session_id") or "").strip()
-            return session_id or None
-    return None
 
 
 def _access_mode_info(provider: str, access_mode: str) -> Dict[str, Any]:
@@ -3122,13 +2970,16 @@ def _access_mode_info(provider: str, access_mode: str) -> Dict[str, Any]:
                 "OpenCode restricted access is unavailable because macOS sandbox-exec is not available; the request is refused."
             ),
         }
-    if provider == "chatgpt":
+    if provider == "claude":
+        available = _sandbox_exec_available()
         return {
-            "enforced": False,
-            "boundary": "unsupported",
+            "enforced": available,
+            "boundary": "macos_seatbelt" if available else "unsupported",
             "note": (
-                "ChatGPT Web CLI cannot truthfully enforce read_only/workspace_write as an OS boundary because the authenticated "
-                "web runtime can act outside the local subprocess filesystem. Restricted modes are refused; use full only when intended."
+                "Claude Code runs inside a Mac MCP macOS Seatbelt boundary with scoped filesystem roots, a private "
+                "config directory and only the short-lived access token of the owner's Claude Code sign-in."
+                if available else
+                "Claude Code restricted access is unavailable because macOS sandbox-exec is not available; the request is refused."
             ),
         }
     return {"enforced": False, "boundary": "unsupported", "note": "Provider process boundary is unsupported."}
@@ -3149,12 +3000,19 @@ def _validate_provider_access_mode(provider: str, access_mode: str) -> None:
             status.HTTP_409_CONFLICT,
             "Codex restricted access is unavailable: macOS sandbox-exec is missing, so Mac MCP refuses to rely on provider-native read-only semantics alone.",
         )
-    if provider == "chatgpt":
+    if provider == "claude" and not _sandbox_exec_available():
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "ChatGPT Web CLI restricted access is unavailable: its authenticated browser/account runtime cannot be OS-confined to the "
-            "requested local scope. The request was refused instead of presenting a false read-only/browser-only guarantee; use full explicitly.",
+            "Claude Code restricted access is unavailable: macOS sandbox-exec is missing, so Mac MCP refuses to rely on Claude Code's own permission checks alone.",
         )
+
+def _require_provider_sign_in(provider: str, access_mode: str, binary: Optional[str]) -> None:
+    """Fail at spawn, before worktrees and admission, when a sandboxed agent could not sign in."""
+    if str(provider or "").lower() == "claude" and str(access_mode or "workspace_write") != "full":
+        token, reason = _claude_sandbox_token(binary)
+        if not token:
+            raise _claude_sign_in_error(reason)
+
 
 def _requested_agent_scope(
     workdir: Path,
@@ -3223,25 +3081,18 @@ def _scope_prompt(scope: ResourceScope, profile: str, provider: str) -> str:
         f"Permission profile: {profile}. Scope: {scope_json}. "
         "Use only the resources and tool families inside this scope."
     )
-    if provider in {"opencode", "codex"}:
-        provider_name = "OpenCode" if provider == "opencode" else "Codex"
+    if provider in _PROVIDER_LABELS:
+        provider_name = _PROVIDER_LABELS[provider]
         return (
             base
             + f" In restricted access modes, Mac MCP also places the entire {provider_name} provider process and its descendants "
               "inside a macOS Seatbelt filesystem boundary. Do not attempt to evade that boundary or launch external UI/keychain helpers."
         )
-    if provider == "chatgpt":
-        return (
-            "This delegated agent runs through the authenticated ChatGPT web UI. Mac MCP permits this provider only with "
-            f"explicit full access because restricted local OS confinement is not enforceable. Permission profile: {profile}. "
-            f"Scope metadata: {scope_json}."
-        )
     return base
 
 
 def _provider_compatibility(provider: str, binary: str) -> Dict[str, Any]:
-    env = _chatgpt_env() if provider == "chatgpt" else _base_env()
-    return provider_compat.check(provider, binary, env=env)
+    return provider_compat.check(provider, binary, env=_base_env())
 
 
 def _require_provider_compatible(provider: str, binary: str) -> None:
@@ -3257,14 +3108,13 @@ def _require_provider_compatible(provider: str, binary: str) -> None:
 
 
 def provider_overview() -> Dict[str, Any]:
-    labels = {"opencode": "OpenCode", "codex": "Codex", "chatgpt": "ChatGPT Web CLI"}
     rows: List[Dict[str, Any]] = []
-    for provider in ("opencode", "codex", "chatgpt"):
+    for provider in _PROVIDER_LABELS:
         enabled = provider_enabled(provider)
         binary = _find_binary(provider)
         rows.append({
             "id": provider,
-            "name": labels[provider],
+            "name": _PROVIDER_LABELS[provider],
             "enabled": enabled,
             "detected": bool(binary),
             "binary_path": binary,
@@ -3384,44 +3234,42 @@ def agent_catalog(
                 for mode in sorted(_ACCESS_MODES)
             },
         }
-    if (not requested or requested == "chatgpt") and provider_enabled("chatgpt"):
-        binary = _find_binary("chatgpt")
-        models, default_model = _chatgpt_models(binary) if binary else ([], None)
-        matched = models
+    if (not requested or requested == "claude") and provider_enabled("claude"):
+        binary = _find_binary("claude")
+        catalog = _claude_model_catalog()
+        items = list(catalog["model_items"])
         if model_filter:
             q = model_filter.lower().strip()
-            matched = [m for m in matched if q in m.lower()]
-        reasoning_values = ["low", "medium", "high", "extra-high"]
-        default_reasoning = str(provider_setting("chatgpt", "default_reasoning", "high") or "high")
-        providers["chatgpt"] = {
+            items = [
+                item for item in items
+                if q in str(item["id"]).lower() or q in str(item["display_name"]).lower()
+            ]
+        providers["claude"] = {
             "available": bool(binary),
             "version": _version(binary),
-            "model_count": len(models),
-            "matched_count": len(matched),
-            "models": matched[:limit],
-            "model_items": _legacy_model_items(
-                matched[:limit],
-                source="chatgpt_model_cache_or_cli",
-                reasoning_values=reasoning_values,
-                default_reasoning=default_reasoning,
-            ),
-            "models_truncated": len(matched) > limit,
-            "default_model": default_model,
-            "reasoning_values": reasoning_values,
-            "default_reasoning": default_reasoning,
-            "catalog_source": "chatgpt_model_cache_or_cli" if binary else "unavailable",
+            "model_count": len(_CLAUDE_MODEL_ALIASES),
+            "matched_count": len(items),
+            "models": [item["id"] for item in items[:limit]],
+            "model_items": items[:limit],
+            "models_truncated": len(items) > limit,
+            "default_model": catalog.get("default_model"),
+            "default_reasoning": catalog.get("default_reasoning"),
+            "reasoning_values": list(_CLAUDE_EFFORTS),
+            "catalog_source": "claude_code_aliases" if binary else "unavailable",
             "catalog_fetched_at": None,
-            "catalog_freshness": "unknown" if binary and models else "unavailable",
+            "catalog_freshness": "fresh" if binary else "unavailable",
             "catalog_error": None,
-            "turn_budget_s": _chatgpt_budget_config()[0],
-            "hard_tool_budget_s": _chatgpt_budget_config()[1],
-            "rate_limit_backoff_s": _chatgpt_cooldown_seconds(1),
-            "default_project": _chatgpt_default_project(),
-            "supports_project_override": True,
+            "model_note": (
+                "Aliases resolve to the newest model of each family; a full model id such as claude-opus-5-5 "
+                "is also accepted. Without a model the owner's Claude Code default is used."
+            ),
             "supports_resume": True,
-            "scoped_mcp": False,
+            "scoped_mcp": True,
             "access_modes": {
-                mode: {"supported": mode == "full", **_access_mode_info("chatgpt", mode)}
+                mode: {
+                    "supported": mode == "full" or _sandbox_exec_available(),
+                    **_access_mode_info("claude", mode),
+                }
                 for mode in sorted(_ACCESS_MODES)
             },
         }
@@ -3619,16 +3467,24 @@ def _validate_provider_model_selection(
         result["validated"] = bool(selected_model and models)
         return result
 
-    if provider == "chatgpt":
-        models, _ = _chatgpt_models(binary)
-        result["catalog_source"] = "chatgpt_model_cache_or_cli"
-        result["catalog_freshness"] = "unknown" if models else "unavailable"
-        if selected_model and models and selected_model not in models:
+    if provider == "claude":
+        result["catalog_source"] = "claude_code_aliases"
+        result["catalog_freshness"] = "fresh"
+        if selected_model:
+            aliases = {alias for alias, _ in _CLAUDE_MODEL_ALIASES}
+            if selected_model.lower() in aliases:
+                result["validated"] = True
+            elif not _CLAUDE_MODEL_ID_RE.fullmatch(selected_model):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"unsupported_model: Claude Code model {selected_model!r} is neither an alias "
+                    f"({', '.join(sorted(aliases))}) nor a claude-... model id.",
+                )
+        if selected_reasoning and selected_reasoning != "none" and selected_reasoning not in _CLAUDE_EFFORTS:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                f"unsupported_model: ChatGPT model {selected_model!r} is not present in the current account model catalog.",
+                f"unsupported_reasoning: Claude Code effort must be one of {list(_CLAUDE_EFFORTS)}, not {selected_reasoning!r}.",
             )
-        result["validated"] = bool(selected_model and models)
         return result
 
     return result
@@ -4080,7 +3936,6 @@ def _public_meta(agent_id: str, meta: Dict[str, Any]) -> Dict[str, Any]:
         "model_catalog_source": meta.get("model_catalog_source"),
         "model_catalog_freshness": meta.get("model_catalog_freshness"),
         "model_mismatch": bool(meta.get("model_mismatch")),
-        "project": meta.get("project"),
         "cwd": meta.get("cwd"),
         "source_cwd": meta.get("source_cwd"),
         "git_isolation": meta.get("git_isolation", "off"),
@@ -4216,8 +4071,6 @@ def _stop_agent_processes(agent_id: str, meta: Dict[str, Any], sig_name: str) ->
     """Signal provider then worker, escalate to KILL after a grace period; return what still runs."""
     allowed = {"TERM": signal_module.SIGTERM, "KILL": signal_module.SIGKILL, "INT": signal_module.SIGINT}
     provider_signal = allowed[sig_name]
-    if meta.get("provider") == "chatgpt" and sig_name == "TERM":
-        provider_signal = signal_module.SIGINT
     if "provider" in _live_agent_processes(meta):
         _signal_agent_processes(meta, provider_signal, ["provider"])
         if provider_signal == signal_module.SIGINT:
@@ -4488,7 +4341,6 @@ def _spawn_internal(
     team_task_id: Optional[str] = None,
     idle_timeout_s: Optional[int] = None,
     retries: int = 0,
-    project: Optional[str] = None,
     role: Optional[str] = None,
     provenance_class: str = "local",
     workflow_id: Optional[str] = None,
@@ -4515,14 +4367,6 @@ def _spawn_internal(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"provider must be one of: {', '.join(sorted(_PROVIDER_NAMES))}")
     if not provider_enabled(provider):
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"provider_disabled: {provider} is disabled in Mac MCP Settings > Subagents.")
-    if provider == "chatgpt":
-        if reasoning is None:
-            reasoning = str(provider_setting("chatgpt", "default_reasoning", "high") or "high").strip() or "high"
-        if reasoning and str(reasoning).strip().lower() != "none" and not _chatgpt_effort(reasoning):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "chatgpt reasoning must be low, medium, high, or extra-high.")
-        project = str(project or _chatgpt_default_project() or "").strip() or None
-    elif project:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "project is only supported by provider=chatgpt.")
     binary = _find_binary(provider)
     if not binary:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"{provider} CLI is not installed or not executable.")
@@ -4539,6 +4383,7 @@ def _spawn_internal(
     if access_mode not in _ACCESS_MODES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"access_mode must be one of: {', '.join(sorted(_ACCESS_MODES))}")
     _validate_provider_access_mode(provider, access_mode)
+    _require_provider_sign_in(provider, access_mode, binary)
     git_isolation = str(git_isolation or "auto").strip().lower()
     if git_isolation not in GIT_ISOLATION_MODES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"git_isolation must be one of: {', '.join(sorted(GIT_ISOLATION_MODES))}")
@@ -4685,7 +4530,6 @@ def _spawn_internal(
     (path / "result.txt").touch()
 
     started = _now()
-    chatgpt_turn_budget_s, chatgpt_hard_tool_budget_s = _chatgpt_budget_config() if provider == "chatgpt" else (None, None)
     meta: Dict[str, Any] = {
         "agent_id": agent_id,
         "team_id": team_id,
@@ -4704,7 +4548,6 @@ def _spawn_internal(
         "model_catalog_source": selection_validation.get("catalog_source"),
         "model_catalog_freshness": selection_validation.get("catalog_freshness"),
         "model_mismatch": False,
-        "project": project,
         "cwd": str(workdir),
         "source_cwd": str(source_workdir),
         "source_scope": source_scope.to_dict(),
@@ -4721,7 +4564,7 @@ def _spawn_internal(
         "lesson_context_chars": lesson_context_chars,
         "lesson_candidate_ids": [],
         "scope": scope.to_dict(),
-        "scoped_mcp": provider in {"opencode", "codex"},
+        "scoped_mcp": provider in {"opencode", "codex", "claude"},
         "mcp_endpoint": os.getenv("MAC_MCP_AGENT_ENDPOINT", "http://127.0.0.1:8765/mcp"),
         "result_style": result_style,
         "result_contract_version": RESULT_ENVELOPE_VERSION,
@@ -4766,8 +4609,8 @@ def _spawn_internal(
         "provider_job_id": None,
         "turn_count": 0,
         "turn_started_at": None,
-        "turn_budget_s": chatgpt_turn_budget_s,
-        "hard_tool_budget_s": chatgpt_hard_tool_budget_s,
+        "turn_budget_s": None,
+        "hard_tool_budget_s": None,
         "active_tool_started_at": None,
         "checkpoint_count": 0,
         "checkpoint_pending": False,
@@ -4912,7 +4755,6 @@ def spawn_agent(
     parent_scope: Optional[ResourceScope] = None,
     parent_profile: str = "trusted",
     capability_profile: Optional[str] = None,
-    project: Optional[str] = None,
     role: Optional[str] = None,
     provenance_class: str = "local",
     git_isolation: str = "auto",
@@ -4932,7 +4774,7 @@ def spawn_agent(
         settings, provider, prompt, model, reasoning, str(workdir), timeout_s, title,
         result_style, effective_scope.access_mode.value, effective_scope, permission_profile,
         capability_profile=effective_capability_profile, parent_agent_id=context.agent_id,
-        idle_timeout_s=idle_timeout_s, retries=retries, project=project,
+        idle_timeout_s=idle_timeout_s, retries=retries,
         role=role, provenance_class=provenance_class, git_isolation=git_isolation,
         selection_validation=selection.get("selection_validation"),
     )
@@ -4989,7 +4831,6 @@ def spawn_agents(
     parent_scope: Optional[ResourceScope] = None,
     parent_profile: str = "trusted",
     capability_profile: Optional[str] = None,
-    project: Optional[str] = None,
     role: Optional[str] = None,
     provenance_class: str = "local",
     max_parallel: Optional[int] = None,
@@ -5012,8 +4853,6 @@ def spawn_agents(
     conflict_policy = str(conflict_policy or "advisory").strip().lower()
     if conflict_policy not in CONFLICT_POLICIES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"conflict_policy must be one of: {', '.join(CONFLICT_POLICIES)}.")
-    if provider != "chatgpt" and project:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "project is only supported by provider=chatgpt.")
     git_isolation = str(git_isolation or "auto").strip().lower()
     if git_isolation not in GIT_ISOLATION_MODES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"git_isolation must be one of: {', '.join(sorted(GIT_ISOLATION_MODES))}")
@@ -5064,14 +4903,6 @@ def spawn_agents(
         legacy_name="max_total_tokens",
         maximum=MAX_TEAM_TOKEN_BUDGET,
     )
-    if provider == "chatgpt" and effective_token_budget is not None:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            (
-                "admission_token_budget is unavailable for provider=chatgpt because "
-                "ChatGPT Web does not expose reliable token usage."
-            ),
-        )
 
     forbidden = {"provider", "model", "reasoning", "access_mode", "result_style"}
     normalized: List[Dict[str, Any]] = []
@@ -5102,8 +4933,6 @@ def spawn_agents(
         if len(depends_on) != len(set(depends_on)):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].depends_on contains duplicates.")
         review_of = str(task.get("review_of") or "").strip() or None
-        if provider != "chatgpt" and task.get("project"):
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].project is only supported by provider=chatgpt.")
         child_scope_raw = task.get("scope")
         if child_scope_raw is not None and not isinstance(child_scope_raw, dict):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"tasks[{index - 1}].scope must be an object.")
@@ -5128,7 +4957,6 @@ def spawn_agents(
             "prompt": prompt,
             "title": str(task.get("title") or f"Agent {index}").strip(),
             "scope": child_scope_raw,
-            "project": str(task.get("project") or project or "").strip() or None,
             "role": child_role,
             "depends_on": depends_on,
             "review_of": review_of,
@@ -5150,6 +4978,7 @@ def spawn_agents(
     )
     access_mode = team_scope.access_mode.value
     _validate_provider_access_mode(provider, access_mode)
+    _require_provider_sign_in(provider, access_mode, provider_binary)
     team_selection_validation = (
         dict(selection["selection_validation"])
         if isinstance(selection.get("selection_validation"), dict)
@@ -5221,7 +5050,6 @@ def spawn_agents(
         "model": model,
         "reasoning": reasoning,
         "model_selection_validation": team_selection_validation,
-        "project": (str(project or _chatgpt_default_project() or "").strip() or None) if provider == "chatgpt" else None,
         "cwd": str(workdir),
         "git_isolation": git_isolation,
         "git_base_commit": team_git_base,
@@ -5705,10 +5533,6 @@ def _recover_provider_session_id(meta: Dict[str, Any], agent_id: str) -> Optiona
     existing = str(meta.get("session_id") or meta.get("resume_session_id") or "").strip()
     if existing:
         return existing
-    if str(meta.get("provider") or "").lower() == "chatgpt":
-        recovered = _chatgpt_session_for_job(meta)
-        if recovered:
-            return str(recovered)
 
     stdout_path = _agent_dir(agent_id) / "stdout.log"
     if not stdout_path.exists():
@@ -5925,7 +5749,6 @@ def _agent_action_single(
             attempt=int(meta.get("attempt", 1)) + 1,
             idle_timeout_s=meta.get("idle_timeout_s"),
             retries=int(meta.get("retries") or 0),
-            project=meta.get("project"),
             role=meta.get("role"),
             provenance_class=str(meta.get("provenance_class") or "local"),
             git_isolation=str(meta.get("git_isolation") or "auto"),
@@ -5984,7 +5807,6 @@ def _agent_action_single(
                 attempt=int(meta.get("attempt", 1)) + 1,
                 idle_timeout_s=meta.get("idle_timeout_s"),
                 retries=int(meta.get("retries") or 0),
-                project=meta.get("project"),
                 role=meta.get("role"),
                 provenance_class=str(meta.get("provenance_class") or "local"),
                 workflow_id=str(checkpoint["workflow_id"]),
@@ -6028,7 +5850,6 @@ def _agent_action_single(
         attempt=int(meta.get("attempt", 1)) + 1,
         idle_timeout_s=meta.get("idle_timeout_s"),
         retries=int(meta.get("retries") or 0),
-        project=meta.get("project"),
         role=meta.get("role"),
         provenance_class=str(meta.get("provenance_class") or "local"),
         git_isolation=str(meta.get("git_isolation") or "auto"),
@@ -6141,7 +5962,6 @@ def agent_action(
                     "prompt": task.get("prompt"),
                     "title": task.get("title"),
                     "scope": task.get("scope"),
-                    "project": task.get("project"),
                     "role": task.get("role"),
                     "depends_on": list(task.get("depends_on") or []),
                     "review_of": task.get("review_of"),
@@ -6153,7 +5973,7 @@ def agent_action(
                 idle_timeout_s=team.get("idle_timeout_s"), retries=int(team.get("retries") or 0),
                 result_style=team.get("result_style", "concise"), access_mode=team.get("access_mode", "read_only"),
                 title=f"Retry: {team.get('title') or team_id}", parent_team_id=str(team_id),
-                scope=team.get("scope"), parent_profile="trusted", project=team.get("project"),
+                scope=team.get("scope"), parent_profile="trusted",
                 role=team.get("role"), provenance_class=str(team.get("provenance_class") or "local"),
                 max_parallel=int(team.get("max_parallel") or len(tasks) or 1),
                 max_revisions=int(team.get("max_revisions") or 0),
@@ -6190,7 +6010,6 @@ def agent_action(
             tasks.append({
                 "prompt": prompt_path.read_text(encoding="utf-8", errors="replace"),
                 "title": child.get("title") or f"Agent {index}",
-                "project": child.get("project"),
                 "role": child.get("role"),
             })
         return spawn_agents(
@@ -6199,7 +6018,7 @@ def agent_action(
             idle_timeout_s=team.get("idle_timeout_s"), retries=int(team.get("retries") or 0),
             result_style=team.get("result_style", "concise"), access_mode=team.get("access_mode", "read_only"),
             title=f"Retry: {team.get('title') or team_id}", parent_team_id=str(team_id),
-            scope=team.get("scope"), parent_profile="trusted", project=team.get("project"),
+            scope=team.get("scope"), parent_profile="trusted",
             role=team.get("role"), provenance_class=str(team.get("provenance_class") or "local"),
             git_isolation=str(team.get("git_isolation") or "auto"),
         )
@@ -6238,26 +6057,74 @@ def _extract_opencode(path: Path) -> Tuple[str, Optional[str], Optional[Dict[str
     return (final or candidate).strip(), session_id, usage
 
 
-def _extract_chatgpt(path: Path) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
-    final = ""
-    session_id: Optional[str] = None
+def _claude_usage_meta(usage: Any) -> Optional[Dict[str, Any]]:
+    """Claude Code reports input without cache tokens and thinking inside output."""
+    if not isinstance(usage, dict):
+        return None
+    details = usage.get("output_tokens_details") if isinstance(usage.get("output_tokens_details"), dict) else {}
+    return {
+        "input": int(usage.get("input_tokens") or 0),
+        "output": int(usage.get("output_tokens") or 0),
+        "reasoning": int(details.get("thinking_tokens") or 0),
+        "cache": {
+            "read": int(usage.get("cache_read_input_tokens") or 0),
+            "write": int(usage.get("cache_creation_input_tokens") or 0),
+        },
+    }
+
+
+def _claude_last_result(path: Path, offset: int = 0) -> Optional[Dict[str, Any]]:
     if not path.exists():
-        return "", None, None
-    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        return None
+    try:
+        raw = path.read_bytes()[max(0, int(offset)):].decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    found: Optional[Dict[str, Any]] = None
+    for line in raw.splitlines():
+        if '"type":"result"' not in line.replace(" ", ""):
+            continue
         try:
-            event = json.loads(raw)
+            event = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if not isinstance(event, dict):
-            continue
-        found_session = event.get("sessionId") or event.get("session_id")
-        if found_session:
-            session_id = str(found_session)
-        if str(event.get("type") or "") == "final":
-            text = event.get("text")
-            if text:
-                final = str(text).strip()
-    return final, session_id, None
+        if isinstance(event, dict) and event.get("type") == "result":
+            found = event
+    return found
+
+
+def _extract_claude(path: Path) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
+    event = _claude_last_result(path)
+    if event is None:
+        return "", None, None
+    session_id = str(event.get("session_id") or "").strip() or None
+    return str(event.get("result") or "").strip(), session_id, _claude_usage_meta(event.get("usage"))
+
+
+def _claude_failure_reason(path: Path, offset: int = 0) -> Optional[Tuple[str, bool, float]]:
+    """Classify a failed Claude Code run from its own result event: (reason, retryable, backoff)."""
+    event = _claude_last_result(path, offset)
+    if event is None or not (event.get("is_error") or str(event.get("subtype") or "") not in {"", "success"}):
+        return None
+    try:
+        api_status = int(event.get("api_error_status") or 0)
+    except (TypeError, ValueError):
+        api_status = 0
+    if api_status == 401:
+        return "provider_auth_expired", False, 0.0
+    if api_status == 403:
+        return "permission_error", False, 0.0
+    if api_status == 429:
+        return "rate_limited", True, 5.0
+    if api_status in {500, 502, 503, 504}:
+        return "provider_unavailable", True, 3.0
+    if api_status == 529:
+        return "provider_overloaded", True, 4.0
+    if api_status in {400, 404, 413}:
+        return "invalid_request", False, 0.0
+    if str(event.get("subtype") or "") == "error_max_turns":
+        return "provider_error_nonretryable", False, 0.0
+    return None
 
 
 def _find_key_recursive(value: Any, keys: set) -> Optional[Any]:
@@ -6298,8 +6165,88 @@ def _codex_shell_home_args(access_mode: str, shell_home: Optional[str]) -> List[
     return ["--config", f"shell_environment_policy.set.HOME={json.dumps(str(shell_home))}"]
 
 
+_CLAUDE_MCP_CONFIG_NAME = "claude-mcp.json"
+
+
+def _claude_mcp_config(meta: Dict[str, Any], bearer: str = "${MAC_MCP_AGENT_TOKEN}") -> str:
+    servers: Dict[str, Any] = {}
+    if meta.get("scoped_mcp"):
+        # By default the CLI expands ${VAR} from the provider environment, so the
+        # scoped bearer token never appears in argv.
+        servers["mac-mcp"] = {
+            "type": "http",
+            "url": str(meta.get("mcp_endpoint") or "http://127.0.0.1:8765/mcp"),
+            "headers": {"Authorization": f"Bearer {bearer}"},
+        }
+    return json.dumps({"mcpServers": servers}, separators=(",", ":"))
+
+
+def _write_claude_mcp_config(agent_id: str, meta: Dict[str, Any], scoped_token: str) -> Path:
+    """Private per-attempt MCP config for a sandboxed agent.
+
+    Scrubbing the CLI's child environment also blanks ${MAC_MCP_AGENT_TOKEN},
+    so a sandboxed agent reads its scoped token from this 0600 file instead;
+    the attempt removes it when the provider exits.
+    """
+    root = _agent_dir(agent_id) / "provider_config"
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        root.chmod(0o700)
+    except OSError:
+        pass
+    path = root / _CLAUDE_MCP_CONFIG_NAME
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(_claude_mcp_config(meta, scoped_token) if scoped_token else _claude_mcp_config({}))
+    return path
+
+
+def _claude_command(meta: Dict[str, Any], prompt: str, mcp_config_path: Optional[Path] = None) -> List[str]:
+    access_mode = str(meta.get("access_mode") or "workspace_write")
+    model = str(meta.get("model") or "").strip() or None
+    effort = str(meta.get("reasoning") or "").strip().lower() or None
+    if access_mode != "full":
+        # A sandboxed agent has its own config directory, so carry over the
+        # owner's default model and effort explicitly.
+        default_model, default_effort = _claude_user_defaults()
+        model = model or default_model
+        effort = effort or default_effort
+    cmd = [
+        str(meta["binary"]), "--print", "--output-format", "stream-json", "--verbose",
+        # Headless runs cannot answer permission prompts. Restricted modes are
+        # bounded by the Seatbelt profile, full mode is unrestricted by design.
+        "--permission-mode", "bypassPermissions",
+        # Only the scoped Mac MCP server: no MCP servers or connectors from the owner's own config.
+        "--strict-mcp-config", "--mcp-config", str(mcp_config_path) if mcp_config_path else _claude_mcp_config(meta),
+    ]
+    if model:
+        cmd += ["--model", model]
+    if effort and effort != "none":
+        cmd += ["--effort", effort]
+    resume_session_id = str(meta.get("resume_session_id") or "").strip()
+    if resume_session_id:
+        cmd += ["--resume", resume_session_id]
+    if access_mode != "full":
+        cwd = _canonical_boundary_path(meta["cwd"])
+        extra_roots = sorted({
+            _canonical_boundary_path(raw) for raw in (ResourceScope.from_dict(meta.get("scope")).path_roots or ())
+        } - {cwd})
+        if extra_roots:
+            cmd += ["--add-dir", *extra_roots]
+        cmd += ["--allowedTools", *_CLAUDE_SANDBOX_ALLOWED_TOOLS]
+    denied = list(_CLAUDE_LIFECYCLE_TOOLS)
+    if access_mode == "read_only":
+        denied += list(_CLAUDE_WRITE_TOOLS)
+    cmd += ["--disallowedTools", *denied]
+    # --mcp-config, --add-dir, --allowedTools and --disallowedTools take several values; "--"
+    # ends them so the prompt is never read as one of their arguments.
+    cmd += ["--", prompt]
+    return cmd
+
+
 def _build_provider_command(
     meta: Dict[str, Any], prompt: str, result_path: Path, shell_home: Optional[str] = None,
+    mcp_config_path: Optional[Path] = None,
 ) -> List[str]:
     provider = meta["provider"]
     binary = meta["binary"]
@@ -6322,20 +6269,9 @@ def _build_provider_command(
         cmd.append(prompt)
         return cmd
 
-    if provider == "chatgpt":
-        if resume_session_id:
-            cmd = [binary, "resume", str(resume_session_id)]
-        else:
-            project = str(meta.get("project") or _chatgpt_default_project() or "").strip()
-            cmd = [binary, "project", project, "new"] if project else [binary, "new"]
-        cmd += ["--json-stream", "--timeout", str(int(meta.get("timeout_s") or DEFAULT_AGENT_TIMEOUT_S))]
-        if model:
-            cmd += ["--model", str(model)]
-        effort = _chatgpt_effort(reasoning)
-        if effort:
-            cmd += ["--effort", effort]
-        cmd.append(prompt)
-        return cmd
+    if provider == "claude":
+        _validate_provider_access_mode(provider, access_mode)
+        return _claude_command(meta, prompt, mcp_config_path)
 
     if resume_session_id:
         cmd = [binary, "exec", "resume", "--json", "--skip-git-repo-check", "-o", str(result_path)]
@@ -6404,6 +6340,90 @@ def _note_unknown_event(meta: Dict[str, Any], event_type: str) -> None:
         meta["unknown_event_types"] = seen
 
 
+_CLAUDE_PASSIVE_EVENTS = {"system", "output", "stream_event", "control_request", "control_response", "keep_alive"}
+
+
+def _claude_note_model(meta: Dict[str, Any], model: Any) -> None:
+    if not model:
+        return
+    meta["effective_model"] = str(model)
+    requested = str(meta.get("requested_model") or meta.get("model") or "").strip()
+    # Aliases (opus, sonnet, ...) resolve to a dated model id; only a full id can mismatch.
+    if requested.startswith("claude-") and not str(model).startswith(requested.removesuffix("[1m]")):
+        meta["model_mismatch"] = True
+        meta["note"] = f"Provider model mismatch: requested {requested}, effective {model}."
+
+
+def _apply_claude_event(meta: Dict[str, Any], event: Dict[str, Any], event_type: str, now: float) -> None:
+    subtype = str(event.get("subtype") or "")
+    if event_type == "system" and subtype == "init":
+        meta["phase"] = "starting"
+        _claude_note_model(meta, event.get("model"))
+        servers = event.get("mcp_servers") if isinstance(event.get("mcp_servers"), list) else []
+        for server in servers:
+            if isinstance(server, dict) and server.get("name") == "mac-mcp":
+                meta["scoped_mcp_status"] = str(server.get("status") or "unknown")
+        return
+    if event_type == "assistant":
+        message = event.get("message") if isinstance(event.get("message"), dict) else {}
+        _claude_note_model(meta, message.get("model"))
+        message_id = str(message.get("id") or "")
+        if message_id and message_id != meta.get("last_message_id"):
+            meta["last_message_id"] = message_id
+            meta["step_count"] = int(meta.get("step_count") or 0) + 1
+        content = message.get("content") if isinstance(message.get("content"), list) else []
+        tools = [item for item in content if isinstance(item, dict) and item.get("type") == "tool_use"]
+        for item in tools:
+            meta["tool_call_count"] = int(meta.get("tool_call_count") or 0) + 1
+            meta["last_tool"] = str(item.get("name") or "tool")
+            if not meta.get("first_tool_at"):
+                meta["first_tool_at"] = now
+        if tools:
+            meta["active_tool_started_at"] = now
+            meta["phase"] = "tool"
+        elif any(isinstance(item, dict) and item.get("type") == "text" for item in content):
+            meta["phase"] = "finalizing"
+        else:
+            meta["phase"] = "reasoning"
+        return
+    if event_type == "user":
+        started = meta.get("active_tool_started_at")
+        if started:
+            meta["last_tool_duration_ms"] = max(0, int((now - float(started)) * 1000))
+            meta["active_tool_started_at"] = None
+        meta["phase"] = "reasoning"
+        return
+    if event_type == "rate_limit_event":
+        info = event.get("rate_limit_info") if isinstance(event.get("rate_limit_info"), dict) else {}
+        if str(info.get("status") or "") == "rejected":
+            meta["throttle_count"] = int(meta.get("throttle_count") or 0) + 1
+            meta["last_throttled_at"] = now
+            meta["last_throttle_reason"] = str(info.get("rateLimitType") or "rate_limit")
+            resets_at = info.get("resetsAt")
+            if isinstance(resets_at, (int, float)) and resets_at > now:
+                meta["cooldown_until"] = float(resets_at)
+        return
+    if event_type == "result":
+        meta["turn_count"] = int(meta.get("turn_count") or 0) + 1
+        usage = _claude_usage_meta(event.get("usage"))
+        if usage:
+            meta["usage"] = usage
+        cost = event.get("total_cost_usd")
+        if isinstance(cost, (int, float)):
+            meta["provider_cost_usd"] = round(float(meta.get("provider_cost_usd") or 0.0) + float(cost), 6)
+        failed = bool(event.get("is_error")) or subtype not in {"", "success"}
+        meta["phase"] = "failed" if failed else "finalizing"
+        if failed:
+            meta["provider_error"] = {
+                "subtype": subtype or None,
+                "api_error_status": event.get("api_error_status"),
+            }
+        return
+    if event_type not in _CLAUDE_PASSIVE_EVENTS:
+        _note_unknown_event(meta, event_type)
+    meta["phase"] = meta.get("phase") or "working"
+
+
 def _apply_provider_event(meta: Dict[str, Any], event: Dict[str, Any], now: float) -> Optional[bool]:
     if meta.get("status") == "cancelled":
         return False
@@ -6418,60 +6438,8 @@ def _apply_provider_event(meta: Dict[str, Any], event: Dict[str, Any], now: floa
     meta["last_activity_at"] = now
     meta["last_event_type"] = event_type
 
-    if provider == "chatgpt":
-        session_id = event.get("sessionId") or event.get("session_id")
-        if session_id:
-            meta["session_id"] = str(session_id)
-        provider_job_id = event.get("jobId") or event.get("job_id")
-        if provider_job_id:
-            meta["provider_job_id"] = str(provider_job_id)
-        if event_type == "job_started":
-            meta["phase"] = "starting"
-            meta["turn_count"] = max(1, int(meta.get("turn_count") or 0))
-            meta["turn_started_at"] = now
-        elif event_type == "status":
-            if int(meta.get("step_count") or 0) == 0:
-                meta["step_count"] = 1
-            meta["phase"] = "reasoning"
-        elif event_type == "tool_activity":
-            meta["phase"] = "tool" if bool(event.get("active")) else "reasoning"
-        elif event_type == "tool_update":
-            text = str(event.get("text") or "").strip()
-            if text:
-                meta["last_tool"] = text
-            meta["phase"] = "tool"
-        elif event_type == "tool_start":
-            meta["tool_call_count"] = int(meta.get("tool_call_count") or 0) + 1
-            meta["last_tool"] = str(event.get("text") or event.get("toolId") or "tool")
-            if not meta.get("first_tool_at"):
-                meta["first_tool_at"] = now
-            meta["active_tool_started_at"] = now
-            meta["phase"] = "tool"
-        elif event_type == "tool_end":
-            tool_started = meta.get("active_tool_started_at")
-            if tool_started:
-                meta["last_tool_duration_ms"] = max(0, int((now - float(tool_started)) * 1000))
-            meta["active_tool_started_at"] = None
-            meta["checkpoint_waiting_for_tool"] = False
-            meta["phase"] = "reasoning"
-        elif event_type == "interrupting":
-            meta["phase"] = "checkpointing"
-        elif event_type == "interrupted":
-            meta["turn_count"] = int(meta.get("turn_count") or 0) + 1
-            meta["turn_started_at"] = now
-            meta["active_tool_started_at"] = None
-            meta["checkpoint_pending"] = False
-            meta["checkpoint_waiting_for_tool"] = False
-            meta["note"] = "ChatGPT checkpoint resumed in a fresh turn."
-            meta["phase"] = "reasoning"
-        elif event_type == "assistant_delta":
-            meta["phase"] = "finalizing"
-        elif event_type == "final":
-            meta["phase"] = "finalizing"
-        elif event_type in {"stopped", "error"}:
-            meta["phase"] = "failed" if event_type == "error" else "cancelled"
-        else:
-            meta["phase"] = meta.get("phase") or "working"
+    if provider == "claude":
+        _apply_claude_event(meta, event, event_type, now)
     elif provider == "codex":
         item = event.get("item") if isinstance(event.get("item"), dict) else {}
         event_model = event.get("model") or event.get("model_slug") or event.get("model_id")
@@ -6670,7 +6638,7 @@ def _ingest_provider_usage_event(
 ) -> None:
     provider = str(saved.get("provider") or "").strip().lower()
     event_type = str(event.get("type") or "")
-    if provider not in {"codex", "opencode"}:
+    if provider not in _USAGE_REPORTING_PROVIDERS:
         return
 
     store = get_provider_usage_store()
@@ -6734,6 +6702,43 @@ def _ingest_provider_usage_event(
             _accumulate_agent_usage(agent_id, event_key, normalized.total_tokens)
         finally:
             _close_codex_usage_turn(agent_id, event_key or None)
+        return
+
+    if provider == "claude":
+        if event_type != "result":
+            return
+        usage = event.get("usage") if isinstance(event.get("usage"), dict) else None
+        normalized = normalize_claude_usage(usage)
+        if not normalized.recognized:
+            if usage:
+                store.diagnostic_increment("unknown_usage_schema_claude")
+            return
+        session_id = str(event.get("session_id") or saved.get("session_id") or "").strip()
+        result_id = str(event.get("uuid") or "").strip()
+        if not session_id or not result_id:
+            store.diagnostic_increment("invalid_identity_claude")
+            return
+        event_key = f"claude:{session_id}:{result_id}"
+        store.ingest(ProviderUsageRecord(
+            event_key=event_key,
+            provider="claude",
+            session_id=session_id,
+            event_id=result_id,
+            timestamp=timestamp,
+            agent_id=agent_id,
+            model=model,
+            model_verified=model_verified,
+            source=PROVIDER_USAGE_SOURCE_REPORT,
+            requested_model=requested_model,
+            effective_model=effective_model,
+            input_tokens=normalized.input_tokens,
+            output_tokens=normalized.output_tokens,
+            reasoning_tokens=normalized.reasoning_tokens,
+            cache_read_tokens=normalized.cache_read_tokens,
+            cache_write_tokens=normalized.cache_write_tokens,
+            total_tokens=normalized.total_tokens,
+        ))
+        _accumulate_agent_usage(agent_id, event_key, normalized.total_tokens)
         return
 
     if event_type != "step_finish":
@@ -6813,7 +6818,7 @@ def _accumulate_agent_usage(agent_id: str, event_key: str, total_tokens: int) ->
 
 
 # Providers whose CLI reports token usage that Mac MCP can count.
-_USAGE_REPORTING_PROVIDERS = {"codex", "opencode"}
+_USAGE_REPORTING_PROVIDERS = {"codex", "opencode", "claude"}
 
 
 def _agent_token_usage(meta: Dict[str, Any]) -> tuple[int, bool]:
@@ -6906,7 +6911,11 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
     env, cleanup_root = _provider_env(agent_id, meta, scoped_token)
     boundary_profile: Optional[Path] = None
     try:
-        cmd = _build_provider_command(meta, prompt, result_path, shell_home=env.get("HOME"))
+        claude_mcp_config = (cleanup_root / _CLAUDE_MCP_CONFIG_NAME) if cleanup_root is not None else None
+        cmd = _build_provider_command(
+            meta, prompt, result_path, shell_home=env.get("HOME"),
+            mcp_config_path=claude_mcp_config if claude_mcp_config is not None and claude_mcp_config.is_file() else None,
+        )
         cmd, boundary_profile = _provider_process_command(agent_id, meta, cmd)
         proc = subprocess.Popen(
             cmd, cwd=meta["cwd"], env=env, stdin=subprocess.DEVNULL,
@@ -6926,9 +6935,6 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
             })
             if str(current.get("provider") or "").lower() == "codex":
                 _prepare_codex_usage_attempt(current, agent_id, attempt_index)
-            if str(current.get("provider") or "").lower() == "chatgpt" and not current.get("turn_started_at"):
-                current["turn_started_at"] = now
-                current["turn_count"] = max(1, int(current.get("turn_count") or 0))
             return True
 
         latest = _update_meta(agent_id, record_provider_start)
@@ -6955,26 +6961,14 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
                 last_admission_heartbeat = heartbeat_now
             if latest.get("status") == "cancelled":
                 stop_reason = "cancelled"
-            elif meta.get("provider") == "chatgpt":
-                budget_action = _chatgpt_turn_budget_action(latest)
-                if budget_action == "wait_for_tool":
-                    if not latest.get("checkpoint_waiting_for_tool"):
-                        def mark_waiting(current: Dict[str, Any]) -> None:
-                            current["checkpoint_waiting_for_tool"] = True
-                            current["note"] = "ChatGPT turn budget reached; waiting for the active tool to finish before checkpointing."
-                            current["updated_at"] = _now()
-                        _update_meta(agent_id, mark_waiting)
-                elif budget_action in {"turn_budget", "hard_tool_budget"}:
-                    _request_chatgpt_checkpoint(agent_id, latest, budget_action)
             if stop_reason is None and time.monotonic() - attempt_started >= timeout_s:
                 stop_reason = "timeout"
             elif stop_reason is None and idle_timeout_s and _now() - float(latest.get("last_activity_at") or latest.get("provider_started_at") or _now()) >= int(idle_timeout_s):
                 stop_reason = "stalled"
             if stop_reason:
-                provider_signal = signal_module.SIGINT if meta.get("provider") == "chatgpt" else signal_module.SIGTERM
-                _kill_group(proc.pid, provider_signal)
+                _kill_group(proc.pid, signal_module.SIGTERM)
                 try:
-                    proc.wait(timeout=4 if meta.get("provider") == "chatgpt" else 3)
+                    proc.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     _kill_group(proc.pid, signal_module.SIGKILL)
                 break
@@ -7049,34 +7043,26 @@ def _worker(agent_id: str) -> int:
                 return 0
             attempt_prompt = prompt
             if attempt_index > 0:
-                if latest.get("provider") != "chatgpt":
-                    try:
-                        checkpoint = workflow_for_agent(agent_id)
-                    except WorkflowCheckpointError:
-                        checkpoint = {"safety": "unknown", "receipt_count": 0}
-                    if checkpoint is None:
-                        final_reason = "outcome_unknown"
-                        break
-                    if str(checkpoint.get("safety") or "unknown") != "verified" or bool(checkpoint.get("pending_effects")):
-                        final_reason = "outcome_unknown"
-                        break
-                    if int(checkpoint.get("receipt_count") or 0) > 0:
-                        final_reason = "resume_required"
-                        break
-                recovered_session_id = _chatgpt_session_for_job(latest) if latest.get("provider") == "chatgpt" else None
+                try:
+                    checkpoint = workflow_for_agent(agent_id)
+                except WorkflowCheckpointError:
+                    checkpoint = {"safety": "unknown", "receipt_count": 0}
+                if checkpoint is None:
+                    final_reason = "outcome_unknown"
+                    break
+                if str(checkpoint.get("safety") or "unknown") != "verified" or bool(checkpoint.get("pending_effects")):
+                    final_reason = "outcome_unknown"
+                    break
+                if int(checkpoint.get("receipt_count") or 0) > 0:
+                    final_reason = "resume_required"
+                    break
                 def record_retry(current: Dict[str, Any]) -> Optional[bool]:
                     if current.get("status") == "cancelled":
                         return False
                     now = _now()
-                    if recovered_session_id:
-                        current["session_id"] = recovered_session_id
-                        current["resume_session_id"] = recovered_session_id
                     current.update({
                         "phase": "retrying", "retry_count": attempt_index, "provider_pid": None,
                         "provider_started_at": None, "last_activity_at": now,
-                        "turn_started_at": None if current.get("provider") == "chatgpt" else current.get("turn_started_at"),
-                        "checkpoint_pending": False if current.get("provider") == "chatgpt" else current.get("checkpoint_pending", False),
-                        "checkpoint_waiting_for_tool": False if current.get("provider") == "chatgpt" else current.get("checkpoint_waiting_for_tool", False),
                         "note": f"Retrying same task after {final_reason or 'provider_error'}.", "updated_at": now,
                     })
                     return True
@@ -7084,33 +7070,13 @@ def _worker(agent_id: str) -> int:
                 latest = _update_meta(agent_id, record_retry)
                 if latest.get("status") == "cancelled":
                     return 0
-                if latest.get("provider") == "chatgpt" and latest.get("resume_session_id"):
-                    attempt_prompt = _chatgpt_checkpoint_prompt("rate_limit" if final_reason == "rate_limited" else "turn_budget")
                 if retry_delay_s > 0:
                     time.sleep(retry_delay_s)
-            if latest.get("provider") == "chatgpt" and not _wait_chatgpt_provider_gate(agent_id):
-                return 0
             stdout_offset = stdout_path.stat().st_size if stdout_path.exists() else 0
             stderr_offset = stderr_path.stat().st_size if stderr_path.exists() else 0
             exit_code, stop_reason = _run_provider_attempt(agent_id, latest, attempt_prompt, attempt_index)
             final_reason = stop_reason
             latest = _read_meta(agent_id)
-            if latest.get("provider") == "chatgpt" and exit_code != 0 and stop_reason is None:
-                throttle_reason = _chatgpt_rate_limit_reason(stdout_path, stderr_path, stdout_offset, stderr_offset)
-                if throttle_reason:
-                    def record_throttle(current: Dict[str, Any]) -> None:
-                        count = int(current.get("throttle_count") or 0) + 1
-                        cooldown_s = _chatgpt_cooldown_seconds(count)
-                        now = _now()
-                        current.update({
-                            "phase": "throttled", "throttle_count": count, "last_throttled_at": now,
-                            "last_throttle_reason": throttle_reason, "cooldown_until": now + cooldown_s,
-                            "note": f"ChatGPT web throttled ({throttle_reason}); cooling down {cooldown_s}s before retry.",
-                            "updated_at": now,
-                        })
-                    latest = _update_meta(agent_id, record_throttle)
-                    _record_chatgpt_shared_throttle(float(latest.get("cooldown_until") or _now()), throttle_reason)
-                    final_reason = "rate_limited"
             if latest.get("status") == "cancelled" or stop_reason == "cancelled":
                 return 0
             if exit_code == 0 and stop_reason is None:
@@ -7120,27 +7086,26 @@ def _worker(agent_id: str) -> int:
 
             # Durable replay safety has precedence over provider error classification.
             # This preserves the stronger parent-visible reason when side effects occurred.
-            if latest.get("provider") != "chatgpt":
-                try:
-                    checkpoint = workflow_for_agent(agent_id)
-                except WorkflowCheckpointError:
-                    checkpoint = {"safety": "unknown", "receipt_count": 0}
-                if checkpoint is None or str(checkpoint.get("safety") or "unknown") != "verified" or bool(checkpoint.get("pending_effects")):
-                    final_reason = "outcome_unknown"
-                    _update_meta(agent_id, lambda current: current.update({
-                        "retry_blocked_reason": "outcome_unknown",
-                        "note": "Automatic replay stopped because the side-effect outcome is unknown.",
-                        "updated_at": _now(),
-                    }))
-                    break
-                if int(checkpoint.get("receipt_count") or 0) > 0:
-                    final_reason = "resume_required"
-                    _update_meta(agent_id, lambda current: current.update({
-                        "retry_blocked_reason": "resume_required",
-                        "note": "Automatic replay stopped after a verified side-effect boundary; use agent_action(action=resume).",
-                        "updated_at": _now(),
-                    }))
-                    break
+            try:
+                checkpoint = workflow_for_agent(agent_id)
+            except WorkflowCheckpointError:
+                checkpoint = {"safety": "unknown", "receipt_count": 0}
+            if checkpoint is None or str(checkpoint.get("safety") or "unknown") != "verified" or bool(checkpoint.get("pending_effects")):
+                final_reason = "outcome_unknown"
+                _update_meta(agent_id, lambda current: current.update({
+                    "retry_blocked_reason": "outcome_unknown",
+                    "note": "Automatic replay stopped because the side-effect outcome is unknown.",
+                    "updated_at": _now(),
+                }))
+                break
+            if int(checkpoint.get("receipt_count") or 0) > 0:
+                final_reason = "resume_required"
+                _update_meta(agent_id, lambda current: current.update({
+                    "retry_blocked_reason": "resume_required",
+                    "note": "Automatic replay stopped after a verified side-effect boundary; use agent_action(action=resume).",
+                    "updated_at": _now(),
+                }))
+                break
 
             decision = _adaptive_retry_decision(
                 latest, exit_code, final_reason, stdout_path, stderr_path, stdout_offset, stderr_offset,
@@ -7208,8 +7173,8 @@ def _worker(agent_id: str) -> int:
     result = ""
     if meta["provider"] == "opencode":
         result, session_id, usage = _extract_opencode(stdout_path)
-    elif meta["provider"] == "chatgpt":
-        result, session_id, usage = _extract_chatgpt(stdout_path)
+    elif meta["provider"] == "claude":
+        result, session_id, usage = _extract_claude(stdout_path)
     else:
         session_id = _extract_codex_session(stdout_path)
         usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else None
@@ -7375,7 +7340,7 @@ def _worker(agent_id: str) -> int:
             )
         if final_status != "completed":
             if final_reason == "rate_limited":
-                current["note"] = f"ChatGPT remained rate-limited after bounded retries; last provider code {exit_code}."
+                current["note"] = f"Provider remained rate-limited after bounded retries; last provider code {exit_code}."
             elif final_reason == "resume_required":
                 current["note"] = "Automatic replay stopped after a verified side-effect boundary; use agent_action(action=resume)."
             elif final_reason == "outcome_unknown":
@@ -7388,7 +7353,7 @@ def _worker(agent_id: str) -> int:
                 current["note"] = "Typed result envelope reported outcome=failure."
             elif final_reason in {"provider_auth_expired", "auth_error"}:
                 provider_name = str(current.get("provider") or "provider")
-                login = "codex login" if provider_name == "codex" else f"the {provider_name} sign-in"
+                login = {"codex": "codex login", "claude": "claude auth login"}.get(provider_name, f"the {provider_name} sign-in")
                 current["note"] = (
                     f"Provider failure is non-retryable ({final_reason}): the {provider_name} sign-in "
                     "expired or was rejected. Sign in again "

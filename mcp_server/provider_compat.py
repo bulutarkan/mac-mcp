@@ -31,8 +31,11 @@ REQUIRED_OPTIONS: Dict[str, Sequence[Tuple[Sequence[str], Sequence[str]]]] = {
     "opencode": (
         (("run", "--help"), ("--format", "--auto", "--dir", "--pure", "--model", "--variant", "--session")),
     ),
-    "chatgpt": (
-        (("--help",), ("new", "resume", "--json-stream", "--timeout", "--model", "--effort")),
+    "claude": (
+        (("--help",), (
+            "--print", "--output-format", "--verbose", "--permission-mode", "--strict-mcp-config", "--mcp-config",
+            "--model", "--effort", "--resume", "--add-dir", "--allowedTools", "--disallowedTools",
+        )),
     ),
 }
 
