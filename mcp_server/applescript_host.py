@@ -11,6 +11,10 @@ osascript. A call that times out or is cancelled kills its helper process, which
 is exactly what happens to an osascript process today. Set
 MAC_MCP_APPLESCRIPT_HOST=0 to always use osascript. Only the CLI-managed server
 enables it, so tests and imports never build or start the helper.
+
+An idle helper holds about 40 MB and costs about 20 ms to start again, so a helper
+unused for MAC_MCP_APPLESCRIPT_HOST_IDLE_S (default 120 s) is stopped. One timer,
+armed only while helpers sit idle, does this; an empty pool never wakes up.
 """
 from __future__ import annotations
 
@@ -35,10 +39,12 @@ from .tool_cancellation import (
 _SOURCE = Path(__file__).resolve().with_name("applescript_host.swift")
 _POOL_LIMIT = 3
 _FAILURE_LIMIT = 3
+_DEFAULT_IDLE_RETIRE_S = 120.0
 
 _lock = threading.Lock()
 _idle: List["_Host"] = []
 _live = 0
+_reaper: Optional[threading.Timer] = None
 _state = {"executable": None, "building": False, "disabled": False, "failures": 0, "allowed": False}
 
 
@@ -101,6 +107,7 @@ class _Host:
             start_new_session=True,
         )
         self._buffer = b""
+        self.idle_since = time.monotonic()
 
     def kill(self) -> None:
         if self.proc.poll() is None:
@@ -160,6 +167,40 @@ def _retire(host: _Host) -> None:
         _live -= 1
 
 
+def _idle_retire_s() -> float:
+    try:
+        value = float(os.getenv("MAC_MCP_APPLESCRIPT_HOST_IDLE_S", _DEFAULT_IDLE_RETIRE_S))
+    except ValueError:
+        value = _DEFAULT_IDLE_RETIRE_S
+    return max(5.0, min(value, 3600.0))
+
+
+def _arm_reaper_locked() -> None:
+    """Arm the single retirement timer for the oldest idle helper (caller holds _lock)."""
+    global _reaper
+    if _reaper is not None or not _idle:
+        return
+    oldest = min(host.idle_since for host in _idle)
+    delay = max(0.05, oldest + _idle_retire_s() - time.monotonic())
+    _reaper = threading.Timer(delay, _reap_idle)
+    _reaper.daemon = True
+    _reaper.start()
+
+
+def _reap_idle() -> None:
+    global _reaper, _live
+    limit = _idle_retire_s()
+    now = time.monotonic()
+    with _lock:
+        _reaper = None
+        expired = [host for host in _idle if now - host.idle_since >= limit]
+        _idle[:] = [host for host in _idle if host not in expired]
+        _live -= len(expired)
+        _arm_reaper_locked()
+    for host in expired:
+        host.kill()
+
+
 def _note_failure() -> None:
     with _lock:
         _state["failures"] += 1
@@ -193,8 +234,10 @@ def run(script: str, timeout_s: float) -> Tuple[bool, str, str]:
     finally:
         unregister_cancellation_cleanup(cleanup)
     with _lock:
+        host.idle_since = time.monotonic()
         _idle.append(host)
         _state["failures"] = 0
+        _arm_reaper_locked()
     if reply.get("ok"):
         return True, str(reply.get("result") or ""), ""
     number = int(reply.get("number") or 0)
@@ -204,9 +247,12 @@ def run(script: str, timeout_s: float) -> Tuple[bool, str, str]:
 
 
 def shutdown() -> None:
-    global _live
+    global _live, _reaper
     with _lock:
         hosts, _idle[:] = list(_idle), []
         _live -= len(hosts)
+        if _reaper is not None:
+            _reaper.cancel()
+            _reaper = None
     for host in hosts:
         host.kill()

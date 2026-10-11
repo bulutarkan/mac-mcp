@@ -111,6 +111,88 @@ class HostReplyTests(unittest.TestCase):
         factory.assert_called_once()
 
 
+class IdleRetirementTests(unittest.TestCase):
+    """#169: helpers left idle are stopped after a grace period; busy ones never are."""
+
+    def setUp(self) -> None:
+        reset_state(allowed=True, executable="/fake/host")
+
+    def tearDown(self) -> None:
+        reset_state()
+
+    def wait_for(self, predicate, timeout=3.0) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return predicate()
+
+    def test_a_helper_idle_past_the_grace_period_is_stopped_and_frees_its_slot(self) -> None:
+        fake = FakeHost({"ok": True, "result": "1"})
+        with patch.object(host, "_idle_retire_s", return_value=0.2), patch.object(host, "_Host", return_value=fake):
+            host.run("a", 5)
+            self.assertEqual([fake], host._idle)
+            self.assertTrue(self.wait_for(lambda: fake.killed))
+        self.assertEqual([], host._idle)
+        self.assertEqual(0, host._live)
+        self.assertIsNone(host._reaper, "an empty pool keeps no timer")
+
+    def test_a_helper_reused_within_the_grace_period_stays_warm(self) -> None:
+        fake = FakeHost({"ok": True, "result": "1"})
+        with patch.object(host, "_idle_retire_s", return_value=60), \
+             patch.object(host, "_Host", return_value=fake) as factory:
+            host.run("a", 5)
+            host.run("b", 5)
+        factory.assert_called_once()
+        self.assertFalse(fake.killed)
+
+    def test_only_expired_helpers_are_stopped_and_the_timer_rearms_for_the_rest(self) -> None:
+        old, fresh = FakeHost(), FakeHost()
+        now = time.monotonic()
+        old.idle_since, fresh.idle_since = now - 100, now - 1
+        host._idle[:] = [old, fresh]
+        host._live = 2
+        with patch.object(host, "_idle_retire_s", return_value=50):
+            host._reap_idle()
+            self.assertTrue(old.killed)
+            self.assertFalse(fresh.killed)
+            self.assertEqual([fresh], host._idle)
+            self.assertEqual(1, host._live)
+            self.assertIsNotNone(host._reaper, "the fresh helper still gets retired later")
+
+    def test_a_busy_helper_is_never_retired_mid_call(self) -> None:
+        class SlowHost(FakeHost):
+            def request(self, script, timeout_s):
+                time.sleep(0.4)
+                return {"ok": True, "result": "done"}
+
+        slow = SlowHost()
+        with patch.object(host, "_idle_retire_s", return_value=0.1), patch.object(host, "_Host", return_value=slow):
+            self.assertEqual((True, "done", ""), host.run("a", 5))
+            self.assertFalse(slow.killed)
+            # Back in the pool it ages from now, then retires.
+            self.assertTrue(self.wait_for(lambda: slow.killed))
+
+    def test_shutdown_cancels_the_timer(self) -> None:
+        with patch.object(host, "_idle_retire_s", return_value=60), \
+             patch.object(host, "_Host", return_value=FakeHost({"ok": True, "result": "1"})):
+            host.run("a", 5)
+        timer = host._reaper
+        self.assertIsNotNone(timer)
+        host.shutdown()
+        self.assertIsNone(host._reaper)
+        self.assertTrue(timer.finished.is_set())
+
+    def test_grace_period_setting_is_bounded(self) -> None:
+        for raw, expected in (("", 120.0), ("abc", 120.0), ("1", 5.0), ("600", 600.0), ("99999", 3600.0)):
+            env = {"MAC_MCP_APPLESCRIPT_HOST_IDLE_S": raw} if raw else {}
+            with self.subTest(raw=raw), patch.dict(os.environ, env, clear=False):
+                if not raw:
+                    os.environ.pop("MAC_MCP_APPLESCRIPT_HOST_IDLE_S", None)
+                self.assertEqual(expected, host._idle_retire_s())
+
+
 class BrowserBridgeFallbackTests(unittest.TestCase):
     def test_unavailable_host_uses_osascript(self) -> None:
         with patch.object(tools_browser.applescript_host, "run", side_effect=host.HostUnavailable("not ready")), \
