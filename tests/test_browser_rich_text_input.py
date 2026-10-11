@@ -79,6 +79,13 @@ class PageScriptTests(unittest.TestCase):
         self.assertIn("sel.setBaseAndExtent(range.endContainer,range.endOffset,range.startContainer,range.startOffset)", select)
         self.assertIn("backward&&clearFirst!==false", select)
 
+    def test_every_unfocused_rich_field_settles_first(self) -> None:
+        # Slate reads a selection a task later and Draft ignores one made while it takes focus, so an
+        # unfocused editor gets its caret before the paste also when it is empty or text is appended.
+        source = agent._bootstrap_functions_source()
+        set_text = source[source.index("function __mcpSetText"):]
+        self.assertIn("if(!wasActive&&!focusSettled){try{__mcpSelectEditable(el,clearFirst,true);}", set_text)
+
     def test_type_step_does_not_call_an_unannounced_page_paste_accepted(self) -> None:
         js = agent._batch_js([{"type": "type", "element_id": "e1", "text": TEXT}], None)
         self.assertIn("unconfirmed?'editor_model_unconfirmed':'value_applied'", js)
@@ -116,6 +123,33 @@ console.log(JSON.stringify({
 """
 
 
+_SELECT_HARNESS = r"""
+const log = [];
+class FocusEvent { constructor(type) { this.type = type; } }
+class Ev { constructor(type) { this.type = type; } }
+function make(hasFocus, active) {
+  const el = { dispatchEvent: e => log.push('el:' + e.type) };
+  const range = { selectNodeContents() {}, collapse() {}, startContainer: el, startOffset: 0, endContainer: el, endOffset: 1 };
+  const sel = { removeAllRanges() {}, addRange() { log.push('range:forward'); }, setBaseAndExtent() { log.push('range:backward'); } };
+  el.ownerDocument = { hasFocus: () => hasFocus, activeElement: active ? el : null, createRange: () => range,
+                       dispatchEvent: e => log.push('doc:' + e.type) };
+  return { el, win: { FocusEvent, Event: Ev, getSelection: () => sel } };
+}
+let current;
+function __mcpOwnerWindow() { return current.win; }
+__FUNCTIONS__
+const run = (hasFocus, active, clearFirst, backward) => { log.length = 0; current = make(hasFocus, active);
+  __mcpSelectEditable(current.el, clearFirst, backward); return log.slice(); };
+console.log(JSON.stringify({
+  background: run(false, false, true, false),
+  focused_field: run(true, true, true, false),
+  other_field_focused: run(true, false, true, false),
+  settling_replace: run(true, true, true, true),
+  settling_append: run(true, true, false, true),
+}));
+"""
+
+
 def _extract(source: str, name: str) -> str:
     start = source.index(f"function {name}(")
     end = source.find("\nfunction ", start + 10)
@@ -140,6 +174,25 @@ class PasteAcceptanceTests(unittest.TestCase):
         self.assertFalse(got["known_model_editor"]["unconfirmed"])
         self.assertFalse(got["lexical_root"]["unconfirmed"])
         self.assertEqual({"handled": False, "unconfirmed": False, "text": ""}, got["not_handled"])
+
+
+class SelectionTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_selection_is_announced_so_react_editors_cannot_drop_it(self) -> None:
+        source = agent._bootstrap_functions_source()
+        script = _SELECT_HARNESS.replace("__FUNCTIONS__", _extract(source, "__mcpSelectEditable"))
+        proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        got = json.loads(proc.stdout)
+        # Background tab: no real focus events, so focus and focusin are synthesized.
+        self.assertEqual(["el:focus", "el:focusin", "range:forward", "doc:selectionchange"], got["background"])
+        # Focused page, field already focused: focusin makes React forget the previous selection.
+        self.assertEqual(["el:focusin", "range:forward", "doc:selectionchange"], got["focused_field"])
+        # Another field holds focus: no synthetic focus (the real el.focus() in __mcpSetText handles it).
+        self.assertEqual(["range:forward", "doc:selectionchange"], got["other_field_focused"])
+        self.assertEqual(["el:focusin", "range:backward", "doc:selectionchange"], got["settling_replace"])
+        # A caret for appending has no direction.
+        self.assertEqual(["el:focusin", "range:forward", "doc:selectionchange"], got["settling_append"])
 
 
 class VerificationTests(unittest.TestCase):

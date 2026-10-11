@@ -1365,8 +1365,11 @@ function __mcpTextMatches(actual,value){var n=function(v){return String(v||'').r
    resort and is reported as such.
    (No apostrophes here: _top_level_function_names tracks quotes, not comments.) */
 function __mcpSelectEditable(el,clearFirst,backward){var doc=el.ownerDocument||document,win=__mcpOwnerWindow(el);
-  /* A background tab gets no focus events, so React keeps the previous field as active and drops the new selection. */
-  try{if(!doc.hasFocus()){el.dispatchEvent(new win.FocusEvent('focus',{relatedTarget:null}));el.dispatchEvent(new win.FocusEvent('focusin',{bubbles:true,relatedTarget:null}));}}catch(e){}
+  /* A background tab gets no focus events, so React keeps the previous field as active and drops the new selection.
+     In a focused page React also drops a selection identical to the last one it saw (the caret the settling pass
+     placed); a focusin on the already focused field makes it forget that one. Editors ignore a focus they hold. */
+  try{if(!doc.hasFocus()){el.dispatchEvent(new win.FocusEvent('focus',{relatedTarget:null}));el.dispatchEvent(new win.FocusEvent('focusin',{bubbles:true,relatedTarget:null}));}
+    else if(doc.activeElement===el){el.dispatchEvent(new win.FocusEvent('focusin',{bubbles:true,relatedTarget:null}));}}catch(e){}
   var sel=win.getSelection(),range=doc.createRange();range.selectNodeContents(el);if(clearFirst===false)range.collapse(false);sel.removeAllRanges();
   if(backward&&clearFirst!==false&&sel.setBaseAndExtent)sel.setBaseAndExtent(range.endContainer,range.endOffset,range.startContainer,range.startOffset);else sel.addRange(range);
   try{doc.dispatchEvent(new win.Event('selectionchange'));}catch(e){}}
@@ -1407,7 +1410,7 @@ function __mcpSetText(el,value,clearFirst,focusSettled){
        that read the selection a task later (Slate) need this early selection. It is made backward because
        React drops a select event identical to the last one it saw, and the busy editor (Draft) ignores
        this one, so the forward select-all of the second run must look new or Draft pastes at the old caret. */
-    if(!wasActive&&!focusSettled&&clearFirst!==false&&start.trim()){try{__mcpSelectEditable(el,clearFirst,true);}catch(e){}s.lastInputMethod='focus_settling';return el;}
+    if(!wasActive&&!focusSettled){try{__mcpSelectEditable(el,clearFirst,true);}catch(e){}s.lastInputMethod='focus_settling';return el;}
     var selected=true;try{__mcpSelectEditable(el,clearFirst);}catch(e){selected=false;}
     if(selected&&value&&__mcpPasteInsert(el,value))return settle('paste_event');
     if(selected&&__mcpEditableText(el)===start&&__mcpExecInsert(el,value,clearFirst))return settle('exec_command');
