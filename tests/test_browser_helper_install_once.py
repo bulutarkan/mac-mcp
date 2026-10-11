@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -32,8 +33,11 @@ class HelperInstallOnceTests(unittest.TestCase):
         js = agent._light_state_js()
         api = agent._agent_api()
         self.assertIn(api["full"], js)
-        self.assertEqual(62, len(api["names"]))
+        self.assertEqual(65, len(api["names"]))
         self.assertEqual(api["names"], agent._top_level_function_names(agent._bootstrap_functions_source()))
+        # A stray quote in a comment (an apostrophe) hides every later helper from the binding.
+        declared = re.findall(r"^function (__mcp\w+)\(", agent._bootstrap_functions_source(), re.MULTILINE)
+        self.assertEqual(declared, api["names"])
         for name in api["names"]:
             self.assertIn(f"{name}=__mcpApi.{name}", api["binding"])
         self.assertLess(len(api["binding"]), 4096)

@@ -1086,8 +1086,11 @@ function __mcpActionable(el){
   }catch(e){}
   var ti=el.getAttribute('tabindex');return ti!==null&&Number(ti)>=0;
 }
+/* Rendering parent: a slotted element is drawn inside the slot it is assigned to (the
+   <dialog><slot> in a web component shadow root), not inside its light-DOM parent. */
+function __mcpFlatParent(el){if(!el)return null;try{if(el.assignedSlot)return el.assignedSlot;}catch(e){}return __mcpParent(el);}
 function __mcpComposedContains(root,node){
-  var cur=node,guard=0;while(cur&&guard++<20){if(cur===root)return true;cur=__mcpParent(cur);}return false;
+  var cur=node,guard=0;while(cur&&guard++<64){if(cur===root)return true;cur=__mcpFlatParent(cur);}return false;
 }
 function __mcpAssociation(el){
   var out={control:null,label:null,ambiguous:false};if(!el||el.nodeType!==1)return out;
@@ -1139,7 +1142,7 @@ function __mcpSemanticVisible(el){
       if(cs.display==='none'||cs.visibility==='hidden'||String(cur.getAttribute&&cur.getAttribute('aria-hidden')||'').toLowerCase()==='true')return false;
       if(state==='closed'&&(r==='dialog'||am==='true'))return false;
     }catch(e){}
-    cur=__mcpParent(cur);
+    cur=__mcpFlatParent(cur);
   }
   if(__mcpVisible(el))return true;
   var role=String(__mcpRole(el)||'').toLowerCase(),tag=String(el&&el.tagName||'').toLowerCase(),type=String(el&&el.getAttribute&&el.getAttribute('type')||'').toLowerCase();
@@ -1217,7 +1220,19 @@ function __mcpPlaceholder(el){try{var v=el.getAttribute('placeholder')||el.getAt
   var c=el.querySelector('[data-placeholder]');return c&&!String(c.textContent||'').trim()?String(c.getAttribute('data-placeholder')||''):'';}catch(e){return '';}}
 function __mcpText(el){var aria=el.getAttribute('aria-label')||'',ph=__mcpPlaceholder(el),title=el.getAttribute('title')||'',txt='';try{txt=(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim();}catch(e){}
   /* Short visible text names a control before its tooltip (a 'Create Topic' button titled 'Or press Cmd Enter'). */
-  return(aria||ph||(txt.length<=80?txt:'')||title||txt).slice(0,240);}
+  var name=aria||ph||(txt.length<=80?txt:'')||title||txt;
+  /* A field inside a web component is often named only on its host (<faceplate-text-input label="Password">). */
+  if(!name){var host=__mcpShadowHost(el);if(host)name=host.getAttribute('aria-label')||host.getAttribute('label')||host.getAttribute('placeholder')||'';}
+  return String(name).slice(0,240);}
+function __mcpShadowHost(el){try{var root=el.getRootNode&&el.getRootNode();return root&&root.host&&root!==document?root.host:null;}catch(e){return null;}}
+/* Closed shadow roots cannot be read from the page. A defined custom element that is drawn
+   but has no open root and no children probably hides its controls in one: say so instead of
+   letting it look empty. */
+function __mcpClosedShadowHosts(all){var tags=[],n=0;
+  for(var i=0;i<all.length&&n<50;i++){var el=all[i],tag=String(el.tagName||'').toLowerCase();if(tag.indexOf('-')<0||el.shadowRoot||el.childElementCount)continue;
+    try{if(!window.customElements||!customElements.get(tag))continue;var r=el.getBoundingClientRect();if(r.width<24||r.height<16||!__mcpVisible(el))continue;}catch(e){continue;}
+    n++;if(tags.indexOf(tag)<0&&tags.length<5)tags.push(tag);}
+  return n?{count:n,tags:tags,hint:'These components keep their controls in closed shadow roots, which page scripts cannot read; use visual=element on one of them.'}:undefined;}
 function __mcpRole(el){var role=el.getAttribute('role');if(role)return role;var tag=(el.tagName||'').toLowerCase();if(tag==='a')return'link';if(tag==='button')return'button';if(tag==='select')return'combobox';if(tag==='textarea')return'textbox';if(tag==='input'){var t=(el.type||'text').toLowerCase();if(t==='checkbox')return'checkbox';if(t==='radio')return'radio';if(['button','submit','reset'].indexOf(t)>=0)return'button';return'textbox';}if(el.isContentEditable&&!__mcpEditableChild(el))return'textbox';return'';}
 function __mcpEditableChild(el){try{var p=__mcpParent(el);return !!p&&!!p.isContentEditable;}catch(e){return false;}}
 function __mcpContext(el){
@@ -1252,6 +1267,7 @@ function __mcpContext(el){
 function __mcpRect(el){var r=__mcpTopRect(el),ox=(window.outerWidth-window.innerWidth),oy=(window.outerHeight-window.innerHeight),viewportX=window.screenX+Math.max(0,Math.round(ox/2)),viewportY=window.screenY+Math.max(0,Math.round(oy));return{viewport:{x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)},document:{x:Math.round(r.left+scrollX),y:Math.round(r.top+scrollY),w:Math.round(r.width),h:Math.round(r.height)},screen:{x:Math.round(viewportX+r.left),y:Math.round(viewportY+r.top),w:Math.round(r.width),h:Math.round(r.height),estimated:true}};}
 function __mcpDescribe(el,s){
   var tag=(el.tagName||'').toLowerCase(),rect=__mcpRect(el),out={element_id:__mcpId(el,s),tag:tag,role:__mcpRole(el),text:__mcpText(el),viewport_rect:rect.viewport,screen_rect:rect.screen,actionable:__mcpActionable(el)};
+  var shadowHost=__mcpShadowHost(el);if(shadowHost)out.shadow_host=String(shadowHost.tagName||'').toLowerCase();
   var modalScope=__mcpModalScope(el);out.modal_scope=modalScope.active?(modalScope.inside?'inside':'outside'):'none';
   var assoc=__mcpAssociation(el),associationText=__mcpAssociationText(el);if(associationText)out.association_text=associationText;
   if(assoc.control&&assoc.control!==el)out.associated_control={element_id:__mcpId(assoc.control,s),tag:String(assoc.control.tagName||'').toLowerCase(),role:__mcpRole(assoc.control)};
@@ -1567,6 +1583,7 @@ return __mcpB64({{
   scope:scope,modal_scope:(function(){{var m=__mcpTopBlockingModal();return m?{{active:true,element_id:__mcpId(m,s),role:__mcpRole(m),text:__mcpText(m).slice(0,120)}}:{{active:false}};}})(),element_count:elements.length,elements:elements,
   ordering:ranked?'foreground_first':'document',eligible_count:ranked?eligible:undefined,omitted_count:ranked&&eligible>elements.length?eligible-elements.length:undefined,
   scan_complete:ranked&&!scanComplete?false:undefined,
+  closed_shadow_hosts:__mcpClosedShadowHosts(all),
   canvas:canvasHint,frames:frameList
 }});
 }})()'''
@@ -2676,7 +2693,7 @@ def _changes_js(observation_id: Optional[str]) -> str:
 function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
 __mcpSettleHidden();var s=__mcpState(),meta=(s.observationMeta||{{}})[{obs}],base=(meta&&meta.ids)?meta:s.lastSeen;
 var sel='button,a[href],input,textarea,select,summary,[role=button],[role=link],[role=option],[role=menuitem],[role=menuitemradio],[role=menuitemcheckbox],[role=tab],[role=checkbox],[role=radio],[role=combobox],[role=switch],[contenteditable=true],[draggable=true]';
-var now=[],seen=Object.create(null),nodes=document.querySelectorAll(sel);
+var now=[],seen=Object.create(null),nodes=__mcpQueryAll(sel);
 for(var i=0;i<nodes.length&&now.length<500;i++){{var el=nodes[i];if(!__mcpVisible(el))continue;var id=__mcpId(el,s);if(seen[id])continue;seen[id]=1;now.push({{id:id,el:el}});}}
 var out={{ok:true,url:location.href,title:document.title,dom_revision:s.mutationRevision}};
 if(base){{
@@ -2697,9 +2714,9 @@ if(base){{
     disappeared_count:(base.ids||[]).filter(function(id){{return !seen[id];}}).length}};
 }}
 var alerts=[];
-document.querySelectorAll('[role=alert],[role=alertdialog],[aria-live=assertive],[aria-live=polite],.error,.invalid-feedback,.field-error,.alert').forEach(function(n){{
+__mcpQueryAll('[role=alert],[role=alertdialog],[aria-live=assertive],[aria-live=polite],.error,.invalid-feedback,.field-error,.alert').forEach(function(n){{
   if(alerts.length>=5||!__mcpVisible(n))return;var t=__mcpText(n).trim();if(t&&alerts.indexOf(t.slice(0,160))<0)alerts.push(t.slice(0,160));}});
-var invalid=[];Array.from(document.querySelectorAll('input,select,textarea')).forEach(function(f){{
+var invalid=[];__mcpQueryAll('input,select,textarea').forEach(function(f){{
   if(invalid.length>=5)return;try{{if(f.willValidate&&!f.checkValidity()&&__mcpVisible(f))invalid.push({{element_id:__mcpId(f,s),message:String(f.validationMessage||'').slice(0,120)}});}}catch(e){{}}}});
 var modal=__mcpTopBlockingModal();
 if(alerts.length||invalid.length||modal){{out.changes=out.changes||{{}};
