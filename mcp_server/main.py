@@ -125,6 +125,8 @@ MCP_AGENT_INSTRUCTIONS = (
     "workflow (open a URL, optionally act, extract fields, optionally close) is a single browser_do. Selector and coordinate "
     "browser tools are advanced compatibility tools reached through tool_discover; use them only when browser_act cannot. "
     "Browser tabs: pass the tab_handle from browser_list_tabs or browser_do on every browser call. "
+    "At a login form, call browser_sign_in (via tool_invoke) instead of asking for or typing a password; it fills the owner's "
+    "saved login for that site without revealing it. "
     "browser_act and browser_do resolve query/role/within targets themselves; use browser_find only to read, never as a step before acting. Each browser_act "
     "returns changes (url/title change, elements that appeared with ids you can act on next, messages, invalid fields, an "
     "open modal), so continue or verify from it instead of observing again; a missed target returns near_matches. "
