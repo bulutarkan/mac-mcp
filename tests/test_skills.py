@@ -101,6 +101,60 @@ class SkillToolTests(unittest.TestCase):
         self.assertEqual("wordpress-performance", found["results"][0]["name"])
         self.assertGreaterEqual(found["index_sync"]["updated"], 1)
 
+    def test_unchanged_skills_are_not_parsed_again(self):
+        # #171: a sync reuses the indexed row while the file is byte-for-byte unchanged.
+        from unittest.mock import patch
+        skills.skill_update_index()
+        with patch.object(skills, "_parse_skill", wraps=skills._parse_skill) as parse:
+            result = skills.skill_update_index()
+        parse.assert_not_called()
+        self.assertEqual(0, result["index_sync"]["updated"])
+        self.assertEqual(1, result["total"])
+
+    def test_a_touched_or_edited_skill_is_parsed_again(self):
+        from unittest.mock import patch
+        skills.skill_update_index()
+        path = self.root / "wordpress-performance" / "SKILL.md"
+        stat = path.stat()
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 5_000_000))
+        with patch.object(skills, "_parse_skill", wraps=skills._parse_skill) as parse:
+            skills.skill_update_index()
+        self.assertEqual(1, parse.call_count, "an mtime change alone is not trusted as unchanged")
+        # Same size and mtime but different bytes is still caught by the content hash.
+        edited = SKILL_TEXT.replace("Inspect logs", "Inspect Logs")
+        self.assertEqual(len(edited), len(SKILL_TEXT))
+        stat = path.stat()
+        path.write_text(edited, encoding="utf-8")
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        result = skills.skill_update_index()
+        self.assertEqual(1, result["index_sync"]["updated"])
+        self.assertIn("Inspect Logs", skills.skill_get(name="wordpress-performance")["body"])
+
+    def test_deleted_and_invalid_skills_are_still_reported_each_sync(self):
+        skills.skill_update_index()
+        broken = self.root / "broken-skill"
+        broken.mkdir()
+        (broken / "SKILL.md").write_text("no frontmatter here", encoding="utf-8")
+        for _ in range(2):
+            result = skills.skill_update_index()
+            self.assertTrue(any(d.get("path", "").endswith("broken-skill/SKILL.md") for d in result["index_sync"]["diagnostics"]))
+        (self.root / "wordpress-performance" / "SKILL.md").unlink()
+        result = skills.skill_update_index()
+        self.assertEqual(1, result["index_sync"]["removed"])
+        self.assertEqual(0, result["total"])
+
+    def test_managed_skill_still_wins_a_name_collision(self):
+        self.external.mkdir(parents=True)
+        outside = self.external / "wordpress-performance"
+        outside.mkdir()
+        (outside / "SKILL.md").write_text(SKILL_TEXT.replace("Inspect logs", "External copy"), encoding="utf-8")
+        skills.skill_register(str(outside / "SKILL.md"))
+        for _ in range(2):  # the second sync takes the unchanged path
+            result = skills.skill_update_index()
+            row = skills.skill_get(name="wordpress-performance")
+            self.assertTrue(row["location"].startswith(str(self.root.resolve())), row["location"])
+            self.assertTrue(any("duplicate skill name" in d.get("warning", "") for d in result["index_sync"]["diagnostics"]))
+
     def test_invalid_skill_frontmatter_is_rejected(self):
         directory = self.external / "bad"
         directory.mkdir(parents=True)

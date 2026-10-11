@@ -79,11 +79,12 @@ def _skill_path(path: str) -> Path:
     return target
 
 
-def _parse_skill(path: Path) -> Dict[str, Any]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except Exception as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Cannot read skill: {exc}") from exc
+def _parse_skill(path: Path, text: Optional[str] = None) -> Dict[str, Any]:
+    if text is None:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Cannot read skill: {exc}") from exc
     if not text.startswith("---"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "SKILL.md must start with YAML frontmatter delimited by ---.")
     match = re.match(r"^---\s*\n(.*?)\n---\s*(?:\n|$)(.*)$", text, re.DOTALL)
@@ -193,24 +194,45 @@ def _registered_paths(conn: sqlite3.Connection) -> List[Path]:
     return paths
 
 
+def _unchanged_row(path: Path, managed: bool, by_location: Dict[str, sqlite3.Row]) -> Optional[sqlite3.Row]:
+    """The index row for this file when its bytes, size and mtime are exactly as indexed."""
+    row = by_location.get(str(path))
+    if row is None or int(row["managed"]) != int(managed):
+        return None
+    try:
+        stat = path.stat()
+        if int(row["mtime_ns"]) != stat.st_mtime_ns or int(row["size"]) != stat.st_size:
+            return None
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return row if row["content_hash"] == hashlib.sha256(text.encode("utf-8")).hexdigest() else None
+
+
 def _sync_index(root: Path, conn: sqlite3.Connection, *, allow_start: bool = False) -> Dict[str, Any]:
     diagnostics: List[Dict[str, str]] = []
     expected: Dict[str, Tuple[Path, bool]] = {}
     # Registered/external first; managed root wins deterministically on name collisions.
     candidates = [(p, False) for p in _registered_paths(conn)] + [(p, True) for p in _managed_paths(root)]
+    existing = {row["name"]: row for row in conn.execute("SELECT * FROM skills")}
+    by_location = {row["location"]: row for row in existing.values()}
     parsed_by_name: Dict[str, Tuple[Dict[str, Any], bool]] = {}
     for path, managed in candidates:
-        try:
-            parsed = _parse_skill(path)
-        except HTTPException as exc:
-            diagnostics.append({"path": str(path), "error": str(exc.detail)})
-            continue
+        row = _unchanged_row(path, managed, by_location)
+        if row is not None:
+            # The file is byte-for-byte what was indexed: no need to parse its YAML again.
+            parsed: Dict[str, Any] = {"name": row["name"], "location": str(path), "unchanged": True}
+        else:
+            try:
+                parsed = _parse_skill(path)
+            except HTTPException as exc:
+                diagnostics.append({"path": str(path), "error": str(exc.detail)})
+                continue
         if parsed["name"] in parsed_by_name:
             diagnostics.append({"path": str(path), "warning": f"duplicate skill name '{parsed['name']}', deterministic precedence applied"})
         parsed_by_name[parsed["name"]] = (parsed, managed)
         expected[parsed["name"]] = (path, managed)
 
-    existing = {row["name"]: row for row in conn.execute("SELECT * FROM skills")}
     removed = 0
     updated = 0
     for name in list(existing):
@@ -222,6 +244,11 @@ def _sync_index(root: Path, conn: sqlite3.Connection, *, allow_start: bool = Fal
 
     for name, (parsed, managed) in parsed_by_name.items():
         row = existing.get(name)
+        if parsed.get("unchanged"):
+            if row is not None and row["location"] == parsed["location"]:
+                continue
+            # The name now resolves to this file but its row is another one's: index it properly.
+            parsed = _parse_skill(Path(parsed["location"]))
         path = Path(parsed["location"])
         stat = path.stat()
         digest = hashlib.sha256(parsed["content"].encode("utf-8")).hexdigest()
