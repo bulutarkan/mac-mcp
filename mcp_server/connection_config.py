@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 
-SUPPORTED_CLIENTS = ("chatgpt", "codex", "opencode")
+SUPPORTED_CLIENTS = ("chatgpt", "codex", "opencode", "claude-code")
+# Clients people ask for whose setup Mac MCP has not verified; they get guidance, not a snippet.
+UNGUIDED_CLIENTS = {
+    "claude-desktop": (
+        "Claude Desktop is not guided yet: Mac MCP has not verified a Claude Desktop connection format. "
+        "To use Mac MCP from Claude today, run: mac-mcp connect-config --client claude-code"
+    ),
+}
 SUPPORTED_ENDPOINTS = ("auto", "local", "public")
 DEFAULT_SERVER_NAME = "mac-mcp"
 DEFAULT_AUTH_ENV = "MAC_MCP_API_KEY"
@@ -25,6 +33,7 @@ class RenderedConnectionConfig:
     target: str
     snippet: str
     secret_instruction: str | None
+    verify_instruction: str | None = None
 
 
 def validate_server_name(value: str) -> str:
@@ -74,6 +83,8 @@ def render_connection_config(
     auth_env: str = DEFAULT_AUTH_ENV,
 ) -> RenderedConnectionConfig:
     selected = str(client or "").strip().lower()
+    if selected in UNGUIDED_CLIENTS:
+        raise ConnectionConfigError(UNGUIDED_CLIENTS[selected])
     if selected not in SUPPORTED_CLIENTS:
         raise ConnectionConfigError(f"unsupported client: {selected or '<empty>'}")
 
@@ -125,6 +136,27 @@ def render_connection_config(
             target="OpenCode 1.x opencode.json/opencode.jsonc remote MCP format",
             snippet=json.dumps(payload, indent=2, sort_keys=False),
             secret_instruction=secret_instruction,
+        )
+
+    if selected == "claude-code":
+        server = {"type": "http", "url": endpoint}
+        secret_instruction = None
+        if auth_required:
+            # Claude Code stores ${VAR} literally and expands it from its own environment
+            # when it connects, so the key never lands in ~/.claude.json.
+            server["headers"] = {"Authorization": f"Bearer ${{{env_name}}}"}
+            secret_instruction = (
+                f"Set {env_name} in the environment Claude Code starts from (for example your "
+                "shell profile) to the same secret value configured as Mac MCP's MCP_API_KEY. "
+                "Keep the single quotes: they stop the shell from expanding the variable."
+            )
+        payload = json.dumps(server, separators=(",", ":"))
+        return RenderedConnectionConfig(
+            client=selected,
+            target="Claude Code CLI command (claude mcp add-json, user scope, HTTP transport)",
+            snippet=f"claude mcp add-json --scope user {name} {shlex.quote(payload)}",
+            secret_instruction=secret_instruction,
+            verify_instruction=f"Run: claude mcp get {name}  (expect Status: Connected)",
         )
 
     chatgpt_url = _chatgpt_url(endpoint, auth_required)

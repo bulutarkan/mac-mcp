@@ -54,11 +54,30 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
 private enum ConnectionsTab: String, CaseIterable, Identifiable {
     case browser
     case mobile
+    case clients
 
     var id: String { rawValue }
-    var title: String { self == .browser ? "Browser" : "Mobile" }
-    var symbol: String { self == .browser ? "safari" : "iphone" }
+    var title: String {
+        switch self {
+        case .browser: return "Browser"
+        case .mobile: return "Mobile"
+        case .clients: return "AI Clients"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .browser: return "safari"
+        case .mobile: return "iphone"
+        case .clients: return "link"
+        }
+    }
 }
+
+/// Clients `mac-mcp connect-config` knows; the CLI renders the setup, so the app never builds a snippet itself.
+private let connectClients: [(id: String, title: String)] = [
+    ("chatgpt", "ChatGPT"), ("claude-code", "Claude Code"), ("codex", "Codex"),
+    ("opencode", "OpenCode"), ("claude-desktop", "Claude Desktop"),
+]
 
 
 private struct UsageHeatCell: Identifiable {
@@ -138,6 +157,10 @@ struct SettingsView: View {
     @MacMCPState private var cloudflareToken = ""
     @MacMCPState private var settingsSearch = ""
     @MacMCPState private var connectionsTab: ConnectionsTab = .browser
+    @MacMCPState private var connectClient = "claude-code"
+    @MacMCPState private var connectOutput = ""
+    @MacMCPState private var connectFailed = false
+    @MacMCPState private var connectLoading = false
     @MacMCPState private var usageAggregation: UsageAggregation = .daily
     @MacMCPState private var usageActor: UsageActorFilter = .all
     @MacMCPState private var providerUsagePeriod: ProviderUsagePeriod = .year
@@ -1574,7 +1597,7 @@ struct SettingsView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
-                .frame(maxWidth: 300)
+                .frame(maxWidth: 420)
 
                 publicEndpointCard
             }
@@ -1584,10 +1607,10 @@ struct SettingsView: View {
 
             Divider()
 
-            if connectionsTab == .browser {
-                browserPane
-            } else {
-                mobilePane
+            switch connectionsTab {
+            case .browser: browserPane
+            case .mobile: mobilePane
+            case .clients: clientsPane
             }
         }
     }
@@ -1801,6 +1824,87 @@ struct SettingsView: View {
             }
             .padding(20)
         }
+    }
+
+    private var clientsPane: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                sectionLead(
+                    "Connect an AI Client",
+                    subtitle: "Setup for using Mac MCP from an AI app, generated from this Mac's endpoint and authentication. The API key itself is never shown."
+                )
+
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Picker("Client", selection: $connectClient) {
+                                ForEach(connectClients, id: \.id) { client in
+                                    Text(client.title).tag(client.id)
+                                }
+                            }
+                            .frame(maxWidth: 260)
+                            .onChange(of: connectClient) { _ in
+                                connectOutput = ""
+                                Task { await generateConnectConfig() }
+                            }
+                            Spacer()
+                            Button {
+                                Task { await generateConnectConfig() }
+                            } label: {
+                                if connectLoading {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Label("Generate", systemImage: "arrow.clockwise")
+                                }
+                            }
+                            .disabled(connectLoading)
+                            Button {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(connectOutput, forType: .string)
+                            } label: {
+                                Label("Copy", systemImage: "doc.on.doc")
+                            }
+                            .disabled(connectOutput.isEmpty || connectFailed)
+                        }
+
+                        if connectOutput.isEmpty {
+                            Text(connectLoading ? "Generating…" : "Choose a client to see its setup.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text(connectOutput)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(connectFailed ? Color.orange : Color.primary)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(8)
+                                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                        }
+                    }
+                    .padding(.vertical, 2)
+                } label: {
+                    Label("Client Setup", systemImage: "link")
+                }
+
+                Text("This connects an AI app to Mac MCP. Delegated agents that Mac MCP starts (Codex, OpenCode, Claude Code) are configured in Subagents.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(20)
+        }
+        .task { if connectOutput.isEmpty { await generateConnectConfig() } }
+    }
+
+    private func generateConnectConfig() async {
+        connectLoading = true
+        let requested = connectClient
+        let result = await state.runCLICommand(["connect-config", "--client", requested])
+        guard requested == connectClient else { return }
+        connectLoading = false
+        connectFailed = result.code != 0
+        let text = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        connectOutput = text.isEmpty ? "mac-mcp connect-config returned no output (exit \(result.code))." : text
     }
 
     private var mobilePane: some View {

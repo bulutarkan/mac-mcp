@@ -9,7 +9,7 @@ enum SettingsSearchIndex {
         "usage": "usage tokens payload calls errors latency heatmap activity input output top tools retention record history clear privacy data memory memories export delete",
         "permissions": "permissions safety approvals security profile read only trusted access",
         "apps": "apps mail messages imessage email send confirm confirmation ask before sending xcode notes calendar",
-        "connections": "connections browser safari chrome mobile iphone ipad pairing public endpoint ngrok cloudflare tunnel https remote",
+        "connections": "connections browser safari chrome mobile iphone ipad pairing public endpoint ngrok cloudflare tunnel https remote ai clients connect claude code chatgpt codex opencode setup config",
         "voice": "voice audio microphone speaker groq language consent recording transcription",
         "advanced": "advanced developer runtime server port cli command decision acceleration openai decisions api key ambiguity",
         "help": "help diagnostics doctor troubleshoot problem support report bundle logs log bug issue security vulnerability version copy permissions accessibility screen recording automation microphone port conflict tunnel restart",

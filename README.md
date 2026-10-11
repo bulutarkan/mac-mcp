@@ -222,11 +222,14 @@ Use the CLI to generate a connection snippet from the Mac MCP endpoint and authe
 mac-mcp connect-config --client chatgpt
 mac-mcp connect-config --client codex
 mac-mcp connect-config --client opencode
+mac-mcp connect-config --client claude-code
 ```
 
-The command never prints the configured API-key value. Codex and OpenCode snippets reference a client-side environment variable (`MAC_MCP_API_KEY` by default); set that variable in the client process to the same secret value configured as Mac MCP's `MCP_API_KEY`. ChatGPT uses the existing header-limited query-key compatibility form and prints only `?ApiKey=<API_KEY>` as a placeholder.
+The command never prints the configured API-key value. Codex, OpenCode and Claude Code snippets reference a client-side environment variable (`MAC_MCP_API_KEY` by default); set that variable in the client process to the same secret value configured as Mac MCP's `MCP_API_KEY`. ChatGPT uses the existing header-limited query-key compatibility form and prints only `?ApiKey=<API_KEY>` as a placeholder.
 
-`--endpoint auto` is the default: it uses the configured public HTTPS endpoint for ChatGPT and loopback for local Codex/OpenCode. Use `--endpoint public` when Codex/OpenCode run elsewhere, or `--endpoint local` to force loopback where supported. `--name` changes the client-side server ID, and `--auth-env` changes the client environment-variable name without exposing its value.
+For Claude Code the output is a ready-to-run `claude mcp add-json --scope user …` command. Its JSON is single-quoted so the shell stores `${MAC_MCP_API_KEY}` literally; Claude Code expands it from its own environment each time it connects, so the key is never written to `~/.claude.json`. The output ends with a verify step: `claude mcp get mac-mcp` should report `Status: Connected` (an HTTP 401 means the variable is missing or wrong in Claude Code's environment). Claude Desktop and claude.ai are not guided yet: Mac MCP has not verified their connection format, so `--client claude-desktop` explains this instead of printing a snippet.
+
+`--endpoint auto` is the default: it uses the configured public HTTPS endpoint for ChatGPT and loopback for local Codex, OpenCode and Claude Code. Use `--endpoint public` when Codex, OpenCode or Claude Code run elsewhere, or `--endpoint local` to force loopback where supported. `--name` changes the client-side server ID, and `--auth-env` changes the client environment-variable name without exposing its value.
 
 Client config formats evolve. The generated output labels the target format it assumes; prefer regenerating the snippet with your installed Mac MCP instead of copying an old README fragment.
 

@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
+import shutil
+import subprocess
+import tempfile
 try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10, the declared floor
@@ -16,6 +20,8 @@ from unittest.mock import patch
 from mcp_server import cli
 from mcp_server.connection_config import (
     ConnectionConfigError,
+    SUPPORTED_CLIENTS,
+    UNGUIDED_CLIENTS,
     render_connection_config,
 )
 
@@ -122,10 +128,83 @@ class ConnectionConfigTemplateTests(unittest.TestCase):
 
     def test_readme_uses_generator_as_source_of_truth(self) -> None:
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        for client in ("chatgpt", "codex", "opencode"):
+        for client in SUPPORTED_CLIENTS:
             self.assertIn(f"mac-mcp connect-config --client {client}", readme)
+        self.assertIn("Claude Desktop", readme)
         self.assertIn("never prints the configured API-key value", readme)
         self.assertIn("--endpoint auto", readme)
+
+
+class ClaudeCodeConfigTests(unittest.TestCase):
+    """#55: Claude Code gets a named, tested setup path; unverified Claude clients get guidance only."""
+
+    def render(self, auth_required: bool = True, endpoint: str = "http://127.0.0.1:8765/mcp"):
+        return render_connection_config(client="claude-code", endpoint_url=endpoint, auth_required=auth_required)
+
+    def payload(self, snippet: str) -> dict:
+        argv = shlex.split(snippet)
+        self.assertEqual(["claude", "mcp", "add-json", "--scope", "user", "mac-mcp"], argv[:6])
+        self.assertEqual(7, len(argv))
+        return json.loads(argv[6])
+
+    def test_command_keeps_the_key_as_an_unexpanded_env_reference(self) -> None:
+        rendered = self.render()
+        server = self.payload(rendered.snippet)
+        self.assertEqual({"type": "http", "url": "http://127.0.0.1:8765/mcp",
+                          "headers": {"Authorization": "Bearer ${MAC_MCP_API_KEY}"}}, server)
+        # Single quotes: a shell must not expand ${MAC_MCP_API_KEY} into the stored config.
+        self.assertIn("'{", rendered.snippet)
+        self.assertIn("MAC_MCP_API_KEY", rendered.secret_instruction)
+        self.assertIn("claude mcp get mac-mcp", rendered.verify_instruction)
+
+    def test_no_auth_and_custom_names(self) -> None:
+        server = self.payload(self.render(auth_required=False).snippet)
+        self.assertNotIn("headers", server)
+        rendered = render_connection_config(client="claude-code", endpoint_url="https://mac.example.com/mcp",
+                                            auth_required=True, server_name="mac_2", auth_env="MY_KEY")
+        argv = shlex.split(rendered.snippet)
+        self.assertEqual("mac_2", argv[5])
+        self.assertEqual("Bearer ${MY_KEY}", json.loads(argv[6])["headers"]["Authorization"])
+
+    @unittest.skipUnless(shutil.which("sh"), "sh is required")
+    def test_a_shell_passes_the_placeholder_through_unchanged(self) -> None:
+        rendered = self.render()
+        argv_json = subprocess.run(
+            ["sh", "-c", rendered.snippet.replace("claude mcp add-json --scope user mac-mcp", "printf %s"),],
+            capture_output=True, text=True, env={"MAC_MCP_API_KEY": "real-secret-value"}, check=True,
+        ).stdout
+        self.assertNotIn("real-secret-value", argv_json)
+        self.assertEqual("Bearer ${MAC_MCP_API_KEY}", json.loads(argv_json)["headers"]["Authorization"])
+
+    def test_claude_desktop_is_not_given_an_unverified_snippet(self) -> None:
+        with self.assertRaises(ConnectionConfigError) as ctx:
+            render_connection_config(client="claude-desktop", endpoint_url="http://127.0.0.1:8765/mcp",
+                                     auth_required=True)
+        self.assertIn("not guided yet", str(ctx.exception))
+        self.assertIn("--client claude-code", str(ctx.exception))
+        self.assertNotIn("claude-desktop", SUPPORTED_CLIENTS)
+
+    @unittest.skipUnless(shutil.which("claude"), "Claude Code CLI not installed")
+    def test_installed_claude_code_accepts_the_generated_command(self) -> None:
+        rendered = self.render(endpoint="http://127.0.0.1:9/mcp")
+        with tempfile.TemporaryDirectory() as home:
+            env = {"HOME": home, "PATH": "/usr/bin:/bin:/opt/homebrew/bin:" + str(Path(shutil.which("claude")).parent)}
+            added = subprocess.run(["sh", "-c", rendered.snippet], cwd=home, env=env,
+                                   capture_output=True, text=True, timeout=60)
+            self.assertEqual(0, added.returncode, added.stderr)
+            stored = json.loads((Path(home) / ".claude.json").read_text(encoding="utf-8"))
+        server = stored["mcpServers"]["mac-mcp"]
+        self.assertEqual("Bearer ${MAC_MCP_API_KEY}", server["headers"]["Authorization"])
+        self.assertEqual("http", server["type"])
+
+
+class SettingsClientSetupTests(unittest.TestCase):
+    def test_connections_pane_offers_every_client_through_the_cli(self) -> None:
+        view = (ROOT / "menu_app/Sources/SettingsView.swift").read_text(encoding="utf-8")
+        self.assertIn('case .clients: return "AI Clients"', view)
+        self.assertIn('state.runCLICommand(["connect-config", "--client", requested])', view)
+        for client in (*SUPPORTED_CLIENTS, *UNGUIDED_CLIENTS):
+            self.assertIn(f'("{client}", ', view)
 
 
 class ConnectionConfigCLITests(unittest.TestCase):
@@ -223,6 +302,24 @@ class ConnectionConfigCLITests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertEqual("", output)
         self.assertIn("MCP_API_KEY is not configured", error)
+
+    def test_claude_code_auto_uses_local_and_prints_a_verify_step(self) -> None:
+        secret = "configured-value-that-must-never-print"
+        settings = SimpleNamespace(allow_no_auth=False, api_key=secret)
+        with patch("mcp_server.cli.resolve_public_endpoint") as public:
+            code, output, error = self._run(["connect-config", "--client", "claude-code"], settings=settings)
+        self.assertEqual(0, code, error)
+        public.assert_not_called()
+        self.assertIn("claude mcp add-json --scope user mac-mcp", output)
+        self.assertIn("Verify:\nRun: claude mcp get mac-mcp", output)
+        self.assertNotIn(secret, output + error)
+
+    def test_claude_desktop_gets_guidance_even_without_a_server_key(self) -> None:
+        settings = SimpleNamespace(allow_no_auth=False, api_key="")
+        code, output, error = self._run(["connect-config", "--client", "claude-desktop"], settings=settings)
+        self.assertEqual(1, code)
+        self.assertEqual("", output)
+        self.assertIn(UNGUIDED_CLIENTS["claude-desktop"], error)
 
     def test_invalid_cli_name_and_env_fail_without_shell_escaping_risk(self) -> None:
         settings = SimpleNamespace(allow_no_auth=False, api_key="hidden")

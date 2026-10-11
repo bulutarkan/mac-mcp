@@ -65,6 +65,7 @@ from .connection_config import (
     DEFAULT_AUTH_ENV,
     DEFAULT_SERVER_NAME,
     SUPPORTED_CLIENTS,
+    UNGUIDED_CLIENTS,
     SUPPORTED_ENDPOINTS,
     render_connection_config,
 )
@@ -1255,6 +1256,9 @@ def _connect_config_endpoint(client: str, selection: str) -> tuple[str, str]:
 
 
 def connect_config(args: argparse.Namespace) -> int:
+    if args.client in UNGUIDED_CLIENTS:
+        print(f"mac-mcp connect-config: {UNGUIDED_CLIENTS[args.client]}", file=sys.stderr)
+        return 1
     try:
         endpoint_url, endpoint_kind = _connect_config_endpoint(args.client, args.endpoint)
         settings = load_settings()
@@ -1287,6 +1291,10 @@ def connect_config(args: argparse.Namespace) -> int:
         print()
         print("Secret setup:")
         print(rendered.secret_instruction)
+    if rendered.verify_instruction:
+        print()
+        print("Verify:")
+        print(rendered.verify_instruction)
     if rendered.client == "chatgpt" and auth_required:
         print(
             "Use the query-key URL only because this ChatGPT connection path is "
@@ -2274,12 +2282,12 @@ def main(argv: list[str] | None = None) -> int:
         "connect-config",
         help="Generate a secret-safe MCP connection snippet for a supported client.",
     )
-    p_connect.add_argument("--client", required=True, choices=SUPPORTED_CLIENTS)
+    p_connect.add_argument("--client", required=True, choices=SUPPORTED_CLIENTS + tuple(UNGUIDED_CLIENTS))
     p_connect.add_argument(
         "--endpoint",
         choices=SUPPORTED_ENDPOINTS,
         default="auto",
-        help="Endpoint choice. auto uses public for ChatGPT and local for Codex/OpenCode.",
+        help="Endpoint choice. auto uses public for ChatGPT and local for Codex, OpenCode and Claude Code.",
     )
     p_connect.add_argument(
         "--name",
