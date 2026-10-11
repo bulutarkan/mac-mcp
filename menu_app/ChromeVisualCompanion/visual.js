@@ -96,13 +96,14 @@
       <style>
         :host { all: initial; }
         * { box-sizing: border-box; }
-        .companion { position: fixed; inset: 0; pointer-events: none; color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; }
+        .companion { --panel-w: min(328px, calc(100vw - 56px)); --surface: rgba(255,255,255,.95); --surface-2: rgba(244,245,248,.95); --surface-pill: rgba(255,255,255,.9); --fg: rgba(17,19,24,.94); --fg-2: rgba(17,19,24,.7); --fg-3: rgba(17,19,24,.6); --line: rgba(17,19,24,.12); --line-soft: rgba(17,19,24,.08); --fill: rgba(17,19,24,.045); --fill-hover: rgba(17,19,24,.08); --accent: rgb(0,113,206); --accent-fill: rgba(0,122,224,.1); --accent-line: rgba(0,122,224,.22); --badge-bg: rgb(0,113,206); --badge-fg: #fff; --focus: rgb(0,103,214); --shadow: rgba(15,20,30,.18); position: fixed; inset: 0; pointer-events: none; color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; }
+        @media (prefers-color-scheme: dark) { .companion { --surface: rgba(26,30,37,.95); --surface-2: rgba(15,18,23,.95); --surface-pill: rgba(17,20,25,.84); --fg: rgba(255,255,255,.96); --fg-2: rgba(255,255,255,.7); --fg-3: rgba(255,255,255,.6); --line: rgba(255,255,255,.14); --line-soft: rgba(255,255,255,.08); --fill: rgba(255,255,255,.055); --fill-hover: rgba(255,255,255,.1); --accent: rgb(116,211,255); --accent-fill: rgba(90,200,250,.12); --accent-line: rgba(90,200,250,.22); --badge-bg: rgba(90,200,250,.24); --badge-fg: rgb(196,235,255); --focus: rgba(116,211,255,.95); --shadow: rgba(0,0,0,.36); } }
         .frame { position: fixed; inset: 2px; border: 2px solid rgba(90, 200, 250, .78); border-radius: 10px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.16), 0 0 18px rgba(90,200,250,.28); opacity: 0; transition: opacity .18s ease, border-color .18s ease, box-shadow .18s ease; animation: none; }
         .frame.active { opacity: 1; animation: mcpPulse 1.7s ease-in-out infinite; }
         .frame.attention { border-color: rgba(255, 184, 74, .9); box-shadow: 0 0 20px rgba(255,184,74,.28); }
-        .pill { position: fixed; top: 14px; right: 14px; display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 10px; border: 1px solid rgba(255,255,255,.18); border-radius: 999px; background: rgba(17,20,25,.78); color: rgba(255,255,255,.94); box-shadow: 0 7px 24px rgba(0,0,0,.22); backdrop-filter: none; -webkit-backdrop-filter: none; font: 600 12px/1 -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; letter-spacing: -.01em; opacity: 0; transform: translateY(-5px) scale(.98); transition: opacity .16s ease, transform .16s ease, right .38s cubic-bezier(.22,.8,.2,1); }
+        .pill { position: fixed; top: 14px; right: 14px; display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-pill); color: var(--fg); box-shadow: 0 7px 24px var(--shadow); backdrop-filter: none; -webkit-backdrop-filter: none; font: 600 12px/1 -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; letter-spacing: -.01em; opacity: 0; transform: translateY(-5px) scale(.98); transition: opacity .16s ease, transform .16s ease, right .38s cubic-bezier(.22,.8,.2,1); }
         .pill.active { opacity: 1; transform: translateY(0) scale(1); backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%); }
-        .companion.sidebar-open .pill { right: 346px; }
+        .companion.sidebar-open .pill { right: calc(var(--panel-w) + 28px); }
         .dot { width: 7px; height: 7px; border-radius: 50%; background: rgb(90,200,250); box-shadow: 0 0 0 0 rgba(90,200,250,.45); animation: none; }
         .pill.active .dot { animation: mcpDot 1.35s ease-out infinite; }
         .label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -113,58 +114,59 @@
         .ripple { position: fixed; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; border: 2px solid rgba(90,200,250,.9); opacity: 0; transform: scale(.35); }
         .ripple.go { animation: mcpRipple .52s ease-out forwards; }
 
-        .history-rail { position: fixed; right: 0; top: 50%; width: 17px; height: 82px; transform: translateY(-50%); pointer-events: auto; border: 1px solid rgba(255,255,255,.14); border-right: 0; border-radius: 13px 0 0 13px; background: rgba(18,21,27,.64); box-shadow: -5px 7px 20px rgba(0,0,0,.16); backdrop-filter: none; -webkit-backdrop-filter: none; opacity: .48; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity .18s ease, width .18s ease, right .38s cubic-bezier(.22,.8,.2,1), background .18s ease; }
-        .history-rail:hover { opacity: .94; width: 21px; background: rgba(18,21,27,.82); backdrop-filter: blur(18px) saturate(135%); -webkit-backdrop-filter: blur(18px) saturate(135%); }
-        .history-rail::before { content: ''; width: 3px; height: 32px; border-radius: 999px; background: linear-gradient(180deg, rgba(90,200,250,.9), rgba(90,200,250,.24)); box-shadow: 0 0 13px rgba(90,200,250,.32); }
-        .history-rail .rail-chevron { position: absolute; left: 3px; top: 50%; width: 7px; height: 7px; border-left: 1.5px solid rgba(255,255,255,.72); border-bottom: 1.5px solid rgba(255,255,255,.72); transform: translateY(-50%) rotate(45deg); opacity: 0; transition: opacity .18s ease; }
-        .history-rail:hover .rail-chevron { opacity: .9; }
-        .history-rail .rail-count { position: absolute; top: -6px; left: -15px; min-width: 21px; height: 21px; padding: 0 5px; border-radius: 999px; display: flex; align-items: center; justify-content: center; background: rgba(31,36,44,.94); border: 1px solid rgba(255,255,255,.14); color: rgba(255,255,255,.86); font-size: 10px; font-weight: 700; opacity: 0; transform: scale(.82); transition: opacity .18s ease, transform .18s ease; }
-        .history-rail.has-history .rail-count { opacity: 1; transform: scale(1); }
-        .companion.sidebar-open .history-rail { right: 330px; opacity: .96; width: 20px; }
-        .companion.sidebar-open .history-rail .rail-chevron { opacity: .9; transform: translateY(-50%) rotate(225deg); }
+        .history-rail { position: fixed; right: 0; top: 50%; width: 30px; min-height: 78px; padding: 10px 0 8px; transform: translateY(-50%); pointer-events: auto; border: 1px solid var(--line); border-right: 0; border-radius: 14px 0 0 14px; background: var(--surface); color: var(--fg-2); box-shadow: -4px 6px 18px var(--shadow); backdrop-filter: blur(14px) saturate(135%); -webkit-backdrop-filter: blur(14px) saturate(135%); opacity: .9; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font: inherit; transition: opacity .18s ease, width .18s ease, right .38s cubic-bezier(.22,.8,.2,1), background .18s ease; }
+        .history-rail::after { content: ''; position: absolute; inset: -10px 0 -10px -12px; }
+        .history-rail:hover { opacity: 1; width: 34px; }
+        .history-rail .rail-icon { display: flex; }
+        .history-rail .rail-icon svg { width: 16px; height: 16px; fill: none; stroke: var(--accent); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+        .history-rail .rail-chevron { width: 6px; height: 6px; margin-top: 1px; border-left: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: translateX(1px) rotate(45deg); opacity: .75; transition: transform .18s ease; }
+        .history-rail .rail-count { display: none; min-width: 20px; height: 18px; padding: 0 5px; border-radius: 999px; align-items: center; justify-content: center; background: var(--badge-bg); color: var(--badge-fg); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+        .history-rail.has-history .rail-count { display: flex; }
+        .companion.sidebar-open .history-rail { right: calc(var(--panel-w) + 12px); opacity: 1; }
+        .companion.sidebar-open .history-rail .rail-chevron { transform: translateX(-1px) rotate(225deg); }
 
-        .history-panel { position: fixed; top: 12px; right: 12px; bottom: 12px; width: 318px; pointer-events: none; overflow: hidden; display: flex; flex-direction: column; border-radius: 22px; border: 1px solid rgba(255,255,255,.14); background: linear-gradient(180deg, rgba(24,28,35,.91), rgba(13,16,21,.90)); box-shadow: 0 24px 68px rgba(0,0,0,.34), inset 0 1px 0 rgba(255,255,255,.07); backdrop-filter: none; -webkit-backdrop-filter: none; visibility: hidden; opacity: 0; transform: translate3d(34px,0,0) scale(.985); transform-origin: right center; transition: opacity .23s ease, transform .38s cubic-bezier(.22,.8,.2,1); }
+        .history-panel { position: fixed; top: 12px; right: 12px; bottom: 12px; width: var(--panel-w); pointer-events: none; overflow: hidden; display: flex; flex-direction: column; border-radius: 22px; border: 1px solid var(--line); background: linear-gradient(180deg, var(--surface), var(--surface-2)); color: var(--fg); box-shadow: 0 24px 68px var(--shadow), inset 0 1px 0 rgba(255,255,255,.07); backdrop-filter: none; -webkit-backdrop-filter: none; visibility: hidden; opacity: 0; transform: translate3d(34px,0,0) scale(.985); transform-origin: right center; transition: opacity .23s ease, transform .38s cubic-bezier(.22,.8,.2,1); }
         .companion.sidebar-open .history-panel { pointer-events: auto; visibility: visible; opacity: 1; transform: translate3d(0,0,0) scale(1); backdrop-filter: blur(28px) saturate(135%); -webkit-backdrop-filter: blur(28px) saturate(135%); }
-        .history-header { flex: 0 0 auto; padding: 18px 18px 14px; border-bottom: 1px solid rgba(255,255,255,.075); }
+        .history-header { flex: 0 0 auto; padding: 18px 18px 14px; border-bottom: 1px solid var(--line-soft); }
         .history-header-row { display: flex; align-items: center; gap: 10px; }
-        .history-brand { width: 32px; height: 32px; border-radius: 10px; display: flex; align-items: center; justify-content: center; background: rgba(90,200,250,.11); border: 1px solid rgba(90,200,250,.18); }
-        .history-brand svg { width: 18px; height: 18px; fill: none; stroke: rgb(116,211,255); stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
+        .history-brand { width: 32px; height: 32px; border-radius: 10px; display: flex; align-items: center; justify-content: center; background: var(--accent-fill); border: 1px solid var(--accent-line); }
+        .history-brand svg { width: 18px; height: 18px; fill: none; stroke: var(--accent); stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
         .history-titles { min-width: 0; flex: 1; }
-        .history-title { color: rgba(255,255,255,.96); font-size: 13px; font-weight: 700; letter-spacing: -.015em; line-height: 1.1; }
-        .history-subtitle { margin-top: 4px; color: rgba(255,255,255,.48); font-size: 11px; font-weight: 500; }
-        .history-close { width: 27px; height: 27px; padding: 0; border: 0; border-radius: 9px; color: rgba(255,255,255,.52); background: rgba(255,255,255,.055); cursor: pointer; font-size: 17px; line-height: 27px; transition: color .16s ease, background .16s ease; }
-        .history-close:hover { color: rgba(255,255,255,.92); background: rgba(255,255,255,.11); }
+        .history-title { color: var(--fg); font-size: 14px; font-weight: 700; letter-spacing: -.015em; line-height: 1.1; }
+        .history-subtitle { margin-top: 4px; color: var(--fg-2); font-size: 12px; font-weight: 500; }
+        .history-close { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 9px; color: var(--fg-2); background: var(--fill); cursor: pointer; font-size: 18px; line-height: 28px; transition: color .16s ease, background .16s ease; }
+        .history-close:hover { color: var(--fg); background: var(--fill-hover); }
         .history-live { margin-top: 13px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-        .history-live-status { display: flex; align-items: center; gap: 7px; color: rgba(255,255,255,.62); font-size: 10.5px; font-weight: 600; }
-        .history-live-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,.28); transition: background .18s ease, box-shadow .18s ease; }
-        .history-live-status.active .history-live-dot { background: rgb(90,200,250); box-shadow: 0 0 0 4px rgba(90,200,250,.10); }
-        .history-clear { padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: rgba(255,255,255,.42); font-size: 10.5px; font-weight: 600; cursor: pointer; transition: color .16s ease, background .16s ease; }
-        .history-clear:hover { color: rgba(255,255,255,.86); background: rgba(255,255,255,.06); }
-        .history-list { flex: 1 1 auto; overflow-y: auto; padding: 10px 12px 14px; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.12) transparent; }
-        .history-empty { height: 100%; min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; color: rgba(255,255,255,.42); }
-        .history-empty-icon { width: 40px; height: 40px; border-radius: 14px; margin-bottom: 12px; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,.08); background: rgba(255,255,255,.035); }
-        .history-empty-icon svg { width: 20px; height: 20px; fill: none; stroke: rgba(255,255,255,.42); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-        .history-empty strong { color: rgba(255,255,255,.72); font-size: 12px; margin-bottom: 5px; }
-        .history-empty span { max-width: 210px; font-size: 10.5px; line-height: 1.45; }
+        .history-live-status { display: flex; align-items: center; gap: 7px; color: var(--fg-2); font-size: 12px; font-weight: 600; }
+        .history-live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg-3); transition: background .18s ease, box-shadow .18s ease; }
+        .history-live-status.active .history-live-dot { background: rgb(90,200,250); box-shadow: 0 0 0 4px rgba(90,200,250,.16); }
+        .history-clear { padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--fg-2); font-size: 12px; font-weight: 600; cursor: pointer; transition: color .16s ease, background .16s ease; }
+        .history-clear:hover { color: var(--fg); background: var(--fill); }
+        .history-list { flex: 1 1 auto; overflow-y: auto; padding: 10px 12px 14px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+        .history-empty { height: 100%; min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; color: var(--fg-2); }
+        .history-empty-icon { width: 40px; height: 40px; border-radius: 14px; margin-bottom: 12px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--line-soft); background: var(--fill); }
+        .history-empty-icon svg { width: 20px; height: 20px; fill: none; stroke: var(--fg-3); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+        .history-empty strong { color: var(--fg); font-size: 13px; margin-bottom: 5px; }
+        .history-empty span { max-width: 220px; font-size: 12px; line-height: 1.45; }
         .history-item { position: relative; display: grid; grid-template-columns: 34px minmax(0,1fr) auto; gap: 10px; align-items: start; padding: 9px 8px; border-radius: 13px; transition: background .14s ease; }
-        .history-item:hover { background: rgba(255,255,255,.035); }
-        .history-item + .history-item::before { content: ''; position: absolute; left: 24.5px; top: -8px; width: 1px; height: 10px; background: rgba(255,255,255,.08); }
-        .history-icon { width: 32px; height: 32px; border-radius: 10px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.07); }
-        .history-icon svg { width: 16px; height: 16px; fill: none; stroke: rgba(158,220,250,.9); stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }
-        .history-copy { min-width: 0; padding-top: 2px; }
-        .history-action { color: rgba(255,255,255,.88); font-size: 11.5px; font-weight: 650; letter-spacing: -.005em; line-height: 1.2; }
-        .history-detail { margin-top: 4px; color: rgba(255,255,255,.42); font-size: 10.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .history-time { padding-top: 3px; color: rgba(255,255,255,.28); font-size: 9.5px; font-variant-numeric: tabular-nums; }
-        .history-footer { flex: 0 0 auto; padding: 11px 16px 13px; border-top: 1px solid rgba(255,255,255,.065); display: flex; align-items: center; gap: 7px; color: rgba(255,255,255,.32); font-size: 9.5px; }
-        .history-footer-dot { width: 4px; height: 4px; border-radius: 50%; background: rgba(90,200,250,.55); }
-        .history-rail:focus-visible, .history-close:focus-visible, .history-clear:focus-visible { outline: 2px solid rgba(116,211,255,.95); outline-offset: 2px; }
-        .history-rail:focus-visible { opacity: .94; }
-        .history-rail:focus-visible .rail-chevron { opacity: .9; }
+        .history-item:hover { background: var(--fill); }
+        .history-item + .history-item::before { content: ''; position: absolute; left: 24.5px; top: -8px; width: 1px; height: 10px; background: var(--line); }
+        .history-icon { width: 32px; height: 32px; border-radius: 10px; display: flex; align-items: center; justify-content: center; background: var(--fill); border: 1px solid var(--line-soft); }
+        .history-icon svg { width: 16px; height: 16px; fill: none; stroke: var(--accent); stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }
+        .history-copy { min-width: 0; padding-top: 1px; }
+        .history-action { color: var(--fg); font-size: 13px; font-weight: 650; letter-spacing: -.005em; line-height: 1.2; }
+        .history-detail { margin-top: 3px; color: var(--fg-2); font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .history-time { padding-top: 2px; color: var(--fg-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+        .history-footer { flex: 0 0 auto; padding: 11px 16px 13px; border-top: 1px solid var(--line-soft); display: flex; align-items: center; gap: 7px; color: var(--fg-3); font-size: 11px; }
+        .history-footer-dot { width: 4px; height: 4px; border-radius: 50%; background: rgba(90,200,250,.7); }
+        .history-rail:focus-visible, .history-close:focus-visible, .history-clear:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+        .history-rail:focus-visible { opacity: 1; outline-offset: -2px; }
         .sr-status { position: fixed; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 
         @keyframes mcpPulse { 0%,100% { box-shadow: 0 0 12px rgba(90,200,250,.16); } 50% { box-shadow: 0 0 24px rgba(90,200,250,.38); } }
         @keyframes mcpDot { 0% { box-shadow: 0 0 0 0 rgba(90,200,250,.48); } 65%,100% { box-shadow: 0 0 0 6px rgba(90,200,250,0); } }
         @keyframes mcpRipple { 0% { opacity: .92; transform: scale(.35); } 100% { opacity: 0; transform: scale(2.8); } }
+        @media (max-width: 520px) { .companion.sidebar-open .pill { opacity: 0; } }
         @media (prefers-reduced-motion: reduce) { .frame,.dot { animation: none; } .cursor,.pill,.history-panel,.history-rail { transition-duration: .01ms; } }
       </style>
       <div class="companion">
@@ -174,7 +176,7 @@
         <div class="ripple" aria-hidden="true"></div>
         <div class="sr-status" role="status" aria-live="polite" aria-atomic="true"></div>
         <button class="history-rail" type="button" aria-label="Mac MCP tab activity" aria-expanded="false" aria-controls="${PANEL_ID}">
-          <span class="rail-chevron" aria-hidden="true"></span><span class="rail-count" aria-hidden="true">0</span>
+          <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M2.5 10.5h3.2l2.1-5 4.2 9.5 2.2-4.5h3.3"/></svg></span><span class="rail-count" aria-hidden="true">0</span><span class="rail-chevron" aria-hidden="true"></span>
         </button>
         <aside class="history-panel" id="${PANEL_ID}" aria-label="Mac MCP tab activity">
           <div class="history-header">
