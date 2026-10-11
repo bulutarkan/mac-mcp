@@ -10,6 +10,9 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from .process_supervision import run_osascript
+from .tool_cancellation import ToolCancelledError
+
 
 _ARTIFACT_TTL_S = 2 * 60 * 60
 _MAX_ARTIFACTS = 256
@@ -153,15 +156,14 @@ def resolve_artifact(
 
 def _run_osascript(script: str, *, timeout_s: float = 10.0) -> Tuple[bool, str, str]:
     try:
-        proc = subprocess.run(
-            ["osascript", "-e", script], capture_output=True, text=True,
-            timeout=max(0.5, min(float(timeout_s), 30.0)),
-        )
-    except subprocess.TimeoutExpired:
-        return False, "", "AppleScript timed out"
+        result = run_osascript(script, max(0.5, min(float(timeout_s), 30.0)))
+    except ToolCancelledError:
+        raise
     except Exception as exc:
         return False, "", str(exc)
-    return proc.returncode == 0, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+    if result.timed_out:
+        return False, "", "AppleScript timed out"
+    return result.ok, result.stdout.strip(), result.stderr.strip()
 
 
 def _panel_script(pid: int, *, mode: str, command: str) -> str:

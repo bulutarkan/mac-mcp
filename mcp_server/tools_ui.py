@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from mcp.server.fastmcp.utilities.types import Image
 
-from .process_supervision import terminate_process_group as _terminate_process_group
+from .process_supervision import run_osascript, terminate_process_group as _terminate_process_group
 from .native_action_verification import (
     ACTION_VERIFY_POLL_S as _NATIVE_ACTION_VERIFY_POLL_S,
     ACTION_VERIFY_TIMEOUT_S as _NATIVE_ACTION_VERIFY_TIMEOUT_S,
@@ -232,34 +232,15 @@ def _resize_screenshot(path: str, timeout_s: float) -> Optional[str]:
 
 def _run_osascript(script: str, timeout_s: float = 30) -> Tuple[bool, str, str]:
     timeout_s = max(0.1, min(float(timeout_s), 120.0))
-    cancellation_checkpoint()
-    proc = subprocess.Popen(
-        ["osascript", "-"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
-    cleanup_token = register_cancellation_cleanup(lambda: _terminate_process_group(proc))
-    cancellation_checkpoint()
     try:
-        stdout, stderr = proc.communicate(input=script, timeout=timeout_s)
-        cancellation_checkpoint()
+        result = run_osascript(script, timeout_s)
     except ToolCancelledError:
-        _terminate_process_group(proc)
-        proc.wait()
         raise
-    except subprocess.TimeoutExpired:
-        _terminate_process_group(proc)
-        proc.wait()
-        return False, "", f"AppleScript timed out after {timeout_s}s"
     except Exception as exc:
         return False, "", f"Could not run osascript: {exc}"
-    finally:
-        unregister_cancellation_cleanup(cleanup_token)
-
-    return proc.returncode == 0, (stdout or "").strip(), (stderr or "").strip()
+    if result.timed_out:
+        return False, "", f"AppleScript timed out after {timeout_s}s"
+    return result.ok, result.stdout.strip(), result.stderr.strip()
 
 
 def _apple_string(value: str) -> str:

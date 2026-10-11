@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import subprocess
 import threading
 from typing import Any, Dict, List, Optional
 
-from .process_supervision import terminate_process_group
+from .process_supervision import run_osascript
+from .tool_cancellation import ToolCancelledError
 from .security import Settings
 
 
@@ -115,11 +115,6 @@ def _validate_choices(
     return normalized, default_label
 
 
-def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
-    # A dialog gets a longer grace period, and is reaped after SIGKILL.
-    terminate_process_group(proc, grace_s=1.0, reap_s=1.0)
-
-
 def _run_native_script(script: str, total_timeout: int) -> Dict[str, Any]:
     """Run one native dialog while enforcing serialization and hard cleanup."""
     if not _DIALOG_LOCK.acquire(blocking=False):
@@ -129,33 +124,22 @@ def _run_native_script(script: str, total_timeout: int) -> Dict[str, Any]:
             "message": "Another interactive dialog is already open; answer or close it before asking again.",
         }
 
-    proc: subprocess.Popen[str] | None = None
     try:
         try:
-            proc = subprocess.Popen(
-                ["osascript", "-e", script],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-            )
-            stdout, stderr = proc.communicate(timeout=total_timeout + 5)
+            # A dialog gets a longer grace period, and is reaped after SIGKILL.
+            result = run_osascript(script, total_timeout + 5, script_on_stdin=False, grace_s=1.0, reap_s=1.0)
         except FileNotFoundError:
             return {"ok": False, "error": "osascript is not available on this Mac"}
-        except subprocess.TimeoutExpired:
-            if proc is not None:
-                _terminate_process_group(proc)
-            return {"ok": True, "output": _TIMEOUT_SENTINEL, "timed_out": True}
+        except ToolCancelledError:
+            raise
         except Exception as exc:
-            if proc is not None:
-                _terminate_process_group(proc)
             return {"ok": False, "error": str(exc)}
+        if result.timed_out:
+            return {"ok": True, "output": _TIMEOUT_SENTINEL, "timed_out": True}
 
-        output = (stdout or "").strip()
-        return_code = getattr(proc, "returncode", 0)
-        if return_code not in (0, None):
-            error = (stderr or "").strip() or f"osascript exited with code {return_code}"
+        output = result.stdout.strip()
+        if result.returncode not in (0, None):
+            error = result.stderr.strip() or f"osascript exited with code {result.returncode}"
             return {"ok": False, "error": error}
         return {"ok": True, "output": output, "timed_out": False}
     finally:

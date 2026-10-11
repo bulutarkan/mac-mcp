@@ -7,6 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional
 
+from .process_supervision import run_osascript
 from .security import Settings
 from .tools_browser import browser_list_tabs
 from .tools_macos import get_running_apps
@@ -26,13 +27,13 @@ def _json_bytes(value: Any) -> int:
 
 
 def _run_osascript(script: str, timeout_s: float = 5.0) -> str:
-    proc = subprocess.run(
-        ["osascript", "-e", script], capture_output=True, text=True,
-        timeout=max(0.2, min(float(timeout_s), 15.0)),
-    )
-    if proc.returncode != 0:
-        raise RuntimeError((proc.stderr or "osascript failed").strip())
-    return (proc.stdout or "").strip()
+    timeout_s = max(0.2, min(float(timeout_s), 15.0))
+    result = run_osascript(script, timeout_s)
+    if result.timed_out:
+        raise subprocess.TimeoutExpired("osascript", timeout_s)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or "osascript failed").strip())
+    return result.stdout.strip()
 
 
 def _read_apps(settings: Settings, *, app_limit: int, **_: Any) -> Dict[str, Any]:

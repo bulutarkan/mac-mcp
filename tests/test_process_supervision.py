@@ -66,11 +66,86 @@ class TerminateProcessGroupTests(unittest.TestCase):
         proc.wait(5)
 
     def test_every_tool_uses_the_shared_supervisor(self) -> None:
-        for name in ("tools_terminal", "tools_macos", "tools_ui", "tools_browser", "tools_interactive"):
+        for name in ("tools_terminal", "tools_macos", "tools_ui", "tools_browser", "tools_interactive",
+                     "tools_snapshot", "artifact_pipeline"):
             source = (ROOT / "mcp_server" / f"{name}.py").read_text(encoding="utf-8")
             with self.subTest(module=name):
-                self.assertIn("from .process_supervision import terminate_process_group", source)
+                self.assertIn("from .process_supervision import", source)
                 self.assertNotRegex(source, re.compile(r"os\.killpg\(proc\.pid"))
+                # osascript is started only through run_osascript.
+                self.assertNotRegex(source, re.compile(r"""\[\s*["']osascript["']"""))
+
+
+@unittest.skipUnless(Path("/usr/bin/osascript").exists(), "osascript is macOS only")
+class RunOsascriptTests(unittest.TestCase):
+    """#74: the one osascript runner the tools adapt to their own response shapes."""
+
+    def marked_alive(self, marker: str) -> bool:
+        out = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True, check=False).stdout
+        return bool(out.strip())
+
+    def test_success_failure_and_arguments(self) -> None:
+        ok = process_supervision.run_osascript('return "hi"', 10)
+        self.assertEqual((True, "hi"), (ok.ok, ok.stdout.strip()))
+        failed = process_supervision.run_osascript('error "boom" number 7', 10)
+        self.assertFalse(failed.ok)
+        self.assertNotEqual(0, failed.returncode)
+        self.assertIn("boom", failed.stderr)
+        # Arguments stay data: they never become AppleScript source.
+        tricky = 'x" & (do shell script "echo pwned") & "'
+        bound = process_supervision.run_osascript("on run argv\nreturn item 1 of argv\nend run", 10,
+                                                  args=[tricky], script_on_stdin=False)
+        self.assertEqual(tricky, bound.stdout.strip())
+
+    def test_timeout_stops_the_process(self) -> None:
+        marker = "mcp74timeout"
+        started = time.monotonic()
+        result = process_supervision.run_osascript(f"delay 20 -- {marker}", 0.5, script_on_stdin=False)
+        self.assertTrue(result.timed_out)
+        self.assertFalse(result.ok)
+        self.assertLess(time.monotonic() - started, 5)
+        deadline = time.monotonic() + 3
+        while self.marked_alive(marker) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(self.marked_alive(marker), subprocess.run(["pgrep", "-fl", marker], capture_output=True, text=True, check=False).stdout)
+
+    def test_a_cancelled_call_stops_the_process_and_raises(self) -> None:
+        import threading
+
+        from mcp_server.tool_cancellation import (
+            ToolCancellationContext,
+            ToolCancelledError,
+            reset_tool_cancellation,
+            set_tool_cancellation,
+        )
+
+        marker = "mcp74cancel"
+        outcome: dict = {}
+
+        def worker() -> None:
+            cancellation_token = set_tool_cancellation(context)
+            try:
+                process_supervision.run_osascript(f"delay 20 -- {marker}", 30, script_on_stdin=False)
+                outcome["result"] = "finished"
+            except ToolCancelledError:
+                outcome["result"] = "cancelled"
+            finally:
+                reset_tool_cancellation(cancellation_token)
+
+        context = ToolCancellationContext(cleanup_wait_s=1.5)
+        thread = threading.Thread(target=worker)
+        thread.start()
+        deadline = time.monotonic() + 5
+        while not self.marked_alive(marker) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(self.marked_alive(marker), "osascript did not start")
+        context.cancel("test_cancel")
+        thread.join(5)
+        self.assertEqual("cancelled", outcome.get("result"))
+        deadline = time.monotonic() + 3
+        while self.marked_alive(marker) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(self.marked_alive(marker), subprocess.run(["pgrep", "-fl", marker], capture_output=True, text=True, check=False).stdout)
 
 
 if __name__ == "__main__":

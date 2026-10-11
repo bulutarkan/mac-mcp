@@ -32,7 +32,7 @@ class FakeProcess:
 class InteractiveToolTests(unittest.TestCase):
     def test_ask_choice_returns_selected_choice_and_index(self):
         process = FakeProcess("Review\n")
-        with patch.object(tools_interactive.subprocess, "Popen", return_value=process) as popen:
+        with patch.object(process_supervision.subprocess, "Popen", return_value=process) as popen:
             result = tools_interactive.ask_choice(
                 None,
                 question="How should we continue?",
@@ -57,7 +57,7 @@ class InteractiveToolTests(unittest.TestCase):
 
     def test_three_choices_use_all_native_buttons_without_extra_cancel(self):
         process = FakeProcess("Ship\n")
-        with patch.object(tools_interactive.subprocess, "Popen", return_value=process) as popen:
+        with patch.object(process_supervision.subprocess, "Popen", return_value=process) as popen:
             result = tools_interactive.ask_choice(
                 None,
                 question="What should we do?",
@@ -81,7 +81,7 @@ class InteractiveToolTests(unittest.TestCase):
 
     def test_ask_confirmation_only_explicit_yes_confirms(self):
         process = FakeProcess("Yes\n")
-        with patch.object(tools_interactive.subprocess, "Popen", return_value=process) as popen:
+        with patch.object(process_supervision.subprocess, "Popen", return_value=process) as popen:
             result = tools_interactive.ask_confirmation(None, "Proceed with the action?")
 
         self.assertTrue(result["confirmed"])
@@ -92,7 +92,7 @@ class InteractiveToolTests(unittest.TestCase):
 
     def test_confirmation_denial_is_not_cancelled(self):
         process = FakeProcess("No\n")
-        with patch.object(tools_interactive.subprocess, "Popen", return_value=process):
+        with patch.object(process_supervision.subprocess, "Popen", return_value=process):
             result = tools_interactive.ask_confirmation(None, "Proceed with the action?")
 
         self.assertEqual(
@@ -108,7 +108,7 @@ class InteractiveToolTests(unittest.TestCase):
 
     def test_timeout_is_fail_closed_and_terminates_process_group(self):
         process = FakeProcess(timeout=True)
-        with patch.object(tools_interactive.subprocess, "Popen", return_value=process), patch.object(
+        with patch.object(process_supervision.subprocess, "Popen", return_value=process), patch.object(
             process_supervision.os, "killpg"
         ) as killpg:
             result = tools_interactive.ask_confirmation(None, "Proceed?", timeout_s=2)
@@ -122,7 +122,7 @@ class InteractiveToolTests(unittest.TestCase):
         )
 
     def test_invalid_choice_list_is_rejected_before_launching_dialog(self):
-        with patch.object(tools_interactive.subprocess, "Popen") as popen:
+        with patch.object(process_supervision.subprocess, "Popen") as popen:
             result = tools_interactive.ask_choice(None, "Pick one", ["Only one"])
 
         self.assertFalse(result["ok"])
@@ -130,7 +130,7 @@ class InteractiveToolTests(unittest.TestCase):
         popen.assert_not_called()
 
     def test_four_choices_are_rejected_before_launching_dialog(self):
-        with patch.object(tools_interactive.subprocess, "Popen") as popen:
+        with patch.object(process_supervision.subprocess, "Popen") as popen:
             result = tools_interactive.ask_choice(None, "Pick one", ["A", "B", "C", "D"])
 
         self.assertFalse(result["ok"])
@@ -140,7 +140,7 @@ class InteractiveToolTests(unittest.TestCase):
     def test_second_dialog_is_rejected_while_one_is_active(self):
         self.assertTrue(tools_interactive._DIALOG_LOCK.acquire(blocking=False))
         try:
-            with patch.object(tools_interactive.subprocess, "Popen") as popen:
+            with patch.object(process_supervision.subprocess, "Popen") as popen:
                 result = tools_interactive.ask_choice(None, "Pick one", ["A", "B"])
         finally:
             tools_interactive._DIALOG_LOCK.release()
@@ -150,7 +150,7 @@ class InteractiveToolTests(unittest.TestCase):
 
     def test_ask_user_keeps_legacy_response_shape(self):
         process = FakeProcess("hello\n")
-        with patch.object(tools_interactive.subprocess, "Popen", return_value=process):
+        with patch.object(process_supervision.subprocess, "Popen", return_value=process):
             result = tools_interactive.ask_user(None, "What is your answer?", timeout_s=2)
 
         self.assertEqual(

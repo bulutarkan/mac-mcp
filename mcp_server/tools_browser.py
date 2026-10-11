@@ -14,7 +14,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from fastapi import HTTPException, status
 
-from .process_supervision import terminate_process_group as _terminate_process_group
+from .process_supervision import run_osascript
 from .security import Settings, truncate, validate_browser_url as _validate_browser_destination
 from . import applescript_host, browser_tabs
 from .chrome_background_bridge import chrome_background_bridge
@@ -25,10 +25,7 @@ from .context_handoff import (
     HandoffError, mark_handoff_consumed, resolve_browser_upload_handoff,
 )
 from .foreground_guard import require_foreground_authorization
-from .tool_cancellation import (
-    ToolCancelledError, cancellation_checkpoint, register_cancellation_cleanup,
-    unregister_cancellation_cleanup,
-)
+from .tool_cancellation import cancellation_checkpoint
 
 
 def validate_url(settings: Settings, url: str) -> None:
@@ -333,33 +330,12 @@ def _run_osascript(script: str, timeout_s: int = 30) -> str:
 def _run_osascript_process(script: str, timeout_s: int) -> str:
     # The script goes in on stdin, not as an argument: page scripts can carry typed
     # text or a filled password, and process arguments are visible to other processes.
-    proc = subprocess.Popen(
-        ["osascript", "-"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
-    cleanup_token = register_cancellation_cleanup(lambda: _terminate_process_group(proc))
-    cancellation_checkpoint()
-    try:
-        stdout, stderr = proc.communicate(input=script, timeout=timeout_s)
-        cancellation_checkpoint()
-    except ToolCancelledError:
-        _terminate_process_group(proc)
-        proc.wait()
-        raise
-    except subprocess.TimeoutExpired:
-        _terminate_process_group(proc)
-        proc.wait()
+    result = run_osascript(script, timeout_s)
+    if result.timed_out:
         raise HTTPException(status.HTTP_408_REQUEST_TIMEOUT, "AppleScript timed out.")
-    finally:
-        unregister_cancellation_cleanup(cleanup_token)
-
-    if proc.returncode != 0:
-        _raise_applescript_error((stderr or stdout or "AppleScript error").strip())
-    return (stdout or "").strip()
+    if result.returncode != 0:
+        _raise_applescript_error((result.stderr or result.stdout or "AppleScript error").strip())
+    return result.stdout.strip()
 
 
 def _raise_applescript_error(msg: str) -> None:
