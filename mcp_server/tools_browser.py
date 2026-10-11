@@ -687,7 +687,8 @@ def _resolve_safari_created_tab(
             if int(row.get("window_index") or 0) == int(window_index)
         ]
 
-        if native_id and native_id != "0":
+        has_native = bool(native_id and native_id != "0")
+        if has_native:
             matches = [
                 row for row in latest_rows
                 if str(row.get("native_id") or "") == native_id
@@ -696,6 +697,24 @@ def _resolve_safari_created_tab(
                 return matches[0]
             if len(matches) > 1:
                 break
+            # Safari swaps the tab's WebContent process when the cross-site
+            # navigation commits, so the pid returned at creation can be gone by
+            # the first scan. Fall back to the one tab that is new by both handle
+            # and pid, and only when its URL or reported index also identifies it.
+            swapped = [
+                row for row in latest_rows
+                if str(row.get("tab_handle") or "") not in before_handles
+                and str(row.get("native_id") or "") not in {"", "0"}
+                and str(row.get("native_id") or "") not in before_native_ids
+            ]
+            # An older tab still holding the returned pid does not make it ours.
+            new_matches = [row for row in matches if str(row.get("tab_handle") or "") not in before_handles]
+            if not new_matches and len(swapped) == 1 and (
+                str(swapped[0].get("url") or "") == str(requested_url)
+                or int(swapped[0].get("tab_index") or 0) == int(hinted_tab_index)
+            ):
+                return swapped[0]
+            latest_candidates = swapped
             time.sleep(0.05)
             continue
 

@@ -194,6 +194,62 @@ class SafariCreatedTabIdentityTests(unittest.TestCase):
             ctx.exception.detail["error"],
         )
 
+    def test_process_swap_before_first_scan_resolves_the_new_tab(self) -> None:
+        # #166: Safari returned pid 3001 at creation, then swapped the tab to 3002
+        # when the cross-site navigation committed, before Mac MCP listed tabs.
+        before_handles = {"btab_old"}
+        before_ids = {"1201"}
+        swapped = [
+            row(window=1, tab=1, native="1201", url="https://old.test/", handle="btab_old"),
+            row(window=1, tab=2, native="3002", url="https://target.test/", handle="btab_created"),
+        ]
+        with patch.object(browser_tabs, "list_tabs", return_value=swapped):
+            resolved = _resolve_safari_created_tab(
+                "https://target.test/", 1, 2, "3001", before_handles, before_ids, timeout_s=0.1,
+            )
+        self.assertEqual("btab_created", resolved["tab_handle"])
+
+    def test_process_swap_resolves_by_reported_index_when_the_url_was_normalized(self) -> None:
+        before_handles = {"btab_old"}
+        before_ids = {"1201"}
+        swapped = [
+            row(window=1, tab=1, native="1201", url="https://old.test/", handle="btab_old"),
+            row(window=1, tab=2, native="3002", url="https://target.test/home", handle="btab_created"),
+        ]
+        with patch.object(browser_tabs, "list_tabs", return_value=swapped):
+            resolved = _resolve_safari_created_tab(
+                "https://target.test", 1, 2, "3001", before_handles, before_ids, timeout_s=0.1,
+            )
+        self.assertEqual("btab_created", resolved["tab_handle"])
+
+    def test_process_swap_with_two_new_tabs_fails_closed(self) -> None:
+        # Someone else opened a tab at the same time: neither URL nor index singles one out.
+        before_handles = {"btab_old"}
+        before_ids = {"1201"}
+        rows = [
+            row(window=1, tab=1, native="1201", url="https://old.test/", handle="btab_old"),
+            row(window=1, tab=2, native="3002", url="https://target.test/a", handle="btab_one"),
+            row(window=1, tab=3, native="3003", url="https://target.test/b", handle="btab_two"),
+        ]
+        with patch.object(browser_tabs, "list_tabs", return_value=rows), self.assertRaises(HTTPException) as ctx:
+            _resolve_safari_created_tab(
+                "https://target.test/", 1, 4, "3001", before_handles, before_ids, timeout_s=0.06,
+            )
+        self.assertEqual("safari_created_tab_identity_unresolved", ctx.exception.detail["error"])
+        self.assertEqual(2, ctx.exception.detail["candidate_count"])
+
+    def test_process_swap_does_not_take_an_unrelated_new_tab(self) -> None:
+        before_handles = {"btab_old"}
+        before_ids = {"1201"}
+        rows = [
+            row(window=1, tab=1, native="1201", url="https://old.test/", handle="btab_old"),
+            row(window=1, tab=3, native="3009", url="https://someone-else.test/", handle="btab_other"),
+        ]
+        with patch.object(browser_tabs, "list_tabs", return_value=rows), self.assertRaises(HTTPException):
+            _resolve_safari_created_tab(
+                "https://target.test/", 1, 2, "3001", before_handles, before_ids, timeout_s=0.06,
+            )
+
     def test_window_scoped_creation_lock_serializes_same_window_only(self) -> None:
         probe = _ProbeLock()
         with tools_browser._SAFARI_NEW_TAB_LOCK_GUARD:
