@@ -939,9 +939,11 @@
     els.activeStripCount.textContent = `${total} running`;
     if (!calls.length) {
       els.activeStrip.innerHTML = `<div class="active-empty">No tools are running right now.</div>`;
+      els.activeStrip.closest(".active-zone")?.classList.add("is-empty");
       return;
     }
     const now = Date.now() / 1000;
+    els.activeStrip.closest(".active-zone")?.classList.remove("is-empty");
     els.activeStrip.innerHTML = calls.map((event) => {
       const started = Number(event.started_at || event.timestamp || now);
       const elapsed = Math.max(0, (now - started) * 1000);

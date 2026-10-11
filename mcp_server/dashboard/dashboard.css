@@ -202,31 +202,35 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 h2 { margin: 0; font-size: 15px; letter-spacing: -.015em; font-weight: 630; }
 .panel-head p, .rail-title p { margin: 5px 0 0; color: var(--muted-deep); font-size: 10.5px; line-height: 1.4; }
 .window-switch { display: flex; align-items: center; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: rgba(7, 17, 27, .65); }
-.window-switch button { min-width: 44px; min-height: 40px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 10.5px; transition: background .16s ease, color .16s ease; }
+.window-switch button { min-width: 40px; min-height: 26px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 10.5px; transition: background .16s ease, color .16s ease; }
 .window-switch button:hover { color: var(--text); background: #142637; }
 .window-switch button.is-active { color: var(--text); background: linear-gradient(180deg, #213a50, #1a3044); box-shadow: inset 0 1px 0 rgba(255,255,255,.04); }
 
-.active-zone { flex: 0 0 auto; margin-top: 12px; padding: 10px 11px 11px; border: 1px solid rgba(101, 160, 202, .15); border-radius: 12px; background: rgba(7, 18, 29, .52); }
+.active-zone { flex: 0 0 auto; margin-top: 10px; padding: 10px 11px 11px; border: 1px solid rgba(101, 160, 202, .15); border-radius: 12px; background: rgba(7, 18, 29, .52); }
 .active-zone-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; color: var(--muted); font-size: 10px; }
 .active-zone-head > div { display: flex; align-items: center; gap: 7px; }
 .active-zone-head strong { color: #abc2d3; font-size: 10.5px; font-weight: 620; }
 .live-indicator { width: 6px; height: 6px; border-radius: 50%; background: var(--ice); box-shadow: 0 0 0 4px rgba(143, 206, 248, .07); }
 .active-strip { display: flex; gap: 8px; margin-top: 8px; overflow-x: auto; padding-bottom: 1px; }
 .active-empty { min-height: 36px; display: flex; align-items: center; color: #60778b; font-size: 10.5px; }
+/* Nothing running: the zone shrinks to its header line so the call list gets the room. */
+.active-zone.is-empty { padding: 7px 11px; }
+.active-zone.is-empty .active-strip { display: none; }
 .active-call { min-width: min(300px, 78%); max-width: 380px; display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; padding: 9px 10px; border: 1px solid rgba(93, 160, 208, .22); border-radius: 10px; color: inherit; background: linear-gradient(180deg, rgba(17, 40, 58, .92), rgba(11, 29, 43, .92)); text-align: left; cursor: pointer; }
 .active-call:hover { border-color: rgba(119, 191, 239, .34); background: linear-gradient(180deg, rgba(21, 48, 69, .98), rgba(12, 32, 47, .98)); }
 .active-call strong { min-width: 0; overflow: hidden; color: var(--text); font-size: 11px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
 .active-call small { grid-column: 1; min-width: 0; overflow: hidden; color: #7790a4; font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
 .active-call time { grid-row: 1 / span 2; grid-column: 2; color: var(--ice); font: 600 10px ui-monospace, "SFMono-Regular", Menlo, monospace; font-variant-numeric: tabular-nums; }
 
-.filters { flex: 0 0 auto; display: grid; grid-template-columns: minmax(170px, 1fr) auto auto; gap: 8px; margin-top: 10px; }
+.filters { flex: 0 0 auto; display: grid; grid-template-columns: minmax(170px, 1fr) auto auto; gap: 8px; margin-top: 8px; }
 .search-box { position: relative; display: block; }
-.search-box svg { position: absolute; left: 11px; top: 50%; width: 15px; height: 15px; transform: translateY(-50%); fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linecap: round; pointer-events: none; }
-.filters input, .filters select { width: 100%; min-height: 39px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: #b8c9d6; background: rgba(7, 17, 27, .72); transition: border-color .16s ease, background .16s ease; }
-.filters input { padding: 0 13px 0 34px; }
-.filters select { min-width: 122px; padding: 0 32px 0 11px; }
+.search-box svg { position: absolute; left: 10px; top: 50%; width: 13px; height: 13px; transform: translateY(-50%); fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-linecap: round; pointer-events: none; }
+.filters input, .filters select { width: 100%; min-height: 30px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: #b8c9d6; background-color: rgba(7, 17, 27, .72); font-size: 11px; transition: border-color .16s ease, background-color .16s ease; }
+.filters input { padding: 0 11px 0 30px; }
+/* Safari draws native selects large and ignores the font size unless the native look is off. */
+.filters select { -webkit-appearance: none; appearance: none; min-width: 112px; padding: 0 26px 0 10px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5' fill='none' stroke='%238298aa' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; background-size: 11px; }
 .filters input::placeholder { color: #61798d; }
-.filters input:hover, .filters select:hover { border-color: rgba(126, 176, 214, .32); background: #0d1c2a; }
+.filters input:hover, .filters select:hover { border-color: rgba(126, 176, 214, .32); background-color: #0d1c2a; }
 
 .activity-table { flex: 1 1 auto; min-height: 0; margin-top: 10px; border: 1px solid rgba(141, 180, 210, .12); border-radius: 11px; background: rgba(5, 14, 23, .42); display: flex; flex-direction: column; overflow: hidden; }
 .activity-header, .event-row { display: grid; grid-template-columns: 76px minmax(180px, 1fr) 70px 88px 88px; gap: 12px; align-items: center; }
@@ -429,6 +433,7 @@ pre { margin: 0; max-width: 100%; padding: 16px; overflow: auto; max-height: 44v
   .panel-head { align-items: center; }
   .panel-head p { display: none; }
   .window-switch button { min-height: 44px; }
+  .filters input, .filters select { min-height: 40px; font-size: 13px; }
   .filters { grid-template-columns: 1fr 1fr; }
   .search-box { grid-column: 1 / -1; }
   .activity-header, .event-row { grid-template-columns: 66px minmax(130px, 1fr) 80px 76px; gap: 8px; }
