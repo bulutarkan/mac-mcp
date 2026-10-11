@@ -1364,19 +1364,32 @@ function __mcpTextMatches(actual,value){var n=function(v){return String(v||'').r
    fires the same trusted beforeinput/input as typing. Assigning textContent is the last
    resort and is reported as such.
    (No apostrophes here: _top_level_function_names tracks quotes, not comments.) */
-function __mcpSelectEditable(el,clearFirst){var doc=el.ownerDocument||document,win=__mcpOwnerWindow(el);
+function __mcpSelectEditable(el,clearFirst,backward){var doc=el.ownerDocument||document,win=__mcpOwnerWindow(el);
   /* A background tab gets no focus events, so React keeps the previous field as active and drops the new selection. */
   try{if(!doc.hasFocus()){el.dispatchEvent(new win.FocusEvent('focus',{relatedTarget:null}));el.dispatchEvent(new win.FocusEvent('focusin',{bubbles:true,relatedTarget:null}));}}catch(e){}
-  var sel=win.getSelection(),range=doc.createRange();range.selectNodeContents(el);if(clearFirst===false)range.collapse(false);sel.removeAllRanges();sel.addRange(range);try{doc.dispatchEvent(new win.Event('selectionchange'));}catch(e){}}
+  var sel=win.getSelection(),range=doc.createRange();range.selectNodeContents(el);if(clearFirst===false)range.collapse(false);sel.removeAllRanges();
+  if(backward&&clearFirst!==false&&sel.setBaseAndExtent)sel.setBaseAndExtent(range.endContainer,range.endOffset,range.startContainer,range.startOffset);else sel.addRange(range);
+  try{doc.dispatchEvent(new win.Event('selectionchange'));}catch(e){}}
 function __mcpExecInsert(el,value,clearFirst){
   var doc=el.ownerDocument||document,ok=true;
   try{if(!value)return clearFirst===false?true:doc.execCommand('delete',false,null);var lines=value.split(/\r\n|\r|\n/);
     for(var i=0;i<lines.length&&ok;i++){if(i>0)ok=doc.execCommand('insertParagraph',false,null);if(ok&&lines[i])ok=doc.execCommand('insertText',false,lines[i]);}}catch(e){return false;}
   return !!ok;
 }
+/* Editors that keep the text in their own model and render the field from it. They take a
+   paste into that model without firing input, so seeing the text is enough for them. */
+function __mcpModelEditor(el){try{return !!(el.closest&&el.closest('.ProseMirror,[data-lexical-editor],.public-DraftEditor-content,[data-slate-editor],.ql-editor,.ck-editor__editable,.mce-content-body,.cm-content'));}catch(e){return false;}}
+/* A page can cancel the paste and write the text into the DOM itself without telling its
+   framework (React state, a form model); the text shows but the next rerender drops it and
+   submit stays disabled. Such a paste is accepted only when the field is a known editor or
+   the page announced the change with beforeinput/input; otherwise s.lastPasteUnconfirmed. */
 function __mcpPasteInsert(el,value){
-  var win=__mcpOwnerWindow(el);try{var dt=new win.DataTransfer();dt.setData('text/plain',value);
-    var ev=new win.ClipboardEvent('paste',{bubbles:true,cancelable:true,composed:true,clipboardData:dt});return !el.dispatchEvent(ev);}catch(e){return false;}
+  var win=__mcpOwnerWindow(el),s=__mcpState(),announced=false,note=function(){announced=true;};s.lastPasteUnconfirmed=false;
+  try{var dt=new win.DataTransfer();dt.setData('text/plain',value);
+    var ev=new win.ClipboardEvent('paste',{bubbles:true,cancelable:true,composed:true,clipboardData:dt});
+    el.addEventListener('beforeinput',note,true);el.addEventListener('input',note,true);
+    var handled;try{handled=!el.dispatchEvent(ev);}finally{el.removeEventListener('beforeinput',note,true);el.removeEventListener('input',note,true);}
+    if(handled&&!announced&&!__mcpModelEditor(el))s.lastPasteUnconfirmed=true;return handled;}catch(e){return false;}
 }
 function __mcpSetText(el,value,clearFirst,focusSettled){
   if(!el)throw new Error('element_not_found');if(el.disabled===true||el.getAttribute('aria-disabled')==='true')throw new Error('element_disabled');if(el.readOnly===true||el.getAttribute('readonly')!==null)throw new Error('element_readonly');var wasActive=false;try{wasActive=(el.ownerDocument||document).activeElement===el;}catch(e){}__mcpScrollIntoView(el);try{el.focus({preventScroll:true});}catch(e){try{el.focus();}catch(_){}}
@@ -1390,8 +1403,11 @@ function __mcpSetText(el,value,clearFirst,focusSettled){
     var settle=function(method){var now=__mcpEditableText(el);s.lastInputMethod=__mcpTextMatches(now,expected)?method:(now===start?method+'_async':'input_partial');return el;};
     /* Replacing text in a field that was not focused: focusing it makes editors such as Draft update their
        state and ignore selection changes until they re-render, so the text would land at the old caret.
-       Focus and select now; the server runs the same action again once the editor has settled. */
-    if(!wasActive&&!focusSettled&&clearFirst!==false&&start.trim()){try{__mcpSelectEditable(el,clearFirst);}catch(e){}s.lastInputMethod='focus_settling';return el;}
+       Focus and select now; the server runs the same action again once the editor has settled. Editors
+       that read the selection a task later (Slate) need this early selection. It is made backward because
+       React drops a select event identical to the last one it saw, and the busy editor (Draft) ignores
+       this one, so the forward select-all of the second run must look new or Draft pastes at the old caret. */
+    if(!wasActive&&!focusSettled&&clearFirst!==false&&start.trim()){try{__mcpSelectEditable(el,clearFirst,true);}catch(e){}s.lastInputMethod='focus_settling';return el;}
     var selected=true;try{__mcpSelectEditable(el,clearFirst);}catch(e){selected=false;}
     if(selected&&value&&__mcpPasteInsert(el,value))return settle('paste_event');
     if(selected&&__mcpEditableText(el)===start&&__mcpExecInsert(el,value,clearFirst))return settle('exec_command');
@@ -2369,9 +2385,13 @@ for(var i=0;i<actions.length;i++){
       var hasValue=('value' in el),actual='';try{actual=hasValue?String(el.value||''):__mcpEditableText(el);}catch(e){}
       var method=s.lastInputMethod||'',expectedText=a.clear===false&&!hasValue?priorText+value:value,pending=/_async$/.test(method);
       var applied=pending||(hasValue?actual===value:(method!=='input_partial'&&__mcpTextMatches(actual,expectedText)));
-      var verification=pending?'editor_pending':(!applied?'input_not_applied':(method==='dom_text'?'dom_text_only':'value_applied'));
+      var unconfirmed=/^paste_event/.test(method)&&s.lastPasteUnconfirmed===true;
+      var verification=pending?'editor_pending':(!applied?'input_not_applied':(method==='dom_text'?'dom_text_only':(unconfirmed?'editor_model_unconfirmed':'value_applied')));
       var typed={index:i,type:type,element_id:a.element_id,ok:applied,value:actual.slice(0,200),effect_observed:applied&&!pending,verification:verification,input_method:method.replace(/_async$/,''),observe_again:!applied};
       if(pending)typed._verify_text=expectedText;
+      if(pending&&unconfirmed)typed._model_unconfirmed=true;
+      /* The page drew the pasted text but nothing shows its framework took it (see __mcpPasteInsert). */
+      if(verification==='editor_model_unconfirmed'){typed.editor_state_unverified=true;typed.observe_again=true;}
       /* Text written only into the DOM may never reach the model of a rich editor (its submit stays disabled). */
       if(verification==='dom_text_only'){typed.editor_state_unverified=true;typed.observe_again=true;}
       if(!applied)typed.error='input_not_applied';results.push(typed);if(!applied)break;
@@ -3306,6 +3326,7 @@ def _verified_dom_action(
             })
 
     expected_text = result.pop("_verify_text", None)
+    model_unconfirmed = bool(result.pop("_model_unconfirmed", False))
     if result.get("verification") == "editor_pending" and typ in {"type", "type_text", "paste"}:
         # The editor accepted the input into its model and renders it shortly; confirm the
         # text arrived (read-only, bounded) instead of reporting success on faith.
@@ -3323,6 +3344,10 @@ def _verified_dom_action(
             if re.sub(r"[\s ​]+", "", seen) == wanted:
                 result.update({"effect_observed": True, "verification": "value_applied_async", "value": seen[:200]})
                 result.pop("observe_again", None)
+                if model_unconfirmed:
+                    # Visible, but the page wrote it without telling its framework; do not call it accepted.
+                    result.update({"verification": "editor_model_unconfirmed", "editor_state_unverified": True,
+                                   "observe_again": True})
                 compact_state = post
                 break
         else:
