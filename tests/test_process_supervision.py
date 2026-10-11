@@ -67,7 +67,7 @@ class TerminateProcessGroupTests(unittest.TestCase):
 
     def test_every_tool_uses_the_shared_supervisor(self) -> None:
         for name in ("tools_terminal", "tools_macos", "tools_ui", "tools_browser", "tools_interactive",
-                     "tools_snapshot", "artifact_pipeline"):
+                     "tools_snapshot", "artifact_pipeline", "browser_tabs"):
             source = (ROOT / "mcp_server" / f"{name}.py").read_text(encoding="utf-8")
             with self.subTest(module=name):
                 self.assertIn("from .process_supervision import", source)

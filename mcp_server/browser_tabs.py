@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from fastapi import HTTPException, status
 
 from . import applescript_host
+from .process_supervision import run_osascript
 
 from .workspace_arbitration import (
     browser_human_takeover,
@@ -106,15 +107,12 @@ def _osascript(script: str) -> str:
     try:
         ok, stdout, stderr = applescript_host.run(script, 30)
     except applescript_host.HostUnavailable:
-        proc = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        ok, stdout, stderr = proc.returncode == 0, proc.stdout, proc.stderr
+        result = run_osascript(script, 30)
+        if result.timed_out:
+            raise subprocess.TimeoutExpired("osascript", 30)
+        ok, stdout, stderr = result.ok, result.stdout, result.stderr
     except applescript_host.HostTimeout as exc:
-        raise subprocess.TimeoutExpired(["osascript"], 30) from exc
+        raise subprocess.TimeoutExpired("osascript", 30) from exc
     if not ok:
         raise RuntimeError((stderr or stdout or "AppleScript error").strip())
     return (stdout or "").strip()
