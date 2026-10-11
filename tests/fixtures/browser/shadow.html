@@ -1,0 +1,53 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Shadow fixture</title>
+<style>body{font:14px system-ui;margin:0;padding:10px} auth-modal{position:fixed;inset:60px 30%;z-index:5;display:block;background:#fff}</style>
+</head><body>
+<header><a href="#home">Home</a> <button type="button">Background button</button></header>
+<div id="items"></div>
+<closed-widget style="display:inline-block;width:160px;height:40px"></closed-widget>
+<p id="receipt"></p>
+
+<!-- Reddit-like: the dialog lives in the host's shadow root and the form is slotted into it;
+     each field is its own web component with the input in its shadow root. -->
+<auth-modal>
+  <form id="login" onsubmit="return false">
+    <faceplate-text-input name="username" label="Email or username"></faceplate-text-input>
+    <faceplate-text-input name="password" type="password" label="Password"></faceplate-text-input>
+    <fancy-select label="Region"></fancy-select>
+    <faceplate-button label="Log In"></faceplate-button>
+  </form>
+</auth-modal>
+
+<script>
+customElements.define('auth-modal', class extends HTMLElement {
+  constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<dialog open aria-label="Log In" style="position:static;display:block;border:1px solid #999"><h1>Log In</h1><slot></slot></dialog>';}
+});
+customElements.define('faceplate-text-input', class extends HTMLElement {
+  constructor(){super();var root=this.attachShadow({mode:'open'});
+    var type=this.getAttribute('type')||'text',name=this.getAttribute('name');
+    root.innerHTML='<div class="wrap"><input type="'+type+'" name="'+name+'" autocomplete="'+(type==='password'?'current-password':'username')+'"><span class="label">'+this.getAttribute('label')+'</span></div>';}
+});
+customElements.define('inner-select', class extends HTMLElement {
+  constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<select aria-label="Region"><option>EU</option><option>US</option></select>';}
+});
+customElements.define('fancy-select', class extends HTMLElement {
+  constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<div><inner-select></inner-select></div>';}
+});
+customElements.define('faceplate-button', class extends HTMLElement {
+  constructor(){super();var root=this.attachShadow({mode:'open'});root.innerHTML='<button type="button">'+this.getAttribute('label')+'</button>';
+    root.querySelector('button').addEventListener('click',function(){
+      var f=document.querySelectorAll('faceplate-text-input'),u=f[0].shadowRoot.querySelector('input').value,p=f[1].shadowRoot.querySelector('input').value;
+      var region=document.querySelector('fancy-select').shadowRoot.querySelector('inner-select').shadowRoot.querySelector('select').value;
+      window.__logins=(window.__logins||0)+1;
+      document.getElementById('receipt').textContent='Mock login: '+u+' / password '+(p?'set':'empty')+' / '+region+' (#'+window.__logins+')';});}
+});
+customElements.define('closed-widget', class extends HTMLElement {
+  constructor(){super();this.attachShadow({mode:'closed'}).innerHTML='<button type="button">Hidden behind closed root</button>';}
+});
+customElements.define('x-item', class extends HTMLElement {
+  constructor(){super();this.attachShadow({mode:'open'}).innerHTML='<button type="button">Item '+this.getAttribute('n')+'</button>';}
+});
+var items=document.getElementById('items');
+for(var i=0;i<300;i++){var x=document.createElement('x-item');x.setAttribute('n',i);items.appendChild(x);}
+</script>
+</body></html>

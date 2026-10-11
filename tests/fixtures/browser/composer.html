@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Composer fixture</title>
+<style>
+body{font:14px system-ui;margin:0}
+header{position:sticky;top:0;background:#eee;padding:6px;display:flex;gap:6px;z-index:10}
+header button.icon{width:28px;height:28px}
+#reply-control{position:fixed;bottom:0;left:0;right:0;height:0;min-height:0;overflow:hidden;background:#fafafa;border-top:1px solid #999;transition:height .2s,min-height .2s;z-index:20}
+#reply-control.open{height:400px;min-height:400px}
+.toolbar button{width:26px;height:26px}
+.ProseMirror{min-height:120px;border:1px solid #ccc;padding:4px}
+.ProseMirror p[data-placeholder]:empty::before,.ProseMirror p.empty::before{content:attr(data-placeholder);color:#999}
+.rows{display:none}.rows.show{display:block}
+.row{padding:4px;cursor:pointer}
+</style></head>
+<body>
+<header>
+  <a href="#home">Composer fixture</a>
+  <button class="icon" aria-label="Search"><svg width="10" height="10"></svg></button>
+  <button class="icon" aria-label="Navigation menu"><svg width="10" height="10"></svg></button>
+  <li class="icon">&#8203;</li><li class="icon">&#8203;</li>
+  <button id="new-topic" type="button">New Topic</button>
+</header>
+<main id="list"></main>
+<p id="receipt"></p>
+<script>
+var list=document.getElementById('list');
+for(var i=0;i<400;i++){var d=document.createElement('div');d.innerHTML='<a href="#t'+i+'">Topic number '+i+'</a> <button type="button">Like '+i+'</button>';list.appendChild(d);}
+window.__submits=0;
+</script>
+<div id="reply-control">
+  <div><button aria-label="Minimize the composer panel" class="icon"><svg width="10" height="10"></svg></button></div>
+  <input id="reply-title" type="text" placeholder="What is this discussion about in one brief sentence?">
+  <details class="select-kit" id="cat"><summary aria-label="Filter by: Uncategorized" role="listbox">Uncategorized</summary>
+    <div class="rows" id="cat-rows">
+      <div class="row" role="menuitemradio" data-name="macOS">macOS</div>
+      <div class="row" role="menuitemradio" data-name="iOS">iOS</div>
+      <div class="row" role="menuitemradio" data-name="Shortcuts">Shortcuts</div>
+    </div>
+  </details>
+  <details class="select-kit"><summary role="listbox">optional tags</summary></details>
+  <div class="toolbar">
+    <button aria-label="Strong"><svg width="10" height="10"></svg></button><button aria-label="Emphasis"><svg width="10" height="10"></svg></button>
+    <button aria-label="Headings"><svg width="10" height="10"></svg></button><button aria-label="Link"><svg width="10" height="10"></svg></button>
+    <button aria-label="Blockquote"><svg width="10" height="10"></svg></button><button aria-label="Preformatted text"><svg width="10" height="10"></svg></button>
+    <button aria-label="Upload"><svg width="10" height="10"></svg></button><button aria-label="Lists"><svg width="10" height="10"></svg></button>
+    <button aria-label="Emoji"><svg width="10" height="10"></svg></button><button aria-label="Options"><svg width="10" height="10"></svg></button>
+  </div>
+  <div class="ProseMirror d-editor-input" contenteditable="true" translate="no"><p data-placeholder="Type here. Use the toolbar or Markdown for formatting."><br></p></div>
+  <div class="submit-panel">
+    <button type="button" class="btn-primary create" title="Or press ⌘ Enter"><svg width="10" height="10"></svg><span class="d-button-label">Create Topic</span></button>
+    <button type="button" class="discard-button"><span class="d-button-label">Discard</span></button>
+  </div>
+</div>
+<script>
+var rc=document.getElementById('reply-control');
+document.getElementById('new-topic').addEventListener('click',function(){rc.classList.add('open');});
+document.querySelector('.discard-button').addEventListener('click',function(){rc.classList.remove('open');});
+document.querySelector('#cat summary').addEventListener('click',function(e){e.preventDefault();var c=document.getElementById('cat');c.open=!c.open;document.getElementById('cat-rows').classList.toggle('show',c.open);});
+document.querySelectorAll('#cat-rows .row').forEach(function(r){r.addEventListener('click',function(){document.querySelector('#cat summary').textContent=r.dataset.name;document.getElementById('cat-rows').classList.remove('show');document.getElementById('cat').open=false;});});
+var ed=document.querySelector('.ProseMirror');
+ed.addEventListener('input',function(){var p=ed.querySelector('p');if(!p)return;if(ed.textContent.trim())p.removeAttribute('data-placeholder');else p.setAttribute('data-placeholder','Type here. Use the toolbar or Markdown for formatting.');});
+document.querySelector('.create').addEventListener('click',function(){window.__submits++;document.getElementById('receipt').textContent='Mock topic created: '+document.getElementById('reply-title').value+' / '+ed.textContent.trim()+' (#'+window.__submits+')';rc.classList.remove('open');});
+</script>
+</body></html>

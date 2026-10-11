@@ -1,0 +1,47 @@
+name: Browser Page Integration
+
+# Runs Mac MCP's real observe/find/act stack against test-owned fixture pages in a
+# throwaway headless Chrome profile (tests/test_browser_page_integration.py). It needs
+# no Accessibility/TCC permission and touches no real browser profile. Opt-in: run it
+# by hand, or let it run when the page scripts or fixtures change.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "mcp_server/tools_browser_agent.py"
+      - "mcp_server/browser_sign_in.py"
+      - "tests/fixtures/browser/**"
+      - "tests/test_browser_page_integration.py"
+
+permissions:
+  contents: read
+
+jobs:
+  pages:
+    name: Headless Chrome pages
+    runs-on: macos-15
+    env:
+      MCP_API_KEY: "ci-regression-only-0123456789abcdef0123456789abcdef"
+      MCP_ALLOW_NO_AUTH: "false"
+      MCP_ALLOW_SHELL: "true"
+      MAC_MCP_SKIP_MENU_APP_INSTALL: "1"
+      MAC_MCP_BROWSER_INTEGRATION: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --disable-pip-version-check --require-hashes -r requirements.lock
+          python -m pip install --disable-pip-version-check --no-deps --no-build-isolation -e .
+      - name: Check Chrome
+        run: test -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+      - name: Browser page tier
+        env:
+          MAC_MCP_TELEMETRY_DIR: ${{ runner.temp }}/mac-mcp-telemetry
+        run: python -m unittest tests.test_browser_page_integration -v
