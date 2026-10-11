@@ -1551,6 +1551,9 @@ final class AppState: ObservableObject {
 
     let settings = SettingsStore()
     private var pollTask: Task<Void, Never>?
+    /// The poll loop's current wait; cancelling it runs the next poll now.
+    private var pollSleepTask: Task<Void, Never>?
+    private var securitySemanticsFetchedAt: Date?
     private var toolActivityStreamTask: Task<Void, Never>?
     /// True while the /dashboard/events stream is open and feeding the activity list.
     private var toolActivityStreamConnected = false
@@ -1573,6 +1576,10 @@ final class AppState: ObservableObject {
     private var lastPublicProcessCheckAt = 0.0
     private static let activePollIntervalSeconds = 2.5
     private static let idlePollIntervalSeconds = 12.0
+    /// Idle with the activity stream open: the stream shows new work, so polls can be rarer.
+    private static let quietIdlePollIntervalSeconds = 30.0
+    /// Permission semantics change only with settings; background polls re-read them at most this often.
+    private static let securitySemanticsMaxAgeSeconds: TimeInterval = 60
     private static let ngrokProcessCheckIntervalSeconds = 30.0
     private static let publicProcessCheckIntervalSeconds = ngrokProcessCheckIntervalSeconds
     private static let maxRetryIntervalSeconds = 30.0
@@ -1822,7 +1829,8 @@ final class AppState: ObservableObject {
     }
 
     private var successfulPollIntervalSeconds: Double {
-        hasActiveWork ? Self.activePollIntervalSeconds : Self.idlePollIntervalSeconds
+        if hasActiveWork { return Self.activePollIntervalSeconds }
+        return toolActivityStreamConnected ? Self.quietIdlePollIntervalSeconds : Self.idlePollIntervalSeconds
     }
 
     /// Mirrors System Settings > Accessibility > Display > Reduce motion.
@@ -1916,11 +1924,19 @@ final class AppState: ObservableObject {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                await self.refresh()
+                await self.refresh(background: true)
                 let delay = max(0.25, self.nextPollDelaySeconds)
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                let sleeper = Task { _ = try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+                self.pollSleepTask = sleeper
+                await sleeper.value
+                self.pollSleepTask = nil
             }
         }
+    }
+
+    /// Run the next background poll now instead of at the end of an idle wait.
+    private func wakePoll() {
+        pollSleepTask?.cancel()
     }
 
     /// Poll /dashboard/api/events only when the stream cannot be trusted to keep
@@ -1965,9 +1981,10 @@ final class AppState: ObservableObject {
         toolActivityStreamTask = nil
         toolActivityStreamConnected = false
 
-        guard settings.requireToolDescriptions, settings.showToolActivity else {
+        // The stream also keeps the activity list current and lets idle polls be rarer, so it
+        // runs with the bubble off; only the bubble itself follows the setting.
+        if !(settings.requireToolDescriptions && settings.showToolActivity) {
             ToolActivityBubbleController.shared.hideImmediately()
-            return
         }
 
         toolActivityStreamTask = Task { [weak self] in
@@ -1977,10 +1994,6 @@ final class AppState: ObservableObject {
 
     private func consumeToolActivityStream() async {
         while !Task.isCancelled {
-            guard settings.requireToolDescriptions, settings.showToolActivity else {
-                ToolActivityBubbleController.shared.hideImmediately()
-                return
-            }
             guard let url = URL(
                 string: "http://127.0.0.1:\(settings.serverPort)/dashboard/events"
             ) else { return }
@@ -2042,6 +2055,12 @@ final class AppState: ObservableObject {
         setIfChanged(\.activeEvents, lists.active)
         setIfChanged(\.recentEvents, lists.recent)
 
+        // A delegated agent or team starting while idle: poll now rather than after the idle wait.
+        if kind == "call_finished", !hasActiveWork,
+           let tool = payload["tool"] as? String, tool.contains("agent") || tool.contains("team") {
+            wakePoll()
+        }
+
         guard let eventID = payload["event_id"] as? String, !eventID.isEmpty else { return }
         if kind == "call_started" {
             presentToolActivityEvent(payload)
@@ -2069,7 +2088,9 @@ final class AppState: ObservableObject {
         )
     }
 
-    func refresh() async {
+    /// Background polls re-read permission semantics only when they are older than a minute;
+    /// a refresh after a user action or on opening the menu reads everything.
+    func refresh(background: Bool = false) async {
         refreshNgrokStateIfNeeded()
         refreshPersistedUpdateState()
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else {
@@ -2086,7 +2107,11 @@ final class AppState: ObservableObject {
             async let eventsFetch: EventsEnvelope? = fetchActivityEvents(base: base, poll: pollEvents)
             async let agentsFetch: AgentsEnvelope = fetch(base.appendingPathComponent("dashboard/api/agents"), query: ["limit": "20"])
             async let steeringFetch: SteeringEnvelope = fetch(base.appendingPathComponent("dashboard/api/steering"), query: [:])
-            async let securityFetch: SecuritySemanticsEnvelope = fetch(base.appendingPathComponent("dashboard/api/security/semantics"), query: [:])
+            let semanticsAge = securitySemanticsFetchedAt.map { Date().timeIntervalSince($0) } ?? .infinity
+            let readSemantics = !background || securitySemantics == nil || semanticsAge >= Self.securitySemanticsMaxAgeSeconds
+            async let securityFetch: SecuritySemanticsEnvelope? = readSemantics
+                ? fetch(base.appendingPathComponent("dashboard/api/security/semantics"), query: [:])
+                : nil
 
             setIfChanged(\.serverRunning, true)
             if let value = summary.version { setIfChanged(\.version, value) }
@@ -2129,9 +2154,11 @@ final class AppState: ObservableObject {
                 secondaryIssue = secondaryIssue ?? "Sessions: \(Self.issueText(for: error))"
             }
             do {
-                let semantics = try await securityFetch
-                setIfChanged(\.securitySemantics, semantics)
-                setIfChanged(\.permissionsSettingsState, .fresh())
+                if let semantics = try await securityFetch {
+                    setIfChanged(\.securitySemantics, semantics)
+                    setIfChanged(\.permissionsSettingsState, .fresh())
+                    securitySemanticsFetchedAt = Date()
+                }
             } catch {
                 let message = "Could not refresh permission semantics: \(Self.issueText(for: error))"
                 let state = settingsFailureState(

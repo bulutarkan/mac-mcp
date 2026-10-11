@@ -96,7 +96,7 @@ class MenuActivityStreamHarnessTests(unittest.TestCase):
 
     def test_refresh_skips_events_fetch_only_through_the_poll_gate(self) -> None:
         source = (SOURCES / "AppState.swift").read_text(encoding="utf-8")
-        refresh = source[source.index("func refresh() async"):source.index("private func fetchActivityEvents")]
+        refresh = source[source.index("func refresh(background: Bool = false) async"):source.index("private func fetchActivityEvents")]
         self.assertNotIn('fetch(base.appendingPathComponent("dashboard/api/events")', refresh)
         self.assertIn("fetchActivityEvents(base: base, poll: pollEvents)", refresh)
         stream = source[source.index("private func consumeToolActivityStream()"):source.index("private func handleToolActivityPayload")]

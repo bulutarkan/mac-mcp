@@ -33,6 +33,8 @@ struct MenuBarView: View {
         .background(.regularMaterial)
         .task {
             audio.refresh()
+            // Background polls are rarer while idle; opening the menu shows current state.
+            Task { await state.refresh() }
             if settings.steeringSessionMinutes != 10 {
                 sessionMinutesText = String(settings.steeringSessionMinutes)
             }

@@ -21,8 +21,28 @@ class MenuStatePerformanceTests(unittest.TestCase):
         self.assertIn("private func updatePulseTask()", source)
         self.assertIn("private var shouldPulse: Bool", source)
         self.assertIn("activeAgents > 0", source[source.index("private var shouldPulse"):source.index("private func refreshNgrokStateIfNeeded")])
-        start_tasks = source[source.index("func startTasks()"):source.index("func refresh() async")]
+        start_tasks = source[source.index("func startTasks()"):source.index("func refresh(background: Bool = false) async")]
         self.assertNotIn("pulseTask = Task", start_tasks)
+
+    def test_background_polls_are_quieter_while_idle(self):
+        # #167: idle polls with the activity stream open wait 30 s, permission semantics are
+        # re-read at most once a minute in the background, and agent starts wake the loop.
+        source = APP_STATE.read_text(encoding="utf-8")
+        self.assertIn("quietIdlePollIntervalSeconds = 30.0", source)
+        self.assertIn("securitySemanticsMaxAgeSeconds: TimeInterval = 60", source)
+        start_tasks = source[source.index("func startTasks()"):source.index("func refresh(background: Bool = false) async")]
+        self.assertIn("await self.refresh(background: true)", start_tasks)
+        self.assertIn("pollSleepTask?.cancel()", start_tasks)
+        refresh = source[source.index("func refresh(background: Bool = false) async"):source.index("private func settingsFailureState")]
+        self.assertIn("let readSemantics = !background || securitySemantics == nil", refresh)
+        interval = source[source.index("private var successfulPollIntervalSeconds"):]
+        self.assertIn("if hasActiveWork { return Self.activePollIntervalSeconds }", interval[:400])
+        stream = source[source.index("func restartToolActivityStream()"):source.index("private func handleToolActivityPayload")]
+        self.assertNotIn("guard settings.requireToolDescriptions, settings.showToolActivity", stream)
+        handler = source[source.index("private func handleToolActivityPayload"):source.index("private func presentToolActivityEvent")]
+        self.assertIn("wakePoll()", handler)
+        menu = (APP_STATE.parent / "MenuBarView.swift").read_text(encoding="utf-8")
+        self.assertIn("Task { await state.refresh() }", menu)
 
     def test_stable_session_diff_handles_identical_update_add_remove_at_scale(self):
         harness = r'''
