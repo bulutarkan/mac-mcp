@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from tests._menu_sources import feature_files, feature_source
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_STATE = ROOT / "menu_app" / "Sources" / "AppState.swift"
@@ -10,7 +11,7 @@ APP_STATE = ROOT / "menu_app" / "Sources" / "AppState.swift"
 
 class MenuSteeringIdempotencyTests(unittest.TestCase):
     def test_source_has_stable_id_bounded_retry_and_distinct_error_paths(self) -> None:
-        source = APP_STATE.read_text(encoding="utf-8")
+        source = feature_source("AppState")
         self.assertIn('"client_instruction_id": clientInstructionID', source)
         self.assertIn("pendingSteeringClientInstructionID", source)
         self.assertIn("pendingSteeringSessionID == sessionID", source)
@@ -49,7 +50,7 @@ struct SteeringDecodeHarness {
             source.write_text(textwrap.dedent(harness), encoding="utf-8")
             cmd = [
                 "xcrun", "swiftc", "-parse-as-library",
-                str(APP_STATE),
+                *map(str, feature_files("AppState")),
                 str(ROOT / "menu_app/Sources/AgentNotificationController.swift"),
                 str(ROOT / "menu_app/Sources/SettingsStore.swift"),
                 str(ROOT / "menu_app/Sources/ToolActivityBubbleController.swift"),

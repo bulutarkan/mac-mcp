@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from tests._menu_sources import feature_files, feature_source
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_STATE = (ROOT / "menu_app/Sources/AppState.swift").read_text(encoding="utf-8")
+APP_STATE = feature_source("AppState")
 SETTINGS_VIEW = (ROOT / "menu_app/Sources/SettingsView.swift").read_text(encoding="utf-8")
 
 

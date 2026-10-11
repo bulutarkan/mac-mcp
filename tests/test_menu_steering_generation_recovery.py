@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from tests._menu_sources import feature_files, feature_source
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_STATE = ROOT / "menu_app" / "Sources" / "AppState.swift"
@@ -11,7 +12,7 @@ APP_STATE = ROOT / "menu_app" / "Sources" / "AppState.swift"
 
 class MenuSteeringGenerationRecoveryTests(unittest.TestCase):
     def test_source_sends_generation_and_handles_unknown_outcome(self):
-        source = APP_STATE.read_text(encoding="utf-8")
+        source = feature_source("AppState")
         self.assertIn('"generation_id": generationID', source)
         self.assertIn('case "stale_generation":', source)
         self.assertIn('case "idempotency_expired":', source)
@@ -59,7 +60,7 @@ struct GenerationRecoveryHarness {
             source.write_text(textwrap.dedent(harness), encoding="utf-8")
             cmd = [
                 "xcrun", "swiftc", "-parse-as-library",
-                str(APP_STATE),
+                *map(str, feature_files("AppState")),
                 str(ROOT / "menu_app/Sources/AgentNotificationController.swift"),
                 str(ROOT / "menu_app/Sources/SettingsStore.swift"),
                 str(ROOT / "menu_app/Sources/ToolActivityBubbleController.swift"),

@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from tests._menu_sources import feature_files, feature_source
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_STATE = ROOT / "menu_app" / "Sources" / "AppState.swift"
@@ -11,7 +12,7 @@ APP_STATE = ROOT / "menu_app" / "Sources" / "AppState.swift"
 
 class MenuRelaunchSteeringRecoveryTests(unittest.TestCase):
     def test_source_persists_only_correlation_metadata_and_reuses_hash(self):
-        source = APP_STATE.read_text(encoding="utf-8")
+        source = feature_source("AppState")
         self.assertIn('MAC_MCP_PENDING_STEERING_STATE_FILE', source)
         self.assertIn('pending-steering.json', source)
         self.assertIn('pendingSteeringTextHash == textHash', source)
@@ -102,7 +103,7 @@ struct RelaunchRecoveryHarness {
             source.write_text(textwrap.dedent(harness), encoding="utf-8")
             cmd = [
                 "xcrun", "swiftc", "-parse-as-library",
-                str(APP_STATE),
+                *map(str, feature_files("AppState")),
                 str(ROOT / "menu_app/Sources/AgentNotificationController.swift"),
                 str(ROOT / "menu_app/Sources/SettingsStore.swift"),
                 str(ROOT / "menu_app/Sources/ToolActivityBubbleController.swift"),

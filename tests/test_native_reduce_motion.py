@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from tests._menu_sources import feature_files, feature_source
 
 SOURCES = Path(__file__).resolve().parents[1] / "menu_app" / "Sources"
 
 
 class NativeReduceMotionTests(unittest.TestCase):
     def test_menu_bar_pulse_stops_with_reduce_motion_and_follows_changes(self) -> None:
-        state = (SOURCES / "AppState.swift").read_text(encoding="utf-8")
+        state = feature_source("AppState")
         should = state[state.index("private var shouldPulse: Bool"):state.index("private func observeReduceMotion")]
         self.assertIn("activeAgents > 0 && !reduceMotion", should)
         self.assertIn("NSWorkspace.shared.accessibilityDisplayShouldReduceMotion", state)

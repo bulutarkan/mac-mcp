@@ -68,6 +68,7 @@ from mcp_server.public_endpoint import (
     resolve_public_endpoint,
     write_cloudflare_token,
 )
+from tests._menu_sources import feature_files, feature_source
 
 
 class PublicEndpointConfigTests(unittest.TestCase):
@@ -491,7 +492,7 @@ class PublicEndpointSourceContractTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         settings = (root / "menu_app/Sources/SettingsStore.swift").read_text(encoding="utf-8")
         view = (root / "menu_app/Sources/SettingsView.swift").read_text(encoding="utf-8")
-        app_state = (root / "menu_app/Sources/AppState.swift").read_text(encoding="utf-8")
+        app_state = feature_source("AppState", root)
         self.assertIn('public_endpoint_mode', settings)
         self.assertIn('@Published var publicEndpointMode = "none"', settings)
         self.assertIn('Text("Cloudflare").tag("cloudflare")', view)

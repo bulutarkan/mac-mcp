@@ -10,6 +10,7 @@ from unittest.mock import patch
 from mcp_server.policy import PolicyContext, permission_semantics, resolve_risk
 from mcp_server.runtime_settings import server_approval_profile_setting
 from mcp_server.security_context import SecurityContextManager
+from tests._menu_sources import feature_files, feature_source
 
 
 class ServerApprovalStartupTests(unittest.TestCase):
@@ -145,7 +146,7 @@ class ServerApprovalSurfaceTests(unittest.TestCase):
 
     def test_native_and_docs_surface_server_approval_separately(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        app_state = (root / "menu_app/Sources/AppState.swift").read_text(encoding="utf-8")
+        app_state = feature_source("AppState", root)
         settings_view = (root / "menu_app/Sources/SettingsView.swift").read_text(encoding="utf-8")
         readme = (root / "README.md").read_text(encoding="utf-8")
         terminology = (root / "docs/TERMINOLOGY.md").read_text(encoding="utf-8")

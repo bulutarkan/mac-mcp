@@ -24,6 +24,7 @@ from mcp_server.tools_browser import (
 )
 from mcp_server.tools_browser_agent import _batch_js, _browser_state_bootstrap, _observe_js, _ensure_visual_companion
 from mcp_server.update_helper import _sync_runtime, _tracked_files
+from tests._menu_sources import feature_files, feature_source
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -312,7 +313,7 @@ class BrowserVisualCompanionTests(unittest.TestCase):
         self.assertIn('BrowserVisualCompanion/visual.js', source)
 
     def test_menu_onboarding_uses_safari_extension_state_and_preferences_api(self) -> None:
-        app_state = (ROOT / "menu_app/Sources/AppState.swift").read_text(encoding="utf-8")
+        app_state = feature_source("AppState")
         menu = (ROOT / "menu_app/Sources/MenuBarView.swift").read_text(encoding="utf-8")
         self.assertIn("SFSafariExtensionManager.getStateOfSafariExtension", app_state)
         self.assertIn("SFSafariApplication.showPreferencesForExtension", app_state)

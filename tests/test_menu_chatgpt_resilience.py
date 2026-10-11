@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from tests._menu_sources import feature_files, feature_source
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_STATE = ROOT / "menu_app/Sources/AppState.swift"
@@ -11,7 +12,7 @@ MENU_VIEW = ROOT / "menu_app/Sources/MenuBarView.swift"
 
 class MenuChatGPTResilienceTests(unittest.TestCase):
     def test_source_surfaces_checkpoint_and_throttle_states(self):
-        state = APP_STATE.read_text(encoding="utf-8")
+        state = feature_source("AppState")
         view = MENU_VIEW.read_text(encoding="utf-8")
         self.assertIn('case turnElapsedMS = "turn_elapsed_ms"', state)
         self.assertIn('case checkpointCount = "checkpoint_count"', state)
@@ -49,7 +50,7 @@ struct AgentResilienceDecodeHarness {
             source.write_text(textwrap.dedent(harness), encoding="utf-8")
             cmd = [
                 "xcrun", "swiftc", "-parse-as-library",
-                str(APP_STATE),
+                *map(str, feature_files("AppState")),
                 str(ROOT / "menu_app/Sources/AgentNotificationController.swift"),
                 str(ROOT / "menu_app/Sources/SettingsStore.swift"),
                 str(ROOT / "menu_app/Sources/ToolActivityBubbleController.swift"),

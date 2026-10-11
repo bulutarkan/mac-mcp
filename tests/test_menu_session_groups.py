@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from tests._menu_sources import feature_files, feature_source
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -62,7 +63,7 @@ struct FixtureHarness {
             source.write_text(textwrap.dedent(harness), encoding="utf-8")
             cmd = [
                 "xcrun", "swiftc", "-parse-as-library",
-                str(ROOT / "menu_app/Sources/AppState.swift"),
+                *map(str, feature_files("AppState")),
                 str(ROOT / "menu_app/Sources/AgentNotificationController.swift"),
                 str(ROOT / "menu_app/Sources/SettingsStore.swift"),
                 str(ROOT / "menu_app/Sources/ToolActivityBubbleController.swift"),

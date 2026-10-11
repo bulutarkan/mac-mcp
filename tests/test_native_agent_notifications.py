@@ -1,5 +1,6 @@
 from pathlib import Path
 import unittest
+from tests._menu_sources import feature_files, feature_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +23,7 @@ class NativeAgentNotificationContractTests(unittest.TestCase):
 
     def test_permission_is_requested_only_from_explicit_enable_flow(self):
         controller = CONTROLLER.read_text(encoding="utf-8")
-        state = STATE.read_text(encoding="utf-8")
+        state = feature_source("AppState")
         self.assertIn("func requestAuthorization() async -> Bool", controller)
         self.assertIn("func setAgentCompletionNotificationsEnabled(_ enabled: Bool)", state)
         self.assertIn("requestAuthorization()", state)
@@ -53,7 +54,7 @@ class NativeAgentNotificationContractTests(unittest.TestCase):
         self.assertIn("AgentNotificationController.swift", source)
 
     def test_notification_click_deep_links_dashboard_agent_or_team(self):
-        state = STATE.read_text(encoding="utf-8")
+        state = feature_source("AppState")
         dashboard = DASHBOARD.read_text(encoding="utf-8")
         css = DASHBOARD_CSS.read_text(encoding="utf-8")
         self.assertIn('URLQueryItem(name: "focus_agent"', state)

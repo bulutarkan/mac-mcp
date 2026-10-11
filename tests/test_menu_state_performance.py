@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
+from tests._menu_sources import feature_files, feature_source
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_STATE = ROOT / "menu_app" / "Sources" / "AppState.swift"
@@ -11,7 +12,7 @@ APP_STATE = ROOT / "menu_app" / "Sources" / "AppState.swift"
 
 class MenuStatePerformanceTests(unittest.TestCase):
     def test_app_state_is_main_actor_and_uses_change_guard(self):
-        source = APP_STATE.read_text(encoding="utf-8")
+        source = feature_source("AppState")
         self.assertIn("@MainActor\nfinal class AppState: ObservableObject", source)
         self.assertIn("private func setIfChanged<Value: Equatable>", source)
         self.assertIn("SteeringSessionGrouping.diff(current: steeringSessions, incoming: envelope.sessions)", source)
@@ -27,7 +28,7 @@ class MenuStatePerformanceTests(unittest.TestCase):
     def test_background_polls_are_quieter_while_idle(self):
         # #167: idle polls with the activity stream open wait 30 s, permission semantics are
         # re-read at most once a minute in the background, and agent starts wake the loop.
-        source = APP_STATE.read_text(encoding="utf-8")
+        source = feature_source("AppState")
         self.assertIn("quietIdlePollIntervalSeconds = 30.0", source)
         self.assertIn("securitySemanticsMaxAgeSeconds: TimeInterval = 60", source)
         start_tasks = source[source.index("func startTasks()"):source.index("func refresh(background: Bool = false) async")]
@@ -123,7 +124,7 @@ struct PerfDiffHarness {
             source.write_text(textwrap.dedent(harness), encoding="utf-8")
             cmd = [
                 "xcrun", "swiftc", "-parse-as-library",
-                str(APP_STATE),
+                *map(str, feature_files("AppState")),
                 str(ROOT / "menu_app/Sources/AgentNotificationController.swift"),
                 str(ROOT / "menu_app/Sources/SettingsStore.swift"),
                 str(ROOT / "menu_app/Sources/ToolActivityBubbleController.swift"),

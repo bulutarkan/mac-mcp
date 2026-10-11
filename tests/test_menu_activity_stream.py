@@ -16,6 +16,7 @@ from mcp_server import dashboard_routes
 from mcp_server.dashboard_routes import create_dashboard_routes
 from mcp_server.observability import TelemetryManager
 from mcp_server.security import load_settings
+from tests._menu_sources import feature_files, feature_source
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ROOT / "menu_app" / "Sources"
@@ -81,7 +82,7 @@ class MenuActivityStreamHarnessTests(unittest.TestCase):
             source.write_text(textwrap.dedent(HARNESS), encoding="utf-8")
             cmd = [
                 "xcrun", "swiftc", "-parse-as-library",
-                str(SOURCES / "AppState.swift"), str(SOURCES / "AgentNotificationController.swift"),
+                *map(str, feature_files("AppState")), str(SOURCES / "AgentNotificationController.swift"),
                 str(SOURCES / "SettingsStore.swift"), str(SOURCES / "ToolActivityBubbleController.swift"),
                 str(SOURCES / "KeychainStore.swift"), str(source),
                 "-framework", "SwiftUI", "-framework", "AppKit", "-framework", "Security",
@@ -95,7 +96,7 @@ class MenuActivityStreamHarnessTests(unittest.TestCase):
             self.assertIn("ACTIVITY_STREAM_PASS", run.stdout)
 
     def test_refresh_skips_events_fetch_only_through_the_poll_gate(self) -> None:
-        source = (SOURCES / "AppState.swift").read_text(encoding="utf-8")
+        source = feature_source("AppState")
         refresh = source[source.index("func refresh(background: Bool = false) async"):source.index("private func fetchActivityEvents")]
         self.assertNotIn('fetch(base.appendingPathComponent("dashboard/api/events")', refresh)
         self.assertIn("fetchActivityEvents(base: base, poll: pollEvents)", refresh)
