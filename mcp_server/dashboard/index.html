@@ -73,6 +73,27 @@
         </div>
       </section>
 
+      <section class="health-row" id="healthRow" aria-label="System health and attention">
+        <div class="health-strip surface-card" aria-label="System health">
+          <div class="health-chip" id="healthServer" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Server</span><strong>—</strong></div>
+          <div class="health-chip" id="healthTelemetry" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Telemetry</span><strong>—</strong></div>
+          <div class="health-chip" id="healthProfile" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Permissions</span><strong>—</strong></div>
+          <div class="health-chip" id="healthApproval" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Server approval</span><strong>—</strong></div>
+          <div class="health-chip" id="healthCompanion" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Chrome companion</span><strong>—</strong></div>
+          <div class="health-chip" id="healthRecord" data-state="unknown"><span class="health-dot" aria-hidden="true"></span><span>Security record</span><strong>—</strong></div>
+        </div>
+        <div class="attention-card surface-card" aria-labelledby="attentionTitle">
+          <div class="rail-title">
+            <div>
+              <h2 id="attentionTitle">Needs your attention</h2>
+              <p id="attentionHint">Requests are answered in the Mac MCP Allow Once / Block prompt on this Mac.</p>
+            </div>
+            <span id="attentionCount">—</span>
+          </div>
+          <div id="attentionList" class="attention-list" role="status" aria-live="polite"><div class="no-agents">Checking…</div></div>
+        </div>
+      </section>
+
       <section class="metric-grid" aria-label="Telemetry summary">
         <div class="metric-card surface-card">
           <div class="metric-label"><span class="metric-dot metric-dot-blue"></span>Tool calls</div>
@@ -239,13 +260,21 @@
       </button>
     </div>
     <div class="drawer-body">
-      <section>
+      <section id="requestSection">
         <div class="payload-title"><h3>Request</h3><span>Sanitized</span></div>
         <pre id="drawerRequest"><code>{}</code></pre>
+      </section>
+      <section id="agentSummarySection" hidden>
+        <div class="payload-title"><h3>Agent</h3><span>Summary</span></div>
+        <dl id="agentSummary" class="agent-summary"></dl>
       </section>
       <section id="resultSection">
         <div class="payload-title"><h3>Result</h3><span id="resultSize">—</span></div>
         <pre id="drawerResult"><code>{}</code></pre>
+      </section>
+      <section id="timelineSection" hidden>
+        <div class="payload-title"><h3>Activity</h3><span id="timelineCount">—</span></div>
+        <ol id="timelineList" class="timeline-list" aria-label="Tool calls by this agent, newest first"></ol>
       </section>
       <section id="errorSection" hidden>
         <div class="payload-title"><h3>Error</h3><span>Captured</span></div>

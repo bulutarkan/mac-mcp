@@ -441,6 +441,30 @@ def create_dashboard_routes(
         )
         return JSONResponse({"ok": True, "events": payload})
 
+    async def attention(request: Request) -> Response:
+        """What needs the owner: requests waiting for an answer and recently blocked calls.
+
+        Read-only. Requests are answered in the Mac MCP Allow Once / Block prompt on this
+        Mac, which stays the authority; the dashboard only shows where to answer.
+        """
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        pending = security_context.pending_requests() if security_context is not None else []
+        try:
+            recent = telemetry.query_security_events(hours=24, limit=200)
+        except sqlite3.Error:
+            recent = []
+        blocked = [row for row in recent if str(row.get("decision") or "") == "deny"]
+        keys = ("timestamp", "event_type", "tool", "origin", "reason_code", "target_summary", "agent_id")
+        return JSONResponse(sanitize_value({
+            "ok": True,
+            "pending": pending,
+            "answer_where": "Mac MCP Allow Once / Block prompt on this Mac",
+            "blocked_24h": len(blocked),
+            "blocked_recent": [{key: row.get(key) for key in keys} for row in blocked[:5]],
+        }))
+
     async def security_escalate(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -825,6 +849,8 @@ def create_dashboard_routes(
             source=request.query_params.get("source"),
             status=request.query_params.get("status"),
             tool=request.query_params.get("tool"),
+            agent_id=request.query_params.get("agent_id") or None,
+            team_id=request.query_params.get("team_id") or None,
         )
         return JSONResponse({
             "events": [_with_browser_context(event) for event in payload],
@@ -1123,6 +1149,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/security/server-approval", set_server_approval_profile, methods=["POST"]),
         Route("/dashboard/api/security/events", security_events, methods=["GET"]),
         Route("/dashboard/api/security/escalate", security_escalate, methods=["POST"]),
+        Route("/dashboard/api/attention", attention, methods=["GET"]),
         Route("/dashboard/api/events", events, methods=["GET"]),
         Route("/dashboard/api/usage", usage, methods=["GET"]),
         Route("/dashboard/api/usage/settings", usage_settings, methods=["POST"]),

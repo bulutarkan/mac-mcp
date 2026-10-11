@@ -31,6 +31,8 @@
     pendingUndo: null,
     transactionMessage: "",
     transactionRefreshTimer: null,
+    timelineAgent: null,
+    timelineEvents: [],
   };
 
   const $ = (id) => document.getElementById(id);
@@ -46,6 +48,11 @@
     toolFilter: $("toolFilter"), sourceFilter: $("sourceFilter"), statusFilter: $("statusFilter"),
     drawer: $("detailDrawer"), backdrop: $("drawerBackdrop"), drawerClose: $("drawerClose"), drawerStatus: $("drawerStatus"), drawerTitle: $("drawerTitle"), drawerMeta: $("drawerMeta"),
     drawerRequest: $("drawerRequest"), drawerResult: $("drawerResult"), drawerError: $("drawerError"), resultSize: $("resultSize"), resultSection: $("resultSection"), errorSection: $("errorSection"),
+    requestSection: $("requestSection"), agentSummarySection: $("agentSummarySection"), agentSummary: $("agentSummary"),
+    timelineSection: $("timelineSection"), timelineList: $("timelineList"), timelineCount: $("timelineCount"),
+    healthRow: $("healthRow"), healthServer: $("healthServer"), healthTelemetry: $("healthTelemetry"), healthProfile: $("healthProfile"),
+    healthApproval: $("healthApproval"), healthCompanion: $("healthCompanion"), healthRecord: $("healthRecord"),
+    attentionList: $("attentionList"), attentionCount: $("attentionCount"),
   };
 
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
@@ -195,10 +202,82 @@
       const mix = (data.sources || []).map((item) => `${String(item.source).toUpperCase()} ${item.calls}`).join(" / ");
       els.sourceMix.textContent = mix || "No calls";
       els.agentCount.textContent = `${number(data.active_agents || 0)} active`;
+      setHealth(els.healthServer, "ok", `Online · v${data.version || "—"}`);
+      renderTelemetryHealth();
       markOnline();
     } catch (error) {
+      setHealth(els.healthServer, "bad", "Unreachable");
       markOffline(error);
     }
+  }
+
+  // ── System health strip and "Needs your attention" (read-only) ─────────────
+  function setHealth(chip, healthState, text, title) {
+    if (!chip) return;
+    chip.dataset.state = healthState;
+    const value = chip.querySelector("strong");
+    if (value && value.textContent !== text) value.textContent = text;
+    chip.title = title || text;
+  }
+
+  function renderTelemetryHealth() {
+    if (state.active.size) { setHealth(els.healthTelemetry, "ok", `${state.active.size} running now`); return; }
+    const latest = state.events.reduce((max, event) => Math.max(max, Number(event.ended_at || event.started_at || event.timestamp || 0)), 0);
+    if (!latest) { setHealth(els.healthTelemetry, "ok", "No calls in this window"); return; }
+    setHealth(els.healthTelemetry, "ok", `Last call ${ago(Date.now() - latest * 1000)}`);
+  }
+
+  const PROFILE_LABELS = {trusted: "Trusted", standard: "Standard", read_only: "Read only"};
+  const APPROVAL_LABELS = {off: "Off", critical: "Critical", high_risk: "High risk"};
+  async function refreshPosture() {
+    try {
+      const data = await fetchJSON("/dashboard/api/security/semantics");
+      const profile = String(data.active_profile || "");
+      const normalized = data.profile_was_normalized ? ` (from ${data.configured_profile})` : "";
+      setHealth(els.healthProfile, data.profile_was_normalized ? "warn" : "ok", `${PROFILE_LABELS[profile] || profile || "—"}${normalized}`);
+      const approval = data.server_approval || {};
+      if (approval.config_valid === false) setHealth(els.healthApproval, "bad", "Invalid configuration", "High-risk calls fail closed until Server Approval is repaired.");
+      else setHealth(els.healthApproval, "ok", APPROVAL_LABELS[approval.active_profile] || String(approval.active_profile || "Off"), approval.summary || "");
+    } catch {
+      setHealth(els.healthProfile, "unknown", "Unavailable");
+      setHealth(els.healthApproval, "unknown", "Unavailable");
+    }
+    try {
+      const runtime = await fetchJSON("/dashboard/api/diagnostics/runtime");
+      setHealth(els.healthCompanion, runtime.chrome_companion_connected ? "ok" : "warn",
+        runtime.chrome_companion_connected ? "Connected" : "Not connected",
+        runtime.chrome_companion_connected ? "Chrome background companion is connected." : "Chrome works without background tabs until the companion connects.");
+    } catch {
+      setHealth(els.healthCompanion, "unknown", "Unavailable");
+    }
+  }
+
+  const EVENT_LABELS = {
+    SERVER_RISK_BLOCK: "High-risk call blocked", SECRET_EGRESS_BLOCK: "Secret sent to a web page blocked",
+    HOST_TOOL_BREACH: "Web page tried to use your Mac", SECURITY_APPROVAL_REJECTED: "You blocked a request",
+    NO_PROGRESS: "Repeated browser action stopped", POLICY_DENY: "Not allowed by permissions", AGENT_CONTROL_DENY: "Agent control refused",
+  };
+  async function refreshAttention() {
+    let data;
+    try { data = await fetchJSON("/dashboard/api/attention"); }
+    catch { els.attentionList.innerHTML = `<div class="no-agents">Attention state is temporarily unavailable.</div>`; return; }
+    const pending = data.pending || [];
+    const blocked = data.blocked_recent || [];
+    const card = els.attentionList.closest(".attention-card");
+    if (card) card.dataset.state = pending.length ? "pending" : "clear";
+    els.attentionCount.textContent = pending.length ? `${pending.length} waiting` : `${number(data.blocked_24h || 0)} blocked · 24h`;
+    const now = Date.now() / 1000;
+    const rows = pending.map((item) => `<div class="attention-item is-pending">
+        <strong>${esc(item.tool || "Tool")} waiting for your answer</strong>
+        <span class="attention-when">${Math.max(0, Math.round(Number(item.expires_at || 0) - now))}s left</span>
+        <span title="${esc(item.target_summary || "")}">${esc([item.origin, item.target_summary].filter(Boolean).join(" · ") || "Answer in the Mac MCP prompt on this Mac")}</span>
+      </div>`);
+    blocked.forEach((item) => rows.push(`<div class="attention-item">
+        <strong>${esc(EVENT_LABELS[item.event_type] || String(item.event_type || "Blocked").replace(/_/g, " ").toLowerCase())}</strong>
+        <span title="${esc(item.target_summary || "")}">${esc([item.tool, item.origin].filter(Boolean).join(" · "))}</span>
+        <time>${esc(clock(item.timestamp))}</time>
+      </div>`));
+    els.attentionList.innerHTML = rows.length ? rows.join("") : `<div class="no-agents">Nothing needs your attention. No requests are waiting and nothing was blocked in the last 24 hours.</div>`;
   }
 
   async function refreshEvents() {
@@ -213,6 +292,7 @@
       seedTrace(state.events);
       renderEvents();
       renderActiveCount();
+      renderTelemetryHealth();
     } catch (error) {
       markOffline(error);
     }
@@ -541,6 +621,7 @@
           <div class="agent-card-head">
             <strong title="${esc(agent.title || agent.agent_id)}">${esc(agent.title || agent.agent_id)}</strong>
             <span class="agent-phase">${esc(phase)}</span>
+            <button class="agent-activity" type="button" data-agent-activity="${esc(agent.agent_id || "")}" aria-label="View activity of ${esc(agent.title || agent.agent_id)}">Activity</button>
             ${activeStatuses.has(status) ? stopButton(agent) : ''}
           </div>
           <div class="agent-meta">${esc(model)}<br>${last} · ${number(agent.tool_call_count)} calls · ${duration(agent.duration_ms)}${turn}${resilience ? `<br>${esc(resilience)}` : ''}</div>
@@ -557,6 +638,7 @@
     if (active.length) groups.push(`<div class="agent-group-label"><strong>Active</strong><span>${active.length}</span></div>${active.map(card).join("")}`);
     if (recent.length) groups.push(`<div class="agent-group-label"><strong>Recent</strong><span>latest ${recent.length}</span></div>${recent.map(card).join("")}`);
     els.agentList.innerHTML = groups.join("");
+    els.agentList.querySelectorAll("[data-agent-activity]").forEach((button) => button.addEventListener("click", () => openAgentDrawer(button.dataset.agentActivity)));
     els.agentList.querySelectorAll("[data-stop-agent]").forEach((button) => button.addEventListener("click", (event) => {
       event.stopPropagation();
       stopAgent(button.dataset.stopAgent, button);
@@ -693,11 +775,94 @@
     }
   }
 
+  function setDrawerMode(mode) {
+    const agent = mode === "agent";
+    els.requestSection.hidden = agent;
+    els.agentSummarySection.hidden = !agent;
+    els.timelineSection.hidden = !agent;
+    if (agent) { els.resultSection.hidden = true; els.errorSection.hidden = true; }
+    els.drawerClose.setAttribute("aria-label", agent ? "Close agent activity" : "Close call details");
+  }
+
+  function showDrawer() {
+    els.backdrop.hidden = false;
+    els.backdrop.classList.add("is-open");
+    els.drawer.classList.add("is-open");
+    els.drawer.setAttribute("aria-hidden", "false");
+    els.drawerClose.focus();
+  }
+
+  async function openAgentDrawer(agentId) {
+    const agent = state.agents.find((item) => item.agent_id === agentId);
+    if (!agent) return;
+    const opening = !els.drawer.classList.contains("is-open");
+    if (opening) state.restoreFocus = document.activeElement;
+    state.selected = null;
+    state.timelineAgent = agentId;
+    setDrawerMode("agent");
+    const status = agent.status || "unknown";
+    els.drawerStatus.className = `status-badge ${["failed", "timeout", "stalled"].includes(status) ? "error" : ["running", "starting"].includes(status) ? "running" : ""}`;
+    els.drawerStatus.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+    els.drawerTitle.textContent = agent.title || agent.agent_id;
+    els.drawerMeta.textContent = `${agent.agent_id}${agent.team_id ? ` · team ${agent.team_id}` : ""}`;
+    const changes = (state.changeSets || []).filter((set) => (set.identity || {}).agent_id === agentId)
+      .reduce((total, set) => total + Number(set.change_count || 0), 0);
+    const rows = [
+      ["Phase", agent.phase || status],
+      ["Provider", [agent.provider, agent.model].filter(Boolean).join(" · ") || "—"],
+      ["Access", agent.access_mode || "—"],
+      ["Duration", duration(agent.duration_ms)],
+      ["Tool calls", number(agent.tool_call_count)],
+      ["Last tool", agent.last_tool || "—"],
+      ["Mac changes", changes ? `${number(changes)} recorded · see What Changed on My Mac` : "None recorded"],
+    ];
+    if (agent.note) rows.push(["Note", agent.note]);
+    els.agentSummary.innerHTML = rows.map(([key, value]) => `<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join("");
+    els.timelineCount.textContent = "Loading…";
+    els.timelineList.innerHTML = "";
+    if (opening) showDrawer();
+    try {
+      const data = await fetchJSON(`/dashboard/api/events?hours=168&limit=100&agent_id=${encodeURIComponent(agentId)}`);
+      if (state.timelineAgent !== agentId) return;
+      const running = (data.active || []).filter((event) => event.agent_id === agentId);
+      state.timelineEvents = running.concat(data.events || []);
+      renderTimeline();
+    } catch {
+      if (state.timelineAgent !== agentId) return;
+      state.timelineEvents = [];
+      els.timelineCount.textContent = "Unavailable";
+      els.timelineList.innerHTML = `<li class="timeline-empty">This agent's activity could not be loaded.</li>`;
+    }
+  }
+
+  function renderTimeline() {
+    const events = state.timelineEvents;
+    const errors = events.filter((event) => event.status === "error").length;
+    els.timelineCount.textContent = events.length ? `${number(events.length)} calls${errors ? ` · ${number(errors)} failed` : ""}` : "None";
+    if (!events.length) {
+      els.timelineList.innerHTML = `<li class="timeline-empty">No Mac MCP tool calls recorded for this agent in the last 7 days. Work it did with its own built-in tools is not recorded here.</li>`;
+      return;
+    }
+    els.timelineList.innerHTML = events.map((event) => {
+      const status = event.status || "running";
+      const outcome = status === "running" ? "running" : status === "error" ? "failed" : duration(event.duration_ms);
+      return `<li><button class="timeline-item" type="button" data-status="${esc(status)}" data-timeline-event="${esc(event.event_id)}">
+        <time>${esc(clock(event.started_at || event.timestamp))}</time>
+        <strong title="${esc(compactToolDetail(event))}">${esc(event.tool || "tool")}</strong>
+        <small>${esc(outcome)}</small>
+      </button></li>`;
+    }).join("");
+    els.timelineList.querySelectorAll("[data-timeline-event]").forEach((button) => button.addEventListener("click", () => openDrawer(button.dataset.timelineEvent)));
+  }
+
   function openDrawer(eventId) {
-    const event = state.active.get(eventId) || state.events.find((item) => item.event_id === eventId);
+    const event = state.active.get(eventId) || state.events.find((item) => item.event_id === eventId)
+      || state.timelineEvents.find((item) => item.event_id === eventId);
     if (!event) return;
+    const fromTimeline = els.drawer.classList.contains("is-open") && state.timelineAgent;
     state.selected = event;
-    state.restoreFocus = document.activeElement;
+    if (!fromTimeline) state.restoreFocus = document.activeElement;
+    setDrawerMode("call");
     const status = event.status || "running";
     els.drawerStatus.className = `status-badge ${status === "error" ? "error" : status === "running" ? "running" : ""}`;
     els.drawerStatus.textContent = status === "success" ? "Success" : status === "error" ? "Error" : "Running";
@@ -709,11 +874,8 @@
     els.resultSection.hidden = status === "running" && event.result == null;
     els.errorSection.hidden = !event.error;
     els.drawerError.textContent = event.error || "";
-    els.backdrop.hidden = false;
-    els.backdrop.classList.add("is-open");
-    els.drawer.classList.add("is-open");
-    els.drawer.setAttribute("aria-hidden", "false");
-    els.drawerClose.focus();
+    if (fromTimeline) els.drawerClose.focus();
+    else showDrawer();
   }
 
   function closeDrawer() {
@@ -723,9 +885,14 @@
     window.setTimeout(() => { els.backdrop.hidden = true; }, 240);
     // The row that opened the drawer may have been re-rendered meanwhile.
     const selectedRow = state.selected ? eventRowButton(state.selected.event_id) : null;
-    const target = state.restoreFocus && state.restoreFocus.isConnected ? state.restoreFocus : selectedRow;
+    // Agent cards re-render every few seconds; find the same agent's Activity button again.
+    const agentButton = state.timelineAgent
+      ? els.agentList.querySelector(`[data-agent-activity="${CSS.escape(state.timelineAgent)}"]`) : null;
+    const target = state.restoreFocus && state.restoreFocus.isConnected ? state.restoreFocus : (selectedRow || agentButton);
     if (target && typeof target.focus === "function") target.focus();
     state.selected = null;
+    state.timelineAgent = null;
+    state.timelineEvents = [];
   }
 
   function seedTrace(events) {
@@ -942,7 +1109,8 @@
   // The security record is hash-chained; say so loudly if it no longer verifies.
   async function refreshIntegrity() {
     let result = null;
-    try { result = await fetchJSON("/dashboard/api/security/integrity"); } catch { return; }
+    try { result = await fetchJSON("/dashboard/api/security/integrity"); } catch { setHealth(els.healthRecord, "unknown", "Unavailable"); return; }
+    setHealth(els.healthRecord, result && result.ok === false ? "bad" : "ok", result && result.ok === false ? "Check failed" : "Verified");
     let banner = document.getElementById("integrityAlert");
     if (result && result.ok === false) {
       if (!banner) {
@@ -950,7 +1118,7 @@
         banner.id = "integrityAlert";
         banner.className = "integrity-alert";
         banner.setAttribute("role", "alert");
-        document.querySelector(".app-main")?.prepend(banner);
+        (els.healthRow || document.querySelector(".app-main"))?.prepend(banner);
       }
       const problem = String(result.problem || "verification_failed").replace(/_/g, " ");
       banner.textContent = `Security record check failed: ${problem}${result.seq ? ` at event #${result.seq}` : ""}. Events may have been edited or removed outside Mac MCP.`;
@@ -959,7 +1127,11 @@
     }
   }
   refreshIntegrity();
+  refreshPosture();
+  refreshAttention();
   window.setInterval(() => { if (!document.hidden) refreshIntegrity(); }, 60000);
+  window.setInterval(() => { if (!document.hidden) refreshPosture(); }, 30000);
+  window.setInterval(() => { if (!document.hidden) refreshAttention(); }, 4000);
   window.setInterval(refreshSummary, 5000);
   window.setInterval(renderFreshness, 5000);
   window.setInterval(refreshAgents, 2200);

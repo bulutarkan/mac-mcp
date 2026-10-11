@@ -959,6 +959,29 @@ class SecurityContextManager:
                 "expires_at": pending.expires_at,
             }
 
+    def pending_requests(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Unexpired requests waiting for the owner's Allow Once / Block answer, newest first."""
+        with self._lock:
+            self._prune_locked()
+            now = time.time()
+            rows = sorted(
+                (item for item in self._pending.values() if item.expires_at > now),
+                key=lambda item: item.created_at, reverse=True,
+            )[:max(1, min(int(limit), 50))]
+            return [
+                {
+                    "request_id": item.request_id,
+                    "tool": item.tool,
+                    "origin": item.origin,
+                    "tab_title": item.tab_title,
+                    "reason_code": item.reason_code,
+                    "target_summary": item.target_summary,
+                    "created_at": item.created_at,
+                    "expires_at": item.expires_at,
+                }
+                for item in rows
+            ]
+
     def grant_escalation(
         self, public_session_id: str, tool: str, *, ttl_s: int = 120,
         request_id: Optional[str] = None,
