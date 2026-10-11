@@ -208,6 +208,8 @@ class SettingsClientSetupTests(unittest.TestCase):
 
 
 class ConnectionConfigCLITests(unittest.TestCase):
+    public_health = "ok"
+
     def _run(self, argv: list[str], *, settings, public=None) -> tuple[int, str, str]:
         stdout = StringIO()
         stderr = StringIO()
@@ -215,6 +217,9 @@ class ConnectionConfigCLITests(unittest.TestCase):
             patch("mcp_server.cli.load_settings", return_value=settings),
             patch("mcp_server.cli._default_port", return_value=8765),
         ]
+        probe = patch("mcp_server.cli._probe_public_route", return_value=self.public_health)
+        probe.start()
+        self.addCleanup(probe.stop)
         if public is not None:
             patches.append(
                 patch(
@@ -291,6 +296,12 @@ class ConnectionConfigCLITests(unittest.TestCase):
         )
         self.assertEqual("", output)
         self.assertEqual(1, code)
+        self.assertIn("needs a public HTTPS address", error)
+        # Other clients asking for --endpoint public keep the generic message.
+        code, output, error = self._run(
+            ["connect-config", "--client", "codex", "--endpoint", "public"], settings=settings, public="",
+        )
+        self.assertEqual(1, code)
         self.assertIn("no public MCP endpoint is configured", error)
 
     def test_required_auth_without_server_key_fails_closed(self) -> None:
@@ -320,6 +331,29 @@ class ConnectionConfigCLITests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertEqual("", output)
         self.assertIn(UNGUIDED_CLIENTS["claude-desktop"], error)
+
+    def test_chatgpt_on_local_only_gets_next_steps_instead_of_a_bare_error(self) -> None:
+        settings = SimpleNamespace(allow_no_auth=False, api_key="hidden")
+        code, output, error = self._run(["connect-config", "--client", "chatgpt"], settings=settings, public="")
+        self.assertEqual(1, code)
+        self.assertEqual("", output)
+        for expected in ("needs a public HTTPS address", "Settings > Connections > Public Endpoint",
+                         "mac-mcp status", "--client claude-code"):
+            self.assertIn(expected, error)
+
+    def test_public_endpoint_reports_its_health(self) -> None:
+        settings = SimpleNamespace(allow_no_auth=False, api_key="hidden")
+        code, output, _ = self._run(["connect-config", "--client", "chatgpt"], settings=settings,
+                                    public="https://mac.example.com/mcp")
+        self.assertEqual(0, code)
+        self.assertIn("Public endpoint check: reachable", output)
+        self.public_health = "unreachable"
+        code, output, _ = self._run(["connect-config", "--client", "chatgpt"], settings=settings,
+                                    public="https://mac.example.com/mcp")
+        self.assertEqual(0, code)
+        self.assertIn("Public endpoint check: NOT reachable", output)
+        local = self._run(["connect-config", "--client", "codex"], settings=settings)[1]
+        self.assertNotIn("Public endpoint check", local)
 
     def test_invalid_cli_name_and_env_fail_without_shell_escaping_risk(self) -> None:
         settings = SimpleNamespace(allow_no_auth=False, api_key="hidden")

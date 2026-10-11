@@ -215,6 +215,7 @@ choose_public_endpoint_mode() {
   local reply=""
   section "Public endpoint"
   info "Choose how Mac MCP should be reachable. Local only is the safest default and can be changed later in Settings."
+  info "Local only works for AI apps on this Mac (Claude Code, Codex, OpenCode). ChatGPT connects from OpenAI's servers and needs a public HTTPS endpoint: Cloudflare Tunnel, ngrok or Custom HTTPS."
 
   while true; do
     if [[ -n "$requested" ]]; then
@@ -1284,7 +1285,13 @@ print_completion() {
       printf '  MCP authentication: Bearer token required\n'
       printf '  API key: stored locally (present, not printed)\n'
       printf '  Client auth header: Authorization: Bearer <API_KEY>\n'
-      printf '  ChatGPT / header-limited client URL: %s?ApiKey=<API_KEY>\n' "$connector_endpoint"
+      if [[ "$connector_endpoint" == https://* ]]; then
+        printf '  ChatGPT / header-limited client URL: %s?ApiKey=<API_KEY>\n' "$connector_endpoint"
+      else
+        # ChatGPT cannot reach a loopback address; do not hand out a URL it cannot use.
+        printf '  Header-limited local client URL: %s?ApiKey=<API_KEY>\n' "$connector_endpoint"
+        printf '  ChatGPT: needs a public HTTPS endpoint. Choose Cloudflare, ngrok or Custom HTTPS in Settings > Connections, then run: mac-mcp connect-config --client chatgpt\n'
+      fi
       printf '  Credential file: %s/mcp_server/.env (owner-only)\n' "$RUNTIME_DIR"
       printf '  Use the query-key URL only for clients that cannot send Authorization headers; upstream proxies/tunnels may observe query strings.\n'
       ;;

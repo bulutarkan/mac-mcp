@@ -15,6 +15,7 @@ import webbrowser
 from pathlib import Path
 from typing import Optional
 from urllib.error import URLError
+from types import SimpleNamespace
 from urllib.parse import quote
 from urllib.request import Request as UrlRequest, urlopen
 
@@ -1248,11 +1249,32 @@ def _connect_config_endpoint(client: str, selection: str) -> tuple[str, str]:
 
     public = resolve_public_endpoint()
     if not public.endpoint_url:
+        if client == "chatgpt":
+            raise ConnectionConfigError(_CHATGPT_NEEDS_PUBLIC)
         raise ConnectionConfigError(
             "no public MCP endpoint is configured; choose --endpoint local or configure "
             "Cloudflare, ngrok, or a custom HTTPS endpoint"
         )
     return public.endpoint_url, "public"
+
+
+# Local only is the safe default, so the first ChatGPT attempt usually lands here.
+_CHATGPT_NEEDS_PUBLIC = (
+    "ChatGPT connects to Mac MCP from OpenAI's servers, so it needs a public HTTPS address, "
+    "and this Mac is set to Local only.\n"
+    "Next steps:\n"
+    "  1. Open Mac MCP Settings > Connections > Public Endpoint and choose Cloudflare, ngrok or Custom HTTPS.\n"
+    "  2. Run: mac-mcp status   (the public endpoint should be reported healthy)\n"
+    "  3. Run this command again: mac-mcp connect-config --client chatgpt\n"
+    "Local only already works for AI apps on this Mac: "
+    "mac-mcp connect-config --client claude-code (or codex, opencode)."
+)
+
+
+def _public_endpoint_check(endpoint_url: str) -> str:
+    """'ok' or 'unreachable' for the public route the snippet points at (same probe as status)."""
+    route = public_health_url(SimpleNamespace(endpoint_url=endpoint_url))
+    return _probe_public_route(route) if route else "unreachable"
 
 
 def connect_config(args: argparse.Namespace) -> int:
@@ -1281,6 +1303,12 @@ def connect_config(args: argparse.Namespace) -> int:
     print(f"Client: {rendered.client}")
     print(f"Target: {rendered.target}")
     print(f"Endpoint: {endpoint_kind} ({endpoint_url})")
+    if endpoint_kind == "public":
+        if _public_endpoint_check(endpoint_url) == "ok":
+            print("Public endpoint check: reachable")
+        else:
+            print("Public endpoint check: NOT reachable right now. The client will not connect until "
+                  "`mac-mcp status` reports the public endpoint healthy.")
     print(
         "Authentication: "
         + ("Bearer/API-key required; secret value not printed" if auth_required else "disabled")

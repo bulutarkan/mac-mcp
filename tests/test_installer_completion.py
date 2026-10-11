@@ -70,10 +70,11 @@ class InstallerCompletionTests(unittest.TestCase):
             self.assertIn("API key: stored locally (present, not printed)", output)
             self.assertIn("Authorization: Bearer <API_KEY>", output)
             self.assertNotIn(secret, output)
-            self.assertIn(
-                "ChatGPT / header-limited client URL: http://127.0.0.1:8000/mcp?ApiKey=<API_KEY>",
-                output,
-            )
+            # #56: a loopback URL is not offered to ChatGPT, which needs public HTTPS.
+            self.assertIn("Header-limited local client URL: http://127.0.0.1:8000/mcp?ApiKey=<API_KEY>", output)
+            self.assertNotIn("ChatGPT / header-limited client URL: http://", output)
+            self.assertIn("ChatGPT: needs a public HTTPS endpoint", output)
+            self.assertIn("mac-mcp connect-config --client chatgpt", output)
             self.assertNotIn("API key: " + secret, output)
             self.assertEqual(before, env_file.read_bytes())
             self.assertEqual(mode_before, stat.S_IMODE(env_file.stat().st_mode))
