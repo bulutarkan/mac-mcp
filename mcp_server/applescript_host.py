@@ -26,7 +26,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import swift_build
 from .tool_cancellation import (
@@ -45,7 +45,7 @@ _lock = threading.Lock()
 _idle: List["_Host"] = []
 _live = 0
 _reaper: Optional[threading.Timer] = None
-_state = {"executable": None, "building": False, "disabled": False, "failures": 0, "allowed": False}
+_state: Dict[str, Any] = {"executable": None, "building": False, "disabled": False, "failures": 0, "allowed": False}
 
 
 class HostUnavailable(RuntimeError):

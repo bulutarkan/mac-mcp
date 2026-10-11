@@ -62,7 +62,7 @@ def finalize_perception_telemetry(
         }
 
     budget = max(4_096, min(int(context_budget_bytes or DEFAULT_CONTEXT_BUDGET_BYTES), 256_000))
-    context = {
+    context: Dict[str, Any] = {
         "limit_bytes": budget,
         "truncated": bool(context_truncated),
     }

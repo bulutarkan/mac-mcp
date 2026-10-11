@@ -283,13 +283,13 @@ def _browser_payload_strings(tool: str, arguments: Mapping[str, Any]) -> list[st
     if name in {"browser_open_url", "open_url"}:
         return [str(arguments.get("url") or "")]
     if name == "http_request":
-        values = [str(arguments.get("url") or ""), str(arguments.get("body") or "")]
+        values: list[str] = [str(arguments.get("url") or ""), str(arguments.get("body") or "")]
         headers = arguments.get("headers") or {}
         if isinstance(headers, Mapping):
             values.extend(str(value or "") for value in headers.values())
         return values
     if name in {"browser_act", "browser_do"}:
-        values: list[str] = []
+        values = []
         for action in arguments.get("actions") or []:
             if not isinstance(action, Mapping):
                 continue
@@ -549,7 +549,7 @@ def redact_sensitive_source_result(tool: str, arguments: Mapping[str, Any], resu
             safe["content"] = "[SENSITIVE OUTPUT REDACTED]"
         return safe
     if name == "read_multiple_files":
-        files = []
+        files: list[Any] = []
         for item in safe.get("files") or []:
             if isinstance(item, Mapping):
                 copy = dict(item)

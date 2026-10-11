@@ -1,0 +1,2 @@
+# Type checking for CI (#145); kept out of the runtime dependency set.
+mypy==2.4.0

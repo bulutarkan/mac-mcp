@@ -29,5 +29,26 @@ mac-mcp = "mcp_server.cli:main"
 packages = ["mcp_server"]
 include-package-data = true
 
+[tool.mypy]
+# Gradual type checking (#145): modules with clean, stable interfaces. Add a module here
+# once it passes; CI runs plain `mypy` with this configuration.
+python_version = "3.10"
+files = [
+  "mcp_server/applescript_host.py",
+  "mcp_server/browser_sign_in.py",
+  "mcp_server/data_guard.py",
+  "mcp_server/login_vault.py",
+  "mcp_server/perception.py",
+  "mcp_server/process_supervision.py",
+  "mcp_server/scoped_fs.py",
+  "mcp_server/swift_build.py",
+  "mcp_server/tool_cancellation.py",
+]
+follow_imports = "silent"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
 [tool.setuptools.package-data]
 mcp_server = ["*.swift", "vendor/*.js", "dashboard/*.html", "dashboard/*.css", "dashboard/*.js", "mobile/*.html", "mobile/*.css", "mobile/*.js", "mobile/*.json", "chatgpt_ui/*.html", "release_trusted_signers.txt"]
