@@ -15,7 +15,8 @@ HARNESS = r'''
 import Foundation
 
 let titles = ["general": "General", "agents": "Agents", "usage": "Usage", "permissions": "Permissions & Safety",
-              "connections": "Connections", "voice": "Voice", "advanced": "Advanced"]
+              "connections": "Connections", "voice": "Voice", "advanced": "Advanced",
+              "activity": "Activity & Notifications"]
 
 func sections(_ query: String) -> [String] {
     titles.keys.sorted().filter {
@@ -27,11 +28,13 @@ func sections(_ query: String) -> [String] {
 struct SearchHarness {
     static func main() {
         let cases: [(String, String)] = [
-            ("agent notifications", "general"),
+            ("agent notifications", "activity"),
+            ("tool activity bubble", "activity"),
+            ("issues", "general"),
             ("public tunnel", "connections"),
             ("server port", "advanced"),
             ("  Server   PORT ", "advanced"),
-            ("notif", "general"),
+            ("notif", "activity"),
             ("usage retention", "usage"),
             ("perm", "permissions"),
         ]

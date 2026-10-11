@@ -4,7 +4,8 @@ import Foundation
 /// matching rules can be tested without building the UI.
 enum SettingsSearchIndex {
     static let terms: [String: String] = [
-        "general": "general overview update version status notifications alerts completion attention agents macos permission",
+        "general": "general overview status server connected degraded disconnected update version issues remote access caught up",
+        "activity": "activity notifications alerts completion attention agents macos permission tool bubble speech descriptions require show preview",
         "agents": "agents subagents provider codex opencode claude code model reasoning thinking default agent history retention delete keep",
         "usage": "usage tokens payload calls errors latency heatmap activity input output top tools retention record history clear privacy data memory memories export delete",
         "permissions": "permissions safety approvals security profile read only trusted access saved logins passwords sign in keychain import",

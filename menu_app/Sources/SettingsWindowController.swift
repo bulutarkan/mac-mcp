@@ -1,25 +1,33 @@
 import AppKit
 import SwiftUI
 
+/// Asks an open Settings window to switch panes; the window stays independent of the popover.
+@MainActor
+final class SettingsNavigation: ObservableObject {
+    static let shared = SettingsNavigation()
+    @Published var requestedSection: SettingsSection?
+}
+
 @MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     static let shared = SettingsWindowController()
 
     private var windowController: NSWindowController?
 
-    func show(state: AppState, settings: SettingsStore) {
+    func show(state: AppState, settings: SettingsStore, section: SettingsSection? = nil) {
         settings.load()
         let transientWindows = NSApplication.shared.windows.filter { candidate in
             candidate.isVisible && candidate.title.isEmpty
         }
 
         if let window = windowController?.window {
+            if let section { SettingsNavigation.shared.requestedSection = section }
             present(window: window, transientWindows: transientWindows)
             return
         }
 
         let hostingController = NSHostingController(
-            rootView: SettingsView(state: state, settings: settings)
+            rootView: SettingsView(state: state, settings: settings, initialSection: section ?? .general)
         )
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Mac MCP Settings"

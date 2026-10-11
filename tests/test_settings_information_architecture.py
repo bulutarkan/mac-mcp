@@ -16,10 +16,10 @@ class SettingsInformationArchitectureTests(unittest.TestCase):
         cls.window = WINDOW_CONTROLLER.read_text(encoding="utf-8")
 
     def test_sidebar_uses_user_intent_sections(self) -> None:
-        section_start = self.view.index("private enum SettingsSection")
+        section_start = self.view.index("enum SettingsSection: String")
         section_end = self.view.index("private enum ConnectionsTab", section_start)
         section = self.view[section_start:section_end]
-        for case in ("general", "agents", "permissions", "connections", "voice", "advanced"):
+        for case in ("general", "agents", "activity", "permissions", "connections", "voice", "advanced"):
             self.assertIn(f"case {case}", section)
         self.assertNotIn("case subagents", section)
         self.assertNotIn("case browser", section)
@@ -44,6 +44,23 @@ class SettingsInformationArchitectureTests(unittest.TestCase):
         general = self.view[general_start:sidebar_start]
         self.assertIn("updateCard", general)
         self.assertIn('"Open Connections"', general)
+        # #64: General is a status overview; activity and alert controls have their own pane.
+        general = general[:general.index("private var activityPane")]
+        self.assertIn("state.connectionState.display", general)
+        self.assertNotIn("state.serverRunning ? \"Running\"", general)
+        self.assertIn('Text("All caught up")', general)
+        self.assertIn("generalIssues", general)
+        self.assertNotIn('GroupBox("Tool Activity")', general)
+        self.assertNotIn('GroupBox("Agent Notifications")', general)
+        activity = self.view[self.view.index("private var activityPane"):self.view.index("private var endpointDisplay")]
+        self.assertIn('GroupBox("Tool Activity")', activity)
+        self.assertIn('GroupBox("Agent Notifications")', activity)
+        self.assertIn("case .activity: activityPane", self.view)
+        # One update row; versions and updater progress sit behind a Details disclosure.
+        update = self.view[self.view.index("private var updateCard"):self.view.index("private var updateSummaryTitle")]
+        self.assertIn("DisclosureGroup(isExpanded: $showUpdateDetails)", update)
+        self.assertIn("state.checkForUpdates()", update)
+        self.assertIn("state.installUpdate()", update)
 
         advanced_start = self.view.index("private var advancedPane")
         update_helpers = self.view.index("private var currentUpdateCommit", advanced_start)
@@ -60,6 +77,22 @@ class SettingsInformationArchitectureTests(unittest.TestCase):
         self.assertIn('NSSize(width: 820, height: 560)', self.window)
         self.assertIn('NSSize(width: 1240, height: 860)', self.window)
         self.assertIn('setFrameAutosaveName("MacMCPSettingsWindow")', self.window)
+
+    def test_settings_can_open_on_a_requested_pane(self) -> None:
+        self.assertIn("func show(state: AppState, settings: SettingsStore, section: SettingsSection? = nil)", self.window)
+        self.assertIn("SettingsNavigation.shared.requestedSection = section", self.window)
+        self.assertIn("initialSection: section ?? .general", self.window)
+        self.assertIn("_selection = MacMCPState(initialValue: initialSection)", self.view)
+        self.assertIn(".onChange(of: navigation.requestedSection)", self.view)
+
+    def test_sidebar_and_search_are_accessible(self) -> None:
+        self.assertIn(".accessibilityAddTraits(selection == item ? .isSelected : [])", self.view)
+        self.assertIn('.accessibilityLabel("Search Settings")', self.view)
+        self.assertIn(".focused($searchFocused)", self.view)
+        self.assertIn('.keyboardShortcut("f", modifiers: .command)', self.view)
+        heatmap = self.view[self.view.index("private func usageHeatmap"):self.view.index("private func usageHeatCells")]
+        self.assertIn(".accessibilityRepresentation", heatmap)
+        self.assertIn("usageMonthSummaries(usage)", heatmap)
 
 
 if __name__ == "__main__":

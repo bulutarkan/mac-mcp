@@ -5,9 +5,10 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
-private enum SettingsSection: String, CaseIterable, Identifiable {
+enum SettingsSection: String, CaseIterable, Identifiable {
     case general
     case agents
+    case activity
     case usage
     case permissions
     case apps
@@ -22,6 +23,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "General"
         case .agents: return "Agents"
+        case .activity: return "Activity & Notifications"
         case .usage: return "Usage"
         case .permissions: return "Permissions & Safety"
         case .apps: return "Apps"
@@ -36,6 +38,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "slider.horizontal.3"
         case .agents: return "cpu"
+        case .activity: return "bell.badge"
         case .usage: return "chart.bar.xaxis"
         case .permissions: return "checkmark.shield"
         case .apps: return "square.grid.2x2"
@@ -148,7 +151,8 @@ struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
     @StateObject private var audio = AudioDeviceStore()
     @StateObject private var diagnostics = DiagnosticsCenter()
-    @MacMCPState private var selection: SettingsSection = .general
+    @ObservedObject private var navigation = SettingsNavigation.shared
+    @MacMCPState private var selection: SettingsSection
     @MacMCPState private var notice = ""
     @MacMCPState private var confirmClearUsage = false
     @MacMCPState private var memoryClearPreview: MemoryClearResult?
@@ -165,6 +169,14 @@ struct SettingsView: View {
     @MacMCPState private var usageActor: UsageActorFilter = .all
     @MacMCPState private var providerUsagePeriod: ProviderUsagePeriod = .year
     @MacMCPState private var saveFeedback: SettingsSaveFeedback?
+    @MacMCPState private var showUpdateDetails = false
+    @FocusState private var searchFocused: Bool
+
+    init(state: AppState, settings: SettingsStore, initialSection: SettingsSection = .general) {
+        self.state = state
+        self.settings = settings
+        _selection = MacMCPState(initialValue: initialSection)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -174,6 +186,8 @@ struct SettingsView: View {
         }
         .frame(minWidth: 820, idealWidth: 920, minHeight: 560, idealHeight: 640)
         .background(.regularMaterial)
+        .onAppear { applyNavigationRequest() }
+        .onChange(of: navigation.requestedSection) { _ in applyNavigationRequest() }
         .task {
             audio.refresh()
             state.refreshCloudflareCredentialState()
@@ -213,54 +227,59 @@ struct SettingsView: View {
     }
 
     private var generalPane: some View {
-        ScrollView {
+        let server = state.connectionState.display
+        let endpoint = endpointDisplay
+        return ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 paneHeader(
                     "General",
-                    subtitle: "A quick view of this Mac MCP instance, software updates, and everyday status."
+                    subtitle: "Status of this Mac MCP instance, remote access, and anything that needs your attention."
                 )
 
                 GroupBox("Overview") {
-                    HStack(spacing: 12) {
-                        overviewMetric(
-                            title: "Server",
-                            value: state.serverRunning ? "Running" : "Disconnected",
-                            symbol: state.serverRunning ? "checkmark.circle.fill" : "exclamationmark.circle",
-                            accent: state.serverRunning ? .green : .orange
-                        )
-                        overviewMetric(
-                            title: "Version",
-                            value: state.version == "—" ? "Unknown" : "v\(state.version)",
-                            symbol: "shippingbox",
-                            accent: .secondary
-                        )
-                        overviewMetric(
-                            title: "Active Agents",
-                            value: String(state.activeAgents),
-                            symbol: "cpu",
-                            accent: state.activeAgents > 0 ? .accentColor : .secondary
-                        )
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 12) {
+                            overviewMetric(
+                                title: "Server",
+                                value: server.label,
+                                symbol: server.symbol,
+                                accent: server.tone.color
+                            )
+                            overviewMetric(
+                                title: "Version",
+                                value: state.version == "—" ? "Unknown" : "v\(state.version)",
+                                symbol: "shippingbox",
+                                accent: .secondary
+                            )
+                            overviewMetric(
+                                title: "Active Agents",
+                                value: String(state.activeAgents),
+                                symbol: "cpu",
+                                accent: state.activeAgents > 0 ? .accentColor : .secondary
+                            )
+                        }
+                        Text(server.explanation)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .padding(.top, 5)
                 }
 
-                GroupBox("Connectivity") {
+                GroupBox("Remote Access") {
                     HStack(spacing: 12) {
-                        Image(systemName: settings.publicEndpointMode == "none" ? "lock.laptopcomputer" : "network")
+                        Image(systemName: endpoint.symbol)
                             .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(settings.publicEndpointMode == "none" ? Color.secondary : Color.accentColor)
+                            .foregroundStyle(endpoint.tone == .neutral ? Color.secondary : endpoint.tone.color)
                             .frame(width: 34)
+                            .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(publicEndpointDisplayName)
+                            Text(endpoint.label)
                                 .font(.subheadline.weight(.semibold))
-                            Text(
-                                settings.publicEndpointMode == "none"
-                                    ? "Local only. Configure remote access in Connections when you need mobile or external access."
-                                    : "Remote access is configured under Connections. Runtime/server internals stay in Advanced."
-                            )
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                            Text(endpoint.explanation)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer()
                         Button("Open Connections") {
@@ -270,6 +289,59 @@ struct SettingsView: View {
                     }
                     .padding(.top, 5)
                 }
+
+                GroupBox("Issues") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        let issues = generalIssues
+                        if issues.isEmpty {
+                            HStack(spacing: 10) {
+                                Image(systemName: "checkmark.seal.fill")
+                                    .font(.system(size: 17, weight: .semibold))
+                                    .foregroundStyle(.green)
+                                    .frame(width: 22)
+                                    .accessibilityHidden(true)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("All caught up")
+                                        .font(.subheadline.weight(.semibold))
+                                    Text("Nothing needs your attention.")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                            }
+                            .accessibilityElement(children: .combine)
+                        } else {
+                            ForEach(Array(issues.enumerated()), id: \.element.id) { index, issue in
+                                if index > 0 { Divider() }
+                                generalIssueRow(issue)
+                            }
+                        }
+                    }
+                    .padding(.top, 5)
+                }
+
+                updateCard
+
+                if let action = state.actionNotice {
+                    Label(action.message, systemImage: action.symbolName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(22)
+        }
+    }
+
+    private var activityPane: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                paneHeader(
+                    "Activity & Notifications",
+                    subtitle: "The tool activity bubble and alerts when delegated agents finish."
+                )
 
                 GroupBox("Tool Activity") {
                     VStack(alignment: .leading, spacing: 12) {
@@ -403,19 +475,119 @@ struct SettingsView: View {
                     .padding(.top, 5)
                 }
 
-                updateCard
-
-                if let action = state.actionNotice {
-                    Label(action.message, systemImage: action.symbolName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
                 Spacer(minLength: 0)
             }
             .padding(22)
         }
+    }
+
+    private var endpointDisplay: StatusDisplay {
+        EndpointDisplay.make(
+            mode: settings.publicEndpointMode,
+            cloudflareRunning: state.cloudflareRunning,
+            ngrokRunning: state.ngrokRunning
+        )
+    }
+
+    private struct GeneralIssue: Identifiable {
+        let id: String
+        let title: String
+        let detail: String
+        let symbol: String
+        let tone: StatusTone
+        var actionTitle: String? = nil
+        var action: (() -> Void)? = nil
+    }
+
+    /// Problems the user can act on now, most urgent first.
+    private var generalIssues: [GeneralIssue] {
+        var issues: [GeneralIssue] = []
+        let server = state.connectionState.display
+        switch state.connectionState {
+        case .disconnected:
+            if state.serverRunning {
+                issues.append(GeneralIssue(id: "server", title: "Server is not answering", detail: server.explanation,
+                                           symbol: server.symbol, tone: .error, actionTitle: "Retry",
+                                           action: { Task { await state.retryConnection() } }))
+            } else {
+                issues.append(GeneralIssue(id: "server", title: "Server is not running", detail: server.explanation,
+                                           symbol: server.symbol, tone: .error, actionTitle: "Start Server",
+                                           action: { state.startServer() }))
+            }
+        case .degraded:
+            issues.append(GeneralIssue(id: "server", title: "Some server data is unavailable",
+                                       detail: state.connectionBannerDetail.isEmpty ? server.explanation : state.connectionBannerDetail,
+                                       symbol: server.symbol, tone: .warning, actionTitle: "Retry",
+                                       action: { Task { await state.retryConnection() } }))
+        case .connected, .connecting:
+            break
+        }
+        if state.connectionState == .connected || state.connectionState == .degraded {
+            let safety = SafetyDisplay.make(state.securitySemantics, serverRunning: state.serverRunning)
+            if safety.tone == .warning {
+                issues.append(GeneralIssue(id: "safety", title: "Review the permission profile", detail: safety.explanation,
+                                           symbol: safety.symbol, tone: .warning, actionTitle: "Review Safety",
+                                           action: { selection = .permissions; notice = "" }))
+            }
+        }
+        if EndpointDisplay.needsReview(mode: settings.publicEndpointMode,
+                                       cloudflareRunning: state.cloudflareRunning,
+                                       ngrokRunning: state.ngrokRunning) {
+            let endpoint = endpointDisplay
+            issues.append(GeneralIssue(id: "endpoint", title: endpoint.label, detail: endpoint.explanation,
+                                       symbol: endpoint.symbol, tone: .warning, actionTitle: "Open Connections",
+                                       action: { selection = .connections; notice = "" }))
+        }
+        if !settings.settingsLoadIssue.isEmpty {
+            issues.append(GeneralIssue(id: "settings", title: "Settings file needs repair", detail: settings.settingsLoadIssue,
+                                       symbol: "exclamationmark.shield", tone: .warning, actionTitle: "Open Agents",
+                                       action: { selection = .agents; notice = "" }))
+        }
+        if let progress = state.updateProgress, !state.updateTransactionActive,
+           progress.isInProgress || ["failed", "recovery_failed"].contains(progress.normalizedStatus) {
+            issues.append(GeneralIssue(id: "update", title: progress.statusTitle, detail: progress.statusDetail,
+                                       symbol: updateStatusSymbol(progress.statusKind), tone: .error,
+                                       actionTitle: state.canInstallUpdate ? state.updateActionTitle : nil,
+                                       action: state.canInstallUpdate ? { state.installUpdate() } : nil))
+        }
+        if settings.agentCompletionNotificationsEnabled && state.agentNotificationAuthorizationState == .denied {
+            issues.append(GeneralIssue(id: "notifications", title: "Agent alerts are blocked by macOS",
+                                       detail: "Allow notifications for Mac MCP in System Settings.",
+                                       symbol: "bell.slash", tone: .warning, actionTitle: "Review",
+                                       action: { selection = .activity; notice = "" }))
+        }
+        return issues
+    }
+
+    private func generalIssueRow(_ issue: GeneralIssue) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: issue.symbol)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(issue.tone.color)
+                .frame(width: 22)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(issue.title)
+                    .font(.subheadline.weight(.semibold))
+                Text(issue.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            if let title = issue.actionTitle, let action = issue.action {
+                Button(title, action: action)
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    private func applyNavigationRequest() {
+        guard let section = navigation.requestedSection else { return }
+        navigation.requestedSection = nil
+        if !filteredSections.contains(section) { settingsSearch = "" }
+        selection = section
+        notice = ""
     }
 
     private func overviewMetric(title: String, value: String, symbol: String, accent: Color) -> some View {
@@ -439,15 +611,6 @@ struct SettingsView: View {
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.55), in: RoundedRectangle(cornerRadius: 9))
     }
 
-    private var publicEndpointDisplayName: String {
-        switch settings.publicEndpointMode {
-        case "ngrok": return "ngrok"
-        case "cloudflare": return "Cloudflare Tunnel"
-        case "custom": return "Custom HTTPS"
-        default: return "Local only"
-        }
-    }
-
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Settings")
@@ -459,8 +622,20 @@ struct SettingsView: View {
             TextField("Search Settings", text: $settingsSearch)
                 .textFieldStyle(.roundedBorder)
                 .font(.caption)
+                .focused($searchFocused)
+                .accessibilityLabel("Search Settings")
+                .accessibilityHint("Filters the settings sections. Press Command-F to jump here.")
+                .help("Search Settings (⌘F)")
                 .padding(.horizontal, 10)
                 .padding(.bottom, 5)
+                .background {
+                    // ⌘F focuses search while the Settings window is key.
+                    Button("Find in Settings") { searchFocused = true }
+                        .keyboardShortcut("f", modifiers: .command)
+                        .opacity(0)
+                        .frame(width: 0, height: 0)
+                        .accessibilityHidden(true)
+                }
                 .onChange(of: settingsSearch) { _ in
                     // Never leave a pane on screen that the search no longer lists.
                     let matches = filteredSections
@@ -490,6 +665,7 @@ struct SettingsView: View {
                     HStack(spacing: 9) {
                         Image(systemName: item.symbol)
                             .frame(width: 17)
+                            .accessibilityHidden(true)
                         Text(item.title)
                         Spacer()
                     }
@@ -502,6 +678,8 @@ struct SettingsView: View {
                     selection == item ? Color.accentColor.opacity(0.16) : Color.clear,
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                 )
+                .accessibilityLabel(item.title)
+                .accessibilityAddTraits(selection == item ? .isSelected : [])
                 .padding(.horizontal, 7)
             }
 
@@ -516,7 +694,7 @@ struct SettingsView: View {
                     .padding(.bottom, 14)
             }
         }
-        .frame(width: 200)
+        .frame(width: 224)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.38))
     }
 
@@ -545,6 +723,7 @@ struct SettingsView: View {
         switch selection {
         case .general: generalPane
         case .agents: subagentsPane
+        case .activity: activityPane
         case .usage: usagePane
         case .permissions: permissionsPane
         case .apps: appsPane
@@ -757,6 +936,7 @@ struct SettingsView: View {
                             Image(systemName: "arrow.clockwise")
                         }
                         .help("Refresh usage")
+                        .accessibilityLabel("Refresh usage")
                     }
                 }
 
@@ -863,6 +1043,7 @@ struct SettingsView: View {
                                     RoundedRectangle(cornerRadius: 2, style: .continuous)
                                         .fill(usageHeatColor(level: level))
                                         .frame(width: 11, height: 11)
+                                        .accessibilityHidden(true)
                                 }
                                 Text("More")
                                 Spacer()
@@ -1204,7 +1385,71 @@ struct SettingsView: View {
             }
         }
         .frame(height: 88)
-        .accessibilityLabel("MCP Payload Tokens activity heatmap")
+        // VoiceOver gets a one-line summary plus one element per active month
+        // instead of 365 unlabeled squares.
+        .accessibilityRepresentation {
+            VStack(alignment: .leading) {
+                Text(usageHeatmapSummary(usage))
+                ForEach(usageMonthSummaries(usage)) { month in
+                    Text(month.spoken)
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("MCP Payload Tokens activity heatmap")
+        }
+    }
+
+    private struct UsageMonthSummary: Identifiable {
+        let id: String
+        let spoken: String
+    }
+
+    /// Last 365 days of raw daily rows, whatever aggregation the grid shows.
+    private func usageHeatmapDays(_ usage: UsageSummaryEnvelope) -> [UsageDay] {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        let calendar = Calendar(identifier: .gregorian)
+        let today = calendar.startOfDay(for: Date())
+        let start = calendar.date(byAdding: .day, value: -364, to: today) ?? today
+        let startKey = formatter.string(from: start)
+        return usage.daily.filter { $0.date >= startKey }
+    }
+
+    private func usageHeatmapSummary(_ usage: UsageSummaryEnvelope) -> String {
+        let days = usageHeatmapDays(usage).filter { $0.calls > 0 || $0.totalTokens > 0 }
+        guard !days.isEmpty else { return "No MCP activity in the last 12 months." }
+        let tokens = days.reduce(0) { $0 + $1.totalTokens }
+        let calls = days.reduce(0) { $0 + $1.calls }
+        var text = "Last 12 months: \(compactNumber(tokens)) tokens in \(compactNumber(calls)) calls on \(days.count) active day\(days.count == 1 ? "" : "s")."
+        if let busiest = days.max(by: { $0.totalTokens < $1.totalTokens }) {
+            text += " Busiest day \(busiest.date), \(compactNumber(busiest.totalTokens)) tokens."
+        }
+        return text
+    }
+
+    private func usageMonthSummaries(_ usage: UsageSummaryEnvelope) -> [UsageMonthSummary] {
+        let parser = DateFormatter()
+        parser.calendar = Calendar(identifier: .gregorian)
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.dateFormat = "yyyy-MM"
+        let display = DateFormatter()
+        display.dateFormat = "LLLL yyyy"
+        var totals: [String: (tokens: Int, calls: Int)] = [:]
+        for day in usageHeatmapDays(usage) where day.calls > 0 || day.totalTokens > 0 {
+            let month = String(day.date.prefix(7))
+            let current = totals[month] ?? (0, 0)
+            totals[month] = (current.tokens + day.totalTokens, current.calls + day.calls)
+        }
+        return totals.keys.sorted().map { month in
+            let total = totals[month] ?? (0, 0)
+            let name = parser.date(from: month).map { display.string(from: $0) } ?? month
+            return UsageMonthSummary(
+                id: month,
+                spoken: "\(name): \(compactNumber(total.tokens)) tokens, \(compactNumber(total.calls)) calls"
+            )
+        }
     }
 
     private func usageHeatCells(_ usage: UsageSummaryEnvelope) -> [UsageHeatCell] {
@@ -1349,6 +1594,7 @@ struct SettingsView: View {
                         Spacer()
                         if state.safariExtensionEnabled {
                             Button { state.refreshSafariExtensionState() } label: { Image(systemName: "arrow.clockwise") }
+                                .accessibilityLabel("Refresh Safari extension status")
                                 .help("Refresh extension status")
                         } else if state.safariExtensionRegistered {
                             Button("Enable in Safari…") { state.openSafariExtensionPreferences() }
@@ -1758,6 +2004,7 @@ struct SettingsView: View {
                         .foregroundStyle(settings.hasGroqKey ? Color.secondary : Color.orange)
                         Spacer()
                         Button { audio.refresh() } label: { Image(systemName: "arrow.clockwise") }
+                            .accessibilityLabel("Refresh audio devices")
                             .help("Refresh audio devices")
                     }
                     HStack {
@@ -1766,6 +2013,7 @@ struct SettingsView: View {
                             .disabled(groqKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         if settings.hasGroqKey {
                             Button { removeGroqKey() } label: { Image(systemName: "trash") }
+                                .accessibilityLabel("Remove Groq API key")
                                 .help("Remove key")
                         }
                     }
@@ -1949,6 +2197,7 @@ struct SettingsView: View {
                                     Image(systemName: "arrow.clockwise")
                                 }
                                 .help("Refresh connected devices")
+                                .accessibilityLabel("Refresh connected devices")
                             }
 
                             if let issue = state.mobilePairingIssue {
@@ -2197,6 +2446,7 @@ struct SettingsView: View {
                         .help("Send one tiny Decisions request to check the key")
                     if settings.hasDecisionsKey {
                         Button { removeDecisionsKey() } label: { Image(systemName: "trash") }
+                            .accessibilityLabel("Remove OpenAI API key")
                             .help("Remove key")
                     }
                 }
@@ -2291,87 +2541,25 @@ struct SettingsView: View {
         return "Up to date · \(info.targetShort)"
     }
 
+    /// One summary row; versions, commits and updater progress sit behind Details.
     private var updateCard: some View {
         GroupBox("Updates") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Current")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Text(currentUpdateVersion)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: updateSummarySymbol)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(updateSummaryColor)
+                        .frame(width: 22)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(updateSummaryTitle)
                             .font(.subheadline.weight(.semibold))
-                        Text(currentUpdateCommit)
-                            .font(.system(.caption2, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                    Divider().frame(height: 48)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Available")
+                            .lineLimit(2)
+                        Text("Installed \(currentUpdateVersion) · \(currentUpdateCommit)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        Text(availableUpdateText)
-                            .font(.subheadline.weight(.medium))
-                            .lineLimit(2)
-                        if state.updateCheckLoading {
-                            Text("Checking verified release channel…")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        } else if state.updateCheckInfo?.releaseVerified == true {
-                            Text("Verified release")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
                     }
                     Spacer()
-                }
-
-                if let progress = state.updateProgress {
-                    Divider()
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 7) {
-                            Image(systemName: updateStatusSymbol(progress.statusKind))
-                                .foregroundStyle(updateStatusColor(progress.statusKind))
-                            Text(progress.statusTitle)
-                                .font(.subheadline.weight(.semibold))
-                            Spacer()
-                            if state.updateTransactionActive {
-                                Text("Running")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 3)
-                                    .background(.quaternary, in: Capsule())
-                            }
-                        }
-                        Text(progress.statusDetail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        if !progress.steps.isEmpty {
-                            VStack(spacing: 5) {
-                                ForEach(progress.steps) { step in
-                                    HStack(spacing: 8) {
-                                        updateStepIcon(step.state)
-                                            .frame(width: 15)
-                                        Text(step.title)
-                                            .font(.caption)
-                                        Spacer()
-                                        Text(step.detail)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                            .padding(9)
-                            .background(Color(nsColor: .controlBackgroundColor).opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
-                        }
-                    }
-                }
-
-                Divider()
-                HStack {
                     Button {
                         state.checkForUpdates()
                     } label: {
@@ -2386,22 +2574,138 @@ struct SettingsView: View {
                     }
                     .disabled(!state.canCheckForUpdates)
 
-                    Button(state.updateActionTitle) {
-                        state.installUpdate()
+                    if state.canInstallUpdate {
+                        Button(state.updateActionTitle) {
+                            state.installUpdate()
+                        }
                     }
-                    .disabled(!state.canInstallUpdate)
+                }
 
-                    Spacer()
+                DisclosureGroup(isExpanded: $showUpdateDetails) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .top, spacing: 18) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Current")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Text(currentUpdateVersion)
+                                    .font(.subheadline.weight(.semibold))
+                                Text(currentUpdateCommit)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Divider().frame(height: 48)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Available")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Text(availableUpdateText)
+                                    .font(.subheadline.weight(.medium))
+                                    .lineLimit(2)
+                                if state.updateCheckLoading {
+                                    Text("Checking verified release channel…")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                } else if state.updateCheckInfo?.releaseVerified == true {
+                                    Text("Verified release")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                        }
 
-                    if state.updateTransactionActive {
-                        Text("Updater transaction is active")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        if let progress = state.updateProgress {
+                            Divider()
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 7) {
+                                    Image(systemName: updateStatusSymbol(progress.statusKind))
+                                        .foregroundStyle(updateStatusColor(progress.statusKind))
+                                    Text(progress.statusTitle)
+                                        .font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    if state.updateTransactionActive {
+                                        Text("Running")
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                            .padding(.horizontal, 7)
+                                            .padding(.vertical, 3)
+                                            .background(.quaternary, in: Capsule())
+                                    }
+                                }
+                                Text(progress.statusDetail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                if !progress.steps.isEmpty {
+                                    VStack(spacing: 5) {
+                                        ForEach(progress.steps) { step in
+                                            HStack(spacing: 8) {
+                                                updateStepIcon(step.state)
+                                                    .frame(width: 15)
+                                                Text(step.title)
+                                                    .font(.caption)
+                                                Spacer()
+                                                Text(step.detail)
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                    }
+                                    .padding(9)
+                                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+                                }
+                            }
+                        }
+
+                        if state.updateTransactionActive {
+                            Text("Updater transaction is active")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .padding(.top, 8)
+                } label: {
+                    Text("Details")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .padding(.top, 5)
         }
+    }
+
+    private var updateSummaryTitle: String {
+        if let progress = state.updateProgress,
+           state.updateTransactionActive || progress.isInProgress
+            || ["failed", "recovered", "recovery_failed", "rolling_back"].contains(progress.normalizedStatus) {
+            return progress.statusTitle
+        }
+        if state.updateCheckLoading { return "Checking verified release channel…" }
+        return availableUpdateText
+    }
+
+    private var updateSummarySymbol: String {
+        if let progress = state.updateProgress,
+           state.updateTransactionActive || progress.isInProgress
+            || ["failed", "recovered", "recovery_failed", "rolling_back"].contains(progress.normalizedStatus) {
+            return updateStatusSymbol(progress.statusKind)
+        }
+        guard let info = state.updateCheckInfo else { return "arrow.triangle.2.circlepath" }
+        if info.dirty { return "exclamationmark.triangle.fill" }
+        return info.updateAvailable ? "arrow.down.circle.fill" : "checkmark.circle.fill"
+    }
+
+    private var updateSummaryColor: Color {
+        if let progress = state.updateProgress,
+           state.updateTransactionActive || progress.isInProgress
+            || ["failed", "recovered", "recovery_failed", "rolling_back"].contains(progress.normalizedStatus) {
+            return updateStatusColor(progress.statusKind)
+        }
+        guard let info = state.updateCheckInfo else { return .secondary }
+        if info.dirty { return .orange }
+        return info.updateAvailable ? .accentColor : .green
     }
 
     private func updateStatusColor(_ kind: UpdateStatusKind) -> Color {
@@ -2581,6 +2885,7 @@ struct SettingsView: View {
                     Image(systemName: "arrow.clockwise")
                 }
                 .help("Refresh provider detection")
+                .accessibilityLabel("Refresh provider detection")
             }
         }
     }
@@ -3234,12 +3539,7 @@ struct SettingsView: View {
     }
 
     private func profileDisplayName(_ value: String) -> String {
-        switch value.lowercased() {
-        case "read_only": return "Read Only"
-        case "standard": return "Standard"
-        case "trusted": return "Trusted"
-        default: return value.replacingOccurrences(of: "_", with: " ").capitalized
-        }
+        SafetyDisplay.profileName(value)
     }
 
     private func approvalSourceDisplayName(_ value: String) -> String {

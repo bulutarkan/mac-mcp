@@ -46,13 +46,15 @@ struct MacMCPMenuApp: App {
     }
 
     private var menuBarAccessibilityLabel: String {
-        if !state.serverRunning { return "Mac MCP, server disconnected" }
+        // Same words as the popover header and Settings (shared StatusDisplay mapping).
+        if !state.serverRunning { return "Mac MCP, \(state.connectionState.display.label.lowercased())" }
         if state.hasReliableSessionSignal && state.sessionNeedsAttentionCount > 0 {
             return "Mac MCP, \(state.sessionNeedsAttentionCount) session\(state.sessionNeedsAttentionCount == 1 ? "" : "s") need attention"
         }
         if state.activeAgents > 0 || (state.hasReliableSessionSignal && state.sessionActiveCount > 0) {
             return "Mac MCP, active work"
         }
+        if state.connectionState == .degraded { return "Mac MCP, degraded" }
         return "Mac MCP"
     }
 }

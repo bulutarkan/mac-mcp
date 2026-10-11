@@ -38,6 +38,7 @@ xcrun swiftc -O -parse-as-library -target "${ARCH}-apple-macos13.0" \
   "${SCRIPT_DIR}/Sources/AppModels+Agents.swift" \
   "${SCRIPT_DIR}/Sources/AppModels+Steering.swift" \
   "${SCRIPT_DIR}/Sources/AppModels+Updates.swift" \
+  "${SCRIPT_DIR}/Sources/StatusDisplay.swift" \
   "${SCRIPT_DIR}/Sources/SettingsStore.swift" \
   "${SCRIPT_DIR}/Sources/SettingsView.swift" \
   "${SCRIPT_DIR}/Sources/SavedLoginsView.swift" \
