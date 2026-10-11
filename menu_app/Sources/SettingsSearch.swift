@@ -7,7 +7,7 @@ enum SettingsSearchIndex {
         "general": "general overview update version status notifications alerts completion attention agents macos permission",
         "agents": "agents subagents provider codex opencode claude code model reasoning thinking default agent history retention delete keep",
         "usage": "usage tokens payload calls errors latency heatmap activity input output top tools retention record history clear privacy data memory memories export delete",
-        "permissions": "permissions safety approvals security profile read only trusted access",
+        "permissions": "permissions safety approvals security profile read only trusted access saved logins passwords sign in keychain import",
         "apps": "apps mail messages imessage email send confirm confirmation ask before sending xcode notes calendar",
         "connections": "connections browser safari chrome mobile iphone ipad pairing public endpoint ngrok cloudflare tunnel https remote ai clients connect claude code chatgpt codex opencode setup config",
         "voice": "voice audio microphone speaker groq language consent recording transcription",

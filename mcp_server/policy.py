@@ -665,6 +665,8 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "browser_close_tab": _r("browser_close_tab", "browser", _caps(Capability.UI_ACTION, Capability.BROWSER_CONTROL), destructive=True),
     "browser_observe": _r("browser_observe", "browser", _caps(Capability.READ, Capability.BROWSER_CONTROL), sensitive=True),
     "browser_find": _r("browser_find", "browser", _caps(Capability.READ, Capability.BROWSER_CONTROL), sensitive=True),
+    # Fills a saved login into the page; the secret never crosses the tool boundary.
+    "browser_sign_in": _r("browser_sign_in", "browser", _caps(Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.EXTERNAL_SIDE_EFFECT), sensitive=True),
     "browser_checkpoint": _r("browser_checkpoint", "browser", _caps(Capability.READ, Capability.BROWSER_CONTROL, Capability.HUMAN_INTERACTION), sensitive=True),
     "browser_act": _r("browser_act", "browser", _caps(Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True),
     "browser_do": _r("browser_do", "browser", _caps(Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True),

@@ -42,6 +42,7 @@ from .scoped_auth import resolve_request_identity
 from .dashboard_routes import create_dashboard_routes, rest_telemetry_middleware
 from .mobile_routes import create_mobile_routes
 from .chatgpt_panel import register_chatgpt_panel
+from .browser_sign_in import browser_sign_in
 from .chrome_background_bridge import create_chrome_background_bridge_routes
 from .tools_terminal import run_command, process_list, kill_process, get_system_info
 from .tools_jobs import (
@@ -1634,6 +1635,24 @@ def create_app():
                                  observation_id=observation_id, window_index=window_index,
                                  tab_index=tab_index, tab_handle=tab_handle,
                                  return_state=return_state, allow_foreground=allow_foreground, frame=frame),
+        )
+
+    @mcp.tool(
+        name="browser_sign_in",
+        description=(
+            "Sign in on the tab's login form with a login the owner saved in Mac MCP (Settings > Saved Logins). "
+            "The password is typed straight into the page and never returned; the result only says which account "
+            "was used and what was filled. The login is chosen from the page's own site, so look-alike sites get nothing. "
+            "Pass account when several are saved; submit=true also submits the form. Works on username-first pages too."
+        ),
+    )
+    async def _browser_sign_in(browser: str, tab_handle: Optional[str] = None, account: Optional[str] = None,
+                               submit: bool = False, window_index: int = 1,
+                               tab_index: Optional[int] = None) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "browser_sign_in",
+            lambda: browser_sign_in(settings, browser=browser, tab_handle=tab_handle, account=account,
+                                    submit=submit, window_index=window_index, tab_index=tab_index),
         )
 
     @mcp.tool(

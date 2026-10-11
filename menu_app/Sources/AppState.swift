@@ -2648,8 +2648,8 @@ final class AppState: ObservableObject {
     }
 
     /// Runs the Mac MCP CLI with this app's settings (used by Help & Diagnostics).
-    func runCLICommand(_ args: [String]) async -> (code: Int32, output: String) {
-        await Self.runCLI(args: args, configuredPath: settings.cliPath, settingsPath: settings.path.path)
+    func runCLICommand(_ args: [String], input: String? = nil) async -> (code: Int32, output: String) {
+        await Self.runCLI(args: args, configuredPath: settings.cliPath, settingsPath: settings.path.path, input: input)
     }
 
     /// Restarts like the menu's Restart action but lets the caller wait to recheck.

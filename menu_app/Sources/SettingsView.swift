@@ -1404,6 +1404,8 @@ struct SettingsView: View {
                     inlineError(issue)
                 }
 
+                SavedLoginsCard(state: state)
+
                 if let semantics = state.securitySemantics {
                     if let profile = semantics.profiles.first(where: { $0.name == semantics.activeProfile }) {
                         GroupBox("Active Profile") {

@@ -2189,6 +2189,53 @@ def _recipe_request(method: str, path: str, payload: dict | None = None) -> tupl
         return 3, {"error": "server_unreachable", "message": f"Mac MCP is not running ({exc}). Start it with: mac-mcp start"}
 
 
+def logins(args: argparse.Namespace) -> int:
+    """Manage saved logins for browser_sign_in. Passwords are read from stdin and never printed."""
+    from . import login_vault
+
+    command = args.logins_command
+    try:
+        if command == "list":
+            rows = login_vault.list_logins()
+            if args.json:
+                print(json.dumps({"ok": True, "logins": rows}, ensure_ascii=False))
+            else:
+                for row in rows:
+                    print(f"{row['id']}  {row['site']}  {row['username']}")
+                if not rows:
+                    print("No saved logins.")
+            return 0
+        if command == "add":
+            password = sys.stdin.readline()
+            password = password[:-1] if password.endswith("\n") else password
+            row = login_vault.add_login(args.site, args.username, password, label=args.label)
+            password = ""
+            print(json.dumps({"ok": True, "login": row}, ensure_ascii=False) if args.json else f"Saved login for {row['site']}.")
+            return 0
+        if command == "remove":
+            removed = login_vault.remove_login(args.login_id)
+            print(json.dumps({"ok": removed}) if args.json else ("Removed." if removed else "No such saved login."))
+            return 0 if removed else 1
+        if command == "import-preview":
+            items = login_vault.preview_import(args.file)
+            print(json.dumps({"ok": True, "items": items}, ensure_ascii=False) if args.json
+                  else "\n".join(f"{item['index']}  {item['site']}  {item['username']}" for item in items) or "No usable logins.")
+            return 0
+        if command == "import":
+            indexes = None if args.select == "all" else [int(part) for part in args.select.split(",") if part.strip()]
+            result = login_vault.import_logins(args.file, indexes, delete_file=args.delete_file)
+            print(json.dumps({"ok": True, **result}) if args.json
+                  else f"Imported {result['imported']} login(s), skipped {result['skipped']}"
+                       + ("; export file deleted." if result["file_deleted"] else "."))
+            return 0
+    except (login_vault.VaultError, ValueError) as exc:
+        code = getattr(exc, "code", "invalid_arguments")
+        print(json.dumps({"ok": False, "error": code, "message": str(exc)}) if getattr(args, "json", False)
+              else f"mac-mcp logins: {exc}", file=sys.stderr if not getattr(args, "json", False) else sys.stdout)
+        return 1
+    return 2
+
+
 def recipe(args: argparse.Namespace) -> int:
     """List or run saved recipes for Shortcuts, Raycast and scripts."""
     _load_env()
@@ -2357,6 +2404,28 @@ def main(argv: list[str] | None = None) -> int:
     p_recipe_run.add_argument("--param", action="append", metavar="NAME=VALUE", help="Recipe parameter; repeat for each.")
     p_recipe_run.add_argument("--json", action="store_true")
     p_recipe.set_defaults(func=recipe)
+
+    p_logins = sub.add_parser("logins", help="Saved logins that agents can use with browser_sign_in without seeing them.")
+    logins_sub = p_logins.add_subparsers(dest="logins_command", required=True)
+    p_logins_list = logins_sub.add_parser("list", help="List saved logins (sites and usernames only).")
+    p_logins_list.add_argument("--json", action="store_true")
+    p_logins_add = logins_sub.add_parser("add", help="Save a login; the password is read from stdin.")
+    p_logins_add.add_argument("--site", required=True, help="Site URL or host name, e.g. https://github.com")
+    p_logins_add.add_argument("--username", required=True)
+    p_logins_add.add_argument("--label")
+    p_logins_add.add_argument("--json", action="store_true")
+    p_logins_remove = logins_sub.add_parser("remove", help="Delete a saved login and its Keychain item.")
+    p_logins_remove.add_argument("login_id")
+    p_logins_remove.add_argument("--json", action="store_true")
+    p_logins_preview = logins_sub.add_parser("import-preview", help="Show the logins in a Passwords app export (no passwords).")
+    p_logins_preview.add_argument("file")
+    p_logins_preview.add_argument("--json", action="store_true")
+    p_logins_import = logins_sub.add_parser("import", help="Save chosen logins from a Passwords app export.")
+    p_logins_import.add_argument("file")
+    p_logins_import.add_argument("--select", default="all", help="Comma-separated row indexes from import-preview, or all.")
+    p_logins_import.add_argument("--delete-file", action="store_true", help="Delete the export file after importing.")
+    p_logins_import.add_argument("--json", action="store_true")
+    p_logins.set_defaults(func=logins)
 
     p_logs = sub.add_parser("logs", help="Show recent, redacted lines from a Mac MCP log, or --list sizes and bounds.")
     p_logs.add_argument("component", nargs="?", default="server", choices=("server", "cloudflared", "ngrok", "audit", "update"))
