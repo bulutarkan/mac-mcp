@@ -384,6 +384,7 @@ code, pre { font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas
 .status-badge::before { content: ""; width: 6px; height: 6px; background: currentColor; border-radius: 50%; }
 .status-badge.error { color: var(--red); }
 .status-badge.running { color: var(--ice); }
+.status-badge.neutral { color: var(--muted); }
 .drawer-body { display: grid; gap: 26px; padding: 24px 26px calc(28px + env(safe-area-inset-bottom)); }
 .payload-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 9px; }
 .payload-title h3 { margin: 0; color: #b7cad7; font-size: 11px; font-weight: 600; }

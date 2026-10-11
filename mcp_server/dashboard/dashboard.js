@@ -801,7 +801,7 @@
     state.timelineAgent = agentId;
     setDrawerMode("agent");
     const status = agent.status || "unknown";
-    els.drawerStatus.className = `status-badge ${["failed", "timeout", "stalled"].includes(status) ? "error" : ["running", "starting"].includes(status) ? "running" : ""}`;
+    els.drawerStatus.className = `status-badge ${["failed", "timeout", "stalled"].includes(status) ? "error" : ["running", "starting"].includes(status) ? "running" : status === "completed" ? "" : "neutral"}`;
     els.drawerStatus.textContent = status.charAt(0).toUpperCase() + status.slice(1);
     els.drawerTitle.textContent = agent.title || agent.agent_id;
     els.drawerMeta.textContent = `${agent.agent_id}${agent.team_id ? ` · team ${agent.team_id}` : ""}`;

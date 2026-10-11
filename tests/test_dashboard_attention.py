@@ -122,6 +122,9 @@ class AgentTimelineTests(unittest.TestCase):
         script = (DASHBOARD / "dashboard.js").read_text(encoding="utf-8")
         self.assertIn('<button class="agent-activity" type="button" data-agent-activity=', script)
         self.assertIn("/dashboard/api/events?hours=168&limit=100&agent_id=", script)
+        # Only completed is green; cancelled and other end states are neutral.
+        self.assertIn('status === "completed" ? "" : "neutral"', script)
+        self.assertIn(".status-badge.neutral", (DASHBOARD / "dashboard.css").read_text(encoding="utf-8"))
         page = (DASHBOARD / "index.html").read_text(encoding="utf-8")
         for element in ("timelineSection", "agentSummarySection", "healthRow", "attentionList"):
             self.assertIn(f'id="{element}"', page)
