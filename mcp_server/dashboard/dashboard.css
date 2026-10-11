@@ -1,4 +1,5 @@
 :root {
+  /* Mac MCP shared tokens: keep this block identical in dashboard.css and mobile.css. */
   --bg: #07101a;
   --bg-deep: #050b12;
   --surface: #0c1825;
@@ -7,6 +8,7 @@
   --surface-hover: #13283a;
   --line: rgba(147, 185, 214, .18);
   --line-strong: rgba(147, 185, 214, .28);
+  --line-soft: rgba(141, 180, 210, .09);
   --text: #f2f7fb;
   --text-soft: #c4d3df;
   --muted: #8298aa;
@@ -17,13 +19,26 @@
   --mint: #71d7bb;
   --amber: #f0b978;
   --red: #ff858c;
+  --neutral: #5d7488;
+  --accent: var(--ice);
+  --ok: var(--mint);
+  --warn: var(--amber);
+  --error: var(--red);
+  --running: var(--ice);
   --focus: #d8ecff;
-  --header-height: 58px;
   --radius-sm: 9px;
   --radius-md: 14px;
   --radius-lg: 18px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
   --shadow-card: 0 18px 48px rgba(0, 0, 0, .18), inset 0 1px 0 rgba(255,255,255,.035);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  /* End shared tokens. */
+  --header-height: 58px;
+  font-family: var(--font-ui);
   color: var(--text);
   background: var(--bg);
   color-scheme: dark;
@@ -147,7 +162,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .health-chip { min-width: 0; display: grid; grid-template-columns: 8px minmax(0, 1fr); column-gap: 7px; align-items: center; font-size: 10px; color: var(--muted); }
 .health-chip > span:not(.health-dot) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .health-chip strong { grid-column: 2; overflow: hidden; color: var(--text-soft); font-size: 11.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.health-dot { grid-row: 1 / span 2; width: 8px; height: 8px; border-radius: 50%; background: #5d7488; }
+.health-dot { grid-row: 1 / span 2; width: 8px; height: 8px; border-radius: 50%; background: var(--neutral); }
 .health-chip[data-state="ok"] .health-dot { background: var(--mint); box-shadow: 0 0 0 4px rgba(113, 215, 187, .07); }
 .health-chip[data-state="warn"] .health-dot { background: var(--amber); box-shadow: 0 0 0 4px rgba(240, 185, 120, .08); }
 .health-chip[data-state="bad"] .health-dot { background: var(--red); box-shadow: 0 0 0 4px rgba(255, 133, 140, .08); }

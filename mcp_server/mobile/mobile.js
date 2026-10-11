@@ -5,8 +5,14 @@
   // A non-secret marker so a later 401 can say access was lost instead of
   // looking like a first visit. The session itself stays in the HttpOnly cookie.
   const PAIRED_MARKER_KEY = "mac_mcp_mobile_paired";
+  // Quick refreshes only while something is running; an idle Mac is polled
+  // slowly, and a hidden page not at all (it refreshes as soon as it returns).
+  const REFRESH_ACTIVE_MS = 4000;
+  const REFRESH_IDLE_MS = 12000;
+  const REFRESH_OFFLINE_MS = 6000;
   const state = {
-    timer: null, agentCollapsed: null, activeAgents: null,
+    timer: null, refreshing: null, refreshQueued: false, polling: false, activeWork: false, activeSessions: 0,
+    agentCollapsed: null, activeAgents: null,
     lastSuccessAt: 0, online: null, unavailable: [], announced: "",
     loaded: { agents: false, activity: false, sessions: false },
     stopping: new Set(),
@@ -329,6 +335,7 @@
     const activeRows = groups.active.map(s => sessionCard(s, "active"));
     const recentRows = groups.recent.map(s => sessionCard(s, "recent"));
     const total = attentionRows.length + activeRows.length + recentRows.length;
+    state.activeSessions = activeRows.length;
     $("sessionMeta").textContent = activeRows.length ? activeRows.length + " active" : (total ? total + " visible" : "");
     $("sessions").innerHTML =
       sessionGroup("attention", "Needs Attention", "Review before continuing", attentionRows) +
@@ -384,6 +391,7 @@
     clearDashboard();
     $("dashboard").classList.add("hidden");
     $("pairing").classList.remove("hidden");
+    $("onlineDot").classList.remove("online");
     $("serverText").textContent = accessLost ? "Access expired or removed" : "Pairing required";
     $("version").textContent = "";
     $("connector").textContent = "Mobile";
@@ -483,10 +491,33 @@
   function lockOut() {
     clearLegacySessionExposure();
     locked(pairedBefore() ? "access_lost" : "");
-    if (state.timer) clearInterval(state.timer);
+    state.polling = false;
+    clearTimeout(state.timer);
     state.timer = null;
   }
+  function scheduleRefresh() {
+    clearTimeout(state.timer);
+    state.timer = null;
+    if (!state.polling || document.hidden) return;
+    const delay = !state.online ? REFRESH_OFFLINE_MS : (state.activeWork ? REFRESH_ACTIVE_MS : REFRESH_IDLE_MS);
+    state.timer = setTimeout(refresh, delay);
+  }
+  // One refresh at a time: a slow response never overlaps the next one, and a
+  // refresh asked for meanwhile (a stop, the page returning) runs right after.
   async function refresh() {
+    if (state.refreshing) { state.refreshQueued = true; return state.refreshing; }
+    clearTimeout(state.timer);
+    state.refreshing = (async () => {
+      try {
+        do { state.refreshQueued = false; await refreshOnce(); } while (state.refreshQueued && state.polling);
+      } finally {
+        state.refreshing = null;
+      }
+    })();
+    await state.refreshing;
+    scheduleRefresh();
+  }
+  async function refreshOnce() {
     const [status, agents, activity] = await Promise.all([
       settle("/mobile/api/status"), settle("/mobile/api/agents"), settle("/mobile/api/activity")
     ]);
@@ -507,6 +538,8 @@
     setOnline(true);
     state.lastSuccessAt = Date.now();
     renderStatus(status.body);
+    state.activeWork = Number(status.body.active_agents || 0) > 0 ||
+      Boolean(activity.ok && Array.isArray(activity.body.active) && activity.body.active.length);
     const unavailable = [];
     const sources = status.body.sources || {};
     if (agents.ok && agents.body.available !== false) renderAgents(agents.body);
@@ -519,6 +552,7 @@
     } catch (e) {
       if (e.status === 401) { lockOut(); return; }
     }
+    if (state.activeSessions) state.activeWork = true;
     state.unavailable = unavailable;
     renderConnection();
   }
@@ -589,10 +623,15 @@
       locked(pairError === "rate_limited" ? "rate_limited" : "pair_error");
       return;
     }
-    await refresh();
     // Keep retrying while the Mac is unreachable; stop only when pairing is needed.
-    if (!state.timer && $("pairing").classList.contains("hidden")) state.timer = setInterval(refresh, 4000);
+    state.polling = true;
+    await refresh();
   }
+  document.addEventListener("visibilitychange", () => {
+    if (!state.polling) return;
+    if (document.hidden) { clearTimeout(state.timer); state.timer = null; }
+    else refresh();
+  });
   const usageToggle = $("usageToggle");
   if (usageToggle) usageToggle.addEventListener("click", () => setUsageOpen(!state.usageOpen));
   // One delegated listener survives the list being re-rendered on every refresh.

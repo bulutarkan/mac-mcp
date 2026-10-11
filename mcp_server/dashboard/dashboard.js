@@ -1124,7 +1124,48 @@
     }
   });
 
-  Promise.all([refreshSummary(), refreshEvents(), refreshAgents(), refreshChanges(), refreshTransactions()]).finally(connectStream);
+  // One request per source at a time: a slow response never overlaps the next
+  // poll, and calls made meanwhile coalesce into a single follow-up request.
+  function singleFlight(task) {
+    let running = null;
+    let again = false;
+    return () => {
+      if (running) { again = true; return running; }
+      running = (async () => {
+        try { do { again = false; await task(); } while (again); }
+        finally { running = null; }
+      })();
+      return running;
+    };
+  }
+  refreshSummary = singleFlight(refreshSummary);
+  refreshAgents = singleFlight(refreshAgents);
+  refreshEvents = singleFlight(refreshEvents);
+  refreshAttention = singleFlight(refreshAttention);
+  refreshPosture = singleFlight(refreshPosture);
+  refreshChanges = singleFlight(refreshChanges);
+  refreshTransactions = singleFlight(refreshTransactions);
+
+  const hasActiveWork = () => state.active.size > 0 || state.agents.some((agent) => agent.status === "running" || agent.status === "starting");
+  const adaptivePolls = [];
+  function pollAdaptive(refresh, activeMs, idleMs) {
+    const poll = {timer: null};
+    poll.schedule = () => {
+      window.clearTimeout(poll.timer);
+      poll.timer = document.hidden ? null : window.setTimeout(poll.run, hasActiveWork() ? activeMs : idleMs);
+    };
+    poll.run = () => refresh().finally(poll.schedule);
+    adaptivePolls.push(poll);
+    // The first interval is chosen once the initial load shows whether work is running.
+    initialLoad.finally(poll.schedule);
+  }
+  document.addEventListener("visibilitychange", () => {
+    adaptivePolls.forEach((poll) => (document.hidden ? window.clearTimeout(poll.timer) : poll.run()));
+    if (!document.hidden) refreshAttention();
+  });
+
+  const initialLoad = Promise.all([refreshSummary(), refreshEvents(), refreshAgents(), refreshChanges(), refreshTransactions()]);
+  initialLoad.finally(connectStream);
   // The security record is hash-chained; say so loudly if it no longer verifies.
   async function refreshIntegrity() {
     let result = null;
@@ -1151,9 +1192,11 @@
   window.setInterval(() => { if (!document.hidden) refreshIntegrity(); }, 60000);
   window.setInterval(() => { if (!document.hidden) refreshPosture(); }, 30000);
   window.setInterval(() => { if (!document.hidden) refreshAttention(); }, 4000);
-  window.setInterval(refreshSummary, 5000);
+  // Summary and agents poll quickly only while work is running (SSE still
+  // delivers every call); an idle dashboard polls slowly, a hidden one not at all.
+  pollAdaptive(refreshSummary, 5000, 12000);
   window.setInterval(renderFreshness, 5000);
-  window.setInterval(refreshAgents, 2200);
+  pollAdaptive(refreshAgents, 2200, 10000);
   window.setInterval(() => { if (!document.hidden) refreshChanges(); }, 10000);
   window.setInterval(() => { if (!document.hidden) refreshTransactions(); }, 10000);
   window.setInterval(() => { if (state.active.size) renderActiveStrip(); }, 1000);

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,6 +26,9 @@ from .version import __version__
 
 MOBILE_DIR = Path(__file__).resolve().parent / "mobile"
 MOBILE_COOKIE = "mac_mcp_mobile"
+# One phone refresh asks for status and agents in parallel; both read the same
+# short-lived agent inventory instead of listing agents twice.
+AGENT_SNAPSHOT_TTL_S = 1.5
 
 
 def _management_guard(request: Request, dashboard_token: str) -> Optional[Response]:
@@ -136,6 +140,24 @@ def create_mobile_routes(
 ) -> list[Route]:
     store = auth_store or MobileAuthStore()
     manual_attempts_by_client: dict[str, list[float]] = {}
+    agent_snapshot: Dict[str, Any] = {"at": 0.0, "agents": None}
+    agent_snapshot_lock = threading.Lock()
+
+    def agent_inventory() -> list[Dict[str, Any]]:
+        # The lock makes a concurrent caller wait for the in-flight listing and
+        # reuse it. Failures are not cached, so the next refresh retries.
+        with agent_snapshot_lock:
+            now = time.monotonic()
+            cached = agent_snapshot.get("agents")
+            if cached is not None and now - float(agent_snapshot["at"]) < AGENT_SNAPSHOT_TTL_S:
+                return cached
+            rows = list(list_agents(settings, limit=100).get("agents", []))
+            agent_snapshot.update({"at": time.monotonic(), "agents": rows})
+            return rows
+
+    def forget_agent_inventory() -> None:
+        with agent_snapshot_lock:
+            agent_snapshot.update({"at": 0.0, "agents": None})
 
     def manual_pairing_rate_limited(request: Request) -> bool:
         now = time.time()
@@ -299,9 +321,9 @@ def create_mobile_routes(
         sources = {"agents": "ok", "telemetry": "ok", "connector": "ok"}
         active_agents: Optional[int] = None
         try:
-            agent_data = await asyncio.to_thread(list_agents, settings, limit=100)
+            agent_rows = await asyncio.to_thread(agent_inventory)
             active_agents = sum(
-                1 for row in agent_data.get("agents", []) if row.get("status") in {"starting", "running"}
+                1 for row in agent_rows if row.get("status") in {"starting", "running"}
             )
         except Exception:
             sources["agents"] = "unavailable"
@@ -335,8 +357,7 @@ def create_mobile_routes(
         if denied is not None:
             return denied
         try:
-            data = await asyncio.to_thread(list_agents, settings, limit=100)
-            all_rows = list(data.get("agents", []))
+            all_rows = await asyncio.to_thread(agent_inventory)
             rows = _mobile_agent_rows(all_rows, limit=6)
             active_count = sum(
                 1 for row in all_rows if row.get("status") in {"starting", "running"}
@@ -381,6 +402,9 @@ def create_mobile_routes(
             )
         except HTTPException as exc:
             return JSONResponse({"ok": False, "error": "cancel_failed"}, status_code=exc.status_code)
+        finally:
+            # The refresh that follows a stop must show the new state, not the snapshot.
+            forget_agent_inventory()
         cancellation = result.get("cancellation") or {}
         return JSONResponse({
             "ok": True, "agent_id": agent_id, "status": result.get("status"),
