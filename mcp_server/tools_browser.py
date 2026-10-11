@@ -346,9 +346,11 @@ def _run_osascript(script: str, timeout_s: int = 30) -> str:
 
 
 def _run_osascript_process(script: str, timeout_s: int) -> str:
+    # The script goes in on stdin, not as an argument: page scripts can carry typed
+    # text or a filled password, and process arguments are visible to other processes.
     proc = subprocess.Popen(
-        ["osascript", "-e", script],
-        stdin=subprocess.DEVNULL,
+        ["osascript", "-"],
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -357,7 +359,7 @@ def _run_osascript_process(script: str, timeout_s: int) -> str:
     cleanup_token = register_cancellation_cleanup(lambda: _terminate_process_group(proc))
     cancellation_checkpoint()
     try:
-        stdout, stderr = proc.communicate(timeout=timeout_s)
+        stdout, stderr = proc.communicate(input=script, timeout=timeout_s)
         cancellation_checkpoint()
     except ToolCancelledError:
         _terminate_process_group(proc)

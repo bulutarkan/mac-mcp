@@ -1243,7 +1243,7 @@ function __mcpDescribe(el,s){
   if(out.actionable){var rd=__mcpElementReadiness(el,'observe',0);out.ready=!!rd.ready;if(rd.reason_code)out.readiness_reason=rd.reason_code;if(rd.hit_target)out.hit_target=rd.hit_target;}
   var context=__mcpContext(el);if(context)out.context=context;
   var aria=el.getAttribute('aria-label')||'',ph=el.getAttribute('placeholder')||'',name=el.getAttribute('name')||'',title=el.getAttribute('title')||'';if(aria)out.aria_label=aria.slice(0,120);if(ph)out.placeholder=ph.slice(0,100);if(name)out.name=name.slice(0,100);if(title)out.title=title.slice(0,100);if(tag==='a'&&el.href)out.href=String(el.href).slice(0,220);if(el.disabled===true||el.getAttribute('aria-disabled')==='true')out.enabled=false;
-  try{if(el.ownerDocument&&el.ownerDocument.activeElement===el)out.focused=true;}catch(e){}if(['input','textarea','select'].indexOf(tag)>=0)out.value=String(el.value||'').slice(0,160);if(tag==='input'&&el.type)out.input_type=String(el.type);if(typeof el.checked==='boolean'&&el.checked)out.checked=true;if(tag==='select')out.options=Array.from(el.options||[]).slice(0,24).map(function(o){return{text:String(o.text||'').slice(0,90),value:String(o.value||'').slice(0,90),selected:!!o.selected};});return out;
+  try{if(el.ownerDocument&&el.ownerDocument.activeElement===el)out.focused=true;}catch(e){}if(['input','textarea','select'].indexOf(tag)>=0)out.value=__mcpSafeValue(el).slice(0,160);if(tag==='input'&&el.type)out.input_type=String(el.type);if(typeof el.checked==='boolean'&&el.checked)out.checked=true;if(tag==='select')out.options=Array.from(el.options||[]).slice(0,24).map(function(o){return{text:String(o.text||'').slice(0,90),value:String(o.value||'').slice(0,90),selected:!!o.selected};});return out;
 }
 function __mcpParent(el){if(!el)return null;if(el.parentElement)return el.parentElement;try{var root=el.getRootNode&&el.getRootNode();return root&&root.host?root.host:null;}catch(e){return null;}}
 function __mcpActivationTarget(el){
@@ -1339,7 +1339,7 @@ function __mcpModalEffectFingerprint(){
 function __mcpEffectState(el){
   var agent=__mcpState(),activationTrace=agent.lastActivationTrace||null,activationNetworkCount=Number(activationTrace&&activationTrace.network_count||0);
   if(!el)return {connected:false,modalFingerprint:__mcpModalEffectFingerprint(),activationNetworkCount:activationNetworkCount};var role=__mcpRole(el),value='',text='';
-  try{value=('value' in el)?String(el.value==null?'':el.value):'';}catch(e){}
+  try{value=('value' in el)?__mcpSafeValue(el):'';}catch(e){}
   try{if(!value&&(el.isContentEditable||role==='textbox'||role==='searchbox'))text=String(el.textContent||'');}catch(e){}
   return {connected:!!el.isConnected,value:value,text:text,checked:typeof el.checked==='boolean'?!!el.checked:null,expanded:el.getAttribute('aria-expanded'),selected:el.getAttribute('aria-selected'),pressed:el.getAttribute('aria-pressed'),ariaChecked:el.getAttribute('aria-checked'),cls:String(el.className||''),modalFingerprint:__mcpModalEffectFingerprint(),activationNetworkCount:activationNetworkCount};
 }
@@ -1353,6 +1353,8 @@ function __mcpKeyboardActivate(el){
   var win=__mcpOwnerWindow(el);function fire(type){try{el.dispatchEvent(new win.KeyboardEvent(type,{bubbles:true,cancelable:true,composed:true,key:key,code:key===' '?'Space':key}));}catch(e){}}
   fire('keydown');fire('keypress');fire('keyup');return key;
 }
+/* A password field never reports its value: observations, effects and extraction say [hidden]. */
+function __mcpSafeValue(el){try{if(String(el.type||'').toLowerCase()==='password')return el.value?'[hidden]':'';return String(el.value==null?'':el.value);}catch(e){return '';}}
 function __mcpEditableText(el){try{return String(el.innerText!=null?el.innerText:el.textContent||'');}catch(e){return String(el.textContent||'');}}
 function __mcpTextMatches(actual,value){var n=function(v){return String(v||'').replace(/[\s\u00a0\u200b]+/g,' ').trim();};return n(actual)===n(value);}
 /* Rich-text editors (Draft.js, Lexical, ProseMirror, the Medium composer) keep their own
@@ -2393,7 +2395,7 @@ for(var i=0;i<actions.length;i++){
       var applied=pending||(hasValue?actual===expectedText:(method!=='input_partial'&&__mcpTextMatches(actual,expectedText)));
       var unconfirmed=/^paste_event/.test(method)&&s.lastPasteUnconfirmed===true;
       var verification=pending?'editor_pending':(!applied?'input_not_applied':(method==='dom_text'?'dom_text_only':(unconfirmed?'editor_model_unconfirmed':'value_applied')));
-      var typed={index:i,type:type,element_id:a.element_id,ok:applied,value:actual.slice(0,200),effect_observed:applied&&!pending,verification:verification,input_method:method.replace(/_async$/,''),observe_again:!applied};
+      var typed={index:i,type:type,element_id:a.element_id,ok:applied,value:(String(el.type||'').toLowerCase()==='password'?(actual?'[hidden]':''):actual.slice(0,200)),effect_observed:applied&&!pending,verification:verification,input_method:method.replace(/_async$/,''),observe_again:!applied};
       if(pending)typed._verify_text=expectedText;
       if(pending&&unconfirmed)typed._model_unconfirmed=true;
       /* The page drew the pasted text but nothing shows its framework took it (see __mcpPasteInsert). */
@@ -2723,7 +2725,7 @@ function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(o
 var s=__mcpState(),el=__mcpRecoverElement({eid},s);
 if(!el) return __mcpB64({{ok:true,connected:false,url:location.href,title:document.title,dom_revision:s.mutationRevision,modal_fingerprint:__mcpModalEffectFingerprint(),activation_network_count:Number(s.lastActivationTrace&&s.lastActivationTrace.network_count||0),activation_trace:s.lastActivationTrace||null}});
 var tag=String(el.tagName||'').toLowerCase(),role=__mcpRole(el),value='',text='';
-try{{value=('value' in el)?String(el.value==null?'':el.value):'';}}catch(e){{}}
+try{{value=('value' in el)?__mcpSafeValue(el):'';}}catch(e){{}}
 try{{if(!value&&(el.isContentEditable||role==='textbox'||role==='searchbox'))text=String(el.textContent||'');}}catch(e){{}}
 var focused=false;try{{focused=!!(el.ownerDocument&&el.ownerDocument.activeElement===el);}}catch(e){{}}
 return __mcpB64({{ok:true,connected:!!el.isConnected,url:location.href,title:document.title,dom_revision:s.mutationRevision,tag:tag,role:role,value:value,text:text,
@@ -2749,7 +2751,7 @@ s.lastActivationTrace=trace;__mcpStartActionNetworkProbe(s,trace);
 var targetRecorder=function(ev){{trace.target_click_seen=true;trace.click_is_trusted=!!ev.isTrusted;}};
 var windowRecorder=function(ev){{try{{var path=typeof ev.composedPath==='function'?ev.composedPath():[];if(ev.target===el||path.indexOf(el)>=0||__mcpComposedContains(el,ev.target)){{trace.window_click_seen=true;trace.click_is_trusted=!!ev.isTrusted;trace.click_default_prevented=!!ev.defaultPrevented;}}}}catch(e){{}}}};
 try{{el.addEventListener('click',targetRecorder,{{capture:true,once:true}});win.addEventListener('click',windowRecorder,{{capture:false,once:true}});setTimeout(function(){{try{{el.removeEventListener('click',targetRecorder,true);win.removeEventListener('click',windowRecorder,false);}}catch(e){{}}}},750);}}catch(e){{}}
-var role=__mcpRole(el),value='',text='';try{{value=('value' in el)?String(el.value==null?'':el.value):'';}}catch(e){{}}try{{if(!value&&(el.isContentEditable||role==='textbox'||role==='searchbox'))text=String(el.textContent||'');}}catch(e){{}}
+var role=__mcpRole(el),value='',text='';try{{value=('value' in el)?__mcpSafeValue(el):'';}}catch(e){{}}try{{if(!value&&(el.isContentEditable||role==='textbox'||role==='searchbox'))text=String(el.textContent||'');}}catch(e){{}}
 return __mcpB64({{ok:true,connected:!!el.isConnected,element_id:rd.element_id,rect:rd.rect,stable_for_ms:rd.stable_for_ms,hit_target:rd.hit_target,url:location.href,title:document.title,dom_revision:rd.dom_revision,value:value,text:text,checked:typeof el.checked==='boolean'?!!el.checked:null,aria_expanded:el.getAttribute('aria-expanded'),aria_selected:el.getAttribute('aria-selected'),aria_pressed:el.getAttribute('aria-pressed'),aria_checked:el.getAttribute('aria-checked'),class_name:String(el.className||''),modal_fingerprint:__mcpModalEffectFingerprint(),activation_network_count:0,activation_trace:trace}});
 }})()'''
 
@@ -3666,7 +3668,7 @@ function readValue(el, attr){{
   attr=String(attr||'text');
   if(attr==='text') return String(el.innerText||el.textContent||'').trim();
   if(attr==='html') return String(el.innerHTML||'');
-  if(attr==='value') return String(el.value==null?'':el.value);
+  if(attr==='value') return String(el.type||'').toLowerCase()==='password'?(el.value?'[hidden]':''):String(el.value==null?'':el.value);
   if(attr==='href') return String(el.href||el.getAttribute('href')||'');
   if(attr==='aria_label') return String(el.getAttribute('aria-label')||'');
   return String(el.getAttribute(attr)||'');
