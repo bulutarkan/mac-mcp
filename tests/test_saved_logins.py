@@ -217,6 +217,47 @@ class SignInTests(VaultCase):
         self.assertNotIn(SECRET, scripts[1])
         self.assertIn("next_step", result)
 
+    def test_telemetry_and_logs_never_hold_the_secret(self) -> None:
+        # #81 acceptance: the telemetry row and every log line of a sign-in carry no secret bytes.
+        import logging
+        import sqlite3
+        from mcp_server.observability import TelemetryManager
+
+        login_vault.add_login("github.com", "ada@example.com", SECRET)
+        arguments = {"browser": "Safari", "tab_handle": "btab_safari_x", "submit": True, "description": "Sign in"}
+        records: list = []
+        handler = logging.Handler()
+        handler.emit = records.append
+        root = logging.getLogger()
+        previous_level = root.level
+        root.addHandler(handler)
+        root.setLevel(logging.DEBUG)
+        try:
+            result, _ = self.run_sign_in(self.probe(), submit=True)
+        finally:
+            root.removeHandler(handler)
+            root.setLevel(previous_level)
+        self.assertNotIn(SECRET, " ".join(record.getMessage() for record in records))
+        db = self.tmp / "telemetry.sqlite3"
+        manager = TelemetryManager(db, usage_enabled=False, async_writes=False)
+        manager.finish_call(manager.start_call("mcp", "browser_sign_in", arguments), result=result)
+        con = sqlite3.connect(db)
+        try:
+            stored = " ".join(str(v or "") for row in con.execute("SELECT * FROM tool_events") for v in row)
+        finally:
+            con.close()
+        self.assertIn("browser_sign_in", stored)
+        self.assertNotIn(SECRET, stored)
+
+    def test_a_login_removed_mid_session_is_not_filled_again(self) -> None:
+        saved = login_vault.add_login("github.com", "ada", SECRET)
+        result, scripts = self.run_sign_in(self.probe())
+        self.assertTrue(result["ok"])
+        login_vault.remove_login(saved["id"])
+        result, scripts = self.run_sign_in(self.probe())
+        self.assertEqual("no_saved_login", result["error"])
+        self.assertEqual(1, len(scripts))  # only the probe ran; no page script carried a password
+
     def test_a_failing_fill_does_not_leak_the_page_script(self) -> None:
         login_vault.add_login("github.com", "ada", SECRET)
         leaking = HTTPException(500, f"AppleScript error near: var pass={json.dumps(SECRET)}")
