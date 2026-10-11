@@ -385,6 +385,10 @@ code, pre { font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas
 .status-badge.error { color: var(--red); }
 .status-badge.running { color: var(--ice); }
 .status-badge.neutral { color: var(--muted); }
+.drawer-back { display: inline-flex; align-items: center; gap: 4px; margin: 0 8px 0 0; padding: 4px 8px 4px 5px; border: 1px solid rgba(133, 174, 205, .22); border-radius: 999px; background: rgba(20, 40, 56, .9); color: #a9c3d6; font: inherit; font-size: 9.5px; cursor: pointer; vertical-align: middle; }
+.drawer-back[hidden] { display: none; }
+.drawer-back svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.drawer-back:hover, .drawer-back:focus-visible { border-color: rgba(126, 202, 255, .72); color: var(--ice-bright); outline: none; }
 .drawer-body { display: grid; gap: 26px; padding: 24px 26px calc(28px + env(safe-area-inset-bottom)); }
 .payload-title { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 9px; }
 .payload-title h3 { margin: 0; color: #b7cad7; font-size: 11px; font-weight: 600; }

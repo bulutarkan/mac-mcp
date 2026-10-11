@@ -125,6 +125,10 @@ class AgentTimelineTests(unittest.TestCase):
         # Only completed is green; cancelled and other end states are neutral.
         self.assertIn('status === "completed" ? "" : "neutral"', script)
         self.assertIn(".status-badge.neutral", (DASHBOARD / "dashboard.css").read_text(encoding="utf-8"))
+        # A call opened from the agent's activity offers a way back to that list.
+        self.assertIn("els.drawerBack.hidden = !fromTimeline", script)
+        self.assertIn("await openAgentDrawer(state.timelineAgent)", script)
+        self.assertIn('id="drawerBack"', (DASHBOARD / "index.html").read_text(encoding="utf-8"))
         page = (DASHBOARD / "index.html").read_text(encoding="utf-8")
         for element in ("timelineSection", "agentSummarySection", "healthRow", "attentionList"):
             self.assertIn(f'id="{element}"', page)

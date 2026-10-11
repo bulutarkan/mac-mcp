@@ -50,6 +50,7 @@
     drawerRequest: $("drawerRequest"), drawerResult: $("drawerResult"), drawerError: $("drawerError"), resultSize: $("resultSize"), resultSection: $("resultSection"), errorSection: $("errorSection"),
     requestSection: $("requestSection"), agentSummarySection: $("agentSummarySection"), agentSummary: $("agentSummary"),
     timelineSection: $("timelineSection"), timelineList: $("timelineList"), timelineCount: $("timelineCount"),
+    drawerBack: $("drawerBack"), drawerBackLabel: $("drawerBackLabel"),
     healthRow: $("healthRow"), healthServer: $("healthServer"), healthTelemetry: $("healthTelemetry"), healthProfile: $("healthProfile"),
     healthApproval: $("healthApproval"), healthCompanion: $("healthCompanion"), healthRecord: $("healthRecord"),
     attentionList: $("attentionList"), attentionCount: $("attentionCount"),
@@ -780,7 +781,7 @@
     els.requestSection.hidden = agent;
     els.agentSummarySection.hidden = !agent;
     els.timelineSection.hidden = !agent;
-    if (agent) { els.resultSection.hidden = true; els.errorSection.hidden = true; }
+    if (agent) { els.resultSection.hidden = true; els.errorSection.hidden = true; els.drawerBack.hidden = true; }
     els.drawerClose.setAttribute("aria-label", agent ? "Close agent activity" : "Close call details");
   }
 
@@ -793,8 +794,11 @@
   }
 
   async function openAgentDrawer(agentId) {
-    const agent = state.agents.find((item) => item.agent_id === agentId);
+    // The card list is capped, so Back must still work after the agent drops out of it.
+    const cached = state.timelineAgentData && state.timelineAgentData.agent_id === agentId ? state.timelineAgentData : null;
+    const agent = state.agents.find((item) => item.agent_id === agentId) || cached;
     if (!agent) return;
+    state.timelineAgentData = agent;
     const opening = !els.drawer.classList.contains("is-open");
     if (opening) state.restoreFocus = document.activeElement;
     state.selected = null;
@@ -863,6 +867,11 @@
     state.selected = event;
     if (!fromTimeline) state.restoreFocus = document.activeElement;
     setDrawerMode("call");
+    // Opened from an agent's activity: offer the way back to that list.
+    const agent = fromTimeline ? state.timelineAgentData : null;
+    els.drawerBack.hidden = !fromTimeline;
+    els.drawerBack.dataset.event = fromTimeline ? eventId : "";
+    els.drawerBack.setAttribute("aria-label", fromTimeline ? `Back to activity of ${agent?.title || state.timelineAgent}` : "Back");
     const status = event.status || "running";
     els.drawerStatus.className = `status-badge ${status === "error" ? "error" : status === "running" ? "running" : ""}`;
     els.drawerStatus.textContent = status === "success" ? "Success" : status === "error" ? "Error" : "Running";
@@ -892,6 +901,7 @@
     if (target && typeof target.focus === "function") target.focus();
     state.selected = null;
     state.timelineAgent = null;
+    state.timelineAgentData = null;
     state.timelineEvents = [];
   }
 
@@ -1093,6 +1103,13 @@
     refreshTransactions();
   });
   els.drawerClose.addEventListener("click", closeDrawer);
+  els.drawerBack.addEventListener("click", async () => {
+    const from = els.drawerBack.dataset.event;
+    if (!state.timelineAgent) return;
+    await openAgentDrawer(state.timelineAgent);
+    const row = from ? els.timelineList.querySelector(`[data-timeline-event="${CSS.escape(from)}"]`) : null;
+    (row || els.drawerClose).focus();
+  });
   els.backdrop.addEventListener("click", closeDrawer);
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && els.drawer.classList.contains("is-open")) closeDrawer();
