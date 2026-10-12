@@ -38,6 +38,10 @@ struct MenuSettings: Codable {
         /// Ask in a native panel before every send; the server treats anything but false as on.
         var confirm_send: Bool
     }
+    /// Get Started (#59): hidden by the owner, or finished once (then it never shows again).
+    struct Onboarding: Codable {
+        var dismissed: Bool
+    }
     struct Apps: Codable {
         var mail: AppSend?
         var messages: AppSend?
@@ -80,6 +84,7 @@ struct MenuSettings: Codable {
     var decision_acceleration: DecisionAcceleration?
     var subagents: Subagents?
     var apps: Apps?
+    var onboarding: Onboarding?
 
     static func defaults() -> MenuSettings {
         MenuSettings(
@@ -124,6 +129,7 @@ final class SettingsStore: ObservableObject {
     @Published var publicURL = ""
     @Published var cloudflareTunnel = ""
     @Published var startAtLogin = true
+    @Published var onboardingDismissed = false
     @Published var steeringSessionMinutes = 10
     @Published var showToolActivity = false
     @Published var requireToolDescriptions = false
@@ -234,6 +240,7 @@ final class SettingsStore: ObservableObject {
         agentCompletionNotificationsEnabled = current.notifications?.agent_completion ?? false
         mailConfirmSend = current.apps?.mail?.confirm_send ?? true
         messagesConfirmSend = current.apps?.messages?.confirm_send ?? true
+        onboardingDismissed = current.onboarding?.dismissed ?? false
         decisionAccelerationEnabled = current.decision_acceleration?.enabled ?? false
         let rawDecisionScope = current.decision_acceleration?.scope?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         decisionAccelerationScope = ["off", "browser", "native", "both"].contains(rawDecisionScope) ? rawDecisionScope : "both"
@@ -291,7 +298,8 @@ final class SettingsStore: ObservableObject {
                 maxActive: min(16, max(1, maxActiveAgents)),
                 retentionDays: min(3650, max(0, agentRetentionDays))
             ),
-            apps: .init(mail: .init(confirm_send: mailConfirmSend), messages: .init(confirm_send: messagesConfirmSend))
+            apps: .init(mail: .init(confirm_send: mailConfirmSend), messages: .init(confirm_send: messagesConfirmSend)),
+            onboarding: .init(dismissed: onboardingDismissed)
         )
         let payloadData = try JSONEncoder.pretty.encode(payload)
         guard let payloadObject = try JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {

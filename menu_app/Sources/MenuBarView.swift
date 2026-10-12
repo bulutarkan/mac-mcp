@@ -27,6 +27,7 @@ struct MenuBarView: View {
                 VStack(spacing: 10) {
                     header
                     actionBar
+                    if state.showsOnboardingReminder { onboardingReminder }
                     if needsAttention { attentionBanner(proxy) }
                     summaryCard(proxy)
                     if state.activeAgents > 0 || !state.agents.isEmpty || !activeTeams.isEmpty { agentCard }
@@ -94,6 +95,36 @@ struct MenuBarView: View {
 
     private func openSettings(_ section: SettingsSection? = nil) {
         SettingsWindowController.shared.show(state: state, settings: settings, section: section)
+    }
+
+    /// Get Started (#59) while setup is unfinished; OnboardingChecklist.shouldShowReminder decides.
+    private var onboardingReminder: some View {
+        let checklist = state.onboardingChecklist
+        return Button { openSettings(.start) } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "flag.checkered")
+                    .foregroundStyle(Color.accentColor)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Finish setting up · \(checklist.completed) of \(checklist.steps.count)")
+                        .font(.caption.weight(.semibold))
+                    if let next = checklist.nextStep {
+                        Text("Next: \(next.title)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            .padding(10)
+            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens Get Started in Settings")
     }
 
     private func revealSessions(_ proxy: ScrollViewProxy) {

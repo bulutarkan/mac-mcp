@@ -939,6 +939,23 @@ class TelemetryManager:
             rows = conn.execute(sql, params).fetchall()
         return [self._row_to_event(row) for row in rows]
 
+    def first_client_calls(self) -> Dict[str, Optional[Dict[str, Any]]]:
+        """The first call an AI app made over MCP or REST, and its first successful one (#59).
+
+        Delegated agents (agent_id set) and the owner's own dashboard actions do not count:
+        these mark that the owner connected a client and that a request through it worked.
+        """
+        base = "SELECT timestamp, tool, source, status FROM tool_events WHERE source IN ('mcp', 'rest') AND agent_id IS NULL"
+        found: Dict[str, Optional[Dict[str, Any]]] = {}
+        with closing(self._connect()) as conn, conn:
+            for key, extra in (("first_call", "status != 'running'"), ("first_success", "status = 'success'")):
+                row = conn.execute(f"{base} AND {extra} ORDER BY timestamp ASC LIMIT 1").fetchone()
+                found[key] = (
+                    {"at": float(row[0]), "tool": str(row[1]), "source": str(row[2]), "status": str(row[3])}
+                    if row else None
+                )
+        return found
+
     def change_summary(
         self, *, hours: float = 24, session_id: Optional[str] = None,
         agent_id: Optional[str] = None, team_id: Optional[str] = None, max_items: int = 50,

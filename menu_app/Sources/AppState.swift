@@ -106,6 +106,18 @@ final class AppState: ObservableObject {
     @Published private(set) var agentNotificationAuthorizationState: AgentNotificationAuthorizationState = .notDetermined
     @Published private(set) var agentNotificationPermissionChanging = false
     @Published private(set) var startAtLoginChanging = false
+    @Published private(set) var onboardingStatus: OnboardingStatus?
+
+    var onboardingChecklist: OnboardingChecklist {
+        OnboardingChecklist.make(serverRunning: serverRunning, status: onboardingStatus)
+    }
+
+    /// The menu reminder needs one answer from the server first, so a returning owner whose
+    /// server is briefly down never sees "0 of 4".
+    var showsOnboardingReminder: Bool {
+        onboardingStatus != nil
+            && OnboardingChecklist.shouldShowReminder(onboardingChecklist, dismissed: settings.onboardingDismissed)
+    }
     @Published var providerStatuses: [ProviderInfo] = []
     @Published var providerCatalogs: [String: ProviderCatalogInfo] = [:]
     @Published var mobileDevices: [MobileDeviceInfo] = []
@@ -213,6 +225,28 @@ final class AppState: ObservableObject {
         settings.agentCompletionNotificationsEnabled = false
         try? settings.save()
         seedAgentNotificationBaseline()
+    }
+
+    func refreshOnboarding() async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        guard let status: OnboardingStatus = try? await fetch(
+            base.appendingPathComponent("dashboard/api/onboarding"), query: [:]
+        ) else { return }
+        setIfChanged(\.onboardingStatus, status)
+        // Finished once: Get Started never comes back, even if something changes later.
+        if serverRunning, onboardingChecklist.isComplete, !settings.onboardingDismissed {
+            setOnboardingDismissed(true)
+        }
+    }
+
+    func setOnboardingDismissed(_ dismissed: Bool) {
+        settings.onboardingDismissed = dismissed
+        do {
+            try settings.save()
+        } catch {
+            settings.onboardingDismissed = !dismissed
+            showNotice(ActionNotice(kind: .error, message: "Couldn’t save the Get Started setting."))
+        }
     }
 
     /// The CLI saves the choice and moves the supervisor job in or out of ~/Library/LaunchAgents.
@@ -726,6 +760,7 @@ final class AppState: ObservableObject {
                 : nil
 
             setIfChanged(\.serverRunning, true)
+            if !settings.onboardingDismissed { await refreshOnboarding() }
             if let value = summary.version { setIfChanged(\.version, value) }
             if let value = summary.totalCalls { setIfChanged(\.totalCalls, value) }
             if let value = summary.successRate { setIfChanged(\.successRate, value) }

@@ -6,6 +6,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum SettingsSection: String, CaseIterable, Identifiable {
+    case start
     case general
     case agents
     case activity
@@ -21,6 +22,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .start: return "Get Started"
         case .general: return "General"
         case .agents: return "Agents"
         case .activity: return "Activity & Notifications"
@@ -36,6 +38,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
     var symbol: String {
         switch self {
+        case .start: return "flag.checkered"
         case .general: return "slider.horizontal.3"
         case .agents: return "cpu"
         case .activity: return "bell.badge"
@@ -224,6 +227,134 @@ struct SettingsView: View {
 
     private var trimmedSettingsSearch: String {
         settingsSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var startPane: some View {
+        let checklist = state.onboardingChecklist
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                paneHeader(
+                    "Get Started",
+                    subtitle: "Four steps from install to a first request that works. Everything stays on this Mac unless you turn on remote access."
+                )
+
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(Array(checklist.steps.enumerated()), id: \.element.id) { index, step in
+                            if index > 0 { Divider() }
+                            onboardingRow(step)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                } label: {
+                    Label(
+                        checklist.isComplete ? "All set" : "\(checklist.completed) of \(checklist.steps.count) done",
+                        systemImage: checklist.isComplete ? "checkmark.seal.fill" : "list.bullet"
+                    )
+                }
+
+                GroupBox("Optional") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        onboardingOptionalRow(
+                            title: "Browser companions",
+                            detail: "Let agents work in Safari and Chrome tabs in the background instead of taking over your screen.",
+                            actionTitle: "Open Browser"
+                        ) {
+                            connectionsTab = .browser
+                            selection = .connections
+                            notice = ""
+                        }
+                        Divider()
+                        onboardingOptionalRow(
+                            title: "Remote access for ChatGPT",
+                            detail: "ChatGPT connects from the internet, so it needs a public HTTPS endpoint: Cloudflare Tunnel, ngrok or your own. It stays off until you set it up.",
+                            actionTitle: "Open Connections"
+                        ) {
+                            connectionsTab = .clients
+                            selection = .connections
+                            notice = ""
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                if !checklist.isComplete {
+                    HStack {
+                        Spacer()
+                        Button(settings.onboardingDismissed ? "Show Get Started in the Menu" : "Hide Get Started") {
+                            state.setOnboardingDismissed(!settings.onboardingDismissed)
+                        }
+                    }
+                }
+            }
+            .padding(22)
+        }
+        .task { await state.refreshOnboarding() }
+    }
+
+    private func onboardingRow(_ step: OnboardingStep) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: step.done ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(step.done ? Color.green : Color.secondary)
+                .frame(width: 24)
+                .accessibilityLabel(step.done ? "Done" : "To do")
+            VStack(alignment: .leading, spacing: 3) {
+                Text(step.title)
+                    .font(.subheadline.weight(.semibold))
+                Text(step.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+            if !step.done {
+                onboardingAction(step.id)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func onboardingAction(_ id: OnboardingStepID) -> some View {
+        switch id {
+        case .server:
+            Button("Start Server") { state.startServer() }
+        case .client:
+            Button("Client Setup") {
+                connectionsTab = .clients
+                selection = .connections
+                notice = ""
+            }
+        case .firstRequest:
+            Button("Copy Request") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(OnboardingChecklist.firstRequestPrompt, forType: .string)
+                notice = "Copied. Paste it into your AI app."
+            }
+        case .permissions:
+            Button("Review") {
+                selection = .help
+                notice = ""
+            }
+        }
+    }
+
+    private func onboardingOptionalRow(
+        title: String, detail: String, actionTitle: String, action: @escaping () -> Void
+    ) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Button(actionTitle, action: action)
+        }
     }
 
     private var generalPane: some View {
@@ -749,6 +880,7 @@ struct SettingsView: View {
     @ViewBuilder
     private var selectedPane: some View {
         switch selection {
+        case .start: startPane
         case .general: generalPane
         case .agents: subagentsPane
         case .activity: activityPane

@@ -4,6 +4,7 @@ import Foundation
 /// matching rules can be tested without building the UI.
 enum SettingsSearchIndex {
     static let terms: [String: String] = [
+        "start": "get started setup first run onboarding checklist begin connect ai app client first request permissions accessibility screen recording",
         "general": "general overview status server connected degraded disconnected update version issues remote access caught up",
         "activity": "activity notifications alerts completion attention agents macos permission tool bubble speech descriptions require show preview",
         "agents": "agents subagents provider codex opencode claude code model reasoning thinking default agent history retention delete keep",

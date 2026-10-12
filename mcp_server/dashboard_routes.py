@@ -32,7 +32,7 @@ from .file_transactions import (
     undo_transaction,
 )
 from .observability import TelemetryManager, sanitize_value
-from .permission_probe import probe_permissions
+from .permission_probe import accessibility_state, probe_permissions, screen_recording_state
 from .provider_usage import clear as provider_usage_clear, summary as provider_usage_summary
 from .policy import (
     GLOBAL_PROFILE_NAMES,
@@ -41,7 +41,9 @@ from .policy import (
     is_global_permission_profile,
     permission_semantics,
 )
-from .runtime_settings import MEMORY_RETENTION_CHOICES, USAGE_RETENTION_CHOICES, update_runtime_setting, usage_privacy
+from .runtime_settings import (
+    MEMORY_RETENTION_CHOICES, USAGE_RETENTION_CHOICES, server_setting, update_runtime_setting, usage_privacy,
+)
 from .tools_memory import memory_clear, memory_export_all, memory_overview
 from .usage_metering import clear_usage
 from . import recipes
@@ -330,6 +332,20 @@ def create_dashboard_routes(
         if denied:
             return denied
         return JSONResponse(await asyncio.to_thread(probe_permissions))
+
+    async def onboarding_status(request: Request) -> Response:
+        # The menu app's Get Started checklist (#59): what the server has seen so far.
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        calls = await asyncio.to_thread(telemetry.first_client_calls)
+        return JSONResponse({
+            "ok": True,
+            **calls,
+            "accessibility": await asyncio.to_thread(accessibility_state),
+            "screen_recording": await asyncio.to_thread(screen_recording_state),
+            "public_endpoint_mode": str(server_setting("public_endpoint_mode", "none") or "none"),
+        })
 
     async def decision_acceleration_status(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
@@ -1276,6 +1292,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/summary", summary, methods=["GET"]),
         Route("/dashboard/api/diagnostics/runtime", runtime_diagnostics, methods=["GET"]),
         Route("/dashboard/api/diagnostics/permissions", permissions_view, methods=["GET"]),
+        Route("/dashboard/api/onboarding", onboarding_status, methods=["GET"]),
         Route("/dashboard/api/decision-acceleration", decision_acceleration_status, methods=["GET"]),
         Route("/dashboard/api/decision-acceleration/verify", decision_acceleration_verify, methods=["POST"]),
         Route("/dashboard/api/security/semantics", security_semantics, methods=["GET"]),
