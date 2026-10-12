@@ -1,12 +1,13 @@
 ## Unreleased
 
-### First run and setup (2.1.9 r7)
+### First run and setup (2.1.9 r8)
 - A first-run tour opens after install: four short animated slides about what Mac MCP does, then live setup steps (start, permissions, connect your AI app, first request). It can be reopened from the menu (More → Take the Tour…) and from Settings → Get Started.
 - macOS permissions now belong to **Mac MCP** instead of Python: the server runs under a small Mac MCP Server helper app, and the tour's Allow buttons open macOS's own prompt naming Mac MCP. After a grant the tour restarts the server so the permission takes effect. Existing installs need to allow Accessibility and Screen Recording once more, this time for Mac MCP.
 - One-click Connect: the tour lists the AI apps on this Mac (Claude Desktop, Claude Code, Codex, OpenCode, ChatGPT) with a single button each. `mac-mcp connect --client <app>` adds Mac MCP to the app as a `mac-mcp stdio` command server, so no address or API key is written into any app's config; for ChatGPT the connector address is copied to the clipboard. `mac-mcp clients` shows which apps are set up.
 - `mac-mcp stdio` bridges stdin/stdout to the running server, replays the session after a server restart, waits briefly for a starting server, and never resends a request that was cut off mid-reply.
 - Mac MCP can start at login when it was left running; `mac-mcp repair` and `mac-mcp uninstall` (preview first) were added; Settings → Get Started has a checklist from install to a first request.
 - `system_info` reports the macOS version.
+- r8 fixes r7's updater, which stopped with an ImportError while building Mac MCP Server and rolled back; r7 was never published as a package.
 
 ### Subagents
 - Added Claude Code as a delegated-agent provider (`provider=claude`, Settings → Subagents). It runs the `claude` CLI headless with stream-json events, model aliases (`fable`, `opus`, `sonnet`, `haiku`) or full ids, `--effort` reasoning levels, session resume, provider-reported token usage and cost, and the scoped Mac MCP server only.
