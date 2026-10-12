@@ -50,3 +50,10 @@ test('ChatGPT is marked as needing remote access; local clients are not', () => 
   assert.equal(CLIENTS.find((c) => c.id === 'claude-code').needsRemote, false);
   assert.ok(CLIENTS.every((c) => typeof c.name === 'string' && c.name.length > 0));
 });
+
+test('a grant this server cannot see yet asks for a restart', () => {
+  const e = evaluate({ server_running: true, accessibility: 'granted', screen_recording: 'granted', permission_restart_needed: true });
+  assert.equal(e.restartNeeded, true);
+  assert.equal(evaluate({ server_running: false, permission_restart_needed: true }).restartNeeded, false);
+  assert.equal(evaluate({ server_running: true }).restartNeeded, false);
+});

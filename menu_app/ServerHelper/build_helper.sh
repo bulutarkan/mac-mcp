@@ -24,7 +24,8 @@ trap '/bin/rm -rf "${WORK}"' EXIT
 STAGE="${WORK}/Mac MCP Server.app"
 /bin/mkdir -p "${STAGE}/Contents/MacOS" "${STAGE}/Contents/Resources"
 /bin/cp "${SRC}/Info.plist" "${STAGE}/Contents/Info.plist"
-/usr/bin/xcrun clang -O2 -o "${STAGE}/Contents/MacOS/mac-mcp-server" "${SRC}/launcher.c"
+/usr/bin/xcrun clang -O2 -framework ApplicationServices -framework CoreGraphics -framework CoreFoundation \
+  -o "${STAGE}/Contents/MacOS/mac-mcp-server" "${SRC}/launcher.c"
 ICONSET="${WORK}/AppIcon.iconset"
 /bin/mkdir -p "${ICONSET}"
 for spec in "16 icon_16x16.png" "32 icon_16x16@2x.png" "32 icon_32x32.png" "64 icon_32x32@2x.png" "128 icon_128x128.png" "256 icon_128x128@2x.png" "256 icon_256x256.png" "512 icon_256x256@2x.png" "512 icon_512x512.png" "1024 icon_512x512@2x.png"; do

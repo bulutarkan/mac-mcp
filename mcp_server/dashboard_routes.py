@@ -32,8 +32,8 @@ from .file_transactions import (
     undo_transaction,
 )
 from .observability import TelemetryManager, sanitize_value
-from .permission_probe import accessibility_state, probe_permissions, process_identity, screen_recording_state
-from .permission_request import REQUESTABLE, request_permission
+from .permission_probe import probe_permissions, process_identity
+from .permission_request import REQUESTABLE, permission_status, request_permission
 from .provider_usage import clear as provider_usage_clear, summary as provider_usage_summary
 from .policy import (
     GLOBAL_PROFILE_NAMES,
@@ -332,7 +332,15 @@ def create_dashboard_routes(
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
             return denied
-        return JSONResponse(await asyncio.to_thread(probe_permissions))
+        report = await asyncio.to_thread(probe_permissions)
+        # This process keeps the answer it saw at start; show what a fresh Mac MCP Server sees.
+        fresh = await asyncio.to_thread(permission_status)
+        for key in ("accessibility", "screen_recording"):
+            entry = (report.get("permissions") or {}).get(key)
+            if isinstance(entry, dict):
+                entry["state"] = fresh[key]
+        report["restart_needed"] = fresh["restart_needed"]
+        return JSONResponse(report)
 
     async def onboarding_status(request: Request) -> Response:
         # The menu app's Get Started checklist (#59): what the server has seen so far.
@@ -340,11 +348,14 @@ def create_dashboard_routes(
         if denied:
             return denied
         calls = await asyncio.to_thread(telemetry.first_client_calls)
+        # Read fresh (a new Mac MCP Server process): this server sees a new grant only after a restart.
+        permissions = await asyncio.to_thread(permission_status)
         return JSONResponse({
             "ok": True,
             **calls,
-            "accessibility": await asyncio.to_thread(accessibility_state),
-            "screen_recording": await asyncio.to_thread(screen_recording_state),
+            "accessibility": permissions["accessibility"],
+            "screen_recording": permissions["screen_recording"],
+            "permission_restart_needed": permissions["restart_needed"],
             "public_endpoint_mode": str(server_setting("public_endpoint_mode", "none") or "none"),
             # Who macOS lists the permissions under: "Mac MCP" when the server runs under Mac MCP Server.
             "permission_holder": (await asyncio.to_thread(process_identity))["listed_as"],

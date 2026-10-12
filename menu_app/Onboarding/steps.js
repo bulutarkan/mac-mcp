@@ -50,6 +50,8 @@ function evaluate(status) {
     holderIsMacMCP: s.permission_holder === 'Mac MCP',
     holder: s.permission_holder || null,
     remote: Boolean(s.public_endpoint_mode) && s.public_endpoint_mode !== 'none',
+    // Granted to Mac MCP, but the running server sees it only after a restart.
+    restartNeeded: running && s.permission_restart_needed === true,
   };
 }
 

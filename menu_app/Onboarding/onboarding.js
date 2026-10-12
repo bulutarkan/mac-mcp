@@ -57,6 +57,8 @@ let client = CLIENTS[0].id;
 let config = '';
 let pollTimer = null;
 let celebrated = false;
+let restarting = false;
+let restartedFor = '';
 
 const screens = $$('.screen');
 const rail = $('.rail');
@@ -182,6 +184,26 @@ async function refresh() {
   }
   evaluation = evaluate(status);
   renderLive();
+  // At most one automatic restart for the same grants, so a grant the server still
+  // cannot use never turns into a restart loop.
+  const grants = `${evaluation.permissions.accessibility}|${evaluation.permissions.screen_recording}`;
+  if (evaluation.restartNeeded && !restarting && grants !== restartedFor) {
+    restartedFor = grants;
+    restartForPermission();
+  }
+}
+
+// A new grant reaches the running server only after it restarts: do it for the owner.
+async function restartForPermission() {
+  restarting = true;
+  toast('Restarting Mac MCP to use the new permission…');
+  try {
+    await call('restartServer');
+  } catch (error) {
+    toast(error.message);
+  }
+  restarting = false;
+  refresh();
 }
 
 function startPolling() {
@@ -216,10 +238,10 @@ async function runPrimary() {
 }
 
 async function requestPermission(name) {
+  // macOS shows its own window naming Mac MCP, with a button to System Settings.
+  $('[data-live="permission-hint"]').hidden = false;
   try {
-    const result = await call('requestPermission', { permission: name });
-    if (result && result.restart_needed) $('[data-live="restart"]').hidden = false;
-    if (result && result.state !== 'granted') await call('openSystemSettings', { permission: name });
+    await call('requestPermission', { permission: name });
   } catch (error) {
     toast(error.message);
   }
@@ -272,11 +294,9 @@ function wire() {
   for (const row of $$('.perm')) {
     $('button', row).addEventListener('click', () => requestPermission(row.dataset.perm));
   }
-  $('[data-action="restart"]').addEventListener('click', async () => {
-    await call('restartServer');
-    $('[data-live="restart"]').hidden = true;
-    refresh();
-  });
+  for (const link of $$('[data-action="open-settings-pane"]')) {
+    link.addEventListener('click', () => call('openSystemSettings', { permission: link.dataset.permission }));
+  }
   $('[data-action="copy-config"]').addEventListener('click', () => {
     if (config) copy(config, 'Setup copied. Paste it into your AI app.');
   });

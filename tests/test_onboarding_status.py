@@ -59,8 +59,8 @@ class OnboardingRouteTests(unittest.TestCase):
     def test_route_needs_the_dashboard_token_and_reports_each_step(self) -> None:
         client = self.client()
         self.assertEqual(401, client.get("/dashboard/api/onboarding").status_code)
-        with patch("mcp_server.dashboard_routes.accessibility_state", return_value="granted"), \
-                patch("mcp_server.dashboard_routes.screen_recording_state", return_value="not_determined"), \
+        perms = {"accessibility": "granted", "screen_recording": "not_determined", "restart_needed": True}
+        with patch("mcp_server.dashboard_routes.permission_status", return_value=perms), \
                 patch("mcp_server.dashboard_routes.server_setting", return_value="cloudflare"):
             body = client.get("/dashboard/api/onboarding", headers={"authorization": f"Bearer {self.TOKEN}"}).json()
         self.assertTrue(body["ok"])
@@ -69,6 +69,22 @@ class OnboardingRouteTests(unittest.TestCase):
         self.assertEqual("granted", body["accessibility"])
         self.assertEqual("not_determined", body["screen_recording"])
         self.assertEqual("cloudflare", body["public_endpoint_mode"])
+        self.assertTrue(body["permission_restart_needed"])
+
+
+class PermissionsViewTests(OnboardingRouteTests):
+    def test_settings_see_fresh_permission_states(self) -> None:
+        client = self.client()
+        report = {"ok": True, "permissions": {"accessibility": {"key": "accessibility", "state": "denied"},
+                                               "screen_recording": {"key": "screen_recording", "state": "denied"}}}
+        perms = {"accessibility": "granted", "screen_recording": "granted", "restart_needed": True}
+        with patch("mcp_server.dashboard_routes.probe_permissions", return_value=report), \
+                patch("mcp_server.dashboard_routes.permission_status", return_value=perms):
+            body = client.get("/dashboard/api/diagnostics/permissions",
+                              headers={"authorization": f"Bearer {self.TOKEN}"}).json()
+        self.assertEqual("granted", body["permissions"]["accessibility"]["state"])
+        self.assertEqual("granted", body["permissions"]["screen_recording"]["state"])
+        self.assertTrue(body["restart_needed"])
 
 
 if __name__ == "__main__":
