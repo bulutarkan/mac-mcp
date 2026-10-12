@@ -949,7 +949,7 @@ struct SettingsView: View {
                 HStack(alignment: .top) {
                     paneHeader(
                         "Usage",
-                        subtitle: "Up to \(usageRetentionDays) days of Mac-MCP-attributable tool payload activity. This is not provider billing or model context usage."
+                        subtitle: "Up to \(usageRetentionDays) days of tool payload activity attributable to Mac MCP. This is not provider billing or model context usage."
                     )
                     Spacer(minLength: 12)
                     if state.usageLoading {

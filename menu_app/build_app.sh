@@ -13,7 +13,8 @@ EXTENSION="${PLUGINS}/Mac MCP Safari Visual Companion.appex"
 EXTENSION_CONTENTS="${EXTENSION}/Contents"
 EXTENSION_MACOS="${EXTENSION_CONTENTS}/MacOS"
 EXTENSION_RESOURCES="${EXTENSION_CONTENTS}/Resources"
-ICON_SOURCE="${MAC_MCP_ICON_SOURCE:-${HOME}/Downloads/mac-mcp-icon.png}"
+# The app icon is part of the repository, so every build has the same artwork (#102).
+ICON_SOURCE="${MAC_MCP_ICON_SOURCE:-${SCRIPT_DIR}/Assets/AppIcon.png}"
 ARCH="$(uname -m)"
 SIGN_IDENTITY="${MAC_MCP_CODESIGN_IDENTITY:--}"
 CODESIGN_EXTRA=()
@@ -67,13 +68,16 @@ cp "${SCRIPT_DIR}/BrowserVisualCompanion/visual.js" "${EXTENSION_RESOURCES}/visu
 /usr/bin/plutil -lint "${EXTENSION_CONTENTS}/Info.plist" >/dev/null
 /usr/bin/codesign --force "${CODESIGN_EXTRA[@]}" --sign "${SIGN_IDENTITY}" "${EXTENSION}" >/dev/null
 
-if [[ -f "${ICON_SOURCE}" ]]; then
-  ICONSET="${BUILD_ROOT}/AppIcon.iconset"; rm -rf "${ICONSET}"; mkdir -p "${ICONSET}"
-  for spec in "16 icon_16x16.png" "32 icon_16x16@2x.png" "32 icon_32x32.png" "64 icon_32x32@2x.png" "128 icon_128x128.png" "256 icon_128x128@2x.png" "256 icon_256x256.png" "512 icon_256x256@2x.png" "512 icon_512x512.png" "1024 icon_512x512@2x.png"; do
-    size="${spec%% *}"; name="${spec#* }"; /usr/bin/sips -z "${size}" "${size}" "${ICON_SOURCE}" --out "${ICONSET}/${name}" >/dev/null
-  done
-  /usr/bin/iconutil -c icns "${ICONSET}" -o "${RESOURCES}/AppIcon.icns"; rm -rf "${ICONSET}"
+if [[ ! -f "${ICON_SOURCE}" ]]; then
+  printf 'App icon source is missing: %s\n' "${ICON_SOURCE}" >&2
+  exit 1
 fi
+ICONSET="${BUILD_ROOT}/AppIcon.iconset"; rm -rf "${ICONSET}"; mkdir -p "${ICONSET}"
+for spec in "16 icon_16x16.png" "32 icon_16x16@2x.png" "32 icon_32x32.png" "64 icon_32x32@2x.png" "128 icon_128x128.png" "256 icon_128x128@2x.png" "256 icon_256x256.png" "512 icon_256x256@2x.png" "512 icon_512x512.png" "1024 icon_512x512@2x.png"; do
+  size="${spec%% *}"; name="${spec#* }"; /usr/bin/sips -z "${size}" "${size}" "${ICON_SOURCE}" --out "${ICONSET}/${name}" >/dev/null
+done
+/usr/bin/iconutil -c icns "${ICONSET}" -o "${RESOURCES}/AppIcon.icns"; rm -rf "${ICONSET}"
+[[ -f "${RESOURCES}/AppIcon.icns" ]] || { printf 'App icon was not built into the bundle.\n' >&2; exit 1; }
 /usr/bin/codesign --force "${CODESIGN_EXTRA[@]}" --sign "${SIGN_IDENTITY}" "${APP}" >/dev/null
 /usr/bin/plutil -lint "${CONTENTS}/Info.plist" >/dev/null
 printf '%s\n' "${APP}"
