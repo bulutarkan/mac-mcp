@@ -190,6 +190,29 @@ def _lay_out_runtime(layout: Layout, release: dict) -> None:
     shutil.copytree(layout.staging / "python", layout.runtime / ".python", symlinks=True)
 
 
+def _lay_out_helper(layout: Layout) -> None:
+    """Put the prebuilt Mac MCP Server in place unless the same one is already there.
+
+    macOS ties the owner's permissions to the exact launcher binary, so a helper built from
+    the same inputs (same .source-sha256) is kept even if this package's copy was rebuilt.
+    """
+    source = layout.staging / "helper"
+    if not (source / "Mac MCP Server.app").is_dir():
+        return
+    target = layout.runtime / ".helper"
+
+    def stamp(folder: Path) -> str:
+        try:
+            return (folder / ".source-sha256").read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
+    if (target / "Mac MCP Server.app").is_dir() and stamp(target) and stamp(target) == stamp(source):
+        return
+    shutil.rmtree(target, ignore_errors=True)
+    shutil.copytree(source, target, symlinks=True)
+
+
 def _create_environment(layout: Layout, run, env: Dict[str, str]) -> None:
     rt = layout.runtime
     run([rt / ".python/bin/python3", "-m", "venv", rt / ".venv"], env=env)
@@ -385,6 +408,7 @@ def install(layout: Layout, *, run=_run, health=_health_ok, start: bool = True, 
         _lay_out_runtime(layout, release)
         if backup is not None:
             _carry_over(backup, layout.runtime, _carried_files(backup, previous, members))
+        _lay_out_helper(layout)
         _create_environment(layout, run, env)
         if not (layout.runtime / "mcp_server/.env").is_file():
             _write_new_env_file(layout)

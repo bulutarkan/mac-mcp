@@ -1132,6 +1132,19 @@ def _start_menu_app(app_path: Path) -> None:
     raise UpdateError(f"Mac MCP menu bar app did not start: {app_path}")
 
 
+def _ensure_server_helper(runtime: Path) -> None:
+    """Build Mac MCP Server when its sources changed (a no-op otherwise, so grants are kept)."""
+    if not (runtime / "menu_app" / "ServerHelper" / "build_helper.sh").is_file():
+        return
+    from .server_helper import ensure_helper
+
+    if ensure_helper(runtime) is not None:
+        print("[mac-mcp update] Mac MCP Server is ready; macOS lists permissions as Mac MCP.", flush=True)
+    else:
+        print("[mac-mcp update] WARNING: Mac MCP Server could not be built; permissions stay with Python.",
+              flush=True)
+
+
 def _refresh_installed_menu_app(runtime: Path) -> bool:
     if os.getenv("MAC_MCP_SKIP_MENU_APP_INSTALL", "").strip().lower() in {"1", "true", "yes", "on"}:
         return False
@@ -1859,6 +1872,7 @@ def apply_update(
 
         if _refresh_installed_menu_app(runtime_path):
             print("[mac-mcp update] Refreshed installed Mac MCP menu bar app.", flush=True)
+        _ensure_server_helper(runtime_path)
 
         if deps_changed and not skip_deps:
             # The hashed lock when this release has one; older releases used requirements.txt.

@@ -796,6 +796,19 @@ install_python_environment() {
   ok "Python environment verified."
 }
 
+install_server_helper() {
+  local script="$RUNTIME_DIR/menu_app/ServerHelper/build_helper.sh"
+  [[ -f "$script" ]] || return 0
+  section "Mac MCP Server"
+  # macOS lists permissions under the process that runs the server; this small launcher
+  # makes that "Mac MCP" instead of Python.
+  if /bin/zsh "$script" "$RUNTIME_DIR/.helper" >/dev/null; then
+    ok "Mac MCP Server built: macOS will ask for permissions as \"Mac MCP\"."
+  else
+    warn "Could not build Mac MCP Server; macOS will list permissions under Python."
+  fi
+}
+
 prepare_chrome_companion() {
   section "Chrome Background Companion"
   # python -c puts the working directory first on sys.path: run from the runtime so a
@@ -1368,6 +1381,7 @@ main() {
   configure_runtime
   configure_subagent_provider_settings
   install_python_environment
+  install_server_helper
   prepare_chrome_companion
   install_menu_app
   install_update_state_and_cli

@@ -302,6 +302,46 @@ class PkgFreshInstallTests(unittest.TestCase):
         self.assertFalse(self.layout.staging.exists())
 
 
+def add_helper(home: Path, stamp: str, marker: str) -> None:
+    helper = home / ".mac-mcp" / "pkg" / "staging" / "helper"
+    exe = helper / "Mac MCP Server.app" / "Contents" / "MacOS"
+    exe.mkdir(parents=True, exist_ok=True)
+    (exe / "mac-mcp-server").write_text(marker)
+    (helper / ".source-sha256").write_text(stamp + "\n")
+
+
+class PkgHelperTests(unittest.TestCase):
+    """The package carries Mac MCP Server prebuilt; an unchanged one is kept so grants survive."""
+
+    def setUp(self) -> None:
+        self.td = tempfile.TemporaryDirectory(prefix="mac-mcp-pkg-helper-")
+        self.home = Path(self.td.name)
+        self.layout = pkg.Layout(self.home)
+        self.exe = self.layout.runtime / ".helper" / "Mac MCP Server.app" / "Contents" / "MacOS" / "mac-mcp-server"
+
+    def tearDown(self) -> None:
+        self.td.cleanup()
+
+    def test_fresh_install_lays_out_the_helper(self) -> None:
+        make_staging(self.home)
+        add_helper(self.home, "aaa", "first")
+        pkg.install(self.layout, run=FakeRun(self.layout), health=lambda p: True)
+        self.assertEqual("first", self.exe.read_text())
+
+    def test_upgrade_keeps_an_unchanged_helper_and_replaces_a_changed_one(self) -> None:
+        make_staging(self.home)
+        add_helper(self.home, "aaa", "first")
+        pkg.install(self.layout, run=FakeRun(self.layout), health=lambda p: True)
+        make_staging_again(self.home, BASE_FILES)
+        add_helper(self.home, "aaa", "rebuilt-with-a-newer-toolchain")
+        pkg.install(self.layout, run=FakeRun(self.layout), health=lambda p: True, clock=lambda: 2000)
+        self.assertEqual("first", self.exe.read_text(), "same inputs: the granted binary stays")
+        make_staging_again(self.home, BASE_FILES)
+        add_helper(self.home, "bbb", "second")
+        pkg.install(self.layout, run=FakeRun(self.layout), health=lambda p: True, clock=lambda: 3000)
+        self.assertEqual("second", self.exe.read_text())
+
+
 class PkgUpgradeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.td = tempfile.TemporaryDirectory(prefix="mac-mcp-pkg-upgrade-")

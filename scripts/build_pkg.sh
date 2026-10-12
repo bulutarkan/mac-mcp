@@ -49,6 +49,13 @@ echo "==> App"
 codesign --verify --deep --strict "$WORK/app/Mac MCP.app"
 ditto "$WORK/app/Mac MCP.app" "$ROOT/Applications/Mac MCP.app"
 
+if [[ -f "$WORK/src/menu_app/ServerHelper/build_helper.sh" ]]; then
+  echo "==> Mac MCP Server"
+  # Prebuilt: package installs have no compiler. pkg_install keeps an installed helper
+  # built from the same inputs, so a newer toolchain here never resets the owner's grants.
+  /bin/zsh "$WORK/src/menu_app/ServerHelper/build_helper.sh" "$STAGING/helper" >/dev/null
+fi
+
 echo "==> Python $PY_VERSION"
 CACHE="$REPO/dist/cache"; mkdir -p "$CACHE"
 PY_TGZ="$CACHE/cpython-$PY_VERSION-20260924-aarch64-apple-darwin-install_only_stripped.tar.gz"
