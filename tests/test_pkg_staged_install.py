@@ -33,8 +33,11 @@ class PkgStagedInstallTests(unittest.TestCase):
 
     def serve(self, home: Path) -> subprocess.Popen:
         rt = home / "mac-mcp"
+        # The server installs and opens the menu app when none is installed; the staged
+        # tree carries no app, so keep it from building one into the temp home.
         env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "MAC_MCP_STATE_DIR": str(home / ".mac-mcp"),
-               "MAC_MCP_PORT": str(PORT), "MAC_MCP_HOST": "127.0.0.1"}
+               "MAC_MCP_PORT": str(PORT), "MAC_MCP_HOST": "127.0.0.1",
+               "MAC_MCP_SKIP_MENU_APP_INSTALL": "1", "MAC_MCP_SKIP_MENU_APP": "1"}
         proc = subprocess.Popen([str(rt / ".venv/bin/python"), "-m", "uvicorn", "mcp_server.main:app",
                                  "--host", "127.0.0.1", "--port", str(PORT)], cwd=str(rt), env=env,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -69,3 +72,4 @@ class PkgStagedInstallTests(unittest.TestCase):
             key = [l.split("=", 1)[1] for l in env_before.decode().splitlines() if l.startswith("MCP_API_KEY=")][0]
             self.assertNotIn(key, log)
             self.assertEqual("pkg", (home / ".mac-mcp/install-kind").read_text().strip())
+            self.assertFalse((home / "Applications").exists(), "the test server installed a menu app")
