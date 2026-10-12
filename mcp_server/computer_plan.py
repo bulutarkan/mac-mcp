@@ -99,6 +99,8 @@ _TERMINAL_UNCERTAIN_CODES = frozenset({
 
 NestedCaller = Callable[[str, dict[str, Any]], Awaitable[Any]]
 ResourceClaimEnsurer = Callable[[str, str, Mapping[str, Any]], None]
+# Called before/after a step that opted into evidence; returns a small record of what was kept.
+EvidenceCapture = Callable[[Mapping[str, Any], str], Awaitable[Optional[dict[str, Any]]]]
 
 
 class ComputerPlanError(ValueError):
@@ -526,6 +528,9 @@ def _validate_step_list(
             )
             fallback_normalized = fb_list[0]
 
+        evidence = raw.get("evidence")
+        if evidence not in (None, "before", "after", "both"):
+            raise ComputerPlanError(f"step {step_id} evidence must be before, after or both")
         normalized.append({
             "id": step_id,
             "kind": "tool",
@@ -536,6 +541,7 @@ def _validate_step_list(
             "retry": retry,
             "fallback": fallback_normalized,
             "recovery": dict(raw.get("recovery") or {}) if isinstance(raw.get("recovery"), Mapping) else {},
+            **({"evidence": evidence} if evidence else {}),
         })
         prior.add(step_id)
     return normalized
@@ -1247,7 +1253,19 @@ async def _execute_steps(
     budget: _Budget,
     version: int,
     resource_claim_ensurer: Optional[ResourceClaimEnsurer] = None,
+    evidence_capture: Optional[EvidenceCapture] = None,
 ) -> None:
+    async def capture(step: Mapping[str, Any], when: str) -> Optional[dict[str, Any]]:
+        # Opt-in checkpoint evidence (#108). It never decides or stops the plan.
+        if evidence_capture is None or step.get("evidence") not in (when, "both"):
+            return None
+        try:
+            # The hook sees the step as it runs: {'$ref': ...} arguments already point at real targets.
+            resolved = {**step, "arguments": _resolve_refs(step.get("arguments") or {}, outputs)}
+            return await evidence_capture(resolved, when)
+        except Exception as exc:
+            return {"when": when, "captured": False, "reason": f"capture_failed: {type(exc).__name__}"}
+
     for step in steps:
         step_id = str(step["id"])
         budget.check_time(step_id)
@@ -1277,6 +1295,7 @@ async def _execute_steps(
                     budget=budget,
                     version=version,
                     resource_claim_ensurer=resource_claim_ensurer,
+                    evidence_capture=evidence_capture,
                 )
             continue
 
@@ -1300,6 +1319,7 @@ async def _execute_steps(
             })
             continue
 
+        evidence = [item for item in [await capture(step, "before")] if item]
         try:
             payload, meta = await _execute_tool_step(
                 call_tool,
@@ -1310,17 +1330,20 @@ async def _execute_steps(
                 resource_claim_ensurer=resource_claim_ensurer,
             )
         except _PlanStop as stop:
+            evidence += [item for item in [await capture(step, "after")] if item]
             records.append({
                 "index": index, "id": step_id, "type": "tool", "tool": step.get("tool"),
                 "ok": False, "status": "failed", "duration_ms": int((time.monotonic() - started) * 1000),
                 "reason_code": stop.reason_code, "error": stop.error, **stop.details,
+                **({"evidence": evidence} if evidence else {}),
             })
             raise
         outputs[step_id] = payload
+        evidence += [item for item in [await capture(step, "after")] if item]
         records.append({
             "index": index, "id": step_id, "type": "tool", "tool": step.get("tool"),
             "ok": True, "status": "completed", "duration_ms": int((time.monotonic() - started) * 1000),
-            "result": _summary(payload), **meta,
+            "result": _summary(payload), **meta, **({"evidence": evidence} if evidence else {}),
         })
 
 
@@ -1422,6 +1445,7 @@ async def execute_computer_plan(
     max_action_units: int = _MAX_ACTION_UNITS,
     resources: Optional[Sequence[Mapping[str, Any]]] = None,
     admission_root: Optional[Path] = None,
+    evidence_capture: Optional[EvidenceCapture] = None,
 ) -> dict[str, Any]:
     version = int(plan_version)
     normalized = _validate_steps(list(steps), version=version)
@@ -1550,6 +1574,7 @@ async def execute_computer_plan(
             budget=budget,
             version=version,
             resource_claim_ensurer=ensure_resolved_resources if resource_lease_id else None,
+            evidence_capture=evidence_capture,
         )
     except _PlanStop as stop:
         failure = {

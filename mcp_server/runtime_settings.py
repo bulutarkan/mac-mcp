@@ -160,6 +160,22 @@ def usage_privacy(*, fresh: bool = False) -> dict[str, Any]:
     return dict(value)
 
 
+# Run evidence (#108): checkpoint screenshots are off until the owner turns them on, and run
+# records with any kept screenshots expire after a short, chosen period.
+RUN_EVIDENCE_RETENTION_CHOICES = (1, 7, 30)
+DEFAULT_RUN_EVIDENCE_RETENTION_DAYS = 7
+
+
+def run_evidence_privacy() -> dict[str, Any]:
+    try:
+        days = int(privacy_setting("run_evidence_retention_days", DEFAULT_RUN_EVIDENCE_RETENTION_DAYS))
+    except (TypeError, ValueError):
+        days = DEFAULT_RUN_EVIDENCE_RETENTION_DAYS
+    if days not in RUN_EVIDENCE_RETENTION_CHOICES:
+        days = min(RUN_EVIDENCE_RETENTION_CHOICES, key=lambda choice: abs(choice - days))
+    return {"capture": privacy_setting("run_evidence_capture", False) is True, "retention_days": days}
+
+
 def security_setting(name: str, default: Any = None) -> Any:
     security = load_runtime_settings().get("security", {})
     if not isinstance(security, dict):

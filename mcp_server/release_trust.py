@@ -97,7 +97,7 @@ def trusted_signers_path() -> Path:
     return Path(__file__).resolve().with_name(TRUSTED_SIGNERS_FILENAME)
 
 
-def _validate_trusted_signers_file(path: Path) -> None:
+def _validate_trusted_signers_file(path: Path, *, identity: str = SIGNER_IDENTITY) -> None:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
@@ -112,12 +112,12 @@ def _validate_trusted_signers_file(path: Path) -> None:
         parts = line.split()
         if (
             len(parts) != 3
-            or parts[0] != SIGNER_IDENTITY
+            or parts[0] != identity
             or parts[1] != "ssh-ed25519"
         ):
             raise ReleaseVerificationError(
                 "Trusted release signer set must contain only exact "
-                "mac-mcp-release ssh-ed25519 entries."
+                f"{identity} ssh-ed25519 entries."
             )
         key = (parts[1], parts[2])
         if key in seen:
@@ -288,11 +288,16 @@ def verify_manifest_signature(
     signature_bytes: bytes,
     *,
     signers_path: str | Path | None = None,
+    identity: str = SIGNER_IDENTITY,
+    namespace: str = SIGNATURE_NAMESPACE,
 ) -> str | None:
+    """Verify a detached SSH signature. identity/namespace default to the release channel;
+    other signed documents (the skill and recipe catalog) pass their own, so a signature made
+    for one can never be accepted as the other."""
     trusted = Path(signers_path).expanduser().resolve() if signers_path else trusted_signers_path()
     if not trusted.is_file():
         raise ReleaseVerificationError(f"Trusted release signer file is missing: {trusted}")
-    _validate_trusted_signers_file(trusted)
+    _validate_trusted_signers_file(trusted, identity=identity)
     ssh_keygen = Path("/usr/bin/ssh-keygen")
     if not ssh_keygen.is_file():
         raise ReleaseVerificationError("ssh-keygen is required for verified releases but was not found.")
@@ -308,9 +313,9 @@ def verify_manifest_signature(
                 "-f",
                 str(trusted),
                 "-I",
-                SIGNER_IDENTITY,
+                identity,
                 "-n",
-                SIGNATURE_NAMESPACE,
+                namespace,
                 "-s",
                 str(sig_path),
             ],

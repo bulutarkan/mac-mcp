@@ -15,7 +15,7 @@ import uuid
 from collections import deque
 from contextlib import closing
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ResourceError, ToolError
@@ -251,6 +251,8 @@ _TELEMETRY_METADATA_COLUMNS = {
     "resource": "resource_json",
     "scope": "scope_json",
     "lock": "lock_json",
+    # The recipe or plan run a call belongs to (#108): the run and every step in it share it.
+    "run_id": "run_id",
 }
 _JSON_METADATA_FIELDS = {"declared_risk", "effective_risk", "resource", "scope", "lock"}
 
@@ -461,6 +463,7 @@ class TelemetryManager:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_events_session_time ON tool_events(session_id, timestamp DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_events_agent_time ON tool_events(agent_id, timestamp DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_events_team_time ON tool_events(team_id, timestamp DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_events_run ON tool_events(run_id, timestamp)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS security_events (
@@ -763,8 +766,8 @@ class TelemetryManager:
                     event_id, timestamp, source, tool, status, started_at, ended_at,
                     duration_ms, arguments_json, result_json, result_size, error,
                     declared_risk_json, effective_risk_json, profile, policy_decision,
-                    actor, agent_id, team_id, session_id, resource_json, scope_json, lock_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    actor, agent_id, team_id, session_id, resource_json, scope_json, lock_json, run_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event["event_id"], event["timestamp"], event["source"], event["tool"],
@@ -774,7 +777,7 @@ class TelemetryManager:
                     _json_text(event.get("declared_risk")), _json_text(event.get("effective_risk")),
                     event.get("profile"), event.get("policy_decision"), event.get("actor"),
                     event.get("agent_id"), event.get("team_id"), event.get("session_id"), _json_text(event.get("resource")),
-                    _json_text(event.get("scope")), _json_text(event.get("lock")),
+                    _json_text(event.get("scope")), _json_text(event.get("lock")), event.get("run_id"),
                 ),
             )
         self._writes += 1
@@ -903,6 +906,7 @@ class TelemetryManager:
         session_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         team_id: Optional[str] = None,
+        run_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         bounded_hours = max(0.05, min(float(hours), 24 * 365))
         bounded_limit = max(1, min(int(limit), 500))
@@ -926,6 +930,9 @@ class TelemetryManager:
         if team_id:
             clauses.append("team_id = ?")
             params.append(str(team_id))
+        if run_id:
+            clauses.append("run_id = ?")
+            params.append(str(run_id))
         params.append(bounded_limit)
         sql = "SELECT * FROM tool_events WHERE " + " AND ".join(clauses) + " ORDER BY timestamp DESC LIMIT ?"
         with closing(self._connect()) as conn, conn:
@@ -1047,6 +1054,16 @@ _STEERING_PARENT_EVENT: contextvars.ContextVar[Optional[str]] = contextvars.Cont
 _SECURITY_SESSION: contextvars.ContextVar[Optional[tuple[str, str]]] = contextvars.ContextVar(
     "mac_mcp_security_session", default=None
 )
+_RUN_ID: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("mac_mcp_run_id", default=None)
+
+
+def current_run_id() -> Optional[str]:
+    """The run (#108) the current call belongs to: a computer_plan or recipe run and its steps."""
+    return _RUN_ID.get()
+
+
+def _starts_run(name: str, arguments: Mapping[str, Any]) -> bool:
+    return name == "computer_plan" or (name == "recipe" and str(arguments.get("action") or "").lower() == "run")
 
 
 def current_security_session() -> Optional[tuple[str, str]]:
@@ -1449,6 +1466,12 @@ class ObservedFastMCP(FastMCP):
         # Tool Activity UI consumes the live SSE event and cannot wait for a
         # later telemetry context update when multiple clients run concurrently.
         metadata["session_id"] = public_session_id
+        run_id = _RUN_ID.get()
+        new_run = run_id is None and _starts_run(name, arguments)
+        if new_run:
+            run_id = "run_" + uuid.uuid4().hex[:12]
+        if run_id:
+            metadata["run_id"] = run_id
         telemetry_arguments = dict(arguments)
         if intent_description:
             telemetry_arguments["description"] = intent_description
@@ -1457,6 +1480,7 @@ class ObservedFastMCP(FastMCP):
         )
 
         steering_token = _STEERING_PARENT_EVENT.set(event_id) if top_level else None
+        run_token = _RUN_ID.set(run_id) if new_run else None
         call_registered = False
         security_token = _SECURITY_SESSION.set(security_pair) if top_level else None
 
@@ -1846,3 +1870,5 @@ class ObservedFastMCP(FastMCP):
                 _SECURITY_SESSION.reset(security_token)
             if top_level and steering_token is not None:
                 _STEERING_PARENT_EVENT.reset(steering_token)
+            if run_token is not None:
+                _RUN_ID.reset(run_token)

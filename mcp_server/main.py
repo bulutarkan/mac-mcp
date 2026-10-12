@@ -21,11 +21,11 @@ from mcp.server.transport_security import TransportSecuritySettings
 from .request_client import client_address
 from .workflow_checkpoints import clear_not_executed
 from .log_retention import start_log_rotation
-from . import recipes
+from . import recipes, run_evidence
 from .host_guard import HostGuard, extra_hosts_from_env
 from .public_endpoint import resolve_public_endpoint
 from .security import BASE_DIR, AuthFailureLimiter, _effective_bind_host, _loopback_host, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
-from .observability import ObservedFastMCP, TelemetryManager, _tool_can_mutate, current_security_session
+from .observability import ObservedFastMCP, TelemetryManager, _tool_can_mutate, current_run_id, current_security_session
 from . import error_contract
 from .tool_summaries import ADVANCED_BROWSER_TOOLS, CORE_TOOL_NAMES, CORE_TOOL_SUMMARIES
 from . import tool_discovery
@@ -1356,7 +1356,9 @@ def create_app():
             "wait_until, conditional branch, bounded retry/fallback, fresh observe + semantic target rebind and "
             "resource preflight. Mutating recovery is fail-closed: ACTION_NO_EFFECT, policy deny, outcome_unknown "
             "or any ambiguous side-effect is never automatically replayed. Every nested step still passes through "
-            "Mac MCP policy, scope, telemetry, leases and action verification. Use {'$ref':'step_id.path'} to reuse outputs."
+            "Mac MCP policy, scope, telemetry, leases and action verification. Use {'$ref':'step_id.path'} to reuse outputs. "
+            "Every run gets a run_id (dashboard timeline). A step may set evidence: before|after|both to keep a checkpoint "
+            "screenshot of its tab or window when the owner turned run evidence on; never kept while a password field shows."
         ),
         structured_output=False,
     )
@@ -1370,6 +1372,8 @@ def create_app():
         resources: Optional[List[Dict[str, Any]]] = None,
         save_as_recipe: Optional[str] = None,
     ) -> Dict[str, Any]:
+        run_id = current_run_id()
+        run_started = time.time()
         try:
             normalized_resources = _computer_plan_resources(steps, resources)
             result = await execute_computer_plan(
@@ -1382,9 +1386,12 @@ def create_app():
                 max_action_units=max_action_units,
                 resources=normalized_resources,
                 admission_root=AGENTS_DIR,
+                evidence_capture=run_evidence.capture_for_run(run_id, mcp.call_tool),
             )
         except ComputerPlanError as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        if run_evidence.record_run(run_id, kind="plan", name=save_as_recipe, started_at=run_started, result=result):
+            result["run_id"] = run_id
         if save_as_recipe and str(save_as_recipe).strip():
             # Opt-in capture: only a successful plan is saved, and only as a draft
             # that must be reviewed and activated before it can run.
@@ -1447,6 +1454,8 @@ def create_app():
             if verb == "run":
                 prepared = recipes.prepare_run(recipe_id, values)
                 budgets = prepared["budgets"]
+                run_id = current_run_id()
+                run_started = time.time()
                 try:
                     result = await execute_computer_plan(
                         mcp.call_tool,
@@ -1454,11 +1463,15 @@ def create_app():
                         plan_version=prepared["plan_version"],
                         resources=_computer_plan_resources(prepared["steps"], None),
                         admission_root=AGENTS_DIR,
+                        evidence_capture=run_evidence.capture_for_run(run_id, mcp.call_tool),
                         **{key: budgets[key] for key in ("max_seconds", "max_recoveries",
                                                           "max_recovery_seconds", "max_action_units") if key in budgets},
                     )
                 except ComputerPlanError as exc:
                     raise recipes.RecipeError("RECIPE_PLAN_INVALID", str(exc)) from exc
+                if run_evidence.record_run(run_id, kind="recipe", name=prepared["recipe"].get("name"),
+                                           started_at=run_started, result=result, recipe_id=recipe_id):
+                    result["run_id"] = run_id
                 result["recipe"] = {"recipe_id": recipe_id, "name": prepared["recipe"].get("name"),
                                     "values": prepared["values"], "last_run": recipes.record_run(recipe_id, result)}
                 return result

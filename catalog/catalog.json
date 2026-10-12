@@ -1,0 +1,25 @@
+{
+  "catalog": "mac-mcp-curated",
+  "packs": [
+    {
+      "capabilities": [
+        "read"
+      ],
+      "description": "How to fill a whole web form, post a comment or reply, and read a long thread with the fewest Mac MCP browser calls.",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "sha256": "ae1e3bced4bdffcc4750207afb4363627eca078e938a171e9f217ddd1709a60f",
+          "size": 1881
+        }
+      ],
+      "id": "browser-forms",
+      "kind": "skill",
+      "min_mac_mcp_version": "2.1.9",
+      "name": "Browser forms, comments and long pages",
+      "publisher": "Mac MCP",
+      "version": "1.0.0"
+    }
+  ],
+  "schema_version": 1
+}

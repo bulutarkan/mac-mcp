@@ -309,6 +309,45 @@ def capture_draft(
     }
 
 
+def import_recipe(
+    *, name: str, description: str, steps: Any, plan_version: int, parameters: Any, budgets: Mapping[str, Any],
+    source: Mapping[str, Any], replace_recipe_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Store a recipe that came from a reviewed catalog pack. It always lands as a draft, so it
+    runs only after the owner activates it (recipe action=activate, confirm=true); an update
+    replaces the installed recipe in place and sends it back to draft."""
+    params = _normalize_parameters(parameters or {})
+    _validate_plan(steps, int(plan_version), params)
+    now = _now()
+    existing: Optional[Dict[str, Any]] = None
+    if replace_recipe_id:
+        try:
+            existing = _load(replace_recipe_id)
+        except RecipeError:
+            existing = None
+    if existing is None and len(list(recipe_dir().glob("rcp_*.json"))) >= MAX_RECIPES:
+        raise RecipeError("RECIPE_LIMIT", f"At most {MAX_RECIPES} recipes can be stored; delete one first.")
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "recipe_id": existing["recipe_id"] if existing else "rcp_" + uuid.uuid4().hex[:12],
+        "name": _clean_text(name, "name", _NAME_LIMIT, required=True),
+        "description": _clean_text(description, "description", _DESCRIPTION_LIMIT),
+        "status": "draft",
+        "plan_version": int(plan_version),
+        "steps": copy.deepcopy(list(steps)),
+        "parameters": params,
+        "budgets": {key: budgets[key] for key in _BUDGET_KEYS if key in (budgets or {})},
+        "consequential": _consequential(steps),
+        "source": dict(source),
+        "created_at": existing.get("created_at", now) if existing else now,
+        "updated_at": now,
+        "run_count": existing.get("run_count", 0) if existing else 0,
+        "last_run": existing.get("last_run") if existing else None,
+    }
+    _write(manifest)
+    return {"recipe_id": manifest["recipe_id"], "name": manifest["name"], "status": "draft", "review_required": True}
+
+
 def list_recipes(*, include_drafts: bool = True) -> Dict[str, Any]:
     items = []
     for path in sorted(recipe_dir().glob("rcp_*.json")):
@@ -470,6 +509,8 @@ def record_run(recipe_id: str, result: Mapping[str, Any]) -> Dict[str, Any]:
         "reason_code": result.get("reason_code"),
         "failed_step": result.get("step_id"),
         "steps_executed": (result.get("plan_stats") or {}).get("steps_executed"),
+        # The run's timeline (#108): its steps in telemetry and any kept evidence.
+        **({"run_id": result["run_id"]} if result.get("run_id") else {}),
     }
     _write(manifest)
     return manifest["last_run"]

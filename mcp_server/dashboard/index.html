@@ -218,6 +218,38 @@
             </div>
           </section>
 
+          <section class="rail-card runs-card surface-card" aria-labelledby="runsTitle">
+            <div class="rail-title">
+              <div>
+                <h2 id="runsTitle">Recipe &amp; plan runs</h2>
+                <p>Each run's ordered steps, outcomes, approvals and opted-in screenshots.</p>
+              </div>
+              <span id="runCount">—</span>
+            </div>
+            <div class="runs-settings">
+              <label><input id="runEvidenceCapture" type="checkbox"> Keep checkpoint screenshots</label>
+              <label>Keep for
+                <select id="runEvidenceRetention" aria-label="Keep run records and screenshots for"></select>
+              </label>
+            </div>
+            <ul id="runList" class="run-list" aria-label="Recent runs, newest first">
+              <li class="no-agents">computer_plan and recipe runs will appear here.</li>
+            </ul>
+          </section>
+
+          <section class="rail-card catalog-card surface-card" aria-labelledby="catalogTitle">
+            <div class="rail-title">
+              <div>
+                <h2 id="catalogTitle">Skill &amp; recipe catalog</h2>
+                <p>Signed packs. Review what a pack can do before you install it.</p>
+              </div>
+              <span id="catalogCount">—</span>
+            </div>
+            <ul id="catalogList" class="run-list" aria-label="Catalog packs">
+              <li class="no-agents">Loading the signed catalog…</li>
+            </ul>
+          </section>
+
           <section class="rail-card hot-tools-card surface-card">
             <div class="rail-title">
               <div>
@@ -279,6 +311,9 @@
       <section id="timelineSection" hidden>
         <div class="payload-title"><h3>Activity</h3><span id="timelineCount">—</span></div>
         <ol id="timelineList" class="timeline-list" aria-label="Tool calls by this agent, newest first"></ol>
+      </section>
+      <section id="panelSection" hidden>
+        <div id="panelBody" class="panel-body"></div>
       </section>
       <section id="errorSection" hidden>
         <div class="payload-title"><h3>Error</h3><span>Captured</span></div>

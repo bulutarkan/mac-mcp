@@ -54,6 +54,9 @@
     healthRow: $("healthRow"), healthServer: $("healthServer"), healthTelemetry: $("healthTelemetry"), healthProfile: $("healthProfile"),
     healthApproval: $("healthApproval"), healthCompanion: $("healthCompanion"), healthRecord: $("healthRecord"),
     attentionList: $("attentionList"), attentionCount: $("attentionCount"),
+    panelSection: $("panelSection"), panelBody: $("panelBody"),
+    runList: $("runList"), runCount: $("runCount"), runEvidenceCapture: $("runEvidenceCapture"), runEvidenceRetention: $("runEvidenceRetention"),
+    catalogList: $("catalogList"), catalogCount: $("catalogCount"),
   };
 
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
@@ -778,6 +781,14 @@
 
   function setDrawerMode(mode) {
     const agent = mode === "agent";
+    const panel = mode === "panel";
+    els.panelSection.hidden = !panel;
+    if (panel) {
+      [els.requestSection, els.agentSummarySection, els.timelineSection, els.resultSection, els.errorSection, els.drawerBack]
+        .forEach((el) => { el.hidden = true; });
+      els.drawerClose.setAttribute("aria-label", "Close details");
+      return;
+    }
     els.requestSection.hidden = agent;
     els.agentSummarySection.hidden = !agent;
     els.timelineSection.hidden = !agent;
@@ -903,6 +914,7 @@
     state.timelineAgent = null;
     state.timelineAgentData = null;
     state.timelineEvents = [];
+    while (blobUrls.length) URL.revokeObjectURL(blobUrls.pop());
   }
 
   function seedTrace(events) {
@@ -1163,6 +1175,174 @@
     adaptivePolls.forEach((poll) => (document.hidden ? window.clearTimeout(poll.timer) : poll.run()));
     if (!document.hidden) refreshAttention();
   });
+
+  // --- Recipe & plan runs (#108): a run's timeline from its own telemetry rows, plus opted-in screenshots.
+  const blobUrls = [];
+  function openPanel(title, meta, statusText, statusClass, html) {
+    if (!els.drawer.classList.contains("is-open")) state.restoreFocus = document.activeElement;
+    state.selected = null;
+    state.timelineAgent = null;
+    setDrawerMode("panel");
+    els.drawerStatus.className = `status-badge ${statusClass || ""}`;
+    els.drawerStatus.textContent = statusText;
+    els.drawerTitle.textContent = title;
+    els.drawerMeta.textContent = meta;
+    els.panelBody.innerHTML = html;
+    if (!els.drawer.classList.contains("is-open")) showDrawer();
+  }
+
+  async function refreshRuns() {
+    let data;
+    try { data = await fetchJSON("/dashboard/api/runs?limit=12"); } catch { els.runCount.textContent = "—"; return; }
+    const runs = data.runs || [];
+    els.runCount.textContent = number(runs.length);
+    const evidence = data.evidence || {};
+    els.runEvidenceCapture.checked = Boolean(evidence.capture);
+    if (!els.runEvidenceRetention.options.length) {
+      els.runEvidenceRetention.innerHTML = (data.retention_choices || [1, 7, 30])
+        .map((days) => `<option value="${days}">${days} day${days === 1 ? "" : "s"}</option>`).join("");
+    }
+    els.runEvidenceRetention.value = String(evidence.retention_days || 7);
+    els.runList.innerHTML = runs.length ? runs.map((run) => `<li><button class="run-item" type="button" data-run="${esc(run.run_id)}" data-status="${run.ok ? "success" : "error"}">
+        <strong>${esc(run.name || (run.kind === "recipe" ? "Recipe run" : "Plan run"))}</strong>
+        <small>${esc(run.kind)} · ${number(run.step_count)} steps${run.evidence_count ? ` · ${number(run.evidence_count)} screenshots` : ""} · ${esc(ago(Date.now() - (run.started_at || 0) * 1000))}</small>
+        <span class="status-badge ${run.ok ? "" : "error"}">${run.ok ? "Done" : "Failed"}</span>
+      </button></li>`).join("") : `<li class="no-agents">computer_plan and recipe runs will appear here.</li>`;
+    els.runList.querySelectorAll("[data-run]").forEach((button) => button.addEventListener("click", () => openRun(button.dataset.run)));
+  }
+
+  async function saveRunEvidenceSettings() {
+    try {
+      await postJSON("/dashboard/api/runs/settings", {
+        capture: els.runEvidenceCapture.checked, retention_days: Number(els.runEvidenceRetention.value),
+      });
+    } catch { /* the next refresh shows the stored values */ }
+    refreshRuns();
+  }
+  els.runEvidenceCapture.addEventListener("change", saveRunEvidenceSettings);
+  els.runEvidenceRetention.addEventListener("change", saveRunEvidenceSettings);
+
+  async function openRun(runId) {
+    openPanel("Run", runId, "Loading", "neutral", `<p class="panel-note">Loading the run timeline…</p>`);
+    let data;
+    try { data = await fetchJSON(`/dashboard/api/runs/detail?run_id=${encodeURIComponent(runId)}`); }
+    catch { els.panelBody.innerHTML = `<p class="panel-note">This run is no longer available (it may have expired).</p>`; return; }
+    const run = data.run || {};
+    els.drawerStatus.className = `status-badge ${run.ok ? "" : "error"}`;
+    els.drawerStatus.textContent = run.ok ? "Done" : "Failed";
+    els.drawerTitle.textContent = run.name || (run.kind === "recipe" ? "Recipe run" : "Plan run");
+    els.drawerMeta.textContent = `${run.run_id} · ${clock(run.started_at)} · ${duration(run.duration_ms)}`;
+    const steps = (run.steps || []).map((step) => {
+      const shots = (step.evidence || []).map((item) => item.captured
+        ? `<figure class="run-shot"><img alt="${esc(`${step.id} ${item.when}`)}" data-shot="${esc(item.file)}"><figcaption>${esc(item.when)}</figcaption></figure>`
+        : `<span class="run-shot-missing">${esc(item.when)}: ${esc(String(item.reason || "not kept").replace(/_/g, " "))}</span>`).join("");
+      return `<li class="run-step" data-status="${step.ok ? "success" : "error"}">
+        <strong>${esc(step.id)} · ${esc(step.tool || step.type)}</strong>
+        <small>${esc(step.status || "")} · ${duration(step.duration_ms)}${step.reason_code ? ` · ${esc(step.reason_code)}` : ""}${step.recovered ? " · recovered" : ""}</small>
+        ${step.error ? `<small class="run-error">${esc(step.error)}</small>` : ""}
+        ${shots ? `<div class="run-shots">${shots}</div>` : ""}
+      </li>`;
+    }).join("");
+    const calls = (data.events || []).map((event) => `<li><span>${esc(clock(event.started_at || event.timestamp))}</span>
+        <strong>${esc(event.tool)}</strong><small>${esc(event.status)} · ${duration(event.duration_ms)}</small></li>`).join("");
+    const approvals = (data.security_events || []).map((item) => `<li><span>${esc(clock(item.timestamp))}</span>
+        <strong>${esc(String(item.event_type || "").replace(/_/g, " "))}</strong><small>${esc(item.decision)} · ${esc(item.tool || "")}</small></li>`).join("");
+    els.panelBody.innerHTML = `
+      ${run.ok ? "" : `<p class="panel-note run-error">${esc(run.reason_code || "failed")}${run.failed_step ? ` at ${esc(run.failed_step)}` : ""}${run.error ? `: ${esc(run.error)}` : ""}</p>`}
+      <div class="payload-title"><h3>Steps</h3><span>${number((run.steps || []).length)}</span></div>
+      <ol class="run-steps">${steps || `<li class="timeline-empty">No steps recorded.</li>`}</ol>
+      <div class="payload-title"><h3>Tool calls</h3><span>${number((data.events || []).length)}</span></div>
+      <ol class="run-calls">${calls || `<li class="timeline-empty">No calls recorded for this run.</li>`}</ol>
+      <div class="payload-title"><h3>Approvals &amp; policy</h3><span>${number((data.security_events || []).length)}</span></div>
+      <ol class="run-calls">${approvals || `<li class="timeline-empty">No approvals or policy decisions during this run.</li>`}</ol>`;
+    // Screenshots need the dashboard token, so they are fetched and shown from local blob URLs.
+    els.panelBody.querySelectorAll("img[data-shot]").forEach(async (img) => {
+      try {
+        const response = await fetch(`/dashboard/api/runs/evidence?run_id=${encodeURIComponent(run.run_id)}&file=${encodeURIComponent(img.dataset.shot)}`,
+          {cache: "no-store", headers: authHeaders()});
+        if (!response.ok) throw new Error(String(response.status));
+        const url = URL.createObjectURL(await response.blob());
+        blobUrls.push(url);
+        img.src = url;
+      } catch { img.replaceWith(Object.assign(document.createElement("span"), {className: "run-shot-missing", textContent: "screenshot expired"})); }
+    });
+  }
+
+  // --- Signed skill & recipe catalog (#146): review before install; nothing installs without the owner.
+  async function refreshCatalog() {
+    let data;
+    try { data = await fetchJSON("/dashboard/api/catalog"); }
+    catch (error) {
+      els.catalogCount.textContent = "—";
+      els.catalogList.innerHTML = `<li class="no-agents">The signed catalog could not be loaded (${esc(error.message)}).</li>`;
+      return;
+    }
+    const packs = data.packs || [];
+    els.catalogCount.textContent = number(packs.length);
+    els.catalogList.innerHTML = packs.map((pack) => `<li><button class="run-item" type="button" data-pack="${esc(pack.id)}">
+        <strong>${esc(pack.name)}</strong>
+        <small>${esc(pack.kind)} · ${esc(pack.version)} · ${esc(pack.publisher)}</small>
+        <span class="status-badge ${pack.update_available ? "running" : pack.installed_version ? "" : "neutral"}">${pack.update_available ? "Update" : pack.installed_version ? "Installed" : "Review"}</span>
+      </button></li>`).join("") || `<li class="no-agents">The catalog has no packs.</li>`;
+    els.catalogList.querySelectorAll("[data-pack]").forEach((button) => button.addEventListener("click", () => openPack(button.dataset.pack)));
+  }
+
+  async function openPack(packId) {
+    openPanel("Catalog pack", packId, "Loading", "neutral", `<p class="panel-note">Checking the signature and file digests…</p>`);
+    let report;
+    try { report = await fetchJSON(`/dashboard/api/catalog/review?pack_id=${encodeURIComponent(packId)}`); }
+    catch (error) {
+      els.drawerStatus.className = "status-badge error";
+      els.drawerStatus.textContent = "Blocked";
+      els.panelBody.innerHTML = `<p class="panel-note run-error">This pack cannot be installed: ${esc(error.message)}. Its signature or file digests did not verify.</p>`;
+      return;
+    }
+    const pack = report.pack;
+    const changes = report.permission_changes;
+    els.drawerStatus.className = `status-badge ${report.blocked ? "error" : report.action === "up_to_date" ? "" : "running"}`;
+    els.drawerStatus.textContent = report.blocked ? "Blocked" : report.action === "up_to_date" ? "Installed" : report.action === "update" ? "Update" : "Not installed";
+    els.drawerTitle.textContent = pack.name;
+    els.drawerMeta.textContent = `${pack.id} ${pack.version} · ${pack.kind} · by ${pack.publisher}`;
+    const rows = [
+      ["Signed by", report.signer || "—"],
+      ["Installed", report.installed_version || "No"],
+      ["Declared capabilities", (report.capabilities || []).join(", ") || "none"],
+      ["Works out to", ((report.effective || {}).capabilities || []).join(", ") || "none"],
+    ];
+    if ((report.effective || {}).tools && report.effective.tools.length) rows.push(["Recipe tools", report.effective.tools.join(", ")]);
+    if (changes) rows.push(["Permission changes", `added: ${changes.added.join(", ") || "none"} · removed: ${changes.removed.join(", ") || "none"}`]);
+    if (report.scripts_held) rows.push(["Scripts held back", `${report.scripts_held.join(", ")} (enable each one separately; an enabled script can run anything)`]);
+    if (report.note) rows.push(["Note", report.note]);
+    const files = (report.files || []).map((item) => `<li><strong>${esc(item.path)}</strong><small>${number(item.size)} B · sha256 ${esc(item.sha256.slice(0, 16))}…</small></li>`).join("");
+    const canInstall = !report.blocked && report.action !== "up_to_date";
+    els.panelBody.innerHTML = `
+      <p class="panel-note">${esc(pack.description)}</p>
+      ${report.blocked ? `<p class="panel-note run-error">Blocked: ${esc(report.blocked)}.</p>` : ""}
+      <dl class="agent-summary">${rows.map(([key, value]) => `<dt>${esc(key)}</dt><dd>${esc(value)}</dd>`).join("")}</dl>
+      <div class="payload-title"><h3>Files</h3><span>${number((report.files || []).length)}</span></div>
+      <ol class="run-calls">${files}</ol>
+      ${canInstall ? `<button class="panel-action" type="button" id="packInstall">${report.action === "update" ? `Update to ${esc(pack.version)}` : `Install ${esc(pack.version)}`}</button>` : ""}
+      <p class="panel-note" id="packMessage" role="status" aria-live="polite"></p>`;
+    const install = document.getElementById("packInstall");
+    if (install) install.addEventListener("click", async () => {
+      const verb = report.action === "update" ? "update" : "install";
+      if (!window.confirm(`${verb === "update" ? "Update" : "Install"} ${pack.name} ${pack.version} from ${pack.publisher}?`)) return;
+      install.disabled = true;
+      const message = document.getElementById("packMessage");
+      try {
+        const done = await postJSON("/dashboard/api/catalog/install", {pack_id: pack.id, confirm: true});
+        message.textContent = done.recipe_id ? `Installed as a draft recipe (${done.recipe_id}); activate it after review.` : `Installed ${pack.id} ${done.version}.`;
+        refreshCatalog();
+      } catch (error) {
+        message.textContent = `Not installed: ${error.message}.`;
+        install.disabled = false;
+      }
+    });
+  }
+
+  refreshRuns();
+  refreshCatalog();
+  window.setInterval(() => { if (!document.hidden) refreshRuns(); }, 15000);
 
   const initialLoad = Promise.all([refreshSummary(), refreshEvents(), refreshAgents(), refreshChanges(), refreshTransactions()]);
   initialLoad.finally(connectStream);

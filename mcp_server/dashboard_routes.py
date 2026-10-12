@@ -818,7 +818,142 @@ def create_dashboard_routes(
             "message": result.get("message") or result.get("error"),
             "failed_step": result.get("step_id"),
             "steps_executed": (result.get("plan_stats") or {}).get("steps_executed"),
+            "run_id": result.get("run_id"),
         })
+
+    async def _object_body(request: Request) -> Optional[Dict[str, Any]]:
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        return body if isinstance(body, dict) else None
+
+    def _catalog_error(exc: Exception) -> Response:
+        from . import catalog as catalog_store
+        if isinstance(exc, catalog_store.CatalogError):
+            blocked = exc.code in {"CATALOG_SIGNATURE_INVALID", "PACK_DIGEST_MISMATCH", "PACK_BLOCKED", "CATALOG_INVALID"}
+            return JSONResponse(exc.to_dict(), status_code=409 if exc.code == "CONFIRM_REQUIRED" else 422 if blocked else 400)
+        raise exc
+
+    async def catalog_list(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from . import catalog as catalog_store
+        try:
+            return JSONResponse(await asyncio.to_thread(catalog_store.list_packs))
+        except Exception as exc:
+            return _catalog_error(exc)
+
+    async def catalog_review(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from . import catalog as catalog_store
+        pack_id = str(request.query_params.get("pack_id") or "")
+        try:
+            return JSONResponse(await asyncio.to_thread(catalog_store.review, pack_id))
+        except Exception as exc:
+            return _catalog_error(exc)
+
+    async def catalog_install(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from . import catalog as catalog_store
+        body = await _object_body(request)
+        if body is None or not isinstance(body.get("pack_id"), str):
+            return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=400)
+        try:
+            return JSONResponse(await asyncio.to_thread(
+                catalog_store.install, body["pack_id"], confirm=body.get("confirm") is True,
+            ))
+        except Exception as exc:
+            return _catalog_error(exc)
+
+    async def catalog_enable_script(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from . import catalog as catalog_store
+        body = await _object_body(request)
+        if body is None or not isinstance(body.get("pack_id"), str) or not isinstance(body.get("path"), str):
+            return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=400)
+        try:
+            return JSONResponse(await asyncio.to_thread(
+                catalog_store.enable_script, body["pack_id"], body["path"], confirm=body.get("confirm") is True,
+            ))
+        except Exception as exc:
+            return _catalog_error(exc)
+
+    async def runs_list(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from . import run_evidence
+        from .runtime_settings import RUN_EVIDENCE_RETENTION_CHOICES, run_evidence_privacy
+        limit = max(1, min(_int_query(request, "limit", 50), 200))
+        rows = await asyncio.to_thread(run_evidence.list_runs, limit)
+        return JSONResponse({"ok": True, "runs": rows, "evidence": run_evidence_privacy(),
+                             "retention_choices": list(RUN_EVIDENCE_RETENTION_CHOICES)})
+
+    async def run_detail(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from . import run_evidence
+        run_id = str(request.query_params.get("run_id") or "")
+        record = run_evidence.get_run(run_id) if run_evidence.valid_run_id(run_id) else None
+        if record is None:
+            return JSONResponse({"ok": False, "error": "run_not_found"}, status_code=404)
+        started, ended = float(record.get("started_at") or 0), float(record.get("ended_at") or time.time())
+        hours = max(0.1, (time.time() - started) / 3600 + 0.1)
+        events = telemetry.query_events(hours=hours, limit=500, run_id=run_id)
+        events.sort(key=lambda event: float(event.get("started_at") or event.get("timestamp") or 0))
+        sessions = {str(event.get("session_id")) for event in events if event.get("session_id")}
+        approvals = []
+        for session in sessions:
+            for item in telemetry.query_security_events(hours=hours, limit=200, session_id=session):
+                if started - 1 <= float(item.get("timestamp") or 0) <= ended + 1:
+                    approvals.append(item)
+        approvals.sort(key=lambda item: float(item.get("timestamp") or 0))
+        return JSONResponse({"ok": True, "run": record, "events": events, "security_events": approvals})
+
+    async def run_evidence_image(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from . import run_evidence
+        path = run_evidence.evidence_file(str(request.query_params.get("run_id") or ""),
+                                          str(request.query_params.get("file") or ""))
+        if path is None:
+            return JSONResponse({"ok": False, "error": "evidence_not_found"}, status_code=404)
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    async def run_evidence_settings(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from .runtime_settings import RUN_EVIDENCE_RETENTION_CHOICES, run_evidence_privacy
+        body = await _object_body(request)
+        if body is None:
+            return JSONResponse({"ok": False, "error": "invalid_payload"}, status_code=400)
+        updates: Dict[str, Any] = {}
+        if "capture" in body:
+            if not isinstance(body["capture"], bool):
+                return JSONResponse({"ok": False, "error": "capture_must_be_boolean"}, status_code=400)
+            updates["run_evidence_capture"] = body["capture"]
+        if "retention_days" in body:
+            if body["retention_days"] not in RUN_EVIDENCE_RETENTION_CHOICES:
+                return JSONResponse({"ok": False, "error": "invalid_retention_days",
+                                     "allowed": list(RUN_EVIDENCE_RETENTION_CHOICES)}, status_code=400)
+            updates["run_evidence_retention_days"] = int(body["retention_days"])
+        try:
+            for key, value in updates.items():
+                update_runtime_setting("privacy", key, value)
+        except (OSError, RuntimeError, ValueError):
+            return JSONResponse({"ok": False, "error": "run_evidence_settings_persist_failed"}, status_code=500)
+        return JSONResponse({"ok": True, **run_evidence_privacy()})
 
     async def provider_usage(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
@@ -1161,6 +1296,14 @@ def create_dashboard_routes(
         Route("/dashboard/api/memory/settings", memory_settings, methods=["POST"]),
         Route("/dashboard/api/recipes", launcher_recipes, methods=["GET"]),
         Route("/dashboard/api/recipes/run", launcher_run_recipe, methods=["POST"]),
+        Route("/dashboard/api/runs", runs_list, methods=["GET"]),
+        Route("/dashboard/api/runs/detail", run_detail, methods=["GET"]),
+        Route("/dashboard/api/runs/evidence", run_evidence_image, methods=["GET"]),
+        Route("/dashboard/api/runs/settings", run_evidence_settings, methods=["POST"]),
+        Route("/dashboard/api/catalog", catalog_list, methods=["GET"]),
+        Route("/dashboard/api/catalog/review", catalog_review, methods=["GET"]),
+        Route("/dashboard/api/catalog/install", catalog_install, methods=["POST"]),
+        Route("/dashboard/api/catalog/enable-script", catalog_enable_script, methods=["POST"]),
         Route("/dashboard/api/provider-usage", provider_usage, methods=["GET"]),
         Route("/dashboard/api/changes", changes, methods=["GET"]),
         Route("/dashboard/api/transactions", transactions, methods=["GET"]),

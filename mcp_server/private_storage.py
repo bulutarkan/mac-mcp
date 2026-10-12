@@ -17,7 +17,8 @@ PRIVATE_DIR_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 
 # Directories under the state root (~/.mac-mcp) that hold content.
-STATE_CONTENT_DIRS = ("dashboard", "memory", "role-learning", "recipes", "state", "cache", "runtime-backups", "backups")
+STATE_CONTENT_DIRS = ("dashboard", "memory", "role-learning", "recipes", "state", "cache", "runtime-backups", "backups",
+                      "runs", "catalog")
 
 
 def make_private(path: Path, *, directory: bool = True) -> bool:

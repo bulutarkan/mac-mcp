@@ -465,6 +465,19 @@ def create_mobile_routes(
             "active": [_safe_event(row) for row in active[:6]],
         })
 
+    async def runs_view(request: Request) -> Response:
+        # Compact run list (#108): outcome and size only; timelines and screenshots stay on the Mac dashboard.
+        _session, denied = require_mobile(request)
+        if denied is not None:
+            return denied
+        from . import run_evidence
+        try:
+            rows = run_evidence.list_runs(10)
+        except Exception:
+            return JSONResponse({"ok": False, "available": False, "error": "runs_unavailable", "runs": []})
+        keys = ("run_id", "kind", "name", "started_at", "duration_ms", "ok", "reason_code", "step_count", "evidence_count")
+        return JSONResponse({"ok": True, "available": True, "runs": [{key: row.get(key) for key in keys} for row in rows]})
+
     async def usage_view(request: Request) -> Response:
         _session, denied = require_mobile(request)
         if denied is not None:
@@ -551,6 +564,7 @@ def create_mobile_routes(
         Route("/mobile/api/sessions", sessions_view, methods=["GET"]),
         Route("/mobile/api/activity", activity_view, methods=["GET"]),
         Route("/mobile/api/usage", usage_view, methods=["GET"]),
+        Route("/mobile/api/runs", runs_view, methods=["GET"]),
         Route("/dashboard/api/mobile/pairings", create_pairing, methods=["POST"]),
         Route("/dashboard/api/mobile/devices", devices, methods=["GET"]),
         Route("/dashboard/api/mobile/revoke", revoke, methods=["POST"]),

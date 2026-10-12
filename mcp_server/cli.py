@@ -2236,6 +2236,87 @@ def logins(args: argparse.Namespace) -> int:
     return 2
 
 
+def _print_catalog_review(report: dict) -> None:
+    pack = report["pack"]
+    print(f"{pack['name']} ({pack['id']} {pack['version']}, {pack['kind']}) by {pack['publisher']}")
+    print(f"  {pack['description']}")
+    print(f"  signed by {report.get('signer')}; catalog {str(report.get('catalog_digest'))[:16]}")
+    installed = report.get("installed_version")
+    print(f"  action: {report['action']}" + (f" (installed {installed})" if installed else ""))
+    print(f"  declared capabilities: {', '.join(report['capabilities']) or 'none'}")
+    effective = report.get("effective") or {}
+    if effective.get("tools"):
+        print(f"  recipe tools: {', '.join(effective['tools'])}")
+    changes = report.get("permission_changes")
+    if changes and (changes["added"] or changes["removed"]):
+        print(f"  permission changes: +{', '.join(changes['added']) or '-'}  -{', '.join(changes['removed']) or '-'}")
+    for item in report.get("files") or []:
+        print(f"  file {item['path']}  {item['size']} B  sha256 {item['sha256'][:16]}")
+    if report.get("scripts_held"):
+        print(f"  scripts held back: {', '.join(report['scripts_held'])} ({report.get('script_note')})")
+    if report.get("note"):
+        print(f"  {report['note']}")
+    if report.get("blocked"):
+        print(f"  BLOCKED: {report['blocked']}")
+
+
+def catalog_command(args: argparse.Namespace) -> int:
+    """Review and install signed skill and recipe packs (#146). Installing needs --yes after review."""
+    from . import catalog
+
+    command = args.catalog_command
+    try:
+        if command == "list":
+            listed = catalog.list_packs()
+            if args.json:
+                print(json.dumps(listed, ensure_ascii=False))
+            else:
+                print(f"Catalog signed by {listed['signer']}")
+                for pack in listed["packs"]:
+                    state = (f"installed {pack['installed_version']}" + (", update available" if pack["update_available"] else "")
+                             if pack["installed_version"] else "not installed")
+                    print(f"{pack['id']}  {pack['version']}  {pack['kind']}  {state}  - {pack['name']}")
+            return 0
+        if command == "review":
+            report = catalog.review(args.pack_id)
+            print(json.dumps(report, ensure_ascii=False)) if args.json else _print_catalog_review(report)
+            return 0
+        if command == "install":
+            if not args.yes:
+                report = catalog.review(args.pack_id)
+                if args.json:
+                    print(json.dumps({"ok": False, "error": "CONFIRM_REQUIRED", "review": report}, ensure_ascii=False))
+                else:
+                    _print_catalog_review(report)
+                    print("Nothing installed. Run again with --yes to install this exact version.")
+                return 1
+            done = catalog.install(args.pack_id, confirm=True)
+            print(json.dumps(done, ensure_ascii=False) if args.json
+                  else f"Installed {done['pack_id']} {done['version']}." + (" Recipe is a draft: activate it after review."
+                                                                           if done.get("recipe_id") else ""))
+            return 0
+        if command == "enable-script":
+            if not args.yes:
+                try:
+                    catalog.enable_script(args.pack_id, args.path)
+                except catalog.CatalogError as exc:
+                    if exc.code != "CONFIRM_REQUIRED":
+                        raise
+                    script = exc.extra["script"]
+                    print(json.dumps({"ok": False, "error": exc.code, "script": script}, ensure_ascii=False) if args.json
+                          else f"{script['path']}  sha256 {script['sha256']}\n---\n{script['content']}\n---\n"
+                               "Nothing enabled. Run again with --yes to install this script; it can run anything.")
+                    return 1
+            done = catalog.enable_script(args.pack_id, args.path, confirm=True)
+            print(json.dumps(done) if args.json else f"Enabled {done['path']} for {done['pack_id']}.")
+            return 0
+    except catalog.CatalogError as exc:
+        print(json.dumps(exc.to_dict(), ensure_ascii=False, default=str) if getattr(args, "json", False)
+              else f"mac-mcp catalog: {exc}", file=sys.stdout if getattr(args, "json", False) else sys.stderr)
+        return 1
+    return 2
+
+
 def recipe(args: argparse.Namespace) -> int:
     """List or run saved recipes for Shortcuts, Raycast and scripts."""
     _load_env()
@@ -2426,6 +2507,24 @@ def main(argv: list[str] | None = None) -> int:
     p_logins_import.add_argument("--delete-file", action="store_true", help="Delete the export file after importing.")
     p_logins_import.add_argument("--json", action="store_true")
     p_logins.set_defaults(func=logins)
+
+    p_catalog = sub.add_parser("catalog", help="Review and install signed skill and recipe packs.")
+    catalog_sub = p_catalog.add_subparsers(dest="catalog_command", required=True)
+    p_catalog_list = catalog_sub.add_parser("list", help="List catalog packs and what is installed.")
+    p_catalog_list.add_argument("--json", action="store_true")
+    p_catalog_review = catalog_sub.add_parser("review", help="Show a pack: provenance, capabilities, files and changes.")
+    p_catalog_review.add_argument("pack_id")
+    p_catalog_review.add_argument("--json", action="store_true")
+    p_catalog_install = catalog_sub.add_parser("install", help="Install or update a pack after review (needs --yes).")
+    p_catalog_install.add_argument("pack_id")
+    p_catalog_install.add_argument("--yes", action="store_true", help="Install the reviewed version.")
+    p_catalog_install.add_argument("--json", action="store_true")
+    p_catalog_script = catalog_sub.add_parser("enable-script", help="Install one held script of a skill pack (needs --yes).")
+    p_catalog_script.add_argument("pack_id")
+    p_catalog_script.add_argument("path", help="Script path in the pack, e.g. scripts/check.sh")
+    p_catalog_script.add_argument("--yes", action="store_true", help="Enable this exact script.")
+    p_catalog_script.add_argument("--json", action="store_true")
+    p_catalog.set_defaults(func=catalog_command)
 
     p_logs = sub.add_parser("logs", help="Show recent, redacted lines from a Mac MCP log, or --list sizes and bounds.")
     p_logs.add_argument("component", nargs="?", default="server", choices=("server", "cloudflared", "ngrok", "audit", "update"))

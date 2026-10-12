@@ -256,6 +256,21 @@
       '<span class="sr-only">' + (cls === "running" ? "Running" : (cls === "error" ? "Failed" : "OK")) +
       '</span></div></div>';
   }
+  function runRow(r) {
+    const steps = (r.step_count || 0) + " step" + (r.step_count === 1 ? "" : "s");
+    const shots = r.evidence_count ? " · " + r.evidence_count + " screenshot" + (r.evidence_count === 1 ? "" : "s") : "";
+    const sub = [r.kind === "recipe" ? "Recipe" : "Plan", steps + shots, ago(r.started_at)].filter(Boolean).join(" · ");
+    const cls = r.ok ? "" : "error";
+    return '<div class="activity-row"><span class="row-icon activity-icon">' + svgIcon(toolIconName("computer_plan")) +
+      '</span><div class="activity-main"><strong>' + esc(r.name || r.run_id) + '</strong><span>' + esc(sub) +
+      '</span></div><div class="activity-side"><span>' + esc(duration(r.duration_ms)) + '</span><span class="result ' + cls +
+      '" aria-hidden="true"></span><span class="sr-only">' + (r.ok ? "OK" : "Failed") + '</span></div></div>';
+  }
+  function renderRuns(runs) {
+    // Compact view: what ran and how it ended. The timeline and screenshots stay on the Mac dashboard.
+    $("runsMeta").textContent = (runs.runs || []).length ? "Recent" : "";
+    $("runs").innerHTML = (runs.runs || []).slice(0, 6).map(runRow).join("") || '<div class="empty">No recipe or plan runs yet.</div>';
+  }
   function lifecycleLabel(value) {
     return ({
       ready:"Ready", queued:"Queued", delivered:"Delivered", acknowledged:"Acknowledged",
@@ -518,8 +533,8 @@
     scheduleRefresh();
   }
   async function refreshOnce() {
-    const [status, agents, activity] = await Promise.all([
-      settle("/mobile/api/status"), settle("/mobile/api/agents"), settle("/mobile/api/activity")
+    const [status, agents, activity, runs] = await Promise.all([
+      settle("/mobile/api/status"), settle("/mobile/api/agents"), settle("/mobile/api/activity"), settle("/mobile/api/runs")
     ]);
     if ([status, agents, activity].some(r => !r.ok && r.error.status === 401)) {
       lockOut();
@@ -546,6 +561,8 @@
     else { markUnavailable("agents"); unavailable.push("Agent data"); }
     if (activity.ok && activity.body.available !== false) renderActivity(activity.body);
     else { markUnavailable("activity"); unavailable.push("Activity"); }
+    if (runs.ok && runs.body.available !== false) renderRuns(runs.body);
+    else $("runsMeta").textContent = "Unavailable";
     if (sources.telemetry === "unavailable" && !unavailable.includes("Activity")) unavailable.push("Call metrics");
     try {
       if (!(await refreshSessions())) unavailable.push("Sessions");
