@@ -54,6 +54,14 @@ def make_staging(home: Path, files: dict[str, str] | None = None, *, release_id:
     return staging
 
 
+def make_staging_again(home: Path, files: dict[str, str]) -> Path:
+    staging = home / ".mac-mcp" / "pkg" / "staging"
+    if staging.exists():
+        import shutil
+        shutil.rmtree(staging)
+    return make_staging(home, files, release_id="stable-test-r2")
+
+
 class FakeRun:
     """Records commands and imitates the side effects install() relies on."""
 
@@ -238,6 +246,80 @@ class PkgFreshInstallTests(unittest.TestCase):
         rc = pkg.main(["--home", str(self.home), "--no-start"])
         self.assertEqual(1, rc)
         self.assertFalse(self.layout.staging.exists())
+
+
+class PkgUpgradeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.td = tempfile.TemporaryDirectory(prefix="mac-mcp-pkg-upgrade-")
+        self.home = Path(self.td.name)
+        self.layout = pkg.Layout(self.home)
+        old_files = dict(BASE_FILES, OLD_ONLY="tracked in r1\n")
+        make_staging(self.home, old_files)
+        pkg.install(self.layout, run=FakeRun(self.layout), health=lambda p: True)
+        rt = self.layout.runtime
+        (rt / "mcp_server/agents").mkdir(parents=True)
+        (rt / "mcp_server/agents/team.json").write_text('{"local": true}\n')
+        self.env_before = (rt / "mcp_server/.env").read_bytes()
+        settings = self.layout.state / "settings.json"
+        data = json.loads(settings.read_text())
+        data["server"]["port"] = 8765
+        settings.write_text(json.dumps(data))
+        self.settings_before = settings.read_bytes()
+        (self.layout.state / "dashboard-token").write_text("secret-token\n")
+        (self.layout.backups_root / "promote-20261001").mkdir(parents=True)
+        new_files = dict(BASE_FILES, VERSION_MARK="B\n")
+        make_staging_again(self.home, new_files)
+
+    def tearDown(self) -> None:
+        self.td.cleanup()
+
+    def test_upgrade_keeps_private_files_and_drops_removed_ones(self) -> None:
+        run = FakeRun(self.layout)
+        ports = []
+        result = pkg.install(self.layout, run=run, health=lambda p: ports.append(p) or True, clock=lambda: 2000)
+        rt = self.layout.runtime
+        self.assertEqual("upgrade", result["mode"])
+        self.assertEqual("B\n", (rt / "VERSION_MARK").read_text())
+        self.assertFalse((rt / "OLD_ONLY").exists())
+        self.assertEqual('{"local": true}\n', (rt / "mcp_server/agents/team.json").read_text())
+        self.assertEqual(self.env_before, (rt / "mcp_server/.env").read_bytes())
+        self.assertEqual(self.settings_before, (self.layout.state / "settings.json").read_bytes())
+        self.assertEqual("secret-token\n", (self.layout.state / "dashboard-token").read_text())
+        self.assertEqual([str(self.layout.cli), "stop"], run.calls[0])
+        self.assertEqual([8765], ports)
+        self.assertTrue((self.layout.backups_root / "pkg-2000" / "runtime" / "OLD_ONLY").exists())
+
+    def test_only_newest_package_backup_is_kept(self) -> None:
+        pkg.install(self.layout, run=FakeRun(self.layout), health=lambda p: True, clock=lambda: 2000)
+        make_staging_again(self.home, dict(BASE_FILES, VERSION_MARK="C\n"))
+        pkg.install(self.layout, run=FakeRun(self.layout), health=lambda p: True, clock=lambda: 3000)
+        names = sorted(p.name for p in self.layout.backups_root.iterdir())
+        self.assertEqual(["pkg-3000", "promote-20261001"], names)
+
+    def test_failed_upgrade_restores_and_restarts_previous_runtime(self) -> None:
+        run = FakeRun(self.layout, fail_on="pip check")
+        with self.assertRaises(pkg.InstallError):
+            pkg.install(self.layout, run=run, health=lambda p: True, clock=lambda: 2000)
+        rt = self.layout.runtime
+        self.assertEqual("A\n", (rt / "VERSION_MARK").read_text())
+        self.assertTrue((rt / "OLD_ONLY").exists())
+        self.assertEqual(self.env_before, (rt / "mcp_server/.env").read_bytes())
+        self.assertEqual("pkg\n", self.layout.kind_file.read_text())
+        self.assertEqual([str(self.layout.cli), "start"], run.calls[-1])
+        self.assertFalse((self.layout.backups_root / "pkg-2000").exists())
+        self.assertIn("OLD_ONLY", json.loads(self.layout.files_list.read_text()))
+
+    def test_unhealthy_new_server_rolls_back(self) -> None:
+        verdicts = iter([False, True])
+        with self.assertRaises(pkg.InstallError):
+            pkg.install(self.layout, run=FakeRun(self.layout), health=lambda p: next(verdicts), clock=lambda: 2000)
+        self.assertEqual("A\n", (self.layout.runtime / "VERSION_MARK").read_text())
+
+    def test_no_start_upgrade_never_touches_processes(self) -> None:
+        run = FakeRun(self.layout)
+        pkg.install(self.layout, run=run, health=lambda p: True, start=False, clock=lambda: 2000)
+        self.assertFalse(run.ran(" stop"))
+        self.assertFalse(run.ran(" start"))
 
 
 if __name__ == "__main__":

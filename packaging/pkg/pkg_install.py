@@ -275,6 +275,49 @@ def _start(layout: Layout, run, env: Dict[str, str], port: int, health) -> None:
         raise InstallError(f"Mac MCP did not become healthy on port {port}.")
 
 
+def _move_runtime_to_backup(layout: Layout, clock) -> Path:
+    target = layout.backups_root / f"pkg-{int(clock())}" / "runtime"
+    target.parent.mkdir(parents=True, exist_ok=False)
+    os.rename(layout.runtime, target)
+    return target
+
+
+def _carried_files(backup: Path, previous: List[str], current: List[str]) -> List[str]:
+    """Files in the old runtime that no release shipped: the owner's private/local files."""
+    shipped = set(previous) | set(current)
+    out = []
+    for path in backup.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        rel = path.relative_to(backup).as_posix()
+        parts = rel.split("/")
+        if rel in shipped or any(d in parts for d in _NOT_CARRIED_DIRS) or any(x.endswith(".egg-info") for x in parts):
+            continue
+        out.append(rel)
+    return sorted(out)
+
+
+def _carry_over(backup: Path, runtime: Path, files: List[str]) -> None:
+    for rel in files:
+        target = runtime / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(backup / rel, target)
+
+
+def _previous_members(layout: Layout) -> List[str]:
+    try:
+        data = json.loads(layout.files_list.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [str(x) for x in data] if isinstance(data, list) else []
+
+
+def _prune_package_backups(layout: Layout, keep: Path) -> None:
+    for folder in layout.backups_root.glob("pkg-*"):
+        if folder != keep.parent:
+            shutil.rmtree(folder, ignore_errors=True)
+
+
 def install(layout: Layout, *, run=_run, health=_health_ok, start: bool = True, clock=time.time) -> dict:
     log = _Log(layout.log_file)
     release = read_release(layout.staging)
@@ -287,16 +330,27 @@ def install(layout: Layout, *, run=_run, health=_health_ok, start: bool = True, 
     if _sha256(layout.staging / "source.tar") != release["source_sha256"]:
         raise InstallError("The package source archive does not match its release checksum.")
     members = _source_members(layout.staging)
+    previous = _previous_members(layout)
+    deployed_file = layout.state / "update/deployed-commit"
+    # Restored on a failed upgrade, so the old runtime keeps describing itself.
+    saved = {f: f.read_bytes() for f in (layout.files_list, deployed_file) if f.exists()}
     env = child_env(layout)
     log.write(f"{'upgrade' if upgrade else 'fresh install'} to {release['release_id']} ({release['commit'][:12]})")
     cli_existed = layout.cli.exists()
     backup: Optional[Path] = None
     runtime_created = False
     try:
+        if upgrade:
+            if start and layout.cli.exists():
+                run([layout.cli, "stop"], env=env, check=False)
+            backup = _move_runtime_to_backup(layout, clock)
         runtime_created = True
         _lay_out_runtime(layout, release)
+        if backup is not None:
+            _carry_over(backup, layout.runtime, _carried_files(backup, previous, members))
         _create_environment(layout, run, env)
-        _write_new_env_file(layout)
+        if not (layout.runtime / "mcp_server/.env").is_file():
+            _write_new_env_file(layout)
         port = _ensure_settings(layout, log)
         _wire_up(layout, run, env, port, release, members)
         if start:
@@ -305,12 +359,25 @@ def install(layout: Layout, *, run=_run, health=_health_ok, start: bool = True, 
         log.write(f"install failed: {exc}")
         if runtime_created and layout.runtime.exists():
             shutil.rmtree(layout.runtime, ignore_errors=True)
-        if not cli_existed and layout.cli.exists():
-            layout.cli.unlink()
-        layout.kind_file.unlink(missing_ok=True)
+        if backup is not None:
+            os.rename(backup, layout.runtime)
+            shutil.rmtree(backup.parent, ignore_errors=True)
+            for path, data in saved.items():
+                path.write_bytes(data)
+            layout.kind_file.write_text("pkg\n", encoding="utf-8")
+            if start and layout.cli.exists():
+                run([layout.cli, "start"], env=env, check=False)
+                log.write("previous runtime restored and started")
+        else:
+            if not cli_existed and layout.cli.exists():
+                layout.cli.unlink()
+            layout.kind_file.unlink(missing_ok=True)
         raise
+    if backup is not None:
+        _prune_package_backups(layout, backup)
     log.write("install complete")
-    return {"mode": "fresh", "release_id": release["release_id"], "backup": None}
+    return {"mode": "upgrade" if upgrade else "fresh", "release_id": release["release_id"],
+            "backup": str(backup) if backup else None}
 
 
 def main(argv: Optional[List[str]] = None) -> int:
