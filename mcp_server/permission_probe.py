@@ -12,6 +12,7 @@ from __future__ import annotations
 import ctypes
 import os
 import platform
+import plistlib
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -153,15 +154,109 @@ def _running_executable() -> Path:
     return Path(sys.executable).resolve()
 
 
+MAC_MCP_SERVER_BUNDLE_ID = "com.bulutarkan.mac-mcp.server"
+
+
+def _responsible_executable() -> Path:
+    """The process macOS records consent for: this process's responsible process.
+
+    Started under Mac MCP Server that is the launcher, so permissions say "Mac MCP";
+    started from a shell it is Terminal; started by launchd directly, Python itself.
+    """
+    if platform.system() == "Darwin":
+        try:
+            libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+            responsible = libsystem.responsibility_get_pid_responsible_for_pid
+            responsible.restype = ctypes.c_int
+            responsible.argtypes = [ctypes.c_int]
+            pid = responsible(os.getpid())
+            buffer = ctypes.create_string_buffer(4096)
+            if pid > 0 and libsystem.proc_pidpath(pid, buffer, ctypes.sizeof(buffer)) > 0:
+                return Path(buffer.value.decode("utf-8", "replace"))
+        except (OSError, AttributeError):
+            pass
+    return _running_executable()
+
+
 def process_identity() -> Dict[str, Any]:
-    executable = _running_executable()
+    executable = _responsible_executable()
     app = next((parent for parent in executable.parents if parent.suffix == ".app"), None)
+    info: Dict[str, Any] = {}
+    if app is not None:
+        try:
+            info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            info = {}
+    name = str(info.get("CFBundleDisplayName") or info.get("CFBundleName") or "") or (
+        app.stem if app is not None else executable.name
+    )
     return {
         "pid": os.getpid(),
         "executable": str(executable),
         # System Settings lists the app bundle when there is one, else the binary.
-        "listed_as": app.stem if app is not None else executable.name,
+        "listed_as": name,
+        "holder": "mac_mcp" if info.get("CFBundleIdentifier") == MAC_MCP_SERVER_BUNDLE_ID else "other",
     }
+
+
+REQUESTABLE = ("accessibility", "screen_recording")
+
+
+def _prompt_accessibility() -> None:
+    """AXIsProcessTrustedWithOptions with the prompt option: macOS asks once, naming the holder."""
+    services = _library("ApplicationServices")
+    foundation = _library("CoreFoundation")
+    if services is None or foundation is None:
+        return
+    try:
+        key = ctypes.c_void_p.in_dll(services, "kAXTrustedCheckOptionPrompt")
+        true = ctypes.c_void_p.in_dll(foundation, "kCFBooleanTrue")
+        create = foundation.CFDictionaryCreate
+        release = foundation.CFRelease
+        trusted = services.AXIsProcessTrustedWithOptions
+    except (AttributeError, ValueError):
+        return
+    create.restype = ctypes.c_void_p
+    create.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+                       ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p]
+    trusted.restype = ctypes.c_bool
+    trusted.argtypes = [ctypes.c_void_p]
+    release.argtypes = [ctypes.c_void_p]
+    keys = (ctypes.c_void_p * 1)(key.value)
+    values = (ctypes.c_void_p * 1)(true.value)
+    options = create(None, keys, values, 1, None, None)
+    try:
+        trusted(options)
+    finally:
+        if options:
+            release(options)
+
+
+def _request_screen_capture() -> bool:
+    graphics = _library("CoreGraphics")
+    if graphics is None:
+        return False
+    try:
+        request = graphics.CGRequestScreenCaptureAccess
+    except AttributeError:
+        return False
+    request.restype = ctypes.c_bool
+    request.argtypes = []
+    return bool(request())
+
+
+def request_permission(permission: str) -> Dict[str, Any]:
+    """Ask macOS for a permission from the server process, so the prompt names its holder."""
+    if permission == "accessibility":
+        _prompt_accessibility()
+        state = accessibility_state()
+        return {"permission": permission, "state": state, "restart_needed": False}
+    if permission == "screen_recording":
+        _request_screen_capture()
+        state = screen_recording_state()
+        # The grant takes effect for this process only after a restart.
+        return {"permission": permission, "state": state, "restart_needed": state != GRANTED}
+    raise ValueError(f"unknown permission: {permission}")
 
 
 def _entry(key: str, state: str, **extra: Any) -> Dict[str, Any]:

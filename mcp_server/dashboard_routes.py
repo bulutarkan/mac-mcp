@@ -32,7 +32,10 @@ from .file_transactions import (
     undo_transaction,
 )
 from .observability import TelemetryManager, sanitize_value
-from .permission_probe import accessibility_state, probe_permissions, screen_recording_state
+from .permission_probe import (
+    REQUESTABLE, accessibility_state, probe_permissions, process_identity, request_permission,
+    screen_recording_state,
+)
 from .provider_usage import clear as provider_usage_clear, summary as provider_usage_summary
 from .policy import (
     GLOBAL_PROFILE_NAMES,
@@ -345,7 +348,20 @@ def create_dashboard_routes(
             "accessibility": await asyncio.to_thread(accessibility_state),
             "screen_recording": await asyncio.to_thread(screen_recording_state),
             "public_endpoint_mode": str(server_setting("public_endpoint_mode", "none") or "none"),
+            # Who macOS lists the permissions under: "Mac MCP" when the server runs under Mac MCP Server.
+            "permission_holder": (await asyncio.to_thread(process_identity))["listed_as"],
         })
+
+    async def permission_request(request: Request) -> Response:
+        # Asked from the server so the macOS prompt names the process that holds the grant.
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        body = await _object_body(request)
+        permission = str((body or {}).get("permission") or "")
+        if permission not in REQUESTABLE:
+            return JSONResponse({"ok": False, "error": "unknown_permission"}, status_code=400)
+        return JSONResponse({"ok": True, **await asyncio.to_thread(request_permission, permission)})
 
     async def decision_acceleration_status(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
@@ -1293,6 +1309,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/diagnostics/runtime", runtime_diagnostics, methods=["GET"]),
         Route("/dashboard/api/diagnostics/permissions", permissions_view, methods=["GET"]),
         Route("/dashboard/api/onboarding", onboarding_status, methods=["GET"]),
+        Route("/dashboard/api/permissions/request", permission_request, methods=["POST"]),
         Route("/dashboard/api/decision-acceleration", decision_acceleration_status, methods=["GET"]),
         Route("/dashboard/api/decision-acceleration/verify", decision_acceleration_verify, methods=["POST"]),
         Route("/dashboard/api/security/semantics", security_semantics, methods=["GET"]),
