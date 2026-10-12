@@ -8,16 +8,28 @@ else
 fi
 [[ -n "$HOME_DIR" && -d "$HOME_DIR" ]] || { echo "Mac MCP: could not find your home folder." >&2; exit 1; }
 
+APP="$HOME_DIR/Applications/Mac MCP.app"
 kind="$(/bin/cat "$HOME_DIR/.mac-mcp/install-kind" 2>/dev/null || true)"
-if [[ -e "$HOME_DIR/mac-mcp" && "$kind" != "pkg" ]]; then
-  echo "Mac MCP is already installed in $HOME_DIR/mac-mcp with install.sh or from source." >&2
-  echo "The package will not replace it. Update that install with: mac-mcp update" >&2
-  exit 1
+if [[ "$kind" != "pkg" ]]; then
+  for path in "$HOME_DIR/mac-mcp" "$HOME_DIR/.local/bin/mac-mcp" "$APP"; do
+    if [[ -e "$path" || -L "$path" ]]; then
+      echo "Mac MCP is already installed on this account with install.sh or from source ($path)." >&2
+      echo "The package will not replace it. Update that install with: mac-mcp update" >&2
+      exit 1
+    fi
+  done
 fi
 [[ "$(/usr/bin/uname -m)" == "arm64" ]] || { echo "Mac MCP: this package is for Apple Silicon Macs." >&2; exit 1; }
 major="$(/usr/bin/sw_vers -productVersion | /usr/bin/cut -d. -f1)"
 (( major >= 14 )) || { echo "Mac MCP: macOS 14 or newer is required." >&2; exit 1; }
 
-# A package upgrade replaces the app bundle: stop the running menu app first.
-/usr/bin/pkill -f "^$HOME_DIR/Applications/Mac MCP.app/Contents/MacOS/MacMCPMenu" 2>/dev/null || true
+# A package upgrade replaces the app bundle: stop the running menu app first, and keep a
+# copy so a failed upgrade can put the previous app back next to the previous runtime.
+/usr/bin/pkill -f "^$APP/Contents/MacOS/MacMCPMenu" 2>/dev/null || true
+if [[ "$kind" == "pkg" && -d "$APP" ]]; then
+  PREVIOUS="$HOME_DIR/.mac-mcp/pkg/previous-app"
+  /bin/rm -rf "$PREVIOUS"
+  /bin/mkdir -p "$PREVIOUS"
+  /usr/bin/ditto "$APP" "$PREVIOUS/Mac MCP.app" || { echo "Mac MCP: could not back up the current app." >&2; exit 1; }
+fi
 exit 0

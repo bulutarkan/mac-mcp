@@ -43,6 +43,27 @@ class PkgScriptTests(unittest.TestCase):
         (self.home / ".mac-mcp/install-kind").write_text("pkg\n")
         self.assertEqual(0, run_script("preinstall", self.home).returncode)
 
+    def test_preinstall_refuses_a_cli_from_another_install(self) -> None:
+        (self.home / ".local/bin").mkdir(parents=True)
+        (self.home / ".local/bin/mac-mcp").write_text("#!/bin/sh\n")
+        self.assertEqual(1, run_script("preinstall", self.home).returncode)
+
+    def test_preinstall_refuses_an_app_from_another_install(self) -> None:
+        (self.home / "Applications/Mac MCP.app").mkdir(parents=True)
+        self.assertEqual(1, run_script("preinstall", self.home).returncode)
+
+    def test_preinstall_keeps_a_copy_of_the_app_for_rollback(self) -> None:
+        (self.home / "mac-mcp").mkdir()
+        (self.home / ".mac-mcp").mkdir()
+        (self.home / ".mac-mcp/install-kind").write_text("pkg\n")
+        app = self.home / "Applications/Mac MCP.app/Contents"
+        app.mkdir(parents=True)
+        (app / "Info.plist").write_text("old")
+        proc = run_script("preinstall", self.home)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        copy = self.home / ".mac-mcp/pkg/previous-app/Mac MCP.app/Contents/Info.plist"
+        self.assertEqual("old", copy.read_text())
+
     def test_postinstall_runs_the_bundled_python_isolated(self) -> None:
         staging = self.home / ".mac-mcp/pkg/staging"
         (staging / "python/bin").mkdir(parents=True)

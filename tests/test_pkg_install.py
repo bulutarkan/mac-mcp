@@ -238,6 +238,24 @@ class PkgFreshInstallTests(unittest.TestCase):
         self.assertEqual("{not json", (self.layout.state / "settings.json").read_text())
         self.assertEqual([8000], self.health_ports)
 
+    # Final review fixes.
+    def test_refuses_when_cli_from_another_install_exists(self) -> None:
+        make_staging(self.home)
+        self.layout.cli.parent.mkdir(parents=True)
+        self.layout.cli.write_text("#!/bin/sh\n# install.sh launcher\n")
+        with self.assertRaises(pkg.InstallError):
+            pkg.install(self.layout, run=FakeRun(self.layout), health=self.health)
+        self.assertIn("install.sh launcher", self.layout.cli.read_text())
+        self.assertFalse(self.layout.runtime.exists())
+
+    def test_failed_fresh_install_removes_the_payload_app(self) -> None:
+        make_staging(self.home)
+        self.layout.app.mkdir(parents=True)
+        (self.layout.app / "NEW_APP").write_text("new")
+        with self.assertRaises(pkg.InstallError):
+            pkg.install(self.layout, run=FakeRun(self.layout, fail_on="pip check"), health=self.health)
+        self.assertFalse(self.layout.app.exists())
+
     def test_main_removes_staging_and_returns_1_on_failure(self) -> None:
         make_staging(self.home)
         (self.layout.staging / "source.tar").unlink()
@@ -312,6 +330,50 @@ class PkgUpgradeTests(unittest.TestCase):
         with self.assertRaises(pkg.InstallError):
             pkg.install(self.layout, run=FakeRun(self.layout), health=lambda p: next(verdicts), clock=lambda: 2000)
         self.assertEqual("A\n", (self.layout.runtime / "VERSION_MARK").read_text())
+
+    # Final review fixes.
+    def test_backup_move_failure_keeps_package_install_and_restarts_it(self) -> None:
+        (self.layout.backups_root / "pkg-2000").mkdir(parents=True)
+        run = FakeRun(self.layout)
+        with self.assertRaises(Exception):
+            pkg.install(self.layout, run=run, health=lambda p: True, clock=lambda: 2000)
+        self.assertEqual("A\n", (self.layout.runtime / "VERSION_MARK").read_text())
+        self.assertEqual("pkg\n", self.layout.kind_file.read_text())
+        self.assertEqual([str(self.layout.cli), "start"], run.calls[-1])
+
+    def test_start_exit_code_alone_does_not_fail_a_healthy_install(self) -> None:
+        run = FakeRun(self.layout, fail_on="mac-mcp start")
+        result = pkg.install(self.layout, run=run, health=lambda p: True, clock=lambda: 2000)
+        self.assertEqual("upgrade", result["mode"])
+        self.assertEqual("B\n", (self.layout.runtime / "VERSION_MARK").read_text())
+
+    def test_unhealthy_upgrade_stops_new_server_before_restoring(self) -> None:
+        run = FakeRun(self.layout)
+        with self.assertRaises(pkg.InstallError):
+            pkg.install(self.layout, run=run, health=lambda p: False, clock=lambda: 2000)
+        cli = str(self.layout.cli)
+        tail = [c for c in run.calls if c[0] == cli][-3:]
+        self.assertEqual([[cli, "start"], [cli, "stop"], [cli, "start"]], tail)
+
+    def test_failed_upgrade_restores_previous_app_bundle(self) -> None:
+        self.layout.previous_app.mkdir(parents=True)
+        (self.layout.previous_app / "OLD_APP").write_text("old")
+        self.layout.app.mkdir(parents=True, exist_ok=True)
+        (self.layout.app / "NEW_APP").write_text("new")
+        with self.assertRaises(pkg.InstallError):
+            pkg.install(self.layout, run=FakeRun(self.layout, fail_on="pip check"), health=lambda p: True, clock=lambda: 2000)
+        self.assertTrue((self.layout.app / "OLD_APP").exists())
+        self.assertFalse((self.layout.app / "NEW_APP").exists())
+        self.assertFalse(self.layout.previous_app.exists())
+
+    def test_successful_upgrade_discards_previous_app_copy(self) -> None:
+        self.layout.previous_app.mkdir(parents=True)
+        (self.layout.previous_app / "OLD_APP").write_text("old")
+        self.layout.app.mkdir(parents=True, exist_ok=True)
+        (self.layout.app / "NEW_APP").write_text("new")
+        pkg.install(self.layout, run=FakeRun(self.layout), health=lambda p: True, clock=lambda: 2000)
+        self.assertTrue((self.layout.app / "NEW_APP").exists())
+        self.assertFalse(self.layout.previous_app.exists())
 
     def test_no_start_upgrade_never_touches_processes(self) -> None:
         run = FakeRun(self.layout)

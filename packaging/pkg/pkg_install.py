@@ -81,6 +81,11 @@ class Layout:
     def backups_root(self) -> Path:
         return self.state / "backups"
 
+    @property
+    def previous_app(self) -> Path:
+        # Written by preinstall before the payload replaces the app (package upgrades only).
+        return self.state / "pkg" / "previous-app" / "Mac MCP.app"
+
 
 class _Log:
     def __init__(self, path: Path) -> None:
@@ -269,8 +274,12 @@ def _wire_up(layout: Layout, run, env: Dict[str, str], port: int, release: dict,
     layout.kind_file.write_text("pkg\n", encoding="utf-8")
 
 
-def _start(layout: Layout, run, env: Dict[str, str], port: int, health) -> None:
-    run([layout.cli, "start"], env=env)
+def _start(layout: Layout, run, env: Dict[str, str], port: int, health, log: "_Log") -> None:
+    # The verdict is the health check: `mac-mcp start` can exit non-zero for an optional
+    # step (a public tunnel) after the server itself is already up.
+    proc = run([layout.cli, "start"], env=env, check=False)
+    if proc.returncode != 0:
+        log.write(f"mac-mcp start exited {proc.returncode}; judging by the health check")
     if not health(port):
         raise InstallError(f"Mac MCP did not become healthy on port {port}.")
 
@@ -312,6 +321,15 @@ def _previous_members(layout: Layout) -> List[str]:
     return [str(x) for x in data] if isinstance(data, list) else []
 
 
+def _restore_previous_app(layout: Layout) -> None:
+    if not layout.previous_app.is_dir():
+        return
+    shutil.rmtree(layout.app, ignore_errors=True)
+    layout.app.parent.mkdir(parents=True, exist_ok=True)
+    os.rename(layout.previous_app, layout.app)
+    shutil.rmtree(layout.previous_app.parent, ignore_errors=True)
+
+
 def _prune_package_backups(layout: Layout, keep: Path) -> None:
     for folder in layout.backups_root.glob("pkg-*"):
         if folder != keep.parent:
@@ -322,9 +340,10 @@ def install(layout: Layout, *, run=_run, health=_health_ok, start: bool = True, 
     log = _Log(layout.log_file)
     release = read_release(layout.staging)
     upgrade = is_upgrade(layout)
-    if layout.runtime.exists() and not upgrade:
+    if not upgrade and (layout.runtime.exists() or layout.cli.exists()):
         raise InstallError(
-            f"{layout.runtime} was not installed by the Mac MCP package (install.sh or a source install). "
+            "Mac MCP is already installed on this account with install.sh or from source "
+            f"({layout.runtime if layout.runtime.exists() else layout.cli}). "
             "It is left untouched; update it with 'mac-mcp update'."
         )
     if _sha256(layout.staging / "source.tar") != release["source_sha256"]:
@@ -336,9 +355,9 @@ def install(layout: Layout, *, run=_run, health=_health_ok, start: bool = True, 
     saved = {f: f.read_bytes() for f in (layout.files_list, deployed_file) if f.exists()}
     env = child_env(layout)
     log.write(f"{'upgrade' if upgrade else 'fresh install'} to {release['release_id']} ({release['commit'][:12]})")
-    cli_existed = layout.cli.exists()
     backup: Optional[Path] = None
     runtime_created = False
+    started = False
     try:
         if upgrade:
             if start and layout.cli.exists():
@@ -354,27 +373,36 @@ def install(layout: Layout, *, run=_run, health=_health_ok, start: bool = True, 
         port = _ensure_settings(layout, log)
         _wire_up(layout, run, env, port, release, members)
         if start:
-            _start(layout, run, env, port, health)
+            started = True
+            _start(layout, run, env, port, health, log)
     except Exception as exc:
         log.write(f"install failed: {exc}")
+        if started and layout.cli.exists():
+            # The new server may be up even though the install failed: stop it before
+            # its runtime goes away, so the previous one can really start again.
+            run([layout.cli, "stop"], env=env, check=False)
         if runtime_created and layout.runtime.exists():
             shutil.rmtree(layout.runtime, ignore_errors=True)
-        if backup is not None:
-            os.rename(backup, layout.runtime)
-            shutil.rmtree(backup.parent, ignore_errors=True)
+        if upgrade:
+            if backup is not None:
+                os.rename(backup, layout.runtime)
+                shutil.rmtree(backup.parent, ignore_errors=True)
             for path, data in saved.items():
                 path.write_bytes(data)
             layout.kind_file.write_text("pkg\n", encoding="utf-8")
+            _restore_previous_app(layout)
             if start and layout.cli.exists():
                 run([layout.cli, "start"], env=env, check=False)
                 log.write("previous runtime restored and started")
         else:
-            if not cli_existed and layout.cli.exists():
-                layout.cli.unlink()
+            # Fresh install: preinstall guaranteed none of these existed before.
+            layout.cli.unlink(missing_ok=True)
             layout.kind_file.unlink(missing_ok=True)
+            shutil.rmtree(layout.app, ignore_errors=True)
         raise
     if backup is not None:
         _prune_package_backups(layout, backup)
+    shutil.rmtree(layout.previous_app.parent, ignore_errors=True)
     log.write("install complete")
     return {"mode": "upgrade" if upgrade else "fresh", "release_id": release["release_id"],
             "backup": str(backup) if backup else None}
