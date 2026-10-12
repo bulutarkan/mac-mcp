@@ -173,8 +173,12 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         page = Page(connect(target["webSocketDebuggerUrl"], max_size=50_000_000), target["id"], self.devtools_port)
         self.addCleanup(page.close)
         page.cmd("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False)
-        deadline = time.monotonic() + 10
-        while page.js("document.readyState") != "complete" and time.monotonic() < deadline:
+        # A new tab reports readyState=complete for about:blank before it navigates, so a slow
+        # runner could start on an empty page: wait for the fixture itself to finish loading.
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and not page.js(
+            f"location.href.startsWith({json.dumps(url)}) && document.readyState === 'complete'"
+        ):
             time.sleep(0.05)
         return page
 
