@@ -82,7 +82,9 @@ class OnboardingBridgeTests(unittest.TestCase):
         node = subprocess.run(["/usr/bin/env", "which", "node"], capture_output=True, text=True).stdout.strip()
         if not node:
             self.skipTest("node is not installed")
-        run = subprocess.run([node, "--test", str(ONBOARDING / "tests")], capture_output=True, text=True, timeout=60)
+        # Files, not the folder: older Node versions do not accept a directory here.
+        files = sorted(str(path) for path in (ONBOARDING / "tests").glob("*.test.mjs"))
+        run = subprocess.run([node, "--test", *files], capture_output=True, text=True, timeout=60)
         self.assertEqual(0, run.returncode, run.stdout + run.stderr)
 
 
