@@ -397,9 +397,13 @@ mac-mcp doctor
 mac-mcp conformance
 mac-mcp autostart            # show whether Mac MCP starts at login
 mac-mcp autostart off        # or: on
+mac-mcp repair               # check the parts Mac MCP manages; --yes fixes them
+mac-mcp uninstall            # preview; --yes removes (to the Trash)
 ```
 
 **Start at login** is on by default: the crash supervisor's launchd job lives in `~/Library/LaunchAgents`, so after a restart or a new login a server you left running starts again, together with the menu bar app. A server you stopped with `mac-mcp stop` (or the menu bar app) stays stopped. Turn it off with `mac-mcp autostart off` or **Settings → General → Startup**; the job then moves back to the state folder and only `mac-mcp start` loads it.
+
+**Repair and uninstall.** `mac-mcp repair` checks the Python environment, the `mac-mcp` command, the menu bar app and the start-at-login job, and with `--yes` fixes only what is broken. If the `mac-mcp` command itself is broken, run the runtime's copy directly: `~/mac-mcp/.venv/bin/mac-mcp repair --yes`; if the Python environment is gone, `python3 ~/mac-mcp/mcp_server/venv_repair.py repair` rebuilds it. `mac-mcp uninstall` shows what it would remove and changes nothing; `mac-mcp uninstall --yes` stops Mac MCP and moves the menu bar app, the runtime (with its API key), the `mac-mcp` command and the login jobs into one dated folder in the Trash, so nothing is deleted. Your settings, keys, tokens and memory in `~/.mac-mcp` and a source checkout are kept unless you add `--include-state` or `--include-source`. It does not edit AI app configurations, the PATH line in `~/.zprofile`, saved logins in your Keychain or the Chrome companion.
 
 The legacy `--ngrok` flag remains supported as an alias for `--public-mode ngrok`. When no CLI override is supplied, `start`/`restart` use the public endpoint mode saved by the native Settings window (or the `MAC_MCP_PUBLIC_*` environment overrides).
 

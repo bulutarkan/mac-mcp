@@ -59,6 +59,7 @@ from . import supervisor
 from .venv_repair import inspect_venv
 from .tools_update import launch_detached_update
 from .install_kind import install_kind, package_update_payload
+from .cli_bootstrap import default_cli_path
 from .update_state import UpdateInProgress
 from .log_retention import log_limits, managed_logs, rotate_copy_truncate, tail_log, update_logs_dir
 from .version import __version__
@@ -674,6 +675,125 @@ def autostart(args: argparse.Namespace) -> int:
     else:
         print("Start at login: off (run 'mac-mcp start' or use the menu bar app after you log in).")
     return 0
+
+
+def _uninstall_app_path() -> Path:
+    configured = os.getenv("MAC_MCP_MENU_APP", "").strip()
+    return Path(configured).expanduser() if configured else Path.home() / "Applications" / "Mac MCP.app"
+
+
+def _uninstall_source_path() -> Path:
+    return Path(os.getenv("MAC_MCP_SOURCE_DIR", str(Path.home() / "Projects" / "mac-mcp"))).expanduser()
+
+
+def _trash_root() -> Path:
+    return Path.home() / ".Trash"
+
+
+def _stop_for_uninstall(app: Path) -> None:
+    try:
+        stop(argparse.Namespace(timeout=10, force=True, keep_intent=False))
+    except Exception as exc:  # keep going: the parts are moved to the Trash either way
+        print(f"Warning: Mac MCP did not stop cleanly ({type(exc).__name__}).")
+    from .update_helper import _stop_menu_app
+    try:
+        _stop_menu_app(app)
+    except Exception:
+        pass
+
+
+PACKAGE_RECEIPT_ID = "com.bulutarkan.mac-mcp.pkg"
+
+
+def _forget_package_receipt() -> None:
+    """A package install leaves an Installer receipt in the home domain; drop it with the install."""
+    home = str(Path.home())
+    try:
+        listed = subprocess.run(["/usr/sbin/pkgutil", "--volume", home, "--pkgs"],
+                                capture_output=True, text=True, timeout=20).stdout.split()
+        if PACKAGE_RECEIPT_ID in listed:
+            subprocess.run(["/usr/sbin/pkgutil", "--volume", home, "--forget", PACKAGE_RECEIPT_ID],
+                           capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def uninstall(args: argparse.Namespace) -> int:
+    from . import lifecycle
+
+    app = _uninstall_app_path()
+    items = lifecycle.uninstall_plan(
+        runtime=PROJECT_ROOT, state=STATE_DIR, app=app, cli=default_cli_path(),
+        launch_agents_dir=_launch_agents_dir(), source=_uninstall_source_path(),
+        include_state=bool(getattr(args, "include_state", False)),
+        include_source=bool(getattr(args, "include_source", False)),
+    )
+    if not getattr(args, "yes", False):
+        print(lifecycle.format_plan(items))
+        extra = "".join(
+            f" --{name.replace('_', '-')}" for name in ("include_state", "include_source") if getattr(args, name, False)
+        )
+        print(f"\nNothing was changed. To do this, run: mac-mcp uninstall --yes{extra}")
+        return 0
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    trash_root = _trash_root()
+    summary = lifecycle.format_plan(items, trash_folder=trash_root / f"Mac MCP uninstall {stamp}")
+    _stop_for_uninstall(app)
+    for label in (SUPERVISOR_LABEL, CLOUDFLARE_LAUNCHD_LABEL):
+        _launchctl_run("bootout", _launchctl_target(label), capture=True)
+    results = lifecycle.apply_uninstall(items, trash_root=trash_root, stamp=stamp)
+    _forget_package_receipt()
+    failed = [row for row in results if row["result"] == "failed"]
+    print(summary)
+    for row in failed:
+        print(f"Could not move {row['path']} ({row.get('error')}); remove it by hand if you want it gone.")
+    return 1 if failed else 0
+
+
+def repair(args: argparse.Namespace) -> int:
+    from . import lifecycle
+    from .cli_bootstrap import ensure_cli_launcher
+
+    def checks():
+        return lifecycle.repair_checks(
+            runtime=PROJECT_ROOT, cli=default_cli_path(), app=_uninstall_app_path(),
+            supervisor_job=_supervisor_plist_path(), start_at_login=_start_at_login(),
+        )
+
+    def show(rows) -> None:
+        for row in rows:
+            mark = "ok " if row.ok else "fix"
+            print(f"  [{mark}] {row.label}: {row.detail}" + ("" if row.ok else f" -> {row.fix}"))
+
+    found = checks()
+    show(found)
+    broken = [row for row in found if not row.ok]
+    if not broken:
+        print("Nothing to repair.")
+        return 0
+    if not getattr(args, "yes", False):
+        print("Nothing was changed. To repair these, run: mac-mcp repair --yes")
+        return 0
+    for row in broken:
+        if row.key == "venv":
+            from .venv_repair import repair as repair_venv
+            repair_venv(PROJECT_ROOT)
+        elif row.key == "cli":
+            ensure_cli_launcher(PROJECT_ROOT, default_cli_path(), strict=True)
+        elif row.key == "supervisor":
+            _ensure_supervisor()
+        elif row.key == "app":
+            installer = PROJECT_ROOT / "menu_app" / "install_app.sh"
+            if installer.is_file() and shutil.which("xcrun") and subprocess.run(
+                ["/usr/bin/xcrun", "--find", "swiftc"], capture_output=True).returncode == 0:
+                subprocess.run([str(installer)], check=False)
+            else:
+                print("The menu bar app cannot be rebuilt here; install the latest package from "
+                      "https://github.com/bulutarkan/mac-mcp/releases to put it back.")
+    after = checks()
+    print("After repair:")
+    show(after)
+    return 0 if all(row.ok for row in after) else 1
 
 
 def supervisor_report() -> dict:
@@ -2586,6 +2706,17 @@ def main(argv: list[str] | None = None) -> int:
     p_logs.add_argument("-n", "--lines", type=int, default=80, help="Number of lines (max 2000).")
     p_logs.add_argument("--list", action="store_true", help="List every log with its size and the retention bounds.")
     p_logs.set_defaults(func=logs)
+
+    p_uninstall = sub.add_parser("uninstall", help="Preview or remove Mac MCP; removed parts go to the Trash.")
+    p_uninstall.add_argument("--yes", action="store_true", help="Do it (without this flag nothing changes).")
+    p_uninstall.add_argument("--include-state", action="store_true",
+                             help="Also move ~/.mac-mcp: your settings, keys, tokens, memory and logs.")
+    p_uninstall.add_argument("--include-source", action="store_true", help="Also move the source checkout.")
+    p_uninstall.set_defaults(func=uninstall)
+
+    p_repair = sub.add_parser("repair", help="Check and fix the parts Mac MCP manages (preview unless --yes).")
+    p_repair.add_argument("--yes", action="store_true", help="Apply the fixes.")
+    p_repair.set_defaults(func=repair)
 
     p_autostart = sub.add_parser("autostart", help="Start Mac MCP when you log in: on, off, or show the setting.")
     p_autostart.add_argument("state", nargs="?", choices=("on", "off"), help="Turn start at login on or off.")
