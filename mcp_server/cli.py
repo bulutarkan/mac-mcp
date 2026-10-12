@@ -765,7 +765,9 @@ def repair(args: argparse.Namespace) -> int:
     def checks():
         return lifecycle.repair_checks(
             runtime=PROJECT_ROOT, cli=default_cli_path(), app=_uninstall_app_path(),
-            supervisor_job=_supervisor_plist_path(), start_at_login=_start_at_login(),
+            supervisor_job=_supervisor_plist_path(),
+            # Only the default install has the login job (see _ensure_supervisor).
+            start_at_login=_start_at_login() and STATE_DIR.resolve() == DEFAULT_STATE_DIR.resolve(),
         )
 
     def show(rows) -> None:

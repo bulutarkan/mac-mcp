@@ -142,6 +142,23 @@ class UninstallCommandTests(Fixture):
         self.assertIn("not the default install", text)
 
 
+class RepairCommandTests(Fixture):
+    def test_an_isolated_install_does_not_expect_the_login_job(self) -> None:
+        out = io.StringIO()
+        with patch.object(cli, "STATE_DIR", self.state), patch.object(cli, "DEFAULT_STATE_DIR", self.home / "elsewhere"), \
+                patch.object(cli, "PROJECT_ROOT", self.runtime), \
+                patch.object(cli, "default_cli_path", return_value=self.cli_path), \
+                patch.object(cli, "_uninstall_app_path", return_value=self.app), \
+                patch.object(lifecycle, "inspect_venv", return_value={"status": "ok", "version": "3.14.7"}), \
+                redirect_stdout(out):
+            self.cli_path.write_text(f"#!/bin/sh\nexec {self.runtime}/.venv/bin/mac-mcp\n")
+            self.cli_path.chmod(0o755)
+            code = cli.repair(argparse.Namespace(yes=False))
+        self.assertEqual(0, code)
+        self.assertNotIn("Start-at-login", out.getvalue())
+        self.assertIn("Nothing to repair", out.getvalue())
+
+
 class RepairChecksTests(Fixture):
     def test_missing_launcher_and_job_are_reported_with_fixes(self) -> None:
         self.cli_path.unlink()
