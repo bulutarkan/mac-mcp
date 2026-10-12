@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pwd
 import fcntl
 import plistlib
 import re
@@ -546,7 +547,9 @@ def _start_server_locked(args: argparse.Namespace) -> int:
 
 SUPERVISOR_LABEL = "com.macmcp.supervisor"
 SUPERVISOR_INTERVAL_S = 30
-DEFAULT_STATE_DIR = Path.home() / ".mac-mcp"
+# The account's real home, not $HOME: an isolated install run with a temporary HOME must not
+# count as the default install, whose launchd jobs and ~/Applications it would share.
+DEFAULT_STATE_DIR = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".mac-mcp"
 
 
 def _supervisor_enabled() -> bool:

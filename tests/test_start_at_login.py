@@ -154,3 +154,21 @@ class LoginPassTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultInstallIdentityTests(unittest.TestCase):
+    def test_the_default_install_follows_the_account_home_not_the_home_variable(self) -> None:
+        # Isolated installs run with a temporary HOME; they must not count as the default
+        # install, whose launchd jobs and ~/Applications they share.
+        import importlib
+        import os
+        import pwd
+
+        real = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".mac-mcp"
+        with tempfile.TemporaryDirectory(prefix="mac-mcp-fake-home-") as fake, \
+                patch.dict(os.environ, {"HOME": fake}):
+            fresh = importlib.reload(cli)
+            try:
+                self.assertEqual(real, fresh.DEFAULT_STATE_DIR)
+            finally:
+                importlib.reload(cli)
