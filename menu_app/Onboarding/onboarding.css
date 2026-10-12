@@ -272,7 +272,7 @@ button[disabled] { opacity: 0.5; cursor: default; }
 @keyframes glide-welcome { 0% { opacity: 0; left: 6%; top: 86%; } 25% { opacity: 1; } 100% { opacity: 1; left: 60%; top: 62%; } }
 @keyframes glide-apps { 0% { opacity: 0; left: 8%; top: 86%; } 25% { opacity: 1; } 100% { opacity: 1; left: 66%; top: 58%; } }
 @keyframes glide-browser { 0% { opacity: 0; left: 6%; top: 88%; } 25% { opacity: 1; } 100% { opacity: 1; left: 44%; top: 40%; } }
-@keyframes glide-safety { 0% { opacity: 0; left: 88%; top: 90%; } 25% { opacity: 1; } 100% { opacity: 1; left: 76%; top: 20%; } }
+@keyframes glide-safety { 0% { opacity: 0; left: 88%; top: 90%; } 25% { opacity: 1; } 100% { opacity: 1; left: 64%; top: 17%; } }
 @keyframes type { to { width: 85%; } }
 @keyframes fill { to { max-width: 220px; } }
 

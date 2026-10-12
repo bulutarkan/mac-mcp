@@ -1,6 +1,10 @@
 // The onboarding's state, kept apart from the DOM so it can be tested with `node --test`.
+// A classic script, not an ES module: WKWebView does not load modules from file:// pages.
+(function (root) {
+'use strict';
 
-export const SCREENS = [
+
+const SCREENS = [
   { id: 'welcome', kind: 'tour', rail: 'Tour' },
   { id: 'apps', kind: 'tour', rail: 'Tour' },
   { id: 'browser', kind: 'tour', rail: 'Tour' },
@@ -13,7 +17,7 @@ export const SCREENS = [
 ];
 
 // Clients `mac-mcp connect-config` knows; the app renders their setup, never this page.
-export const CLIENTS = [
+const CLIENTS = [
   { id: 'claude-code', name: 'Claude Code', needsRemote: false },
   { id: 'codex', name: 'Codex', needsRemote: false },
   { id: 'opencode', name: 'OpenCode', needsRemote: false },
@@ -21,14 +25,14 @@ export const CLIENTS = [
   { id: 'chatgpt', name: 'ChatGPT', needsRemote: true },
 ];
 
-export const FIRST_REQUEST = 'Use Mac MCP to tell me which macOS version this Mac is running.';
+const FIRST_REQUEST = 'Use Mac MCP to tell me which macOS version this Mac is running.';
 
-export function indexOf(id) {
+function indexOf(id) {
   return SCREENS.findIndex((screen) => screen.id === id);
 }
 
 /** What the live status (GET /dashboard/api/onboarding plus server_running) says is done. */
-export function evaluate(status) {
+function evaluate(status) {
   const s = status || {};
   const running = s.server_running === true;
   const accessibility = running ? s.accessibility || 'unknown' : 'unknown';
@@ -50,7 +54,7 @@ export function evaluate(status) {
 }
 
 /** The primary button for a screen: its label and what it does. */
-export function primaryAction(id, evaluation) {
+function primaryAction(id, evaluation) {
   const e = evaluation || evaluate(null);
   switch (id) {
     case 'welcome':
@@ -71,3 +75,8 @@ export function primaryAction(id, evaluation) {
       return { label: 'Continue', action: 'next' };
   }
 }
+
+const api = { SCREENS, CLIENTS, FIRST_REQUEST, indexOf, evaluate, primaryAction };
+if (typeof module === 'object' && module.exports) module.exports = api;
+else root.OnboardingSteps = api;
+})(typeof window === 'object' ? window : globalThis);

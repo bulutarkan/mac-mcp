@@ -62,6 +62,10 @@ class OnboardingBridgeTests(unittest.TestCase):
         html = (ONBOARDING / "index.html").read_text(encoding="utf-8")
         self.assertIn("default-src 'none'", html)
         self.assertIn("connect-src 'none'", html)
+        # WKWebView does not load ES modules from file:// pages: classic scripts only.
+        self.assertNotIn('type="module"', html)
+        for script in ("steps.js", "onboarding.js"):
+            self.assertNotRegex((ONBOARDING / script).read_text(encoding="utf-8"), r"(?m)^\s*(import|export) ")
         for path in ONBOARDING.rglob("*"):
             if path.suffix in {".html", ".css", ".js"}:
                 self.assertIsNone(re.search(r"https?://(?!127\.0\.0\.1)", path.read_text(encoding="utf-8")), path.name)

@@ -1,5 +1,8 @@
 // Mac MCP onboarding controller: navigation, the bridge to the app, and live status.
-import { SCREENS, CLIENTS, FIRST_REQUEST, evaluate, primaryAction, indexOf } from './steps.js';
+// A classic script (WKWebView does not load ES modules from file:// pages).
+(function () {
+'use strict';
+const { SCREENS, CLIENTS, FIRST_REQUEST, evaluate, primaryAction, indexOf } = window.OnboardingSteps;
 
 // ---------- bridge ----------
 // The app answers every message with window.macmcp.receive({id, ok, result | error}).
@@ -287,3 +290,4 @@ buildRail();
 buildClients();
 wire();
 show(current);
+})();

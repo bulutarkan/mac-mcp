@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SCREENS, CLIENTS, evaluate, primaryAction, indexOf } from '../steps.js';
+import steps from '../steps.js';
+
+const { SCREENS, CLIENTS, evaluate, primaryAction, indexOf } = steps;
 
 test('the tour comes first, then the setup in order', () => {
   assert.deepEqual(SCREENS.map((s) => s.id),
