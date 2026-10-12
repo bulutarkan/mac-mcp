@@ -105,3 +105,10 @@ spctl --assess --type execute --verbose=4 "/tmp/mac-mcp-release-build/Mac MCP.ap
 ```
 
 The notarized ZIP/PKG/DMG should then be included with `--artifact` when generating the signed release manifest. Apple code signing/notarization and the Mac MCP Ed25519 release signature are complementary controls: one establishes Apple-distribution provenance, the other binds the Mac MCP update payload and channel.
+
+## Package installer
+
+After a stable checkpoint is signed and verified, build the Apple Silicon package from it:
+`scripts/build_pkg.sh` (defaults to HEAD; refuses a commit that is not a verified checkpoint).
+It writes `dist/Mac-MCP-<version>-<release_id>-arm64.pkg` and a `.sha256` file to attach to the
+GitHub Release. The package is unsigned. Package installs update by installing the newer package.

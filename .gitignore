@@ -31,3 +31,6 @@ menu_app/build/
 # Local agent instructions
 AGENTS.md
 CLAUDE.md
+
+# Package installer build output
+dist/
