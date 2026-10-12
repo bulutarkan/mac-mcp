@@ -4046,6 +4046,8 @@ def _process_state(pid: int) -> tuple[Optional[str], Optional[float]]:
     try:
         raw = subprocess.run(
             ["/bin/ps", "-p", str(int(pid)), "-o", "stat=,lstart="], capture_output=True, text=True, timeout=3,
+            # lstart is printed in the locale; the English format below needs the C locale.
+            env={**os.environ, "LC_ALL": "C", "LANG": "C"},
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError, ValueError):
         return None, None

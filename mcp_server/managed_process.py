@@ -76,10 +76,17 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
-def _run_text(command: list[str], timeout: float = 3.0) -> str | None:
+# ps prints process start times (lstart) in the caller's locale ("Pzt 12 Eki ..." in
+# Turkish). A start time identifies a process across the CLI, launchd jobs and the server,
+# which run with different locales, so it is always read in the C locale.
+_C_LOCALE = {"LC_ALL": "C", "LANG": "C"}
+
+
+def _run_text(command: list[str], timeout: float = 3.0, *, env: dict[str, str] | None = None) -> str | None:
     try:
         proc = subprocess.run(
             command,
+            env=env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -97,7 +104,7 @@ def process_snapshot(pid: int) -> ProcessSnapshot | None:
     if pid <= 0 or not pid_alive(pid):
         return None
 
-    start_time = _run_text(["/bin/ps", "-p", str(pid), "-o", "lstart="])
+    start_time = _run_text(["/bin/ps", "-p", str(pid), "-o", "lstart="], env={**os.environ, **_C_LOCALE})
     executable = _run_text(["/bin/ps", "-p", str(pid), "-o", "comm="])
     command = _run_text(["/bin/ps", "-p", str(pid), "-o", "command="])
     if not start_time or not executable or not command:
@@ -369,6 +376,15 @@ def write_process_record(
     return read_process_record(path)  # type: ignore[return-value]
 
 
+def _same_start(recorded: str | None, current: str, pid: int) -> bool:
+    if recorded == current:
+        return True
+    # A record written before start times were read in the C locale holds the start time
+    # in the writer's locale; accept it when it matches this process read that way.
+    local = _run_text(["/bin/ps", "-p", str(pid), "-o", "lstart="])
+    return bool(recorded) and recorded == (local or "").strip()
+
+
 def validate_process_record(
     path: Path,
     role: str,
@@ -401,7 +417,7 @@ def validate_process_record(
         return ProcessValidation("identity_mismatch", pid, role, record.format, "record_role_mismatch", snap)
 
     if (
-        record.start_time != snap.start_time
+        not _same_start(record.start_time, snap.start_time, pid)
         or record.executable != snap.executable
         or record.command_sha256 != snap.command_sha256
         or (record.cwd is not None and record.cwd != snap.cwd)

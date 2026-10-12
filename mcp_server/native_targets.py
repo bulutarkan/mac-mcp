@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import subprocess
 import threading
@@ -35,6 +36,7 @@ def _process_instance_token(pid: int) -> str:
     try:
         proc = subprocess.run(
             ["/bin/ps", "-o", "lstart=", "-p", str(int(pid))],
+            env={**os.environ, "LC_ALL": "C", "LANG": "C"},
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
