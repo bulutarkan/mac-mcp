@@ -96,9 +96,11 @@ class UninstallCommandTests(Fixture):
         values.update(extra)
         return argparse.Namespace(**values)
 
-    def run_cli(self, args):
+    def run_cli(self, args, default_install=True):
         out = io.StringIO()
+        default_state = self.state if default_install else self.home / "elsewhere"
         with patch.object(cli, "STATE_DIR", self.state), patch.object(cli, "PROJECT_ROOT", self.runtime), \
+                patch.object(cli, "DEFAULT_STATE_DIR", default_state), \
                 patch.object(cli, "_launch_agents_dir", return_value=self.agents), \
                 patch.object(cli, "default_cli_path", return_value=self.cli_path), \
                 patch.object(cli, "_uninstall_app_path", return_value=self.app), \
@@ -127,6 +129,17 @@ class UninstallCommandTests(Fixture):
         self.assertFalse(self.app.exists())
         self.assertTrue(self.state.exists())
         self.assertIn("Moved to the Trash", text)
+
+
+    def test_an_isolated_install_never_touches_the_shared_launchd_jobs(self) -> None:
+        # launchd labels are shared with the default install: stopping or unloading them
+        # from an isolated install would take down the owner's real server and tunnel.
+        code, text, stop, launchctl, _ = self.run_cli(self.args(yes=True), default_install=False)
+        self.assertEqual(0, code)
+        stop.assert_not_called()
+        launchctl.assert_not_called()
+        self.assertFalse(self.app.exists())
+        self.assertIn("not the default install", text)
 
 
 class RepairChecksTests(Fixture):

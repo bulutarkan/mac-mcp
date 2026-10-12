@@ -738,9 +738,14 @@ def uninstall(args: argparse.Namespace) -> int:
     stamp = time.strftime("%Y%m%d-%H%M%S")
     trash_root = _trash_root()
     summary = lifecycle.format_plan(items, trash_folder=trash_root / f"Mac MCP uninstall {stamp}")
-    _stop_for_uninstall(app)
-    for label in (SUPERVISOR_LABEL, CLOUDFLARE_LAUNCHD_LABEL):
-        _launchctl_run("bootout", _launchctl_target(label), capture=True)
+    if STATE_DIR.resolve() == DEFAULT_STATE_DIR.resolve():
+        _stop_for_uninstall(app)
+        for label in (SUPERVISOR_LABEL, CLOUDFLARE_LAUNCHD_LABEL):
+            _launchctl_run("bootout", _launchctl_target(label), capture=True)
+    else:
+        # launchd labels are shared with the default install; unloading them from here
+        # would stop the owner's real server and tunnel.
+        print("This is not the default install, so its server and login jobs were not stopped; stop them yourself.")
     results = lifecycle.apply_uninstall(items, trash_root=trash_root, stamp=stamp)
     _forget_package_receipt()
     failed = [row for row in results if row["result"] == "failed"]
@@ -784,7 +789,9 @@ def repair(args: argparse.Namespace) -> int:
             _ensure_supervisor()
         elif row.key == "app":
             installer = PROJECT_ROOT / "menu_app" / "install_app.sh"
-            if installer.is_file() and shutil.which("xcrun") and subprocess.run(
+            if STATE_DIR.resolve() != DEFAULT_STATE_DIR.resolve():
+                print("Not the default install: the menu bar app is not reinstalled from here.")
+            elif installer.is_file() and shutil.which("xcrun") and subprocess.run(
                 ["/usr/bin/xcrun", "--find", "swiftc"], capture_output=True).returncode == 0:
                 subprocess.run([str(installer)], check=False)
             else:
