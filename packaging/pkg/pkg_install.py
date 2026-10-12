@@ -165,10 +165,28 @@ def _source_members(staging: Path) -> List[str]:
         return sorted(m.name for m in tar.getmembers() if m.isfile())
 
 
+def _extract_source(archive: Path, target: Path) -> None:
+    root = target.resolve()
+    with tarfile.open(archive) as tar:
+        if getattr(tarfile, "data_filter", None):
+            try:
+                tar.extractall(target, filter="data")
+            except tarfile.FilterError as exc:
+                raise InstallError(f"The package source archive has an unsafe entry: {exc}") from exc
+            return
+        # Python without extraction filters (tests on 3.10; the package ships 3.14): the
+        # release tree has only plain files and folders, so refuse anything else.
+        members = tar.getmembers()
+        for member in members:
+            dest = (root / member.name).resolve()
+            if not (member.isfile() or member.isdir()) or (dest != root and root not in dest.parents):
+                raise InstallError(f"The package source archive has an unsafe entry: {member.name}")
+        tar.extractall(target, members)
+
+
 def _lay_out_runtime(layout: Layout, release: dict) -> None:
     layout.runtime.mkdir(parents=True)
-    with tarfile.open(layout.staging / "source.tar") as tar:
-        tar.extractall(layout.runtime, filter="data")
+    _extract_source(layout.staging / "source.tar", layout.runtime)
     shutil.copytree(layout.staging / "python", layout.runtime / ".python", symlinks=True)
 
 

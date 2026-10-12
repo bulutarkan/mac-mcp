@@ -256,6 +256,42 @@ class PkgFreshInstallTests(unittest.TestCase):
             pkg.install(self.layout, run=FakeRun(self.layout, fail_on="pip check"), health=self.health)
         self.assertFalse(self.layout.app.exists())
 
+    def old_tarfile(self):
+        """Python 3.10 without extraction filters: extractall() has no filter argument and no protection."""
+        real = pkg.tarfile.TarFile.extractall
+
+        def extractall(tar, path=".", members=None, *, numeric_owner=False, **kwargs):
+            if "filter" in kwargs:
+                raise TypeError("extractall() got an unexpected keyword argument 'filter'")
+            return real(tar, path, members, numeric_owner=numeric_owner, filter="fully_trusted")
+
+        return patch.multiple(pkg.tarfile, create=True, data_filter=None), \
+            patch.object(pkg.tarfile.TarFile, "extractall", extractall)
+
+    def test_extraction_without_data_filter_still_installs(self) -> None:
+        # CI runs Python 3.10, where tarfile may lack extraction filters; the package ships 3.14.
+        make_staging(self.home)
+        no_filter, old_extract = self.old_tarfile()
+        with no_filter, old_extract:
+            pkg.install(self.layout, run=FakeRun(self.layout), health=self.health)
+        self.assertEqual("A\n", (self.layout.runtime / "VERSION_MARK").read_text())
+
+    def test_source_paths_outside_the_runtime_are_refused(self) -> None:
+        make_staging(self.home, dict(BASE_FILES, **{"../escaped.txt": "x\n"}))
+        for old in (False, True):
+            with self.subTest(old_tarfile=old):
+                if old:
+                    no_filter, old_extract = self.old_tarfile()
+                    no_filter.start(); old_extract.start()
+                try:
+                    with self.assertRaises(pkg.InstallError):
+                        pkg.install(self.layout, run=FakeRun(self.layout), health=self.health)
+                finally:
+                    if old:
+                        patch.stopall()
+                self.assertFalse((self.home / "escaped.txt").exists())
+                self.assertFalse(self.layout.runtime.exists())
+
     def test_main_removes_staging_and_returns_1_on_failure(self) -> None:
         make_staging(self.home)
         (self.layout.staging / "source.tar").unlink()
