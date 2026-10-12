@@ -23,8 +23,13 @@ Command Line Tools, Git, Homebrew or system Python are needed.
 - **Build cadence:** packages are built only at signed stable checkpoints,
   never per commit, by a local script first. Moving the build to GitHub Actions
   happens after the script is proven.
-- **Apple Silicon only (arm64) in v1.** onnxruntime no longer publishes
-  macOS x86_64 wheels, and the build Mac is arm64.
+- **Apple Silicon only (arm64), macOS 14+ in v1.** onnxruntime no longer
+  publishes macOS x86_64 wheels, and the locked onnxruntime 1.31.0 wheel for
+  CPython 3.14 is tagged `macosx_14_0_arm64`.
+- **Bundled Python is CPython 3.14.7** (python-build-standalone release
+  `20260924`, `install_only_stripped`), the same minor/patch production runs
+  today. A dry `pip download` of `requirements.lock` for cp314/arm64/macOS ≤14
+  resolved all 72 wheels (59 MB).
 
 ## 2. Non-goals (v1)
 
@@ -67,18 +72,20 @@ Payload (relative to the user's home):
 - `Applications/Mac MCP.app`
 - `.mac-mcp/pkg/staging/` containing:
   - `release.json` — `release_id`, `version`, `commit`, `payload_sha256`,
-    `python_version`, `arch`, build time.
+    `source_sha256`, `python_version`, `arch`, build time.
   - `source.tar` — `git archive <checkpoint commit>`, the same tree
     `install.sh` puts in the runtime.
-  - `python.tar.gz` — pinned python-build-standalone `install_only_stripped`
-    for `aarch64-apple-darwin` (version and SHA-256 pinned in the build script).
-  - `wheelhouse/` — every wheel from `requirements.lock`, arm64/py3.12, with
-    hashes still enforced at install time.
+  - `python/` — the pinned python-build-standalone tree, already extracted
+    (the archive SHA-256 is verified at build time), so postinstall can run it
+    directly.
+  - `pkg_install.py` — the postinstall core, taken from the same commit.
+  - `wheelhouse/` — every wheel from `requirements.lock`, arm64/cp314, with
+    hashes still enforced at install time by `pip --require-hashes`.
 
 Scripts: `preinstall`, `postinstall` (bash, `/usr/bin` tools only for
 preinstall; postinstall hands off to the bundled Python).
 
-Expected size: roughly 100–150 MB compressed (onnxruntime, numpy and the
+Expected size: roughly 90–120 MB compressed (onnxruntime, numpy and the
 Python runtime dominate).
 
 ## 5. Components
@@ -92,12 +99,19 @@ Python runtime dominate).
    (`menu_app/build_app.sh`), `codesign --verify --deep --strict`.
 3. Download the pinned Python tarball, verify SHA-256.
 4. `pip download --only-binary=:all: --require-hashes` from
-   `requirements.lock` for macOS arm64 / CPython 3.12 into the wheelhouse;
+   `requirements.lock` for macOS arm64 / CPython 3.14 into the wheelhouse;
    the setuptools/wheel build tools from the lock are included so the
    editable install of the runtime works offline.
 5. Write `release.json`, assemble the payload root, `pkgbuild` +
    `productbuild` with a distribution that enables only the
-   current-user-home domain and requires macOS ≥ 13 on arm64.
+   current-user-home domain and requires macOS ≥ 14 on arm64. The app
+   component is marked `BundleIsRelocatable=false` so Installer never
+   "relocates" the payload onto another copy of the app with the same
+   bundle ID found elsewhere on disk.
+   For local testing only, `--allow-unverified` builds any commit and labels
+   it `unverified-<short sha>`; `--stage-only DIR` writes the payload as a
+   home-directory tree instead of a `.pkg`. The first real package can be
+   built only from a checkpoint that already contains `packaging/`.
 6. Output `dist/Mac-MCP-<version>-<release_id>-arm64.pkg` and a `.sha256`.
    `dist/` is git-ignored.
 
@@ -108,20 +122,19 @@ message in the Installer log) without touching anything when:
 
 - `~/mac-mcp` exists and `~/.mac-mcp/install-kind` is not `pkg`
   (an `install.sh` / developer install — never overwritten by a pkg), or
-- the Mac is not arm64 / macOS < 13 (also enforced by the distribution).
+- the Mac is not arm64 / macOS < 14 (also enforced by the distribution).
 
 ### 5.3 `packaging/pkg/pkg_install.py` (postinstall core)
 
 Run by the bundled Python straight from staging, so it is unit-testable with a
 temporary `HOME` and alternate port. Steps:
 
-1. Read `release.json`; validate staging contents and the wheel hashes against
-   the lock.
+1. Read `release.json`; validate that the staging contents are complete.
 2. **Upgrade only:** stop the running server (`mac-mcp stop`) and menu app,
    move the current runtime to `~/.mac-mcp/backups/pkg-<timestamp>/runtime`
    (only the newest backup is kept).
-3. Extract `source.tar` into `~/mac-mcp`, `python.tar.gz` into
-   `~/mac-mcp/.python`, create `~/mac-mcp/.venv` from it **in its final
+3. Check `source.tar` against `source_sha256`, extract it into `~/mac-mcp`,
+   copy `python/` to `~/mac-mcp/.python`, create `~/mac-mcp/.venv` from it **in its final
    location** (venvs are not relocatable), then
    `pip install --no-index --find-links wheelhouse --require-hashes -r
    requirements.lock` and `pip install --no-index --no-deps
@@ -200,6 +213,9 @@ before and after.
   in the real end-to-end test.
 - **Offline wheel resolution:** if any locked package has no arm64/cp312
   wheel, the build fails loudly; no sdist builds on the user's Mac.
-- **Size:** ~100–150 MB download; acceptable for v1.
+- **Size:** ~90–120 MB download; acceptable for v1.
+- **Payload ownership:** a home-domain payload built on uid 501 must end up
+  owned by the installing user (who may be uid 502+). Verified in the real
+  end-to-end test, which uses a second account.
 - **Two update paths:** pkg installs update by reinstalling until the in-app
   updater exists; the updater message makes this explicit.
