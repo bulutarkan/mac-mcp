@@ -58,6 +58,7 @@ from .update_helper import (
 from . import supervisor
 from .venv_repair import inspect_venv
 from .tools_update import launch_detached_update
+from .install_kind import install_kind, package_update_payload
 from .update_state import UpdateInProgress
 from .log_retention import log_limits, managed_logs, rotate_copy_truncate, tail_log, update_logs_dir
 from .version import __version__
@@ -2108,6 +2109,13 @@ def conformance(args: argparse.Namespace) -> int:
 
 def update(args: argparse.Namespace) -> int:
     try:
+        if install_kind() == "pkg":
+            payload = package_update_payload(check_only=bool(args.check))
+            if args.check and getattr(args, "json", False):
+                print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            else:
+                print(f"[mac-mcp update] {payload['message']} {payload['download_url']}")
+            return 0 if args.check else 3
         validate_update_state()
         if args.check:
             info = check_update(args.repo, args.runtime, branch=args.branch, remote=args.remote, fetch=True)

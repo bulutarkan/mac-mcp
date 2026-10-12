@@ -27,6 +27,7 @@ from .update_state import (
     update_state_path,
 )
 from .log_retention import prune_update_logs
+from .install_kind import install_kind, package_update_payload
 
 
 def _public_info(info) -> Dict[str, Any]:
@@ -199,6 +200,8 @@ def mac_mcp_update(check_only: bool = True, branch: str = "main") -> Dict[str, A
     branch = str(branch or "main").strip()
     if not branch or len(branch) > 120:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "branch must be a non-empty Git branch name.")
+    if install_kind() == "pkg":
+        return package_update_payload(check_only=bool(check_only))
     try:
         validate_update_state()
         repo, runtime = resolve_paths()

@@ -28,6 +28,7 @@ from .managed_process import (
 )
 from .permission_probe import DENIED, GRANTED, NOT_DETERMINED, probe_permissions
 from .cli_bootstrap import default_cli_path, launcher_kind, runtime_entrypoint
+from .install_kind import install_kind
 from .runtime_resolver import resolve_cloudflared_binary, resolve_ngrok_binary
 from .public_endpoint import (
     PublicEndpointError,
@@ -183,6 +184,7 @@ def _check_cli_installation() -> CheckResult:
         "on_path": on_path,
         "absolute_invocation": str(launcher.expanduser()),
         "deployed_commit": (read_deployed_commit(runtime_root()) or "")[:12] or None,
+        "install_kind": install_kind(),
     }
 
     if broken_symlink:
