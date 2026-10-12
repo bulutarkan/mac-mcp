@@ -1,6 +1,6 @@
 {
   "artifacts": [],
-  "base_commit": "ffceb30ee14ee3f21aeb4d894733d950fca0ab50",
+  "base_commit": "904c463830b7233d22eb3e0edceac7cd2412e50c",
   "branch": "main",
   "channel": "stable",
   "files": [
@@ -871,8 +871,8 @@
     {
       "mode": "100644",
       "path": "mcp_server/tools_browser_agent.py",
-      "sha256": "3f93b12bb58a0de56305cd16497ce3132ddcc5b8731f738679320aab94149539",
-      "size": 276148
+      "sha256": "3570bd29e2f950d78d1c10e5f80e773234a4abe36a1e4d5a6370c854be0bcfd9",
+      "size": 277418
     },
     {
       "mode": "100644",
@@ -1326,6 +1326,12 @@
     },
     {
       "mode": "100644",
+      "path": "tests/fixtures/browser/picker.html",
+      "sha256": "27de11a48f0aa7642bbeeabd56c8b199207b936b7d11e8a6f7847aa09e33335e",
+      "size": 1143
+    },
+    {
+      "mode": "100644",
       "path": "tests/fixtures/browser/shadow.html",
       "sha256": "72b85e1929afbe4910a391a484b041664b2de209f5e66d6fd5e23c93977e4f93",
       "size": 3482
@@ -1591,8 +1597,8 @@
     {
       "mode": "100644",
       "path": "tests/test_browser_fill_action.py",
-      "sha256": "92d335d370745ac731086e87dc32ffa0d875c368b09efcaa6672a75166e0ee9f",
-      "size": 11420
+      "sha256": "0bbe8a62c860460d0acb8ca1eccad6d823553fab15e42841bb57b5119ccdc156",
+      "size": 14344
     },
     {
       "mode": "100644",
@@ -1657,8 +1663,8 @@
     {
       "mode": "100644",
       "path": "tests/test_browser_page_integration.py",
-      "sha256": "c4cf0f607d16dcffb91c7931bd5d7996369e488c78b12cbeabefbb1b4b01b721",
-      "size": 19976
+      "sha256": "e245b9fe52e6e0b683c5bc14d82b6194e92189979076326ecf49468aae8be6ae",
+      "size": 20830
     },
     {
       "mode": "100644",
@@ -2687,10 +2693,10 @@
       "size": 83
     }
   ],
-  "generated_at": "2026-10-12T08:11:58Z",
-  "payload_sha256": "6687019c203aa34eb764c0f5200dcd722095764d400dacf882b394900145e936",
+  "generated_at": "2026-10-12T08:40:11Z",
+  "payload_sha256": "b632c720210f0b1792a205cf1cc7d6d6191eee19dc5b9310a90503fd6e3195d1",
   "product": "mac-mcp",
-  "release_id": "stable-2.1.9-r3",
+  "release_id": "stable-2.1.9-r4",
   "schema_version": 1,
   "signature": {
     "algorithm": "ssh-ed25519",
