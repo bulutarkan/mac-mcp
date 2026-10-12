@@ -1133,12 +1133,24 @@ def _start_menu_app(app_path: Path) -> None:
 
 
 def _ensure_server_helper(runtime: Path) -> None:
-    """Build Mac MCP Server when its sources changed (a no-op otherwise, so grants are kept)."""
-    if not (runtime / "menu_app" / "ServerHelper" / "build_helper.sh").is_file():
-        return
-    from .server_helper import ensure_helper
+    """Build Mac MCP Server when its sources changed (a no-op otherwise, so grants are kept).
 
-    if ensure_helper(runtime) is not None:
+    The updater runs as a staged standalone script, so this mirrors
+    server_helper.ensure_helper instead of importing the package.
+    """
+    script = runtime / "menu_app" / "ServerHelper" / "build_helper.sh"
+    if not script.is_file():
+        return
+    bundle = runtime / ".helper" / "Mac MCP Server.app"
+    try:
+        subprocess.run(["/bin/zsh", str(script), str(bundle.parent)], capture_output=True, text=True, timeout=300)
+        executable = bundle / "Contents" / "MacOS" / "mac-mcp-server"
+        ready = executable.is_file() and os.access(executable, os.X_OK) and subprocess.run(
+            ["/usr/bin/codesign", "--verify", "--strict", str(bundle)], capture_output=True, timeout=20,
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        ready = False
+    if ready:
         print("[mac-mcp update] Mac MCP Server is ready; macOS lists permissions as Mac MCP.", flush=True)
     else:
         print("[mac-mcp update] WARNING: Mac MCP Server could not be built; permissions stay with Python.",

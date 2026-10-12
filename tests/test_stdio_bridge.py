@@ -126,6 +126,17 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(1, len(calls))
         self.assertEqual(INTERRUPTED, self.out[-1]["error"]["message"])
 
+    def test_listening_stops_when_the_session_is_gone(self) -> None:
+        def gone(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404)
+
+        async def write(message: dict) -> None:
+            self.out.append(message)
+
+        bridge = Bridge(URL, "k", write, client=httpx.AsyncClient(transport=httpx.MockTransport(gone)))
+        bridge.session_id = "stale"
+        asyncio.run(asyncio.wait_for(bridge._listen_loop(), timeout=1.0))  # returns instead of retrying
+
 
 if __name__ == "__main__":
     unittest.main()

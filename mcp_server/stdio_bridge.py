@@ -106,6 +106,7 @@ class Bridge:
             await self._post(self.initialize, relay=False, capture=True)
             if self.initialized:
                 await self._post({"jsonrpc": "2.0", "method": "notifications/initialized"}, relay=False)
+                self._listen()
 
     async def _post(self, message: dict[str, Any] | None, *, relay: bool, capture: bool = False) -> int:
         deadline = asyncio.get_running_loop().time() + self.wait_s
@@ -149,8 +150,10 @@ class Bridge:
                 headers = {k: v for k, v in self.headers().items() if k != "content-type"}
                 headers["accept"] = "text/event-stream"
                 async with self.client.stream("GET", self.url, headers=headers) as response:
-                    if response.status_code in (400, 405):
-                        return  # the server has no standalone stream
+                    if response.status_code in (400, 404, 405):
+                        # No standalone stream, or the session is gone (a restart): the next
+                        # request renews the session and starts listening again.
+                        return
                     if response.status_code == 200:
                         async for reply in _messages(response):
                             await self.write(reply)
