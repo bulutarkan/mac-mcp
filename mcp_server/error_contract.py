@@ -46,6 +46,8 @@ REGISTRY: Dict[str, ErrorSpec] = {
     "invalid_arguments": ErrorSpec("validation", "not_executed", "fix_arguments", 422),
     "intent_description_required": _VALIDATION,
     "intent_description_sensitive": _VALIDATION,
+    # Nothing ran: a shorter description makes the same call valid.
+    "intent_description_too_long": _VALIDATION,
     "unknown_tool": ErrorSpec("validation", "not_executed", "fix_arguments", 404),
     "invalid_cursor": _VALIDATION,
     "cursor_mismatch": _VALIDATION,

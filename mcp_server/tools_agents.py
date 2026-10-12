@@ -134,6 +134,34 @@ def _meta_path(agent_id: str) -> Path:
     return _agent_dir(agent_id) / "meta.json"
 
 
+_HELD_FILE_LOCKS = threading.local()
+
+
+@contextmanager
+def _file_lock(lock_path: Path) -> Iterator[None]:
+    """flock lock_path against other processes; a nested entry by the thread holding it is a no-op.
+
+    flock belongs to an open file, so a second open + flock of the same file in one process
+    waits for itself even though the caller's thread lock is reentrant. A team start reads
+    its team again while _team_tick holds the team lock, which hung spawn_agents.
+    """
+    held = getattr(_HELD_FILE_LOCKS, "paths", None)
+    if held is None:
+        held = _HELD_FILE_LOCKS.paths = set()
+    key = str(lock_path)
+    if key in held:
+        yield
+        return
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        held.add(key)
+        try:
+            yield
+        finally:
+            held.discard(key)
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _meta_thread_lock(agent_id: str) -> threading.RLock:
     with _META_LOCKS_GUARD:
         return _META_LOCKS.setdefault(agent_id, threading.RLock())
@@ -150,13 +178,8 @@ def _locked_meta(agent_id: str, *, create_parent: bool = False) -> Iterator[None
         if not path.parent.exists():
             yield
             return
-        lock_path = path.parent / ".meta.lock"
-        with lock_path.open("a", encoding="utf-8") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        with _file_lock(path.parent / ".meta.lock"):
+            yield
 
 
 def _read_meta_unlocked(agent_id: str) -> Dict[str, Any]:
@@ -232,13 +255,8 @@ def _locked_team(team_id: str, *, create_parent: bool = False) -> Iterator[None]
         if not path.parent.exists():
             yield
             return
-        lock_path = path.parent / ".team.lock"
-        with lock_path.open("a", encoding="utf-8") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        with _file_lock(path.parent / ".team.lock"):
+            yield
 
 
 def _read_team_unlocked(team_id: str) -> Dict[str, Any]:
@@ -4294,6 +4312,23 @@ def _spawn_worker_process(agent_id: str, worker_log, launch_nonce: Optional[str]
     )
 
 
+def _access_instruction(access_mode: str, permission_profile: Optional[str]) -> str:
+    """The access rule a delegated prompt states; it must match what the profile allows."""
+    if access_mode != "read_only":
+        return ""
+    if str(permission_profile or "") == "browser_only":
+        # The browser_only profile allows browser side effects (its whole purpose); telling the
+        # agent "no external state" made it refuse to post the reply it was asked to post.
+        return (
+            "Files, repositories, configuration and services on this Mac are read-only: do not modify them. "
+            "In the browser, act as the task asks (click, type, submit, post) with the browser tools."
+        )
+    return (
+        "This task is read-only. Do not modify files, configuration, services, repositories, or external state. "
+        "Use only inspection/read commands and tools."
+    )
+
+
 def _inherited_provenance_seed(*, team_id: Optional[str], parent_agent_id: Optional[str]) -> Optional[Dict[str, Any]]:
     """Untrusted-web provenance a new agent starts with: from the spawning call, its team or its parent."""
     seed = current_delegated_provenance()
@@ -4487,11 +4522,7 @@ def _spawn_internal(
         scope=source_scope.to_dict(), role=clean_role,
     )
     workflow_id_value = str(workflow_id or "").strip() or ("wf_" + uuid.uuid4().hex[:16])
-    access_instruction = (
-        "This task is read-only. Do not modify files, configuration, services, repositories, or external state. "
-        "Use only inspection/read commands and tools."
-        if access_mode == "read_only" else ""
-    )
+    access_instruction = _access_instruction(access_mode, permission_profile)
     scope_instruction = _scope_prompt(scope, permission_profile, provider)
     injected_lesson_ids: List[str] = []
     lesson_context_chars = 0
