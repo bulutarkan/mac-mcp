@@ -41,6 +41,8 @@ struct MenuSettings: Codable {
     /// Get Started (#59): hidden by the owner, or finished once (then it never shows again).
     struct Onboarding: Codable {
         var dismissed: Bool
+        /// The first-run tour: "completed" or "skipped" once it was shown; absent before.
+        var tour: String?
     }
     struct Apps: Codable {
         var mail: AppSend?
@@ -130,6 +132,7 @@ final class SettingsStore: ObservableObject {
     @Published var cloudflareTunnel = ""
     @Published var startAtLogin = true
     @Published var onboardingDismissed = false
+    @Published var onboardingTour: String?
     @Published var steeringSessionMinutes = 10
     @Published var showToolActivity = false
     @Published var requireToolDescriptions = false
@@ -241,6 +244,7 @@ final class SettingsStore: ObservableObject {
         mailConfirmSend = current.apps?.mail?.confirm_send ?? true
         messagesConfirmSend = current.apps?.messages?.confirm_send ?? true
         onboardingDismissed = current.onboarding?.dismissed ?? false
+        onboardingTour = current.onboarding?.tour
         decisionAccelerationEnabled = current.decision_acceleration?.enabled ?? false
         let rawDecisionScope = current.decision_acceleration?.scope?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         decisionAccelerationScope = ["off", "browser", "native", "both"].contains(rawDecisionScope) ? rawDecisionScope : "both"
@@ -299,7 +303,7 @@ final class SettingsStore: ObservableObject {
                 retentionDays: min(3650, max(0, agentRetentionDays))
             ),
             apps: .init(mail: .init(confirm_send: mailConfirmSend), messages: .init(confirm_send: messagesConfirmSend)),
-            onboarding: .init(dismissed: onboardingDismissed)
+            onboarding: .init(dismissed: onboardingDismissed, tour: onboardingTour)
         )
         let payloadData = try JSONEncoder.pretty.encode(payload)
         guard let payloadObject = try JSONSerialization.jsonObject(with: payloadData) as? [String: Any] else {

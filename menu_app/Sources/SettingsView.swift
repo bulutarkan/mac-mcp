@@ -280,6 +280,11 @@ struct SettingsView: View {
                     .padding(.vertical, 4)
                 }
 
+                HStack {
+                    Button("Open the Tour") { state.showTour() }
+                    Spacer()
+                }
+
                 if !checklist.isComplete {
                     HStack {
                         Spacer()

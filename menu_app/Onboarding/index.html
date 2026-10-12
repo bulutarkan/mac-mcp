@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Welcome to Mac MCP</title>
+  <link rel="stylesheet" href="onboarding.css">
+  <script type="module" src="onboarding.js"></script>
+</head>
+<body>
+  <div class="window" id="app">
+    <header class="titlebar">
+      <button class="quiet" id="skip" type="button">Skip tour</button>
+    </header>
+
+    <main class="screens">
+      <!-- Tour -->
+      <section class="screen" data-screen="welcome" aria-labelledby="h-welcome">
+        <div class="copy">
+          <h1 id="h-welcome">Let your AI use your Mac.</h1>
+          <p>Mac MCP connects AI apps like Claude, ChatGPT and Codex to the apps, files and browser on this Mac, and asks you before anything sensitive.</p>
+        </div>
+        <div class="stage desk" aria-hidden="true">
+          <div class="wallpaper"></div>
+          <div class="menubar"><span></span><span></span><span></span></div>
+          <img class="hero-icon" src="../Assets/AppIcon.png" alt="">
+          <div class="cursor"><svg viewBox="0 0 30 30"><path d="M3.5 3.5 L3.5 24 L9.2 18.6 L13 27 L16.6 25.4 L12.9 17.2 L20.6 17 Z"/></svg><span class="label">Ready when you are</span></div>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="apps" aria-labelledby="h-apps">
+        <div class="copy">
+          <h1 id="h-apps">It works inside your apps.</h1>
+          <p>Your AI can open Notes, look through a folder in Finder or draft a reply in Mail, using the same buttons and menus you do.</p>
+        </div>
+        <div class="stage desk" aria-hidden="true">
+          <div class="wallpaper"></div>
+          <div class="menubar"><span></span><span></span><span></span></div>
+          <div class="win finder"><div class="lights"><i></i><i></i><i></i></div><div class="grid"><b></b><b></b><b></b><b></b><b></b><b></b></div></div>
+          <div class="win notes"><div class="lights"><i></i><i></i><i></i></div><div class="lines"><em></em><em></em><em class="typed"></em></div></div>
+          <div class="cursor"><svg viewBox="0 0 30 30"><path d="M3.5 3.5 L3.5 24 L9.2 18.6 L13 27 L16.6 25.4 L12.9 17.2 L20.6 17 Z"/></svg><span class="label">Writing in Notes</span></div>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="browser" aria-labelledby="h-browser">
+        <div class="copy">
+          <h1 id="h-browser">It browses in the background.</h1>
+          <p>Forms, long pages and comment threads: it works in a Safari or Chrome tab without taking over your screen, and frames the tab so you can see what it touches.</p>
+        </div>
+        <div class="stage desk" aria-hidden="true">
+          <div class="wallpaper"></div>
+          <div class="menubar"><span></span><span></span><span></span></div>
+          <div class="win browser companion">
+            <div class="lights"><i></i><i></i><i></i><u class="url"></u></div>
+            <div class="form">
+              <div class="field"><small></small><div class="input"><span class="filled">Ayşe Yılmaz</span></div></div>
+              <div class="field"><small></small><div class="input"><span class="filled late">ayse@example.com</span></div></div>
+              <div class="submit"></div>
+            </div>
+          </div>
+          <div class="cursor"><svg viewBox="0 0 30 30"><path d="M3.5 3.5 L3.5 24 L9.2 18.6 L13 27 L16.6 25.4 L12.9 17.2 L20.6 17 Z"/></svg><span class="label">Filling the form</span></div>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="safety" aria-labelledby="h-safety">
+        <div class="copy">
+          <h1 id="h-safety">You stay in charge.</h1>
+          <p>Everything runs on this Mac. Remote access is off until you turn it on, risky actions wait for your answer, and every run leaves a record you can review.</p>
+        </div>
+        <div class="stage desk" aria-hidden="true">
+          <div class="wallpaper"></div>
+          <div class="menubar"><span></span><span></span><span></span></div>
+          <div class="approval">
+            <img src="../Assets/AppIcon.png" alt="">
+            <strong>Send this email?</strong>
+            <p>To Ayşe: “The report is attached.”</p>
+            <div class="choices"><span class="deny">Don’t send</span><span class="allow">Send</span></div>
+          </div>
+          <div class="cursor"><svg viewBox="0 0 30 30"><path d="M3.5 3.5 L3.5 24 L9.2 18.6 L13 27 L16.6 25.4 L12.9 17.2 L20.6 17 Z"/></svg><span class="label">Waiting for you</span></div>
+        </div>
+      </section>
+
+      <!-- Setup -->
+      <section class="screen" data-screen="start" aria-labelledby="h-start">
+        <div class="copy">
+          <h1 id="h-start">Start Mac MCP.</h1>
+          <p data-live="start-text">AI apps reach your Mac through a small server that runs here. Start it once; it starts again when you log in.</p>
+        </div>
+        <div class="stage plain" aria-hidden="true">
+          <div class="power">
+            <div class="ring-wrap">
+              <svg class="ring" viewBox="0 0 120 120"><circle class="track" cx="60" cy="60" r="50"/><circle class="arc" cx="60" cy="60" r="50"/></svg>
+              <img src="../Assets/AppIcon.png" alt="">
+            </div>
+            <p data-live="power-state">Not running yet</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="permissions" aria-labelledby="h-permissions">
+        <div class="copy">
+          <h1 id="h-permissions">Let Mac MCP see and use your apps.</h1>
+          <p>macOS asks you for each permission. It names <strong data-live="holder">Mac MCP</strong>; if System Settings opens instead, turn on Mac MCP in the list.</p>
+          <div class="perms">
+            <div class="perm" data-perm="accessibility">
+              <div><strong>Accessibility</strong><span>Click, type and read what is in an app window.</span></div>
+              <button type="button" data-action="request">Allow</button>
+            </div>
+            <div class="perm" data-perm="screen_recording">
+              <div><strong>Screen Recording</strong><span>See a window when the app’s buttons are not enough.</span></div>
+              <button type="button" data-action="request">Allow</button>
+            </div>
+          </div>
+          <p class="note" data-live="restart" hidden>Screen Recording takes effect after a restart. <button type="button" class="link" data-action="restart">Restart Mac MCP</button></p>
+        </div>
+        <div class="stage plain" aria-hidden="true">
+          <div class="settings">
+            <div class="settings-bar"><div class="lights"><i></i><i></i><i></i></div><span>Privacy &amp; Security</span></div>
+            <div class="settings-body">
+              <h2>Accessibility</h2>
+              <div class="settings-row" data-mirror="accessibility"><img src="../Assets/AppIcon.png" alt=""><span>Mac MCP</span><i class="toggle"></i></div>
+              <h2>Screen &amp; System Audio Recording</h2>
+              <div class="settings-row" data-mirror="screen_recording"><img src="../Assets/AppIcon.png" alt=""><span>Mac MCP</span><i class="toggle"></i></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="connect" aria-labelledby="h-connect">
+        <div class="copy">
+          <h1 id="h-connect">Connect your AI app.</h1>
+          <p>Pick the app you use. Copy its setup into that app, then ask it anything about your Mac.</p>
+          <div class="clients" role="radiogroup" aria-label="AI app"></div>
+          <p class="waiting" data-live="connect-state"><span class="pulse"></span>Waiting for your AI app to call Mac MCP</p>
+        </div>
+        <div class="stage plain">
+          <div class="snippet">
+            <div class="snippet-head"><span data-live="client-name">Claude Code</span><button type="button" class="quiet" data-action="copy-config">Copy</button></div>
+            <pre data-live="config" tabindex="0">Choose an app to see its setup.</pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="request" aria-labelledby="h-request">
+        <div class="copy">
+          <h1 id="h-request">Try your first request.</h1>
+          <p>Paste this into your AI app. It only reads; nothing on your Mac changes.</p>
+          <p class="waiting" data-live="request-state"><span class="pulse"></span>Waiting for the request to arrive</p>
+        </div>
+        <div class="stage plain">
+          <div class="prompt">
+            <p data-live="prompt"></p>
+            <button type="button" data-action="copy-prompt">Copy request</button>
+          </div>
+          <div class="burst" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="done" aria-labelledby="h-done">
+        <div class="copy">
+          <h1 id="h-done">You’re set.</h1>
+          <p>Try asking your AI app:</p>
+          <ul class="ideas">
+            <li>“Summarize the PDFs in my Downloads folder.”</li>
+            <li>“Fill out this sign-up form in Safari with my details.”</li>
+            <li>“Find yesterday’s email from Ayşe and draft a reply.”</li>
+          </ul>
+          <p class="note">Settings, saved runs and permissions are in the Mac MCP menu at the top of your screen.</p>
+        </div>
+        <div class="stage desk" aria-hidden="true">
+          <div class="wallpaper"></div>
+          <div class="menubar"><span></span><span></span><span class="lit"></span></div>
+          <img class="hero-icon small" src="../Assets/AppIcon.png" alt="">
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <ol class="rail" aria-label="Progress"></ol>
+      <div class="actions">
+        <button type="button" class="quiet" id="back">Back</button>
+        <button type="button" class="primary" id="primary">Continue</button>
+      </div>
+    </footer>
+    <div class="toast" role="status" aria-live="polite"></div>
+  </div>
+</body>
+</html>

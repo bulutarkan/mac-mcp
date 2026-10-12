@@ -239,6 +239,76 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: Onboarding tour (menu_app/Onboarding)
+
+    private var tourOfferedThisLaunch = false
+    /// Opens the tour window; set by the app (AppState stays free of window types).
+    var presentTour: (() -> Void)?
+
+    /// Open the tour once, on a launch where setup is unfinished and the tour was never shown.
+    func maybeShowTourOnLaunch() {
+        guard !tourOfferedThisLaunch, settings.onboardingTour == nil, !settings.onboardingDismissed else { return }
+        if onboardingStatus != nil && onboardingChecklist.isComplete { return }
+        tourOfferedThisLaunch = true
+        presentTour?()
+    }
+
+    func showTour() {
+        presentTour?()
+    }
+
+    func recordTour(_ outcome: String) {
+        settings.onboardingTour = outcome
+        try? settings.save()
+    }
+
+    struct OnboardingFailure: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    func startServerForOnboarding() async -> Bool {
+        let result = await Self.runCLI(args: lifecycleArgs("start"), configuredPath: settings.cliPath, settingsPath: settings.path.path)
+        await refresh()
+        return result.code == 0
+    }
+
+    func restartServerForOnboarding() async -> Bool {
+        let result = await Self.runCLI(args: lifecycleArgs("restart") + ["--wait"], configuredPath: settings.cliPath, settingsPath: settings.path.path)
+        await refresh()
+        return result.code == 0
+    }
+
+    /// GET /dashboard/api/onboarding plus server_running, as the tour page reads it.
+    func onboardingStatusPayload() async -> [String: Any] {
+        guard var payload = try? await dashboardJSON("dashboard/api/onboarding", body: nil) as? [String: Any] else {
+            return ["server_running": false]
+        }
+        setIfChanged(\.serverRunning, true)
+        payload["server_running"] = true
+        return payload
+    }
+
+    func dashboardJSON(_ path: String, body: [String: Any]?) async throws -> Any {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else {
+            throw OnboardingFailure(message: "Mac MCP is not running.")
+        }
+        var request = URLRequest(url: base.appendingPathComponent(path))
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 15
+        if let body {
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+        authorizeDashboardRequest(&request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw OnboardingFailure(message: "Mac MCP is not answering. Start it first.")
+        }
+        return try JSONSerialization.jsonObject(with: data)
+    }
+
     func setOnboardingDismissed(_ dismissed: Bool) {
         settings.onboardingDismissed = dismissed
         do {
@@ -568,9 +638,14 @@ final class AppState: ObservableObject {
         restartToolActivityStream()
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
+            var first = true
             while !Task.isCancelled {
                 guard let self else { return }
                 await self.refresh(background: true)
+                if first {
+                    first = false
+                    self.maybeShowTourOnLaunch()
+                }
                 let delay = max(0.25, self.nextPollDelaySeconds)
                 let sleeper = Task { _ = try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
                 self.pollSleepTask = sleeper

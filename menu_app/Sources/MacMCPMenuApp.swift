@@ -8,6 +8,10 @@ struct MacMCPMenuApp: App {
     init() {
         let appState = AppState()
         _state = StateObject(wrappedValue: appState)
+        appState.presentTour = { [weak appState] in
+            guard let appState else { return }
+            OnboardingWindowController.shared.show(state: appState)
+        }
         // macmcp://recipe/run links reach the running server with the dashboard token.
         RecipeLauncher.shared.configure(
             baseURL: { [weak appState] in

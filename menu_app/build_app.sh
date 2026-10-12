@@ -30,7 +30,7 @@ if [[ -n "${MAC_MCP_APP_DISPLAY_NAME:-}" ]]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ${MAC_MCP_APP_DISPLAY_NAME}" "${CONTENTS}/Info.plist" >/dev/null
 fi
 xcrun swiftc -O -parse-as-library -target "${ARCH}-apple-macos13.0" \
-  -framework SwiftUI -framework AppKit -framework Foundation -framework Security -framework CoreAudio -framework SafariServices -framework CoreImage -framework UserNotifications \
+  -framework SwiftUI -framework AppKit -framework Foundation -framework Security -framework CoreAudio -framework SafariServices -framework CoreImage -framework UserNotifications -framework WebKit \
   "${SCRIPT_DIR}/Sources/SwiftUICompat.swift" \
   "${SCRIPT_DIR}/Sources/MacMCPMenuApp.swift" \
   "${SCRIPT_DIR}/Sources/AgentNotificationController.swift" \
@@ -41,6 +41,8 @@ xcrun swiftc -O -parse-as-library -target "${ARCH}-apple-macos13.0" \
   "${SCRIPT_DIR}/Sources/AppModels+Updates.swift" \
   "${SCRIPT_DIR}/Sources/StatusDisplay.swift" \
   "${SCRIPT_DIR}/Sources/OnboardingChecklist.swift" \
+  "${SCRIPT_DIR}/Sources/OnboardingBridge.swift" \
+  "${SCRIPT_DIR}/Sources/OnboardingWindowController.swift" \
   "${SCRIPT_DIR}/Sources/SettingsStore.swift" \
   "${SCRIPT_DIR}/Sources/SettingsView.swift" \
   "${SCRIPT_DIR}/Sources/SavedLoginsView.swift" \
@@ -54,6 +56,11 @@ xcrun swiftc -O -parse-as-library -target "${ARCH}-apple-macos13.0" \
   "${SCRIPT_DIR}/Sources/AudioDeviceStore.swift" \
   "${SCRIPT_DIR}/Sources/MenuBarView.swift" \
   -o "${MACOS}/MacMCPMenu"
+
+# The first-run tour (a local web page; tests stay out of the bundle) and the icon it shows.
+/usr/bin/rsync -a --exclude tests "${SCRIPT_DIR}/Onboarding" "${RESOURCES}/"
+/bin/mkdir -p "${RESOURCES}/Assets"
+/bin/cp "${SCRIPT_DIR}/Assets/AppIcon.png" "${RESOURCES}/Assets/AppIcon.png"
 
 # Safari Web Extension: built with the same command-line Swift toolchain so installing
 # Mac MCP from GitHub does not require generating or shipping an Xcode project.

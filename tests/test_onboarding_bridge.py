@@ -1,0 +1,86 @@
+"""The onboarding page talks to the app through a closed set of actions (OnboardingBridge.swift)."""
+from __future__ import annotations
+
+import re
+import subprocess
+import tempfile
+import textwrap
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+BRIDGE = ROOT / "menu_app" / "Sources" / "OnboardingBridge.swift"
+ONBOARDING = ROOT / "menu_app" / "Onboarding"
+
+HARNESS = r'''
+import Foundation
+
+func check(_ condition: Bool, _ message: String) {
+    if !condition { print("FAIL: \(message)"); exit(1) }
+}
+
+@main
+struct Harness {
+    static func main() {
+        check(OnboardingBridge.parse(["id": 1, "action": "status", "args": [:]]) == OnboardingMessage(id: 1, action: .status), "status")
+        check(OnboardingBridge.parse(["id": 2, "action": "requestPermission", "args": ["permission": "accessibility"]])?.action == .requestPermission("accessibility"), "permission")
+        check(OnboardingBridge.parse(["id": 3, "action": "requestPermission", "args": ["permission": "camera"]]) == nil, "unknown permission")
+        check(OnboardingBridge.parse(["id": 4, "action": "connectConfig", "args": ["client": "codex"]])?.action == .connectConfig("codex"), "client")
+        check(OnboardingBridge.parse(["id": 5, "action": "connectConfig", "args": ["client": "rm -rf"]]) == nil, "unknown client")
+        check(OnboardingBridge.parse(["id": 6, "action": "copy", "args": ["text": String(repeating: "a", count: 5000)]]) == nil, "copy limit")
+        check(OnboardingBridge.parse(["id": 7, "action": "copy", "args": ["text": "hello"]])?.action == .copy("hello"), "copy")
+        check(OnboardingBridge.parse(["id": 8, "action": "runShell", "args": ["cmd": "ls"]]) == nil, "unknown action")
+        check(OnboardingBridge.parse(["action": "status"]) == nil, "missing id")
+        check(OnboardingBridge.parse(["id": 9, "action": "finish", "args": ["outcome": "skipped"]])?.action == .finish("skipped"), "finish")
+        check(OnboardingBridge.parse(["id": 10, "action": "finish", "args": ["outcome": "whatever"]]) == nil, "finish outcome")
+        check(OnboardingBridge.parse(["id": 11, "action": "openSettings", "args": ["section": "connections"]])?.action == .openSettings("connections"), "settings")
+        check(OnboardingBridge.systemSettingsURL("accessibility")?.absoluteString == "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", "ax url")
+        check(OnboardingBridge.systemSettingsURL("screen_recording")?.absoluteString == "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", "screen url")
+        let reply = OnboardingBridge.replyScript(id: 3, ok: false, result: nil, error: "Quote \" and </script>")
+        check(reply.hasPrefix("window.macmcp.receive(") && reply.hasSuffix(");"), "reply shape")
+        check(!reply.contains("</script>"), "reply escapes markup")
+        print("BRIDGE_PASS")
+    }
+}
+'''
+
+
+class OnboardingBridgeTests(unittest.TestCase):
+    def test_bridge_accepts_only_known_actions(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            harness = Path(td) / "Harness.swift"
+            binary = Path(td) / "bridge-harness"
+            harness.write_text(textwrap.dedent(HARNESS), encoding="utf-8")
+            built = subprocess.run(["xcrun", "swiftc", "-parse-as-library", str(BRIDGE), str(harness), "-o", str(binary)],
+                                   capture_output=True, text=True, timeout=180)
+            self.assertEqual(0, built.returncode, built.stderr)
+            run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=20)
+            self.assertEqual(0, run.returncode, run.stdout + run.stderr)
+            self.assertIn("BRIDGE_PASS", run.stdout)
+
+    def test_page_is_local_only(self) -> None:
+        html = (ONBOARDING / "index.html").read_text(encoding="utf-8")
+        self.assertIn("default-src 'none'", html)
+        self.assertIn("connect-src 'none'", html)
+        for path in ONBOARDING.rglob("*"):
+            if path.suffix in {".html", ".css", ".js"}:
+                self.assertIsNone(re.search(r"https?://(?!127\.0\.0\.1)", path.read_text(encoding="utf-8")), path.name)
+
+    def test_the_build_bundles_the_page_and_links_webkit(self) -> None:
+        build = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")
+        self.assertIn("-framework WebKit", build)
+        self.assertIn("Sources/OnboardingBridge.swift", build)
+        self.assertIn("Sources/OnboardingWindowController.swift", build)
+        self.assertIn('"${SCRIPT_DIR}/Onboarding"', build)
+        self.assertIn('"${RESOURCES}/Assets/AppIcon.png"', build)
+
+    def test_steps_logic_passes_node_tests(self) -> None:
+        node = subprocess.run(["/usr/bin/env", "which", "node"], capture_output=True, text=True).stdout.strip()
+        if not node:
+            self.skipTest("node is not installed")
+        run = subprocess.run([node, "--test", str(ONBOARDING / "tests")], capture_output=True, text=True, timeout=60)
+        self.assertEqual(0, run.returncode, run.stdout + run.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

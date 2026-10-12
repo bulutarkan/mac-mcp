@@ -240,6 +240,7 @@ struct MenuBarView: View {
             Button("Review Connections…") { openSettings(.connections) }
             Button("Review Safety…") { openSettings(.permissions) }
             Button("Settings…") { openSettings() }
+            Button("Take the Tour…") { state.showTour() }
             Divider()
             Button(state.updateCheckLoading ? "Checking for Updates…" : "Check for Updates") { state.checkForUpdates() }
                 .disabled(!state.canCheckForUpdates)
