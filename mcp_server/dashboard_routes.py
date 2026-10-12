@@ -32,10 +32,8 @@ from .file_transactions import (
     undo_transaction,
 )
 from .observability import TelemetryManager, sanitize_value
-from .permission_probe import (
-    REQUESTABLE, accessibility_state, probe_permissions, process_identity, request_permission,
-    screen_recording_state,
-)
+from .permission_probe import accessibility_state, probe_permissions, process_identity, screen_recording_state
+from .permission_request import REQUESTABLE, request_permission
 from .provider_usage import clear as provider_usage_clear, summary as provider_usage_summary
 from .policy import (
     GLOBAL_PROFILE_NAMES,

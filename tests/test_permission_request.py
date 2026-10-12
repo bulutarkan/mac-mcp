@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mcp_server import permission_probe as probe
+from mcp_server import permission_request as requester
 
 
 class PermissionHolderTests(unittest.TestCase):
@@ -44,22 +45,22 @@ class PermissionHolderTests(unittest.TestCase):
 
 class PermissionRequestTests(unittest.TestCase):
     def test_accessibility_prompt_then_state(self) -> None:
-        with patch.object(probe, "_prompt_accessibility") as prompt, \
-                patch.object(probe, "accessibility_state", return_value=probe.NOT_DETERMINED):
-            result = probe.request_permission("accessibility")
+        with patch.object(requester, "_prompt_accessibility") as prompt, \
+                patch.object(requester, "accessibility_state", return_value=probe.NOT_DETERMINED):
+            result = requester.request_permission("accessibility")
         prompt.assert_called_once()
         self.assertEqual({"permission": "accessibility", "state": "not_determined", "restart_needed": False}, result)
 
     def test_screen_recording_needs_a_restart_until_it_takes_effect(self) -> None:
-        with patch.object(probe, "_request_screen_capture", return_value=True) as request, \
-                patch.object(probe, "screen_recording_state", return_value=probe.DENIED):
-            result = probe.request_permission("screen_recording")
+        with patch.object(requester, "_request_screen_capture", return_value=True) as request, \
+                patch.object(requester, "screen_recording_state", return_value=probe.DENIED):
+            result = requester.request_permission("screen_recording")
         request.assert_called_once()
         self.assertTrue(result["restart_needed"])
 
     def test_unknown_permissions_are_refused(self) -> None:
         with self.assertRaises(ValueError):
-            probe.request_permission("microphone")
+            requester.request_permission("microphone")
 
 
 class PermissionRouteTests(unittest.TestCase):
