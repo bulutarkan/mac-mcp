@@ -16,13 +16,13 @@ const SCREENS = [
   { id: 'done', kind: 'finish', rail: 'Done' },
 ];
 
-// Clients `mac-mcp connect-config` knows; the app renders their setup, never this page.
+// Apps `mac-mcp connect` sets up; the app does the setup, never this page.
 const CLIENTS = [
-  { id: 'claude-code', name: 'Claude Code', needsRemote: false },
-  { id: 'codex', name: 'Codex', needsRemote: false },
-  { id: 'opencode', name: 'OpenCode', needsRemote: false },
-  { id: 'claude-desktop', name: 'Claude Desktop', needsRemote: false },
-  { id: 'chatgpt', name: 'ChatGPT', needsRemote: true },
+  { id: 'claude-desktop', name: 'Claude Desktop', mark: '✳', needsRemote: false },
+  { id: 'claude-code', name: 'Claude Code', mark: '>_', needsRemote: false },
+  { id: 'chatgpt', name: 'ChatGPT', mark: '◎', needsRemote: true },
+  { id: 'codex', name: 'Codex', mark: '{ }', needsRemote: false },
+  { id: 'opencode', name: 'OpenCode', mark: '[ ]', needsRemote: false },
 ];
 
 const FIRST_REQUEST = 'Use Mac MCP to tell me which macOS version this Mac is running.';
@@ -78,7 +78,28 @@ function primaryAction(id, evaluation) {
   }
 }
 
-const api = { SCREENS, CLIENTS, FIRST_REQUEST, indexOf, evaluate, primaryAction };
+/**
+ * One row of the Connect screen: an AI app as `mac-mcp clients` found it.
+ * action: 'connect' (Mac MCP sets it up), 'settings' (needs a public address first) or null.
+ */
+function appRow(client, found, remote) {
+  if (client.needsRemote) {
+    return remote
+      ? { state: 'ready', detail: 'Copies its address, then you paste it in ChatGPT', button: 'Copy address', action: 'connect' }
+      : { state: 'blocked', detail: 'Needs a public address for this Mac first', button: 'Set up', action: 'settings' };
+  }
+  if (found && found.added) return { state: 'added', detail: 'Mac MCP is added', button: 'Set up again', action: 'connect' };
+  if (found && found.installed) return { state: 'ready', detail: 'On this Mac', button: 'Connect', action: 'connect' };
+  return { state: 'missing', detail: 'Not on this Mac', button: null, action: null };
+}
+
+/** Apps on this Mac first, keeping the list's order otherwise. */
+function orderedClients(apps) {
+  const present = (client) => client.needsRemote || Boolean((apps || []).find((a) => a.id === client.id && a.installed));
+  return [...CLIENTS.filter(present), ...CLIENTS.filter((client) => !present(client))];
+}
+
+const api = { SCREENS, CLIENTS, FIRST_REQUEST, indexOf, evaluate, primaryAction, appRow, orderedClients };
 if (typeof module === 'object' && module.exports) module.exports = api;
 else root.OnboardingSteps = api;
 })(typeof window === 'object' ? window : globalThis);

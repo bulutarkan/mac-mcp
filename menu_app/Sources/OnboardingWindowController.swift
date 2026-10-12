@@ -122,6 +122,22 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, WKNavigation
                 throw AppState.OnboardingFailure(message: text.isEmpty ? "This app's setup is not available yet." : text)
             }
             return text
+        case .apps:
+            let result = await state.runCLICommand(["clients", "--json"])
+            guard let object = OnboardingBridge.jsonResult(result.output), let apps = object["apps"] else {
+                throw AppState.OnboardingFailure(message: "Mac MCP could not look for AI apps on this Mac.")
+            }
+            return apps
+        case .connectApp(let client):
+            // Mac MCP writes the app's setup itself; for ChatGPT the address goes to the clipboard.
+            let result = await state.runCLICommand(["connect", "--client", client, "--json"])
+            guard let object = OnboardingBridge.jsonResult(result.output) else {
+                throw AppState.OnboardingFailure(message: "Mac MCP could not set up this app. Use the manual setup below.")
+            }
+            if object["ok"] as? Bool != true {
+                throw AppState.OnboardingFailure(message: object["error"] as? String ?? "Mac MCP could not set up this app.")
+            }
+            return object
         case .copy(let text):
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)

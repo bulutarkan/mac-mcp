@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import steps from '../steps.js';
 
-const { SCREENS, CLIENTS, evaluate, primaryAction, indexOf } = steps;
+const { SCREENS, CLIENTS, evaluate, primaryAction, indexOf, appRow, orderedClients } = steps;
 
 test('the tour comes first, then the setup in order', () => {
   assert.deepEqual(SCREENS.map((s) => s.id),
@@ -49,6 +49,23 @@ test('ChatGPT is marked as needing remote access; local clients are not', () => 
   assert.equal(chatgpt.needsRemote, true);
   assert.equal(CLIENTS.find((c) => c.id === 'claude-code').needsRemote, false);
   assert.ok(CLIENTS.every((c) => typeof c.name === 'string' && c.name.length > 0));
+});
+
+test('each AI app row says what one click will do', () => {
+  const code = CLIENTS.find((c) => c.id === 'claude-code');
+  const chatgpt = CLIENTS.find((c) => c.id === 'chatgpt');
+  assert.equal(appRow(code, { installed: true, added: false }, false).button, 'Connect');
+  assert.equal(appRow(code, { installed: true, added: true }, false).state, 'added');
+  assert.equal(appRow(code, { installed: false, added: false }, false).action, null);
+  assert.equal(appRow(code, undefined, false).state, 'missing');
+  assert.equal(appRow(chatgpt, undefined, false).action, 'settings');
+  assert.equal(appRow(chatgpt, undefined, true).button, 'Copy address');
+});
+
+test('apps on this Mac are listed first', () => {
+  const order = orderedClients([{ id: 'codex', installed: true }]).map((c) => c.id);
+  assert.deepEqual(order.slice(0, 2), ['chatgpt', 'codex']);
+  assert.equal(order.length, CLIENTS.length);
 });
 
 test('a grant this server cannot see yet asks for a restart', () => {

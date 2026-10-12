@@ -132,15 +132,12 @@
       <section class="screen" data-screen="connect" aria-labelledby="h-connect">
         <div class="copy">
           <h1 id="h-connect">Connect your AI app.</h1>
-          <p>Pick the app you use. Copy its setup into that app, then ask it anything about your Mac.</p>
-          <div class="clients" role="radiogroup" aria-label="AI app"></div>
+          <p>Choose the app you use. Mac MCP adds itself to it, so there is nothing to copy or paste.</p>
           <p class="waiting" data-live="connect-state"><span class="pulse"></span>Waiting for your AI app to call Mac MCP</p>
+          <p class="note">Prefer to set it up by hand? <button type="button" class="link" data-action="manual-setup">Open the manual setup</button></p>
         </div>
         <div class="stage plain">
-          <div class="snippet">
-            <div class="snippet-head"><span data-live="client-name">Claude Code</span><button type="button" class="quiet" data-action="copy-config">Copy</button></div>
-            <pre data-live="config" tabindex="0">Choose an app to see its setup.</pre>
-          </div>
+          <ul class="apps" data-live="apps" aria-label="AI apps"></ul>
         </div>
       </section>
 

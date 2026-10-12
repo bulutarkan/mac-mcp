@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.error import URLError
 from types import SimpleNamespace
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import Request as UrlRequest, urlopen
 
 from dotenv import load_dotenv
@@ -2312,6 +2312,72 @@ def credential(args: argparse.Namespace) -> int:
     return 2
 
 
+def connect_app(args: argparse.Namespace) -> int:
+    """One-click setup: add Mac MCP to an AI app (ChatGPT: copy its connector address)."""
+    from . import client_setup
+
+    try:
+        if args.client == "chatgpt":
+            result = _copy_chatgpt_address()
+        else:
+            result = client_setup.connect(args.client)
+    except (client_setup.SetupError, ConnectionConfigError, PublicEndpointError) as exc:
+        if args.json:
+            print(json.dumps({"ok": False, "client": args.client, "error": str(exc)}))
+        else:
+            print(f"mac-mcp connect: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(result))
+    else:
+        print(f"Mac MCP is added to {result['name']}. {result['next']}")
+    return 0
+
+
+def _copy_chatgpt_address() -> dict[str, object]:
+    """ChatGPT is set up in its own window: put the address, key included, on the clipboard."""
+    _load_env()
+    endpoint_url, _ = _connect_config_endpoint("chatgpt", "auto")
+    settings = load_settings()
+    address = endpoint_url
+    if not settings.allow_no_auth:
+        if not settings.api_key:
+            raise ConnectionConfigError("authentication is required but MCP_API_KEY is not configured")
+        address = f"{endpoint_url}?{urlencode({'ApiKey': settings.api_key})}"
+    # Straight to the clipboard: the key is never printed.
+    subprocess.run(["/usr/bin/pbcopy"], input=address, text=True, check=True, timeout=5)
+    return {
+        "ok": True,
+        "client": "chatgpt",
+        "name": "ChatGPT",
+        "copied": True,
+        "next": "The address is copied. In ChatGPT, open Settings › Apps & Connectors, create a connector "
+                "named Mac MCP and paste the address as its URL.",
+    }
+
+
+def clients(args: argparse.Namespace) -> int:
+    """Which AI apps are on this Mac and which already have Mac MCP."""
+    from . import client_setup
+
+    apps = client_setup.apps_status()
+    if args.json:
+        print(json.dumps({"ok": True, "apps": apps}))
+    else:
+        for app in apps:
+            state = "added" if app["added"] else ("installed" if app["installed"] else "not installed")
+            print(f"{app['name']}: {state}")
+    return 0
+
+
+def stdio(args: argparse.Namespace) -> int:
+    """Serve MCP over stdin/stdout for AI apps that start Mac MCP as a command."""
+    from .stdio_bridge import run
+
+    _load_env()
+    return run(_default_port(), os.getenv("MCP_API_KEY", "").strip() or None)
+
+
 def dashboard(args: argparse.Namespace) -> int:
     _load_env()
     port = _default_port()
@@ -2736,6 +2802,25 @@ def main(argv: list[str] | None = None) -> int:
         help="Client environment variable that will hold the API key; its value is never printed.",
     )
     p_connect.set_defaults(func=connect_config)
+
+    p_connect_app = sub.add_parser(
+        "connect",
+        help="Add Mac MCP to an AI app on this Mac in one step (ChatGPT: copy its connector address).",
+    )
+    p_connect_app.add_argument("--client", required=True, choices=("claude-code", "codex", "claude-desktop",
+                                                                   "opencode", "chatgpt"))
+    p_connect_app.add_argument("--json", action="store_true", help="Print the outcome as JSON.")
+    p_connect_app.set_defaults(func=connect_app)
+
+    p_clients = sub.add_parser("clients", help="List the AI apps on this Mac and whether Mac MCP is added.")
+    p_clients.add_argument("--json", action="store_true", help="Print as JSON.")
+    p_clients.set_defaults(func=clients)
+
+    p_stdio = sub.add_parser(
+        "stdio",
+        help="Speak MCP over stdin/stdout, forwarding to the running server (what one-click app setup runs).",
+    )
+    p_stdio.set_defaults(func=stdio)
 
     p_dashboard = sub.add_parser("dashboard", help="Open the local Mac MCP operations dashboard.")
     p_dashboard.set_defaults(func=dashboard)

@@ -224,9 +224,21 @@ For MCP clients/connectors that cannot set an `Authorization` header, Mac MCP al
 https://your-domain.example/mcp?ApiKey=<MCP_API_KEY>
 ```
 
+### Connect an AI app in one step
+
+The tour's **Connect** step lists the AI apps on this Mac, each with a **Connect** button. The same setup is available from the CLI:
+
+```bash
+mac-mcp clients                          # which apps are on this Mac, and which already have Mac MCP
+mac-mcp connect --client claude-desktop  # or claude-code, codex, opencode
+mac-mcp connect --client chatgpt         # copies ChatGPT's connector address to the clipboard
+```
+
+`mac-mcp connect` adds Mac MCP to the app as a command-based server that runs `mac-mcp stdio`, replacing an earlier `mac-mcp` entry. The app's config holds no address and no key: `mac-mcp stdio` forwards MCP messages to the running server and adds the API key from Mac MCP's own `.env`. If the server restarts, the bridge sets up the session again on the new server. If the server is not running, a request waits up to 15 seconds and then returns a clear error. A request cut off mid-reply is never resent. Claude Code and Codex are set up through their own `mcp add` commands. For Claude Desktop and OpenCode, Mac MCP edits their JSON config and leaves everything else in it unchanged, keeping the old file next to it as `*.before-mac-mcp`. If an OpenCode config contains comments, Mac MCP does not change it and points you to the manual setup. For ChatGPT, the address including its key goes straight to the clipboard and is never printed; ChatGPT still needs a public HTTPS endpoint.
+
 ### Generate a client connection config
 
-Use the CLI to generate a connection snippet from the Mac MCP endpoint and authentication state that are actually configured on this Mac:
+For manual setup, use the CLI to generate a connection snippet from the Mac MCP endpoint and authentication state that are actually configured on this Mac:
 
 ```bash
 mac-mcp connect-config --client chatgpt

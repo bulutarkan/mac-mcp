@@ -11,6 +11,8 @@ enum OnboardingAction: Equatable {
     case requestPermission(String)
     case openSystemSettings(String)
     case connectConfig(String)
+    case apps
+    case connectApp(String)
     case copy(String)
     case openSettings(String)
     case finish(String)
@@ -45,6 +47,8 @@ enum OnboardingBridge {
         case "requestPermission": action = value("permission", in: permissions).map(OnboardingAction.requestPermission)
         case "openSystemSettings": action = value("permission", in: permissions).map(OnboardingAction.openSystemSettings)
         case "connectConfig": action = value("client", in: clients).map(OnboardingAction.connectConfig)
+        case "apps": action = .apps
+        case "connectApp": action = value("client", in: clients).map(OnboardingAction.connectApp)
         case "openSettings": action = value("section", in: sections).map(OnboardingAction.openSettings)
         case "finish": action = value("outcome", in: outcomes).map(OnboardingAction.finish)
         case "copy":
@@ -67,6 +71,16 @@ enum OnboardingBridge {
         default:
             return nil
         }
+    }
+
+    /// The JSON object a `mac-mcp ... --json` run printed; warnings may come before it.
+    static func jsonResult(_ output: String) -> [String: Any]? {
+        for line in output.split(separator: "\n").reversed() where line.hasPrefix("{") {
+            if let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] {
+                return object
+            }
+        }
+        return nil
     }
 
     /// JavaScript that hands the answer to window.macmcp.receive. The payload is JSON with

@@ -189,10 +189,12 @@ def kill_process(settings: Settings, pid: int, signal: str = "TERM") -> Dict[str
 
 
 def get_system_info(settings: Settings) -> Dict[str, Any]:
-    """Get Mac system info: CPU, memory, disk, uptime, hostname."""
+    """Get Mac system info: macOS version, CPU, memory, disk, uptime, hostname."""
     script = r"""
 echo "=== HOSTNAME ==="
 hostname
+echo "=== MACOS ==="
+sw_vers
 echo "=== UPTIME ==="
 uptime
 echo "=== CPU ==="

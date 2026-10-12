@@ -2,7 +2,7 @@
 // A classic script (WKWebView does not load ES modules from file:// pages).
 (function () {
 'use strict';
-const { SCREENS, CLIENTS, FIRST_REQUEST, evaluate, primaryAction, indexOf } = window.OnboardingSteps;
+const { SCREENS, FIRST_REQUEST, evaluate, primaryAction, indexOf, appRow, orderedClients } = window.OnboardingSteps;
 
 // ---------- bridge ----------
 // The app answers every message with window.macmcp.receive({id, ok, result | error}).
@@ -39,10 +39,22 @@ const demoStatus = {
   done: { server_running: true, accessibility: 'granted', screen_recording: 'granted', permission_holder: 'Mac MCP', public_endpoint_mode: 'none', first_call: { tool: 'system_info' }, first_success: { tool: 'system_info' } },
 }[params.get('demo') || 'running'];
 
+const demoApps = [
+  { id: 'claude-desktop', installed: true, added: false },
+  { id: 'claude-code', installed: true, added: true },
+  { id: 'codex', installed: false, added: false },
+  { id: 'opencode', installed: false, added: false },
+];
+
 function demo(action, args) {
   const replies = {
     status: () => demoStatus,
-    connectConfig: () => `claude mcp add-json --scope user mac-mcp '{"type":"http","url":"http://127.0.0.1:8765/mcp","headers":{"Authorization":"Bearer \${MAC_MCP_API_KEY}"}}'\n\nThen run: claude mcp get mac-mcp  (expect Status: Connected)\n# demo for ${args.client}`,
+    apps: () => demoApps.map((app) => ({ ...app })),
+    connectApp: () => {
+      const app = demoApps.find((item) => item.id === args.client);
+      if (app) app.added = true;
+      return { ok: true, next: 'Quit Claude and open it again, then ask it something about your Mac.' };
+    },
   };
   return Promise.resolve(replies[action] ? replies[action]() : { ok: true });
 }
@@ -53,8 +65,9 @@ const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 let current = Math.max(0, indexOf(params.get('screen') || 'welcome'));
 let status = null;
 let evaluation = evaluate(null);
-let client = CLIENTS[0].id;
-let config = '';
+let apps = null;
+const appNotes = {};
+let appsRemote = null;
 let pollTimer = null;
 let celebrated = false;
 let restarting = false;
@@ -139,6 +152,7 @@ function renderLive() {
   connectState.lastChild.textContent = e.connect
     ? `Connected. Your AI app called ${e.firstTool || 'Mac MCP'}.`
     : 'Waiting for your AI app to call Mac MCP';
+  if (apps && appsRemote !== e.remote) renderApps();
   // First request
   const requestState = $('[data-live="request-state"]');
   requestState.classList.toggle('is-done', e.request);
@@ -168,7 +182,7 @@ function show(index) {
   skip.textContent = screen.kind === 'tour' ? 'Skip tour' : 'Close';
   renderRail();
   renderPrimary();
-  if (screen.id === 'connect' && !config) loadConfig(client);
+  if (screen.id === 'connect' && !apps) loadApps();
   if (screen.kind !== 'tour') startPolling();
   else stopPolling();
   const heading = $('h1', screens[current]);
@@ -248,39 +262,63 @@ async function requestPermission(name) {
   refresh();
 }
 
-async function loadConfig(id) {
-  client = id;
-  for (const button of $$('.clients button')) button.setAttribute('aria-checked', String(button.dataset.client === id));
-  const meta = CLIENTS.find((item) => item.id === id);
-  $('[data-live="client-name"]').textContent = meta.name;
-  const pre = $('[data-live="config"]');
-  if (meta.needsRemote && !evaluation.remote) {
-    config = '';
-    pre.textContent = 'ChatGPT connects from the internet, so it needs a public HTTPS address for this Mac first.\n\nSet one up in Settings › Connections (Cloudflare Tunnel, ngrok or your own), then come back here. Remote access stays off until you do.';
-    return;
-  }
-  pre.textContent = 'Loading…';
+// The AI apps on this Mac, each with one button: Mac MCP does the setup itself.
+async function loadApps() {
   try {
-    config = await call('connectConfig', { client: id });
-    pre.textContent = config;
-  } catch (error) {
-    config = '';
-    pre.textContent = error.message;
+    apps = await call('apps');
+  } catch {
+    apps = [];
+  }
+  renderApps();
+}
+
+function renderApps() {
+  appsRemote = evaluation.remote;
+  const list = $('[data-live="apps"]');
+  list.textContent = '';
+  for (const item of orderedClients(apps)) {
+    const row = appRow(item, (apps || []).find((found) => found.id === item.id), evaluation.remote);
+    const element = document.createElement('li');
+    element.className = 'app';
+    element.dataset.app = item.id;
+    element.dataset.state = row.state;
+    const mark = document.createElement('i');
+    mark.className = 'app-mark';
+    mark.textContent = item.mark;
+    mark.setAttribute('aria-hidden', 'true');
+    const text = document.createElement('div');
+    const name = document.createElement('strong');
+    name.textContent = item.name;
+    const detail = document.createElement('span');
+    detail.textContent = appNotes[item.id] || row.detail;
+    text.append(name, detail);
+    element.append(mark, text);
+    if (row.button) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = row.button;
+      button.setAttribute('aria-label', `${row.button}: ${item.name}`);
+      button.addEventListener('click', () => (row.action === 'settings'
+        ? call('openSettings', { section: 'connections' })
+        : connectApp(item, element)));
+      element.append(button);
+    }
+    list.append(element);
   }
 }
 
-function buildClients() {
-  const group = $('.clients');
-  for (const item of CLIENTS) {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.textContent = item.name;
-    button.dataset.client = item.id;
-    button.setAttribute('role', 'radio');
-    button.setAttribute('aria-checked', String(item.id === client));
-    button.addEventListener('click', () => loadConfig(item.id));
-    group.append(button);
+async function connectApp(item, element) {
+  element.classList.add('is-working');
+  $('button', element).disabled = true;
+  try {
+    const result = await call('connectApp', { client: item.id });
+    appNotes[item.id] = result.next;
+    toast(item.needsRemote ? 'Address copied. Paste it in ChatGPT.' : `Mac MCP is added to ${item.name}.`);
+    apps = await call('apps').catch(() => apps);
+  } catch (error) {
+    appNotes[item.id] = error.message;
   }
+  renderApps();
 }
 
 // ---------- wiring ----------
@@ -297,9 +335,7 @@ function wire() {
   for (const link of $$('[data-action="open-settings-pane"]')) {
     link.addEventListener('click', () => call('openSystemSettings', { permission: link.dataset.permission }));
   }
-  $('[data-action="copy-config"]').addEventListener('click', () => {
-    if (config) copy(config, 'Setup copied. Paste it into your AI app.');
-  });
+  $('[data-action="manual-setup"]').addEventListener('click', () => call('openSettings', { section: 'connections' }));
   $('[data-action="copy-prompt"]').addEventListener('click', () => copy(FIRST_REQUEST, 'Copied. Paste it into your AI app.'));
   document.addEventListener('keydown', (event) => {
     if (event.target.closest && event.target.closest('pre')) return;
@@ -312,7 +348,6 @@ function wire() {
 
 $('[data-live="prompt"]').textContent = `“${FIRST_REQUEST}”`;
 buildRail();
-buildClients();
 wire();
 show(current);
 })();
