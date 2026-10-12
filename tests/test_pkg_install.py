@@ -259,11 +259,13 @@ class PkgFreshInstallTests(unittest.TestCase):
     def old_tarfile(self):
         """Python 3.10 without extraction filters: extractall() has no filter argument and no protection."""
         real = pkg.tarfile.TarFile.extractall
+        # On a Python that has filters, extract without one, as an old Python would.
+        unfiltered = {"filter": "fully_trusted"} if getattr(pkg.tarfile, "data_filter", None) else {}
 
         def extractall(tar, path=".", members=None, *, numeric_owner=False, **kwargs):
             if "filter" in kwargs:
                 raise TypeError("extractall() got an unexpected keyword argument 'filter'")
-            return real(tar, path, members, numeric_owner=numeric_owner, filter="fully_trusted")
+            return real(tar, path, members, numeric_owner=numeric_owner, **unfiltered)
 
         return patch.multiple(pkg.tarfile, create=True, data_filter=None), \
             patch.object(pkg.tarfile.TarFile, "extractall", extractall)
