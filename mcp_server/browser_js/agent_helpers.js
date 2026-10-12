@@ -262,7 +262,7 @@ function __mcpClosedShadowHosts(all){var tags=[],n=0;
     try{if(!window.customElements||!customElements.get(tag))continue;var r=el.getBoundingClientRect();if(r.width<24||r.height<16||!__mcpVisible(el))continue;}catch(e){continue;}
     n++;if(tags.indexOf(tag)<0&&tags.length<5)tags.push(tag);}
   return n?{count:n,tags:tags,hint:'These components keep their controls in closed shadow roots, which page scripts cannot read; use visual=element on one of them.'}:undefined;}
-function __mcpRole(el){var role=el.getAttribute('role');if(role)return role;var tag=(el.tagName||'').toLowerCase();if(tag==='a')return'link';if(tag==='button')return'button';if(tag==='select')return'combobox';if(tag==='textarea')return'textbox';if(tag==='input'){var t=(el.type||'text').toLowerCase();if(t==='checkbox')return'checkbox';if(t==='radio')return'radio';if(['button','submit','reset'].indexOf(t)>=0)return'button';return'textbox';}if(el.isContentEditable&&!__mcpEditableChild(el))return'textbox';return'';}
+function __mcpRole(el){var role=el.getAttribute('role');if(role)return role;var tag=(el.tagName||'').toLowerCase();if(tag==='a')return'link';if(tag==='button')return'button';if(tag==='select')return'combobox';if(tag==='textarea')return'textbox';if(tag==='input'){var t=(el.type||'text').toLowerCase();if(t==='checkbox')return'checkbox';if(t==='radio')return'radio';if(t==='range')return'slider';if(['button','submit','reset'].indexOf(t)>=0)return'button';return'textbox';}if(el.isContentEditable&&!__mcpEditableChild(el))return'textbox';return'';}
 function __mcpEditableChild(el){try{var p=__mcpParent(el);return !!p&&!!p.isContentEditable;}catch(e){return false;}}
 function __mcpContext(el){
   try{

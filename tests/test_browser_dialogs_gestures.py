@@ -111,7 +111,9 @@ class LeadingDialogTests(unittest.TestCase):
 
 class GestureActionTests(unittest.TestCase):
     def _run(self, typ, action, centers, **kwargs):
-        seq = iter(centers)
+        # A drag first asks the page whether the source is a native range slider.
+        not_range = [{"ok": True, "is_range": False}] if typ == "drag" and not action.get("to_query") else []
+        seq = iter(not_range + list(centers))
         with patch.object(agent, "_run_json_js", side_effect=lambda *a, **k: next(seq)), \
                 patch.object(agent, "_chrome_native_id", return_value="7"), \
                 patch.object(agent.chrome_background_bridge, "request_gesture",
@@ -144,6 +146,29 @@ class GestureActionTests(unittest.TestCase):
                                         {"ok": True, "x": 10, "y": 900, "in_view": False}])
         self.assertFalse(offscreen["ok"])
         self.assertEqual("destination", offscreen["endpoint"])
+        gesture.assert_not_called()
+
+    def test_debugger_refusal_explains_itself_and_nothing_ran(self) -> None:
+        from fastapi import HTTPException
+
+        refusal = HTTPException(409, {"error": "chrome_gesture_failed", "steps_done": 0,
+                                      "message": "Cannot access a chrome-extension:// URL of different extension"})
+        with patch.object(agent, "_run_json_js", side_effect=[{"ok": True, "x": 40, "y": 20, "in_view": True}]), \
+                patch.object(agent, "_chrome_native_id", return_value="7"), \
+                patch.object(agent.chrome_background_bridge, "request_gesture", side_effect=refusal):
+            result = agent._gesture_action(None, "Google Chrome", "hover", {"element_id": "e_1"}, {"type": "hover"}, 1, 1, "t",
+                                           resolve_target=lambda a: ({}, None))
+        self.assertEqual(("chrome_debugger_blocked", "CHROME_DEBUGGER_BLOCKED", 0),
+                         (result["error"], result["reason_code"], result["steps_done"]))
+        self.assertIn("Another extension", result["message"])
+
+    def test_range_slider_drag_sets_the_value_without_the_debugger(self) -> None:
+        with patch.object(agent, "_run_json_js", return_value={"ok": True, "is_range": True, "before": "5", "after": "8"}), \
+                patch.object(agent.chrome_background_bridge, "request_gesture") as gesture:
+            for browser in ("Google Chrome", "Safari"):
+                result = agent._gesture_action(None, browser, "drag", {"element_id": "e_1"}, {"type": "drag", "dx": 60}, 1, 1, "t",
+                                               resolve_target=lambda a: ({}, None))
+                self.assertEqual((True, "dom_range_value", "8"), (result["ok"], result["activation_mode"], result["value"]))
         gesture.assert_not_called()
 
     def test_safari_has_no_background_pointer(self) -> None:

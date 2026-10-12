@@ -26,6 +26,7 @@
     Selecting: 'Selected',
     Focusing: 'Focused',
     Scrolling: 'Scrolled',
+    Dragging: 'Dragged',
     Opened: 'Opened page',
     Working: 'Worked'
   };
@@ -38,13 +39,15 @@
     Selecting: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.2 6.2h11.6l-5.8 7.6-5.8-7.6Z"/></svg>',
     Focusing: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="5.6"/><circle cx="10" cy="10" r="1.8"/></svg>',
     Scrolling: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v14M6.7 6.3 10 3l3.3 3.3M6.7 13.7 10 17l3.3-3.3"/></svg>',
+    Dragging: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 10h14M6.3 6.7 3 10l3.3 3.3M13.7 6.7 17 10l-3.3 3.3"/></svg>',
     Opened: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 4.5h12v11H4z"/><path d="M4 7.2h12"/></svg>',
     Working: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="2"/><circle cx="4" cy="10" r="1"/><circle cx="16" cy="10" r="1"/></svg>'
   };
 
   let hideTimer = null;
-  let cursorTimer = null;
+  let pressTimer = null;
   let lastSeq = null;
+  let cursorAt = null;
   let announceTimer = null;
   let announceIdleTimer = null;
   let sessionAnnounced = false;
@@ -79,6 +82,19 @@
     return HISTORY_LABELS[action] || 'Worked';
   }
 
+  // The label next to the arrow: the action, plus the safe scroll direction when there is one.
+  function tipLabel(action, detail) {
+    const name = HISTORY_LABELS[action] ? action : 'Working';
+    return detail ? `${name} ${detail.toLowerCase()}` : name;
+  }
+
+  // Short hops are quick, long ones a little slower, so the arrow glides rather than jumps.
+  function moveDuration(from, x, y) {
+    if (!from) return 0;
+    const distance = Math.hypot(x - from.x, y - from.y);
+    return Math.round(Math.max(180, Math.min(520, 180 + distance * 0.35)));
+  }
+
   function formatClock(timestamp) {
     try {
       return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -96,23 +112,28 @@
       <style>
         :host { all: initial; }
         * { box-sizing: border-box; }
-        .companion { --panel-w: min(328px, calc(100vw - 56px)); --surface: rgba(255,255,255,.95); --surface-2: rgba(244,245,248,.95); --surface-pill: rgba(255,255,255,.9); --fg: rgba(17,19,24,.94); --fg-2: rgba(17,19,24,.7); --fg-3: rgba(17,19,24,.6); --line: rgba(17,19,24,.12); --line-soft: rgba(17,19,24,.08); --fill: rgba(17,19,24,.045); --fill-hover: rgba(17,19,24,.08); --accent: rgb(0,113,206); --accent-fill: rgba(0,122,224,.1); --accent-line: rgba(0,122,224,.22); --badge-bg: rgb(0,113,206); --badge-fg: #fff; --focus: rgb(0,103,214); --shadow: rgba(15,20,30,.18); position: fixed; inset: 0; pointer-events: none; color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; }
-        @media (prefers-color-scheme: dark) { .companion { --surface: rgba(26,30,37,.95); --surface-2: rgba(15,18,23,.95); --surface-pill: rgba(17,20,25,.84); --fg: rgba(255,255,255,.96); --fg-2: rgba(255,255,255,.7); --fg-3: rgba(255,255,255,.6); --line: rgba(255,255,255,.14); --line-soft: rgba(255,255,255,.08); --fill: rgba(255,255,255,.055); --fill-hover: rgba(255,255,255,.1); --accent: rgb(116,211,255); --accent-fill: rgba(90,200,250,.12); --accent-line: rgba(90,200,250,.22); --badge-bg: rgba(90,200,250,.24); --badge-fg: rgb(196,235,255); --focus: rgba(116,211,255,.95); --shadow: rgba(0,0,0,.36); } }
-        .frame { position: fixed; inset: 2px; border: 2px solid rgba(90, 200, 250, .78); border-radius: 10px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.16), 0 0 18px rgba(90,200,250,.28); opacity: 0; transition: opacity .18s ease, border-color .18s ease, box-shadow .18s ease; animation: none; }
-        .frame.active { opacity: 1; animation: mcpPulse 1.7s ease-in-out infinite; }
-        .frame.attention { border-color: rgba(255, 184, 74, .9); box-shadow: 0 0 20px rgba(255,184,74,.28); }
-        .pill { position: fixed; top: 14px; right: 14px; display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-pill); color: var(--fg); box-shadow: 0 7px 24px var(--shadow); backdrop-filter: none; -webkit-backdrop-filter: none; font: 600 12px/1 -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; letter-spacing: -.01em; opacity: 0; transform: translateY(-5px) scale(.98); transition: opacity .16s ease, transform .16s ease, right .38s cubic-bezier(.22,.8,.2,1); }
-        .pill.active { opacity: 1; transform: translateY(0) scale(1); backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%); }
-        .companion.sidebar-open .pill { right: calc(var(--panel-w) + 28px); }
-        .dot { width: 7px; height: 7px; border-radius: 50%; background: rgb(90,200,250); box-shadow: 0 0 0 0 rgba(90,200,250,.45); animation: none; }
-        .pill.active .dot { animation: mcpDot 1.35s ease-out infinite; }
-        .label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .cursor { position: fixed; left: 0; top: 0; width: 18px; height: 24px; opacity: 0; transform: translate3d(-40px,-40px,0); transition: transform .24s cubic-bezier(.22,.8,.2,1), opacity .12s ease; filter: drop-shadow(0 2px 4px rgba(0,0,0,.32)); }
-        .cursor::before { content: ''; position: absolute; inset: 0; background: white; clip-path: polygon(0 0, 0 90%, 25% 69%, 40% 100%, 51% 94%, 36% 65%, 66% 64%); }
-        .cursor::after { content: ''; position: absolute; inset: 1px; background: #111; clip-path: polygon(0 0, 0 90%, 25% 69%, 40% 100%, 51% 94%, 36% 65%, 66% 64%); z-index: -1; transform: scale(1.08); transform-origin: top left; }
-        .cursor.active { opacity: .96; }
-        .ripple { position: fixed; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; border: 2px solid rgba(90,200,250,.9); opacity: 0; transform: scale(.35); }
-        .ripple.go { animation: mcpRipple .52s ease-out forwards; }
+        .companion { --panel-w: min(328px, calc(100vw - 56px)); --surface: rgba(255,255,255,.95); --surface-2: rgba(244,245,248,.95); --fg: rgba(17,19,24,.94); --fg-2: rgba(17,19,24,.7); --fg-3: rgba(17,19,24,.6); --line: rgba(17,19,24,.12); --line-soft: rgba(17,19,24,.08); --fill: rgba(17,19,24,.045); --fill-hover: rgba(17,19,24,.08); --accent: rgb(0,113,206); --accent-fill: rgba(0,122,224,.1); --accent-line: rgba(0,122,224,.22); --badge-bg: rgb(0,113,206); --badge-fg: #fff; --focus: rgb(0,103,214); --shadow: rgba(15,20,30,.18); position: fixed; inset: 0; pointer-events: none; color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; }
+        @media (prefers-color-scheme: dark) { .companion { --surface: rgba(26,30,37,.95); --surface-2: rgba(15,18,23,.95); --fg: rgba(255,255,255,.96); --fg-2: rgba(255,255,255,.7); --fg-3: rgba(255,255,255,.6); --line: rgba(255,255,255,.14); --line-soft: rgba(255,255,255,.08); --fill: rgba(255,255,255,.055); --fill-hover: rgba(255,255,255,.1); --accent: rgb(116,211,255); --accent-fill: rgba(90,200,250,.12); --accent-line: rgba(90,200,250,.22); --badge-bg: rgba(90,200,250,.24); --badge-fg: rgb(196,235,255); --focus: rgba(116,211,255,.95); --shadow: rgba(0,0,0,.36); } }
+        /* Graphite frame with a light hairline: reads on light and dark pages alike. It fades in once, no idle pulse. */
+        .frame { position: fixed; inset: 3px; border: 1.5px solid rgba(28,28,30,.58); border-radius: 12px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.5), 0 0 0 1px rgba(255,255,255,.35), 0 10px 34px rgba(0,0,0,.12); opacity: 0; transition: opacity .34s ease, border-color .2s ease, box-shadow .2s ease; }
+        .frame.active { opacity: 1; animation: mcpFrameIn .42s cubic-bezier(.22,.8,.2,1); }
+        .frame.attention { border-color: rgba(255,159,10,.92); box-shadow: inset 0 0 0 1px rgba(255,255,255,.5), 0 0 22px rgba(255,159,10,.26); }
+        /* A rounded graphite arrow with a light rim; its tip (3.5,3.5) sits on the target. */
+        .cursor { position: fixed; left: 0; top: 0; width: 30px; height: 30px; opacity: 0; transform: translate3d(-80px,-80px,0); transition: transform var(--move, .32s) cubic-bezier(.2,.8,.2,1), opacity .22s ease; will-change: transform; }
+        .cursor.jump { transition: opacity .22s ease; }
+        .cursor.active { opacity: 1; }
+        .cursor svg { display: block; width: 30px; height: 30px; overflow: visible; filter: drop-shadow(0 2px 5px rgba(0,0,0,.34)) drop-shadow(0 0 .5px rgba(0,0,0,.45)); transform-origin: 3.5px 3.5px; transition: transform .14s ease; }
+        .cursor.press svg { transform: scale(.84); }
+        .tip { position: absolute; left: 27px; top: 28px; max-width: 220px; padding: 5px 9px 6px; border-radius: 8px; background: rgba(28,28,30,.9); color: #fff; box-shadow: 0 6px 18px rgba(0,0,0,.26), inset 0 0 0 1px rgba(255,255,255,.2); backdrop-filter: blur(12px) saturate(140%); -webkit-backdrop-filter: blur(12px) saturate(140%); font: 600 11.5px/1.2 -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; letter-spacing: -.005em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transform: translateY(-3px); transition: opacity .18s ease, transform .18s ease; }
+        .cursor.active .tip.show { opacity: 1; transform: translateY(0); }
+        .cursor.flip-x .tip { left: auto; right: 27px; }
+        .cursor.flip-y .tip { top: auto; bottom: 28px; }
+        /* Page-level steps (no element) show the same label without moving the arrow. */
+        .page-tip { position: fixed; top: 14px; right: 14px; left: auto; transform: translateY(-4px); }
+        .page-tip.show { opacity: 1; transform: translateY(0); }
+        .companion.sidebar-open .page-tip { right: calc(var(--panel-w) + 28px); }
+        .ripple { position: fixed; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; border: 1.5px solid rgba(28,28,30,.6); box-shadow: 0 0 0 1px rgba(255,255,255,.55); opacity: 0; transform: scale(.4); }
+        .ripple.go { animation: mcpRipple .5s cubic-bezier(.2,.8,.2,1) forwards; }
 
         .history-rail { position: fixed; right: 0; top: 50%; width: 30px; min-height: 78px; padding: 10px 0 8px; transform: translateY(-50%); pointer-events: auto; border: 1px solid var(--line); border-right: 0; border-radius: 14px 0 0 14px; background: var(--surface); color: var(--fg-2); box-shadow: -4px 6px 18px var(--shadow); backdrop-filter: blur(14px) saturate(135%); -webkit-backdrop-filter: blur(14px) saturate(135%); opacity: .9; cursor: pointer; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font: inherit; transition: opacity .18s ease, width .18s ease, right .38s cubic-bezier(.22,.8,.2,1), background .18s ease; }
         .history-rail::after { content: ''; position: absolute; inset: -10px 0 -10px -12px; }
@@ -163,16 +184,15 @@
         .history-rail:focus-visible { opacity: 1; outline-offset: -2px; }
         .sr-status { position: fixed; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
 
-        @keyframes mcpPulse { 0%,100% { box-shadow: 0 0 12px rgba(90,200,250,.16); } 50% { box-shadow: 0 0 24px rgba(90,200,250,.38); } }
-        @keyframes mcpDot { 0% { box-shadow: 0 0 0 0 rgba(90,200,250,.48); } 65%,100% { box-shadow: 0 0 0 6px rgba(90,200,250,0); } }
-        @keyframes mcpRipple { 0% { opacity: .92; transform: scale(.35); } 100% { opacity: 0; transform: scale(2.8); } }
-        @media (max-width: 520px) { .companion.sidebar-open .pill { opacity: 0; } }
-        @media (prefers-reduced-motion: reduce) { .frame,.dot { animation: none; } .cursor,.pill,.history-panel,.history-rail { transition-duration: .01ms; } }
+        @keyframes mcpFrameIn { 0% { opacity: 0; transform: scale(1.006); } 100% { opacity: 1; transform: scale(1); } }
+        @keyframes mcpRipple { 0% { opacity: .9; transform: scale(.4); } 100% { opacity: 0; transform: scale(2.4); } }
+        @media (max-width: 520px) { .companion.sidebar-open .page-tip { opacity: 0; } }
+        @media (prefers-reduced-motion: reduce) { .frame.active, .ripple.go { animation: none; } .cursor,.cursor svg,.tip,.history-panel,.history-rail { transition-duration: .01ms; } .cursor.press svg { transform: none; } }
       </style>
       <div class="companion">
         <div class="frame" aria-hidden="true"></div>
-        <div class="pill" aria-hidden="true"><span class="dot"></span><span class="label">Mac MCP · Working</span></div>
-        <div class="cursor" aria-hidden="true"></div>
+        <div class="cursor" aria-hidden="true"><svg viewBox="0 0 26 26"><path d="M3.4 3.2 23 11.2 14.6 14.4 11.3 23.2Z" fill="rgba(250,250,252,.96)" stroke="rgba(250,250,252,.96)" stroke-width="3.6" stroke-linejoin="round"/><path d="M3.4 3.2 23 11.2 14.6 14.4 11.3 23.2Z" fill="#1c1c1e" stroke="#1c1c1e" stroke-width="1.4" stroke-linejoin="round"/></svg><span class="tip"></span></div>
+        <div class="tip page-tip" aria-hidden="true"></div>
         <div class="ripple" aria-hidden="true"></div>
         <div class="sr-status" role="status" aria-live="polite" aria-atomic="true"></div>
         <button class="history-rail" type="button" aria-label="Mac MCP tab activity" aria-expanded="false" aria-controls="${PANEL_ID}">
@@ -312,9 +332,9 @@
     lastSeq = event.seq;
     const ui = ensureUI();
     const frame = ui.querySelector('.frame');
-    const pill = ui.querySelector('.pill');
-    const label = ui.querySelector('.label');
     const cursor = ui.querySelector('.cursor');
+    const cursorTip = cursor.querySelector('.tip');
+    const pageTip = ui.querySelector('.page-tip');
     const ripple = ui.querySelector('.ripple');
     const live = ui.querySelector('.history-live-status');
     const liveCopy = ui.querySelector('.history-live-copy');
@@ -325,31 +345,55 @@
     clearTimeout(hideTimer);
     frame.classList.toggle('attention', phase === 'attention');
     frame.classList.add('active');
-    pill.classList.add('active');
-    label.textContent = `Mac MCP · ${action}`;
     live.classList.add('active');
     liveCopy.textContent = historyLabel(action);
+    const text = tipLabel(action, safeDetail(event.detail));
 
     const x = Number(event.x), y = Number(event.y);
     if (Number.isFinite(x) && Number.isFinite(y)) {
+      const px = Math.round(x), py = Math.round(y);
+      const shown = cursor.classList.contains('active') && cursorAt;
+      const duration = shown ? moveDuration(cursorAt, px, py) : 0;
+      // The first appearance does not slide in from a corner; later moves glide.
+      cursor.classList.toggle('jump', !duration);
+      cursor.style.setProperty('--move', `${duration}ms`);
+      cursor.style.transform = `translate3d(${px - 3.5}px,${py - 3.5}px,0)`;
+      cursor.classList.toggle('flip-x', px > window.innerWidth - 200);
+      cursor.classList.toggle('flip-y', py > window.innerHeight - 64);
       cursor.classList.add('active');
-      cursor.style.transform = `translate3d(${Math.round(x)}px,${Math.round(y)}px,0)`;
-      clearTimeout(cursorTimer);
-      cursorTimer = setTimeout(() => cursor.classList.remove('active'), 1100);
+      cursorAt = { x: px, y: py };
+      cursorTip.textContent = text;
+      cursorTip.classList.add('show');
+      pageTip.classList.remove('show');
       if (event.effect === 'click') {
-        ripple.classList.remove('go');
-        ripple.style.left = `${Math.round(x)}px`;
-        ripple.style.top = `${Math.round(y)}px`;
-        void ripple.offsetWidth;
-        ripple.classList.add('go');
+        clearTimeout(pressTimer);
+        const press = () => {
+          cursor.classList.add('press');
+          pressTimer = setTimeout(() => cursor.classList.remove('press'), 140);
+          ripple.classList.remove('go');
+          ripple.style.left = `${px}px`;
+          ripple.style.top = `${py}px`;
+          void ripple.offsetWidth;
+          ripple.classList.add('go');
+        };
+        // Press once the arrow has arrived.
+        pressTimer = setTimeout(press, duration);
       }
+    } else if (cursor.classList.contains('active')) {
+      // A page-level step while the arrow is on screen: keep it where it is and update its label.
+      cursorTip.textContent = text;
+    } else {
+      pageTip.textContent = text;
+      pageTip.classList.add('show');
     }
 
     const ttl = Math.max(500, Math.min(Number(event.ttl_ms || 1600), 5000));
     const finish = () => {
       frame.classList.remove('active');
-      pill.classList.remove('active');
       cursor.classList.remove('active');
+      cursorTip.classList.remove('show');
+      pageTip.classList.remove('show');
+      cursorAt = null;
       live.classList.remove('active');
       liveCopy.textContent = 'Ready';
     };

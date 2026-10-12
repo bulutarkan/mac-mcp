@@ -3392,6 +3392,39 @@ def _trusted_key_action(browser: str, action: Dict[str, Any], tab_handle: Option
 _DRAG_STEPS = 10
 
 
+def _range_drag_js(element_id: str, dx: float, to_element_id: Optional[str]) -> str:
+    """Drag a native range slider by setting the value its thumb would reach, then firing input/change.
+
+    A slider's thumb follows its value, so the result is the same as a pointer drag without needing
+    trusted (debugger) input: it works in Safari and in a Chrome where the debugger cannot attach."""
+    eid, to_id = json.dumps(str(element_id or "")), json.dumps(str(to_element_id or ""))
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
+var s=__mcpState(),el=__mcpRecoverElement({eid},s);
+if(!el||String(el.tagName||'').toLowerCase()!=='input'||String(el.type||'').toLowerCase()!=='range')return __mcpB64({{ok:true,is_range:false}});
+var r=el.getBoundingClientRect(),min=Number(el.min||0),max=Number(el.max===''?100:el.max),step=el.step==='any'?0:Number(el.step||1);
+if(!(max>min)||r.width<1)return __mcpB64({{ok:false,is_range:true,error:'range_not_draggable'}});
+var before=Number(el.value),thumb=r.left+(before-min)/(max-min)*r.width,target=thumb+{float(dx)};
+var to=__mcpRecoverElement({to_id},s);if(to){{var tr=to.getBoundingClientRect();target=tr.left+tr.width/2;}}
+var ratio=Math.max(0,Math.min(1,(target-r.left)/r.width)),value=min+ratio*(max-min);
+if(step>0)value=min+Math.round((value-min)/step)*step;value=Math.max(min,Math.min(max,value));
+var setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;setter.call(el,String(value));
+el.dispatchEvent(new Event('input',{{bubbles:true}}));el.dispatchEvent(new Event('change',{{bubbles:true}}));
+__mcpVisual('Dragging',el,'',1600);
+return __mcpB64({{ok:true,is_range:true,before:String(before),after:el.value}});
+}})()'''
+
+
+# Chrome refuses chrome.debugger.attach when another extension's page is involved, or another
+# debugger holds the tab. Trusted input cannot work then; say why instead of a bare failure.
+_DEBUGGER_BLOCKED_MARKERS = (
+    "Cannot access a chrome-extension:// URL of different extension",
+    "Detached while handling command",
+    "Another debugger is already attached",
+)
+
+
 def _gesture_action(
     settings: Settings,
     browser: str,
@@ -3407,6 +3440,17 @@ def _gesture_action(
 ) -> Dict[str, Any]:
     """Trusted pointer gestures (Chrome): hover moves the real pointer; drag presses, moves and releases."""
     base: Dict[str, Any] = {"type": typ, "element_id": work_action.get("element_id")}
+    if typ == "drag" and work_action.get("element_id") and action.get("to_query") is None and action.get("to_role") is None:
+        ranged = _run_json_js(settings, browser, _range_drag_js(
+            str(work_action["element_id"]), float(action.get("dx") or 0), action.get("to_element_id"),
+        ), window_index, tab_index, tab_handle)
+        if ranged.get("is_range"):
+            if not ranged.get("ok"):
+                return {**base, "ok": False, "error": str(ranged.get("error") or "range_not_draggable"), "_js_calls": 1}
+            return {**base, "ok": ranged.get("after") != ranged.get("before"), "activation_mode": "dom_range_value",
+                    "input_trust": "untrusted", "value_before": ranged.get("before"), "value": ranged.get("after"),
+                    "steps_done": 1, "verification": "value_changed" if ranged.get("after") != ranged.get("before") else "value_unchanged",
+                    **({} if ranged.get("after") != ranged.get("before") else {"error": "action_no_effect"}), "_js_calls": 1}
     if current_frame_scope():
         return {**base, **{"ok": False, "type": typ, "error": "trusted_input_in_frame_unsupported", "reason_code": "TRUSTED_INPUT_IN_FRAME",
                 "message": "Trusted pointer input uses top-level page coordinates; inside a frame use DOM actions (the default).",
@@ -3469,8 +3513,15 @@ def _gesture_action(
         out = chrome_background_bridge.request_gesture(native_id, steps)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {"message": str(exc.detail)}
+        message = str(detail.get("message") or "")
+        if not detail.get("steps_done") and any(marker in message for marker in _DEBUGGER_BLOCKED_MARKERS):
+            return {**base, "ok": False, "error": "chrome_debugger_blocked", "reason_code": "CHROME_DEBUGGER_BLOCKED",
+                    "message": "Chrome would not let the Mac MCP companion attach its debugger to this tab "
+                               f"({message}). Another extension with debugger access (or an open DevTools) usually "
+                               "causes this: turn that extension off or close DevTools, then retry. Nothing was done.",
+                    "steps_done": 0, "automatic_retry": False, "observe_again": False, "_js_calls": js_calls}
         return {**base, "ok": False, "error": str(detail.get("error") or "chrome_gesture_failed"),
-                "message": str(detail.get("message") or ""), "steps_done": detail.get("steps_done", 0),
+                "message": message, "steps_done": detail.get("steps_done", 0),
                 "automatic_retry": False, "observe_again": True, "_js_calls": js_calls}
     result = {**base, "ok": True, "input_trust": "trusted", "activation_mode": "trusted_chrome_cdp",
               "from": {"x": round(sx, 1), "y": round(sy, 1)}, "steps_done": out.get("steps_done"),
@@ -4247,7 +4298,7 @@ _KNOWN_FAILURE_ERRORS = frozenset({
     "target_not_found", "within_anchor_ambiguous", "within_anchor_not_found", "option_not_found",
     "element_not_ready", "stale_observation", "field_not_found", "invalid_input_mode",
     "trusted_input_not_supported_for_action", "post_field_not_found", "post_field_ambiguous",
-    "post_field_outside_item", "post_submit_not_found", "post_submit_ambiguous",
+    "post_field_outside_item", "post_submit_not_found", "post_submit_ambiguous", "chrome_debugger_blocked",
 })
 _LOCATOR_KEYS = ("query", "target", "role", "text_match", "target_text")
 

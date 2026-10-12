@@ -33,6 +33,7 @@ from mcp_server import applescript_host, browser_tabs, tools_browser
 from mcp_server import tools_browser_agent as agent
 from mcp_server.security import load_settings
 
+ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "browser"
 CHROME = os.environ.get("MAC_MCP_TEST_CHROME", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 ENABLED = os.environ.get("MAC_MCP_BROWSER_INTEGRATION") == "1"
@@ -359,6 +360,60 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertTrue(guests.get("closed_popup_with_escape"), guests)
         self.assertEqual(["2026-10-20", "7", "Window seat", 1], tools.page.js(
             "[arrival.value,document.getElementById('guests').value,document.getElementById('notes').value,window.__escapes]"))
+
+    def test_visual_companion_arrow_lands_on_the_target_with_its_label(self) -> None:
+        # The redesigned companion: a graphite arrow whose tip sits on the target, the action label
+        # next to it (flipped near the edges), a page-level label without coordinates, and an
+        # overlay that never takes a click.
+        page = self.open("form.html")
+        page.js((ROOT / "menu_app" / "BrowserVisualCompanion" / "visual.js").read_text(encoding="utf-8"))
+
+        def send(**event):
+            payload = {"seq": f"s{time.time_ns()}", "claim": True, "phase": "working", "ttl_ms": 5000, **event}
+            raw = base64.b64encode(json.dumps(payload).encode()).decode()
+            page.js(f"document.documentElement.setAttribute('data-mac-mcp-visual-event', {json.dumps(raw)});"
+                    "window.dispatchEvent(new Event('mac-mcp-visual'));")
+
+        state = ("(()=>{const root=document.getElementById('mac-mcp-visual-companion-root').shadowRoot;"
+                 "const c=root.querySelector('.cursor'),t=c.querySelector('.tip'),p=root.querySelector('.page-tip');"
+                 "const tip=c.querySelector('svg').getBoundingClientRect();"
+                 "return {x:tip.left+3.5,y:tip.top+3.5,label:t.textContent,shown:t.classList.contains('show'),"
+                 "flip:[c.classList.contains('flip-x'),c.classList.contains('flip-y')],page:p.classList.contains('show')?p.textContent:'',"
+                 "cursorOn:c.classList.contains('active')}})()")
+        send(action="Inspecting", target_kind="Page")
+        time.sleep(0.3)
+        first = page.js(state)
+        self.assertEqual(("Inspecting", False), (first["page"], first["cursorOn"]))
+        target = page.js("(()=>{const r=document.querySelector('#email').getBoundingClientRect();"
+                         "return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)}})()")
+        send(action="Clicking", target_kind="Text field", x=target["x"], y=target["y"], effect="click")
+        time.sleep(0.6)
+        clicked = page.js(state)
+        self.assertLess(abs(clicked["x"] - target["x"]) + abs(clicked["y"] - target["y"]), 3, clicked)
+        self.assertEqual(("Clicking", True, [False, False], ""), (clicked["label"], clicked["shown"], clicked["flip"], clicked["page"]))
+        send(action="Scrolling", detail="Down", target_kind="Page", x=1400, y=870)
+        time.sleep(0.8)
+        edge = page.js(state)
+        self.assertEqual(("Scrolling down", [True, True]), (edge["label"], edge["flip"]))
+        # The overlay is pointer-transparent: a click at the arrow reaches the page.
+        hit = page.js(f"document.elementFromPoint({target['x']}, {target['y']}).id")
+        self.assertEqual("email", hit)
+
+    def test_range_slider_is_a_slider_and_drags_without_trusted_input(self) -> None:
+        # Live: a drag on a Chrome range input failed because Chrome would not attach the debugger,
+        # and role=slider found nothing because range inputs were reported as textboxes.
+        tools = self.tools("picker.html")
+        slider = tools.find("Guests", role="slider")
+        self.assertEqual(("input", "slider"), (slider["tag"], slider["role"]))
+        moved = tools.act([{"type": "drag", "query": "Guests", "role": "slider", "dx": 120, "dy": 0}])
+        self.assertTrue(moved["ok"], moved)
+        step = moved["actions"][0]
+        self.assertEqual("dom_range_value", step["activation_mode"])
+        self.assertGreater(int(step["value"]), int(step["value_before"]))
+        self.assertEqual(step["value"], tools.page.js("document.getElementById('guests').value"))
+        back = tools.act([{"type": "drag", "query": "Guests", "dx": -400}])
+        self.assertTrue(back["ok"], back)
+        self.assertEqual("1", tools.page.js("document.getElementById('guests').value"))
 
     def test_scan_reads_a_long_thread_in_one_action(self) -> None:
         tools = self.tools("thread.html")

@@ -88,7 +88,7 @@ class BrowserVisualCompanionTests(unittest.TestCase):
         self.assertEqual(1, source.count("aria-live="))
         self.assertIn('<div class="sr-status" role="status" aria-live="polite" aria-atomic="true"></div>', source)
         self.assertNotIn('aria-live="assertive"', source)
-        for decorative in ('class="frame" aria-hidden="true"', 'class="pill" aria-hidden="true"',
+        for decorative in ('class="frame" aria-hidden="true"', 'class="tip page-tip" aria-hidden="true"',
                            'class="cursor" aria-hidden="true"', 'class="ripple" aria-hidden="true"'):
             self.assertIn(decorative, source)
         update_start = source.index("function updateAnnouncements")
@@ -282,8 +282,10 @@ class BrowserVisualCompanionTests(unittest.TestCase):
 
     def test_visual_companion_has_no_idle_infinite_animation_or_hidden_blur(self) -> None:
         source = (ROOT / "menu_app/BrowserVisualCompanion/visual.js").read_text(encoding="utf-8")
-        self.assertIn(".frame.active { opacity: 1; animation: mcpPulse", source)
-        self.assertIn(".pill.active .dot { animation: mcpDot", source)
+        # The frame fades in once; nothing pulses forever while Mac MCP works.
+        self.assertIn(".frame.active { opacity: 1; animation: mcpFrameIn .42s", source)
+        self.assertNotIn("infinite", source)
+        self.assertNotIn("mcpPulse", source)
         self.assertIn(".history-panel {", source)
         self.assertIn("visibility: hidden", source)
         self.assertIn(".companion.sidebar-open .history-panel", source)
