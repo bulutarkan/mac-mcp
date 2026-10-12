@@ -37,3 +37,6 @@ dist/
 
 # Mac MCP Server launcher built into the runtime
 .helper/
+
+# Local browser-automation output
+.playwright-mcp/
