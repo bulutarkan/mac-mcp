@@ -116,7 +116,12 @@ function renderLive() {
     ? 'Mac MCP is running on this Mac. It starts again when you log in.'
     : 'AI apps reach your Mac through a small server that runs here. Start it once; it starts again when you log in.';
   // Permissions
-  $('[data-live="holder"]').textContent = e.holder || 'Mac MCP';
+  // Until Mac MCP Server runs the server, macOS lists the permissions under another name.
+  const holder = $('[data-live="holder"]');
+  holder.textContent = e.holder || 'Mac MCP';
+  holder.title = e.holder && !e.holderIsMacMCP
+    ? `On this Mac the permissions are listed under “${e.holder}” until Mac MCP Server runs the server.`
+    : '';
   for (const name of ['accessibility', 'screen_recording']) {
     const granted = e.permissions[name] === 'granted';
     const row = $(`.perm[data-perm="${name}"]`);
