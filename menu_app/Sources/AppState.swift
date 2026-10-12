@@ -1334,6 +1334,17 @@ final class AppState: ObservableObject {
     }
 
     private func applyUpdateCheckOutput(_ output: String, code: Int32, shouldShowNotice: Bool) {
+        if let data = output.data(using: .utf8),
+           let notice = try? JSONDecoder().decode(PackageInstallUpdateNotice.self, from: data),
+           notice.installKind == "pkg" {
+            setIfChanged(\.updateCheckInfo, nil)
+            guard shouldShowNotice else { return }
+            showNotice(ActionNotice(kind: .info, message: notice.message))
+            if let url = URL(string: notice.downloadURL) {
+                NSWorkspace.shared.open(url)
+            }
+            return
+        }
         guard code == 0 || code == 2,
               let data = output.data(using: .utf8),
               let info = try? JSONDecoder().decode(UpdateCheckInfo.self, from: data) else {

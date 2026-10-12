@@ -34,6 +34,18 @@ struct UpdateCheckInfo: Decodable, Equatable {
     var targetShort: String { String(targetCommit.prefix(8)) }
 }
 
+struct PackageInstallUpdateNotice: Decodable, Equatable {
+    let installKind: String
+    let message: String
+    let downloadURL: String
+
+    enum CodingKeys: String, CodingKey {
+        case message
+        case installKind = "install_kind"
+        case downloadURL = "download_url"
+    }
+}
+
 struct UpdateOutcomeInfo: Decodable, Equatable {
     let status: String?
     let reason: String?
