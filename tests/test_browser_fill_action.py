@@ -107,6 +107,22 @@ class FillFlowTests(unittest.TestCase):
                                          window_index=1, tab_index=1, tab_handle="tab", return_state="none")
         return result, calls
 
+    def _fill_with(self, values, finds):
+        calls = []
+
+        def find(_settings, _browser, **kwargs):
+            calls.append(("find", kwargs.get("query"), kwargs.get("wait_timeout_s")))
+            return finds[kwargs.get("query")]
+
+        with patch.object(agent, "_resolve_tab_target", return_value=(1, 1)), \
+             patch.object(agent, "browser_find", side_effect=find), \
+             patch.object(agent, "_run_json_js", return_value={"ok": True, "url": "u", "title": "t", "dom_revision": 1}), \
+             patch.object(agent.time, "sleep"), \
+             patch.object(agent.time, "monotonic", side_effect=lambda clock=itertools.count(0.0, 0.5): next(clock)):
+            result = _browser_act_locked(MagicMock(), "Safari", [{"type": "fill", "values": values}], observation_id=None,
+                                         window_index=1, tab_index=1, tab_handle="tab", return_state="none")
+        return result, calls
+
     @staticmethod
     def _found(*matches):
         return {"ok": True, "best_match": matches[0] if matches else None, "matches": list(matches)}
@@ -160,6 +176,37 @@ class FillFlowTests(unittest.TestCase):
         finds = [call for call in calls if call[0] == "find" and call[1] == "State"]
         # Not found right after a change: the lookup polls while the field renders.
         self.assertGreater(len(finds), 1, finds)
+
+    def test_covered_field_is_retried_once_after_escape_on_the_previous_field(self) -> None:
+        outcomes = {"e_range": [{"ok": False, "error": "element_not_ready", "reason_code": "ELEMENT_OCCLUDED"},
+                                {"ok": True}]}
+
+        def verified(_settings, _browser, item, *_args, **_kwargs):
+            queue = outcomes.get(item["element_id"])
+            result = queue.pop(0) if queue else {"ok": True}
+            return {"type": item["type"], "element_id": item["element_id"], "_js_calls": 1, **result}
+
+        with patch.object(agent, "_verified_dom_action", side_effect=verified), \
+             patch.object(agent, "_dom_key_action", return_value={"ok": True, "type": "key"}) as key:
+            result, _calls = self._fill_with(
+                {"Date": "2026-10-20", "Range": "7"},
+                {"Date": self._found(field("e_date", "Date", input_type="date")),
+                 "Range": self._found(field("e_range", "Range", input_type="range"))},
+            )
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("e_date", key.call_args.args[3])
+        self.assertTrue(next(row for row in result["actions"][0]["fields"] if row["field"] == "Range")["closed_popup_with_escape"])
+
+        outcomes["e_range"] = [{"ok": False, "error": "element_not_ready", "reason_code": "ELEMENT_OCCLUDED"}] * 2
+        with patch.object(agent, "_verified_dom_action", side_effect=verified), \
+             patch.object(agent, "_dom_key_action", return_value={"ok": True, "type": "key"}) as key:
+            result, _calls = self._fill_with(
+                {"Date": "2026-10-20", "Range": "7"},
+                {"Date": self._found(field("e_date", "Date", input_type="date")),
+                 "Range": self._found(field("e_range", "Range", input_type="range"))},
+            )
+        self.assertEqual(["Range"], result["actions"][0]["failed_fields"])
+        self.assertEqual(1, key.call_count)  # one Escape, one retry, no loop
 
     def test_option_text_never_stands_in_for_a_field_label(self) -> None:
         # Live bug: State (not rendered yet) matched the Country select that lists "United States".

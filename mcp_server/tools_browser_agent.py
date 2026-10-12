@@ -3687,6 +3687,11 @@ def _pick_fill_control(matches: List[Dict[str, Any]], label: str) -> Optional[Di
     return best[1] if best else None
 
 
+def _fill_occluded(result: Dict[str, Any]) -> bool:
+    readiness = result.get("readiness") if isinstance(result.get("readiness"), dict) else {}
+    return "ELEMENT_OCCLUDED" in {str(result.get("reason_code") or ""), str(readiness.get("reason_code") or "")}
+
+
 def _fill_truthy(value: Any) -> bool:
     return value is True or (not isinstance(value, bool) and str(value).strip().lower() in _FILL_TRUE)
 
@@ -4848,7 +4853,20 @@ def _browser_act_locked(
         scope_keys = {key: action[key] for key in ("within", "within_element_id", "within_levels") if action.get(key)}
         fields: List[Dict[str, Any]] = []
         changed = False
+        last_filled = ""
         in_flight = ["fill"]
+
+        def apply(kind: str, step: Dict[str, Any]) -> Dict[str, Any]:
+            nonlocal internal_js_calls
+            if kind == "select":
+                done = _select_action(settings, browser, step, None, window_index, tab_index, tab_handle,
+                                      mutation_revalidator=revalidate_mutation)
+            else:
+                done = _verified_dom_action(settings, browser, step, None, window_index, tab_index, tab_handle,
+                                            mutation_revalidator=revalidate_mutation)
+            internal_js_calls += int(done.pop("_js_calls", 0))
+            return done
+
         for label, value in dict(action.get("values") or {}).items():
             row: Dict[str, Any] = {"field": str(label)[:80]}
             # A field revealed by an earlier choice in this fill may render a moment later.
@@ -4875,15 +4893,21 @@ def _browser_act_locked(
             else:
                 step = {"type": "type", "element_id": element_id, "text": str(value)}
             mutation_dispatched = True
-            if kind == "select":
-                done = _select_action(settings, browser, step, None, window_index, tab_index, tab_handle,
-                                      mutation_revalidator=revalidate_mutation)
-            else:
-                done = _verified_dom_action(settings, browser, step, None, window_index, tab_index, tab_handle,
-                                            mutation_revalidator=revalidate_mutation)
-            internal_js_calls += int(done.pop("_js_calls", 0))
+            done = apply(kind, step)
+            if not done.get("ok") and last_filled and _fill_occluded(done):
+                # Nothing was sent to a covered field. The usual cover is a picker the previous
+                # field left open (a date calendar, an autocomplete list): Escape closes it.
+                key_target, blocked = revalidate_mutation("key")
+                if blocked is None:
+                    closed = _dom_key_action(settings, browser, {"key": "Escape"}, last_filled,
+                                             window_index, tab_index, tab_handle, prevalidated_target=key_target)
+                    internal_js_calls += int(closed.pop("_js_calls", 0))
+                    row["closed_popup_with_escape"] = True
+                    done = apply(kind, step)
             ok = bool(done.get("ok")) or (kind in {"checkbox", "radio"} and done.get("error") == "action_no_effect")
             changed = changed or ok
+            if ok:
+                last_filled = element_id
             fields.append({**row, "ok": ok, **({key: done.get(key) for key in ("error", "reason_code") if done.get(key)}
                                                  if not ok else {})})
         in_flight = []

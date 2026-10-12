@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Picker fixture</title>
+<style>
+body{font:14px system-ui;margin:0;padding:16px}
+.row{margin:10px 0}
+#calendar{position:absolute;left:16px;top:70px;width:320px;height:140px;background:#fff;border:1px solid #999;display:none;z-index:5}
+</style></head>
+<body>
+<div class="row"><label for="arrival">Arrival date</label> <input id="arrival" type="text"></div>
+<div id="calendar" role="dialog" aria-label="Choose a date">October 2026</div>
+<div class="row" style="margin-top:40px"><label for="guests">Guests</label> <input id="guests" type="range" min="1" max="10" value="2"></div>
+<div class="row"><label for="notes">Notes</label> <input id="notes" type="text"></div>
+<script>
+// Like a date picker: it opens on input and stays open (over the next field) until Escape.
+var arrival=document.getElementById('arrival'),cal=document.getElementById('calendar');window.__escapes=0;
+arrival.addEventListener('input',function(){cal.style.display='block';});
+arrival.addEventListener('keydown',function(e){if(e.key==='Escape'){window.__escapes++;cal.style.display='none';}});
+</script>
+</body></html>

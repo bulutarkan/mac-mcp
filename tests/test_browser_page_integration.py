@@ -349,6 +349,17 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertTrue(chosen["ok"], chosen)
         self.assertEqual("Free", tools.page.js("document.getElementById('plan').textContent"))
 
+    def test_fill_closes_a_picker_that_covers_the_next_field(self) -> None:
+        # Live run on a real form: the date field left its calendar open over the range field,
+        # so fill reported ELEMENT_OCCLUDED for it and the agent needed three more calls.
+        tools = self.tools("picker.html")
+        filled = tools.act([{"type": "fill", "values": {"Arrival date": "2026-10-20", "Guests": "7", "Notes": "Window seat"}}])
+        self.assertTrue(filled["ok"], filled)
+        guests = next(row for row in filled["actions"][0]["fields"] if row["field"] == "Guests")
+        self.assertTrue(guests.get("closed_popup_with_escape"), guests)
+        self.assertEqual(["2026-10-20", "7", "Window seat", 1], tools.page.js(
+            "[arrival.value,document.getElementById('guests').value,document.getElementById('notes').value,window.__escapes]"))
+
     def test_scan_reads_a_long_thread_in_one_action(self) -> None:
         tools = self.tools("thread.html")
         scanned = tools.act([{"type": "scan", "max_items": 100}])
