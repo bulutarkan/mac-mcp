@@ -30,7 +30,7 @@ from .public_endpoint import (
     resolve_public_endpoint,
     write_cloudflare_token,
 )
-from .runtime_settings import server_setting
+from .runtime_settings import server_setting, update_runtime_setting
 from .managed_process import (
     listener_owner,
     listener_pids,
@@ -561,8 +561,27 @@ def _record_intent(desired: str, args: argparse.Namespace | None) -> None:
         print(f"Warning: could not record the server intent ({type(exc).__name__}).")
 
 
+def _launch_agents_dir() -> Path:
+    return Path.home() / "Library" / "LaunchAgents"
+
+
+def _start_at_login() -> bool:
+    """Start Mac MCP at login (settings server.start_at_login, on unless set to false)."""
+    return server_setting("start_at_login", True) is not False
+
+
 def _supervisor_plist_path() -> Path:
+    # In ~/Library/LaunchAgents launchd loads the job at login, so a server the owner left
+    # running comes back after a restart; in the state folder it only runs once loaded.
+    if _start_at_login():
+        return _launch_agents_dir() / f"{SUPERVISOR_LABEL}.plist"
     return STATE_DIR / "supervisor.plist"
+
+
+def _stale_supervisor_plists() -> list[Path]:
+    current = _supervisor_plist_path()
+    candidates = (STATE_DIR / "supervisor.plist", _launch_agents_dir() / f"{SUPERVISOR_LABEL}.plist")
+    return [path for path in candidates if path != current and path.exists()]
 
 
 def _supervisor_payload() -> dict:
@@ -576,7 +595,7 @@ def _supervisor_payload() -> dict:
             sys.executable, "-m", "mcp_server.supervisor",
         ],
         "StartInterval": SUPERVISOR_INTERVAL_S,
-        "RunAtLoad": False,
+        "RunAtLoad": _start_at_login(),
         "ProcessType": "Background",
         "WorkingDirectory": str(PROJECT_ROOT),
         "StandardOutPath": str(STATE_DIR / "supervisor.log"),
@@ -595,8 +614,9 @@ def _supervisor_loaded() -> bool:
 def _ensure_supervisor() -> None:
     """Load the crash supervisor for the default installation (idempotent).
 
-    The plist lives in the state folder, not ~/Library/LaunchAgents, so it does
-    not start anything at login by itself; `mac-mcp start` loads it.
+    With start at login on (the default) the job lives in ~/Library/LaunchAgents and
+    runs at login, where it starts a server the owner left running; with it off the
+    job lives in the state folder and only `mac-mcp start` loads it.
     """
     if STATE_DIR.resolve() != DEFAULT_STATE_DIR.resolve():
         return
@@ -606,16 +626,20 @@ def _ensure_supervisor() -> None:
         return
     payload = _supervisor_payload()
     path = _supervisor_plist_path()
+    stale = _stale_supervisor_plists()
     try:
         current = plistlib.loads(path.read_bytes()) if path.exists() else None
     except (OSError, plistlib.InvalidFileException):
         current = None
     loaded = _supervisor_loaded()
-    if loaded and current == payload:
+    if loaded and current == payload and not stale:
         return
     try:
         if loaded:
             _launchctl_run("bootout", _launchctl_target(SUPERVISOR_LABEL), capture=True)
+        for old in stale:
+            old.unlink(missing_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f".{path.name}.tmp")
         with tmp.open("wb") as handle:
             plistlib.dump(payload, handle, fmt=plistlib.FMT_XML, sort_keys=True)
@@ -627,6 +651,29 @@ def _ensure_supervisor() -> None:
         return
     if proc.returncode != 0:
         print(f"Warning: crash supervisor could not be loaded: {(proc.stderr or proc.stdout or '').strip()}")
+
+
+def autostart(args: argparse.Namespace) -> int:
+    desired = getattr(args, "state", None)
+    if desired in {"on", "off"}:
+        try:
+            update_runtime_setting("server", "start_at_login", desired == "on")
+        except RuntimeError as exc:
+            print(f"mac-mcp autostart: could not save the setting: {exc}", file=sys.stderr)
+            return 1
+        _ensure_supervisor()
+    report = {
+        "start_at_login": _start_at_login(),
+        "job": str(_supervisor_plist_path()),
+        "loaded": _supervisor_loaded(),
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(report, sort_keys=True))
+    elif report["start_at_login"]:
+        print("Start at login: on (a server you left running starts again when you log in).")
+    else:
+        print("Start at login: off (run 'mac-mcp start' or use the menu bar app after you log in).")
+    return 0
 
 
 def supervisor_report() -> dict:
@@ -2539,6 +2586,11 @@ def main(argv: list[str] | None = None) -> int:
     p_logs.add_argument("-n", "--lines", type=int, default=80, help="Number of lines (max 2000).")
     p_logs.add_argument("--list", action="store_true", help="List every log with its size and the retention bounds.")
     p_logs.set_defaults(func=logs)
+
+    p_autostart = sub.add_parser("autostart", help="Start Mac MCP when you log in: on, off, or show the setting.")
+    p_autostart.add_argument("state", nargs="?", choices=("on", "off"), help="Turn start at login on or off.")
+    p_autostart.add_argument("--json", action="store_true", help="Print the setting as JSON.")
+    p_autostart.set_defaults(func=autostart)
 
     p_update = sub.add_parser("update", help="Update Mac MCP to the latest verified stable release checkpoint.")
     p_update.add_argument("--check", action="store_true", help="Check for updates without changing files.")

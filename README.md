@@ -395,7 +395,11 @@ mac-mcp stop
 mac-mcp dashboard
 mac-mcp doctor
 mac-mcp conformance
+mac-mcp autostart            # show whether Mac MCP starts at login
+mac-mcp autostart off        # or: on
 ```
+
+**Start at login** is on by default: the crash supervisor's launchd job lives in `~/Library/LaunchAgents`, so after a restart or a new login a server you left running starts again, together with the menu bar app. A server you stopped with `mac-mcp stop` (or the menu bar app) stays stopped. Turn it off with `mac-mcp autostart off` or **Settings → General → Startup**; the job then moves back to the state folder and only `mac-mcp start` loads it.
 
 The legacy `--ngrok` flag remains supported as an alias for `--public-mode ngrok`. When no CLI override is supplied, `start`/`restart` use the public endpoint mode saved by the native Settings window (or the `MAC_MCP_PUBLIC_*` environment overrides).
 

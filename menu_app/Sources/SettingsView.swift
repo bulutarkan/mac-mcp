@@ -290,6 +290,34 @@ struct SettingsView: View {
                     .padding(.top, 5)
                 }
 
+                GroupBox("Startup") {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "power")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 34)
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Start Mac MCP when you log in")
+                                .font(.subheadline.weight(.semibold))
+                            Text("If the server was running when you restarted or logged out, it starts again with the menu bar app. A server you stopped stays stopped.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer()
+                        if state.startAtLoginChanging {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Toggle("Start Mac MCP when you log in", isOn: startAtLoginBinding)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                        }
+                    }
+                    .padding(.top, 5)
+                }
+
                 GroupBox("Issues") {
                     VStack(alignment: .leading, spacing: 10) {
                         let issues = generalIssues
@@ -3335,6 +3363,13 @@ struct SettingsView: View {
                     notice = message
                 }
             }
+        )
+    }
+
+    private var startAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { settings.startAtLogin },
+            set: { enabled in state.setStartAtLogin(enabled) }
         )
     }
 

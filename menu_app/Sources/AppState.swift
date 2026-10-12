@@ -105,6 +105,7 @@ final class AppState: ObservableObject {
     @Published private(set) var agentTeams: [AgentTeamInfo] = []
     @Published private(set) var agentNotificationAuthorizationState: AgentNotificationAuthorizationState = .notDetermined
     @Published private(set) var agentNotificationPermissionChanging = false
+    @Published private(set) var startAtLoginChanging = false
     @Published var providerStatuses: [ProviderInfo] = []
     @Published var providerCatalogs: [String: ProviderCatalogInfo] = [:]
     @Published var mobileDevices: [MobileDeviceInfo] = []
@@ -212,6 +213,27 @@ final class AppState: ObservableObject {
         settings.agentCompletionNotificationsEnabled = false
         try? settings.save()
         seedAgentNotificationBaseline()
+    }
+
+    /// The CLI saves the choice and moves the supervisor job in or out of ~/Library/LaunchAgents.
+    func setStartAtLogin(_ enabled: Bool) {
+        guard !startAtLoginChanging else { return }
+        setIfChanged(\.startAtLoginChanging, true)
+        let cliPath = settings.cliPath
+        let settingsPath = settings.path.path
+        Task {
+            let result = await Self.runCLI(
+                args: ["autostart", enabled ? "on" : "off", "--json"],
+                configuredPath: cliPath,
+                settingsPath: settingsPath
+            )
+            setIfChanged(\.startAtLoginChanging, false)
+            if result.code == 0 {
+                settings.startAtLogin = enabled
+            } else {
+                showNotice(ActionNotice(kind: .error, message: "Couldn’t change start at login."))
+            }
+        }
     }
 
     func setAgentCompletionNotificationsEnabled(_ enabled: Bool) {

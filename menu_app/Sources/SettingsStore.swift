@@ -20,6 +20,8 @@ struct MenuSettings: Codable {
         var public_endpoint_mode: String?
         var public_url: String?
         var cloudflare_tunnel: String?
+        /// Start a server left running when the owner logs in (the server's default is on).
+        var start_at_login: Bool?
     }
     struct Steering: Codable {
         var session_ttl_minutes: Int
@@ -83,7 +85,7 @@ struct MenuSettings: Codable {
         MenuSettings(
             experimental_tools: ["ask_user_voice": ExperimentalTool(enabled: false)],
             voice: Voice(language: "auto", input_device: "auto", output_device: "system", tts_rate: "-5%", timeout_s: 45, voice: "tr-TR-AhmetNeural", transcription_consent: "ask"),
-            server: Server(port: 8000, cli_path: "", ngrok_on_start: false, public_endpoint_mode: "none", public_url: "", cloudflare_tunnel: ""),
+            server: Server(port: 8000, cli_path: "", ngrok_on_start: false, public_endpoint_mode: "none", public_url: "", cloudflare_tunnel: "", start_at_login: true),
             steering: Steering(session_ttl_minutes: 10),
             tool_activity: ToolActivity(show_bubble: false, require_descriptions: false),
             notifications: Notifications(agent_completion: false),
@@ -121,6 +123,7 @@ final class SettingsStore: ObservableObject {
     @Published var publicEndpointMode = "none"
     @Published var publicURL = ""
     @Published var cloudflareTunnel = ""
+    @Published var startAtLogin = true
     @Published var steeringSessionMinutes = 10
     @Published var showToolActivity = false
     @Published var requireToolDescriptions = false
@@ -220,6 +223,7 @@ final class SettingsStore: ObservableObject {
         }
         publicURL = current.server.public_url ?? ""
         cloudflareTunnel = current.server.cloudflare_tunnel ?? ""
+        startAtLogin = current.server.start_at_login ?? true
         ngrokOnStart = publicEndpointMode == "ngrok"
         steeringSessionMinutes = max(1, current.steering?.session_ttl_minutes ?? 10)
         showToolActivity = current.tool_activity?.show_bubble ?? false
@@ -265,7 +269,8 @@ final class SettingsStore: ObservableObject {
                 ngrok_on_start: publicEndpointMode == "ngrok",
                 public_endpoint_mode: publicEndpointMode,
                 public_url: publicURL,
-                cloudflare_tunnel: cloudflareTunnel
+                cloudflare_tunnel: cloudflareTunnel,
+                start_at_login: startAtLogin
             ),
             steering: .init(session_ttl_minutes: max(1, steeringSessionMinutes)),
             tool_activity: .init(

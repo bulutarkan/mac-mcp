@@ -18,6 +18,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -148,11 +149,15 @@ def _log_tail(root: Path) -> str:
     return tail_log(root / "mac-mcp.log", lines=8)[-1200:]
 
 
-def _cli(args: list[str], timeout_s: float = 180.0) -> int:
+def _cli(args: list[str], timeout_s: float = 180.0, open_menu_app: bool = False) -> int:
     env = os.environ.copy()
     env.pop("MAC_MCP_MANAGED_SERVER", None)
     # A recovery brings the server back; it must not reopen a menu app the user quit.
-    env["MAC_MCP_SKIP_MENU_APP"] = "1"
+    # Starting at login opens it, as if the owner had started Mac MCP.
+    if open_menu_app:
+        env.pop("MAC_MCP_SKIP_MENU_APP", None)
+    else:
+        env["MAC_MCP_SKIP_MENU_APP"] = "1"
     try:
         return subprocess.run(
             [sys.executable, "-m", "mcp_server.cli", *args],
@@ -161,6 +166,18 @@ def _cli(args: list[str], timeout_s: float = 180.0) -> int:
         ).returncode
     except (OSError, subprocess.SubprocessError):
         return 1
+
+
+def _boot_time() -> float:
+    """When this Mac last booted (kern.boottime), or 0 when it cannot be read."""
+    try:
+        out = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "kern.boottime"], capture_output=True, text=True, timeout=3,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return 0.0
+    match = re.search(r"sec\s*=\s*(\d+)", out or "")
+    return float(match.group(1)) if match else 0.0
 
 
 def run_once(
@@ -173,11 +190,13 @@ def run_once(
     update_lock_held: Callable[[], bool] = _update_lock_held,
     tunnel_selected: Callable[[list[str]], bool] = ngrok_selected,
     tunnel_alive: Callable[[Path, int], bool] = _ngrok_alive,
+    boot_time: Callable[[], float] = _boot_time,
 ) -> dict[str, Any]:
     root = root or state_dir()
     now = time.time() if now is None else now
     process_present = process_present or _server_process_present
     state = read_state(root)
+    previous_check = state.get("last_check_at")
     state["last_check_at"] = now
     intent = read_intent(root)
     start_args = [str(item) for item in intent.get("start_args") or []]
@@ -204,6 +223,16 @@ def run_once(
         return finish("healthy")
 
     present = process_present(root, port)
+    # The first pass of this login session, with no server yet: the Mac restarted (or the
+    # owner logged in again) while the server was meant to run. Start it like the owner
+    # would, menu app included; this is not a crash, so it is not a recovery attempt.
+    if not present and previous_check is not None and float(previous_check) < boot_time() <= now:
+        code = cli(["start", *start_args], open_menu_app=True)
+        started = code == 0 and healthy(port)
+        state["unhealthy_passes"] = 0
+        state["last_login_start"] = {"at": now, "result": "started" if started else "failed", "exit_code": code}
+        return finish("started_at_login" if started else "login_start_failed")
+
     if present:
         state["unhealthy_passes"] = int(state.get("unhealthy_passes") or 0) + 1
         if state["unhealthy_passes"] < UNHEALTHY_PASSES_BEFORE_RESTART:
