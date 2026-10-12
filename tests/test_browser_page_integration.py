@@ -295,6 +295,21 @@ class BrowserPageIntegrationTests(unittest.TestCase):
             "Array.from(document.querySelectorAll('article')).find(a=>a.querySelector('.body').textContent.startsWith('Do you let'))"
             ".querySelector('.replies .body').textContent"))
 
+    def test_reply_without_opening_the_box_never_lands_in_the_main_composer(self) -> None:
+        # Live run: a delegated agent sent post within=<comment> without clicking Reply, and the
+        # reply was published as a top-level comment through the post's main composer.
+        tools = self.tools("thread.html")
+        phrase = "Do you let users teach it new skills"
+        result = tools.act([{"type": "post", "text": "Auto-opened reply under that comment.", "within": phrase}])
+        self.assertTrue(result["ok"], result)
+        post = result["actions"][0]
+        self.assertEqual((True, "Reply"), (post["posted"], post["opened_reply"]))
+        self.assertEqual([1, 0], tools.page.js(
+            "[window.__posts,Array.from(document.querySelectorAll('#thread > article > .body')).filter(b=>b.textContent.startsWith('Auto-opened')).length]"))
+        self.assertEqual("Auto-opened reply under that comment.", tools.page.js(
+            "Array.from(document.querySelectorAll('article')).find(a=>a.querySelector('.body').textContent.startsWith('Do you let'))"
+            ".querySelector('.replies .body').textContent"))
+
     def test_unconfirmed_post_reports_once_without_retrying(self) -> None:
         tools = self.tools("thread.html")
         result = tools.act([{"type": "post", "text": "Please fail this integration comment.", "timeout_s": 1.5}])

@@ -162,18 +162,48 @@ class PostFlowTests(unittest.TestCase):
         self.assertEqual([], calls["verified"])
 
     def test_reply_searches_inside_the_item_and_explicit_submit_is_scoped_to_the_box(self) -> None:
+        opener = {"element_id": "e_open", "text": "Reply", "role": "button", "within_up": 3, "within_down": 1}
         send = {"element_id": "e_reply_send", "text": "Reply", "role": "button", "confidence": 1.0,
                 "within_up": 2, "within_down": 2}
         result, find, calls = self._post(
             {"type": "post", "text": COMMENT, "within": "do you let users teach it", "submit": "Reply"},
-            finds=[found([box("e_reply", "", within_up=3, within_down=2)]), found([send])],
+            finds=[found([opener]), found([box("e_reply", "", within_up=3, within_down=2)]), found([send])],
             submit={}, counts=[0, 1],
         )
         self.assertTrue(result["ok"], result)
         self.assertEqual("do you let users teach it", find.call_args_list[0].kwargs["within"])
-        submit_call = find.call_args_list[1].kwargs
+        submit_call = find.call_args_list[2].kwargs
         self.assertEqual(("e_reply", "button", "Reply"), (submit_call["within_element_id"], submit_call["role"], submit_call["query"]))
         self.assertEqual([("type", "e_reply", COMMENT), ("click", "e_reply_send", None)], calls["verified"])
+        self.assertNotIn("opened_reply", result["actions"][0])
+
+    def test_closed_reply_box_is_opened_and_the_page_composer_is_never_used(self) -> None:
+        # Live run: post within=<comment> without opening its box typed into the post's main
+        # composer (the nearest box in scope) and published the reply as a top-level comment.
+        opener = {"element_id": "e_open", "text": "Reply", "role": "button", "within_up": 1, "within_down": 1}
+        page_box = box("e_main", "Join the conversation", within_up=3, within_down=4)
+        own_box = box("e_own", "Write a reply", within_up=1, within_down=2)
+        result, _find, calls = self._post(
+            {"type": "post", "text": COMMENT, "within": "do you let users teach it"},
+            finds=[found([opener]), found([page_box]), found([own_box, page_box])],
+            submit={"ok": True, "element_id": "e_send", "label": "reply"}, counts=[0, 1],
+        )
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("Reply", result["actions"][0]["opened_reply"])
+        self.assertEqual([("click", "e_open", None), ("type", "e_own", COMMENT), ("click", "e_send", None)], calls["verified"])
+
+    def test_box_that_belongs_to_something_else_is_refused_before_typing(self) -> None:
+        opener = {"element_id": "e_open", "text": "Reply", "role": "button", "within_up": 1, "within_down": 1}
+        page_box = box("e_main", "Join the conversation", within_up=3, within_down=4)
+        result, _find, calls = self._post(
+            {"type": "post", "text": COMMENT, "within": "do you let users teach it", "wait_s": 0},
+            finds=[found([opener])] + [found([page_box])] * 30,
+            submit={}, counts=[],
+        )
+        self.assertFalse(result["ok"])
+        post = result["actions"][0]
+        self.assertEqual(("post_field_outside_item", "field", False), (post["error"], post["stage"], post["submitted"]))
+        self.assertEqual([("click", "e_open", None)], calls["verified"])
 
 
 class PostGuidanceTests(unittest.TestCase):

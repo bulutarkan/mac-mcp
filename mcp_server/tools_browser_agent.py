@@ -3645,17 +3645,32 @@ def _post_label(element: Dict[str, Any]) -> str:
     return " ".join(parts)[:160]
 
 
-def _pick_post_field(matches: List[Dict[str, Any]], *, scoped: bool) -> Tuple[Optional[Dict[str, Any]], str]:
-    """Choose the comment box among textbox matches: never a search field, and never a guess.
-
-    Returns (match, "ok"), (None, "not_found") or (None, "ambiguous").
-    """
+def _post_boxes(matches: List[Dict[str, Any]]) -> List[Tuple[bool, Dict[str, Any]]]:
+    """Textbox matches that can be a comment box (never a search field), each with whether its label names one."""
     boxes = []
     for match in matches:
         tokens = set(_normalize_text(_post_label(match)).split())
         if str(match.get("input_type") or "").lower() == "search" or tokens & _POST_SEARCH_WORDS:
             continue
         boxes.append((bool(tokens & _POST_FIELD_WORDS), match))
+    return boxes
+
+
+def _post_reply_opener(matches: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The nearest Reply-style button of an item (matches come nearest first)."""
+    for match in matches:
+        tokens = _normalize_text(_post_label(match)).split()
+        if tokens and len(tokens) <= 4 and set(tokens) & _POST_SUBMIT_SECONDARY_WORDS and not set(tokens) & _POST_CANCEL_WORDS:
+            return match
+    return None
+
+
+def _pick_post_field(matches: List[Dict[str, Any]], *, scoped: bool) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Choose the comment box among textbox matches: never a search field, and never a guess.
+
+    Returns (match, "ok"), (None, "not_found") or (None, "ambiguous").
+    """
+    boxes = _post_boxes(matches)
     if not boxes:
         return None, "not_found"
     if scoped or len(boxes) == 1:
@@ -4463,7 +4478,73 @@ def _browser_act_locked(
         internal_js_calls += 1
         return _run_json_js(settings, browser, js, window_index, tab_index, tab_handle)
 
-    def post_field(action: Dict[str, Any], scope_keys: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    def post_item_field(
+        action: Dict[str, Any], scope_keys: Dict[str, Any], within_label: Any, notes: Dict[str, Any],
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        """The reply box of one item. It may be no farther from the item text than the item's own
+        Reply button: a nearer-to-the-page box (the post's main composer, another comment's open
+        box) belongs to something else. A closed box is opened with that Reply button first."""
+        nonlocal internal_js_calls, mutation_dispatched
+
+        def scoped_find(role: str) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+            nonlocal internal_js_calls
+            found = browser_find(
+                settings, browser, query="", role=role, window_index=window_index, tab_index=tab_index,
+                tab_handle=tab_handle, max_results=10, **scope_keys,
+            )
+            internal_js_calls += 1
+            return [item for item in (found.get("matches") or []) if isinstance(item, dict)], _within_anchor_failure(found, within_label)
+
+        buttons, failure = scoped_find("button")
+        if failure is not None:
+            return None, failure
+        opener = _post_reply_opener(buttons)
+        limit = int(opener.get("within_up") or 0) if opener else None
+        deadline = time.monotonic() + _late_target_wait_s(action, results)
+        boxes: List[Tuple[bool, Dict[str, Any]]] = []
+        while True:
+            matches, failure = scoped_find("textbox")
+            if failure is not None:
+                return None, failure
+            boxes = _post_boxes(matches)
+            near = [match for _named, match in boxes if limit is None or int(match.get("within_up") or 0) <= limit]
+            if near:
+                return near[0], None
+            if opener is not None and not notes.get("opened_reply"):
+                note_possible_navigation()
+                mutation_dispatched = True
+                clicked = _verified_dom_action(
+                    settings, browser, {"type": "click", "element_id": str(opener.get("element_id") or "")}, None,
+                    window_index, tab_index, tab_handle, mutation_revalidator=revalidate_mutation,
+                )
+                internal_js_calls += int(clicked.pop("_js_calls", 0))
+                if not clicked.get("ok") and clicked.get("error") != "action_no_effect":
+                    return None, {key: value for key, value in clicked.items() if key not in {"type", "_compact_state"}}
+                notes["opened_reply"] = _post_label(opener) or "reply"
+                deadline = time.monotonic() + _LATE_TARGET_WAIT_S
+                continue
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.25)
+        if boxes:
+            return None, {
+                "ok": False, "error": "post_field_outside_item", "reason_code": "POST_FIELD_OUTSIDE_ITEM",
+                "boxes": [_post_label(match) or "textbox" for _named, match in boxes][:6],
+                **({"opened_reply": notes["opened_reply"]} if notes.get("opened_reply") else {}),
+                "observe_again": False, "automatic_retry": False,
+                "hint": "The only boxes near this item belong to the page or another item, so nothing was typed. "
+                        "If the site replies in one shared composer, open it and post with field='<its label>' instead of within.",
+            }
+        return None, {
+            "ok": False, "error": "post_field_not_found", "reason_code": "POST_FIELD_NOT_FOUND",
+            **({"opened_reply": notes["opened_reply"]} if notes.get("opened_reply") else {}),
+            "observe_again": False, "automatic_retry": False,
+            "hint": "No reply box opened for this item. Check the within text, or click the control that opens it first.",
+        }
+
+    def post_field(
+        action: Dict[str, Any], scope_keys: Dict[str, Any], notes: Dict[str, Any],
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
         """The box to type into: element_id, field=label words, or the page's (or item's) comment box."""
         nonlocal internal_js_calls
         if action.get("element_id"):
@@ -4474,6 +4555,8 @@ def _browser_act_locked(
                 return None, chosen
             return (chosen or {"element_id": resolved.get("element_id")}), None
         within_label = scope_keys.get("within") or scope_keys.get("within_element_id")
+        if scope_keys:
+            return post_item_field(action, scope_keys, within_label, notes)
         deadline = time.monotonic() + _late_target_wait_s(action, results)
         while True:
             found = browser_find(
@@ -4537,7 +4620,10 @@ def _browser_act_locked(
         scope_keys = {key: action[key] for key in ("within", "within_element_id", "within_levels") if action.get(key)}
         out: Dict[str, Any] = {"type": "post", "ok": False, "posted": False, "submitted": False}
 
-        field, failure = post_field(action, scope_keys)
+        notes: Dict[str, Any] = {}
+        field, failure = post_field(action, scope_keys, notes)
+        if notes.get("opened_reply"):
+            out["opened_reply"] = notes["opened_reply"]
         if failure is not None:
             return {**out, **failure, "type": "post", "stage": "field"}
         field_id = str((field or {}).get("element_id") or "")
