@@ -490,6 +490,9 @@ class UpdateHelperTests(unittest.TestCase):
             self.assertNotIn("PYTHONPATH", env)
             self.assertNotIn("PYTHONHOME", env)
             self.assertEqual(str(runtime), env["MAC_MCP_RUNTIME_DIR"])
+            # Open MCP streams must not hold the next restart open indefinitely.
+            command = popen.call_args.args[0]
+            self.assertEqual("5", command[command.index("--timeout-graceful-shutdown") + 1])
 
     def test_updater_refuses_foreign_listener_when_pid_record_is_missing(self):
         with tempfile.TemporaryDirectory(prefix="mac-mcp-update-adopt-foreign-") as td:

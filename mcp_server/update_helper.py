@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import plistlib
 import re
 import shutil
 import signal
@@ -877,6 +878,57 @@ def _adopt_verified_runtime_listener(
     return validation
 
 
+SERVER_JOB_LABEL = "com.macmcp.server"
+
+
+def _launchctl_quiet(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["/bin/launchctl", *args], capture_output=True, text=True, timeout=20)
+
+
+def _start_under_server_helper(runtime: Path, state_dir: Path, port: int):
+    """Start the server again under Mac MCP Server when it ran there (its job file is kept).
+
+    Started directly, the server would be Python's again in macOS's eyes and lose the
+    permissions granted to Mac MCP. Returns (pid, snapshot), or None when the server
+    does not run under the helper on this Mac.
+    """
+    plist = state_dir / "server.plist"
+    helper = runtime / ".helper" / "Mac MCP Server.app" / "Contents" / "MacOS" / "mac-mcp-server"
+    try:
+        with plist.open("rb") as handle:
+            arguments = plistlib.load(handle).get("ProgramArguments") or []
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return None
+    if not arguments or arguments[0] != str(helper) or not os.access(helper, os.X_OK):
+        return None
+    domain = f"gui/{os.getuid()}"
+    _launchctl_quiet("bootout", f"{domain}/{SERVER_JOB_LABEL}")
+    loaded = _launchctl_quiet("bootstrap", domain, str(plist))
+    if loaded.returncode != 0:
+        raise UpdateError(f"Mac MCP could not start under Mac MCP Server: {(loaded.stderr or '').strip()}")
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        for pid in listener_pids(port):
+            snapshot = process_snapshot(pid)
+            if snapshot and matches_role(snapshot, "server", port=port, project_root=runtime) \
+                    and _parent_executable(pid) == str(helper):
+                return pid, snapshot
+        time.sleep(0.25)
+    _launchctl_quiet("bootout", f"{domain}/{SERVER_JOB_LABEL}")
+    raise UpdateError("Mac MCP did not come up under Mac MCP Server.")
+
+
+def _parent_executable(pid: int) -> str | None:
+    try:
+        ppid = subprocess.run(["/bin/ps", "-o", "ppid=", "-p", str(pid)],
+                              capture_output=True, text=True, timeout=3).stdout.strip()
+        parent = subprocess.run(["/bin/ps", "-o", "comm=", "-p", ppid],
+                                capture_output=True, text=True, timeout=3).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parent or None
+
+
 def _restart_cli(runtime: Path, host: str, port: int) -> None:
     state_dir = Path.home() / ".mac-mcp"
     pid_file = state_dir / "mac-mcp.pid"
@@ -948,6 +1000,19 @@ def _restart_cli(runtime: Path, host: str, port: int) -> None:
             raise UpdateError("Verified Mac MCP process did not stop within 8 seconds; refusing unsafe restart.")
         pid_file.unlink(missing_ok=True)
 
+    under_helper = _start_under_server_helper(runtime, state_dir, int(port))
+    if under_helper is not None:
+        child, snapshot = under_helper
+        try:
+            write_process_record(
+                pid_file, "server", child,
+                metadata={"port": int(port), "ownership_source": "helper"}, snapshot=snapshot,
+            )
+        except (OSError, RuntimeError) as exc:
+            _launchctl_quiet("bootout", f"gui/{os.getuid()}/{SERVER_JOB_LABEL}")
+            raise UpdateError("Could not persist verified Mac MCP process identity after restart.") from exc
+        return
+
     python = runtime / ".venv" / "bin" / "python"
     if not python.exists():
         raise UpdateError(f"Runtime Python was not found: {python}")
@@ -958,7 +1023,8 @@ def _restart_cli(runtime: Path, host: str, port: int) -> None:
     server_env["MAC_MCP_RUNTIME_DIR"] = str(runtime)
     log = log_file.open("a", encoding="utf-8")
     proc = subprocess.Popen(
-        [str(python), "-m", "uvicorn", "mcp_server.main:app", "--host", host, "--port", str(port)],
+        [str(python), "-m", "uvicorn", "mcp_server.main:app", "--host", host, "--port", str(port),
+         "--timeout-graceful-shutdown", "5"],
         cwd=str(runtime), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
         env=server_env,
         start_new_session=True,

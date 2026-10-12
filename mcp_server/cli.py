@@ -93,6 +93,7 @@ RESTART_HANDOFF_LABEL = "com.macmcp.restart-handoff"
 RESTART_REQUESTER_WAIT_S = 5.0
 RESTART_RESPONSE_GRACE_S = 3.0
 RESTART_RECOVERY_DELAY_S = 2.0
+GRACEFUL_SHUTDOWN_S = 5
 RESTART_FINAL_STATES = frozenset({"succeeded", "failed", "degraded"})
 DEFAULT_STARTUP_HEALTH_TIMEOUT_S = 10.0
 
@@ -390,6 +391,17 @@ def _start_server(args: argparse.Namespace) -> int:
     return code
 
 
+def _server_command(args: argparse.Namespace, port: int) -> list[str]:
+    cmd = [
+        sys.executable, "-m", "uvicorn", APP_MODULE, "--host", args.host, "--port", str(port),
+        # Open MCP streams would otherwise hold a stop or restart open indefinitely.
+        "--timeout-graceful-shutdown", str(GRACEFUL_SHUTDOWN_S),
+    ]
+    if args.reload:
+        cmd.append("--reload")
+    return cmd
+
+
 def _start_server_locked(args: argparse.Namespace) -> int:
     port = int(args.port)
 
@@ -462,18 +474,7 @@ def _start_server_locked(args: argparse.Namespace) -> int:
     env.setdefault("MAC_MCP_PORT", str(port))
     # Only the CLI-managed server rotates the shared logs in the background.
     env["MAC_MCP_MANAGED_SERVER"] = "1"
-    cmd = [
-        sys.executable,
-        "-m",
-        "uvicorn",
-        APP_MODULE,
-        "--host",
-        args.host,
-        "--port",
-        str(port),
-    ]
-    if args.reload:
-        cmd.append("--reload")
+    cmd = _server_command(args, port)
 
     # Rotate the file this start is about to append to (the module path, so tests
     # that point LOG_FILE elsewhere never touch the real log).

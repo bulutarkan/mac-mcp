@@ -91,6 +91,12 @@ class HelperStartTests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertEqual("bootout", self.launchctl[-1][0])
 
+    def test_server_shutdown_is_bounded(self) -> None:
+        # Open MCP streams must not hold a stop, restart or update open indefinitely.
+        cmd = cli._server_command(argparse.Namespace(host="127.0.0.1", reload=False), 8765)
+        self.assertEqual(str(cli.GRACEFUL_SHUTDOWN_S), cmd[cmd.index("--timeout-graceful-shutdown") + 1])
+        self.assertIn("mcp_server.main:app", cmd)
+
     def test_stop_unloads_the_server_job_for_the_default_install(self) -> None:
         with patch.object(cli, "STATE_DIR", self.state), patch.object(cli, "DEFAULT_STATE_DIR", self.state), \
                 patch.object(cli, "PID_FILE", self.state / "mac-mcp.pid"), patch.object(cli, "_load_env"), \

@@ -58,3 +58,58 @@ class StandaloneUpdaterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HelperRestartTests(unittest.TestCase):
+    """After an update the server starts again under Mac MCP Server, keeping its permissions."""
+
+    def setUp(self) -> None:
+        from mcp_server import update_helper
+
+        self.module = update_helper
+        self.root = Path(tempfile.mkdtemp(prefix="mac-mcp-helper-restart-"))
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.runtime = self.root / "runtime"
+        self.state = self.root / "state"
+        self.state.mkdir()
+        self.helper = self.runtime / ".helper" / "Mac MCP Server.app" / "Contents" / "MacOS" / "mac-mcp-server"
+        self.helper.parent.mkdir(parents=True)
+        self.helper.write_text("#!/bin/sh\n")
+        self.helper.chmod(0o755)
+        self.calls: list[tuple] = []
+
+    def write_job(self, program: Path) -> None:
+        import plistlib
+
+        with (self.state / "server.plist").open("wb") as handle:
+            plistlib.dump({"Label": "com.macmcp.server", "ProgramArguments": [str(program), "python"]}, handle)
+
+    def start(self, parent: str):
+        from unittest.mock import patch
+
+        def launchctl(*args):
+            self.calls.append(args)
+            import subprocess
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with patch.object(self.module, "_launchctl_quiet", side_effect=launchctl), \
+                patch.object(self.module, "listener_pids", return_value=[4242]), \
+                patch.object(self.module, "process_snapshot", return_value=object()), \
+                patch.object(self.module, "matches_role", return_value=True), \
+                patch.object(self.module, "_parent_executable", return_value=parent):
+            return self.module._start_under_server_helper(self.runtime, self.state, 8765)
+
+    def test_no_job_file_means_the_old_direct_start(self) -> None:
+        self.assertIsNone(self.start(str(self.helper)))
+        self.assertEqual([], self.calls)
+
+    def test_a_job_for_another_program_is_left_alone(self) -> None:
+        self.write_job(self.root / "elsewhere")
+        self.assertIsNone(self.start(str(self.helper)))
+
+    def test_the_job_is_loaded_again_and_its_child_recorded(self) -> None:
+        self.write_job(self.helper)
+        pid, _ = self.start(str(self.helper))
+        self.assertEqual(4242, pid)
+        self.assertEqual("bootout", self.calls[0][0])
+        self.assertEqual(("bootstrap", f"gui/{__import__('os').getuid()}", str(self.state / "server.plist")), self.calls[1])
