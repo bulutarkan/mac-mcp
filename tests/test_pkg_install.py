@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("pkg_install", ROOT / "packaging/pkg/pkg_install.py")
@@ -163,11 +164,8 @@ class PkgFreshInstallTests(unittest.TestCase):
                 envs.append(env)
                 return super().__call__(cmd, env=env, cwd=cwd, check=check)
 
-        os.environ["MCP_API_KEY"] = "leak-check-value"
-        try:
+        with patch.dict(os.environ, {"MCP_API_KEY": "leak-check-value"}):
             pkg.install(self.layout, run=Recording(self.layout), health=self.health)
-        finally:
-            del os.environ["MCP_API_KEY"]
         for env in envs:
             self.assertEqual(str(self.home), env["HOME"])
             self.assertEqual(str(self.layout.state), env["MAC_MCP_STATE_DIR"])
