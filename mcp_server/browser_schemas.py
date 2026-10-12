@@ -53,6 +53,8 @@ def validate_action(index: int, action: Any) -> Dict[str, Any]:
     typ = action_type(action)
     if typ not in _ACT_TYPES:
         raise ValueError(f"actions[{index}] has unsupported type {action.get('type')!r}; use one of: {', '.join(_ACT_TYPES)}")
+    if typ == "post" and not str(action.get("text") or "").strip():
+        raise ValueError(f"actions[{index}] (post) needs text: the comment or reply to post")
     if typ in _TEXT_TYPES and action.get("text") is None and not action.get("handoff_id"):
         raise ValueError(f"actions[{index}] ({typ}) needs text (or handoff_id from context_handoff)")
     if typ in _KEY_TYPES and not action.get("key"):
@@ -94,7 +96,7 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
         "within": _str("Unique phrase of one item."),
         "within_element_id": {"type": "string"},
         "intent": _str("Only breaks ties."),
-        "text": _str("type/type_text/paste: text; clear:false appends. wait for=text: text to wait for."),
+        "text": _str("type/type_text/paste/post: text; clear:false appends. wait for=text: the text."),
         "handoff_id": _str("context_handoff id instead of text."),
         "option": _str("select: option label or value."),
         "key": _str("key/keyboard/shortcut: Enter, Escape, Tab, ArrowDown or one character."),

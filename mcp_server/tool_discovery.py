@@ -25,7 +25,7 @@ _STOPWORDS = frozenset({
 TOOL_USE_CASES: Dict[str, Tuple[str, ...]] = {
     "browser_observe": ("read browser page", "see web page", "page content", "inspect website", "look at tab", "dom"),
     "browser_act": ("click button on page", "fill form", "type into web field", "submit form", "select dropdown",
-                    "interact with website"),
+                    "interact with website", "post a comment", "reply to a comment", "scan long page"),
     "browser_do": ("open url and extract", "one shot web research", "scrape page", "get price from website",
                    "visit page read fields"),
     "browser_find": ("find element on page", "locate button", "search page text"),

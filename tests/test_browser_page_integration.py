@@ -271,5 +271,45 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertEqual(["[hidden]"], [e.get("value") for e in again["elements"] if e.get("input_type") == "password"])
         self.assertNotIn("not-a-real-secret", json.dumps(again))
 
+    def test_post_comments_and_replies_in_one_action(self) -> None:
+        # A comment box in a shadow root with a formatting toolbar, a search field above it,
+        # and Reply buttons that open a box inside one comment whose reply arrives later.
+        tools = self.tools("thread.html")
+        posted = tools.act([{"type": "post", "text": "Integration comment: one call is enough."}])
+        self.assertTrue(posted["ok"], posted)
+        self.assertEqual((True, "text_visible"), (posted["actions"][0]["posted"], posted["actions"][0]["verification"]))
+        self.assertEqual("comment", posted["actions"][0]["submit"]["label"])
+        self.assertEqual([1, 1, ""], tools.page.js(
+            "[window.__posts,window.__clicks,document.querySelector('header input').value]"))
+        self.assertIn("Integration comment", tools.page.js("document.querySelector('#thread article .body').textContent"))
+
+        phrase = "Do you let users teach it new skills"
+        replied = tools.act([
+            {"type": "click", "query": "Reply", "role": "button", "within": phrase},
+            {"type": "post", "text": "Integration reply under that comment.", "within": phrase},
+        ])
+        self.assertTrue(replied["ok"], replied)
+        self.assertTrue(replied["actions"][1]["posted"])
+        self.assertEqual(2, tools.page.js("window.__posts"))
+        self.assertEqual("Integration reply under that comment.", tools.page.js(
+            "Array.from(document.querySelectorAll('article')).find(a=>a.querySelector('.body').textContent.startsWith('Do you let'))"
+            ".querySelector('.replies .body').textContent"))
+
+    def test_unconfirmed_post_reports_once_without_retrying(self) -> None:
+        tools = self.tools("thread.html")
+        result = tools.act([{"type": "post", "text": "Please fail this integration comment.", "timeout_s": 1.5}])
+        self.assertFalse(result["ok"])
+        post = result["actions"][0]
+        self.assertEqual(("post_not_confirmed", True, None), (post["error"], post["submitted"], post["posted"]))
+        self.assertEqual([0, 1], tools.page.js("[window.__posts,window.__clicks]"))
+
+    def test_scan_reads_a_long_thread_in_one_action(self) -> None:
+        tools = self.tools("thread.html")
+        scanned = tools.act([{"type": "scan", "max_items": 100}])
+        self.assertTrue(scanned["ok"], scanned)
+        texts = [item["text"] for item in scanned["actions"][0]["items"]]
+        self.assertTrue(any("Comment number 29" in text for text in texts), texts[-3:])
+        self.assertGreaterEqual(len(texts), 30)
+
 if __name__ == "__main__":
     unittest.main()

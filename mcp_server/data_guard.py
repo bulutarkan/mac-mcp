@@ -294,7 +294,7 @@ def _browser_payload_strings(tool: str, arguments: Mapping[str, Any]) -> list[st
             if not isinstance(action, Mapping):
                 continue
             typ = str(action.get("type") or "").lower().replace("-", "_")
-            if typ not in {"type", "type_text", "paste"}:
+            if typ not in {"type", "type_text", "paste", "post"}:
                 continue
             for key in ("text", "value", "content"):
                 if action.get(key) is not None:
@@ -471,7 +471,7 @@ def sanitize_tool_arguments(tool: str, arguments: Mapping[str, Any]) -> dict[str
                 continue
             copy = dict(action)
             typ = str(copy.get("type") or "").lower().replace("-", "_")
-            if typ in {"type", "type_text", "paste"}:
+            if typ in {"type", "type_text", "paste", "post"}:
                 for key in ("text", "value", "content"):
                     if key in copy:
                         copy[key] = "[BROWSER INPUT REDACTED]"

@@ -56,8 +56,11 @@ class CoreCatalogDescriptionTests(unittest.TestCase):
 
         act = compact["browser_act"]
         for phrase in ("BATCH-FIRST:", "observe once", "one browser_act", "type/select/click/scroll", "verify from its changes",
-                       "Custom dropdowns: select", "query/role/text_match", "+intent", "Split only for dependencies"):
+                       "{type:'post',text}", "query/role/text_match", "+intent", "Split only for dependencies"):
             self.assertIn(phrase, act)
+        # The custom-dropdown hint moved to the full description and the select option field.
+        self.assertIn("Custom dropdowns: select", main.BROWSER_ACT_DESCRIPTION)
+        self.assertIn("browser_act scan", compact["browser_observe"])
         observe = compact["browser_observe"]
         for phrase in ("BATCH-FIRST HINT", "one browser_act", "verify from its changes", "dependency/rerender", "stale/takeover",
                        "consequential verification"):

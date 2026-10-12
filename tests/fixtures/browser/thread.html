@@ -1,0 +1,61 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Thread fixture</title>
+<style>
+body{font:14px system-ui;margin:0}
+header{position:sticky;top:0;background:#eee;padding:6px;display:flex;gap:6px;z-index:10}
+article{border-bottom:1px solid #ddd;padding:10px 16px;min-height:60px}
+.replies{margin-left:24px}
+.reply-box{display:none}.reply-box.open{display:block}
+#status{color:#b00}
+</style></head>
+<body>
+<header>
+  <a href="#home">Thread fixture</a>
+  <input type="text" placeholder="Search the forum" aria-label="Search the forum">
+</header>
+<h1>Which delegated agents do you run on your Mac?</h1>
+<p>Post body: tell us how you split work between subagents.</p>
+<thread-composer></thread-composer>
+<p id="status"></p>
+<section id="thread"></section>
+<script>
+window.__posts=0;window.__clicks=0;
+var thread=document.getElementById('thread');
+function comment(author,text){
+  var a=document.createElement('article');
+  a.innerHTML='<b></b><p class="body"></p><button type="button" class="reply">Reply</button><button type="button">Share</button>'+
+    '<div class="reply-box"><textarea aria-label="Write a reply"></textarea><button type="button" class="cancel">Cancel</button><button type="button" class="send">Reply</button></div>'+
+    '<div class="replies"></div>';
+  a.querySelector('b').textContent=author;a.querySelector('.body').textContent=text;
+  var boxEl=a.querySelector('.reply-box'),area=a.querySelector('textarea');
+  a.querySelector('.reply').addEventListener('click',function(){boxEl.classList.add('open');});
+  a.querySelector('.cancel').addEventListener('click',function(){boxEl.classList.remove('open');});
+  a.querySelector('.send').addEventListener('click',function(){
+    window.__clicks++;var value=area.value;if(!value.trim())return;
+    // Replies arrive after a round trip, like a real site.
+    setTimeout(function(){window.__posts++;a.querySelector('.replies').appendChild(comment('you',value));area.value='';boxEl.classList.remove('open');},300);
+  });
+  return a;
+}
+for(var i=0;i<30;i++)thread.appendChild(comment('user'+i,'Comment number '+i+' about running agents locally'));
+thread.children[7].querySelector('.body').textContent='Do you let users teach it new skills over time?';
+
+// The main composer lives in a shadow root with a formatting toolbar, like rich-text editors do.
+customElements.define('thread-composer',class extends HTMLElement{
+  connectedCallback(){
+    var root=this.attachShadow({mode:'open'});
+    root.innerHTML='<div class="composer"><div class="toolbar"><button type="button" aria-label="Bold">B</button>'+
+      '<button type="button" aria-label="Italic">I</button><button type="button" aria-label="Insert link">L</button></div>'+
+      '<div class="editor" contenteditable="true" role="textbox" aria-label="Join the conversation" style="min-height:60px;border:1px solid #ccc"></div>'+
+      '<div class="footer"><button type="button" class="cancel">Cancel</button><button type="button" class="submit">Comment</button></div></div>';
+    var editor=root.querySelector('.editor');
+    root.querySelector('.submit').addEventListener('click',function(){
+      window.__clicks++;var text=editor.innerText;
+      if(/please fail/i.test(text)){document.getElementById('status').textContent='Something went wrong. Try again later.';return;}
+      if(!text.trim())return;
+      window.__posts++;thread.insertBefore(comment('you',text),thread.firstChild);editor.textContent='';
+    });
+  }
+});
+</script>
+</body></html>

@@ -1862,11 +1862,14 @@ def _browser_find_impl(
                 raise
             candidate_limit = max(10, candidate_limit // 2)
             payload_limited = True
+    scoped = bool(within or within_element_id)
     scored: List[Tuple[float, Dict[str, Any]]] = []
     for element in payload.get("elements", []):
         score = _score_candidate(element, str(query or ""), role, text)
-        if element.get("offscreen"):
-            score *= 0.9  # reachable by scrolling, but an on-screen twin wins
+        if element.get("offscreen") and not scoped:
+            # Reachable by scrolling, but an on-screen twin wins. Inside one item locality
+            # decides instead: the Reply of an off-screen comment is still that comment's Reply.
+            score *= 0.9
         if score >= 0.30:
             scored.append((score, element))
     scored = _demote_redundant_candidates(scored)
@@ -1881,7 +1884,6 @@ def _browser_find_impl(
             return 2
         return 1
 
-    scoped = bool(within or within_element_id)
     if scoped:
         # Locality decides among equally good text matches: the nearest common
         # ancestor with the anchor first, then the shortest path below it.
@@ -1906,7 +1908,7 @@ def _browser_find_impl(
             "text": element.get("text"), "aria_label": element.get("aria_label"),
             "placeholder": element.get("placeholder"), "name": element.get("name"),
             "title": element.get("title"), "value": element.get("value"), "context": element.get("context"),
-            "href": element.get("href"), "viewport_rect": element.get("viewport_rect"),
+            "href": element.get("href"), "input_type": element.get("input_type"), "viewport_rect": element.get("viewport_rect"),
             "screen_rect": element.get("screen_rect"), "actionable": element.get("actionable"),
             "ready": element.get("ready"), "readiness_reason": element.get("readiness_reason"),
             "modal_scope": element.get("modal_scope"), "association_text": element.get("association_text"),
@@ -3609,6 +3611,146 @@ def _scan_action(
     }
 
 
+# {type:'post'}: type into a comment/reply box, press that box's own submit button and
+# confirm the text shows up on the page, in one action. Agents used to spend 8-10 calls
+# on this (observe, scroll, find the box, type, observe, click, find, observe).
+def _post_words(*words: str) -> frozenset:
+    return frozenset(_normalize_text(word) for word in words)
+
+
+_POST_SEARCH_WORDS = _post_words("search", "ara", "arama", "find", "filter")
+_POST_FIELD_WORDS = _post_words(
+    "comment", "comments", "reply", "replies", "conversation", "discussion", "thoughts", "write", "message",
+    "post", "respond", "response", "answer", "yorum", "yorumla", "yanıt", "yanıtla", "cevap", "cevapla",
+    "mesaj", "düşünce", "yaz",
+)
+# A box's own submit button. Reply/Yanıtla rank below the others: a thread is full of
+# Reply buttons that open other boxes, and the nearest submit button wins anyway.
+_POST_SUBMIT_WORDS = _post_words(
+    "post", "comment", "submit", "send", "publish", "save", "tweet", "gönder", "kaydet", "yayınla", "paylaş",
+)
+_POST_SUBMIT_SECONDARY_WORDS = _post_words("reply", "respond", "yanıtla", "cevapla", "yorum")
+_POST_CANCEL_WORDS = _post_words("cancel", "discard", "close", "delete", "remove", "iptal", "vazgeç", "kapat", "sil")
+_POST_SUBMIT_LEVELS = 14
+_POST_VERIFY_S = 10.0
+_POST_SNIPPET_WORDS = 8
+
+
+def _post_label(element: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    for key in ("aria_label", "placeholder", "name", "title", "text"):
+        value = str(element.get(key) or "").strip()
+        if value and value not in parts:
+            parts.append(value)
+    return " ".join(parts)[:160]
+
+
+def _pick_post_field(matches: List[Dict[str, Any]], *, scoped: bool) -> Tuple[Optional[Dict[str, Any]], str]:
+    """Choose the comment box among textbox matches: never a search field, and never a guess.
+
+    Returns (match, "ok"), (None, "not_found") or (None, "ambiguous").
+    """
+    boxes = []
+    for match in matches:
+        tokens = set(_normalize_text(_post_label(match)).split())
+        if str(match.get("input_type") or "").lower() == "search" or tokens & _POST_SEARCH_WORDS:
+            continue
+        boxes.append((bool(tokens & _POST_FIELD_WORDS), match))
+    if not boxes:
+        return None, "not_found"
+    if scoped or len(boxes) == 1:
+        # Inside one item the nearest box is the answer (matches come nearest first).
+        return boxes[0][1], "ok"
+    named = [match for is_named, match in boxes if is_named]
+    if len(named) == 1:
+        return named[0], "ok"
+    return None, "ambiguous"
+
+
+def _post_snippet(text: str) -> str:
+    """The first words of the text as a page shows them (markdown link targets and URLs dropped)."""
+    cleaned = re.sub(r"\]\([^)]*\)", " ", str(text or ""))
+    cleaned = re.sub(r"https?://\S+", " ", cleaned)
+    return " ".join(_normalize_text(cleaned).split()[:_POST_SNIPPET_WORDS])
+
+
+_POST_PAGE_JS_COMMON = r"""
+function __mcpB64(obj){return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}
+function norm(v){return String(v||'').normalize('NFKD').toLowerCase().replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9çğıöşü]+/g,' ').replace(/\s+/g,' ').trim();}
+function cparent(n){return n.parentNode||(n.host||null);}
+function shown(el){try{var st=__mcpStyle(el);if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0)return false;var r=__mcpTopRect(el);return r.width>=1&&r.height>=1;}catch(e){return false;}}
+"""
+
+
+def _post_submit_js(field_id: str, max_levels: int) -> str:
+    """Find the submit button that belongs to the box: walk up from the box one ancestor at a
+    time and stop at the first ancestor holding a submit-named button (open shadow roots included)."""
+    words = {
+        "primary": sorted(_POST_SUBMIT_WORDS), "secondary": sorted(_POST_SUBMIT_SECONDARY_WORDS),
+        "cancel": sorted(_POST_CANCEL_WORDS),
+    }
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+{_POST_PAGE_JS_COMMON}
+var s=__mcpState(),field=__mcpRecoverElement({json.dumps(str(field_id or ""))},s),words={json.dumps(words)},maxLevels={int(max_levels)};
+if(!field)return __mcpB64({{ok:false,error:'post_field_detached',reason_code:'POST_FIELD_DETACHED'}});
+var primary=new Set(words.primary),secondary=new Set(words.secondary),cancel=new Set(words.cancel);
+function buttons(root){{var out=[],stack=[root];while(stack.length&&out.length<400){{var node=stack.pop(),list=[];
+  try{{list=node.querySelectorAll('button,[role=button],input[type=submit],input[type=button]');}}catch(e){{}}
+  for(var i=0;i<list.length;i++)out.push(list[i]);
+  if(node.shadowRoot)stack.push(node.shadowRoot);
+  var kids=[];try{{kids=node.querySelectorAll('*');}}catch(e){{}}for(var k=0;k<kids.length;k++)if(kids[k].shadowRoot)stack.push(kids[k].shadowRoot);}}
+  return out;}}
+function info(el){{var tag=String(el.tagName||'').toLowerCase(),raw=[el.getAttribute('aria-label'),el.getAttribute('title'),tag==='input'?el.value:'',(el.innerText||el.textContent||'')].filter(Boolean).join(' ');
+  var label=norm(raw).slice(0,80),toks=label?label.split(' '):[],short=toks.length&&toks.length<=4,tier=0;
+  if(toks.some(function(t){{return cancel.has(t);}}))tier=-1;
+  else if(short&&toks.some(function(t){{return primary.has(t);}}))tier=1;
+  else if(short&&toks.some(function(t){{return secondary.has(t);}}))tier=2;
+  return {{el:el,label:label,tier:tier,submit:String(el.type||'').toLowerCase()==='submit',disabled:!!el.disabled||String(el.getAttribute('aria-disabled')||'')==='true'}};}}
+var cur=field,level=0,nearby=null;
+while(level<maxLevels){{
+  cur=cur&&cparent(cur);if(!cur||cur.nodeType===9)break;if(cur.nodeType!==1)continue;level++;
+  var seen=new Set(),found=buttons(cur).filter(function(b){{if(seen.has(b)||b===field)return false;seen.add(b);return shown(b);}}).map(info);
+  if(!found.length)continue;
+  if(!nearby)nearby=found.slice(0,8).map(function(x){{return x.label;}}).filter(Boolean);
+  var hits=found.filter(function(x){{return x.tier>0;}});
+  if(!hits.length)continue;
+  hits.sort(function(a,b){{return (a.tier-b.tier)||((b.submit?1:0)-(a.submit?1:0));}});
+  var best=hits[0],tied=hits.filter(function(x){{return x.tier===best.tier&&x.submit===best.submit&&x.el!==best.el;}});
+  if(tied.length)return __mcpB64({{ok:true,ambiguous:true,level:level,buttons:[best].concat(tied).slice(0,6).map(function(x){{return x.label;}})}});
+  var id=__mcpId(best.el,s);__mcpRememberTarget(best.el,id,s);
+  return __mcpB64({{ok:true,element_id:id,label:best.label,disabled:best.disabled,level:level}});
+}}
+return __mcpB64({{ok:true,element_id:null,buttons:nearby||[]}});
+}})()'''
+
+
+def _post_check_js(field_id: str, snippet: str) -> str:
+    """Count where the text appears on the page outside the box itself (open shadow roots included)."""
+    return f'''(function(){{
+{_browser_state_bootstrap()}
+{_POST_PAGE_JS_COMMON}
+var s=__mcpState(),field=s.elements[{json.dumps(str(field_id or ""))}]||null,want={json.dumps(snippet)};
+var connected=!!(field&&field.isConnected),fieldText='';
+if(connected){{try{{fieldText=(typeof field.value==='string')?field.value:String(field.innerText||field.textContent||'');}}catch(e){{}}}}
+var parts=[],roots=__mcpRoots(),vis=new Map(),visited=0;
+for(var r=0;r<roots.length&&visited<60000;r++){{
+  var start=roots[r].nodeType===9?roots[r].body:roots[r];if(!start)continue;
+  var tw;try{{tw=(roots[r].nodeType===9?roots[r]:document).createTreeWalker(start,NodeFilter.SHOW_TEXT);}}catch(e){{continue;}}
+  var tn;while((tn=tw.nextNode())&&visited++<60000){{
+    var pe=tn.parentElement;if(!pe||!tn.data||!tn.data.trim())continue;
+    var tag=String(pe.tagName||'').toLowerCase();if(tag==='script'||tag==='style'||tag==='textarea'||tag==='noscript'||tag==='template')continue;
+    if(connected&&(pe===field||__mcpComposedContains(field,pe)))continue;
+    var v=vis.get(pe);if(v===undefined){{v=shown(pe);vis.set(pe,v);}}
+    if(v)parts.push(tn.data);
+  }}
+}}
+var hay=' '+norm(parts.join(' '))+' ',needle=' '+want+' ',count=0;
+if(want){{var at=hay.indexOf(needle);while(at>=0&&count<50){{count++;at=hay.indexOf(needle,at+needle.length-1);}}}}
+return __mcpB64({{ok:true,count:count,field_connected:connected,field_has_text:!!(want&&(' '+norm(fieldText)+' ').indexOf(needle)>=0),url:location.href}});
+}})()'''
+
+
 def _wait_action_polling(
     settings: Settings,
     browser: str,
@@ -3853,7 +3995,7 @@ def _wait_action(
 _TARGET_CANDIDATE_LIMIT = 8
 _LATE_TARGET_WAIT_S = 2.5
 _LATE_TARGET_MAX_WAIT_S = 10.0
-_MUTATING_RESULT_TYPES = {"click", "double_click", "type", "type_text", "paste", "select", "key"}
+_MUTATING_RESULT_TYPES = {"click", "double_click", "type", "type_text", "paste", "select", "key", "post"}
 
 
 def _late_target_wait_s(action: Dict[str, Any], results: List[Dict[str, Any]]) -> float:
@@ -3872,6 +4014,25 @@ def _late_target_wait_s(action: Dict[str, Any], results: List[Dict[str, Any]]) -
 
 
 _INTENT_HINT_LIMIT = 120
+
+
+def _within_anchor_failure(found: Dict[str, Any], within: Optional[str]) -> Optional[Dict[str, Any]]:
+    """The refusal for a within anchor that is missing or found in several items, else None."""
+    scope = found.get("within") if isinstance(found.get("within"), dict) else None
+    if scope is None or scope.get("status") not in {"anchor_not_found", "anchor_ambiguous"}:
+        return None
+    ambiguous = scope.get("status") == "anchor_ambiguous"
+    return {
+        "ok": False,
+        "error": "within_anchor_ambiguous" if ambiguous else "within_anchor_not_found",
+        "reason_code": "WITHIN_ANCHOR_AMBIGUOUS" if ambiguous else "WITHIN_ANCHOR_NOT_FOUND",
+        "within": within, "anchor_count": scope.get("anchor_count"),
+        "anchors": scope.get("anchors"), "observe_again": False, "automatic_retry": False,
+        "hint": (
+            "Use a longer phrase that appears only in the intended item, or pass within_element_id."
+            if ambiguous else "The within text is not on the page; check the anchor text."
+        ),
+    }
 
 
 def _action_intent_hint(action: Dict[str, Any]) -> str:
@@ -3955,7 +4116,7 @@ def _has_locator(action: Dict[str, Any]) -> bool:
     return any(action.get(key) for key in _LOCATOR_KEYS)
 _ACT_TYPES = (
     "click", "double_click", "type", "type_text", "paste", "select", "scroll", "focus",
-    "wait", "key", "keyboard", "shortcut", "extract", "scan", "dialog", "hover", "drag",
+    "wait", "key", "keyboard", "shortcut", "extract", "scan", "dialog", "hover", "drag", "post",
 )
 # Agents often name the action kind "action" instead of "type"; accept it.
 _ACT_TYPE_ALIASES = ("action", "kind", "op")
@@ -3980,6 +4141,10 @@ def normalize_act_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 status.HTTP_400_BAD_REQUEST,
                 f"actions[{index}] has unsupported type {str(raw or '')!r}; "
                 f"set \"type\" to one of: {', '.join(_ACT_TYPES)}.",
+            ))
+        if typ == "post" and not str(action.get("text") or "").strip():
+            raise mark_not_executed(HTTPException(
+                status.HTTP_400_BAD_REQUEST, f"actions[{index}] (post) needs text: the comment or reply to post.",
             ))
         item = dict(action)
         item["type"] = typ
@@ -4199,19 +4364,9 @@ def _browser_act_locked(
         best = found.get("best_match")
         waited_s = 0.0
         scope = found.get("within") if isinstance(found.get("within"), dict) else None
-        if scope is not None and scope.get("status") in {"anchor_not_found", "anchor_ambiguous"}:
-            ambiguous = scope.get("status") == "anchor_ambiguous"
-            return dict(action), {
-                "ok": False,
-                "error": "within_anchor_ambiguous" if ambiguous else "within_anchor_not_found",
-                "reason_code": "WITHIN_ANCHOR_AMBIGUOUS" if ambiguous else "WITHIN_ANCHOR_NOT_FOUND",
-                "within": within or within_element_id, "anchor_count": scope.get("anchor_count"),
-                "anchors": scope.get("anchors"), "observe_again": False, "automatic_retry": False,
-                "hint": (
-                    "Use a longer phrase that appears only in the intended item, or pass within_element_id."
-                    if ambiguous else "The within text is not on the page; check the anchor text."
-                ),
-            }
+        anchor_failure = _within_anchor_failure(found, within or within_element_id)
+        if anchor_failure is not None:
+            return dict(action), anchor_failure
         if not best:
             wait_s = _late_target_wait_s(action, results)
             if wait_s > 0 and scope is not None:
@@ -4303,6 +4458,154 @@ def _browser_act_locked(
             current_observation_id = None
         return bool(out.get("ok"))
 
+    def post_page_js(js: str) -> Dict[str, Any]:
+        nonlocal internal_js_calls
+        internal_js_calls += 1
+        return _run_json_js(settings, browser, js, window_index, tab_index, tab_handle)
+
+    def post_field(action: Dict[str, Any], scope_keys: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        """The box to type into: element_id, field=label words, or the page's (or item's) comment box."""
+        nonlocal internal_js_calls
+        if action.get("element_id"):
+            return {"element_id": str(action["element_id"])}, None
+        if action.get("field"):
+            resolved, chosen = resolve_target({"type": "type", "query": str(action["field"]), **scope_keys})
+            if isinstance(chosen, dict) and chosen.get("ok") is False:
+                return None, chosen
+            return (chosen or {"element_id": resolved.get("element_id")}), None
+        within_label = scope_keys.get("within") or scope_keys.get("within_element_id")
+        deadline = time.monotonic() + _late_target_wait_s(action, results)
+        while True:
+            found = browser_find(
+                settings, browser, query="", role="textbox", window_index=window_index, tab_index=tab_index,
+                tab_handle=tab_handle, max_results=10, **scope_keys,
+            )
+            internal_js_calls += 1
+            anchor_failure = _within_anchor_failure(found, within_label)
+            if anchor_failure is not None:
+                return None, anchor_failure
+            matches = [item for item in (found.get("matches") or []) if isinstance(item, dict)]
+            chosen, reason = _pick_post_field(matches, scoped=bool(scope_keys))
+            if chosen is not None:
+                return chosen, None
+            if reason == "ambiguous" or time.monotonic() >= deadline:
+                break
+            # A box an earlier step opened (a Reply button) may render a moment later.
+            time.sleep(0.25)
+        boxes = [_post_label(item) or str(item.get("tag") or "textbox") for item in matches][:6]
+        if reason == "ambiguous":
+            return None, {
+                "ok": False, "error": "post_field_ambiguous", "reason_code": "POST_FIELD_AMBIGUOUS",
+                "boxes": boxes, "observe_again": False, "automatic_retry": False,
+                "hint": "Several text boxes on the page; pass field='<words from the box label>', or within='<text of the item>' for a reply.",
+            }
+        return None, {
+            "ok": False, "error": "post_field_not_found", "reason_code": "POST_FIELD_NOT_FOUND",
+            **({"boxes": boxes} if boxes else {}), "observe_again": False, "automatic_retry": False,
+            "hint": "No comment box found. If a button opens it (Reply, Add a comment), click it first in the same call.",
+        }
+
+    def post_submit_button(action: Dict[str, Any], field_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        """The box's own submit button: submit=button text, else the nearest submit-named button."""
+        levels = _POST_SUBMIT_LEVELS
+        if action.get("submit"):
+            resolved, chosen = resolve_target({
+                "type": "click", "query": str(action["submit"]), "role": "button",
+                "within_element_id": field_id, "within_levels": levels,
+            })
+            if isinstance(chosen, dict) and chosen.get("ok") is False:
+                return None, chosen
+            return (chosen or {"element_id": resolved.get("element_id")}), None
+        found = post_page_js(_post_submit_js(field_id, levels))
+        if not found.get("ok"):
+            return None, {**found, "observe_again": True, "automatic_retry": False}
+        if found.get("element_id"):
+            return {"element_id": found["element_id"], "text": found.get("label")}, None
+        ambiguous = bool(found.get("ambiguous"))
+        return None, {
+            "ok": False, "error": "post_submit_ambiguous" if ambiguous else "post_submit_not_found",
+            "reason_code": "POST_SUBMIT_AMBIGUOUS" if ambiguous else "POST_SUBMIT_NOT_FOUND",
+            "buttons": found.get("buttons") or [], "observe_again": False, "automatic_retry": False,
+            "hint": "The text is in the box but nothing was posted. Call post again with submit='<button text>' "
+                    "(it replaces the text, nothing is doubled), or click the button.",
+        }
+
+    def run_post(action: Dict[str, Any]) -> Dict[str, Any]:
+        """Type into the comment box, press its submit button and confirm the text is on the page."""
+        nonlocal internal_js_calls, mutation_dispatched, in_flight
+        text = str(action.get("text") or "")
+        scope_keys = {key: action[key] for key in ("within", "within_element_id", "within_levels") if action.get(key)}
+        out: Dict[str, Any] = {"type": "post", "ok": False, "posted": False, "submitted": False}
+
+        field, failure = post_field(action, scope_keys)
+        if failure is not None:
+            return {**out, **failure, "type": "post", "stage": "field"}
+        field_id = str((field or {}).get("element_id") or "")
+        out["field"] = {"element_id": field_id, **({"label": _post_label(field)} if _post_label(field or {}) else {})}
+
+        in_flight = ["post"]
+        dispatched_before = mutation_dispatched
+        mutation_dispatched = True
+        typed = _verified_dom_action(
+            settings, browser,
+            {"type": "type", "element_id": field_id, "text": text, **({"clear": action["clear"]} if "clear" in action else {})},
+            current_observation_id if action.get("element_id") else None,
+            window_index, tab_index, tab_handle, mutation_revalidator=revalidate_mutation,
+        )
+        internal_js_calls += int(typed.pop("_js_calls", 0))
+        typed.pop("_compact_state", None)
+        if typed.get("no_side_effect"):
+            mutation_dispatched = dispatched_before
+        if not typed.get("ok"):
+            detail = {key: value for key, value in typed.items() if key not in {"type", "ok", "value"}}
+            return {**out, **detail, "type": "post", "ok": False, "stage": "type"}
+        out["typed"] = True
+
+        button, failure = post_submit_button(action, field_id)
+        if failure is not None:
+            return {**out, **failure, "type": "post", "stage": "submit"}
+        button_id = str((button or {}).get("element_id") or "")
+        out["submit"] = {"element_id": button_id, **({"label": str(button.get("text"))} if (button or {}).get("text") else {})}
+
+        snippet = _post_snippet(text)
+        before = post_page_js(_post_check_js(field_id, snippet)) if snippet else {}
+        baseline = int(before.get("count") or 0)
+        note_possible_navigation()
+        clicked = _verified_dom_action(
+            settings, browser, {"type": "click", "element_id": button_id}, None,
+            window_index, tab_index, tab_handle, mutation_revalidator=revalidate_mutation,
+        )
+        internal_js_calls += int(clicked.pop("_js_calls", 0))
+        clicked.pop("_compact_state", None)
+        if clicked.get("no_side_effect") or (not clicked.get("ok") and clicked.get("error") != "action_no_effect"):
+            detail = {key: value for key, value in clicked.items() if key not in {"type", "ok"}}
+            return {**out, **detail, "type": "post", "ok": False, "stage": "submit"}
+        out["submitted"] = True
+
+        # The button was pressed. From here on the outcome is reported, never retried.
+        timeout_s = max(1.0, min(float(action.get("timeout_s") or _POST_VERIFY_S), 30.0))
+        deadline = time.monotonic() + timeout_s
+        check: Dict[str, Any] = {}
+        while True:
+            cancellation_checkpoint()
+            check = post_page_js(_post_check_js(field_id, snippet))
+            seen = int(check.get("count") or 0) > baseline
+            field_cleared = not check.get("field_connected") or not check.get("field_has_text")
+            if seen or (not snippet and field_cleared) or time.monotonic() >= deadline:
+                break
+            cancellable_sleep(0.4)
+        out["field_cleared"] = bool(field_cleared)
+        if seen:
+            return {**out, "ok": True, "posted": True, "verification": "text_visible"}
+        if not snippet and field_cleared:
+            return {**out, "ok": True, "posted": True, "verification": "field_cleared"}
+        return {
+            **out, "ok": False, "posted": None, "error": "post_not_confirmed", "reason_code": "POST_NOT_CONFIRMED",
+            "outcome_unknown": True, "automatic_retry": False, "observe_again": True, "waited_s": timeout_s,
+            "hint": "The submit button was pressed but the text did not show up on the page. Do not post again "
+                    "before checking: browser_find text='<first words>' (it may be pending, collapsed or sorted elsewhere).",
+        }
+
     tab_lost: Optional[Dict[str, Any]] = None
     typ = ""
     try:
@@ -4329,6 +4632,16 @@ def _browser_act_locked(
                 if not point_result.get("ok"):
                     break
                 mutation_dispatched = True
+                continue
+            if typ == "post":
+                if not flush_pending():
+                    break
+                post_result = run_post(action)
+                results.append(post_result)
+                current_observation_id = None
+                in_flight = []
+                if not post_result.get("ok"):
+                    break
                 continue
             if typ not in {"wait", "key", "keyboard", "shortcut", "extract", "scan", "dialog"} or (
                 typ == "scan" and not action.get("element_id") and _has_locator(action)
@@ -4609,7 +4922,7 @@ def _browser_act_locked(
                 "error", "reason_code", "retryable", "automatic_retry", "observe_again",
                 "human_priority", "yielded", "human_takeover_during_action",
                 "human_input_recent", "human_input_age_ms", "human_input_probe_error",
-                "resource_kind", "expected_lease_generation", "actual_lease_generation",
+                "resource_kind", "expected_lease_generation", "actual_lease_generation", "outcome_unknown",
             ):
                 if key in failed:
                     response[key] = failed.get(key)

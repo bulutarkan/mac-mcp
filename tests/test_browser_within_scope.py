@@ -32,6 +32,25 @@ class WithinScopeJsTests(unittest.TestCase):
         self.assertIn(f"withinLevels={agent._WITHIN_MAX_LEVELS}", _find_candidates_js("x", None, None, within="a", within_levels=999))
 
 
+class WithinRankingTests(unittest.TestCase):
+    def test_off_screen_item_control_beats_an_on_screen_neighbour(self) -> None:
+        # Live bug: the Reply of an off-screen comment lost to the Reply of an on-screen
+        # comment, because the off-screen penalty outweighed locality.
+        own = {"element_id": "e_own", "text": "Reply", "role": "button", "tag": "button", "actionable": True,
+               "offscreen": True, "within_up": 1, "within_down": 2}
+        neighbour = {"element_id": "e_other", "text": "Reply", "role": "button", "tag": "button", "actionable": True,
+                     "within_up": 2, "within_down": 3}
+        payload = {"ok": True, "elements": [neighbour, own], "within": {"status": "ok", "levels": 6, "anchor_count": 1}}
+        with patch.object(agent, "_resolve_tab_target", return_value=(1, 1)), \
+             patch.object(agent, "_ensure_visual_companion"), \
+             patch.object(agent, "_run_json_js", return_value=payload):
+            scoped = agent._browser_find_impl(MagicMock(), "Safari", "Reply", role="button", tab_handle="tab",
+                                              within="teach it new skills")
+            plain = agent._browser_find_impl(MagicMock(), "Safari", "Reply", role="button", tab_handle="tab")
+        self.assertEqual("e_own", scoped["best_match"]["element_id"])
+        self.assertEqual("e_other", plain["best_match"]["element_id"])
+
+
 class WithinGuidanceTests(unittest.TestCase):
     def test_agents_are_told_to_use_one_scoped_call(self) -> None:
         from mcp_server.main import BROWSER_ACT_DESCRIPTION, MCP_AGENT_INSTRUCTIONS

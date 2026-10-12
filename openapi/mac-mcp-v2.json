@@ -3383,7 +3383,8 @@
                             "scan",
                             "dialog",
                             "hover",
-                            "drag"
+                            "drag",
+                            "post"
                           ],
                           "type": "string"
                         },
@@ -3415,7 +3416,7 @@
                           "type": "string"
                         },
                         "text": {
-                          "description": "type/type_text/paste: text; clear:false appends. wait for=text: text to wait for.",
+                          "description": "type/type_text/paste/post: text; clear:false appends. wait for=text: the text.",
                           "type": "string"
                         },
                         "handoff_id": {
@@ -3693,7 +3694,8 @@
                                 "scan",
                                 "dialog",
                                 "hover",
-                                "drag"
+                                "drag",
+                                "post"
                               ],
                               "type": "string"
                             }
