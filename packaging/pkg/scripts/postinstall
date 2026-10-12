@@ -1,0 +1,10 @@
+#!/bin/bash
+# Mac MCP package postinstall: hands off to the installer core on the bundled Python.
+set -u
+if [[ -n "${MAC_MCP_PKG_HOME:-}" ]]; then
+  HOME_DIR="$MAC_MCP_PKG_HOME"
+else
+  HOME_DIR="$(/usr/bin/dscl . -read "/Users/$(/usr/bin/id -un)" NFSHomeDirectory | /usr/bin/awk '{print $2}')"
+fi
+STAGING="$HOME_DIR/.mac-mcp/pkg/staging"
+exec "$STAGING/python/bin/python3" -I "$STAGING/pkg_install.py" --home "$HOME_DIR"

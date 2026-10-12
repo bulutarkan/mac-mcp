@@ -1,0 +1,23 @@
+#!/bin/bash
+# Mac MCP package preinstall: runs as the installing user before any file is placed.
+set -u
+if [[ -n "${MAC_MCP_PKG_HOME:-}" ]]; then
+  HOME_DIR="$MAC_MCP_PKG_HOME"
+else
+  HOME_DIR="$(/usr/bin/dscl . -read "/Users/$(/usr/bin/id -un)" NFSHomeDirectory | /usr/bin/awk '{print $2}')"
+fi
+[[ -n "$HOME_DIR" && -d "$HOME_DIR" ]] || { echo "Mac MCP: could not find your home folder." >&2; exit 1; }
+
+kind="$(/bin/cat "$HOME_DIR/.mac-mcp/install-kind" 2>/dev/null || true)"
+if [[ -e "$HOME_DIR/mac-mcp" && "$kind" != "pkg" ]]; then
+  echo "Mac MCP is already installed in $HOME_DIR/mac-mcp with install.sh or from source." >&2
+  echo "The package will not replace it. Update that install with: mac-mcp update" >&2
+  exit 1
+fi
+[[ "$(/usr/bin/uname -m)" == "arm64" ]] || { echo "Mac MCP: this package is for Apple Silicon Macs." >&2; exit 1; }
+major="$(/usr/bin/sw_vers -productVersion | /usr/bin/cut -d. -f1)"
+(( major >= 14 )) || { echo "Mac MCP: macOS 14 or newer is required." >&2; exit 1; }
+
+# A package upgrade replaces the app bundle: stop the running menu app first.
+/usr/bin/pkill -f "^$HOME_DIR/Applications/Mac MCP.app/Contents/MacOS/MacMCPMenu" 2>/dev/null || true
+exit 0
