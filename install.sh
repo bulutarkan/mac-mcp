@@ -798,8 +798,10 @@ install_python_environment() {
 
 prepare_chrome_companion() {
   section "Chrome Background Companion"
-  MAC_MCP_STATE_DIR="$STATE_DIR" MAC_MCP_PORT="${MAC_MCP_PORT:-8000}" PYTHONPATH="$RUNTIME_DIR" \
-    "$RUNTIME_DIR/.venv/bin/python" -c 'from mcp_server.chrome_background_bridge import ensure_chrome_companion_config; p=ensure_chrome_companion_config(); assert p and p.is_file()' \
+  # python -c puts the working directory first on sys.path: run from the runtime so a
+  # Mac MCP checkout in the caller's directory is never imported (or written to).
+  (cd "$RUNTIME_DIR" && MAC_MCP_STATE_DIR="$STATE_DIR" MAC_MCP_PORT="${MAC_MCP_PORT:-8000}" PYTHONPATH="$RUNTIME_DIR" \
+    "$RUNTIME_DIR/.venv/bin/python" -c 'from mcp_server.chrome_background_bridge import ensure_chrome_companion_config; p=ensure_chrome_companion_config(); assert p and p.is_file()') \
     || fail "Could not prepare the Chrome background companion configuration."
   /bin/chmod 600 "$STATE_DIR/chrome-companion-token" "$RUNTIME_DIR/menu_app/ChromeVisualCompanion/bridge_config.js" \
     || fail "Could not secure the Chrome background companion credentials."
@@ -814,7 +816,7 @@ install_update_state_and_cli() {
   if [[ -d "$CLI_PATH" && ! -L "$CLI_PATH" ]]; then
     fail "CLI path is a directory and cannot be replaced: $CLI_PATH"
   fi
-  MAC_MCP_CLI_PATH="$CLI_PATH" MAC_MCP_RUNTIME_DIR="$RUNTIME_DIR" PYTHONPATH="$RUNTIME_DIR"     "$RUNTIME_DIR/.venv/bin/python" -c 'from pathlib import Path; from mcp_server.cli_bootstrap import ensure_cli_launcher; import os; p=ensure_cli_launcher(Path(os.environ["MAC_MCP_RUNTIME_DIR"]), Path(os.environ["MAC_MCP_CLI_PATH"]), strict=True); assert p'     || fail "Could not install the Mac MCP CLI launcher."
+  (cd "$RUNTIME_DIR" && MAC_MCP_CLI_PATH="$CLI_PATH" MAC_MCP_RUNTIME_DIR="$RUNTIME_DIR" PYTHONPATH="$RUNTIME_DIR"     "$RUNTIME_DIR/.venv/bin/python" -c 'from pathlib import Path; from mcp_server.cli_bootstrap import ensure_cli_launcher; import os; p=ensure_cli_launcher(Path(os.environ["MAC_MCP_RUNTIME_DIR"]), Path(os.environ["MAC_MCP_CLI_PATH"]), strict=True); assert p')     || fail "Could not install the Mac MCP CLI launcher."
   CREATED_CLI=1
   [[ -x "$CLI_PATH" && ! -L "$CLI_PATH" ]] || fail "CLI launcher was created but is not an executable regular file: $CLI_PATH"
   MAC_MCP_SKIP_MENU_APP_INSTALL=1 MAC_MCP_SKIP_MENU_APP=1 "$CLI_PATH" --version >/dev/null 2>&1 || fail "CLI verification failed."
