@@ -133,6 +133,14 @@ brew install cliclick brightness
 
 ## Install
 
+### Package (Apple Silicon, macOS 14+)
+
+Download `Mac-MCP-…-arm64.pkg` from the [latest GitHub Release](https://github.com/bulutarkan/mac-mcp/releases/latest) and open it. It installs the menu bar app and the server for your account (no administrator password) and starts them; no Terminal, Xcode tools, Git, Homebrew or Python are needed. It ships its own Python, so it is about 90 MB.
+
+The package is **not signed with an Apple Developer ID and not notarized yet**, so macOS blocks the first open: go to System Settings → Privacy & Security and choose **Open Anyway**. Compare the download with the `.sha256` file on the release page if you want to check it. The code inside is the signed stable checkpoint named in the file name.
+
+To update a package install, install the newer package the same way; your settings, API key and tokens are kept. The package does not replace an existing `install.sh`/source installation; keep updating that one with `mac-mcp update`. Intel Macs use the installer below.
+
 ### Installer
 
 The interactive installer now installs only a cryptographically verified stable release. It clones `main`, finds the newest signed stable-release commit, verifies the pinned bootstrap verifier, Ed25519 manifest signature, complete tracked-file SHA-256/mode/size inventory, aggregate payload digest, and release lineage **before** creating persistent source/runtime paths.
