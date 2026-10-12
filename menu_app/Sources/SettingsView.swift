@@ -267,7 +267,9 @@ struct SettingsView: View {
                         Divider()
                         onboardingOptionalRow(
                             title: "Remote access for ChatGPT",
-                            detail: "ChatGPT connects from the internet, so it needs a public HTTPS endpoint: Cloudflare Tunnel, ngrok or your own. It stays off until you set it up.",
+                            detail: (state.onboardingStatus?.publicEndpointMode ?? "none") == "none"
+                                ? "ChatGPT connects from the internet, so it needs a public HTTPS endpoint: Cloudflare Tunnel, ngrok or your own. It stays off until you set it up."
+                                : "Remote access is set up, so ChatGPT can reach this Mac over HTTPS.",
                             actionTitle: "Open Connections"
                         ) {
                             connectionsTab = .clients

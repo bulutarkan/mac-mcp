@@ -93,6 +93,7 @@ class OnboardingChecklistTests(unittest.TestCase):
         self.assertIn("case start", view)
         self.assertIn("private var startPane", view)
         self.assertIn("Hide Get Started", view)
+        self.assertIn("Remote access is set up, so ChatGPT can reach this Mac over HTTPS.", view)
         menu = MENU.read_text(encoding="utf-8")
         self.assertIn("openSettings(.start)", menu)
         self.assertIn("OnboardingChecklist.shouldShowReminder", menu)
