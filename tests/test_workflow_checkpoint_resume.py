@@ -200,6 +200,41 @@ class WorkflowCheckpointStoreTests(unittest.TestCase):
         self.assertEqual("unknown", state["safety"])
         self.assertEqual("side_effect_result_not_verified", state["unknown_reason"])
 
+    def test_failure_with_a_known_outcome_keeps_the_agent_working(self) -> None:
+        # Live run: a form agent's select found no "Pro" option (nothing chosen, every earlier
+        # step verified); the workflow went unknown and refused every later call, even closing
+        # the agent's own tab.
+        caps = ["ui_action", "external_side_effect"]
+        for agent_id, result in (
+            ("agt_knownfail1", {"ok": False, "error": "option_not_found", "mutation_dispatched": True,
+                                "outcome_unknown": False}),
+            ("agt_knownfail2", {"result": {"ok": False, "error": "fill_incomplete", "mutation_dispatched": True,
+                                           "outcome_unknown": False}}),
+        ):
+            with self.subTest(agent_id=agent_id):
+                self._create(agent_id)
+                receipt = _record_verified_effect(
+                    agent_id, tool="browser_act", family="browser", capabilities=caps, destructive=True,
+                    arguments={"actions": [{"type": "select"}]}, result=result,
+                )
+                self.assertTrue(receipt["verified"])
+                self.assertTrue(receipt["known_failure"])
+                self.assertEqual("verified", workflows.workflow_for_agent(agent_id)["safety"])
+                # The next side effect is allowed.
+                self.assertIsNotNone(workflows.begin_side_effect(
+                    agent_id, tool="browser_close_tab", family="browser", capabilities=caps, destructive=True,
+                    arguments={"tab_handle": "btab_x"},
+                ))
+
+    def test_failure_that_may_have_acted_still_becomes_unknown(self) -> None:
+        self._create("agt_maybeacted")
+        _record_verified_effect(
+            "agt_maybeacted", tool="browser_act", family="browser", capabilities=["ui_action", "external_side_effect"],
+            destructive=True, arguments={"actions": [{"type": "post"}]},
+            result={"ok": False, "error": "post_not_confirmed", "mutation_dispatched": True, "outcome_unknown": True},
+        )
+        self.assertEqual("unknown", workflows.workflow_for_agent("agt_maybeacted")["safety"])
+
     def test_crash_after_intent_before_result_is_outcome_unknown(self) -> None:
         input_hash, checkpoint = self._create("agt_pending01")
         secret = "PENDING_SECRET_SENTINEL"

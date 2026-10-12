@@ -100,6 +100,7 @@ class WithinResolutionTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertFalse(result["mutation_dispatched"])
         self.assertEqual("WITHIN_ANCHOR_AMBIGUOUS", result["actions"][0]["reason_code"])
+        self.assertIs(False, result["outcome_unknown"])
         self.assertEqual(1, find.call_count)
         self.assertEqual([], verified)
         self.assertEqual("davidjones145", find.call_args.kwargs["within"])

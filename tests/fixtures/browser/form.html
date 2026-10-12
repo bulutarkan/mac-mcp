@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Form fixture</title>
+<style>
+body{font:14px system-ui;margin:0;padding:0 16px}
+header{position:sticky;top:0;background:#eee;padding:6px}
+.row{margin:10px 0}
+[role=listbox]{border:1px solid #999;margin:0;padding:0;list-style:none;width:200px}
+[role=option]{padding:4px;cursor:pointer}
+#state-row{display:none}
+</style></head>
+<body>
+<header><input type="search" aria-label="Search the site" placeholder="Search the site"></header>
+<h1>Apply for the beta</h1>
+<form id="apply" onsubmit="event.preventDefault();window.__submits++;">
+  <div class="row"><label for="name">Full name</label> <input id="name" name="name"></div>
+  <div class="row"><label for="email">Email</label> <input id="email" type="email" name="email"></div>
+  <div class="row"><label for="country">Country</label>
+    <select id="country" name="country"><option value="">Choose</option><option>Turkey</option><option>United States</option><option>Germany</option></select></div>
+  <div class="row" id="state-row"><label for="state">State</label> <input id="state" name="state"></div>
+  <div class="row"><span id="plan-label">Plan</span>
+    <button type="button" id="plan" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="plan-list"
+            aria-labelledby="plan-label">Choose a plan</button>
+    <ul role="listbox" id="plan-list" hidden><li role="option">Free</li><li role="option">Pro</li><li role="option">Team</li></ul></div>
+  <div class="row"><label for="message">Message</label><br><textarea id="message" name="message"></textarea></div>
+  <div class="row"><label><input type="checkbox" id="news" checked> Newsletter</label></div>
+  <div class="row"><label><input type="checkbox" id="terms"> I accept the terms</label></div>
+  <button type="submit">Submit application</button>
+</form>
+<script>
+window.__submits=0;
+document.getElementById('country').addEventListener('change',function(e){
+  // The state field appears a moment after the country choice, like a real dependent field.
+  var row=document.getElementById('state-row');setTimeout(function(){row.style.display=e.target.value==='United States'?'block':'none';},200);
+});
+var plan=document.getElementById('plan'),list=document.getElementById('plan-list');
+plan.addEventListener('click',function(){var open=list.hidden;list.hidden=!open;plan.setAttribute('aria-expanded',String(open));});
+Array.from(list.children).forEach(function(o){o.addEventListener('click',function(){plan.textContent=o.textContent;list.hidden=true;plan.setAttribute('aria-expanded','false');});});
+</script>
+</body></html>

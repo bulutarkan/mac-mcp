@@ -14,7 +14,7 @@ from typing import Annotated, Any, Callable, Dict, List, Literal, Mapping, Optio
 
 from pydantic import AfterValidator, BeforeValidator, WithJsonSchema
 
-from .tools_browser_agent import _ACT_TYPE_ALIASES, _ACT_TYPES, _MAX_ACTIONS
+from .tools_browser_agent import _ACT_TYPE_ALIASES, _ACT_TYPES, _MAX_ACTIONS, _fill_values_problem
 
 _TEXT_TYPES = ("type", "type_text", "paste")
 _KEY_TYPES = ("key", "keyboard", "shortcut")
@@ -55,6 +55,10 @@ def validate_action(index: int, action: Any) -> Dict[str, Any]:
         raise ValueError(f"actions[{index}] has unsupported type {action.get('type')!r}; use one of: {', '.join(_ACT_TYPES)}")
     if typ == "post" and not str(action.get("text") or "").strip():
         raise ValueError(f"actions[{index}] (post) needs text: the comment or reply to post")
+    if typ == "fill":
+        problem = _fill_values_problem(action.get("values"))
+        if problem:
+            raise ValueError(f"actions[{index}] (fill) {problem}")
     if typ in _TEXT_TYPES and action.get("text") is None and not action.get("handoff_id"):
         raise ValueError(f"actions[{index}] ({typ}) needs text (or handoff_id from context_handoff)")
     if typ in _KEY_TYPES and not action.get("key"):
@@ -89,11 +93,11 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
         "type": {"type": "string", "enum": list(_ACT_TYPES)},
-        "element_id": _str("From observe/find; or use query/role/text_match."),
-        "query": _str("Target words, e.g. 'Continue'."),
+        "element_id": _str("From observe/find; or use query/role/text_match"),
+        "query": _str("Target words, e.g. 'Continue'"),
         "role": _str("ARIA role, e.g. button, link, textbox, combobox."),
         "text_match": _str("Visible text the target contains."),
-        "within": _str("Unique phrase of one item."),
+        "within": _str("Unique phrase of one item"),
         "within_element_id": {"type": "string"},
         "intent": _str("Only breaks ties."),
         "text": _str("type/type_text/paste/post: text; clear:false appends. wait for=text: the text."),

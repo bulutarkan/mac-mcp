@@ -682,7 +682,14 @@ def record_side_effect_outcome(
             _write_workflow(payload)
             return {"verified": False, "not_executed": True, "workflow_id": workflow_id}
 
-        if explicit_ok is False:
+        # A tool can fail with a known outcome: what it changed was verified step by step and the
+        # failing step changed nothing (a field or option that is not there). Only a failure whose
+        # effect the tool cannot vouch for makes the workflow unknown.
+        outcome = mapped
+        if mapped is not None and "ok" not in mapped and isinstance(mapped.get("result"), Mapping):
+            outcome = mapped["result"]
+        known_failure = explicit_ok is False and outcome is not None and outcome.get("outcome_unknown") is False
+        if explicit_ok is False and not known_failure:
             _append_uncertain_event(
                 payload, reason="side_effect_result_not_verified", tool=tool, event_type="tool_result",
             )
@@ -702,6 +709,7 @@ def record_side_effect_outcome(
             "event_id": str(event_id or (matched_intent or {}).get("event_id") or "")[:120] or None,
             "resume_generation": int(payload.get("resume_generation") or 0),
             "verified_at": now,
+            **({"known_failure": True} if known_failure else {}),
         }
         previous_chain = str(payload.get("receipt_chain_sha256") or hashlib.sha256(b"").hexdigest())
         payload["receipt_chain_sha256"] = hashlib.sha256((previous_chain + _sha256(receipt)).encode("ascii")).hexdigest()

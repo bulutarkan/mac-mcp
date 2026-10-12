@@ -1235,6 +1235,10 @@ def _capture_region(rect: Dict[str, Any], max_dimension: int = 1280) -> Tuple[Op
 
 
 def _format_observation(payload: Dict[str, Any], image_data: Optional[bytes]) -> Any:
+    template = _fill_template(payload.get("elements"))
+    if template:
+        # Tool output is what the model reads most closely: hand it the one-call form fill.
+        payload = {**payload, "fill_template": template}
     if image_data:
         visual = payload.get("visual") or {}
         compact_elements: List[Dict[str, Any]] = []
@@ -1269,6 +1273,7 @@ def _format_observation(payload: Dict[str, Any], image_data: Optional[bytes]) ->
             "not_modified": payload.get("not_modified"),
             "previous_observation_id": payload.get("previous_observation_id"),
             "telemetry": payload.get("telemetry"),
+            **({"fill_template": payload["fill_template"]} if payload.get("fill_template") else {}),
             "visual": {
                 "mode": visual.get("mode"),
                 "w": visual.get("output_width"),
@@ -1908,7 +1913,8 @@ def _browser_find_impl(
             "text": element.get("text"), "aria_label": element.get("aria_label"),
             "placeholder": element.get("placeholder"), "name": element.get("name"),
             "title": element.get("title"), "value": element.get("value"), "context": element.get("context"),
-            "href": element.get("href"), "input_type": element.get("input_type"), "viewport_rect": element.get("viewport_rect"),
+            "href": element.get("href"), "input_type": element.get("input_type"), "checked": element.get("checked"),
+            "viewport_rect": element.get("viewport_rect"),
             "screen_rect": element.get("screen_rect"), "actionable": element.get("actionable"),
             "ready": element.get("ready"), "readiness_reason": element.get("readiness_reason"),
             "modal_scope": element.get("modal_scope"), "association_text": element.get("association_text"),
@@ -2043,7 +2049,8 @@ def _select_action(
     element_id = str(action.get("element_id") or "")
     if not element_id:
         return {"ok": False, "type": "select", "error": "element_id is required", "_js_calls": 0}
-    option = action.get("option")
+    # Agents often pass the choice as value=; it means the same as option=.
+    option = action.get("option") if action.get("option") is not None else action.get("value")
     timeout_s = max(0.2, min(float(action.get("timeout_s", 2.0)), 5.0))
     poll_s = max(0.05, min(float(action.get("poll_ms", 100)) / 1000.0, 0.5))
     started = time.perf_counter()
@@ -3611,6 +3618,110 @@ def _scan_action(
     }
 
 
+# {type:'fill', values:{label: value}}: a whole form in one action. Each label is resolved
+# like a query; text boxes are typed, selects (native and custom) pick the option, and
+# checkboxes/radios are set from a true/false value. Fields are filled in the given order,
+# so one revealed by an earlier choice (country -> state) is awaited briefly.
+_FILL_MAX_FIELDS = 30
+_FILL_TEMPLATE_MAX_FIELDS = 15
+_FILL_SKIP_INPUT_TYPES = frozenset({"search", "password", "hidden", "submit", "button", "reset", "file", "image"})
+_FILL_TRUE = frozenset({"true", "yes", "on", "1", "checked", "evet", "x"})
+
+
+def _fill_values_problem(values: Any) -> Optional[str]:
+    if not isinstance(values, dict) or not values:
+        return "needs values: an object of field label -> value, e.g. {'Email': 'a@b.c', 'Country': 'Turkey'}."
+    if len(values) > _FILL_MAX_FIELDS:
+        return f"may fill at most {_FILL_MAX_FIELDS} fields; split the form."
+    for label, value in values.items():
+        if not str(label or "").strip():
+            return "has an empty field label."
+        if not isinstance(value, (str, int, float, bool)):
+            return f"value for {str(label)[:60]!r} must be text, a number or true/false."
+    return None
+
+
+def _fill_kind(target: Dict[str, Any]) -> str:
+    tag = str(target.get("tag") or "").lower()
+    role = str(target.get("role") or "").lower()
+    input_type = str(target.get("input_type") or "").lower()
+    if role in {"checkbox", "switch"} or input_type == "checkbox":
+        return "checkbox"
+    if role == "radio" or input_type == "radio":
+        return "radio"
+    if tag == "select" or (role in {"combobox", "listbox"} and tag not in {"input", "textarea"}):
+        return "select"
+    return "text"
+
+
+def _fill_is_control(element: Dict[str, Any]) -> bool:
+    tag = str(element.get("tag") or "").lower()
+    role = str(element.get("role") or "").lower()
+    return (
+        _fill_kind(element) != "text" or tag in {"input", "textarea"}
+        or role in {"textbox", "searchbox", "combobox", "spinbutton"}
+    ) and str(element.get("input_type") or "").lower() not in _FILL_SKIP_INPUT_TYPES - {"search"}
+
+
+def _pick_fill_control(matches: List[Dict[str, Any]], label: str) -> Optional[Dict[str, Any]]:
+    """The form control a label names. Only the control's own label counts (its <label>, aria
+    label, placeholder or name), never option text: "State" must not pick a Country select
+    that lists "United States". A matched <label> or caption stands for its control."""
+    best: Optional[Tuple[int, Dict[str, Any]]] = None
+    for match in matches:
+        if _fill_is_control(match):
+            target = match
+            names = [match.get(key) for key in ("association_text", "aria_label", "placeholder", "name", "title")]
+            if _fill_kind(match) in {"checkbox", "radio"}:
+                names.append(match.get("text"))
+        elif isinstance(match.get("associated_control"), dict) and match["associated_control"].get("element_id"):
+            control = match["associated_control"]
+            direct = next((item for item in matches if item.get("element_id") == control.get("element_id")), None)
+            target = direct or {**control, "confidence": match.get("confidence")}
+            names = [match.get("text"), match.get("aria_label")]
+        else:
+            continue
+        level = max([_match_level(name, label) for name in names if name] or [0])
+        if level >= 3 and (best is None or level > best[0]):
+            best = (level, target)
+    return best[1] if best else None
+
+
+def _fill_truthy(value: Any) -> bool:
+    return value is True or (not isinstance(value, bool) and str(value).strip().lower() in _FILL_TRUE)
+
+
+def _fill_template(elements: Any) -> Optional[Dict[str, Any]]:
+    """A ready {type:'fill'} action for the form fields an observation shows, so the next call
+    fills them all at once instead of one field per call."""
+    values: Dict[str, Any] = {}
+    for element in elements or []:
+        if not isinstance(element, dict) or not element.get("actionable") or element.get("enabled") is False:
+            continue
+        tag = str(element.get("tag") or "").lower()
+        role = str(element.get("role") or "").lower()
+        input_type = str(element.get("input_type") or "").lower()
+        if input_type in _FILL_SKIP_INPUT_TYPES:
+            continue
+        kind = _fill_kind(element)
+        if kind == "text" and not (role in {"textbox", "searchbox", "combobox"} or tag in {"input", "textarea"}):
+            continue
+        label = " ".join(str(
+            element.get("association_text") or element.get("aria_label") or element.get("placeholder")
+            or element.get("name") or ""
+        ).split())[:60]
+        if not label or label in values or set(_normalize_text(label).split()) & _POST_SEARCH_WORDS:
+            continue
+        if kind == "text" and str(element.get("value") or "").strip():
+            continue
+        values[label] = False if kind in {"checkbox", "radio"} else ""
+        if len(values) >= _FILL_TEMPLATE_MAX_FIELDS:
+            break
+    if len(values) < 2:
+        return None
+    return {"type": "fill", "values": values}
+
+
 # {type:'post'}: type into a comment/reply box, press that box's own submit button and
 # confirm the text shows up on the page, in one action. Agents used to spend 8-10 calls
 # on this (observe, scroll, find the box, type, observe, click, find, observe).
@@ -4010,7 +4121,7 @@ def _wait_action(
 _TARGET_CANDIDATE_LIMIT = 8
 _LATE_TARGET_WAIT_S = 2.5
 _LATE_TARGET_MAX_WAIT_S = 10.0
-_MUTATING_RESULT_TYPES = {"click", "double_click", "type", "type_text", "paste", "select", "key", "post"}
+_MUTATING_RESULT_TYPES = {"click", "double_click", "type", "type_text", "paste", "select", "key", "post", "fill"}
 
 
 def _late_target_wait_s(action: Dict[str, Any], results: List[Dict[str, Any]]) -> float:
@@ -4124,6 +4235,15 @@ def _decide_browser_target(
 
 
 _NON_MUTATING_ACT_TYPES = {"wait", "extract"}
+# Failures that change nothing on the page: the target, option or field is not there, or it
+# was refused before anything was sent. With every earlier step verified, the outcome of the
+# call is known (outcome_unknown=false), so a delegated agent is not locked out by it.
+_KNOWN_FAILURE_ERRORS = frozenset({
+    "target_not_found", "within_anchor_ambiguous", "within_anchor_not_found", "option_not_found",
+    "element_not_ready", "stale_observation", "field_not_found", "invalid_input_mode",
+    "trusted_input_not_supported_for_action", "post_field_not_found", "post_field_ambiguous",
+    "post_field_outside_item", "post_submit_not_found", "post_submit_ambiguous",
+})
 _LOCATOR_KEYS = ("query", "target", "role", "text_match", "target_text")
 
 
@@ -4131,7 +4251,7 @@ def _has_locator(action: Dict[str, Any]) -> bool:
     return any(action.get(key) for key in _LOCATOR_KEYS)
 _ACT_TYPES = (
     "click", "double_click", "type", "type_text", "paste", "select", "scroll", "focus",
-    "wait", "key", "keyboard", "shortcut", "extract", "scan", "dialog", "hover", "drag", "post",
+    "wait", "key", "keyboard", "shortcut", "extract", "scan", "dialog", "hover", "drag", "post", "fill",
 )
 # Agents often name the action kind "action" instead of "type"; accept it.
 _ACT_TYPE_ALIASES = ("action", "kind", "op")
@@ -4161,6 +4281,10 @@ def normalize_act_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             raise mark_not_executed(HTTPException(
                 status.HTTP_400_BAD_REQUEST, f"actions[{index}] (post) needs text: the comment or reply to post.",
             ))
+        if typ == "fill":
+            problem = _fill_values_problem(action.get("values"))
+            if problem:
+                raise mark_not_executed(HTTPException(status.HTTP_400_BAD_REQUEST, f"actions[{index}] (fill) {problem}"))
         item = dict(action)
         item["type"] = typ
         normalized.append(item)
@@ -4692,6 +4816,92 @@ def _browser_act_locked(
                     "before checking: browser_find text='<first words>' (it may be pending, collapsed or sorted elsewhere).",
         }
 
+    def fill_control(
+        label: str, scope_keys: Dict[str, Any], wait_s: float,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        nonlocal internal_js_calls
+        deadline = time.monotonic() + wait_s
+        while True:
+            found = browser_find(
+                settings, browser, query=label, window_index=window_index, tab_index=tab_index,
+                tab_handle=tab_handle, max_results=10, **scope_keys,
+            )
+            internal_js_calls += 1
+            anchor_failure = _within_anchor_failure(found, scope_keys.get("within") or scope_keys.get("within_element_id"))
+            if anchor_failure is not None:
+                return None, anchor_failure
+            matches = [item for item in (found.get("matches") or []) if isinstance(item, dict)]
+            chosen = _pick_fill_control(matches, label)
+            if chosen is not None:
+                return chosen, None
+            if time.monotonic() >= deadline:
+                near = [
+                    _post_label(item) for item in matches[:5]
+                    if _fill_is_control(item) or item.get("associated_control")
+                ]
+                return None, {"error": "field_not_found", **({"near_matches": [n for n in near if n]} if any(near) else {})}
+            time.sleep(0.25)
+
+    def run_fill(action: Dict[str, Any]) -> Dict[str, Any]:
+        """Fill every labelled field; independent fields keep going when one is missing."""
+        nonlocal internal_js_calls, mutation_dispatched, in_flight
+        scope_keys = {key: action[key] for key in ("within", "within_element_id", "within_levels") if action.get(key)}
+        fields: List[Dict[str, Any]] = []
+        changed = False
+        in_flight = ["fill"]
+        for label, value in dict(action.get("values") or {}).items():
+            row: Dict[str, Any] = {"field": str(label)[:80]}
+            # A field revealed by an earlier choice in this fill may render a moment later.
+            wait_s = float(action["wait_s"]) if action.get("wait_s") is not None else (_LATE_TARGET_WAIT_S if changed else 0.0)
+            target, failure = fill_control(str(label), scope_keys, max(0.0, min(wait_s, _LATE_TARGET_MAX_WAIT_S)))
+            if target is None:
+                fields.append({**row, "ok": False, **(failure or {"error": "target_not_found"})})
+                continue
+            kind = _fill_kind(target)
+            element_id = str(target.get("element_id") or "")
+            row.update(kind=kind, element_id=element_id)
+            if kind in {"checkbox", "radio"}:
+                wanted = _fill_truthy(value)
+                state = post_page_js(_element_effect_state_js(element_id))
+                checked = state.get("checked") if state.get("checked") is not None else target.get("checked")
+                if bool(checked) == wanted or (kind == "radio" and not wanted):
+                    fields.append({**row, "ok": True, "unchanged": True})
+                    continue
+                note_possible_navigation()
+                step = {"type": "click", "element_id": element_id}
+            elif kind == "select":
+                note_possible_navigation()
+                step = {"type": "select", "element_id": element_id, "option": str(value)}
+            else:
+                step = {"type": "type", "element_id": element_id, "text": str(value)}
+            mutation_dispatched = True
+            if kind == "select":
+                done = _select_action(settings, browser, step, None, window_index, tab_index, tab_handle,
+                                      mutation_revalidator=revalidate_mutation)
+            else:
+                done = _verified_dom_action(settings, browser, step, None, window_index, tab_index, tab_handle,
+                                            mutation_revalidator=revalidate_mutation)
+            internal_js_calls += int(done.pop("_js_calls", 0))
+            ok = bool(done.get("ok")) or (kind in {"checkbox", "radio"} and done.get("error") == "action_no_effect")
+            changed = changed or ok
+            fields.append({**row, "ok": ok, **({key: done.get(key) for key in ("error", "reason_code") if done.get(key)}
+                                                 if not ok else {})})
+        in_flight = []
+        failed = [row["field"] for row in fields if not row.get("ok")]
+        out: Dict[str, Any] = {
+            "type": "fill", "ok": not failed, "filled": sum(1 for row in fields if row.get("ok") and not row.get("unchanged")),
+            "fields": fields,
+        }
+        if failed:
+            known = all(str(row.get("error") or "") in _KNOWN_FAILURE_ERRORS for row in fields if not row.get("ok"))
+            if known:
+                out["outcome_unknown"] = False
+            out.update(error="fill_incomplete", reason_code="FILL_INCOMPLETE", failed_fields=failed,
+                       automatic_retry=False, observe_again=False,
+                       hint="The other fields were filled. Fix only these: check the label words (near_matches), "
+                            "or open the part of the form that shows them, then fill just those.")
+        return out
+
     tab_lost: Optional[Dict[str, Any]] = None
     typ = ""
     try:
@@ -4718,6 +4928,15 @@ def _browser_act_locked(
                 if not point_result.get("ok"):
                     break
                 mutation_dispatched = True
+                continue
+            if typ == "fill":
+                if not flush_pending():
+                    break
+                fill_result = run_fill(action)
+                results.append(fill_result)
+                current_observation_id = None
+                if not fill_result.get("ok"):
+                    break
                 continue
             if typ == "post":
                 if not flush_pending():
@@ -5003,6 +5222,11 @@ def _browser_act_locked(
             (item for item in results if isinstance(item, dict) and item.get("ok") is False),
             None,
         )
+        if (
+            failed is not None and failed.get("outcome_unknown") is None
+            and str(failed.get("error") or "") in _KNOWN_FAILURE_ERRORS
+        ):
+            failed["outcome_unknown"] = False
         if failed is not None:
             for key in (
                 "error", "reason_code", "retryable", "automatic_retry", "observe_again",

@@ -294,6 +294,9 @@ def _browser_payload_strings(tool: str, arguments: Mapping[str, Any]) -> list[st
             if not isinstance(action, Mapping):
                 continue
             typ = str(action.get("type") or "").lower().replace("-", "_")
+            if typ == "fill" and isinstance(action.get("values"), Mapping):
+                values.extend(str(value) for value in action["values"].values() if value is not None)
+                continue
             if typ not in {"type", "type_text", "paste", "post"}:
                 continue
             for key in ("text", "value", "content"):
@@ -475,6 +478,9 @@ def sanitize_tool_arguments(tool: str, arguments: Mapping[str, Any]) -> dict[str
                 for key in ("text", "value", "content"):
                     if key in copy:
                         copy[key] = "[BROWSER INPUT REDACTED]"
+            if typ == "fill" and isinstance(copy.get("values"), Mapping):
+                # Field labels stay readable; what goes into them does not.
+                copy["values"] = {str(label): "[BROWSER INPUT REDACTED]" for label in copy["values"]}
             actions.append(copy)
         if "actions" in data:
             data["actions"] = actions

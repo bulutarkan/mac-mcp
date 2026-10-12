@@ -318,6 +318,33 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertEqual(("post_not_confirmed", True, None), (post["error"], post["submitted"], post["posted"]))
         self.assertEqual([0, 1], tools.page.js("[window.__posts,window.__clicks]"))
 
+    def test_observe_hands_back_a_fill_template_and_fill_does_the_form_in_one_call(self) -> None:
+        tools = self.tools("form.html")
+        observed = tools.observe(max_elements=60)
+        template = observed.get("fill_template") or {}
+        self.assertEqual("fill", template.get("type"), observed.get("fill_template"))
+        self.assertTrue({"Full name", "Email", "Country", "Message", "I accept the terms"} <= set(template["values"]),
+                        template)
+        self.assertNotIn("Search the site", template["values"])
+        filled = tools.act([{"type": "fill", "values": {
+            "Full name": "Integration Tester", "Email": "tester@example.invalid", "Country": "United States",
+            "State": "California", "Plan": "Pro", "Message": "Filled in one call.",
+            "Newsletter": True, "I accept the terms": True,
+        }}])
+        self.assertTrue(filled["ok"], filled)
+        self.assertEqual(7, filled["actions"][0]["filled"])  # Newsletter was already checked
+        self.assertEqual(
+            ["Integration Tester", "tester@example.invalid", "United States", "California", "Pro", "Filled in one call.",
+             True, True, 0, ""],
+            tools.page.js("['name','email','country','state'].map(i=>document.getElementById(i).value)"
+                          ".concat([document.getElementById('plan').textContent,document.getElementById('message').value,"
+                          "document.getElementById('news').checked,document.getElementById('terms').checked,window.__submits,"
+                          "document.querySelector('header input').value])"))
+        # Agents often pass the choice as value=; select takes it like option=.
+        chosen = tools.act([{"type": "select", "query": "Plan", "value": "Free"}])
+        self.assertTrue(chosen["ok"], chosen)
+        self.assertEqual("Free", tools.page.js("document.getElementById('plan').textContent"))
+
     def test_scan_reads_a_long_thread_in_one_action(self) -> None:
         tools = self.tools("thread.html")
         scanned = tools.act([{"type": "scan", "max_items": 100}])

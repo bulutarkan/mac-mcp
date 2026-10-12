@@ -3384,16 +3384,17 @@
                             "dialog",
                             "hover",
                             "drag",
-                            "post"
+                            "post",
+                            "fill"
                           ],
                           "type": "string"
                         },
                         "element_id": {
-                          "description": "From observe/find; or use query/role/text_match.",
+                          "description": "From observe/find; or use query/role/text_match",
                           "type": "string"
                         },
                         "query": {
-                          "description": "Target words, e.g. 'Continue'.",
+                          "description": "Target words, e.g. 'Continue'",
                           "type": "string"
                         },
                         "role": {
@@ -3405,7 +3406,7 @@
                           "type": "string"
                         },
                         "within": {
-                          "description": "Unique phrase of one item.",
+                          "description": "Unique phrase of one item",
                           "type": "string"
                         },
                         "within_element_id": {
@@ -3695,7 +3696,8 @@
                                 "dialog",
                                 "hover",
                                 "drag",
-                                "post"
+                                "post",
+                                "fill"
                               ],
                               "type": "string"
                             }

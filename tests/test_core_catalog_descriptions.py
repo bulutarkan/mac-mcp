@@ -55,7 +55,7 @@ class CoreCatalogDescriptionTests(unittest.TestCase):
                 self.assertIn(name, observability._CORE_TOOL_NAMES)
 
         act = compact["browser_act"]
-        for phrase in ("BATCH-FIRST:", "observe once", "one browser_act", "type/select/click/scroll", "verify from its changes",
+        for phrase in ("BATCH-FIRST:", "observe once", "one browser_act", "{type:'fill',values:{label:value}}", "verify from its changes",
                        "{type:'post',text}", "query/role/text_match", "+intent", "Split only for dependencies"):
             self.assertIn(phrase, act)
         # The custom-dropdown hint moved to the full description and the select option field.

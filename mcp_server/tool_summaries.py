@@ -98,8 +98,8 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "Not needed before acting: browser_act takes the same query/role/within and resolves the target itself."
     ),
     "browser_act": (
-        "BATCH-FIRST: observe once->one browser_act (type/select/click/scroll)->verify from its changes. "
-        "Comment/reply: {type:'post',text}. Target query/role/text_match +intent/within, no find first. Split only for dependencies."
+        "BATCH-FIRST: observe once->one browser_act->verify from its changes. Form:{type:'fill',values:{label:value}}; "
+        "comment: {type:'post',text}. query/role/text_match +intent/within, no find first. Split only for dependencies."
     ),
     "browser_do": (
         "One-shot workflow: open URL -> wait -> optional actions -> extract -> optional close_after, e.g. "
