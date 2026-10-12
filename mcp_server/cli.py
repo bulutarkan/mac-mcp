@@ -478,6 +478,9 @@ def _start_server_locked(args: argparse.Namespace) -> int:
     # Rotate the file this start is about to append to (the module path, so tests
     # that point LOG_FILE elsewhere never touch the real log).
     rotate_copy_truncate(LOG_FILE)
+    helper = _server_helper_for_start(args)
+    if helper is not None:
+        return _start_server_via_helper(args, port, helper, cmd, env)
     # The child keeps its own copy of the log descriptor; close ours right away.
     with LOG_FILE.open("a", encoding="utf-8") as log:
         proc = subprocess.Popen(
@@ -655,6 +658,93 @@ def _ensure_supervisor() -> None:
         return
     if proc.returncode != 0:
         print(f"Warning: crash supervisor could not be loaded: {(proc.stderr or proc.stdout or '').strip()}")
+
+
+def _server_helper_for_start(args: argparse.Namespace) -> Path | None:
+    """Mac MCP Server, when this start should run under it (default install only).
+
+    Isolated installs and --reload keep the direct spawn; MAC_MCP_SERVER_HELPER=0 turns
+    the helper off. A missing or unsigned helper also means a direct spawn.
+    """
+    from . import server_helper
+
+    if getattr(args, "reload", False) or STATE_DIR.resolve() != DEFAULT_STATE_DIR.resolve():
+        return None
+    if os.getenv("MAC_MCP_SERVER_HELPER", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return None
+    return server_helper.helper_executable(PROJECT_ROOT)
+
+
+def _server_job_plist_path() -> Path:
+    return STATE_DIR / "server.plist"
+
+
+def _unload_server_job() -> None:
+    from . import server_helper
+
+    _launchctl_run("bootout", _launchctl_target(server_helper.SERVER_LABEL), capture=True)
+    _server_job_plist_path().unlink(missing_ok=True)
+
+
+def _start_server_via_helper(
+    args: argparse.Namespace, port: int, helper: Path, cmd: list[str], env: dict[str, str],
+) -> int:
+    """Start the server as a launchd job under Mac MCP Server and record its Python child."""
+    from . import server_helper
+
+    payload = server_helper.server_job_payload(
+        helper=helper, command=cmd, env=server_helper.job_environment(env), cwd=PROJECT_ROOT, log=LOG_FILE,
+    )
+    path = _server_job_plist_path()
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    try:
+        with tmp.open("wb") as handle:
+            plistlib.dump(payload, handle, fmt=plistlib.FMT_XML, sort_keys=True)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+    _launchctl_run("bootout", _launchctl_target(server_helper.SERVER_LABEL), capture=True)
+    proc = _launchctl_run("bootstrap", f"gui/{os.getuid()}", str(path), capture=True)
+    if proc.returncode != 0:
+        path.unlink(missing_ok=True)
+        print(f"mac-mcp could not start under Mac MCP Server: {(proc.stderr or proc.stdout or '').strip()}")
+        return 1
+
+    deadline = time.time() + _startup_health_timeout_s()
+    child = None
+    while time.time() < deadline:
+        helper_pid = _launchctl_pid(server_helper.SERVER_LABEL)
+        if helper_pid:
+            child = server_helper.server_child_pid(helper_pid, port)
+            if child:
+                break
+        time.sleep(0.25)
+    snapshot = process_snapshot(child) if child else None
+    if snapshot is None or not matches_role(snapshot, "server", port=port, project_root=PROJECT_ROOT):
+        _unload_server_job()
+        print(f"mac-mcp did not come up under Mac MCP Server. See log: {LOG_FILE}")
+        return 1
+    try:
+        write_process_record(
+            PID_FILE, "server", child, metadata={"port": port, "ownership_source": "helper"}, snapshot=snapshot,
+        )
+    except (OSError, RuntimeError):
+        _unload_server_job()
+        print("mac-mcp could not persist verified process identity; started process was stopped.")
+        return 1
+    if not _restart_health_ok(args, timeout_s=_startup_health_timeout_s(), expected_pid=child):
+        _unload_server_job()
+        PID_FILE.unlink(missing_ok=True)
+        print(f"mac-mcp process started but did not become ready. See log: {LOG_FILE}")
+        return 1
+    print(f"mac-mcp started on {_local_url(args.host, port)} (pid {child}; health verified).")
+    print("macOS permissions belong to Mac MCP (the server runs under Mac MCP Server).")
+    print("dashboard: run 'mac-mcp dashboard' for an authenticated local launch")
+    print(f"mac-mcp log: {LOG_FILE}")
+    _launch_menu_app()
+    return 0
 
 
 def autostart(args: argparse.Namespace) -> int:
@@ -1415,6 +1505,9 @@ def stop(args: argparse.Namespace) -> int:
         args.force,
     )
     cloudflare_ok = _stop_cloudflare(args.timeout, args.force)
+    if server_ok and STATE_DIR.resolve() == DEFAULT_STATE_DIR.resolve() and _server_job_plist_path().exists():
+        # The server ran under Mac MCP Server: its launchd job ends with it; unload it too.
+        _unload_server_job()
     return 0 if server_ok and ngrok_ok and cloudflare_ok else 1
 
 

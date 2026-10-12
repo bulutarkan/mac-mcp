@@ -34,3 +34,6 @@ CLAUDE.md
 
 # Package installer build output
 dist/
+
+# Mac MCP Server launcher built into the runtime
+.helper/
