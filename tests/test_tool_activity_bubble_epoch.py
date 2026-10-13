@@ -91,7 +91,12 @@ struct BubbleEpochHarness {
         }
         precondition(sameSize(lingering.frame.size, expandedSize))
 
-        await wait(1.15)
+        // The fade-out ends 2.24 s after the last finish; a slow CI runner may finish it later.
+        var hideWaited = 0.0
+        while visiblePanel() != nil && hideWaited < 3.0 {
+            await wait(0.05)
+            hideWaited += 0.05
+        }
         precondition(visiblePanel() == nil)
 
         controller.begin(

@@ -10,7 +10,7 @@
 - **It browses where you can see it.** Visible, non-focus-stealing browser automation in Safari and Chrome: it works in a tab while you keep using your Mac, and frames the tab so you can see what it touches.
 - **It hands off work and reports back.** Delegate a task to a Codex, Claude Code or OpenCode agent and read a report of what it did; Scheduled Tasks (experimental) run AI tasks and scripts on a schedule.
 
-[Watch the 40-second demo](site/assets/media/mac-mcp-demo.mp4) · Website: https://bulutarkan.github.io/mac-mcp/ (live with 2.2.0) · [Install](#install) · MIT
+[Watch the 40-second demo](site/assets/media/mac-mcp-demo.mp4) · Website: [bulutarkan.github.io/mac-mcp](https://bulutarkan.github.io/mac-mcp/) · [Install](#install) · MIT
 
 **Quick install:** download the `.pkg` from the [latest release](https://github.com/bulutarkan/mac-mcp/releases/latest) (Apple Silicon, macOS 14 or later), or run the installer on any Mac with macOS 13 or later:
 
@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/bulutarkan/mac-mcp/main/install.sh 
 
 ## What's new in 2.2.0
 
-Coming with the next release:
+2.2.0 lets your AI work on a schedule and shows what it is doing while it works.
 
 - **Scheduled Tasks (experimental):** AI tasks and scripts that run once, daily, weekly, monthly or every few hours, with a run report (result and steps) for each run. Tasks an AI app suggests wait for your approval in Settings.
 - **Live activity island:** an optional island beside the notch shows the app in use while your AI works, what needs you, recent work and the next scheduled task. Off by default (Settings › Activity & Notifications).

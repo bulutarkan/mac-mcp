@@ -1,19 +1,30 @@
-## Unreleased
+## [2.2.0] - 2026-10-13
 
-**In short (planned as 2.2.0):** schedule AI tasks and scripts and read a report of each run; see what your AI is doing in an optional island beside the notch; and the guard against leaking secrets now also catches encoded ones. Mac MCP also has a product page and a 40-second demo.
+**In short:** schedule AI tasks and scripts and read a report of each run; see what your AI is doing in an optional island beside the notch; and the guard against leaking secrets now also catches encoded ones. Mac MCP also has a product page and a 40-second demo.
+
+### Scheduled Tasks (experimental, #175)
+- **Settings › Scheduled Tasks**: AI tasks (a prompt for a delegated agent) and script tasks (a file or command) that run once, daily, weekly, monthly, every few hours or on a cron expression, in local time. Cards with the last result, an Up next strip, a detail page with recent runs and full reports, Run now, Pause and Edit, and a New Task sheet that states in a sentence when the task runs; developer options sit under Advanced.
+- Each run has a report: the result as formatted text, and the agent's steps (its thinking, tool calls and commands) for Codex, Claude Code and OpenCode, with token usage and cost where the provider reports them. A failed run says why, in the provider's own words.
+- Runs missed while the Mac slept or Mac MCP was stopped are recorded as Skipped with the reason instead of running late. The scheduler sleeps until the next run and does not wake at all without active tasks.
+- AI apps can suggest tasks and changes with the `scheduled_tasks` tool; nothing they suggest runs until the owner approves it in Settings. `macmcp://settings/<pane>` opens Settings on a pane.
+
+### Live activity island (#174)
+- An optional island beside the notch (Settings › Activity & Notifications › Live activity: Off, Bubble or Notch island; off by default). At rest it shows the Mac MCP mark; while a tool runs, the app it uses turns in one slot and a tick follows. Only events that need you slide a row down.
+- Hover opens a panel with Needs you, Now, Recent and Scheduled, also when nothing is running. Long titles fade and scroll while hovered. The island stays on screen when Mac MCP is in the background and names the AI app that made each call.
+
+### Security fix (#7)
+- The secret-egress guard now also checks the decoded forms of an outgoing payload: base64/base64url (padded, unpadded, line-split), hex and percent-encoding, two layers deep, including tokens inside JSON. Before, a secret read on this Mac could be sent without approval by encoding it first. Values of `NAME_TOKEN=` / `SERVICE_API_KEY=` style lines are now remembered when such a file is read. Encryption or splitting a secret across requests is not detected.
 
 ### Product page and README (#57, #101)
-- A product page for GitHub Pages (`site/`): the promise, how it works, workflows, what Mac MCP is and is not, and install choices with the exact package version, download link and SHA-256 taken from the published release at deploy time (`scripts/build_site.py`, `.github/workflows/pages.yml`). It goes live with 2.2.0.
+- A product page at https://bulutarkan.github.io/mac-mcp/ (`site/`): the promise, how it works, workflows, what Mac MCP is and is not, and install choices with the exact package version, download link and SHA-256 taken from the published release at deploy time (`scripts/build_site.py`, `.github/workflows/pages.yml`).
 - A 40-second demo video made with Remotion (`video/`, development only; the installer never uses Node).
 - The README now opens with what Mac MCP does and who it is for; the ChatGPT section moved to Workflows.
 
-### Scheduled Tasks (experimental, not yet in a checkpoint)
-- **Settings › Scheduled Tasks**: AI tasks (a prompt for a delegated agent) and script tasks (a file or command) that run once, daily, weekly, monthly, every few hours or on a cron expression, in local time. Cards with the last result, an Up next strip, a detail page with recent runs and full reports, Run now, Pause and Edit, and a New Task sheet that states in a sentence when the task runs; developer options sit under Advanced.
-- Runs missed while the Mac slept or Mac MCP was stopped are recorded as Skipped with the reason instead of running late. The scheduler sleeps until the next run and does not wake at all without active tasks.
-- AI apps can suggest tasks and changes with the `scheduled_tasks` tool; nothing they suggest runs until the owner approves it in Settings.
+### Also
+- Codex agents start again when the owner's Codex config has the keyless `mac-mcp` entry: the agent's scoped server has its own name (`mac-mcp-agent`), and the owner's home folder is not trusted as a Codex project. This also works on Python 3.10.
+- Settings panes share one header and margin; the Default Agent pickers are right-aligned.
 
-### Security fix (not yet in a checkpoint)
-- The secret-egress guard now also checks the decoded forms of an outgoing payload: base64/base64url (padded, unpadded, line-split), hex and percent-encoding, two layers deep, including tokens inside JSON. Before, a secret read on this Mac could be sent without approval by encoding it first (#7). Values of `NAME_TOKEN=` / `SERVICE_API_KEY=` style lines are now remembered when such a file is read. Encryption or splitting a secret across requests is not detected.
+## 2.1.9 checkpoints (r2–r10)
 
 ### Privacy, browser outcomes and startup (2.1.9 r10)
 - **Settings › Privacy**: pause observation (no screen, page, clipboard or voice reads, no new agents) and private mode (nothing about the work is kept), enforced by the server for every caller and available from the menu (More → Pause Observation / Private Mode). Never-observe lists for apps and sites, optional category rules (password managers, banking and finance, health), every local store with size, retention and owner-only state (move one or all to the Trash), where data can go, FileVault status and an option to keep Mac MCP data out of Time Machine. Tool results that read a page or app carry `privacy_source`. `mac-mcp privacy delete` and `mac-mcp status` cover the same.
