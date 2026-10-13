@@ -290,3 +290,114 @@ class AtRestTests(PrivacySettings):
         log.chmod(0o644)
         secure_content_stores(state_dir=self.dir)
         self.assertEqual(0o600, log.stat().st_mode & 0o777)
+
+
+class CategoryAndSourceTests(PrivacySettings):
+    TOKEN = "privacy-route-token"
+    def test_categories_block_only_when_the_owner_chooses(self) -> None:
+        privacy_policy.check_site("https://www.mybank.com/")
+        self.rules(blocked_categories=["finance", "bogus"])
+        self.assertEqual(["finance"], privacy_policy.policy()["blocked_categories"])
+        with self.assertRaisesRegex(privacy_policy.PrivacyBlocked, "privacy_sensitive_site"):
+            privacy_policy.check_site("https://www.mybank.com/")
+        privacy_policy.check_app("1Password 7")  # password managers not chosen
+        self.rules(blocked_categories=["password_manager"])
+        with self.assertRaisesRegex(privacy_policy.PrivacyBlocked, "privacy_sensitive_app"):
+            privacy_policy.check_app("1Password 7")
+
+    def test_results_say_what_was_read_and_why_it_was_allowed(self) -> None:
+        from mcp_server.main import _log
+
+        def read_page():
+            privacy_policy.check_site("https://www.mybank.com/statements")
+            return {"ok": True}
+
+        result = _log(unittest.mock.Mock(), "browser_observe", read_page)
+        self.assertEqual("www.mybank.com", result["privacy_source"]["site"])
+        self.assertEqual("finance", result["privacy_source"]["category"])
+        self.assertIn("labeled only", result["privacy_source"]["rule"])
+        self.assertNotIn("privacy_source", _log(unittest.mock.Mock(), "read_file", lambda: {"ok": True}))
+
+    def test_json_text_results_carry_the_source_too(self) -> None:
+        from mcp_server.main import _log
+
+        def observe_text():
+            privacy_policy.check_app("Finder")
+            return '{"ok":true,"nodes":[]}'
+
+        text = _log(unittest.mock.Mock(), "mac_observe", observe_text)
+        self.assertEqual("Finder", json.loads(text)["privacy_source"]["app"])
+        listed = _log(unittest.mock.Mock(), "mac_observe", lambda: [observe_text(), object()])
+        self.assertEqual("Finder", json.loads(listed[0])["privacy_source"]["app"])
+        self.assertEqual("plain", _log(unittest.mock.Mock(), "mac_observe", lambda: (privacy_policy.check_app("X"), "plain")[1]))
+
+    def test_dashboard_validates_categories(self) -> None:
+        client = DashboardTests.client(self)
+        auth = {"authorization": f"Bearer {DashboardTests.TOKEN}"}
+        self.assertEqual(400, client.post("/dashboard/api/privacy/settings", headers=auth,
+                                          json={"blocked_categories": ["everything"]}).status_code)
+        body = client.post("/dashboard/api/privacy/settings", headers=auth,
+                           json={"blocked_categories": ["health", "health"]}).json()
+        self.assertEqual(["health"], body["blocked_categories"])
+
+
+class DeleteAndNoticeTests(PrivacySettings):
+    TOKEN = "privacy-route-token"
+    def test_delete_previews_then_moves_only_chosen_stores_to_the_trash(self) -> None:
+        import argparse
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from mcp_server import cli
+
+        state = self.dir / "state"
+        runs = state / "runs"
+        runs.mkdir(parents=True)
+        (runs / "run.json").write_text("{}")
+        memory = self.dir / "memory"
+        memory.mkdir()
+        trash = self.dir / "Trash"
+        trash.mkdir()
+        env = {"MAC_MCP_STATE_DIR": str(state), "MAC_MCP_MEMORY_DIR": str(memory)}
+        with patch.dict(os.environ, env), patch.object(cli, "_trash_root", return_value=trash), \
+                patch.object(cli, "STATE_DIR", state):
+            out = StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(0, cli.privacy_delete(argparse.Namespace(all=False, store=["run_evidence"],
+                                                                          yes=False, json=False)))
+            self.assertIn("Nothing was changed", out.getvalue())
+            self.assertTrue(runs.exists())
+            out = StringIO()
+            with redirect_stdout(out):
+                code = cli.privacy_delete(argparse.Namespace(all=False, store=["run_evidence"], yes=True, json=True))
+        self.assertEqual(0, code)
+        result = json.loads(out.getvalue().strip().splitlines()[-1])
+        self.assertFalse(runs.exists())
+        self.assertTrue(memory.exists())  # not chosen
+        self.assertEqual(["run_evidence"], [row["store"] for row in result["moved"]])
+        self.assertTrue(Path(result["moved"][0]["to"]).joinpath("run.json").exists())
+        self.assertIsNone(result["restarted"])  # not the default install: nothing stopped or started
+
+    def test_settings_and_audit_cannot_be_deleted_this_way(self) -> None:
+        import argparse
+        from contextlib import redirect_stderr
+        from io import StringIO
+
+        from mcp_server import cli
+
+        with redirect_stderr(StringIO()):
+            self.assertEqual(2, cli.privacy_delete(argparse.Namespace(all=False, store=["audit_log"], yes=True, json=True)))
+
+    def test_started_agents_name_where_their_data_goes(self) -> None:
+        from mcp_server import privacy_inventory as inv
+
+        self.assertIn("OpenAI (Codex)", inv.with_provider_notice({"provider": "codex"})["data_notice"])
+        team = inv.with_provider_notice({"agents": [{"provider": "claude"}, {"provider": "codex"}]})
+        self.assertIn("Anthropic", team["data_notice"])
+        self.assertNotIn("data_notice", inv.with_provider_notice({"provider": "unknown"}))
+
+    def test_menu_summary_carries_pause_and_private_mode(self) -> None:
+        self.rules(observation_paused=True)
+        client = DashboardTests.client(self)
+        body = client.get("/dashboard/api/summary", headers={"authorization": f"Bearer {DashboardTests.TOKEN}"}).json()
+        self.assertEqual({"paused": True, "private_mode": False}, body["privacy"])

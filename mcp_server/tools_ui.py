@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import functools
+
 import copy
 from contextlib import nullcontext
 import hashlib
@@ -2310,7 +2312,7 @@ def _collect_observation(
     return payload, image_data if include_screenshot else None
 
 
-def observe_ui(
+def _observe_ui(
     settings: Settings,
     app: Optional[str] = None,
     window_index: int = 1,
@@ -2537,15 +2539,29 @@ def observe_ui(
             state_mode="full",
         )
         refresh_perception_size(payload)
-        # The frontmost app can change between the check and the capture: check what was read.
-        blocked = _privacy_block_names(payload.get("app"), payload.get("active_app"), payload.get("bundle_id"))
-        if blocked is not None:
-            return blocked
         return _format_result(payload, image_data)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
     except Exception as exc:
         return {"ok": False, "error": f"Could not observe macOS UI: {exc}"}
+
+
+@functools.wraps(_observe_ui)
+def observe_ui(*args: Any, **kwargs: Any) -> Any:
+    """Read a macOS app/window Accessibility tree, then check what was read against the owner's
+    privacy rules: the frontmost app can change between the check before capture and the capture."""
+    result = _observe_ui(*args, **kwargs)
+    text = result[0] if isinstance(result, list) and result else result
+    if isinstance(text, str) and text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            return result
+        if isinstance(payload, dict) and payload.get("ok") is not False:
+            blocked = _privacy_block_names(payload.get("app"), payload.get("active_app"), payload.get("bundle_id"))
+            if blocked is not None:
+                return blocked
+    return result
 
 
 def _privacy_block_names(*names: Any) -> Optional[Dict[str, Any]]:

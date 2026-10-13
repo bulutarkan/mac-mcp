@@ -80,6 +80,14 @@ struct MenuBarView: View {
                 explanation: "\(count) session\(count == 1 ? "" : "s") need\(count == 1 ? "s" : "") attention.", tone: .warning
             )
         }
+        if state.privacyFlags?.paused == true {
+            return StatusDisplay(label: "Paused", symbol: "pause.circle.fill",
+                                 explanation: "Observation is paused (Settings › Privacy).", tone: .warning)
+        }
+        if state.privacyFlags?.privateMode == true, state.connectionState == .connected {
+            return StatusDisplay(label: "Private", symbol: "eye.slash.fill",
+                                 explanation: "Private mode: Mac MCP keeps nothing about this work.", tone: .neutral)
+        }
         return connectionDisplay
     }
 
@@ -244,6 +252,12 @@ struct MenuBarView: View {
             }
             Button("Refresh Status") { Task { await state.retryConnection() } }
             Divider()
+            if let flags = state.privacyFlags {
+                Button(flags.paused ? "Resume Observation" : "Pause Observation") { state.setPrivacy(paused: !flags.paused) }
+                Button(flags.privateMode ? "Turn Off Private Mode" : "Private Mode") { state.setPrivacy(privateMode: !flags.privateMode) }
+                Button("Privacy Settings…") { openSettings(.privacy) }
+                Divider()
+            }
             Button("Open Dashboard") { state.openDashboard() }
             Button("Review Connections…") { openSettings(.connections) }
             Button("Review Safety…") { openSettings(.permissions) }

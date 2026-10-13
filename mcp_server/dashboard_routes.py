@@ -316,6 +316,8 @@ def create_dashboard_routes(
             "active_agents": sum(1 for agent in agents if agent.get("status") in {"starting", "running"}),
             "global_admission": cached_agent_data.get("global_admission"),
         })
+        rules = privacy_policy.policy()
+        payload["privacy"] = {"paused": rules["paused"], "private_mode": rules["private_mode"]}
         return JSONResponse(payload)
 
     async def runtime_diagnostics(request: Request) -> Response:
@@ -728,6 +730,12 @@ def create_dashboard_routes(
                 if not isinstance(body[field], bool):
                     return JSONResponse({"ok": False, "error": f"{field}_must_be_boolean"}, status_code=400)
                 updates[key] = body[field]
+        if "blocked_categories" in body:
+            items = body["blocked_categories"]
+            if not isinstance(items, list) or not all(item in privacy_policy.CATEGORIES for item in items):
+                return JSONResponse({"ok": False, "error": "invalid_blocked_categories",
+                                     "allowed": list(privacy_policy.CATEGORIES)}, status_code=400)
+            updates["blocked_categories"] = sorted(set(items))
         for field in ("excluded_sites", "excluded_apps"):
             if field in body:
                 items = body[field]

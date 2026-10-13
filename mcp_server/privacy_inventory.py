@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -138,7 +139,8 @@ def stores(*, measure: bool = True) -> List[Dict[str, Any]]:
     ]
     out = []
     for key, name, holds, targets, kept in rows:
-        row = {"key": key, "name": name, "holds": holds, "kept": kept, "paths": [str(path) for path in targets]}
+        row = {"key": key, "name": name, "holds": holds, "kept": kept, "paths": [str(path) for path in targets],
+               "deletable": key in DELETABLE}
         if measure:
             row.update(_measure(targets))
             existing = [path for path in targets if path.exists()]
@@ -170,3 +172,50 @@ def recipients() -> List[Dict[str, Any]]:
         {"key": "decisions", "name": "OpenAI (decision acceleration)", "active": decisions.get("enabled") is True,
          "sends": "Short descriptions of ambiguous on-screen targets to pick the right one."},
     ]
+
+
+# Stores the owner can move to the Trash from Settings > Privacy (or mac-mcp privacy delete).
+# Settings, the saved-login index, the audit log and logs are not: they run Mac MCP itself.
+DELETABLE = ("tool_activity", "memory", "lessons", "run_evidence", "agents", "jobs", "file_history", "provider_usage")
+
+
+def delete_plan(keys: Iterable[str]) -> List[Dict[str, Any]]:
+    wanted = set(keys)
+    return [store for store in stores() if store["key"] in wanted and store["key"] in DELETABLE]
+
+
+def trash_stores(keys: Iterable[str], *, trash_root: Path, stamp: str) -> Dict[str, Any]:
+    """Move the chosen stores into one dated folder in the Trash; nothing is erased."""
+    folder = trash_root / f"Mac MCP data {stamp}"
+    moved: List[Dict[str, str]] = []
+    failed: List[Dict[str, str]] = []
+    for store in delete_plan(keys):
+        for raw in store["paths"]:
+            path = Path(raw)
+            if not path.exists():
+                continue
+            target = folder / store["key"] / path.name
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(path), str(target))
+                moved.append({"store": store["key"], "path": raw, "to": str(target)})
+            except OSError as exc:
+                failed.append({"store": store["key"], "path": raw, "error": type(exc).__name__})
+    return {"folder": str(folder), "moved": moved, "failed": failed}
+
+
+_PROVIDER_VENDORS = {"codex": "OpenAI (Codex)", "claude": "Anthropic (Claude Code)",
+                     "opencode": "the model provider OpenCode is set up with"}
+
+
+def with_provider_notice(result: Any) -> Any:
+    """Name where a started agent's data goes, at the moment it starts (#19)."""
+    if not isinstance(result, dict):
+        return result
+    providers = {str(result.get("provider") or "")} | {
+        str(agent.get("provider") or "") for agent in result.get("agents") or [] if isinstance(agent, dict)}
+    vendors = [_PROVIDER_VENDORS[key] for key in sorted(providers) if key in _PROVIDER_VENDORS]
+    if vendors:
+        result["data_notice"] = (f"This task's prompt, and the files and tool results the agent reads, go to "
+                                 f"{' and '.join(vendors)} (Settings > Privacy lists every recipient).")
+    return result

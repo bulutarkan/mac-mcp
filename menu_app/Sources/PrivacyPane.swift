@@ -10,6 +10,9 @@ struct PrivacyPane: View {
     @MacMCPState private var paused = false
     @MacMCPState private var fileVault: Bool?
     @MacMCPState private var excludeFromBackups = false
+    @MacMCPState private var blockedCategories: [String] = []
+    @MacMCPState private var pendingDelete: [String: Any]?
+    @MacMCPState private var deleting = false
     @MacMCPState private var privateMode = false
     @MacMCPState private var excludedApps: [String] = []
     @MacMCPState private var excludedSites: [String] = []
@@ -66,6 +69,19 @@ struct PrivacyPane: View {
                     suggestions: runningApps(),
                     key: "excluded_apps"
                 )
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Also never observe").font(.subheadline.weight(.semibold))
+                        Text("Mac MCP recognizes these by name and address. Recognition can miss some, so add the ones that matter above too.")
+                            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        categoryToggle("password_manager", "Password managers")
+                        categoryToggle("finance", "Banking and finance sites")
+                        categoryToggle("health", "Health portals")
+                    }
+                    .padding(6)
+                }
+                .disabled(!loaded)
+
                 exclusionBox(
                     title: "Never observe these sites",
                     detail: "Their pages are never read, captured or acted in, including subdomains. Tab lists show them without title or address.",
@@ -88,6 +104,14 @@ struct PrivacyPane: View {
                     .padding(.vertical, 4)
                 }
 
+                HStack {
+                    Spacer()
+                    Button("Move all Mac MCP data to the Trash…") {
+                        pendingDelete = ["key": "all", "name": "all Mac MCP data"]
+                    }
+                    .disabled(!loaded || deleting)
+                }
+
                 GroupBox("Where your data can go") {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(recipients.enumerated()), id: \.offset) { index, recipient in
@@ -102,6 +126,45 @@ struct PrivacyPane: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task { await load() }
+        .alert(
+            "Move \(pendingDelete?["name"] as? String ?? "this") to the Trash?",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })
+        ) {
+            Button("Move to Trash", role: .destructive) {
+                if let key = pendingDelete?["key"] as? String { delete(key) }
+                pendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text("Mac MCP stops for a moment, moves the files into one dated folder in the Trash, and starts again. Running agents and jobs stop. Nothing is erased until you empty the Trash.")
+        }
+    }
+
+    private func categoryToggle(_ key: String, _ title: String) -> some View {
+        Toggle(title, isOn: Binding(
+            get: { blockedCategories.contains(key) },
+            set: { on in save(["blocked_categories": on ? blockedCategories + [key] : blockedCategories.filter { $0 != key }]) }
+        ))
+        .font(.callout)
+    }
+
+    private func delete(_ key: String) {
+        deleting = true
+        message = "Moving to the Trash…"
+        Task {
+            let args = key == "all" ? ["privacy", "delete", "--all", "--yes", "--json"]
+                : ["privacy", "delete", "--store", key, "--yes", "--json"]
+            let result = await state.runCLICommand(args)
+            let line = result.output.split(separator: "\n").last(where: { $0.hasPrefix("{") }).map(String.init) ?? ""
+            let object = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any]
+            let moved = (object?["moved"] as? [Any])?.count ?? 0
+            let failed = (object?["failed"] as? [Any])?.count ?? 0
+            message = object == nil ? "Couldn’t move the data. See Help & Diagnostics."
+                : failed == 0 ? "Moved \(moved) item\(moved == 1 ? "" : "s") to the Trash (\((object?["folder"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Trash"))."
+                : "Moved \(moved), could not move \(failed). See Help & Diagnostics."
+            deleting = false
+            await load()
+        }
     }
 
     private func exclusionBox(title: String, detail: String, items: [String], text: Binding<String>,
@@ -187,6 +250,15 @@ struct PrivacyPane: View {
                     Text("Not in backups").font(.caption2).foregroundStyle(.secondary)
                 }
             }
+            if (store["deletable"] as? Bool) == true, (store["exists"] as? Bool) == true {
+                Button {
+                    pendingDelete = store
+                } label: { Image(systemName: "trash") }
+                    .buttonStyle(.borderless)
+                    .help("Move to the Trash")
+                    .disabled(deleting)
+                    .accessibilityLabel("Move \(store["name"] as? String ?? "store") to the Trash")
+            }
             if let path = (store["paths"] as? [String])?.first, (store["exists"] as? Bool) == true {
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
@@ -238,6 +310,7 @@ struct PrivacyPane: View {
         if let rows = object["stores"] as? [[String: Any]] { stores = rows }
         if object.keys.contains("filevault") { fileVault = object["filevault"] as? Bool }
         if let value = object["exclude_from_backups"] as? Bool { excludeFromBackups = value }
+        if let value = object["blocked_categories"] as? [String] { blockedCategories = value }
         if let rows = object["recipients"] as? [[String: Any]] { recipients = rows }
     }
 

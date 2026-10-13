@@ -303,11 +303,23 @@ struct DashboardSummary: Decodable {
     let totalCalls: Int?
     let successRate: Double?
     let activeAgents: Int?
+    let privacy: PrivacyFlags?
     enum CodingKeys: String, CodingKey {
         case version
         case totalCalls = "total_calls"
         case successRate = "success_rate"
         case activeAgents = "active_agents"
+        case privacy
+    }
+}
+
+/// Settings › Privacy switches the menu shows and flips (the server enforces them).
+struct PrivacyFlags: Decodable, Equatable {
+    let paused: Bool
+    let privateMode: Bool
+    enum CodingKeys: String, CodingKey {
+        case paused
+        case privateMode = "private_mode"
     }
 }
 

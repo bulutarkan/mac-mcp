@@ -6,16 +6,18 @@
   memories or lessons, no run evidence.
 - excluded_sites / excluded_apps: never read, captured or acted in, whatever a caller
   asks. A site matches itself and its subdomains; an app matches its name or bundle id.
+- blocked_categories: the owner may also turn whole recognized categories (password
+  managers, finance, health) into exclusions. Off by default: recognition can miss.
 
 Every rule is enforced where the capture happens on the server, so no tool argument
-can bypass it. Sensitive categories (password managers, banking, health) are only
-recognized to label results; they never block on their own, because recognition can
-miss or misjudge a site, so the owner's exclusions are the reliable rule.
+can bypass it. Each tool result that read a site or an app carries privacy_source: what
+was read, its recognized category and the rule that allowed it, so the owner can see why.
 """
 from __future__ import annotations
 
 import time
 import unicodedata
+from contextvars import ContextVar
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import urlsplit
 
@@ -54,6 +56,32 @@ _SENSITIVE_SITES = {
 }
 
 
+CATEGORIES = ("password_manager", "finance", "health")
+
+# What the current tool call read, filled by the checks below and attached by main._log.
+# A dict is shared, not copied, into worker threads, so reads made there are seen too.
+_SOURCE: ContextVar[Optional[Dict[str, Any]]] = ContextVar("mac_mcp_privacy_source", default=None)
+
+
+def begin_source() -> Any:
+    return _SOURCE.set({})
+
+
+def end_source(token: Any) -> Optional[Dict[str, Any]]:
+    found = _SOURCE.get()
+    _SOURCE.reset(token)
+    return found or None
+
+
+def _note(kind: str, value: str, category: Optional[str]) -> None:
+    found = _SOURCE.get()
+    if found is None or not value:
+        return
+    found[kind] = value
+    found["category"] = category
+    found["rule"] = "allowed: not excluded" + (f"; {category} is labeled only" if category else "")
+
+
 class PrivacyBlocked(HTTPException):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(status.HTTP_403_FORBIDDEN, f"{code}: {message}")
@@ -77,6 +105,7 @@ def policy(*, fresh: bool = False) -> Dict[str, Any]:
         "excluded_sites": [site for site in (_site_key(item) for item in _strings(privacy_setting("excluded_sites", [])))
                            if site],
         "excluded_apps": [key for key in (_app_key(item) for item in _strings(privacy_setting("excluded_apps", []))) if key],
+        "blocked_categories": [item for item in _strings(privacy_setting("blocked_categories", [])) if item in CATEGORIES],
     }
     _cache.update({"at": now, "value": value})
     return value
@@ -153,6 +182,14 @@ def check_site(url: str) -> None:
             f"the owner excluded {site} from Mac MCP (Settings > Privacy): its pages are never read, captured or "
             "acted in. Ask the owner to do this step themselves.",
         )
+    category = site_category(url)
+    if category and category in policy()["blocked_categories"]:
+        raise PrivacyBlocked(
+            "privacy_sensitive_site",
+            f"{_host(url)} looks like a {category.replace('_', ' ')} site, and the owner chose never to observe "
+            "those (Settings > Privacy). Ask the owner to do this step themselves.",
+        )
+    _note("site", _host(url), category)
 
 
 def check_app(*names: Optional[str]) -> None:
@@ -165,6 +202,15 @@ def check_app(*names: Optional[str]) -> None:
             f"the owner excluded {app} from Mac MCP (Settings > Privacy): it is never observed, captured or "
             "operated. Ask the owner to do this step themselves.",
         )
+    category = app_category(*names)
+    shown = next((str(name) for name in names if name), "")
+    if category and category in policy()["blocked_categories"]:
+        raise PrivacyBlocked(
+            "privacy_sensitive_app",
+            f"{shown} looks like a {category.replace('_', ' ')} app, and the owner chose never to observe those "
+            "(Settings > Privacy). Ask the owner to do this step themselves.",
+        )
+    _note("app", shown, category)
 
 
 def check_screen(visible_owners: Iterable[str]) -> None:

@@ -853,6 +853,50 @@ def uninstall(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def privacy_delete(args: argparse.Namespace) -> int:
+    """Preview, or move chosen Mac MCP data stores to the Trash (Settings > Privacy)."""
+    from . import privacy_inventory
+
+    keys = list(privacy_inventory.DELETABLE) if args.all else list(args.store or [])
+    unknown = [key for key in keys if key not in privacy_inventory.DELETABLE]
+    if not keys or unknown:
+        print(f"Choose --all or --store from: {', '.join(privacy_inventory.DELETABLE)}", file=sys.stderr)
+        return 2
+    plan = privacy_inventory.delete_plan(keys)
+    if not args.yes:
+        for store in plan:
+            size = f"{store['bytes'] / 1_048_576:.1f} MB" if store.get("exists") else "empty"
+            print(f"  {store['name']}: {size} ({', '.join(store['paths'])})")
+        print("\nNothing was changed. Mac MCP stops while the files move to the Trash, then starts again.")
+        print(f"To do this, run: mac-mcp privacy delete {'--all' if args.all else ' '.join('--store ' + k for k in keys)} --yes")
+        return 0
+    default_install = STATE_DIR.resolve() == DEFAULT_STATE_DIR.resolve()
+    was_running = default_install and _resolve_server_identity(_default_port(), adopt_listener=False)[0] is not None
+    if was_running:
+        # Open databases and running agents must not keep writing into what moves.
+        stop(argparse.Namespace(timeout=STOP_TIMEOUT_S, force=True, keep_intent=True))
+    result = privacy_inventory.trash_stores(keys, trash_root=_trash_root(), stamp=time.strftime("%Y%m%d-%H%M%S"))
+    started = _start_again_as_before() if was_running else None
+    result.update({"ok": not result["failed"], "restarted": started})
+    if args.json:
+        print(json.dumps(result))
+    else:
+        for row in result["moved"]:
+            print(f"Moved {row['path']} -> {row['to']}")
+        for row in result["failed"]:
+            print(f"Could not move {row['path']} ({row['error']})")
+    return 0 if result["ok"] else 1
+
+
+def _start_again_as_before() -> bool:
+    """Start the server with the flags it last ran with, the way the supervisor does."""
+    start_args = [str(item) for item in supervisor.read_intent(STATE_DIR).get("start_args") or []]
+    proc = subprocess.run([sys.executable, "-m", "mcp_server.cli", "start", *start_args],
+                          cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                          timeout=180, check=False)
+    return proc.returncode == 0
+
+
 def repair(args: argparse.Namespace) -> int:
     from . import lifecycle
     from .cli_bootstrap import ensure_cli_launcher
@@ -2837,6 +2881,15 @@ def main(argv: list[str] | None = None) -> int:
     p_clients = sub.add_parser("clients", help="List the AI apps on this Mac and whether Mac MCP is added.")
     p_clients.add_argument("--json", action="store_true", help="Print as JSON.")
     p_clients.set_defaults(func=clients)
+
+    p_privacy = sub.add_parser("privacy", help="Mac MCP's stored data (Settings > Privacy).")
+    privacy_sub = p_privacy.add_subparsers(dest="privacy_command", required=True)
+    p_privacy_delete = privacy_sub.add_parser("delete", help="Preview, or move stores to the Trash with --yes.")
+    p_privacy_delete.add_argument("--store", action="append", help="A store key; repeat for more.")
+    p_privacy_delete.add_argument("--all", action="store_true", help="Every store that can be deleted.")
+    p_privacy_delete.add_argument("--yes", action="store_true", help="Move them to the Trash.")
+    p_privacy_delete.add_argument("--json", action="store_true", help="Print the outcome as JSON.")
+    p_privacy_delete.set_defaults(func=privacy_delete)
 
     p_stdio = sub.add_parser(
         "stdio",

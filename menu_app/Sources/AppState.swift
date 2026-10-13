@@ -70,6 +70,8 @@ struct SettingsDataState: Equatable {
 @MainActor
 final class AppState: ObservableObject {
     @Published var serverRunning = false
+    /// Pause and private mode from Settings › Privacy, as last reported by the server.
+    @Published private(set) var privacyFlags: PrivacyFlags?
     @Published var ngrokRunning = false
     @Published var cloudflareRunning = false
     @Published private(set) var cloudflareCredentialConfigured = false
@@ -236,6 +238,26 @@ final class AppState: ObservableObject {
         // Finished once: Get Started never comes back, even if something changes later.
         if serverRunning, onboardingChecklist.isComplete, !settings.onboardingDismissed {
             setOnboardingDismissed(true)
+        }
+    }
+
+    // MARK: Privacy
+
+    /// Flip pause or private mode from the menu; the server enforces it for every tool call.
+    func setPrivacy(paused: Bool? = nil, privateMode: Bool? = nil) {
+        var body: [String: Any] = [:]
+        if let paused { body["paused"] = paused }
+        if let privateMode { body["private_mode"] = privateMode }
+        Task {
+            do {
+                _ = try await dashboardJSON("dashboard/api/privacy/settings", body: body)
+                showNotice(ActionNotice(kind: .info, message: paused == true ? "Observation paused"
+                    : paused == false ? "Observation resumed"
+                    : privateMode == true ? "Private mode on: nothing is kept" : "Private mode off"))
+            } catch {
+                showNotice(ActionNotice(kind: .error, message: "Couldn’t change privacy. Is Mac MCP running?"))
+            }
+            await refresh()
         }
     }
 
@@ -868,6 +890,7 @@ final class AppState: ObservableObject {
             if let value = summary.version { setIfChanged(\.version, value) }
             if let value = summary.totalCalls { setIfChanged(\.totalCalls, value) }
             if let value = summary.successRate { setIfChanged(\.successRate, value) }
+            setIfChanged(\.privacyFlags, summary.privacy)
 
             var secondaryIssue: String?
             var resolvedActiveAgents = summary.activeAgents ?? activeAgents

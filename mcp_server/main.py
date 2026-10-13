@@ -306,13 +306,39 @@ def _fit_browser_do_output(payload: Dict[str, Any], budget_bytes: int = _BROWSER
     return out
 
 
+def _with_privacy_source(result: Any, source: Dict[str, Any]) -> Any:
+    """Add privacy_source to a dict result or to compact JSON text (alone or before an image)."""
+    if isinstance(result, dict):
+        result.setdefault("privacy_source", source)
+        return result
+    if isinstance(result, str) and result.startswith("{"):
+        try:
+            payload = json.loads(result)
+        except ValueError:
+            return result
+        if isinstance(payload, dict) and "privacy_source" not in payload:
+            payload["privacy_source"] = source
+            return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return result
+    if isinstance(result, list) and result and isinstance(result[0], str):
+        return [_with_privacy_source(result[0], source), *result[1:]]
+    return result
+
+
 def _log(audit_logger, tool: str, fn):
     start = time.perf_counter()
     outcome = "ok"
     try:
         # The owner's pause and private mode (Settings > Privacy) apply to every caller.
         privacy_policy.check_tool(tool)
-        result = fn()
+        source_token = privacy_policy.begin_source()
+        try:
+            result = fn()
+        finally:
+            source = privacy_policy.end_source(source_token)
+        if source:
+            # What this call read and the rule that let it, so the owner can see why.
+            result = _with_privacy_source(result, source)
         return result
     except HTTPException as exc:
         outcome = f"error:{exc.status_code}:{exc.detail}"
@@ -714,13 +740,13 @@ def create_app():
                      git_isolation: str = "auto") -> Dict[str, Any]:
         context = current_policy_context()
         return _log(audit_logger, "spawn_agent",
-                    lambda: spawn_agent(settings, provider=provider, prompt=prompt, model=model,
+                    lambda: privacy_inventory.with_provider_notice(spawn_agent(settings, provider=provider, prompt=prompt, model=model,
                                         reasoning=reasoning, cwd=cwd, timeout_s=timeout_s,
                                         title=title, result_style=result_style, access_mode=access_mode,
                                         idle_timeout_s=idle_timeout_s, retries=retries, scope=scope,
                                         parent_scope=context.scope, parent_profile=context.profile,
                                         capability_profile=capability_profile, role=role,
-                                        provenance_class=current_provenance_class(), git_isolation=git_isolation))
+                                        provenance_class=current_provenance_class(), git_isolation=git_isolation)))
 
     @mcp.tool(
         name="spawn_agents",
@@ -764,7 +790,7 @@ def create_app():
                       git_isolation: str = "auto", conflict_policy: str = "advisory") -> Dict[str, Any]:
         context = current_policy_context()
         return _log(audit_logger, "spawn_agents",
-                    lambda: spawn_agents(settings, tasks=tasks, provider=provider, model=model,
+                    lambda: privacy_inventory.with_provider_notice(spawn_agents(settings, tasks=tasks, provider=provider, model=model,
                                          reasoning=reasoning, cwd=cwd, timeout_s=timeout_s,
                                          idle_timeout_s=idle_timeout_s, retries=retries,
                                          result_style=result_style, access_mode=access_mode, title=title,
@@ -777,7 +803,7 @@ def create_app():
                                          admission_token_budget=admission_token_budget,
                                          max_total_tool_calls=max_total_tool_calls,
                                          max_total_tokens=max_total_tokens, git_isolation=git_isolation,
-                                         conflict_policy=conflict_policy))
+                                         conflict_policy=conflict_policy)))
 
     @mcp.tool(
         name="wait_agents",
