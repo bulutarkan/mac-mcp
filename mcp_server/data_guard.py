@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import math
@@ -7,6 +9,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
+from urllib.parse import unquote, unquote_plus
 
 # Intentionally conservative direct-secret patterns. Generic high-entropy values are
 # only used as source fingerprints; they do not independently block ordinary user text.
@@ -123,8 +126,20 @@ def _entropy_candidates(text: str) -> list[str]:
     return found
 
 
+def _env_secret_values(text: str) -> list[str]:
+    """Values of NAME_TOKEN= / SERVICE_API_KEY= style lines (.env files). Only for remembering what
+    was read: on its own this pattern would also match ordinary outgoing code samples."""
+    values = []
+    for match in _ENV_SECRET_RE.finditer(text or ""):
+        value = match.group(2).strip().strip("\"'")
+        if len(value) >= 8:
+            values.append(value)
+    return values
+
+
 def secret_fingerprints(text: str, *, include_entropy: bool = True, include_whole: bool = False) -> frozenset[str]:
     fingerprints = {_digest(candidate) for candidate in _direct_secret_candidates(text)}
+    fingerprints.update(_digest(value) for value in _env_secret_values(text))
     if include_entropy:
         fingerprints.update(_digest(candidate) for candidate in _entropy_candidates(text))
     normalized = str(text or "").strip()
@@ -321,6 +336,87 @@ def _payload_candidate_fingerprints(text: str) -> frozenset[str]:
     return frozenset(_digest(candidate) for candidate in candidates if candidate)
 
 
+# Encodings an agent can apply locally before sending (#7). Decoded forms are tested like the raw
+# payload; the plaintext path is unchanged. Bounded so a large body cannot make this expensive.
+_B64_TOKEN_RE = re.compile(r"[A-Za-z0-9+/_-]{16,}={0,2}")
+_HEX_TOKEN_RE = re.compile(r"(?:[0-9a-fA-F]{2}){8,}")
+_MAX_DECODE_INPUT = 2_000_000
+_MAX_DECODED_VARIANTS = 64
+_MAX_DECODE_DEPTH = 2
+
+
+def _printable_text(raw: bytes) -> Optional[str]:
+    if len(raw) < 6:
+        return None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    printable = sum(1 for char in text if char.isprintable() or char in "\n\r\t")
+    return text if printable >= 0.9 * len(text) else None
+
+
+def _decode_token(token: str) -> list[str]:
+    found: list[str] = []
+    compact = re.sub(r"\s+", "", token)
+    if _HEX_TOKEN_RE.fullmatch(compact):
+        try:
+            text = _printable_text(binascii.unhexlify(compact))
+        except (binascii.Error, ValueError):
+            text = None
+        if text:
+            found.append(text)
+    if len(compact) >= 16 and re.fullmatch(r"[A-Za-z0-9+/_-]+={0,2}", compact):
+        padded = compact + "=" * (-len(compact) % 4)
+        for decoder in (base64.b64decode, base64.urlsafe_b64decode):
+            try:
+                text = _printable_text(decoder(padded))
+            except (binascii.Error, ValueError):
+                continue
+            if text and text not in found:
+                found.append(text)
+    return found
+
+
+def _decodings(text: str) -> list[str]:
+    """One layer of decoding: percent-encoding, and base64/hex tokens (or the whole text)."""
+    found: list[str] = []
+    if "%" in text:
+        found.extend((unquote(text), unquote_plus(text)))
+    tokens: list[str] = []
+    stripped = text.strip()
+    if stripped and re.fullmatch(r"[A-Za-z0-9+/_=\s-]+", stripped):
+        tokens.append(stripped)  # a whole multi-line base64 body
+    tokens.extend(match.group(0) for match in _B64_TOKEN_RE.finditer(text))
+    tokens.extend(match.group(0) for match in _HEX_TOKEN_RE.finditer(text))
+    for token in tokens:
+        found.extend(_decode_token(token))
+    return found
+
+
+def decoded_variants(payload: str) -> list[str]:
+    """Readable texts hidden in a payload as base64/base64url, hex or percent-encoding,
+    up to two layers deep (e.g. base64 of hex), bounded in count."""
+    seen: set[str] = set()
+    out: list[str] = []
+    frontier = [str(payload or "")[:_MAX_DECODE_INPUT]]
+    for _depth in range(_MAX_DECODE_DEPTH):
+        next_layer: list[str] = []
+        for text in frontier:
+            for candidate in _decodings(text):
+                if not candidate or candidate == text or candidate in seen:
+                    continue
+                seen.add(candidate)
+                out.append(candidate)
+                next_layer.append(candidate)
+                if len(out) >= _MAX_DECODED_VARIANTS:
+                    return out
+        frontier = next_layer
+        if not frontier:
+            break
+    return out
+
+
 def scan_sensitive_egress(
     tool: str,
     arguments: Mapping[str, Any],
@@ -349,12 +445,14 @@ def scan_sensitive_egress(
     for payload in _browser_payload_strings(name, arguments):
         if not payload:
             continue
-        if contains_direct_secret(payload):
-            return EgressScan(True, "direct_secret_pattern", "browser_payload")
-        payload_fingerprints = set(secret_fingerprints(payload, include_entropy=True, include_whole=True))
-        payload_fingerprints.update(_payload_candidate_fingerprints(payload))
-        if known.intersection(payload_fingerprints):
-            return EgressScan(True, "tainted_secret_match", "browser_payload")
+        for index, text in enumerate([payload, *decoded_variants(payload)]):
+            encoded = "encoded_" if index else ""
+            if contains_direct_secret(text):
+                return EgressScan(True, f"{encoded}direct_secret_pattern", "browser_payload")
+            payload_fingerprints = set(secret_fingerprints(text, include_entropy=True, include_whole=True))
+            payload_fingerprints.update(_payload_candidate_fingerprints(text))
+            if known.intersection(payload_fingerprints):
+                return EgressScan(True, f"{encoded}tainted_secret_match", "browser_payload")
     return EgressScan(False)
 
 
