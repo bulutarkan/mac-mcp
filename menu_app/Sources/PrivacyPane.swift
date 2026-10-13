@@ -8,6 +8,8 @@ struct PrivacyPane: View {
     @ObservedObject var state: AppState
 
     @MacMCPState private var paused = false
+    @MacMCPState private var fileVault: Bool?
+    @MacMCPState private var excludeFromBackups = false
     @MacMCPState private var privateMode = false
     @MacMCPState private var excludedApps: [String] = []
     @MacMCPState private var excludedSites: [String] = []
@@ -76,6 +78,8 @@ struct PrivacyPane: View {
 
                 GroupBox("What Mac MCP keeps on this Mac") {
                     VStack(alignment: .leading, spacing: 0) {
+                        atRestRow
+                        Divider()
                         ForEach(Array(stores.enumerated()), id: \.offset) { index, store in
                             if index > 0 { Divider() }
                             storeRow(store)
@@ -139,6 +143,30 @@ struct PrivacyPane: View {
         .disabled(!loaded)
     }
 
+    /// FileVault encrypts these stores on disk; Time Machine copies may not be encrypted.
+    private var atRestRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label {
+                Text(fileVault == true ? "FileVault is on: everything below is encrypted on disk."
+                     : fileVault == false ? "FileVault is off: these files are not encrypted on disk. Turn it on in System Settings › Privacy & Security."
+                     : "Couldn’t check FileVault.")
+                    .font(.caption).fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: fileVault == true ? "lock.shield.fill" : "exclamationmark.shield")
+                    .foregroundStyle(fileVault == true ? Color.green : Color.orange)
+            }
+            Toggle(isOn: Binding(get: { excludeFromBackups }, set: { save(["exclude_from_backups": $0]) })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Keep Mac MCP data out of Time Machine").font(.callout.weight(.medium))
+                    Text("Activity, memories, lessons, agent output, jobs and file history are left out of backups, which may not be encrypted. A restored Mac then starts without them.")
+                        .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.vertical, 6)
+        .disabled(!loaded)
+    }
+
     private func storeRow(_ store: [String: Any]) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: (store["owner_only"] as? Bool) == true ? "lock.fill" : "lock.open")
@@ -155,6 +183,9 @@ struct PrivacyPane: View {
                      ? ByteCountFormatter.string(fromByteCount: Int64(store["bytes"] as? Int ?? 0), countStyle: .file)
                      : "Empty").font(.caption.monospacedDigit())
                 Text("Kept: \(store["kept"] as? String ?? "")").font(.caption2).foregroundStyle(.secondary)
+                if (store["in_backups"] as? Bool) == false {
+                    Text("Not in backups").font(.caption2).foregroundStyle(.secondary)
+                }
             }
             if let path = (store["paths"] as? [String])?.first, (store["exists"] as? Bool) == true {
                 Button {
@@ -205,6 +236,8 @@ struct PrivacyPane: View {
         excludedApps = object["excluded_apps"] as? [String] ?? []
         excludedSites = object["excluded_sites"] as? [String] ?? []
         if let rows = object["stores"] as? [[String: Any]] { stores = rows }
+        if object.keys.contains("filevault") { fileVault = object["filevault"] as? Bool }
+        if let value = object["exclude_from_backups"] as? Bool { excludeFromBackups = value }
         if let rows = object["recipients"] as? [[String: Any]] { recipients = rows }
     }
 
@@ -226,6 +259,7 @@ struct PrivacyPane: View {
                 if let object = try await state.dashboardJSON("dashboard/api/privacy/settings", body: changes) as? [String: Any] {
                     apply(object)
                     message = "Saved · applies right away"
+                    if changes.keys.contains("exclude_from_backups") { await load() }
                 }
             } catch {
                 message = "Couldn’t save. Is Mac MCP running?"

@@ -5,6 +5,7 @@ from pathlib import Path
 import hashlib
 import json
 import os
+import threading
 import time
 import uuid
 from typing import Any, Dict, List, Literal, Optional
@@ -21,7 +22,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from .request_client import client_address
 from .workflow_checkpoints import clear_not_executed
 from .log_retention import start_log_rotation
-from . import privacy_policy, recipes, run_evidence
+from . import privacy_inventory, privacy_policy, recipes, run_evidence
 from .host_guard import HostGuard, extra_hosts_from_env
 from .public_endpoint import resolve_public_endpoint
 from .security import BASE_DIR, AuthFailureLimiter, _effective_bind_host, _loopback_host, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
@@ -2580,3 +2581,7 @@ if os.getenv("MAC_MCP_MANAGED_SERVER") == "1":
     start_agent_history_expiry()
     # Owner-only store directories (agents, teams, jobs, telemetry, memory, lessons).
     secure_content_stores([AGENTS_DIR, AGENTS_DIR.parent / "agent_teams", AGENTS_DIR.parent / "jobs"])
+    if privacy_policy.privacy_setting("exclude_from_backups", False) is True:
+        # Stores created since the owner chose this are kept out of Time Machine too.
+        threading.Thread(target=privacy_inventory.set_backup_exclusion, args=(True,),
+                         name="mac-mcp-backup-exclusion", daemon=True).start()

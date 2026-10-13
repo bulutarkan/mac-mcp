@@ -5,7 +5,11 @@ agents did on this Mac. Each store's directory is kept at 0700 so other accounts
 on the Mac cannot list or read it, whatever the umask or the modes of the files
 inside. The server's umask is deliberately left alone: delegated agents inherit
 it and the files they create in your projects must keep their usual modes.
-At-rest encryption is not part of this (FileVault covers the disk).
+At-rest encryption is FileVault's job: Mac MCP reports whether it is on (Settings > Privacy)
+and can keep its stores out of Time Machine backups, which may not be encrypted. It does not
+add its own encryption layer: a key that this account's processes can read (the login
+Keychain through /usr/bin/security) would not stop same-account malware, and losing it would
+lose the data (#24).
 """
 from __future__ import annotations
 
@@ -48,4 +52,10 @@ def secure_content_stores(extra_dirs: Iterable[Path] = (), *, state_dir: Optiona
     state = state_dir or paths.state_dir()
     targets: List[Path] = [state] + [state / name for name in STATE_CONTENT_DIRS] + [Path(p) for p in extra_dirs]
     changed = [str(path) for path in targets if make_private(path)]
+    # Logs written by a shell redirect or an older version can be 0644; keep them owner-only too.
+    try:
+        logs = [path for path in state.glob("*.log*") if path.is_file()]
+    except OSError:
+        logs = []
+    changed += [str(path) for path in logs if make_private(path, directory=False)]
     return {"changed": changed}

@@ -712,7 +712,9 @@ def create_dashboard_routes(
             return denied
         current = privacy_policy.policy(fresh=True)
         return JSONResponse({"ok": True, **current, "stores": privacy_inventory.stores(),
-                             "recipients": privacy_inventory.recipients()})
+                             "recipients": privacy_inventory.recipients(),
+                             "filevault": privacy_inventory.filevault_on(),
+                             "exclude_from_backups": privacy_policy.privacy_setting("exclude_from_backups", False) is True})
 
     async def privacy_settings(request: Request) -> Response:
         """Pause, private mode and exclusions (Settings > Privacy). The server enforces them."""
@@ -733,12 +735,21 @@ def create_dashboard_routes(
                         isinstance(item, str) and 0 < len(item.strip()) <= 253 for item in items):
                     return JSONResponse({"ok": False, "error": f"invalid_{field}"}, status_code=400)
                 updates[field] = sorted({item.strip() for item in items})
+        backups: Optional[Dict[str, Any]] = None
+        if "exclude_from_backups" in body:
+            if not isinstance(body["exclude_from_backups"], bool):
+                return JSONResponse({"ok": False, "error": "exclude_from_backups_must_be_boolean"}, status_code=400)
+            updates["exclude_from_backups"] = body["exclude_from_backups"]
         try:
             for key, value in updates.items():
                 update_runtime_setting("privacy", key, value)
         except (OSError, RuntimeError, ValueError):
             return JSONResponse({"ok": False, "error": "privacy_settings_persist_failed"}, status_code=500)
-        return JSONResponse({"ok": True, **privacy_policy.policy(fresh=True)})
+        if "exclude_from_backups" in updates:
+            backups = await asyncio.to_thread(privacy_inventory.set_backup_exclusion, updates["exclude_from_backups"])
+        return JSONResponse({"ok": True, **privacy_policy.policy(fresh=True),
+                             "exclude_from_backups": privacy_policy.privacy_setting("exclude_from_backups", False) is True,
+                             **({"backups": backups} if backups is not None else {})})
 
     async def _json_body(request: Request) -> Dict[str, Any]:
         try:

@@ -235,3 +235,58 @@ class PathsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AtRestTests(PrivacySettings):
+    """#24: what protects stored data on disk, and keeping it out of backups."""
+
+    TOKEN = DashboardTests.TOKEN
+
+    def run_result(self, stdout: str, code: int = 0):
+        import subprocess
+
+        return subprocess.CompletedProcess([], code, stdout, "")
+
+    def test_filevault_and_backup_states_are_read_not_guessed(self) -> None:
+        from mcp_server import privacy_inventory as inv
+
+        for stdout, expected in (("true\n", True), ("false\n", False), ("", None)):
+            with self.subTest(stdout=stdout), patch.object(inv.subprocess, "run", return_value=self.run_result(stdout)):
+                self.assertEqual(expected, inv.filevault_on())
+        for stdout, expected in (("[Excluded]    /x\n", True), ("[Included]    /x\n", False), ("", None)):
+            with self.subTest(stdout=stdout), patch.object(inv.subprocess, "run", return_value=self.run_result(stdout)):
+                self.assertEqual(expected, inv.backup_excluded(self.dir))
+
+    def test_backup_exclusion_covers_content_stores_only(self) -> None:
+        from mcp_server import privacy_inventory as inv
+
+        stores = [{"key": "memory", "paths": [str(self.dir)]}, {"key": "audit_log", "paths": [str(self.dir)]},
+                  {"key": "jobs", "paths": [str(self.dir / "missing")]}]
+        calls = []
+        with patch.object(inv, "stores", return_value=stores), \
+                patch.object(inv.subprocess, "run", side_effect=lambda args, **k: calls.append(args) or self.run_result("")):
+            result = inv.set_backup_exclusion(True)
+        self.assertEqual([["/usr/bin/xattr", "-wx", inv._EXCLUDE_XATTR, inv._EXCLUDE_VALUE, str(self.dir)]], calls)
+        self.assertEqual([str(self.dir)], result["changed"])
+
+    def test_dashboard_applies_the_backup_choice(self) -> None:
+        from mcp_server import privacy_inventory as inv
+
+        client = DashboardTests.client(self)
+        auth = {"authorization": f"Bearer {self.TOKEN}"}
+        with patch.object(inv, "set_backup_exclusion", return_value={"changed": ["/x"], "failed": []}) as apply:
+            body = client.post("/dashboard/api/privacy/settings", headers=auth, json={"exclude_from_backups": True}).json()
+        apply.assert_called_once_with(True)
+        self.assertEqual((True, ["/x"]), (body["exclude_from_backups"], body["backups"]["changed"]))
+        with patch.object(inv, "filevault_on", return_value=True), patch.object(inv, "backup_excluded", return_value=True):
+            overview = client.get("/dashboard/api/privacy", headers=auth).json()
+        self.assertTrue(overview["filevault"])
+
+    def test_logs_in_the_state_root_become_owner_only(self) -> None:
+        from mcp_server.private_storage import secure_content_stores
+
+        log = self.dir / "restart-1.log"
+        log.write_text("x")
+        log.chmod(0o644)
+        secure_content_stores(state_dir=self.dir)
+        self.assertEqual(0o600, log.stat().st_mode & 0o777)

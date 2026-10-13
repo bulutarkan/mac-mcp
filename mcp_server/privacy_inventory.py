@@ -6,7 +6,9 @@ names how long it is kept; "until deleted" means the owner removes it.
 from __future__ import annotations
 
 import os
+import plistlib
 import stat
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -53,7 +55,62 @@ def _measure(targets: Iterable[Path]) -> Dict[str, Any]:
     return {"exists": exists, "bytes": total, "files": files, "modes": sorted(set(modes)), "owner_only": private}
 
 
-def stores() -> List[Dict[str, Any]]:
+def filevault_on() -> Any:
+    """True/False from fdesetup (no admin needed), None when it cannot tell."""
+    try:
+        out = subprocess.run(["/usr/bin/fdesetup", "isactive"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    answer = (out.stdout or "").strip().lower()
+    return True if answer == "true" else False if answer == "false" else None
+
+
+def backup_excluded(path: Path) -> Any:
+    """Whether Time Machine skips this path (tmutil isexcluded), None when unknown."""
+    try:
+        out = subprocess.run(["/usr/bin/tmutil", "isexcluded", str(path)], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    text = out.stdout or ""
+    return True if "[Excluded]" in text else False if "[Included]" in text else None
+
+
+def set_backup_exclusion(exclude: bool) -> Dict[str, Any]:
+    """Keep every content store out of Time Machine (sticky, per item), or put it back."""
+    done: List[str] = []
+    failed: List[str] = []
+    for store in stores(measure=False):
+        if store["key"] in _BACKED_UP_ALWAYS:
+            continue
+        for raw in store["paths"]:
+            path = Path(raw)
+            if not path.exists():
+                continue
+            # The sticky per-item exclusion tmutil addexclusion writes, set directly: tmutil
+            # takes ~11 s per path, the attribute takes milliseconds and Time Machine reads it.
+            args = (["/usr/bin/xattr", "-wx", _EXCLUDE_XATTR, _EXCLUDE_VALUE, str(path)] if exclude
+                    else ["/usr/bin/xattr", "-d", _EXCLUDE_XATTR, str(path)])
+            try:
+                out = subprocess.run(args, capture_output=True, text=True, timeout=10)
+            except (OSError, subprocess.SubprocessError):
+                failed.append(str(path))
+                continue
+            if out.returncode == 0 or (not exclude and "No such xattr" in (out.stderr or "")):
+                done.append(str(path))
+            else:
+                failed.append(str(path))
+    return {"changed": done, "failed": failed}
+
+
+_EXCLUDE_XATTR = "com.apple.metadata:com_apple_backup_excludeItem"
+_EXCLUDE_VALUE = plistlib.dumps("com.apple.backupd", fmt=plistlib.FMT_BINARY).hex()
+
+
+# Kept in backups whatever the choice: small, and needed to restore Mac MCP itself.
+_BACKED_UP_ALWAYS = frozenset({"saved_logins", "audit_log", "logs"})
+
+
+def stores(*, measure: bool = True) -> List[Dict[str, Any]]:
     usage = usage_privacy()
     memory = memory_privacy()
     evidence = run_evidence_privacy()
@@ -81,8 +138,13 @@ def stores() -> List[Dict[str, Any]]:
     ]
     out = []
     for key, name, holds, targets, kept in rows:
-        out.append({"key": key, "name": name, "holds": holds, "kept": kept,
-                    "paths": [str(path) for path in targets], **_measure(targets)})
+        row = {"key": key, "name": name, "holds": holds, "kept": kept, "paths": [str(path) for path in targets]}
+        if measure:
+            row.update(_measure(targets))
+            existing = [path for path in targets if path.exists()]
+            row["in_backups"] = (None if not existing else
+                                 not all(backup_excluded(path) is True for path in existing))
+        out.append(row)
     return out
 
 
