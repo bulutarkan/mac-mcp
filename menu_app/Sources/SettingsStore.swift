@@ -29,6 +29,8 @@ struct MenuSettings: Codable {
     struct ToolActivity: Codable {
         var show_bubble: Bool
         var require_descriptions: Bool
+        /// The notch island style of live activity (#174); absent means off.
+        var island: Bool?
     }
     struct Notifications: Codable {
         var agent_completion: Bool
@@ -135,6 +137,7 @@ final class SettingsStore: ObservableObject {
     @Published var onboardingTour: String?
     @Published var steeringSessionMinutes = 10
     @Published var showToolActivity = false
+    @Published var showLiveIsland = false
     @Published var requireToolDescriptions = false
     @Published var agentCompletionNotificationsEnabled = false
     @Published var mailConfirmSend = true
@@ -237,6 +240,7 @@ final class SettingsStore: ObservableObject {
         steeringSessionMinutes = max(1, current.steering?.session_ttl_minutes ?? 10)
         showToolActivity = current.tool_activity?.show_bubble ?? false
         requireToolDescriptions = current.tool_activity?.require_descriptions ?? false
+        showLiveIsland = current.tool_activity?.island ?? false
         if !requireToolDescriptions {
             showToolActivity = false
         }
@@ -286,7 +290,8 @@ final class SettingsStore: ObservableObject {
             steering: .init(session_ttl_minutes: max(1, steeringSessionMinutes)),
             tool_activity: .init(
                 show_bubble: showToolActivity && requireToolDescriptions,
-                require_descriptions: requireToolDescriptions
+                require_descriptions: requireToolDescriptions,
+                island: showLiveIsland ? true : nil
             ),
             notifications: .init(agent_completion: agentCompletionNotificationsEnabled),
             decision_acceleration: .init(enabled: decisionAccelerationEnabled, scope: decisionAccelerationScope),

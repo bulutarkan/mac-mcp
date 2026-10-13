@@ -258,6 +258,26 @@ _TELEMETRY_METADATA_COLUMNS = {
 _JSON_METADATA_FIELDS = {"declared_risk", "effective_risk", "resource", "scope", "lock"}
 
 
+_CLIENT_NAMES = {
+    "claude-code": "Claude Code", "claude-ai": "Claude", "claude": "Claude", "codex": "Codex",
+    "codex-mcp-client": "Codex", "openai-mcp": "ChatGPT", "chatgpt": "ChatGPT", "cursor": "Cursor",
+    "opencode": "OpenCode", "gemini-cli-mcp-client": "Gemini CLI", "mac-mcp-stdio": "An AI app",
+}
+
+
+def client_display_name(name: str) -> Optional[str]:
+    """An MCP clientInfo name as people know the app; None for an empty name."""
+    key = str(name or "").strip().lower()
+    if not key:
+        return None
+    if key in _CLIENT_NAMES:
+        return _CLIENT_NAMES[key]
+    if key.startswith("openai-mcp"):
+        return "ChatGPT"
+    cleaned = re.sub(r"[^A-Za-z0-9 ._()-]", "", str(name)).strip()[:40]
+    return cleaned or None
+
+
 def _mapping_failure_status(value: Any) -> Optional[str]:
     if hasattr(value, "model_dump"):
         try:
@@ -601,6 +621,10 @@ class TelemetryManager:
         }
         for field in _TELEMETRY_METADATA_COLUMNS:
             event[field] = sanitize_value((metadata or {}).get(field), preview_chars=self.preview_chars)
+        client = (metadata or {}).get("client")
+        if client:
+            # Live only (the activity stream shows which app is working); not a stored column.
+            event["client"] = str(client)[:40]
         with self._lock:
             self._active[event_id] = event
             if str(source or "mcp") == "mcp":
@@ -1168,6 +1192,16 @@ class ObservedFastMCP(FastMCP):
             availability["scope_limited"] = True
         return availability
 
+    def client_label(self, context: Any = None) -> Optional[str]:
+        """The app making this call, in words (ChatGPT, Claude Code, ...), or None when unknown."""
+        if context is not None and getattr(context, "agent_id", None):
+            return "Mac MCP agent"
+        try:
+            name = str(self.get_context().request_context.session.client_params.clientInfo.name or "")
+        except (AttributeError, LookupError, TypeError, ValueError):
+            return None
+        return client_display_name(name)
+
     def intent_descriptions_enabled(self) -> bool:
         return bool(self._intent_descriptions_provider())
 
@@ -1487,6 +1521,9 @@ class ObservedFastMCP(FastMCP):
         # Tool Activity UI consumes the live SSE event and cannot wait for a
         # later telemetry context update when multiple clients run concurrently.
         metadata["session_id"] = public_session_id
+        client = self.client_label(policy_context)
+        if client:
+            metadata["client"] = client
         run_id = _RUN_ID.get()
         new_run = run_id is None and _starts_run(name, arguments)
         if new_run:

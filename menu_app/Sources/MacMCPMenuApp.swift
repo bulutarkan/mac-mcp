@@ -15,6 +15,7 @@ struct MacMCPMenuApp: App {
         // The menu bar app opens at login while start at login is on.
         appState.syncLoginItem = { enabled in LoginItem.sync(enabled: enabled) }
         LoginItem.sync(enabled: appState.settings.startAtLogin)
+        LiveIslandController.shared.attach(appState)
         MenuAppDelegate.openSettings = { [weak appState] pane in
             guard let appState, let section = pane == "scheduled-tasks" ? .scheduled : SettingsSection(rawValue: pane) else { return }
             SettingsWindowController.shared.show(state: appState, settings: appState.settings, section: section)

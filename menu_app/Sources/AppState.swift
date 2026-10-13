@@ -180,6 +180,10 @@ final class AppState: ObservableObject {
     private let agentNotificationTracker = AgentNotificationTransitionTracker()
     /// Scheduled Tasks runs that ended after this time have not been announced yet.
     private var scheduledTaskNotifySince = Date().timeIntervalSince1970
+    /// The live-activity island (#174) listens here; set by the app at launch.
+    var onLiveToolCallStarted: ((LiveToolCall) -> Void)?
+    var onLiveToolCallFinished: ((String) -> Void)?
+    var onScheduledRunFinished: ((TaskRun, String) -> Void)?
     private var lastPublicProcessCheckAt = 0.0
     private static let activePollIntervalSeconds = 2.5
     private static let idlePollIntervalSeconds = 12.0
@@ -473,9 +477,11 @@ final class AppState: ObservableObject {
         let result = await taskAPI("dashboard/api/scheduled-tasks/finished?since=\(scheduledTaskNotifySince)")
         guard result.ok else { return }
         if let now = result.object["now"] as? Double { scheduledTaskNotifySince = now }
-        for raw in result.object["runs"] as? [[String: Any]] ?? [] where (raw["notify"] as? Bool) ?? true {
+        for raw in result.object["runs"] as? [[String: Any]] ?? [] {
             let run = TaskRun(raw)
             let name = raw["task_name"] as? String ?? "Scheduled task"
+            onScheduledRunFinished?(run, name)
+            guard (raw["notify"] as? Bool) ?? true else { continue }
             // Like agent notifications, never the prompt or the result itself: only how it ended.
             let title: String
             let body: String
@@ -865,17 +871,28 @@ final class AppState: ObservableObject {
             presentToolActivityEvent(payload)
         } else if kind == "call_finished" {
             ToolActivityBubbleController.shared.finish(eventID: eventID)
+            onLiveToolCallFinished?(eventID)
         }
     }
 
     private func presentToolActivityEvent(_ payload: [String: Any]) {
-        guard settings.requireToolDescriptions, settings.showToolActivity else { return }
         guard
             let eventID = payload["event_id"] as? String,
             let arguments = payload["arguments"] as? [String: Any],
             let description = arguments["description"] as? String,
             !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
+        onLiveToolCallStarted?(LiveToolCall(
+            eventID: eventID,
+            tool: String(describing: payload["tool"] ?? "tool"),
+            description: description,
+            sessionID: payload["session_id"] as? String,
+            agentID: payload["agent_id"] as? String,
+            client: payload["client"] as? String,
+            startedAt: (payload["started_at"] as? Double).map { Date(timeIntervalSince1970: $0) } ?? Date()
+        ))
+        // The bubble is one style of live activity; the island is the other.
+        guard settings.requireToolDescriptions, settings.showToolActivity, !settings.showLiveIsland else { return }
 
         ToolActivityBubbleController.shared.begin(
             eventID: eventID,

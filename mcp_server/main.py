@@ -1526,21 +1526,7 @@ def create_app():
 
     def _calling_app() -> str:
         """Who is asking, in words for the owner's Review sheet."""
-        context = current_policy_context()
-        if context.agent_id:
-            return "A Mac MCP agent"
-        try:
-            name = str(mcp.get_context().request_context.session.client_params.clientInfo.name or "")
-        except (AttributeError, LookupError, TypeError, ValueError):
-            name = ""
-        key = name.strip().lower()
-        known = {"claude-code": "Claude Code", "claude-ai": "Claude", "claude": "Claude", "codex": "Codex",
-                 "codex-mcp-client": "Codex", "openai-mcp": "ChatGPT", "chatgpt": "ChatGPT", "cursor": "Cursor",
-                 "opencode": "OpenCode", "mac-mcp-stdio": "An AI app", "gemini-cli-mcp-client": "Gemini CLI"}
-        if key in known:
-            return known[key]
-        cleaned = re.sub(r"[^A-Za-z0-9 ._()-]", "", name).strip()[:40]
-        return cleaned or "An AI app"
+        return mcp.client_label(current_policy_context()) or "An AI app"
 
     @mcp.tool(
         name="scheduled_tasks",

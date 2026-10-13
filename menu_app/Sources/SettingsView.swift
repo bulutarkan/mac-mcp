@@ -513,7 +513,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 paneHeader(
                     "Activity & Notifications",
-                    subtitle: "The tool activity bubble and alerts when delegated agents finish."
+                    subtitle: "Live activity while Mac MCP works, and alerts when delegated agents finish."
                 )
 
                 GroupBox("Tool Activity") {
@@ -532,12 +532,16 @@ struct SettingsView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             Spacer()
-                            if settings.showToolActivity && settings.requireToolDescriptions {
+                            if liveActivityStyle != "off" {
                                 Button("Preview") {
-                                    ToolActivityBubbleController.shared.preview(
-                                        tool: "run_command",
-                                        description: "Checking RAM & Disk Health"
-                                    )
+                                    if liveActivityStyle == "island" {
+                                        LiveIslandController.shared.preview()
+                                    } else {
+                                        ToolActivityBubbleController.shared.preview(
+                                            tool: "run_command",
+                                            description: "Checking RAM & Disk Health"
+                                        )
+                                    }
                                 }
                                 .controlSize(.small)
                             }
@@ -547,18 +551,22 @@ struct SettingsView: View {
 
                         HStack(alignment: .top, spacing: 12) {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text("Show Tool Activity")
+                                Text("Live activity")
                                     .font(.subheadline.weight(.medium))
-                                Text("Displays the native menu-bar speech bubble. Drag it anywhere; its position is remembered. Descriptions can stay enabled when this is off.")
+                                Text(liveActivityDetail)
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             Spacer()
-                            Toggle("", isOn: showToolActivityBinding)
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-                                .disabled(!settings.requireToolDescriptions)
+                            Picker("", selection: liveActivityStyleBinding) {
+                                Text("Off").tag("off")
+                                Text("Bubble").tag("bubble")
+                                Text("Notch island").tag("island")
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .fixedSize()
                         }
 
                         HStack(alignment: .top, spacing: 12) {
@@ -3626,16 +3634,35 @@ struct SettingsView: View {
         )
     }
 
-    private var showToolActivityBinding: Binding<Bool> {
+    /// Off, the tool activity bubble, or the notch island (#174); the island is never on by default.
+    private var liveActivityStyle: String {
+        settings.showLiveIsland ? "island" : (settings.showToolActivity && settings.requireToolDescriptions ? "bubble" : "off")
+    }
+
+    private var liveActivityDetail: String {
+        switch liveActivityStyle {
+        case "island":
+            return "Grows out of the notch while Mac MCP works: tool steps, agents, scheduled tasks and anything waiting for you. Hidden when nothing is happening."
+                + (settings.requireToolDescriptions ? "" : " Tool steps appear when Require Tool Descriptions is on.")
+        case "bubble":
+            return "A speech bubble under the menu bar shows each tool step. Drag it anywhere; its position is remembered."
+        default:
+            return "Nothing is shown while Mac MCP works. Descriptions can stay enabled."
+        }
+    }
+
+    private var liveActivityStyleBinding: Binding<String> {
         Binding(
-            get: { settings.showToolActivity && settings.requireToolDescriptions },
-            set: { enabled in
-                settings.showToolActivity = enabled && settings.requireToolDescriptions
-                persistSettings(success: enabled ? "Tool Activity bubble enabled." : "Tool Activity bubble hidden.")
-                state.restartToolActivityStream()
-                if !enabled {
-                    ToolActivityBubbleController.shared.hideImmediately()
+            get: { liveActivityStyle },
+            set: { style in
+                settings.showLiveIsland = style == "island"
+                if style == "bubble" && !settings.requireToolDescriptions {
+                    settings.requireToolDescriptions = true  // the bubble shows tool descriptions
                 }
+                settings.showToolActivity = style == "bubble"
+                persistSettings(success: style == "island" ? "Notch island on." : style == "bubble" ? "Tool Activity bubble on." : "Live activity off.")
+                state.restartToolActivityStream()
+                if style != "bubble" { ToolActivityBubbleController.shared.hideImmediately() }
             }
         )
     }
