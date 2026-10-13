@@ -347,7 +347,7 @@ class AiRunTests(StoreCase):
         calls = self.fake_agents({"status": "completed", "provider": "codex", "model": "gpt-5",
                                   "result_envelope": {"outcome": "success", "summary": "Leads up 12% to 214.",
                                                       "artifacts": [{"ref": "~/Desktop/report.xlsx", "description": "Excel"}]},
-                                  "result_full": {"text": "Full report text"}})
+                                  "result_full": {"text": "Full report text\n\nTASK_RESULT_ENVELOPE_V1\n{\"schema_version\":1}"}})
         task, result = self.execute()
         self.assertEqual(("done", "Leads up 12% to 214.", "Full report text", "agent_abc"),
                          (result["status"], result["summary"], result["output"], result["agent_id"]))

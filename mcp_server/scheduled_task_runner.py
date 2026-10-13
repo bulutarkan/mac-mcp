@@ -189,6 +189,8 @@ def wait_for_agent(agent_id: str, settings: Any, *, deadline: float) -> Dict[str
         time.sleep(AGENT_POLL_S)
     envelope = state.get("result_envelope") or {}
     report = str((state.get("result_full") or {}).get("text") or state.get("result") or "")
+    # The machine-readable result block the agent appends is for Mac MCP, not the owner's report.
+    report = report.split(tools_agents.RESULT_ENVELOPE_MARKER, 1)[0].strip()
     detail = {
         "agent_id": agent_id, "provider": state.get("provider"),
         "model": state.get("effective_model") or state.get("model"),
