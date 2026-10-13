@@ -1590,7 +1590,7 @@ def create_app():
                 task = await asyncio.to_thread(scheduled_tasks.create_task, given, by=_calling_app())
                 return {"ok": True, "task": task, "status": "needs_approval",
                         "message": "Saved as a suggestion. It will not run until the owner approves it in "
-                                   "Mac MCP Settings › Scheduled Tasks."}
+                                   "Mac MCP Settings › Scheduled Tasks (macmcp://settings/scheduled-tasks)."}
             if not task_id:
                 raise scheduled_tasks.TaskError("task_id_required", f"action={verb} needs task_id.")
             if verb == "get":

@@ -15,6 +15,10 @@ struct MacMCPMenuApp: App {
         // The menu bar app opens at login while start at login is on.
         appState.syncLoginItem = { enabled in LoginItem.sync(enabled: enabled) }
         LoginItem.sync(enabled: appState.settings.startAtLogin)
+        MenuAppDelegate.openSettings = { [weak appState] section in
+            guard let appState else { return }
+            SettingsWindowController.shared.show(state: appState, settings: appState.settings, section: section)
+        }
         // macmcp://recipe/run links reach the running server with the dashboard token.
         RecipeLauncher.shared.configure(
             baseURL: { [weak appState] in
