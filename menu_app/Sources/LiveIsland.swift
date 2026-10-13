@@ -909,13 +909,14 @@ struct LiveIslandView: View {
     }
 
     private func peekRow(_ peek: LivePeek) -> some View {
+        HoverRow { hovering in
         HStack(spacing: 11) {
             ZStack {
                 Circle().fill(peek.tone.color.opacity(0.18)).frame(width: 30, height: 30)
                 Image(systemName: peek.symbol).font(.system(size: 13, weight: .bold)).foregroundStyle(peek.tone.color)
             }
             VStack(alignment: .leading, spacing: 1) {
-                Text(peek.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                MarqueeText(text: peek.title, font: .system(size: 13, weight: .semibold), color: .white, active: hovering)
                 Text(peek.detail).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
             }
             Spacer(minLength: 0)
@@ -927,6 +928,7 @@ struct LiveIslandView: View {
         .frame(height: 54)
         .contentShape(Rectangle())
         .onTapGesture { controller.open(peek.target) }
+        }
         .id(peek.id)
         .transition(.asymmetric(insertion: .move(edge: .top).combined(with: .opacity), removal: .opacity))
     }
@@ -1025,10 +1027,11 @@ private struct IslandPanelContent: View {
     }
 
     private func liveRow(_ item: LiveItem) -> some View {
+        HoverRow { hovering in
         HStack(spacing: 10) {
             iconFor(item)
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                MarqueeText(text: item.title, font: .system(size: 12.5, weight: .semibold), color: .white, active: hovering)
                 Text(item.detail).font(.system(size: 11)).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
                     .id(item.detail)
                     .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
@@ -1049,6 +1052,7 @@ private struct IslandPanelContent: View {
         .contentShape(Rectangle())
         .onTapGesture { controller.open(item.target) }
         .animation(IslandMotion.slot, value: item.detail)
+        }
     }
 
     @ViewBuilder
@@ -1064,10 +1068,11 @@ private struct IslandPanelContent: View {
     }
 
     private func historyRow(_ entry: LiveHistoryEntry) -> some View {
+        HoverRow { hovering in
         HStack(spacing: 8) {
             IconTile(icon: IslandIcon.forTool(entry.tool, target: entry.target), size: 18)
             VStack(alignment: .leading, spacing: 1) {
-                Text(entry.title).font(.system(size: 11.5, weight: .medium)).foregroundStyle(.white.opacity(0.9)).lineLimit(1)
+                MarqueeText(text: entry.title, font: .system(size: 11.5, weight: .medium), color: .white.opacity(0.9), active: hovering)
                 Text([entry.client, LiveIslandController.ago(entry.at)].compactMap { $0 }.joined(separator: " · "))
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
             }
@@ -1075,6 +1080,8 @@ private struct IslandPanelContent: View {
             Image(systemName: entry.ok ? "checkmark" : "xmark")
                 .font(.system(size: 9, weight: .bold))
                 .foregroundStyle(entry.ok ? LiveTone.done.color : LiveTone.problem.color)
+        }
+        .contentShape(Rectangle())
         }
     }
 
@@ -1103,6 +1110,97 @@ private struct IslandPanelContent: View {
         if let next = task.nextRunAt { return "Next " + TaskTime.upcoming(next) }
         if let last = task.lastRun { return last.shortLine }
         return task.scheduleText
+    }
+}
+
+/// One line of text that fits by fading at its end; while `active` (the row is hovered) and the text
+/// is longer than its room, it glides to its end, rests, glides back, and repeats. When `active`
+/// ends it returns to the start quickly.
+struct MarqueeText: View {
+    let text: String
+    let font: Font
+    let color: Color
+    let active: Bool
+
+    @MacMCPState private var room: CGFloat = 0
+    @MacMCPState private var full: CGFloat = 0
+    @MacMCPState private var offset: CGFloat = 0
+    @MacMCPState private var loop: Task<Void, Never>?
+
+    private var overflow: CGFloat { max(0, full - room) }
+    private static let speed: CGFloat = 38  // points per second, slow enough to read
+
+    var body: some View {
+        // An invisible one-line copy sets the size; the visible full-length text rides in an overlay,
+        // so a long title never widens the row.
+        Text(text)
+            .font(font)
+            .lineLimit(1)
+            .opacity(0)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(GeometryReader { proxy in
+                Color.clear.onAppear { room = proxy.size.width }.onChange(of: proxy.size.width) { room = $0 }
+            })
+            .overlay(alignment: .leading) {
+                Text(text)
+                    .font(font)
+                    .foregroundStyle(color)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .background(GeometryReader { proxy in
+                        Color.clear.onAppear { full = proxy.size.width }.onChange(of: proxy.size.width) { full = $0 }
+                    })
+                    .offset(x: offset)
+            }
+            .clipped()
+            .mask(fadeMask)
+            .onChange(of: active) { on in on ? start() : stop() }
+            .onDisappear { loop?.cancel() }
+            .accessibilityLabel(text)
+    }
+
+    /// Fade the edge where text continues: the end at rest, the start once it has moved.
+    private var fadeMask: some View {
+        let leading = offset < -1
+        let trailing = overflow > 1 && offset > -overflow + 1
+        return LinearGradient(stops: [
+            .init(color: leading ? .clear : .black, location: 0),
+            .init(color: .black, location: leading ? 0.06 : 0),
+            .init(color: .black, location: trailing ? 0.9 : 1),
+            .init(color: trailing ? .clear : .black, location: 1),
+        ], startPoint: .leading, endPoint: .trailing)
+    }
+
+    private func start() {
+        loop?.cancel()
+        guard overflow > 1, !IslandMotion.reduceMotion else { return }
+        loop = Task { @MainActor in
+            let travel = Double(overflow / Self.speed)
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            while !Task.isCancelled {
+                withAnimation(.easeInOut(duration: travel)) { offset = -overflow }
+                try? await Task.sleep(nanoseconds: UInt64((travel + 1.1) * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeInOut(duration: travel)) { offset = 0 }
+                try? await Task.sleep(nanoseconds: UInt64((travel + 1.1) * 1_000_000_000))
+            }
+        }
+    }
+
+    private func stop() {
+        loop?.cancel()
+        loop = nil
+        withAnimation(.easeOut(duration: 0.22)) { offset = 0 }
+    }
+}
+
+/// A row that knows when the cursor is over it, for its marquee title.
+private struct HoverRow<Content: View>: View {
+    @ViewBuilder let content: (Bool) -> Content
+    @MacMCPState private var hovering = false
+
+    var body: some View {
+        content(hovering).onHover { hovering = $0 }
     }
 }
 
