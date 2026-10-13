@@ -78,6 +78,11 @@ class CodexAuthRefreshTests(unittest.TestCase):
         self.assertIn("mcp_servers.mac-mcp.enabled=false", agents._codex_scoped_mcp_args(full))
         self.assertEqual([], agents._codex_scoped_mcp_args({"scoped_mcp": False}))
 
+    def test_reasoning_summaries_follow_the_owners_setting(self) -> None:
+        self.assertEqual(["--config", 'model_reasoning_summary="auto"'], agents._codex_reasoning_summary_args())
+        (self.codex_home / "config.toml").write_text('model_reasoning_summary = "concise"\n')
+        self.assertEqual(["--config", 'model_reasoning_summary="concise"'], agents._codex_reasoning_summary_args())
+
     def test_unchanged_or_missing_sign_in_is_not_rewritten(self) -> None:
         agents._restricted_codex_state("agt_owner", self.meta)
         self.assertFalse(agents._refresh_codex_auth_snapshot(self.source, self.snapshot()))

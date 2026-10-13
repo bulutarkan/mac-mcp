@@ -352,6 +352,7 @@ class AiRunTests(StoreCase):
         self.assertEqual(("done", "Leads up 12% to 214.", "Full report text", "agent_abc"),
                          (result["status"], result["summary"], result["output"], result["agent_id"]))
         self.assertEqual("~/Desktop/report.xlsx", result["detail"]["artifacts"][0]["ref"])
+        self.assertEqual({"steps": [], "usage": {}}, {k: result["detail"][k] for k in ("steps", "usage")})
         spawned = calls["spawn"][0]
         self.assertEqual(("codex", "Summarize last week's leads.", str(self.folder), 1800, "Scheduled: Weekly ad report"),
                          (spawned["provider"], spawned["prompt"], spawned["cwd"], spawned["timeout_s"], spawned["title"]))

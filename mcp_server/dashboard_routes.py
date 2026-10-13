@@ -846,6 +846,13 @@ def create_dashboard_routes(
             run = await asyncio.to_thread(task_store.get_run, request.query_params.get("run_id", ""))
         except task_store.TaskError as exc:
             return _task_error(exc)
+        detail = run.get("detail") or {}
+        if detail.get("agent_id") and "steps" not in detail and not detail.get("private_mode"):
+            # Runs from before steps were kept: read them from the agent's files while those exist.
+            report = str(run.get("output") or "").split("TASK_RESULT_ENVELOPE_V1", 1)[0].strip()
+            run["output"] = report
+            run["detail"] = {**detail, **await asyncio.to_thread(
+                scheduled_task_runner._agent_steps, str(detail["agent_id"]), report)}
         return JSONResponse({"ok": True, "run": run})
 
     async def scheduled_task_finished(request: Request) -> Response:

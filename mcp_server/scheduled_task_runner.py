@@ -9,6 +9,7 @@ running) is not run late: it is recorded as Skipped with the reason, and the own
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -198,6 +199,7 @@ def wait_for_agent(agent_id: str, settings: Any, *, deadline: float) -> Dict[str
         "artifacts": [{"ref": item.get("ref"), "description": item.get("description")}
                       for item in (envelope.get("artifacts") or [])[:20] if isinstance(item, dict)],
     }
+    detail.update(_agent_steps(agent_id, report))
     summary = str(envelope.get("summary") or _last_line(report) or "")
     if status == "completed" and envelope.get("outcome") != "failure":
         return {"status": "done", "summary": summary or "Finished", "output": report, "detail": detail}
@@ -207,6 +209,26 @@ def wait_for_agent(agent_id: str, settings: Any, *, deadline: float) -> Dict[str
     reason = str(state.get("error") or state.get("failure_reason") or "") or {
         "cancelled": "The agent was stopped", "stalled": "The agent stopped responding"}.get(status, "The agent failed")
     return {"status": "failed", "reason": reason[:300], "summary": summary, "output": report, "detail": detail}
+
+
+MAX_STEPS_BYTES = 400_000
+
+
+def _agent_steps(agent_id: str, report: str) -> Dict[str, Any]:
+    """The agent's steps, kept with the run so the report outlives the agent's own files."""
+    from . import agent_timeline, tools_agents
+
+    timeline = agent_timeline.for_agent(tools_agents._agent_dir(agent_id))
+    steps = timeline["steps"]
+    final = report.strip()
+    if steps and steps[-1].get("kind") == "message" and final and str(steps[-1].get("text") or "").strip()[:200] == final[:200]:
+        steps = steps[:-1]  # the closing message is the report shown above the steps
+    while steps and len(json.dumps(steps)) > MAX_STEPS_BYTES:
+        for step in steps:
+            step.pop("output", None)
+        if len(json.dumps(steps)) > MAX_STEPS_BYTES:
+            steps = steps[: len(steps) // 2]
+    return {"steps": steps, "usage": timeline["usage"]}
 
 
 def execute(task_id: str, run_id: str, definition: Dict[str, Any], settings: Any) -> Dict[str, Any]:

@@ -2659,6 +2659,24 @@ def _owner_codex_has_mac_mcp() -> bool:
     return isinstance(servers, dict) and "mac-mcp" in servers
 
 
+def _codex_reasoning_summary_args() -> List[str]:
+    """Ask Codex for summaries of its reasoning so run reports can show its thinking.
+
+    Sandboxed agents use a private Codex home, so the owner's own model_reasoning_summary
+    is passed along ("none" included); without one, "auto".
+    """
+    value = "auto"
+    config = Path(os.getenv("CODEX_HOME") or (Path.home() / ".codex")).expanduser() / "config.toml"
+    try:
+        import tomllib
+        owner = tomllib.loads(config.read_text(encoding="utf-8")).get("model_reasoning_summary")
+        if isinstance(owner, str) and re.fullmatch(r"[a-z]{1,16}", owner):
+            value = owner
+    except (OSError, ValueError):
+        pass
+    return ["--config", f'model_reasoning_summary="{value}"']
+
+
 def _codex_scoped_mcp_args(meta: Dict[str, Any]) -> List[str]:
     """The agent's own scoped Mac MCP connection, under a name of its own.
 
@@ -6385,6 +6403,7 @@ def _build_provider_command(
         ]
         cmd += _codex_shell_home_args(access_mode, shell_home)
         cmd += _codex_scoped_mcp_args(meta)
+        cmd += _codex_reasoning_summary_args()
         if model:
             cmd += ["--model", model]
         if reasoning:
@@ -6407,6 +6426,7 @@ def _build_provider_command(
         cmd.append("--dangerously-bypass-approvals-and-sandbox")
     cmd += _codex_shell_home_args(access_mode, shell_home)
     cmd += _codex_scoped_mcp_args(meta)
+    cmd += _codex_reasoning_summary_args()
     if model:
         cmd += ["--model", model]
     if reasoning:
