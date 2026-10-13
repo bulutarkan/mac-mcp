@@ -39,8 +39,9 @@ class BrowserSchemaTests(unittest.TestCase):
         for name in ("browser_observe", "browser_act", "browser_do"):
             text = json.dumps(self.tools[name].inputSchema)
             self.assertNotIn("$ref", text)
-            # 4.2 KB: #176 spends ~150 bytes on clear's replace-all warning beside the argument.
-            self.assertLess(len(text), 4_200)
+            # 4.4 KB: #176 spends ~150 bytes on clear's replace-all warning beside the argument,
+            # #172 ~130 bytes on expect, the postcondition that confirms an action's result.
+            self.assertLess(len(text), 4_400)
 
     def test_action_items_expose_types_and_per_type_requirements(self) -> None:
         actions = self.tools["browser_act"].inputSchema["properties"]["actions"]

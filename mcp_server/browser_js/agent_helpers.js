@@ -418,7 +418,9 @@ function __mcpKeyboardActivate(el){
 /* A password field never reports its value: observations, effects and extraction say [hidden]. */
 function __mcpSafeValue(el){try{if(String(el.type||'').toLowerCase()==='password')return el.value?'[hidden]':'';return String(el.value==null?'':el.value);}catch(e){return '';}}
 function __mcpEditableText(el){try{return String(el.innerText!=null?el.innerText:el.textContent||'');}catch(e){return String(el.textContent||'');}}
-function __mcpTextMatches(actual,value){var n=function(v){return String(v||'').replace(/[\s\u00a0\u200b]+/g,' ').trim();};return n(actual)===n(value);}
+/* Editors such as Medium, Google Docs and Notion rewrite punctuation as you type (smart quotes,
+   -- to a dash, ... to an ellipsis); that is the text arriving, not missing. */
+function __mcpTextMatches(actual,value){var n=function(v){return String(v||'').replace(/[\u2018\u2019\u201a\u201b\u2032]/g,"'").replace(/[\u201c\u201d\u201e\u201f\u2033]/g,'"').replace(/\u2026/g,'...').replace(/[\u2013\u2014]|--/g,'-').replace(/[\s\u00a0\u200b]+/g,' ').trim();};return n(actual)===n(value);}
 /* Rich-text editors (Draft.js, Lexical, ProseMirror, the Medium composer) keep their own
    model and ignore or mis-read text written straight into the DOM (Draft even crashes
    when the browser edits its blocks underneath it), so a contenteditable gets text the

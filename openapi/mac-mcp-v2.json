@@ -3534,6 +3534,10 @@
                           "maximum": 3000,
                           "minimum": 0,
                           "type": "integer"
+                        },
+                        "expect": {
+                          "description": "Check after the action, e.g. {text:'Saved'}, {gone:'Upload'}, {selector}, {url_change:true}; timeout_s.",
+                          "type": "object"
                         }
                       },
                       "required": [

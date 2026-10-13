@@ -71,6 +71,8 @@ def validate_action(index: int, action: Any) -> Dict[str, Any]:
             raise ValueError(f"actions[{index}] (fill) {problem}")
     if typ in _TEXT_TYPES and action.get("text") is None and not action.get("handoff_id"):
         raise ValueError(f"actions[{index}] ({typ}) needs text (or handoff_id from context_handoff)")
+    if "expect" in action and not isinstance(action["expect"], dict):
+        raise ValueError(f"actions[{index}] expect must be an object such as {{text: 'Saved'}} or {{gone: 'Upload'}}")
     if typ in _TEXT_TYPES:
         partial = next((key for key in _PARTIAL_EDIT_KEYS if key in action), None)
         if partial:
@@ -147,6 +149,8 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
         "to_query": {"type": "string"},
         "to_role": {"type": "string"},
         "hold_ms": {"type": "integer", "minimum": 0, "maximum": 3000},
+        "expect": {"type": "object", "description": "Check after the action, e.g. {text:'Saved'}, {gone:'Upload'}, "
+                   "{selector}, {url_change:true}; timeout_s."},
     },
     "required": ["type"],
     "additionalProperties": True,

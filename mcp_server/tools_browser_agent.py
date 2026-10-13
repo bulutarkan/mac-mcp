@@ -2871,7 +2871,7 @@ def _verified_dom_action(
     if result.get("verification") == "editor_pending" and typ in {"type", "type_text", "paste"}:
         # The editor accepted the input into its model and renders it shortly; confirm the
         # text arrived (read-only, bounded) instead of reporting success on faith.
-        wanted = re.sub(r"[\s ​]+", "", str(expected_text or ""))
+        wanted = _fold_typed_text(str(expected_text or ""))
         deadline = time.perf_counter() + _TYPE_VERIFY_TIMEOUT_S
         seen = ""
         while time.perf_counter() < deadline:
@@ -2882,7 +2882,7 @@ def _verified_dom_action(
             )
             js_calls += 1
             seen = str(post.get("value") or post.get("text") or "")
-            if re.sub(r"[\s ​]+", "", seen) == wanted:
+            if _fold_typed_text(seen) == wanted:
                 result.update({"effect_observed": True, "verification": "value_applied_async", "value": seen[:200]})
                 result.pop("observe_again", None)
                 if model_unconfirmed:
@@ -2905,6 +2905,24 @@ def _verified_dom_action(
     if isinstance(compact_state, dict):
         result["_compact_state"] = compact_state
     return result
+
+
+_TYPOGRAPHIC_FOLDS = (
+    (re.compile("[\u2018\u2019\u201a\u201b\u2032]"), "'"),
+    (re.compile("[\u201c\u201d\u201e\u201f\u2033]"), '"'),
+    (re.compile("\u2026"), "..."),
+    (re.compile("[\u2013\u2014]|--"), "-"),
+    (re.compile("[\\s\u00a0\u200b]+"), ""),
+)
+
+
+def _fold_typed_text(text: str) -> str:
+    """Text compared the way an editor may have rewritten it: smart quotes, dashes and
+    ellipses count as what was typed (Medium, Google Docs and Notion convert them), and
+    whitespace is ignored. Mirrors __mcpTextMatches in agent_helpers.js."""
+    for pattern, replacement in _TYPOGRAPHIC_FOLDS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 def _event_wait_js(
@@ -3026,6 +3044,9 @@ def _condition_js(action: Dict[str, Any], initial_url: str) -> str:
     elif kind == "element_removed":
         eid = json.dumps(str(action.get("element_id") or ""))
         expr = f"(function(){{var s=__mcpState(),e=s.elements[{eid}];return !e||!e.isConnected;}})()"
+    elif kind == "text_gone":
+        text = json.dumps(str(action.get("text") or "").lower())
+        expr = f"!(document.body&&String(document.body.innerText||'').toLowerCase().indexOf({text})>=0)"
     elif kind == "url_change":
         base = json.dumps(initial_url)
         expr = f"location.href!=={base}"
@@ -4313,6 +4334,144 @@ _ACT_TYPES = (
 _ACT_TYPE_ALIASES = ("action", "kind", "op")
 
 
+# expect: what must be true after an action for its intended result to count as done.
+_EXPECT_KINDS = {"text": "text", "gone": "text_gone", "selector": "selector", "url_change": "url_change"}
+_EXPECT_DEFAULT_TIMEOUT_S = 5.0
+# A page that changed is not the intended result: a menu closing is not a link copied,
+# a network request is not a submission. These need a check (expect) to be confirmed.
+_REACTED_VERIFICATIONS = frozenset({
+    "state_changed", "dom_mutated", "async_state_changed", "async_dom_mutated", "async_network_activity",
+    "async_navigation",
+})
+_UNCONFIRMED_VERIFICATIONS = frozenset({
+    "editor_model_unconfirmed", "dom_text_only", "editor_pending", "deferred_pending", "focus_settling",
+})
+_CONFIRMED_VERIFICATIONS = frozenset({"value_applied", "value_applied_async"})
+_BLOCKED_ERRORS = frozenset({
+    "chrome_debugger_blocked", "foreground_not_authorized", "capability_required", "policy_denied",
+    "approval_denied", "trusted_input_unavailable",
+})
+CONFIRM_HINT = (
+    "page_reacted means the page changed after the action, not that its intended result happened (a link "
+    "copied, an image inserted, a form submitted). Add expect={text|gone|selector|url_change} to the action, "
+    "or observe the page, before reporting success; do not repeat the action to check."
+)
+
+
+def _expect_wait(index: int, expect: Any) -> Dict[str, Any]:
+    if not isinstance(expect, dict):
+        raise mark_not_executed(HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"actions[{index}] expect must be an object such as {{text: 'Pending review'}} or {{gone: 'Choose an image'}}.",
+        ))
+    kinds = [key for key in _EXPECT_KINDS if key in expect]
+    if len(kinds) != 1:
+        raise mark_not_executed(HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"actions[{index}] expect needs exactly one of {', '.join(_EXPECT_KINDS)}.",
+        ))
+    kind = kinds[0]
+    value = expect[kind]
+    if kind == "url_change":
+        if value is not True:
+            raise mark_not_executed(HTTPException(status.HTTP_400_BAD_REQUEST, f"actions[{index}] expect url_change must be true."))
+    elif not isinstance(value, str) or not value.strip():
+        raise mark_not_executed(HTTPException(
+            status.HTTP_400_BAD_REQUEST, f"actions[{index}] expect {kind} must be non-empty text.",
+        ))
+    try:
+        timeout_s = float(expect.get("timeout_s", _EXPECT_DEFAULT_TIMEOUT_S))
+    except (TypeError, ValueError):
+        timeout_s = _EXPECT_DEFAULT_TIMEOUT_S
+    wait: Dict[str, Any] = {
+        "type": "wait", "for": _EXPECT_KINDS[kind], "timeout_s": max(0.2, min(timeout_s, 30.0)),
+        "required": True, "_expect_for": index, "_expect": {kind: value},
+    }
+    if kind in {"text", "gone"}:
+        wait["text"] = value
+    elif kind == "selector":
+        wait["selector"] = value
+    return wait
+
+
+def _expand_expectations(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Each action with expect is followed by the wait that checks it."""
+    expanded: List[Dict[str, Any]] = []
+    for index, action in enumerate(actions):
+        expect = action.get("expect")
+        if expect is None:
+            expanded.append(action)
+            continue
+        if action.get("type") in {"wait", "extract", "scan", "dialog"}:
+            raise mark_not_executed(HTTPException(
+                status.HTTP_400_BAD_REQUEST, f"actions[{index}] ({action.get('type')}) takes no expect; it already reports its result.",
+            ))
+        expanded.append({key: value for key, value in action.items() if key != "expect"})
+        expanded.append(_expect_wait(index, expect))
+    return expanded
+
+
+def _fold_expectations(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Put each expect check back on the action it belongs to."""
+    folded: List[Dict[str, Any]] = []
+    for item in results:
+        if not isinstance(item, dict) or "_expect_for" not in item:
+            folded.append(item)
+            continue
+        target = folded[-1] if folded and isinstance(folded[-1], dict) else None
+        expect = item.get("_expect") or {}
+        met = bool(item.get("matched"))
+        check = {**expect, "met": met, "waited_ms": item.get("duration_ms")}
+        if target is None:
+            continue
+        target["expect"] = check
+        if not met:
+            # The action ran; only its intended result is missing. Never replay it automatically.
+            target.update({
+                "ok": False, "error": "expectation_not_met", "reason_code": "EXPECTATION_NOT_MET",
+                "outcome_unknown": True, "automatic_retry": False, "observe_again": True,
+            })
+    return folded
+
+
+def _action_outcome(result: Dict[str, Any]) -> str:
+    """confirmed | page_reacted | unconfirmed | failed | blocked, for one action result."""
+    error = str(result.get("error") or "")
+    if result.get("human_priority") or result.get("yielded") or error in _BLOCKED_ERRORS:
+        return "blocked"
+    expect = result.get("expect")
+    if isinstance(expect, dict):
+        return "confirmed" if expect.get("met") else "unconfirmed"
+    if result.get("ok") is False:
+        return "unconfirmed" if result.get("outcome_unknown") or result.get("posted") is None and result.get("type") == "post" else "failed"
+    typ = str(result.get("type") or "")
+    verification = str(result.get("verification") or "")
+    if verification in _CONFIRMED_VERIFICATIONS:
+        return "confirmed"
+    if verification in _UNCONFIRMED_VERIFICATIONS or result.get("editor_state_unverified"):
+        return "unconfirmed"
+    if typ == "post":
+        return "confirmed" if result.get("posted") is True else "unconfirmed"
+    if typ in {"wait"}:
+        return "confirmed" if result.get("matched") else "unconfirmed"
+    if typ in {"fill", "select", "extract", "scan", "scroll", "focus", "dialog"}:
+        return "confirmed"
+    if verification in _REACTED_VERIFICATIONS or result.get("effect_observed"):
+        return "page_reacted"
+    return "unconfirmed"
+
+
+def _flag_unconfirmed(response: Dict[str, Any]) -> None:
+    """Name the actions whose intended result nothing checked, so a caller cannot read ok as done."""
+    pending = [
+        index for index, item in enumerate(response.get("actions") or [])
+        if isinstance(item, dict) and item.get("outcome") in {"page_reacted", "unconfirmed"}
+    ]
+    if pending:
+        response["unconfirmed_actions"] = pending
+        response["confirm_hint"] = CONFIRM_HINT
+
+
 def normalize_act_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Return actions with a known lower-case type, or raise before anything runs.
 
@@ -4393,6 +4552,8 @@ def _browser_act_impl(
         if len(actions) > _MAX_ACTIONS:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, f"actions may contain at most {_MAX_ACTIONS} items.")
         actions = normalize_act_actions(actions)
+        requested_action_count = len(actions)
+        actions = _expand_expectations(actions)
         normalized_return_state = str(return_state or "compact").lower().strip()
         if normalized_return_state not in _RETURN_STATE_MODES:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "return_state must be none, compact, or full.")
@@ -4444,6 +4605,8 @@ def _browser_act_impl(
             if isinstance(result, dict):
                 # Bytes sent to and returned from the page, separate from the response size.
                 result["transport"] = dict(transport)
+                result["action_count"] = requested_action_count
+                _flag_unconfirmed(result)
             return result
     except HTTPException as exc:
         # Validation, tab-handle and lease refusals happen before any action runs;
@@ -5172,6 +5335,9 @@ def _browser_act_locked(
                     )
                     wait_result.pop("_compact_state", None)
                     internal_js_calls += int(wait_result.pop("_js_calls", 0))
+                    if "_expect_for" in action:
+                        wait_result["_expect_for"] = action["_expect_for"]
+                        wait_result["_expect"] = action.get("_expect")
                     results.append(wait_result)
                     if not wait_result.get("matched") and action.get("required", True):
                         break
@@ -5283,6 +5449,10 @@ def _browser_act_locked(
             "tab_handle": tab_handle,
         })
 
+    results = _fold_expectations(results)
+    for item in results:
+        if isinstance(item, dict):
+            item["outcome"] = _action_outcome(item)
     ok = all(bool(r.get("ok")) for r in results) if results else True
     response: Dict[str, Any] = {
         "ok": ok,
