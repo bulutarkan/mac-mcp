@@ -57,9 +57,10 @@ class AgentTypeTests(unittest.TestCase):
                           "number": False, "date": False, "select": False}, json.loads(proc.stdout))
 
     def test_clear_is_described_in_the_action_schema(self) -> None:
-        # The action schema has a tight size budget, so clear is explained on the text field.
-        text = browser_schemas.ACTION_ITEM_SCHEMA["properties"]["text"]["description"]
-        self.assertIn("clear:false appends", text)
+        # #176: the warning sits on clear itself, beside the argument that loses text.
+        clear = browser_schemas.ACTION_ITEM_SCHEMA["properties"]["clear"]["description"]
+        self.assertIn("false appends", clear)
+        self.assertIn("removes ALL existing text", clear)
 
 
 class SelectorTypeTests(unittest.TestCase):

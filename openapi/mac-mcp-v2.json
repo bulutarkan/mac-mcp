@@ -3417,8 +3417,12 @@
                           "type": "string"
                         },
                         "text": {
-                          "description": "type/type_text/paste/post: text; clear:false appends. wait for=text: the text.",
+                          "description": "type/type_text/paste/post: text. wait for=text: the text.",
                           "type": "string"
+                        },
+                        "clear": {
+                          "description": "Default true removes ALL existing text, even when only part is selected; false appends. No partial edits.",
+                          "type": "boolean"
                         },
                         "handoff_id": {
                           "description": "context_handoff id instead of text.",

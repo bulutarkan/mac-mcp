@@ -17,6 +17,16 @@ from pydantic import AfterValidator, BeforeValidator, WithJsonSchema
 from .tools_browser_agent import _ACT_TYPE_ALIASES, _ACT_TYPES, _MAX_ACTIONS, _fill_values_problem
 
 _TEXT_TYPES = ("type", "type_text", "paste")
+# Words an agent uses to ask for a change to part of the text. Text actions replace the whole
+# field or append to it, so such a request is refused instead of silently replacing everything.
+_PARTIAL_EDIT_KEYS = (
+    "selection", "replace_selection", "selected_text", "range", "selection_start", "selection_end",
+    "start", "end", "offset", "position", "find", "replace", "replace_text", "old_text", "search",
+)
+PARTIAL_EDIT_HINT = (
+    "type replaces ALL existing text in the field (even when only part of it is selected); clear:false "
+    "appends at the end. To change part of the text, read the field and type its full new text."
+)
 _KEY_TYPES = ("key", "keyboard", "shortcut")
 
 
@@ -61,6 +71,14 @@ def validate_action(index: int, action: Any) -> Dict[str, Any]:
             raise ValueError(f"actions[{index}] (fill) {problem}")
     if typ in _TEXT_TYPES and action.get("text") is None and not action.get("handoff_id"):
         raise ValueError(f"actions[{index}] ({typ}) needs text (or handoff_id from context_handoff)")
+    if typ in _TEXT_TYPES:
+        partial = next((key for key in _PARTIAL_EDIT_KEYS if key in action), None)
+        if partial:
+            raise ValueError(f"actions[{index}] ({typ}) asks to edit only part of the text ({partial}); "
+                             f"partial edits are not supported. {PARTIAL_EDIT_HINT}")
+        if "clear" in action and not isinstance(action["clear"], bool):
+            raise ValueError(f"actions[{index}] ({typ}) clear must be true or false, got {action['clear']!r}. "
+                             f"{PARTIAL_EDIT_HINT}")
     if typ in _KEY_TYPES and not action.get("key"):
         raise ValueError(f"actions[{index}] ({typ}) needs key, e.g. 'Enter', 'Escape', 'a'")
     if typ == "dialog" and str(action.get("decision") or "").lower() not in {"accept", "dismiss"}:
@@ -100,7 +118,9 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
         "within": _str("Unique phrase of one item"),
         "within_element_id": {"type": "string"},
         "intent": _str("Only breaks ties."),
-        "text": _str("type/type_text/paste/post: text; clear:false appends. wait for=text: the text."),
+        "text": _str("type/type_text/paste/post: text. wait for=text: the text."),
+        "clear": {"type": "boolean", "description": "Default true removes ALL existing text, even when only part is "
+                  "selected; false appends. No partial edits."},
         "handoff_id": _str("context_handoff id instead of text."),
         "option": _str("select: option label or value."),
         "key": _str("key/keyboard/shortcut: Enter, Escape, Tab, ArrowDown or one character."),
