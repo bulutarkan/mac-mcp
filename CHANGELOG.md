@@ -1,5 +1,8 @@
 ## Unreleased
 
+### Security fix (not yet in a checkpoint)
+- The secret-egress guard now also checks the decoded forms of an outgoing payload: base64/base64url (padded, unpadded, line-split), hex and percent-encoding, two layers deep, including tokens inside JSON. Before, a secret read on this Mac could be sent without approval by encoding it first (#7). Values of `NAME_TOKEN=` / `SERVICE_API_KEY=` style lines are now remembered when such a file is read. Encryption or splitting a secret across requests is not detected.
+
 ### Privacy, browser outcomes and startup (2.1.9 r10)
 - **Settings › Privacy**: pause observation (no screen, page, clipboard or voice reads, no new agents) and private mode (nothing about the work is kept), enforced by the server for every caller and available from the menu (More → Pause Observation / Private Mode). Never-observe lists for apps and sites, optional category rules (password managers, banking and finance, health), every local store with size, retention and owner-only state (move one or all to the Trash), where data can go, FileVault status and an option to keep Mac MCP data out of Time Machine. Tool results that read a page or app carry `privacy_source`. `mac-mcp privacy delete` and `mac-mcp status` cover the same.
 - **Browser outcomes**: every `browser_act` action reports `outcome` (confirmed, page_reacted, unconfirmed, failed, blocked) and takes `expect` to check its result; editor punctuation (smart quotes, dashes) no longer reads as `input_not_applied`. Typing replaces the whole field and partial edits are refused, stated in the tool schema.
