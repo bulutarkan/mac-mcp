@@ -1,0 +1,76 @@
+name: Product page
+
+# Publishes site/ to GitHub Pages with the exact current release (#101). The build reads the
+# latest GitHub release and its .pkg.sha256, checks them against the signed release manifest
+# at that tag, and fills the page. Releases older than scripts/build_site.py MIN_RELEASE are
+# not deployed. No Node runs here: the demo video is rendered locally and committed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "scripts/build_site.py"
+      - ".github/workflows/pages.yml"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.site.outputs.deploy }}
+    steps:
+      # On a release event the default ref is the tag; the page itself always comes from main.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Read the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > "$RUNNER_TEMP/release.json"
+          tag="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag_name"])' "$RUNNER_TEMP/release.json")"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern '*.pkg.sha256' --dir "$RUNNER_TEMP/sha" || true
+          shopt -s nullglob
+          files=("$RUNNER_TEMP"/sha/*.pkg.sha256)
+          if [ "${#files[@]}" -eq 1 ]; then cp "${files[0]}" "$RUNNER_TEMP/pkg.sha256"; else : > "$RUNNER_TEMP/pkg.sha256"; fi
+      - name: Build and check the page
+        id: site
+        run: |
+          python3 scripts/build_site.py --release-json "$RUNNER_TEMP/release.json" \
+            --sha256-file "$RUNNER_TEMP/pkg.sha256" --out _site
+          if [ -f _site/release.json ]; then python3 scripts/build_site.py --check _site; fi
+      - name: Site tests
+        run: python3 -m unittest tests.test_site tests.test_product_language
+      - if: steps.site.outputs.deploy == 'true'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

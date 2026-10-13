@@ -1,0 +1,20 @@
+{
+  "_comment": "Every UI label the video draws. tests/test_site.py checks each one exists in the app (menu_app/Sources or menu_app/Onboarding), so the video never shows a screen the app does not have.",
+  "strings": [
+    "Connect your AI app.",
+    "Connect",
+    "Filling the form",
+    "Send this email?",
+    "Don’t send",
+    "Send",
+    "Pause observation",
+    "Private mode",
+    "Scheduled Tasks",
+    "Experimental",
+    "Result",
+    "Steps",
+    "Run now",
+    "Recent",
+    "Scheduled"
+  ]
+}

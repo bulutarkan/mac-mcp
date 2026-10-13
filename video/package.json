@@ -1,0 +1,21 @@
+{
+  "name": "mac-mcp-demo-video",
+  "private": true,
+  "description": "The 40-second Mac MCP product video, rendered with Remotion. Not part of the app or the installer.",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts MacMcpDemo out/mac-mcp-demo.mp4 --codec=h264 --crf=22 --scale=0.6667",
+    "still": "remotion still src/index.ts MacMcpDemo out/demo-poster.jpg --frame=470 --image-format=jpeg --jpeg-quality=80 --scale=0.6667",
+    "export": "node scripts/export.mjs"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.526",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.526"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "typescript": "5.6.3"
+  }
+}

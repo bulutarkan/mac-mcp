@@ -1,14 +1,53 @@
 <p align="center">
-  <img src="assets/screenshots/mac-mcp.png" alt="Mac MCP" width="760">
+  <a href="site/assets/media/mac-mcp-demo.mp4"><img src="site/assets/media/demo-poster.jpg" alt="Mac MCP: the live island beside the notch shows what your AI app is doing" width="760"></a>
 </p>
 
-# Mac MCP 2.1.9
+# Mac MCP
 
-Mac MCP is a local macOS control server for AI agents. It exposes your Mac through a native MCP endpoint and a REST/OpenAPI surface, with shell, files, browser automation, macOS UI control, delegated OpenCode/Codex agents, memory, Agent Skills, voice interaction, self-update tooling, and a local operations dashboard. The native MCP endpoint is the full capability surface; REST/OpenAPI intentionally publishes a selected compatibility subset, so some capabilities remain MCP-only.
+**Let your AI apps use your Mac.** Mac MCP is a local server and menu bar app that lets Claude, ChatGPT, Codex, OpenCode and other MCP apps work in your Mac's apps, files, terminal and browser, with approvals you control. It is for people who already work with an AI app and want it to act on their Mac, not just talk about it.
 
-## Talk to ChatGPT. Let it work on your Mac.
+- **It works inside your apps.** Your AI app opens Notes, looks through a folder in Finder or drafts a reply in Mail through macOS Accessibility, using the same buttons and menus you do. Files and the terminal are there too.
+- **It browses where you can see it.** Visible, non-focus-stealing browser automation in Safari and Chrome: it works in a tab while you keep using your Mac, and frames the tab so you can see what it touches.
+- **It hands off work and reports back.** Delegate a task to a Codex, Claude Code or OpenCode agent and read a report of what it did; Scheduled Tasks (experimental) run AI tasks and scripts on a schedule.
 
-Mac MCP is model-agnostic and works with MCP-compatible AI clients. But ChatGPT is an especially natural way to use it.
+[Watch the 40-second demo](site/assets/media/mac-mcp-demo.mp4) · Website: https://bulutarkan.github.io/mac-mcp/ (live with 2.2.0) · [Install](#install) · MIT
+
+**Quick install:** download the `.pkg` from the [latest release](https://github.com/bulutarkan/mac-mcp/releases/latest) (Apple Silicon, macOS 14 or later), or run the installer on any Mac with macOS 13 or later:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bulutarkan/mac-mcp/main/install.sh | bash
+```
+
+**You stay in charge.** Permission profiles decide what may run and optional Server Approval asks before risky actions; you can pause observation, turn on private mode, or keep apps and sites out of reach. Mac MCP is not a sandbox: it acts with your macOS user's permissions, localhost is machine-local transport, not same-user isolation, and what your AI app reads is sent to that app's provider. See [Product and security terminology](#product-and-security-terminology).
+
+## What's new in 2.2.0
+
+Coming with the next release:
+
+- **Scheduled Tasks (experimental):** AI tasks and scripts that run once, daily, weekly, monthly or every few hours, with a run report (result and steps) for each run. Tasks an AI app suggests wait for your approval in Settings.
+- **Live activity island:** an optional island beside the notch shows the app in use while your AI works, what needs you, recent work and the next scheduled task. Off by default (Settings › Activity & Notifications).
+- **Safer outgoing data:** the secret-egress guard also catches secrets hidden in base64, hex or percent-encoded payloads.
+
+### In 2.1.9
+
+2.1.9 brings Mac MCP into ChatGPT itself with a native plugin panel, and makes everyday browser work, approvals, updates and restarts more dependable.
+
+- **Mac MCP panel inside ChatGPT:** ChatGPT now shows Mac MCP as a plugin app. Open it from the ChatGPT sidebar in full screen or as a side panel in any conversation. A compact black-and-white panel shows today's tool activity, running and recent delegated agents, and 7-day token usage for Codex, OpenCode and Claude Code. It refreshes only when you press refresh, so it never polls your Mac in the background.
+- **Choose your default agent from ChatGPT:** the panel's Settings tab lets you pick the provider, model and reasoning level ChatGPT uses when it delegates work. Models come from your own provider accounts, and the server checks every choice before saving. Notifications and connection details are shown read-only; permissions, providers and credentials still live only in the Mac app.
+- **ChatGPT-only and permission-bound:** Claude, Codex, OpenCode and other clients never see the panel. Every action from it passes the same permission profiles and approvals as any other Mac MCP call, and no keys or tokens are sent to it.
+- **See what your agents are doing:** optional activity bubbles on the Mac show what each tool call is for while it runs, even when several run at once, and optional notifications tell you when a delegated agent finishes.
+- **Optional server approvals:** a new Server Approval setting (`Off`, `Critical`, `High Risk`) can ask you to **Allow Once** or **Block** risky actions such as raw commands, update control, or destructive browser and app actions.
+- **Smoother browser work:** agents can finish whole forms in a single step: they can press keys and Enter without bringing the browser to the front and wait for buttons that appear a moment later. Safari tabs stay tracked across site changes and tab shuffling, clicks whose effect appears elsewhere on the page count as working, and page images now work on pages such as Google Sheets.
+- **Better picks between look-alike targets:** Mac MCP now prefers the actual button over the boxes around it. An optional Decision Acceleration layer (off by default, uses your own OpenAI key) can break remaining ties, guided by a short hint from the agent.
+- **Easier setup and history:** `mac-mcp connect-config` prints ready-to-paste connection settings for ChatGPT, Codex and OpenCode; the dashboard adds a safe transaction history view; and memory and Agent Skills can be read over REST.
+- **More dependable updates and restarts:** updates started from inside Mac MCP survive their own restart, `mac-mcp restart` no longer leaves the server stopped, background jobs keep tracking the programs they start, and update operations no longer replace your own Git identity.
+- **Accessibility:** the browser Visual Companion announces activity to screen readers and works with the keyboard.
+
+## Workflows
+
+### Talk to ChatGPT. Let it work on your Mac.
+
+ChatGPT is one of the AI apps you can use with Mac MCP, and its voice mode makes it an especially natural one. ChatGPT reaches your Mac through a public endpoint you turn on, such as a Cloudflare Tunnel (see [Public endpoint modes](#public-endpoint-modes)).
 
 ChatGPT Live can use plugins during voice conversations. With Mac MCP connected, the same ChatGPT conversation you already use can become a control surface for your actual Mac. You can talk naturally while Mac MCP handles the execution: browsing in Safari or Chrome, working with files, opening apps, running commands, and coordinating agents.
 
@@ -22,7 +61,7 @@ For example:
 
 **ChatGPT is the conversation. Mac MCP is the execution layer.**
 
-### The Mac MCP panel in ChatGPT
+#### The Mac MCP panel in ChatGPT
 
 When Mac MCP is connected as a ChatGPT plugin, ChatGPT also shows Mac MCP as an app you can open next to your conversations: from the ChatGPT sidebar in full screen, or as a side panel inside any chat. The panel shows tool activity, delegated agents and token usage at a glance, and lets you choose the default agent ChatGPT delegates to. It refreshes only when you press refresh.
 
@@ -30,24 +69,13 @@ The panel is offered only to ChatGPT; other MCP clients keep their normal tool l
 
 This is a powerful combination, not a Mac MCP-only voice feature. ChatGPT provides the natural voice interface and reasoning experience; Mac MCP gives it a local execution layer on macOS. Existing ChatGPT plugin permissions, approvals, and usage limits still apply, and Mac MCP keeps its normal permission, background-control, outcome-safety, and undo boundaries.
 
+## For developers
+
+Mac MCP exposes your Mac through a native MCP endpoint and a REST/OpenAPI surface, with shell, files, browser automation, macOS UI control, delegated OpenCode/Codex/Claude Code agents, memory, Agent Skills, voice interaction, self-update tooling, and a local operations dashboard. The native MCP endpoint is the full capability surface; REST/OpenAPI intentionally publishes a selected compatibility subset, so some capabilities remain MCP-only.
+
 > **Security:** Mac MCP can execute commands, read/write files, and control desktop apps. Keep MCP authentication enabled whenever the service is reachable outside localhost and expose it only to clients you trust. The operations dashboard is loopback-only **and** requires a separate per-user dashboard Bearer token; localhost is machine-local transport, not a same-user sandbox.
 
 **Secure bootstrap defaults:** missing configuration fails closed. Without explicit settings, MCP authentication is required, shell execution and HTTP/browser host allowlists are disabled, and the global permission profile defaults to `standard` rather than `trusted`. A normal installer run generates the API key and writes the intended settings explicitly. Deliberate `MCP_ALLOW_NO_AUTH=true` is accepted only on loopback with no managed public endpoint; non-loopback or tunneled no-auth startup is refused.
-
-## What's new in 2.1.9
-
-2.1.9 brings Mac MCP into ChatGPT itself with a native plugin panel, and makes everyday browser work, approvals, updates and restarts more dependable.
-
-- **Mac MCP panel inside ChatGPT:** ChatGPT now shows Mac MCP as a plugin app. Open it from the ChatGPT sidebar in full screen or as a side panel in any conversation. A compact black-and-white panel, in the same style as the Mac MCP website, shows today's tool activity, running and recent delegated agents, and 7-day token usage for Codex, OpenCode and Claude Code. It refreshes only when you press refresh, so it never polls your Mac in the background.
-- **Choose your default agent from ChatGPT:** the panel's Settings tab lets you pick the provider, model and reasoning level ChatGPT uses when it delegates work. Models come from your own provider accounts, and the server checks every choice before saving. Notifications and connection details are shown read-only; permissions, providers and credentials still live only in the Mac app.
-- **ChatGPT-only and permission-bound:** Claude, Codex, OpenCode and other clients never see the panel. Every action from it passes the same permission profiles and approvals as any other Mac MCP call, and no keys or tokens are sent to it.
-- **See what your agents are doing:** optional activity bubbles on the Mac show what each tool call is for while it runs, even when several run at once, and optional notifications tell you when a delegated agent finishes.
-- **Optional server approvals:** a new Server Approval setting (`Off`, `Critical`, `High Risk`) can ask you to **Allow Once** or **Block** risky actions such as raw commands, update control, or destructive browser and app actions.
-- **Smoother browser work:** agents can finish whole forms in a single step: they can press keys and Enter without bringing the browser to the front and wait for buttons that appear a moment later. Safari tabs stay tracked across site changes and tab shuffling, clicks whose effect appears elsewhere on the page count as working, and page images now work on pages such as Google Sheets.
-- **Better picks between look-alike targets:** Mac MCP now prefers the actual button over the boxes around it. An optional Decision Acceleration layer (off by default, uses your own OpenAI key) can break remaining ties, guided by a short hint from the agent.
-- **Easier setup and history:** `mac-mcp connect-config` prints ready-to-paste connection settings for ChatGPT, Codex and OpenCode; the dashboard adds a safe transaction history view; and memory and Agent Skills can be read over REST.
-- **More dependable updates and restarts:** updates started from inside Mac MCP survive their own restart, `mac-mcp restart` no longer leaves the server stopped, background jobs keep tracking the programs they start, and update operations no longer replace your own Git identity.
-- **Accessibility:** the browser Visual Companion announces activity to screen readers and works with the keyboard.
 
 
 ## Browser automation that doesn't hijack your Mac

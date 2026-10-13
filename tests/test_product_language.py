@@ -41,10 +41,27 @@ class ProductLanguageTests(unittest.TestCase):
                 ROOT / "docs" / "TERMINOLOGY.md",
             )
         ).lower()
+        corpus += "\n" + (ROOT / "site" / "index.html").read_text(encoding="utf-8").lower()
         self.assertNotIn("localhost-only dashboard apis", corpus)
         self.assertNotIn("background = invisible", corpus)
         self.assertNotIn("standard = every write prompts", corpus)
         self.assertNotIn("localhost = secure sandbox", corpus)
+
+
+    def test_front_door_makes_no_claim_the_product_cannot_back(self):
+        # The README's first screen and the product site (#57, #101): no blanket privacy or sandbox
+        # promises, no hidden browsing, no pricing before the paid product exists.
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        front = readme.split("\n## ", 1)[0]
+        site = (ROOT / "site" / "index.html").read_text(encoding="utf-8")
+        for text in (front.lower(), site.lower()):
+            for phrase in ("never leaves your mac", "sandboxed server", "server is sandboxed", "invisible browser",
+                           "hidden browser", "pricing", "pro plan", "upgrade to pro", "100% private", "fully private"):
+                self.assertNotIn(phrase, text)
+        for phrase in ("visible, non-focus-stealing", "machine-local transport, not same-user isolation",
+                       "experimental", "off by default", "open anyway", "mit", "not a sandbox"):
+            self.assertIn(phrase, site.lower())
+        self.assertIn("not a sandbox", front.lower())
 
 
 if __name__ == "__main__":

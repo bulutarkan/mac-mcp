@@ -1,0 +1,217 @@
+/* The Mac MCP product page. Same night-time palette as the first-run tour; one moving thing
+   (the little island in the hero), everything else quiet. */
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(900px 520px at 78% -8%, color-mix(in srgb, var(--violet) 22%, transparent), transparent 70%),
+    radial-gradient(700px 420px at 4% 18%, color-mix(in srgb, var(--teal) 12%, transparent), transparent 70%),
+    var(--night);
+  color: var(--paper);
+  font: 16px/1.6 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; }
+a:focus-visible, button:focus-visible, summary:focus-visible, video:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.skip {
+  position: absolute;
+  left: -999px;
+  top: 8px;
+  background: var(--ember);
+  color: var(--ember-ink);
+  padding: 8px 14px;
+  border-radius: 8px;
+  z-index: 10;
+}
+.skip:focus { left: 12px; }
+
+.preview-banner {
+  margin: 0;
+  padding: 8px 16px;
+  background: var(--ember);
+  color: var(--ember-ink);
+  text-align: center;
+  font-weight: 600;
+}
+
+.top, main, .bottom { width: min(1120px, 100% - 40px); margin-inline: auto; }
+
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 0;
+}
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; text-decoration: none; }
+.brand img { border-radius: 7px; }
+.top nav { display: flex; gap: 6px; flex-wrap: wrap; }
+.top nav a {
+  text-decoration: none;
+  color: var(--haze);
+  padding: 10px 12px;
+  border-radius: 9px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+.top nav a:hover { color: var(--paper); background: var(--glass); }
+
+h1, h2, h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01em; line-height: 1.15; }
+h1 { font-size: clamp(2.4rem, 5.2vw, 4rem); margin: 18px 0 16px; }
+h2 { font-size: clamp(1.7rem, 3vw, 2.3rem); margin: 0 0 22px; }
+h3 { font-size: 1.25rem; margin: 10px 0 8px; }
+
+section { padding: 56px 0; }
+
+.hero {
+  display: grid;
+  gap: 40px;
+  align-items: center;
+  padding-top: 28px;
+}
+.lede { font-size: 1.15rem; color: var(--haze); max-width: 34em; margin: 0 0 26px; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.meta { color: var(--haze); font-size: 0.85rem; margin-top: 18px; }
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 10px 20px;
+  border-radius: 12px;
+  border: 1px solid var(--glass-edge);
+  background: var(--glass);
+  text-decoration: none;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  transition: transform 0.25s var(--ease), background 0.25s var(--ease);
+}
+.button:hover { transform: translateY(-1px); }
+/* Dark ink on the ember fill in both themes (white on the light-theme orange is below AA). */
+.button.primary { background: var(--ember); color: #2a1a05; border-color: transparent; }
+
+/* The live island, in miniature: the Mac MCP mark and a turning ring beside a notch. */
+.island {
+  width: 150px;
+  height: 30px;
+  border-radius: 0 0 14px 14px;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+.island-mark {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+}
+.island-ring {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.16);
+  border-top-color: var(--violet);
+  animation: turn 1.15s linear infinite;
+}
+@keyframes turn { to { transform: rotate(360deg); } }
+
+.demo { margin: 0; }
+.demo video {
+  width: 100%;
+  height: auto;
+  border-radius: 18px;
+  border: 1px solid var(--glass-edge);
+  background: #000;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+}
+.transcript { margin-top: 10px; color: var(--haze); font-size: 0.9rem; }
+.transcript summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
+
+.works { padding: 12px 0 8px; color: var(--haze); text-align: center; }
+
+.cards { display: grid; gap: 16px; }
+.card {
+  background: var(--glass);
+  border: 1px solid var(--glass-edge);
+  border-radius: 18px;
+  padding: 22px 22px 18px;
+}
+.card p, .card li { color: var(--haze); }
+.card ul { padding-left: 1.1em; margin: 8px 0 0; }
+.card li { margin: 6px 0; }
+.card.plain { background: var(--well); }
+.links { font-size: 0.9rem; }
+.links a { color: var(--paper); }
+
+.tag {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 99px;
+  background: var(--well);
+}
+.tag.violet { color: var(--violet); }
+.tag.teal { color: var(--teal); }
+.tag.ember { color: var(--ember); }
+
+.small { font-size: 0.85rem; color: var(--haze); }
+.center { text-align: center; margin-top: 22px; }
+.mobile-note { display: none; color: var(--ember); }
+
+.copyable {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--well);
+  border: 1px solid var(--glass-edge);
+  border-radius: 10px;
+  padding: 8px 8px 8px 12px;
+}
+.copyable code { font: 0.8rem/1.45 var(--mono); overflow-wrap: anywhere; flex: 1; color: var(--paper); }
+.copy {
+  min-height: 36px;
+  min-width: 64px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--glass);
+  color: var(--paper);
+  font: 600 0.8rem var(--sans);
+  cursor: pointer;
+}
+
+.bottom { padding: 40px 0 56px; border-top: 1px solid var(--glass-edge); }
+.bottom nav { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 10px; }
+.bottom nav a { color: var(--haze); min-height: 44px; display: inline-flex; align-items: center; }
+
+@media (min-width: 900px) {
+  .hero { grid-template-columns: 1fr 1.15fr; }
+  .cards.two { grid-template-columns: repeat(2, 1fr); }
+  .cards.three { grid-template-columns: repeat(3, 1fr); }
+}
+
+@media (max-width: 640px) {
+  .top nav a:not(:last-child) { display: none; }
+  .mobile-note { display: block; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .island-ring { animation: none; border-top-color: var(--violet); }
+  .button { transition: none; }
+}

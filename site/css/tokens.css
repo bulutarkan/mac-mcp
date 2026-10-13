@@ -1,0 +1,37 @@
+/* Mac MCP design tokens, shared with the first-run tour (menu_app/Onboarding/onboarding.css).
+   tests/test_site.py keeps the two in step. */
+
+:root {
+  --night: #151b2e;
+  --glass: #222a44;
+  --glass-edge: rgba(236, 239, 246, 0.09);
+  --paper: #eceff6;
+  --haze: #8e97b2;
+  --ember: #ffb45e;
+  --ember-ink: #2a1a05;
+  --teal: #5ed3c4;
+  --violet: #8b7cf6;
+  --ok: #5ed3a0;
+  --serif: ui-serif, "New York", Georgia, serif;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --ease: cubic-bezier(0.22, 0.8, 0.24, 1);
+  --well: rgba(10, 14, 28, 0.45);
+  --ok-ink: var(--ok);
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --night: #f2f4fa;
+    --glass: #ffffff;
+    --glass-edge: rgba(21, 27, 46, 0.1);
+    --paper: #151b2e;
+    --haze: #5b6480;
+    --ember: #e8892a;
+    --ember-ink: #ffffff;
+    --well: rgba(255, 255, 255, 0.85);
+    --ok-ink: #1f8a5c;
+    color-scheme: light;
+  }
+}

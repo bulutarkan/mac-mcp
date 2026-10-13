@@ -1,5 +1,12 @@
 ## Unreleased
 
+**In short (planned as 2.2.0):** schedule AI tasks and scripts and read a report of each run; see what your AI is doing in an optional island beside the notch; and the guard against leaking secrets now also catches encoded ones. Mac MCP also has a product page and a 40-second demo.
+
+### Product page and README (#57, #101)
+- A product page for GitHub Pages (`site/`): the promise, how it works, workflows, what Mac MCP is and is not, and install choices with the exact package version, download link and SHA-256 taken from the published release at deploy time (`scripts/build_site.py`, `.github/workflows/pages.yml`). It goes live with 2.2.0.
+- A 40-second demo video made with Remotion (`video/`, development only; the installer never uses Node).
+- The README now opens with what Mac MCP does and who it is for; the ChatGPT section moved to Workflows.
+
 ### Scheduled Tasks (experimental, not yet in a checkpoint)
 - **Settings › Scheduled Tasks**: AI tasks (a prompt for a delegated agent) and script tasks (a file or command) that run once, daily, weekly, monthly, every few hours or on a cron expression, in local time. Cards with the last result, an Up next strip, a detail page with recent runs and full reports, Run now, Pause and Edit, and a New Task sheet that states in a sentence when the task runs; developer options sit under Advanced.
 - Runs missed while the Mac slept or Mac MCP was stopped are recorded as Skipped with the reason instead of running late. The scheduler sleeps until the next run and does not wake at all without active tasks.

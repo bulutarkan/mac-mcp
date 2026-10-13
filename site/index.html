@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; media-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>Mac MCP · Let your AI apps use your Mac</title>
+  <meta name="description" content="A local server and menu bar app that lets Claude, ChatGPT, Codex and other MCP apps work in your Mac's apps, files, terminal and browser, with approvals you control. Open source, MIT.">
+  <link rel="canonical" href="https://bulutarkan.github.io/mac-mcp/">
+  <link rel="icon" href="assets/img/app-icon-256.png">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Mac MCP · Let your AI apps use your Mac">
+  <meta property="og:description" content="Claude, ChatGPT, Codex and other MCP apps working in your Mac's apps, files, terminal and browser, with approvals you control.">
+  <meta property="og:url" content="https://bulutarkan.github.io/mac-mcp/">
+  <meta property="og:image" content="https://bulutarkan.github.io/mac-mcp/assets/img/og-image.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/site.css">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Mac MCP","applicationCategory":"DeveloperApplication","operatingSystem":"macOS 13 or later","softwareVersion":"{{version}}","license":"https://opensource.org/licenses/MIT","url":"https://bulutarkan.github.io/mac-mcp/","downloadUrl":"{{pkg_url}}"}</script>
+  <script type="module" src="js/site.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  {{preview_banner}}
+  <header class="top">
+    <a class="brand" href="#top"><img src="assets/img/app-icon-256.png" alt="" width="28" height="28"><span>Mac MCP</span></a>
+    <nav aria-label="Sections">
+      <a href="#how">How it works</a>
+      <a href="#safety">Safety</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/bulutarkan/mac-mcp">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="hero-copy">
+        <div class="island" aria-hidden="true"><img class="island-mark" src="assets/img/app-icon-256.png" alt="" width="16" height="16"><span class="island-ring"></span></div>
+        <h1>Let your AI apps use your Mac.</h1>
+        <p class="lede">A local server and menu bar app that lets Claude, ChatGPT, Codex and other MCP apps work in your Mac's apps, files, terminal and browser, with approvals you control.</p>
+        <div class="actions">
+          <a class="button primary" href="{{pkg_url}}">Download Mac MCP {{version}}</a>
+          <a class="button" href="https://github.com/bulutarkan/mac-mcp">View on GitHub</a>
+        </div>
+        <p class="meta">Apple Silicon package · macOS 14 or later · Installer for any Mac on macOS 13 or later · MIT · {{release_id}}</p>
+      </div>
+      <figure class="demo" id="demo">
+        <video controls preload="none" playsinline width="1280" height="720" poster="assets/media/demo-poster.jpg">
+          <source src="assets/media/mac-mcp-demo.mp4" type="video/mp4">
+          <track kind="captions" srclang="en" label="English" src="assets/media/demo.en.vtt" default>
+        </video>
+        <details class="transcript">
+          <summary>Transcript</summary>
+          <p>Your AI can think. It can't use your Mac. Connect the AI apps you already use. See what it's doing: the live island beside the notch shows the app in use, then a tick (optional, off by default). Visible, non-focus-stealing browser work: a Safari tab fills a form while you keep typing elsewhere. Hand off work and get a report back: a scheduled task runs every weekday and leaves a report (experimental). You stay in charge: approvals, Pause observation and Private mode. Let your AI apps use your Mac. Open source, MIT.</p>
+        </details>
+      </figure>
+    </section>
+
+    <section class="works" aria-label="Works with">
+      <p>Works with <strong>Claude Desktop</strong>, <strong>Claude Code</strong>, <strong>ChatGPT</strong>, <strong>Codex</strong>, <strong>OpenCode</strong> and other MCP clients.</p>
+    </section>
+
+    <section class="proof" id="how">
+      <h2>How it works</h2>
+      <div class="cards three">
+        <article class="card">
+          <span class="tag violet">Apps, files, terminal</span>
+          <h3>It works inside your apps.</h3>
+          <p>Your AI app opens Notes, looks through a folder in Finder or drafts a reply in Mail through macOS Accessibility, using the same buttons and menus you do. Files and the terminal are there too.</p>
+        </article>
+        <article class="card">
+          <span class="tag teal">Safari and Chrome</span>
+          <h3>It browses where you can see it.</h3>
+          <p>Visible, non-focus-stealing browser automation: forms, long pages and comment threads are handled in a tab while you keep using your Mac, and the tab is framed so you can see what it touches.</p>
+        </article>
+        <article class="card">
+          <span class="tag ember">Agents and schedules</span>
+          <h3>It hands off work and reports back.</h3>
+          <p>Delegate a task to a Codex, Claude Code or OpenCode agent and read a report of what it did. Scheduled Tasks (experimental) run AI tasks and scripts on the schedule you set.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="workflows">
+      <h2>What people do with it</h2>
+      <div class="cards two">
+        <article class="card">
+          <h3>Ask ChatGPT from your phone</h3>
+          <p>Talk to ChatGPT while you are away and let it work on the Mac at your desk. ChatGPT reaches your Mac through a public endpoint you turn on, such as a Cloudflare Tunnel.</p>
+        </article>
+        <article class="card">
+          <h3>Build with Claude Code</h3>
+          <p>Claude Code runs your tests, reads the failing page in the browser and checks the app it just changed, without leaving the terminal.</p>
+        </article>
+        <article class="card">
+          <h3>Hand a job to Codex</h3>
+          <p>Ask for a release checklist or a cleanup across the repo; a Codex agent works in its own folder and leaves a report with its steps and the files it changed.</p>
+        </article>
+        <article class="card">
+          <h3>Get a summary every weekday</h3>
+          <p>A scheduled task runs at 08:30 and sends a notification when its report is ready. Tasks an AI app suggests wait for your approval. Experimental.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="safety" id="safety">
+      <h2>You stay in charge.</h2>
+      <div class="cards two">
+        <article class="card">
+          <h3>Rules the server enforces</h3>
+          <ul>
+            <li>Permission profiles decide which kinds of tools may run. An allowed capability is not an approval prompt; Server Approval adds an Allow Once or Block answer for risky actions when you turn it on.</li>
+            <li>Pause observation, Private mode and never-observe lists for apps and sites, in Settings › Privacy.</li>
+            <li>The live island beside the notch is off by default.</li>
+            <li>Updates install only signed stable release checkpoints.</li>
+          </ul>
+        </article>
+        <article class="card plain">
+          <h3>What Mac MCP is not</h3>
+          <ul>
+            <li>It is not a sandbox. It acts with your macOS user's permissions.</li>
+            <li>Localhost is machine-local transport, not same-user isolation.</li>
+            <li>What your AI app reads through Mac MCP is sent to that app's provider.</li>
+            <li>Browser work is visible on screen, not hidden.</li>
+            <li>The package is not notarized yet, so macOS asks you to choose Open Anyway the first time.</li>
+          </ul>
+          <p class="links"><a href="https://github.com/bulutarkan/mac-mcp/blob/main/SECURITY.md">Security policy</a> · <a href="https://github.com/bulutarkan/mac-mcp/blob/main/docs/TERMINOLOGY.md">What the terms mean</a> · <a href="https://github.com/bulutarkan/mac-mcp/blob/main/docs/LOCAL_API_SECURITY.md">Local API security</a></p>
+        </article>
+      </div>
+    </section>
+
+    <section class="install" id="install">
+      <h2>Install</h2>
+      <p class="mobile-note">Open this page on your Mac to install.</p>
+      <div class="cards three">
+        <article class="card">
+          <span class="tag violet">Recommended</span>
+          <h3>Package</h3>
+          <p>Mac MCP {{version}} ({{release_id}}), Apple Silicon, macOS 14 or later, about {{pkg_size_mb}} MB.</p>
+          <p><a class="button primary" href="{{pkg_url}}">Download for Apple Silicon</a></p>
+          <p class="small">SHA-256, published with the <a href="{{release_url}}">GitHub release</a>:</p>
+          <div class="copyable"><code id="pkg-sha">{{pkg_sha256}}</code><button type="button" class="copy" data-copy="pkg-sha" hidden>Copy</button></div>
+          <p class="small">Check it after downloading:</p>
+          <div class="copyable"><code id="pkg-check">shasum -a 256 ~/Downloads/{{pkg_name}}</code><button type="button" class="copy" data-copy="pkg-check" hidden>Copy</button></div>
+          <p class="small">The package is not notarized yet. If macOS stops it, open System Settings › Privacy &amp; Security and choose Open Anyway.</p>
+        </article>
+        <article class="card">
+          <span class="tag teal">Any Mac</span>
+          <h3>Terminal</h3>
+          <p>Installs the newest cryptographically verified stable release checkpoint, on Apple Silicon or Intel, macOS 13 or later.</p>
+          <div class="copyable"><code id="installer">curl -fsSL https://raw.githubusercontent.com/bulutarkan/mac-mcp/main/install.sh | bash</code><button type="button" class="copy" data-copy="installer" hidden>Copy</button></div>
+        </article>
+        <article class="card">
+          <span class="tag ember">Developers</span>
+          <h3>From source</h3>
+          <p>Clone the repository and run the server from your own checkout.</p>
+          <p><a href="https://github.com/bulutarkan/mac-mcp#install">Install from source</a></p>
+        </article>
+      </div>
+      <p class="small center">Then connect your AI app in one click from the menu bar app, and allow Accessibility and Screen Recording for Mac MCP when the first-run tour asks.</p>
+    </section>
+  </main>
+
+  <footer class="bottom">
+    <nav aria-label="Project">
+      <a href="https://github.com/bulutarkan/mac-mcp">GitHub</a>
+      <a href="https://github.com/bulutarkan/mac-mcp/releases">Releases</a>
+      <a href="https://github.com/bulutarkan/mac-mcp/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/bulutarkan/mac-mcp/blob/main/SECURITY.md">Security</a>
+      <a href="https://github.com/bulutarkan/mac-mcp/blob/main/LICENSE">MIT license</a>
+    </nav>
+    <p class="small">Built from {{release_id}}, released {{published_date}}. Mac MCP is open source and not affiliated with Apple, Anthropic or OpenAI.</p>
+  </footer>
+</body>
+</html>
