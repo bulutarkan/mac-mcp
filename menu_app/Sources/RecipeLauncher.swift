@@ -164,22 +164,21 @@ final class RecipeLauncher {
 }
 
 final class MenuAppDelegate: NSObject, NSApplicationDelegate {
-    /// Opens Settings at a pane; set by the app once its state exists.
-    @MainActor static var openSettings: ((SettingsSection) -> Void)?
+    /// Opens Settings at a pane named by its link; set by the app once its state exists.
+    @MainActor static var openSettings: ((String) -> Void)?
 
     /// macmcp://settings/<pane> (e.g. scheduled-tasks) only opens Settings, so any link may use it.
-    nonisolated static func settingsSection(_ url: URL) -> SettingsSection? {
+    nonisolated static func settingsPane(_ url: URL) -> String? {
         guard url.scheme?.lowercased() == "macmcp", url.host?.lowercased() == "settings" else { return nil }
         let name = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
-        if name == "scheduled-tasks" { return .scheduled }
-        return SettingsSection(rawValue: name)
+        return name.isEmpty ? nil : name
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         Task { @MainActor in
             for url in urls {
                 if url.host?.lowercased() == "settings" {
-                    if let section = Self.settingsSection(url) { Self.openSettings?(section) }
+                    if let pane = Self.settingsPane(url) { Self.openSettings?(pane) }
                     continue
                 }
                 RecipeLauncher.shared.handle(url)
