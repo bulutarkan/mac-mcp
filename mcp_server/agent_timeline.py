@@ -190,6 +190,23 @@ def _claude_tool(name: str, arguments: Any) -> Dict[str, Any]:
             "input": _inputs(arguments), "output": "", "status": "running"}
 
 
+def _error_message(event: Dict[str, Any]) -> str:
+    """Codex {message} / {error: {message}}, OpenCode {error: {name, data: {message}}}."""
+    error = event.get("error")
+    if isinstance(error, dict):
+        data = error.get("data") if isinstance(error.get("data"), dict) else {}
+        return str(data.get("message") or error.get("message") or error.get("name") or "")
+    return str(error or event.get("message") or "")
+
+
+def failure_reason(steps: List[Dict[str, Any]]) -> Optional[str]:
+    """The last problem the agent reported, as the run's reason."""
+    for step in reversed(steps):
+        if step.get("kind") == "error" and step.get("text"):
+            return str(step["text"]).splitlines()[0][:300]
+    return None
+
+
 # ── Building the list ────────────────────────────────────────────────────────
 
 def from_events(lines: List[str]) -> Dict[str, Any]:
@@ -230,7 +247,7 @@ def from_events(lines: List[str]) -> Dict[str, Any]:
             usage = {"input_tokens": int(raw.get("input_tokens") or 0), "output_tokens": int(raw.get("output_tokens") or 0),
                      "reasoning_tokens": int(raw.get("reasoning_output_tokens") or 0)}
         elif kind in {"turn.failed", "error"}:
-            message = (event.get("error") or {}).get("message") if isinstance(event.get("error"), dict) else event.get("message")
+            message = _error_message(event)
             if message:
                 put(None, {"kind": "error", "title": "Ran into a problem", "text": _cut(message, MAX_TEXT), "status": "failed"})
         # Claude Code

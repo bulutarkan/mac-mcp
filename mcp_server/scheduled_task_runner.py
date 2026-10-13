@@ -206,12 +206,26 @@ def wait_for_agent(agent_id: str, settings: Any, *, deadline: float) -> Dict[str
     if status == "timeout":
         return {"status": "timed_out", "reason": "The agent ran past the time limit and was stopped",
                 "summary": summary, "output": report, "detail": detail}
-    reason = str(state.get("error") or state.get("failure_reason") or "") or {
+    reason = str(state.get("error") or state.get("failure_reason") or "") or _reported_problem(detail, report) or {
         "cancelled": "The agent was stopped", "stalled": "The agent stopped responding"}.get(status, "The agent failed")
     return {"status": "failed", "reason": reason[:300], "summary": summary, "output": report, "detail": detail}
 
 
 MAX_STEPS_BYTES = 400_000
+
+
+def _reported_problem(detail: Dict[str, Any], report: str) -> Optional[str]:
+    """What the agent or its provider said went wrong, instead of a bare 'The agent failed'."""
+    from . import agent_timeline
+
+    reason = agent_timeline.failure_reason(detail.get("steps") or [])
+    if reason:
+        return reason
+    for line in report.splitlines():
+        line = line.strip()
+        if line.lower().startswith("error:"):
+            return line[6:].strip()[:300] or None
+    return None
 
 
 def _agent_steps(agent_id: str, report: str) -> Dict[str, Any]:

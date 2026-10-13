@@ -873,8 +873,9 @@ private struct TaskEditorSheet: View {
             HStack(spacing: 10) {
                 switch model.when {
                 case .once:
-                    DatePicker("", selection: $model.onceAt, in: Date()..., displayedComponents: [.date, .hourAndMinute])
-                        .labelsHidden()
+                    DateField(date: $model.onceAt)
+                    TimeField(date: $model.onceAt)
+                    Spacer()
                 case .weekly:
                     HStack(spacing: 4) {
                         ForEach(0..<7, id: \.self) { day in
@@ -896,17 +897,31 @@ private struct TaskEditorSheet: View {
                     Spacer()
                     timePicker
                 case .monthly:
-                    Picker("On day", selection: $model.monthDay) {
-                        ForEach(1...31, id: \.self) { Text("\($0)").tag($0) }
+                    SchedulePill(symbol: "calendar") {
+                        Text("On day").foregroundStyle(.secondary)
+                        Menu {
+                            ForEach(1...31, id: \.self) { day in Button("\(day)") { model.monthDay = day } }
+                        } label: {
+                            Text("\(model.monthDay)").font(.body.monospacedDigit().weight(.medium))
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
                     }
-                    .frame(width: 130)
                     Spacer()
                     timePicker
                 case .hours:
-                    Picker("Every", selection: $model.everyHours) {
-                        ForEach([1, 2, 3, 4, 6, 8, 12], id: \.self) { Text("\($0) hour\($0 == 1 ? "" : "s")").tag($0) }
+                    SchedulePill(symbol: "repeat") {
+                        Text("Every").foregroundStyle(.secondary)
+                        Menu {
+                            ForEach([1, 2, 3, 4, 6, 8, 12], id: \.self) { hours in
+                                Button("\(hours) hour\(hours == 1 ? "" : "s")") { model.everyHours = hours }
+                            }
+                        } label: {
+                            Text("\(model.everyHours) hour\(model.everyHours == 1 ? "" : "s")").font(.body.weight(.medium))
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
                     }
-                    .frame(width: 170)
                     Spacer()
                     Text("from").foregroundStyle(.secondary)
                     timePicker
@@ -939,9 +954,7 @@ private struct TaskEditorSheet: View {
     }
 
     private var timePicker: some View {
-        DatePicker("", selection: $model.time, displayedComponents: .hourAndMinute)
-            .labelsHidden()
-            .frame(width: 90)
+        TimeField(date: $model.time)
     }
 
     private var advanced: some View {
@@ -1089,6 +1102,100 @@ private struct TaskEditorSheet: View {
                 error = result.object["message"] as? String ?? "Couldn’t save the task."
             }
         }
+    }
+}
+
+// MARK: - Schedule controls
+
+/// A rounded field with an icon, roomy enough for its value (the system date fields are tight).
+struct SchedulePill<Content: View>: View {
+    let symbol: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol).font(.system(size: 13)).foregroundStyle(.secondary)
+            content
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 30)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.primary.opacity(0.14)))
+    }
+}
+
+/// Hour and minute as two menus in one pill.
+struct TimeField: View {
+    @Binding var date: Date
+
+    private var hour: Int { Calendar.current.component(.hour, from: date) }
+    private var minute: Int { Calendar.current.component(.minute, from: date) }
+
+    private func set(hour: Int? = nil, minute: Int? = nil) {
+        date = Calendar.current.date(bySettingHour: hour ?? self.hour, minute: minute ?? self.minute, second: 0, of: date) ?? date
+    }
+
+    private var minutes: [Int] {
+        let steps = Array(stride(from: 0, to: 60, by: 5))
+        return steps.contains(minute) ? steps : (steps + [minute]).sorted()
+    }
+
+    var body: some View {
+        SchedulePill(symbol: "clock") {
+            HStack(spacing: 3) {
+                Menu {
+                    ForEach(0..<24, id: \.self) { value in Button(String(format: "%02d", value)) { set(hour: value) } }
+                } label: {
+                    Text(String(format: "%02d", hour)).font(.body.monospacedDigit().weight(.medium))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel("Hour")
+                Text(":").font(.body.weight(.medium)).foregroundStyle(.secondary)
+                Menu {
+                    ForEach(minutes, id: \.self) { value in Button(String(format: "%02d", value)) { set(minute: value) } }
+                } label: {
+                    Text(String(format: "%02d", minute)).font(.body.monospacedDigit().weight(.medium))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel("Minute")
+            }
+        }
+    }
+}
+
+/// The day, opening a calendar; the time stays in its own TimeField.
+struct DateField: View {
+    @Binding var date: Date
+    @MacMCPState private var open = false
+
+    private var day: Binding<Date> {
+        Binding(get: { date }, set: { picked in
+            let calendar = Calendar.current
+            let clock = calendar.dateComponents([.hour, .minute], from: date)
+            date = calendar.date(bySettingHour: clock.hour ?? 9, minute: clock.minute ?? 0, second: 0, of: picked) ?? picked
+        })
+    }
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            SchedulePill(symbol: "calendar") {
+                Text(date.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated).year()))
+                    .font(.body.weight(.medium))
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            }
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            DatePicker("", selection: day, in: Calendar.current.startOfDay(for: Date())..., displayedComponents: .date)
+                .labelsHidden()
+                .datePickerStyle(.graphical)
+                .padding(12)
+        }
+        .accessibilityLabel("Date")
     }
 }
 

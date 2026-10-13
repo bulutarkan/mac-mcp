@@ -91,6 +91,16 @@ class OpenCodeTimelineTests(unittest.TestCase):
         self.assertEqual(("List files", "ls", "done"), (steps[1]["title"], steps[1]["detail"], steps[1]["status"]))
         self.assertEqual(("Read a file", "failed", "missing"), (steps[2]["title"], steps[2]["status"], steps[2]["output"]))
 
+    def test_provider_errors_become_the_reason(self) -> None:
+        steps = agent_timeline.from_events(lines(
+            {"type": "error", "sessionID": "s", "error": {"name": "APIError", "data": {
+                "message": "An active OpenCode Go subscription is required to use Go models.", "statusCode": 403}}},
+        ))["steps"]
+        self.assertEqual(("error", "An active OpenCode Go subscription is required to use Go models."),
+                         (steps[0]["kind"], steps[0]["text"]))
+        self.assertEqual(steps[0]["text"], agent_timeline.failure_reason(steps))
+        self.assertIsNone(agent_timeline.failure_reason([{"kind": "message", "text": "hi"}]))
+
     def test_limits(self) -> None:
         many = [{"type": "item.completed", "item": {"id": f"i{n}", "type": "agent_message", "text": "x" * 9000}}
                 for n in range(agent_timeline.MAX_STEPS + 20)]
