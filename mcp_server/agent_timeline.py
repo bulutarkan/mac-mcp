@@ -279,6 +279,14 @@ def from_events(lines: List[str]) -> Dict[str, Any]:
             if event.get("total_cost_usd") is not None:
                 usage["cost_usd"] = float(event["total_cost_usd"])
         # OpenCode
+        elif kind == "step_finish" and isinstance(event.get("part"), dict):
+            tokens = event["part"].get("tokens") if isinstance(event["part"].get("tokens"), dict) else {}
+            cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
+            usage = {"input_tokens": usage.get("input_tokens", 0) + int(tokens.get("input") or 0) + int(cache.get("read") or 0),
+                     "output_tokens": usage.get("output_tokens", 0) + int(tokens.get("output") or 0),
+                     "reasoning_tokens": usage.get("reasoning_tokens", 0) + int(tokens.get("reasoning") or 0),
+                     **({"cost_usd": usage.get("cost_usd", 0.0) + float(event["part"]["cost"])}
+                        if event["part"].get("cost") else ({"cost_usd": usage["cost_usd"]} if "cost_usd" in usage else {}))}
         elif kind in {"tool_use", "text", "reasoning"} and isinstance(event.get("part"), dict):
             part = event["part"]
             if kind == "text":

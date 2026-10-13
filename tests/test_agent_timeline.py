@@ -84,8 +84,13 @@ class OpenCodeTimelineTests(unittest.TestCase):
             {"type": "tool_use", "part": {"callID": "c2", "tool": "read",
                                           "state": {"status": "error", "input": {"filePath": "/x"}, "error": "missing"}}},
             {"type": "text", "part": {"text": "All set."}},
+            {"type": "step_finish", "part": {"reason": "tool-calls", "cost": 0.01,
+                                             "tokens": {"input": 10, "output": 2, "reasoning": 1, "cache": {"read": 90}}}},
+            {"type": "step_finish", "part": {"reason": "stop", "cost": 0,
+                                             "tokens": {"input": 5, "output": 3, "reasoning": 0, "cache": {"read": 0}}}},
             "not json",
         ))
+        self.assertEqual({"input_tokens": 105, "output_tokens": 5, "reasoning_tokens": 1, "cost_usd": 0.01}, timeline["usage"])
         steps = timeline["steps"]
         self.assertEqual(["thinking", "command", "tool", "message"], [s["kind"] for s in steps])
         self.assertEqual(("List files", "ls", "done"), (steps[1]["title"], steps[1]["detail"], steps[1]["status"]))
