@@ -25,11 +25,11 @@ struct PrivacyPane: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text("Privacy").font(.title2.weight(.semibold))
                     Text("What Mac MCP may look at, what it keeps, and where your data can go. Mac MCP enforces these rules itself; an AI app cannot turn them off.")
-                        .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 if !message.isEmpty {
                     Text(message).font(.caption).foregroundStyle(.secondary)
@@ -122,7 +122,7 @@ struct PrivacyPane: View {
                     .padding(.vertical, 4)
                 }
             }
-            .padding(24)
+            .padding(22)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task { await load() }

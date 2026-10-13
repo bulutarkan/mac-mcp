@@ -956,7 +956,7 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 2)
             }
-            .padding(20)
+            .padding(22)
         }
     }
 
@@ -1810,7 +1810,7 @@ struct SettingsView: View {
 
                 Spacer(minLength: 0)
             }
-            .padding(20)
+            .padding(22)
         }
     }
 
@@ -2002,7 +2002,7 @@ struct SettingsView: View {
 
                 Spacer(minLength: 0)
             }
-            .padding(20)
+            .padding(22)
         }
     }
 
@@ -2248,7 +2248,7 @@ struct SettingsView: View {
 
                 Spacer(minLength: 0)
             }
-            .padding(20)
+            .padding(22)
         }
     }
 
@@ -2325,7 +2325,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(20)
+            .padding(22)
         }
     }
 
@@ -2499,7 +2499,7 @@ struct SettingsView: View {
 
                 Spacer(minLength: 0)
             }
-            .padding(20)
+            .padding(22)
         }
     }
 
@@ -3112,7 +3112,6 @@ struct SettingsView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(maxWidth: 250)
                 }
 
                 defaultAgentPickerRow(title: "Model") {
@@ -3128,7 +3127,6 @@ struct SettingsView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(maxWidth: 250)
                     .disabled(settings.defaultAgentProvider.isEmpty)
                 }
 
@@ -3145,7 +3143,6 @@ struct SettingsView: View {
                         }
                     }
                     .labelsHidden()
-                    .frame(maxWidth: 250)
                     .disabled(settings.defaultAgentProvider.isEmpty || defaultReasoningOptions.isEmpty)
                 }
 
@@ -3173,6 +3170,7 @@ struct SettingsView: View {
                 .frame(width: 72, alignment: .leading)
             Spacer()
             content()
+                .fixedSize()  // natural width, right edges aligned (a wider frame only centers the popup)
         }
     }
 
@@ -3584,7 +3582,7 @@ struct SettingsView: View {
 
                 Spacer(minLength: 0)
             }
-            .padding(20)
+            .padding(22)
         }
     }
 

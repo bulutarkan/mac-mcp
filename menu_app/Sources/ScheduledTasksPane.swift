@@ -114,9 +114,9 @@ struct ScheduledTasksPane: View {
 
     private var list: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 8) {
                             Text("Scheduled Tasks").font(.title2.weight(.semibold))
                             Text("Experimental")
@@ -126,7 +126,7 @@ struct ScheduledTasksPane: View {
                                 .foregroundStyle(Color.accentColor)
                         }
                         Text("AI tasks and scripts that run on their own, on the schedule you choose.")
-                            .font(.callout).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button {
@@ -175,7 +175,7 @@ struct ScheduledTasksPane: View {
                     }
                 }
             }
-            .padding(24)
+            .padding(22)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -400,7 +400,7 @@ private struct TaskDetailView: View {
                     }
                 }
             }
-            .padding(24)
+            .padding(22)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task(id: task.raw["updated_at"] as? Double ?? 0) { await loadRuns() }
