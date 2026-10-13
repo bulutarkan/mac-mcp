@@ -40,3 +40,4 @@ dist/
 
 # Local browser-automation output
 .playwright-mcp/
+.superpowers/
