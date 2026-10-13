@@ -24,7 +24,23 @@ from .runtime_settings import (
     usage_privacy,
 )
 
-_SIZE_FILE_LIMIT = 20_000
+
+
+def _directory_bytes(root: Path) -> int:
+    """Apparent size of everything under root, as du -A reports it (fast even for 60k+ files).
+    Falls back to adding file sizes when du is unavailable."""
+    try:
+        out = subprocess.run(["/usr/bin/du", "-skA", str(root)], capture_output=True, text=True, timeout=30)
+        return int(out.stdout.split()[0]) * 1024
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        total = 0
+        for current, _dirs, names in os.walk(root):
+            for name in names:
+                try:
+                    total += (Path(current) / name).lstat().st_size
+                except OSError:
+                    continue
+        return total
 
 
 def _measure(targets: Iterable[Path]) -> Dict[str, Any]:
@@ -43,15 +59,8 @@ def _measure(targets: Iterable[Path]) -> Dict[str, Any]:
             files += 1
             total += root.stat().st_size
             continue
-        for current, _dirs, names in os.walk(root):
-            for name in names:
-                if files >= _SIZE_FILE_LIMIT:
-                    break
-                try:
-                    total += (Path(current) / name).lstat().st_size
-                    files += 1
-                except OSError:
-                    continue
+        files += sum(len(names) for _current, _dirs, names in os.walk(root))
+        total += _directory_bytes(root)
     private = bool(modes) and all(mode in {"0o700", "0o600"} for mode in modes)
     return {"exists": exists, "bytes": total, "files": files, "modes": sorted(set(modes)), "owner_only": private}
 

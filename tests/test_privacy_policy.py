@@ -401,3 +401,18 @@ class DeleteAndNoticeTests(PrivacySettings):
         client = DashboardTests.client(self)
         body = client.get("/dashboard/api/summary", headers={"authorization": f"Bearer {DashboardTests.TOKEN}"}).json()
         self.assertEqual({"paused": True, "private_mode": False}, body["privacy"])
+
+
+class StoreSizeTests(unittest.TestCase):
+    def test_sizes_cover_every_file_however_many(self) -> None:
+        # 2026-10-13: a 20,000-file cap showed the 3.5 GB agents store as 1.3 GB.
+        from mcp_server import privacy_inventory as inv
+
+        root = Path(tempfile.mkdtemp(prefix="mac-mcp-sizes-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        for index in range(30):
+            (root / f"f{index}").write_bytes(b"x" * 10_000)
+        measured = inv._measure([root])
+        self.assertEqual(30, measured["files"])
+        self.assertGreaterEqual(measured["bytes"], 300_000)
+        self.assertLess(measured["bytes"], 400_000)
