@@ -70,7 +70,8 @@ struct BubbleEpochHarness {
             sessionID: "s2"
         )
         controller.finish(eventID: "e2")
-        await wait(0.20)
+        // Let a same-lane update settle; a slow CI runner once checked mid-resize at 0.20 s.
+        await wait(0.50)
         guard let sameExpanded = visiblePanel() else {
             fatalError("panel disappeared during same-lane update")
         }
