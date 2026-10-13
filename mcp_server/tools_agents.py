@@ -2300,7 +2300,47 @@ def _restricted_codex_state(agent_id: str, meta: Dict[str, Any]) -> Path:
             target.chmod(0o600)
         except OSError:
             target.unlink(missing_ok=True)
+    _untrust_owner_codex_home_as_project(codex_home, meta, source_home)
     return root
+
+
+def _untrust_owner_codex_home_as_project(codex_home: Path, meta: Dict[str, Any], source_home: Path) -> None:
+    """Keep Codex from loading the owner's own config as a project config.
+
+    `codex exec` trusts its working folder, and a trusted folder's .codex/config.toml is
+    loaded as a project layer. In the home folder that file is the owner's global Codex
+    config, with its own mac-mcp entry (a stdio command): merged with the agent's scoped
+    url it stops Codex from starting, and under another name it would hand the agent the
+    owner's unscoped Mac MCP. Marking that folder untrusted in the agent's private config
+    keeps the layer out; Codex leaves an explicit entry as it is.
+    """
+    cwd = str(meta.get("cwd") or "").strip()
+    if not cwd:
+        return
+    folder = Path(cwd).expanduser().resolve(strict=False)
+    if (folder / ".codex").resolve(strict=False) != source_home:
+        return
+    config = codex_home / "config.toml"
+    header = f"[projects.{json.dumps(str(folder))}]"
+    try:
+        lines = config.read_text(encoding="utf-8").splitlines() if config.exists() else []
+    except OSError:
+        lines = []
+    kept: List[str] = []
+    skipping = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("["):
+            skipping = stripped == header
+        if not skipping:
+            kept.append(line)
+    text = "\n".join(kept).rstrip("\n")
+    text = (text + "\n\n" if text else "") + f'{header}\ntrust_level = "untrusted"\n'
+    try:
+        config.write_text(text, encoding="utf-8")
+        config.chmod(0o600)
+    except OSError:
+        pass
 
 
 def _codex_sandbox_profile(agent_id: str, meta: Dict[str, Any]) -> Path:
@@ -2605,14 +2645,38 @@ def _cleanup_provider_config(path: Optional[Path]) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
+CODEX_SCOPED_SERVER = "mac-mcp-agent"
+
+
+def _owner_codex_has_mac_mcp() -> bool:
+    """Whether the owner's own Codex config lists Mac MCP (e.g. the keyless `mac-mcp stdio` entry)."""
+    config = Path(os.getenv("CODEX_HOME") or (Path.home() / ".codex")).expanduser() / "config.toml"
+    try:
+        import tomllib
+        servers = tomllib.loads(config.read_text(encoding="utf-8")).get("mcp_servers")
+    except (OSError, ValueError):
+        return False
+    return isinstance(servers, dict) and "mac-mcp" in servers
+
+
 def _codex_scoped_mcp_args(meta: Dict[str, Any]) -> List[str]:
+    """The agent's own scoped Mac MCP connection, under a name of its own.
+
+    Overriding the owner's mac-mcp entry fails when that entry is a stdio command (Codex
+    refuses a url on it), and leaving it on would give the agent the owner's unscoped
+    connection. So the scoped server has its own name and, where Codex reads the owner's
+    config (full access), the owner's entry is turned off for the agent.
+    """
     if not meta.get("scoped_mcp"):
         return []
     endpoint = str(meta.get("mcp_endpoint") or "http://127.0.0.1:8765/mcp")
-    return [
-        "--config", f"mcp_servers.mac-mcp.url={json.dumps(endpoint)}",
-        "--config", 'mcp_servers.mac-mcp.bearer_token_env_var="MAC_MCP_AGENT_TOKEN"',
+    args = [
+        "--config", f"mcp_servers.{CODEX_SCOPED_SERVER}.url={json.dumps(endpoint)}",
+        "--config", f'mcp_servers.{CODEX_SCOPED_SERVER}.bearer_token_env_var="MAC_MCP_AGENT_TOKEN"',
     ]
+    if str(meta.get("access_mode") or "workspace_write") == "full" and _owner_codex_has_mac_mcp():
+        args += ["--config", "mcp_servers.mac-mcp.enabled=false"]
+    return args
 
 
 def _find_binary(provider: str) -> Optional[str]:

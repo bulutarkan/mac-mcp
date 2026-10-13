@@ -45,6 +45,39 @@ class CodexAuthRefreshTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), Path(os.readlink(link)))
         self.assertEqual([], [p.name for p in self.snapshot().parent.glob(".auth.*")], "no temp files left")
 
+    def test_the_owners_codex_folder_is_never_a_trusted_project(self) -> None:
+        home = self.root / "home"
+        home.mkdir()
+        (home / ".codex").symlink_to(self.codex_home)  # an agent working in the home folder
+        config = self.root / "agents" / "agt_owner" / "provider_state" / "codex" / "codex-home" / "config.toml"
+        config.parent.mkdir(parents=True)
+        folder = str(home.resolve())
+        config.write_text(f'model = "x"\n\n[projects."{folder}"]\ntrust_level = "trusted"\n\n[projects."/other"]\n'
+                          'trust_level = "trusted"\n', encoding="utf-8")
+        agents._restricted_codex_state("agt_owner", {**self.meta, "cwd": str(home)})
+        text = config.read_text(encoding="utf-8")
+        self.assertIn(f'[projects."{folder}"]\ntrust_level = "untrusted"', text)
+        self.assertEqual(1, text.count(f'[projects."{folder}"]'))
+        self.assertIn('[projects."/other"]\ntrust_level = "trusted"', text)
+        self.assertIn('model = "x"', text)
+        self.assertEqual(0o600, stat.S_IMODE(config.stat().st_mode))
+        other = self.root / "project"
+        other.mkdir()
+        before = config.read_text(encoding="utf-8")
+        agents._restricted_codex_state("agt_owner", {**self.meta, "cwd": str(other)})
+        self.assertEqual(before, config.read_text(encoding="utf-8"), "other folders are left to Codex")
+
+    def test_scoped_server_has_its_own_name_and_turns_off_the_owners_entry(self) -> None:
+        meta = {"scoped_mcp": True, "access_mode": "workspace_write"}
+        args = agents._codex_scoped_mcp_args(meta)
+        self.assertIn('mcp_servers.mac-mcp-agent.url="http://127.0.0.1:8765/mcp"', args)
+        self.assertNotIn("mcp_servers.mac-mcp.enabled=false", args)  # the private Codex home has no owner entry
+        full = {**meta, "access_mode": "full"}
+        self.assertNotIn("mcp_servers.mac-mcp.enabled=false", agents._codex_scoped_mcp_args(full))
+        (self.codex_home / "config.toml").write_text('[mcp_servers.mac-mcp]\ncommand = "mac-mcp"\nargs = ["stdio"]\n')
+        self.assertIn("mcp_servers.mac-mcp.enabled=false", agents._codex_scoped_mcp_args(full))
+        self.assertEqual([], agents._codex_scoped_mcp_args({"scoped_mcp": False}))
+
     def test_unchanged_or_missing_sign_in_is_not_rewritten(self) -> None:
         agents._restricted_codex_state("agt_owner", self.meta)
         self.assertFalse(agents._refresh_codex_auth_snapshot(self.source, self.snapshot()))
