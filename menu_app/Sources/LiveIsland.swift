@@ -287,6 +287,7 @@ final class LiveIslandController {
     /// A short sample from Settings: work in the slot, a tick, then a finished-task row.
     func preview() {
         guard enabled else { return }
+        showWindow()
         withAnimation(IslandMotion.slot) { model.slot = .working(.app("com.apple.Safari"), count: 1) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
             guard let self else { return }
@@ -377,8 +378,8 @@ final class LiveIslandController {
     private func enabledChanged(_ on: Bool) {
         if on {
             model.notch = NotchGeometry.detect(NotchGeometry.targetScreen())
-            startPolling()
             showWindow()
+            startPolling()
         } else {
             pollTask?.cancel()
             pollTask = nil
@@ -402,6 +403,8 @@ final class LiveIslandController {
 
     private func pollOnce() async {
         guard enabled, let state else { return }
+        // Self-heal: the island is always on screen while its style is on.
+        if !locked, !(window?.isVisible ?? false) || (window?.alphaValue ?? 0) < 0.99 { showWindow() }
         let attentionResult = await state.taskAPI("dashboard/api/attention")
         let tasksResult = await state.taskAPI("dashboard/api/scheduled-tasks")
         let historyResult = historySeeded ? (ok: false, object: [String: Any]()) : await state.taskAPI("dashboard/api/events?limit=40")
@@ -589,16 +592,17 @@ final class LiveIslandController {
         guard enabled, !locked else { return }
         let panel = ensureWindow()
         position(panel)
-        if !panel.isVisible || panel.alphaValue < 1 {
+        if !panel.isVisible {
             panel.alphaValue = 0
             panel.orderFrontRegardless()
+        }
+        if panel.alphaValue < 1 {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.35
                 panel.animator().alphaValue = 1
             }
         }
         installMouseTracking()
-        Task { await pollOnce() }
     }
 
     private func hideWindow() {
@@ -625,6 +629,8 @@ final class LiveIslandController {
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         panel.isMovable = false
         panel.ignoresMouseEvents = true
+        // Panels hide when their app goes to the background by default; the island must not.
+        panel.hidesOnDeactivate = false
         let host = IslandHostingView(rootView: LiveIslandView(model: model, controller: self))
         host.model = model
         panel.contentView = host
@@ -674,6 +680,12 @@ final class LiveIslandController {
             Task { @MainActor in
                 guard let self, let panel = self.window else { return }
                 self.position(panel)
+            }
+        })
+        observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.enabled, !self.locked else { return }
+                self.window?.orderFrontRegardless()
             }
         })
         let distributed = DistributedNotificationCenter.default()
