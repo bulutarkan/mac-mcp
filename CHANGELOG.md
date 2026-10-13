@@ -1,5 +1,12 @@
 ## Unreleased
 
+### Privacy, browser outcomes and startup (2.1.9 r10)
+- **Settings › Privacy**: pause observation (no screen, page, clipboard or voice reads, no new agents) and private mode (nothing about the work is kept), enforced by the server for every caller and available from the menu (More → Pause Observation / Private Mode). Never-observe lists for apps and sites, optional category rules (password managers, banking and finance, health), every local store with size, retention and owner-only state (move one or all to the Trash), where data can go, FileVault status and an option to keep Mac MCP data out of Time Machine. Tool results that read a page or app carry `privacy_source`. `mac-mcp privacy delete` and `mac-mcp status` cover the same.
+- **Browser outcomes**: every `browser_act` action reports `outcome` (confirmed, page_reacted, unconfirmed, failed, blocked) and takes `expect` to check its result; editor punctuation (smart quotes, dashes) no longer reads as `input_not_applied`. Typing replaces the whole field and partial edits are refused, stated in the tool schema.
+- **One-click connect** also in Settings › Connections; apps added the old way with the key in their settings show Update.
+- **Start at login**: the menu bar app is a login item and shows Starting… until the server answers.
+- Restarts finish while MCP streams are open (3 s graceful shutdown, 10 s stop wait); one path resolver (`mcp_server/paths.py`, docs/CONFIGURATION.md).
+
 ### First run and setup (2.1.9 r9)
 - A first-run tour opens after install: four short animated slides about what Mac MCP does, then live setup steps (start, permissions, connect your AI app, first request). It can be reopened from the menu (More → Take the Tour…) and from Settings → Get Started.
 - macOS permissions now belong to **Mac MCP** instead of Python: the server runs under a small Mac MCP Server helper app, and the tour's Allow buttons open macOS's own prompt naming Mac MCP. After a grant the tour restarts the server so the permission takes effect. Existing installs need to allow Accessibility and Screen Recording once more, this time for Mac MCP.
