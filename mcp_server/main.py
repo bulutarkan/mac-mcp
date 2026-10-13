@@ -1548,7 +1548,7 @@ def create_app():
         description=(
             "The owner's Scheduled Tasks: AI tasks (a prompt a delegated agent runs) and scripts that run at a set "
             "time or on a recurrence. action=list|get|create|update|delete|run_now. create/update take name, "
-            "description, kind ('ai' or 'script'), schedule, and for ai: prompt, agent (codex|claude|opencode), "
+            "summary (what the task is for), kind ('ai' or 'script'), schedule, and for ai: prompt, agent (codex|claude|opencode), "
             "model, folder; for script: script (a file path) or command, arguments, interpreter, folder. schedule is "
             "{type:'once',at:'2026-10-20T09:00'} | {type:'daily',time:'09:00'} | {type:'weekly',time:'09:00',"
             "weekdays:[0..6] (0=Monday)} | {type:'monthly',time:'09:00',day:1-31} | {type:'hours',every:N,"
@@ -1563,7 +1563,7 @@ def create_app():
         action: str = "list",
         task_id: Optional[str] = None,
         name: Optional[str] = None,
-        description: Optional[str] = None,
+        summary: Optional[str] = None,
         kind: Optional[str] = None,
         schedule: Optional[Dict[str, Any]] = None,
         prompt: Optional[str] = None,
@@ -1578,7 +1578,7 @@ def create_app():
         time_limit_minutes: Optional[int] = None,
     ) -> Dict[str, Any]:
         verb = str(action or "list").strip().lower()
-        fields = {"name": name, "description": description, "kind": kind, "schedule": schedule, "prompt": prompt,
+        fields = {"name": name, "description": summary, "kind": kind, "schedule": schedule, "prompt": prompt,
                   "provider": agent, "model": model, "cwd": folder, "script": script, "command": command,
                   "args": arguments, "interpreter": interpreter, "notify": notify, "timeout_min": time_limit_minutes}
         given = {key: value for key, value in fields.items() if value is not None}

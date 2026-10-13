@@ -560,6 +560,17 @@ class McpToolTests(StoreCase):
         self.assertEqual([task_id], [t["id"] for t in listed["tasks"]])
         self.assertEqual("action_invalid", self.call(action="approve", task_id=task_id)["error"])
 
+    def test_listing_works_with_intent_descriptions_on(self) -> None:
+        # Every tool gains a required "description" (intent) field; a tool argument of that name breaks listing.
+        with patch.object(self.mcp, "_intent_descriptions_provider", lambda: True):
+            tools = {tool.name: tool for tool in asyncio.run(self.mcp.list_available_tools(compact=False))}
+        schema = tools["scheduled_tasks"].inputSchema
+        self.assertIn("summary", schema["properties"])
+        self.assertIn("description", schema["required"])
+        created = self.call(action="create", name="Notes", summary="For Fridays", kind="script", command="echo hi",
+                            schedule={"type": "daily", "time": "09:00"})
+        self.assertEqual("For Fridays", created["task"]["proposal"]["description"])
+
     def mcp_actions(self) -> str:
         tool = asyncio.run(self.mcp.list_available_tools(compact=False))
         return next(t.description for t in tool if t.name == "scheduled_tasks").split("action=")[1].split(".")[0]
