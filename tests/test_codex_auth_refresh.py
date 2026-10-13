@@ -83,6 +83,18 @@ class CodexAuthRefreshTests(unittest.TestCase):
         (self.codex_home / "config.toml").write_text('model_reasoning_summary = "concise"\n')
         self.assertEqual(["--config", 'model_reasoning_summary="concise"'], agents._codex_reasoning_summary_args())
 
+    def test_owner_config_is_read_without_tomllib(self) -> None:
+        # Python 3.10 (the supported floor) has no tomllib.
+        with patch.object(agents, "tomllib", None):
+            self.assertEqual(["--config", 'model_reasoning_summary="auto"'], agents._codex_reasoning_summary_args())
+            full = {"scoped_mcp": True, "access_mode": "full"}
+            self.assertNotIn("mcp_servers.mac-mcp.enabled=false", agents._codex_scoped_mcp_args(full))
+            (self.codex_home / "config.toml").write_text(
+                'model_reasoning_summary = "none"  # quiet\n\n[mcp_servers."mac-mcp"]\ncommand = "mac-mcp"\n'
+                '[profiles.x]\nmodel_reasoning_summary = "detailed"\n')
+            self.assertEqual(["--config", 'model_reasoning_summary="none"'], agents._codex_reasoning_summary_args())
+            self.assertIn("mcp_servers.mac-mcp.enabled=false", agents._codex_scoped_mcp_args(full))
+
     def test_unchanged_or_missing_sign_in_is_not_rewritten(self) -> None:
         agents._restricted_codex_state("agt_owner", self.meta)
         self.assertFalse(agents._refresh_codex_auth_snapshot(self.source, self.snapshot()))

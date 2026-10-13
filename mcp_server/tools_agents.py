@@ -19,6 +19,11 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from fastapi import HTTPException, status
 
+try:
+    import tomllib
+except ImportError:  # Python 3.10
+    tomllib = None  # type: ignore[assignment]
+
 from .policy import PolicyContext, PROFILES, current_policy_context, narrow_child_profile, profile_contains
 from .policy_scope import (
     ResourceScope, access_mode_allows, child_scope, normalize_access_mode, scope_contains,
@@ -2648,14 +2653,41 @@ def _cleanup_provider_config(path: Optional[Path]) -> None:
 CODEX_SCOPED_SERVER = "mac-mcp-agent"
 
 
+def _owner_codex_config() -> Dict[str, Any]:
+    """The owner's Codex config.toml. Python 3.10 has no tomllib, so there only the two
+    things read below are picked out: the top-level model_reasoning_summary and the
+    [mcp_servers.<name>] tables."""
+    path = Path(os.getenv("CODEX_HOME") or (Path.home() / ".codex")).expanduser() / "config.toml"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    if tomllib is not None:
+        try:
+            return tomllib.loads(text)
+        except ValueError:
+            return {}
+    config: Dict[str, Any] = {}
+    servers: Dict[str, Any] = {}
+    in_table = False
+    for line in (raw.strip() for raw in text.splitlines()):
+        server = re.fullmatch(r'\[\s*mcp_servers\s*\.\s*"?([A-Za-z0-9_-]+)"?\s*\]\s*(#.*)?', line)
+        if server:
+            servers[server.group(1)] = {}
+        if line.startswith("["):
+            in_table = True
+            continue
+        summary = re.fullmatch(r'model_reasoning_summary\s*=\s*"([^"]*)"\s*(#.*)?', line)
+        if summary and not in_table:
+            config["model_reasoning_summary"] = summary.group(1)
+    if servers:
+        config["mcp_servers"] = servers
+    return config
+
+
 def _owner_codex_has_mac_mcp() -> bool:
     """Whether the owner's own Codex config lists Mac MCP (e.g. the keyless `mac-mcp stdio` entry)."""
-    config = Path(os.getenv("CODEX_HOME") or (Path.home() / ".codex")).expanduser() / "config.toml"
-    try:
-        import tomllib
-        servers = tomllib.loads(config.read_text(encoding="utf-8")).get("mcp_servers")
-    except (OSError, ValueError):
-        return False
+    servers = _owner_codex_config().get("mcp_servers")
     return isinstance(servers, dict) and "mac-mcp" in servers
 
 
@@ -2666,14 +2698,9 @@ def _codex_reasoning_summary_args() -> List[str]:
     is passed along ("none" included); without one, "auto".
     """
     value = "auto"
-    config = Path(os.getenv("CODEX_HOME") or (Path.home() / ".codex")).expanduser() / "config.toml"
-    try:
-        import tomllib
-        owner = tomllib.loads(config.read_text(encoding="utf-8")).get("model_reasoning_summary")
-        if isinstance(owner, str) and re.fullmatch(r"[a-z]{1,16}", owner):
-            value = owner
-    except (OSError, ValueError):
-        pass
+    owner = _owner_codex_config().get("model_reasoning_summary")
+    if isinstance(owner, str) and re.fullmatch(r"[a-z]{1,16}", owner):
+        value = owner
     return ["--config", f'model_reasoning_summary="{value}"']
 
 
