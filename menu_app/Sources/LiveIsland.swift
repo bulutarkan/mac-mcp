@@ -2,11 +2,16 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// The live-activity island (#174): grows out of the notch while Mac MCP works, shows what needs
-/// the owner, and stays hidden otherwise. One of the two live-activity styles (the other is the
-/// tool activity bubble); off unless chosen in Settings › Activity & Notifications.
+/// The live-activity island (#174), one of the two live-activity styles (the other is the tool
+/// activity bubble); off unless chosen in Settings › Activity & Notifications.
+///
+/// It rests as two small wings beside the notch: the Mac MCP mark on the left, an empty slot on
+/// the right. Work shows only in that slot (the native icon of what is being used, with a ring,
+/// then a tick) so ordinary tool calls never move the shape. Events that matter (an agent or a
+/// scheduled run ending, something needing the owner) slide a row down for a few seconds.
+/// Hovering opens the full panel: what needs you, what runs now, recent work, scheduled tasks.
 
-// MARK: - Notch geometry
+// MARK: - Geometry and shape
 
 struct NotchGeometry: Equatable {
     let width: CGFloat
@@ -21,17 +26,16 @@ struct NotchGeometry: Equatable {
             return NotchGeometry(width: screen.frame.width - left - right, height: top, hasNotch: true)
         }
         let menuBar = screen.frame.maxY - screen.visibleFrame.maxY - 1
-        return NotchGeometry(width: 190, height: menuBar > 0 ? menuBar : max(24, NSStatusBar.system.thickness), hasNotch: false)
+        return NotchGeometry(width: 120, height: menuBar > 0 ? menuBar : max(24, NSStatusBar.system.thickness), hasNotch: false)
     }
 
-    /// The screen with a notch, else the main one.
     static func targetScreen() -> NSScreen? {
         NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main
     }
 }
 
-/// Flat top flush with the screen edge, small flares where it meets the menu bar and soft
-/// bottom corners, so the island reads as the notch itself growing.
+/// Flat top flush with the screen edge, small flares into the menu bar and soft bottom corners,
+/// so the island reads as the notch itself. Width, height and radius all animate together.
 struct IslandSilhouette: Shape {
     var bottomRadius: CGFloat
     var flare: CGFloat = 6
@@ -65,9 +69,11 @@ struct IslandSilhouette: Shape {
 
 enum IslandMotion {
     static var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
-    static var open: Animation { reduceMotion ? .easeInOut(duration: 0.18) : .spring(response: 0.42, dampingFraction: 0.80) }
-    static var close: Animation { reduceMotion ? .easeInOut(duration: 0.16) : .spring(response: 0.30, dampingFraction: 0.90) }
-    static var change: Animation { reduceMotion ? .easeInOut(duration: 0.15) : .spring(response: 0.35, dampingFraction: 0.85) }
+    /// Opening: a little give at the end, like the iPhone island.
+    static var open: Animation { reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.45, dampingFraction: 0.78) }
+    /// Closing: content leaves first, then the shape settles back without bounce.
+    static var close: Animation { reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.38, dampingFraction: 0.92) }
+    static var slot: Animation { reduceMotion ? .easeInOut(duration: 0.15) : .spring(response: 0.32, dampingFraction: 0.8) }
 }
 
 extension LiveTone {
@@ -79,14 +85,78 @@ extension LiveTone {
         case .problem: return Color(red: 1.0, green: 0.38, blue: 0.36)
         }
     }
+}
 
-    var badgeSymbol: String {
-        switch self {
-        case .done: return "checkmark"
-        case .attention: return "exclamationmark"
-        case .problem: return "xmark"
-        case .working: return "ellipsis"
+// MARK: - Icons for what is being used
+
+/// The native icon for a tool's subject: Safari or Chrome for the browser, Terminal for commands,
+/// Finder for files, the app itself for app tools; an SF Symbol where no app fits.
+enum IslandIcon: Hashable {
+    case app(String)      // bundle identifier or app name
+    case symbol(String)
+
+    static func forTool(_ tool: String, target: String?) -> IslandIcon {
+        let target = (target ?? "").trimmingCharacters(in: .whitespaces)
+        if tool.hasPrefix("browser") || tool == "open_url" {
+            return .app(target.lowercased() == "chrome" ? "com.google.Chrome" : "com.apple.Safari")
         }
+        if tool.contains("command") || tool.contains("job") || tool == "run_shell" { return .app("com.apple.Terminal") }
+        if tool.contains("file") || tool.contains("director") || tool == "spotlight_search" {
+            return .app("com.apple.finder")
+        }
+        if (tool.hasPrefix("mac_") || tool == "open_app" || tool == "screenshot"), !target.isEmpty { return .app(target) }
+        if tool.hasPrefix("mac_") || tool == "screenshot" || tool == "computer_plan" { return .symbol("macwindow") }
+        if tool.contains("agent") || tool.contains("team") { return .symbol("sparkles") }
+        if tool.hasPrefix("memory") || tool.hasPrefix("lesson") { return .symbol("brain") }
+        if tool == "http_request" { return .symbol("globe") }
+        if tool == "scheduled_tasks" { return .symbol("calendar.badge.clock") }
+        if tool.hasPrefix("ask") { return .symbol("questionmark.bubble") }
+        if tool.contains("voice") { return .symbol("waveform") }
+        return .symbol("wrench.and.screwdriver")
+    }
+
+    private static var cache: [String: NSImage] = [:]
+
+    static func image(for key: String) -> NSImage? {
+        if let cached = cache[key] { return cached }
+        let workspace = NSWorkspace.shared
+        var url = workspace.urlForApplication(withBundleIdentifier: key)
+        if url == nil {
+            for folder in ["/Applications", "/System/Applications", "/System/Applications/Utilities", "/Applications/Utilities"] {
+                let candidate = URL(fileURLWithPath: "\(folder)/\(key).app")
+                if FileManager.default.fileExists(atPath: candidate.path) { url = candidate; break }
+            }
+        }
+        guard let url else { return nil }
+        let image = workspace.icon(forFile: url.path)
+        cache[key] = image
+        return image
+    }
+}
+
+private struct IconTile: View {
+    let icon: IslandIcon
+    var size: CGFloat = 18
+    var tint: Color = .white
+
+    var body: some View {
+        switch icon {
+        case .app(let key):
+            if let image = IslandIcon.image(for: key) {
+                Image(nsImage: image).resizable().interpolation(.high).frame(width: size, height: size)
+            } else {
+                symbol("app.dashed")
+            }
+        case .symbol(let name):
+            symbol(name)
+        }
+    }
+
+    private func symbol(_ name: String) -> some View {
+        RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+            .fill(Color.white.opacity(0.12))
+            .frame(width: size, height: size)
+            .overlay(Image(systemName: name).font(.system(size: size * 0.52, weight: .semibold)).foregroundStyle(tint))
     }
 }
 
@@ -94,71 +164,72 @@ extension LiveTone {
 
 @MainActor
 final class LiveIslandModel: ObservableObject {
-    enum Mode: Int { case hidden = 0, compact, peek, expanded }
+    enum Mode: Int { case rest = 0, peek, expanded }
 
-    @Published private(set) var mode: Mode = .hidden
+    /// What the right wing shows.
+    enum Slot: Equatable {
+        case empty
+        case working(IslandIcon, count: Int)
+        case finished(ok: Bool)
+        case waiting(count: Int)
+    }
+
+    @Published private(set) var mode: Mode = .rest
     @Published var notch: NotchGeometry
+    @Published var slot: Slot = .empty
     @Published var now: [LiveItem] = []
     @Published var needsYou: [LiveItem] = []
-    @Published var upNext: (name: String, at: Date)?
+    @Published var recent: [LiveHistoryEntry] = []
+    @Published var scheduled: [ScheduledTask] = []
     @Published var peek: LivePeek?
-    @Published var lingerTone: LiveTone?
     @Published var privateMode = false
     @Published var observationPaused = false
     @Published var contentVisible = false
-    @Published var expandedHeight: CGFloat = 200
+    @Published var expandedHeight: CGFloat = 220
+    @Published var working = false
     var hovering = false
-
-    let wing: CGFloat = 76
 
     init(notch: NotchGeometry) { self.notch = notch }
 
-    /// The tone the wings show: what needs the owner first, then problems, work, endings.
-    var tone: LiveTone {
-        if !needsYou.isEmpty { return .attention }
-        if now.contains(where: { $0.tone == .problem }) { return .problem }
-        if !now.isEmpty { return .working }
-        return lingerTone ?? peek?.tone ?? .done
-    }
-
-    var hasContent: Bool { !now.isEmpty || !needsYou.isEmpty || peek != nil || lingerTone != nil }
+    /// Each wing holds one icon; the same width at rest and while working, so work never moves the shape.
+    var wing: CGFloat { notch.hasNotch ? 40 : 34 }
 
     var size: CGSize {
-        let compactWidth = notch.width + wing * 2
+        let rest = CGSize(width: notch.width + wing * 2, height: notch.height)
         switch mode {
-        case .hidden: return CGSize(width: notch.width, height: notch.height)
-        case .compact: return CGSize(width: compactWidth, height: notch.height)
-        case .peek: return CGSize(width: max(compactWidth, 440), height: notch.height + 54)
-        case .expanded: return CGSize(width: max(compactWidth, 560), height: notch.height + expandedHeight)
+        case .rest: return rest
+        case .peek: return CGSize(width: max(rest.width, 420), height: notch.height + 54)
+        case .expanded: return CGSize(width: max(rest.width, 580), height: notch.height + expandedHeight)
         }
     }
 
     func go(_ new: Mode) {
         guard new != mode else { return }
         let opening = new.rawValue > mode.rawValue
-        if !opening || new == .compact || new == .hidden {
-            withAnimation(.easeOut(duration: 0.10)) { contentVisible = false }
-        }
-        withAnimation(opening ? IslandMotion.open : IslandMotion.close) { mode = new }
-        if new == .peek || new == .expanded {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) { [weak self] in
+        if opening {
+            withAnimation(IslandMotion.open) { mode = new }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
                 guard let self, self.mode == new else { return }
-                withAnimation(.easeOut(duration: 0.18)) { self.contentVisible = true }
+                withAnimation(.easeOut(duration: 0.2)) { self.contentVisible = true }
+            }
+        } else {
+            // Content leaves first, then the shape settles.
+            withAnimation(.easeIn(duration: 0.1)) { contentVisible = false }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                guard let self else { return }
+                withAnimation(IslandMotion.close) { self.mode = new }
+                if new == .peek {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                        guard self.mode == .peek else { return }
+                        withAnimation(.easeOut(duration: 0.2)) { self.contentVisible = true }
+                    }
+                }
             }
         }
     }
 
-    /// The resting mode for the current content (hover and peeks sit on top of it).
     func settle() {
-        if observationPaused || !hasContent {
-            go(.hidden)
-        } else if hovering {
-            go(.expanded)
-        } else if peek != nil {
-            go(.peek)
-        } else {
-            go(.compact)
-        }
+        if hovering { go(.expanded) } else if peek != nil { go(.peek) } else { go(.rest) }
     }
 }
 
@@ -177,8 +248,9 @@ final class LiveIslandController {
     private var agentsSeeded = false
     private var peekQueue: [LivePeek] = []
     private var peekTask: Task<Void, Never>?
-    private var lingerTask: Task<Void, Never>?
+    private var finishTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
+    private var hoverTask: Task<Void, Never>?
     private var mouseMonitors: [Any] = []
     private var observers: [NSObjectProtocol] = []
     private var locked = false
@@ -186,62 +258,79 @@ final class LiveIslandController {
     private var attention: [LiveItem] = []
     private var reviews: [LiveItem] = []
     private var runningTasks: [LiveItem] = []
-    private var knownProposals: Set<String> = []
-    private var proposalsSeeded = false
+    private var knownAttention: Set<String> = []
+    private var attentionSeeded = false
+    private var historySeeded = false
 
     var enabled: Bool { state?.settings.showLiveIsland == true }
 
     func attach(_ state: AppState) {
         self.state = state
         state.onLiveToolCallStarted = { [weak self] call in self?.toolStarted(call) }
-        state.onLiveToolCallFinished = { [weak self] id in self?.toolFinished(id) }
+        state.onLiveToolCallFinished = { [weak self] id, ok in self?.toolFinished(id, ok: ok) }
         state.onScheduledRunFinished = { [weak self] run, name in self?.scheduledRunFinished(run, name: name) }
-        state.$agents
-            .sink { [weak self] agents in self?.agentsChanged(agents) }
-            .store(in: &subscriptions)
-        state.$privacyFlags
-            .sink { [weak self] flags in
-                self?.model.privateMode = flags?.privateMode == true
-                self?.model.observationPaused = flags?.paused == true
-                self?.model.settle()
-                self?.updateWindow()
-            }
-            .store(in: &subscriptions)
-        state.$serverRunning
-            .removeDuplicates()
-            .sink { [weak self] running in self?.serverChanged(running) }
-            .store(in: &subscriptions)
-        state.settings.$showLiveIsland
-            .removeDuplicates()
-            .sink { [weak self] on in self?.enabledChanged(on) }
-            .store(in: &subscriptions)
+        state.$agents.sink { [weak self] agents in self?.agentsChanged(agents) }.store(in: &subscriptions)
+        state.$privacyFlags.sink { [weak self] flags in
+            self?.model.privateMode = flags?.privateMode == true
+            self?.model.observationPaused = flags?.paused == true
+        }.store(in: &subscriptions)
+        state.$serverRunning.removeDuplicates().sink { [weak self] running in
+            if running { self?.serverWasRunning = true }
+            self?.rebuild()
+        }.store(in: &subscriptions)
+        state.settings.$showLiveIsland.removeDuplicates().sink { [weak self] on in
+            self?.enabledChanged(on)
+        }.store(in: &subscriptions)
         observeSystem()
     }
 
-    /// A short sample of every state, from Settings.
+    /// A short sample from Settings: work in the slot, a tick, then a finished-task row.
     func preview() {
-        guard window != nil || enabled else { return }
-        enqueuePeek(LivePeek(id: "preview-1", symbol: "sparkles", title: "Codex started “Weekly ad report”",
-                             detail: "Scheduled task · Every Monday at 09:00", tone: .working))
-        enqueuePeek(LivePeek(id: "preview-2", symbol: "checkmark", title: "Weekly ad report finished",
-                             detail: "Codex · 36 s", tone: .done))
+        guard enabled else { return }
+        withAnimation(IslandMotion.slot) { model.slot = .working(.app("com.apple.Safari"), count: 1) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in
+            guard let self else { return }
+            withAnimation(IslandMotion.slot) { self.model.slot = .finished(ok: true) }
+            self.enqueuePeek(LivePeek(id: "preview", symbol: "checkmark", title: "Weekly ad report finished",
+                                      detail: "Scheduled task · Codex · 36 s", tone: .done))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { self.refreshSlot() }
+        }
     }
 
     // MARK: Inputs
 
     private func toolStarted(_ call: LiveToolCall) {
+        finishTask?.cancel()
+        finishTask = nil
         tools[call.eventID] = call
         rebuild()
+        refreshSlot()
     }
 
-    private func toolFinished(_ eventID: String) {
-        guard tools.removeValue(forKey: eventID) != nil else { return }
-        if tools.isEmpty && runningAgents().isEmpty && runningTasks.isEmpty { linger(.done) }
+    private func toolFinished(_ eventID: String, ok: Bool) {
+        guard let call = tools.removeValue(forKey: eventID) else { return }
+        remember(LiveHistoryEntry(id: eventID, tool: call.tool, title: call.description, client: call.client,
+                                  target: call.target, at: Date(), ok: ok))
         rebuild()
+        guard tools.isEmpty else {
+            refreshSlot()
+            return
+        }
+        // A tick only when work actually stops, not between back-to-back calls.
+        finishTask?.cancel()
+        finishTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled, let self, self.tools.isEmpty else { return }
+            withAnimation(IslandMotion.slot) { self.model.slot = .finished(ok: ok) }
+            try? await Task.sleep(nanoseconds: 1_400_000_000)
+            guard !Task.isCancelled else { return }
+            self.finishTask = nil
+            self.refreshSlot()
+        }
     }
 
     private func agentsChanged(_ agents: [AgentInfo]) {
-        defer { rebuild() }
+        defer { rebuild(); refreshSlot() }
         guard agentsSeeded else {
             agentStatus = Dictionary(agents.map { ($0.agentID, $0.status ?? "") }, uniquingKeysWith: { a, _ in a })
             agentsSeeded = true
@@ -251,19 +340,17 @@ final class LiveIslandController {
             let previous = agentStatus[agent.agentID]
             let current = agent.status ?? ""
             agentStatus[agent.agentID] = current
-            guard previous != current, !scheduledTitle(agent) else { continue }  // scheduled runs announce themselves
-            let name = Self.agentName(agent)
-            let provider = Self.providerName(agent.provider)
-            if agent.isActive, previous == nil || previous == "queued" {
-                enqueuePeek(LivePeek(id: "agent-start-\(agent.agentID)", symbol: "sparkles",
-                                     title: "\(provider) started \(name)", detail: agent.model ?? "Delegated agent",
-                                     tone: .working, target: .agent(agent.agentID)))
-            } else if !agent.isActive, previous.map({ $0 == "running" || $0 == "starting" }) == true {
+            guard previous != current, !Self.isScheduled(agent) else { continue }  // scheduled runs announce themselves
+            if !agent.isActive, previous.map({ $0 == "running" || $0 == "starting" }) == true {
                 let ok = current == "completed"
+                let name = Self.agentName(agent)
+                let detail = [Self.providerName(agent.provider), agent.durationMS.map { Self.duration(Double($0) / 1000) }]
+                    .compactMap { $0 }.joined(separator: " · ")
                 enqueuePeek(LivePeek(id: "agent-end-\(agent.agentID)", symbol: ok ? "checkmark" : "xmark",
                                      title: ok ? "\(name) finished" : "\(name) \(current == "cancelled" ? "was stopped" : "failed")",
-                                     detail: [provider, agent.durationMS.map { Self.duration(Double($0) / 1000) }].compactMap { $0 }.joined(separator: " · "),
-                                     tone: ok ? .done : .problem, target: .agent(agent.agentID)))
+                                     detail: detail, tone: ok ? .done : .problem, target: .agent(agent.agentID)))
+                remember(LiveHistoryEntry(id: "agent-\(agent.agentID)", tool: "spawn_agent", title: name,
+                                          client: Self.providerName(agent.provider), target: nil, at: Date(), ok: ok))
             }
         }
     }
@@ -277,110 +364,117 @@ final class LiveIslandController {
         case "timed_out": title = "\(name) stopped at its time limit"
         default: title = "\(name) failed"
         }
-        let detail = run.status == "done" ? (run.duration.map { "Scheduled task · \(Self.duration($0))" } ?? "Scheduled task")
+        let detail = run.status == "done"
+            ? "Scheduled task" + (run.duration.map { " · \(Self.duration($0))" } ?? "")
             : (run.reason ?? "Scheduled task")
-        enqueuePeek(LivePeek(id: "run-\(run.id)", symbol: tone == .done ? "checkmark" : tone == .problem ? "xmark" : "forward.end",
+        enqueuePeek(LivePeek(id: "run-\(run.id)", symbol: tone == .done ? "checkmark" : tone == .problem ? "xmark" : "forward.end.fill",
                              title: title, detail: detail, tone: tone, target: .settings("scheduled-tasks")))
+        remember(LiveHistoryEntry(id: "run-\(run.id)", tool: "scheduled_tasks", title: name, client: "Scheduled task",
+                                  target: nil, at: Date(), ok: run.status == "done"))
         Task { await pollOnce() }
-    }
-
-    private func serverChanged(_ running: Bool) {
-        if running { serverWasRunning = true }
-        rebuild()
     }
 
     private func enabledChanged(_ on: Bool) {
         if on {
             model.notch = NotchGeometry.detect(NotchGeometry.targetScreen())
             startPolling()
+            showWindow()
         } else {
             pollTask?.cancel()
             pollTask = nil
             peekQueue.removeAll()
             model.peek = nil
-            model.lingerTone = nil
-            model.go(.hidden)
+            hideWindow()
         }
-        rebuild()
     }
 
-    // MARK: Polling what the app does not already have
+    // MARK: What the app does not already have
 
     private func startPolling() {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.pollOnce()
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
             }
         }
     }
 
     private func pollOnce() async {
         guard enabled, let state else { return }
-        async let attentionCall = state.taskAPI("dashboard/api/attention")
-        async let tasksCall = state.taskAPI("dashboard/api/scheduled-tasks")
-        let (attentionResult, tasksResult) = await (attentionCall, tasksCall)
+        let attentionResult = await state.taskAPI("dashboard/api/attention")
+        let tasksResult = await state.taskAPI("dashboard/api/scheduled-tasks")
+        let historyResult = historySeeded ? (ok: false, object: [String: Any]()) : await state.taskAPI("dashboard/api/events?limit=40")
         if attentionResult.ok {
             attention = (attentionResult.object["pending"] as? [[String: Any]] ?? []).map { row in
-                let tool = row["tool"] as? String ?? "an action"
+                let tool = row["tool"] as? String ?? ""
                 let origin = (row["origin"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                 return LiveItem(id: "approval-\(row["request_id"] as? String ?? UUID().uuidString)", symbol: "hand.raised.fill",
-                                title: "Waiting for your answer",
-                                detail: [Self.toolWords(tool), origin].compactMap { $0 }.joined(separator: " · ") + " — answer in the Mac MCP prompt",
-                                tone: .attention, startedAt: (row["created_at"] as? Double).map { Date(timeIntervalSince1970: $0) }, target: nil)
+                                title: "Waiting for your answer", detail: [Self.toolWords(tool), origin].compactMap { $0 }.joined(separator: " · "),
+                                tone: .attention, startedAt: nil, target: nil, actionTitle: nil)
             }
         }
         if tasksResult.ok {
             let tasks = (tasksResult.object["tasks"] as? [[String: Any]] ?? []).map(ScheduledTask.init)
             reviews = tasks.filter { $0.proposal != nil }.map { task in
                 let by = task.proposal?["proposed_by"] as? String ?? "An AI app"
-                let name = task.proposal?["name"] as? String ?? task.name
-                return LiveItem(id: "review-\(task.id)", symbol: "text.badge.checkmark", title: name,
+                return LiveItem(id: "review-\(task.id)", symbol: "text.badge.checkmark",
+                                title: task.proposal?["name"] as? String ?? task.name,
                                 detail: task.approved ? "\(by) suggested a change" : "\(by) suggested this task",
                                 tone: .attention, startedAt: nil, target: .settings("scheduled-tasks"), actionTitle: "Review")
             }
-            let proposalIDs = Set(reviews.map(\.id))
-            if proposalsSeeded {
-                for item in reviews where !knownProposals.contains(item.id) {
-                    enqueuePeek(LivePeek(id: item.id, symbol: "exclamationmark.bubble.fill", title: item.detail,
-                                         detail: item.title, tone: .attention, actionTitle: "Review", target: item.target))
-                }
-            }
-            knownProposals = proposalIDs
-            proposalsSeeded = true
             runningTasks = tasks.filter { $0.state == "running" && !$0.isAI }.map { task in
                 LiveItem(id: "task-\(task.id)", symbol: "chevron.left.forwardslash.chevron.right", title: task.name,
                          detail: "Scheduled script", tone: .working, startedAt: task.lastRun?.startedAt,
                          target: .settings("scheduled-tasks"))
             }
-            if let next = (tasksResult.object["up_next"] as? [[String: Any]])?.first,
-               let at = next["at"] as? Double {
-                model.upNext = (next["name"] as? String ?? "", Date(timeIntervalSince1970: at))
-            } else {
-                model.upNext = nil
+            model.scheduled = tasks.filter { $0.approved }.sorted {
+                ($0.nextRunAt ?? .distantFuture) < ($1.nextRunAt ?? .distantFuture)
             }
         }
+        if historyResult.ok {
+            historySeeded = true
+            let seeded = (historyResult.object["events"] as? [[String: Any]] ?? []).compactMap { event -> LiveHistoryEntry? in
+                let arguments = event["arguments"] as? [String: Any] ?? [:]
+                guard let text = arguments["description"] as? String, !text.isEmpty,
+                      let id = event["event_id"] as? String else { return nil }
+                let status = event["status"] as? String ?? "ok"
+                return LiveHistoryEntry(id: id, tool: event["tool"] as? String ?? "", title: text, client: nil,
+                                        target: (arguments["browser"] as? String) ?? (arguments["app"] as? String),
+                                        at: Date(timeIntervalSince1970: (event["ended_at"] as? Double) ?? (event["timestamp"] as? Double) ?? 0),
+                                        ok: !["error", "failed", "denied", "blocked", "timeout"].contains(status))
+            }
+            let known = Set(model.recent.map(\.id))
+            model.recent = Array((model.recent + seeded.filter { !known.contains($0.id) }).sorted { $0.at > $1.at }.prefix(20))
+        }
+        let waiting = attention + reviews
+        if attentionSeeded {
+            for item in waiting where !knownAttention.contains(item.id) {
+                let review = item.id.hasPrefix("review")
+                enqueuePeek(LivePeek(id: item.id, symbol: review ? "exclamationmark.bubble.fill" : "hand.raised.fill",
+                                     title: review ? item.detail : item.title, detail: review ? item.title : item.detail,
+                                     tone: .attention, actionTitle: item.actionTitle, target: item.target))
+            }
+        }
+        knownAttention = Set(waiting.map(\.id))
+        attentionSeeded = true
         rebuild()
+        refreshSlot()
     }
 
     // MARK: Building what is shown
 
-    private func runningAgents() -> [AgentInfo] {
-        (state?.agents ?? []).filter(\.isActive)
-    }
+    private func runningAgents() -> [AgentInfo] { (state?.agents ?? []).filter(\.isActive) }
 
     private func rebuild() {
-        guard enabled, let state else {
-            updateWindow()
-            return
-        }
+        guard let state else { return }
         var now: [LiveItem] = []
         if serverWasRunning && !state.serverRunning {
             now.append(LiveItem(id: "server", symbol: "bolt.horizontal.circle", title: "Mac MCP stopped answering",
                                 detail: "Start it from the menu bar", tone: .problem, startedAt: nil, target: nil))
         }
-        for agent in runningAgents() {
+        let agents = runningAgents()
+        for agent in agents {
             let step = agent.lastTool.map { Self.toolWords($0) } ?? (agent.phase.map { $0.capitalized } ?? "Working")
             now.append(LiveItem(id: "agent-\(agent.agentID)", symbol: "sparkles", title: Self.agentName(agent),
                                 detail: "\(Self.providerName(agent.provider)) · \(step)", tone: .working,
@@ -388,32 +482,42 @@ final class LiveIslandController {
                                 target: .agent(agent.agentID)))
         }
         now.append(contentsOf: runningTasks)
-        // Tool calls made by an agent are already shown on that agent's row.
-        let agentIDs = Set(runningAgents().map(\.agentID))
+        let agentIDs = Set(agents.map(\.agentID))
+        var waitingTools: [LiveItem] = []
         for call in tools.values.sorted(by: { $0.startedAt < $1.startedAt }) where call.agentID.map({ !agentIDs.contains($0) }) ?? true {
-            let app = call.client
-            let attention = ["browser_checkpoint", "ask_user", "ask_choice", "ask_confirmation"].contains(call.tool)
-            now.append(LiveItem(id: "tool-\(call.eventID)", symbol: Self.toolSymbol(call.tool), title: call.description,
-                                detail: [app, Self.toolWords(call.tool)].compactMap { $0 }.joined(separator: " · "),
-                                tone: attention ? .attention : .working, startedAt: call.startedAt, target: .dashboard))
+            let asking = ["browser_checkpoint", "ask_user", "ask_choice", "ask_confirmation"].contains(call.tool)
+            // `symbol` carries the tool name here; the row turns it into the tool's icon.
+            let item = LiveItem(id: "tool-\(call.eventID)", symbol: call.tool, title: call.description,
+                                detail: [call.client, Self.toolWords(call.tool)].compactMap { $0 }.joined(separator: " · "),
+                                tone: asking ? .attention : .working, startedAt: call.startedAt, target: .dashboard)
+            if asking { waitingTools.append(item) } else { now.append(item) }
         }
-        let waiting = now.filter { $0.tone == .attention }
-        model.now = now.filter { $0.tone != .attention }
-        model.needsYou = waiting + attention + reviews
-        model.settle()
-        updateWindow()
+        model.now = now
+        model.needsYou = waitingTools + attention + reviews
+        model.working = !now.isEmpty
     }
 
-    private func linger(_ tone: LiveTone) {
-        lingerTask?.cancel()
-        withAnimation(IslandMotion.change) { model.lingerTone = tone }
-        lingerTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
-            guard !Task.isCancelled, let self else { return }
-            withAnimation(IslandMotion.change) { self.model.lingerTone = nil }
-            self.model.settle()
-            self.updateWindow()
+    /// The right wing: what needs you first, then the icon of the current work, else empty.
+    private func refreshSlot() {
+        let slot: LiveIslandModel.Slot
+        if !model.needsYou.isEmpty {
+            slot = .waiting(count: model.needsYou.count)
+        } else if let call = tools.values.max(by: { $0.startedAt < $1.startedAt }) {
+            slot = .working(IslandIcon.forTool(call.tool, target: call.target), count: tools.count + runningAgents().count)
+        } else if !runningAgents().isEmpty || !runningTasks.isEmpty {
+            slot = .working(.symbol("sparkles"), count: runningAgents().count + runningTasks.count)
+        } else if finishTask != nil {
+            return  // the tick is showing; it clears itself
+        } else {
+            slot = .empty
         }
+        if slot != model.slot { withAnimation(IslandMotion.slot) { model.slot = slot } }
+    }
+
+    private func remember(_ entry: LiveHistoryEntry) {
+        var list = model.recent.filter { $0.id != entry.id }
+        list.insert(entry, at: 0)
+        model.recent = Array(list.prefix(20))
     }
 
     private func enqueuePeek(_ peek: LivePeek) {
@@ -426,19 +530,17 @@ final class LiveIslandController {
     private func showNextPeek() {
         guard !peekQueue.isEmpty else {
             peekTask = nil
-            if model.peek != nil {
-                let ended = model.peek?.tone
-                withAnimation(IslandMotion.change) { model.peek = nil }
-                if let ended, ended != .working, model.now.isEmpty { linger(ended) }
-            }
+            model.peek = nil
             model.settle()
-            updateWindow()
             return
         }
         let next = peekQueue.removeFirst()
-        withAnimation(IslandMotion.change) { model.peek = next }
-        model.settle()
-        updateWindow()
+        if model.mode == .peek {
+            withAnimation(IslandMotion.slot) { model.peek = next }
+        } else {
+            model.peek = next
+            model.settle()
+        }
         let hold: UInt64 = next.tone == .attention ? 5_000_000_000 : 3_500_000_000
         peekTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: hold)
@@ -447,11 +549,13 @@ final class LiveIslandController {
         }
     }
 
+    // MARK: Actions from the island
+
     func open(_ target: LiveTarget?) {
         guard let state else { return }
         switch target {
         case .agent(let id):
-            if let url = state.dashboardURL.flatMap({ URL(string: $0.absoluteString + "#agent=\(id)") }) { NSWorkspace.shared.open(url) }
+            if let base = state.dashboardURL, let url = URL(string: base.absoluteString + "#agent=\(id)") { NSWorkspace.shared.open(url) }
         case .settings(let pane):
             MenuAppDelegate.openSettings?(pane)
         case .dashboard:
@@ -466,26 +570,48 @@ final class LiveIslandController {
         state.setPrivacy(paused: !(state.privacyFlags?.paused ?? false))
     }
 
+    private func hoverChanged(_ inside: Bool) {
+        model.hovering = inside
+        hoverTask?.cancel()
+        // Open after a short pause so passing over the menu bar does nothing; close a little later
+        // so a cursor crossing the edge does not flicker the panel.
+        hoverTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: inside ? 160_000_000 : 260_000_000)
+            guard !Task.isCancelled, let self, self.model.hovering == inside else { return }
+            if inside { await self.pollOnce() }
+            self.model.settle()
+        }
+    }
+
     // MARK: Window
 
-    private func updateWindow() {
-        let visible = enabled && !locked && model.mode != .hidden
-        if visible {
-            let panel = ensureWindow()
-            if !panel.isVisible {
-                position(panel)
-                panel.orderFrontRegardless()
-                installMouseTracking()
-            }
-            shapeChanged()
-        } else if let panel = window, panel.isVisible {
-            removeMouseTracking()
-            // Let the closing spring finish before the window goes away.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
-                guard let self, self.model.mode == .hidden || !self.enabled || self.locked else { return }
-                panel.orderOut(nil)
+    private func showWindow() {
+        guard enabled, !locked else { return }
+        let panel = ensureWindow()
+        position(panel)
+        if !panel.isVisible || panel.alphaValue < 1 {
+            panel.alphaValue = 0
+            panel.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.35
+                panel.animator().alphaValue = 1
             }
         }
+        installMouseTracking()
+        Task { await pollOnce() }
+    }
+
+    private func hideWindow() {
+        removeMouseTracking()
+        guard let panel = window, panel.isVisible else { return }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.25
+            panel.animator().alphaValue = 0
+        }, completionHandler: {
+            Task { @MainActor in
+                if !self.enabled || self.locked { panel.orderOut(nil) }
+            }
+        })
     }
 
     private func ensureWindow() -> IslandPanel {
@@ -515,19 +641,14 @@ final class LiveIslandController {
                               width: size.width, height: size.height), display: true)
     }
 
-    /// Clicks pass through everywhere except the visible island; it never takes focus.
+    /// Clicks pass through everywhere except the island's shape; it never takes focus.
     private func installMouseTracking() {
         guard mouseMonitors.isEmpty else { return }
-        let handler: (NSEvent) -> Void = { [weak self] _ in
-            Task { @MainActor in self?.updateMouseThrough() }
-        }
-        if let global = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved], handler: handler) {
-            mouseMonitors.append(global)
-        }
-        if let local = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved], handler: { event in handler(event); return event }) {
+        let handler: (NSEvent) -> Void = { [weak self] _ in Task { @MainActor in self?.updateMouseThrough() } }
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved], handler: handler) { mouseMonitors.append(global) }
+        if let local = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved], handler: { handler($0); return $0 }) {
             mouseMonitors.append(local)
         }
-        updateMouseThrough()
     }
 
     private func removeMouseTracking() {
@@ -537,22 +658,14 @@ final class LiveIslandController {
     }
 
     private func updateMouseThrough() {
-        guard let panel = window else { return }
+        guard let panel = window, panel.isVisible else { return }
         let cursor = NSEvent.mouseLocation
         let frame = panel.frame
         let size = model.size
         let rect = NSRect(x: frame.midX - size.width / 2, y: frame.maxY - size.height, width: size.width, height: size.height)
-        let inside = model.mode != .hidden && rect.contains(cursor)
+        let inside = rect.contains(cursor)
         if panel.ignoresMouseEvents == inside { panel.ignoresMouseEvents = !inside }
-        if !inside, model.hovering {
-            model.hovering = false
-            model.settle()
-        }
-    }
-
-    /// After the shape changes size under a cursor that is not moving.
-    func shapeChanged() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.updateMouseThrough() }
+        if inside != model.hovering { hoverChanged(inside) }
     }
 
     private func observeSystem() {
@@ -573,14 +686,14 @@ final class LiveIslandController {
         observers.append(distributed.addObserver(forName: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 self?.locked = false
-                self?.updateWindow()
+                self?.showWindow()
             }
         })
     }
 
     // MARK: Words
 
-    private func scheduledTitle(_ agent: AgentInfo) -> Bool { (agent.title ?? "").hasPrefix("Scheduled: ") }
+    static func isScheduled(_ agent: AgentInfo) -> Bool { (agent.title ?? "").hasPrefix("Scheduled: ") }
 
     static func agentName(_ agent: AgentInfo) -> String {
         let title = (agent.title ?? "").trimmingCharacters(in: .whitespaces)
@@ -599,32 +712,34 @@ final class LiveIslandController {
     static func toolWords(_ tool: String) -> String {
         let known = [
             "browser_observe": "Looking at a page", "browser_act": "Working in a page", "browser_do": "Visiting a page",
-            "browser_checkpoint": "Your turn in the browser", "read_file": "Reading a file", "write_file": "Writing a file",
-            "edit_file": "Editing a file", "run_command": "Running a command", "search_files": "Searching files",
-            "mac_snapshot": "Looking at the screen", "mac_observe": "Looking at an app", "mac_act": "Working in an app",
-            "spawn_agent": "Starting an agent", "spawn_agents": "Starting agents", "wait_agents": "Waiting for agents",
-            "ask_user": "Asking you", "http_request": "Calling a web service", "scheduled_tasks": "Scheduled Tasks",
+            "browser_find": "Searching a page", "browser_checkpoint": "Your turn in the browser", "read_file": "Reading a file",
+            "write_file": "Writing a file", "edit_file": "Editing a file", "run_command": "Running a command",
+            "search_files": "Searching files", "mac_snapshot": "Looking at the screen", "mac_observe": "Looking at an app",
+            "mac_act": "Working in an app", "mac_app": "Using an app", "spawn_agent": "Starting an agent",
+            "spawn_agents": "Starting agents", "wait_agents": "Waiting for agents", "ask_user": "Asking you",
+            "http_request": "Calling a web service", "scheduled_tasks": "Scheduled Tasks", "tool_invoke": "Using a tool",
+            "tool_discover": "Finding a tool",
         ]
         if let words = known[tool] { return words }
         let spaced = tool.replacingOccurrences(of: "_", with: " ")
         return spaced.prefix(1).uppercased() + spaced.dropFirst()
     }
 
-    static func toolSymbol(_ tool: String) -> String {
-        if tool.hasPrefix("browser") { return "safari" }
-        if tool.contains("file") { return "doc.text" }
-        if tool.contains("command") || tool.contains("job") { return "terminal" }
-        if tool.hasPrefix("mac_") || tool == "screenshot" { return "macwindow" }
-        if tool.contains("agent") { return "sparkles" }
-        if tool.hasPrefix("ask") { return "questionmark.bubble" }
-        return "wrench.and.screwdriver"
+    static func ago(_ date: Date) -> String {
+        let seconds = Date().timeIntervalSince(date)
+        if seconds < 60 { return "just now" }
+        if seconds < 3600 { return "\(Int(seconds / 60)) min ago" }
+        if Calendar.current.isDateInToday(date) {
+            return date.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+        }
+        return TaskTime.relativeDay(date)
     }
 }
 
 // MARK: - Window types
 
 final class IslandPanel: NSPanel {
-    static let size = NSSize(width: 720, height: 420)
+    static let size = NSSize(width: 760, height: 560)
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 }
@@ -644,45 +759,83 @@ final class IslandHostingView: NSHostingView<LiveIslandView> {
 
 // MARK: - Views
 
-/// The Mac MCP icon; a thin ring turns around it while work runs and a badge settles on it otherwise.
+/// The Mac MCP mark in the left wing; dimmed with a pause glyph while observation is paused.
 private struct IslandMark: View {
-    let tone: LiveTone
+    let paused: Bool
     let privateMode: Bool
+
+    static let icon: NSImage = Bundle.main.url(forResource: "AppIcon", withExtension: "png", subdirectory: "Assets")
+        .flatMap(NSImage.init(contentsOf:)) ?? NSApp.applicationIconImage
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Image(nsImage: Self.icon)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 20, height: 20)
+                .opacity(paused ? 0.45 : 1)
+            if paused || privateMode {
+                Image(systemName: paused ? "pause.circle.fill" : "eye.slash.circle.fill")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white, .black)
+                    .offset(x: 3, y: 3)
+            }
+        }
+        .accessibilityLabel(paused ? "Mac MCP, observation paused" : "Mac MCP")
+    }
+}
+
+/// The right wing: empty at rest, the icon of the current work with a ring, a tick when it ends,
+/// an orange count when something waits for the owner.
+private struct IslandSlot: View {
+    let slot: LiveIslandModel.Slot
     @MacMCPState private var spin = false
 
     var body: some View {
         ZStack {
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 18, height: 18)
-                .clipShape(RoundedRectangle(cornerRadius: 4.5, style: .continuous))
-            Circle()
-                .trim(from: 0, to: 0.28)
-                .stroke(LiveTone.working.color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                .frame(width: 26, height: 26)
-                .rotationEffect(.degrees(spin ? 360 : 0))
-                .animation(IslandMotion.reduceMotion ? nil : .linear(duration: 1.1).repeatForever(autoreverses: false), value: spin)
-                .opacity(tone == .working ? 1 : 0)
-            if tone != .working {
+            switch slot {
+            case .empty:
+                Color.clear
+            case .working(let icon, let count):
                 ZStack {
-                    Circle().fill(tone.color).frame(width: 11, height: 11)
-                    Image(systemName: tone.badgeSymbol).font(.system(size: 6.5, weight: .black)).foregroundStyle(.black)
+                    IconTile(icon: icon, size: 16)
+                    Circle()
+                        .stroke(Color.white.opacity(0.14), lineWidth: 1.8)
+                        .frame(width: 24, height: 24)
+                    Circle()
+                        .trim(from: 0, to: 0.3)
+                        .stroke(LiveTone.working.color, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+                        .frame(width: 24, height: 24)
+                        .rotationEffect(.degrees(spin ? 360 : 0))
+                        .animation(IslandMotion.reduceMotion ? nil : .linear(duration: 1.0).repeatForever(autoreverses: false), value: spin)
+                        .onAppear { spin = true }
+                    if count > 1 {
+                        Text("\(count)")
+                            .font(.system(size: 8, weight: .heavy, design: .rounded))
+                            .foregroundStyle(.black)
+                            .padding(.horizontal, 3)
+                            .background(Capsule().fill(Color.white))
+                            .offset(x: 10, y: 9)
+                    }
                 }
-                .overlay(Circle().stroke(Color.black, lineWidth: 1.5))
-                .offset(x: 8, y: 8)
-                .transition(.scale(scale: 0.1).combined(with: .opacity))
-            }
-            if privateMode {
-                Image(systemName: "eye.slash.fill")
-                    .font(.system(size: 7, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.8))
-                    .offset(x: -9, y: -9)
+                .id(icon)
+                .transition(.scale(scale: 0.6).combined(with: .opacity))
+            case .finished(let ok):
+                Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(ok ? LiveTone.done.color : LiveTone.problem.color)
+                    .transition(.scale(scale: 0.3).combined(with: .opacity))
+            case .waiting(let count):
+                ZStack {
+                    Circle().fill(LiveTone.attention.color).frame(width: 18, height: 18)
+                    Text(count > 9 ? "9+" : "\(count)")
+                        .font(.system(size: 10, weight: .heavy, design: .rounded))
+                        .foregroundStyle(.black)
+                }
+                .transition(.scale(scale: 0.4).combined(with: .opacity))
             }
         }
-        .frame(width: 30, height: 28)
-        .onAppear { spin = true }
-        .accessibilityLabel(tone == .working ? "Mac MCP is working" : tone == .attention ? "Mac MCP needs you" : "Mac MCP")
+        .frame(width: 26, height: 26)
     }
 }
 
@@ -692,9 +845,9 @@ struct LiveIslandView: View {
 
     private var radius: CGFloat {
         switch model.mode {
-        case .expanded: return 26
-        case .peek: return 20
-        default: return 12
+        case .expanded: return 28
+        case .peek: return 22
+        case .rest: return model.notch.hasNotch ? 10 : 9
         }
     }
 
@@ -704,94 +857,47 @@ struct LiveIslandView: View {
             ZStack(alignment: .top) {
                 IslandSilhouette(bottomRadius: radius)
                     .fill(Color.black)
-                    .shadow(color: model.tone.color.opacity(model.mode == .hidden ? 0 : 0.32), radius: 14, y: 2)
-                    .overlay(IslandSilhouette(bottomRadius: radius).stroke(Color.white.opacity(model.mode == .expanded ? 0.08 : 0), lineWidth: 1))
+                    .shadow(color: .black.opacity(model.mode == .rest ? 0 : 0.45), radius: 18, y: 6)
 
-                wings
-                    .opacity(model.mode == .hidden ? 0 : 1)
-                    .scaleEffect(model.mode == .hidden ? 0.6 : 1, anchor: .top)
+                HStack(spacing: 0) {
+                    IslandMark(paused: model.observationPaused, privateMode: model.privateMode)
+                        .frame(width: model.wing)
+                    Spacer(minLength: model.notch.width)
+                    IslandSlot(slot: model.slot)
+                        .frame(width: model.wing)
+                }
+                .frame(width: model.notch.width + model.wing * 2, height: model.notch.height)
 
                 VStack(spacing: 0) {
                     Color.clear.frame(height: model.notch.height)
                     if model.mode == .peek, let peek = model.peek {
                         peekRow(peek)
                     } else if model.mode == .expanded {
-                        expanded
+                        IslandPanelContent(model: model, controller: controller)
+                            .fixedSize(horizontal: false, vertical: true)
                             .background(GeometryReader { proxy in
                                 Color.clear.preference(key: IslandHeightKey.self, value: proxy.size.height)
                             })
                     }
                 }
+                .frame(width: size.width, alignment: .top)
                 .opacity(model.contentVisible ? 1 : 0)
-                .offset(y: model.contentVisible ? 0 : -8)
-                .blur(radius: model.contentVisible ? 0 : 3)
+                .offset(y: model.contentVisible ? 0 : -6)
             }
             .frame(width: size.width, height: size.height, alignment: .top)
             .contentShape(Rectangle())
-            .onHover { inside in
-                model.hovering = inside
-                if inside {
-                    // A short pause so passing over the menu bar does not open the panel.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                        if model.hovering { model.settle() }
-                    }
-                } else {
-                    model.settle()
-                }
-                controller.shapeChanged()
-            }
-            .onTapGesture {
-                if model.mode == .compact { model.hovering = true; model.settle() }
-            }
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onPreferenceChange(IslandHeightKey.self) { height in
             if height > 0, abs(height - model.expandedHeight) > 1 {
-                withAnimation(IslandMotion.change) { model.expandedHeight = height }
+                withAnimation(IslandMotion.slot) { model.expandedHeight = min(height, 470) }
             }
         }
     }
 
-    private var wings: some View {
-        HStack(spacing: 0) {
-            IslandMark(tone: model.tone, privateMode: model.privateMode)
-                .frame(width: model.wing)
-            Spacer(minLength: model.notch.width)
-            rightWing
-                .frame(width: model.wing)
-        }
-        .frame(width: model.notch.width + model.wing * 2, height: model.notch.height)
-    }
-
-    @ViewBuilder
-    private var rightWing: some View {
-        if !model.needsYou.isEmpty {
-            Text(model.needsYou.count == 1 ? "Review" : "\(model.needsYou.count) waiting")
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundStyle(LiveTone.attention.color)
-        } else if let problem = model.now.first(where: { $0.tone == .problem }) {
-            Text(problem.id == "server" ? "Stopped" : "Failed")
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundStyle(LiveTone.problem.color)
-        } else if model.now.count == 1, let start = model.now.first?.startedAt {
-            Text(timerInterval: start...Date.distantFuture, countsDown: false)
-                .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-        } else if model.now.count > 1 {
-            Text("\(model.now.count) live")
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white)
-        } else if let tone = model.lingerTone ?? model.peek?.tone, tone != .working {
-            Text(tone == .done ? "Done" : tone == .attention ? "Skipped" : "Failed")
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                .foregroundStyle(tone.color)
-        }
-    }
-
     private func peekRow(_ peek: LivePeek) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 11) {
             ZStack {
                 Circle().fill(peek.tone.color.opacity(0.18)).frame(width: 30, height: 30)
                 Image(systemName: peek.symbol).font(.system(size: 13, weight: .bold)).foregroundStyle(peek.tone.color)
@@ -802,95 +908,189 @@ struct LiveIslandView: View {
             }
             Spacer(minLength: 0)
             if let action = peek.actionTitle {
-                Button(action) { controller.open(peek.target) }
-                    .buttonStyle(IslandPillButton(tint: peek.tone.color))
+                Button(action) { controller.open(peek.target) }.buttonStyle(IslandPillButton(tint: peek.tone.color))
             }
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 18)
         .frame(height: 54)
         .contentShape(Rectangle())
         .onTapGesture { controller.open(peek.target) }
         .id(peek.id)
         .transition(.asymmetric(insertion: .move(edge: .top).combined(with: .opacity), removal: .opacity))
     }
+}
 
-    private var expanded: some View {
-        VStack(alignment: .leading, spacing: 10) {
+/// The panel that opens on hover.
+private struct IslandPanelContent: View {
+    @ObservedObject var model: LiveIslandModel
+    let controller: LiveIslandController
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
             if !model.needsYou.isEmpty {
-                section("NEEDS YOU")
-                ForEach(model.needsYou.prefix(3)) { item in row(item) }
+                section("Needs you") {
+                    ForEach(model.needsYou.prefix(3)) { item in liveRow(item) }
+                }
             }
             if !model.now.isEmpty {
-                section("NOW")
-                ForEach(model.now.prefix(4)) { item in row(item) }
-            }
-            if model.now.isEmpty && model.needsYou.isEmpty {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(LiveTone.done.color)
-                    Text(model.peek?.title ?? "All quiet").font(.system(size: 13, weight: .medium)).foregroundStyle(.white)
+                section("Now") {
+                    ForEach(model.now.prefix(3)) { item in liveRow(item) }
                 }
-                .padding(.vertical, 4)
             }
-            if let next = model.upNext {
-                HStack(spacing: 6) {
-                    Image(systemName: "clock").font(.system(size: 10))
-                    Text("Up next: \(TaskTime.upcoming(next.at)) · \(next.name)").font(.system(size: 11)).lineLimit(1)
+            HStack(alignment: .top, spacing: 14) {
+                section("Recent") {
+                    if model.recent.isEmpty {
+                        quiet("Nothing yet")
+                    } else {
+                        ForEach(model.recent.prefix(5)) { entry in historyRow(entry) }
+                    }
                 }
-                .foregroundStyle(.white.opacity(0.5))
-            }
-            Divider().overlay(Color.white.opacity(0.08))
-            HStack(spacing: 8) {
-                Button {
-                    controller.togglePause()
-                } label: {
-                    Label(model.observationPaused ? "Resume" : "Pause observation",
-                          systemImage: model.observationPaused ? "play.fill" : "pause.fill")
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                section("Scheduled") {
+                    if model.scheduled.isEmpty {
+                        Button { controller.open(.settings("scheduled-tasks")) } label: {
+                            quiet("No scheduled tasks · Add one")
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        ForEach(model.scheduled.prefix(4)) { task in scheduledRow(task) }
+                    }
                 }
-                .buttonStyle(IslandFooterButton())
-                Spacer()
-                Button { controller.open(.dashboard) } label: { Label("Dashboard", systemImage: "gauge.with.dots.needle.33percent") }
-                    .buttonStyle(IslandFooterButton())
-                Button { controller.open(.settings("scheduled-tasks")) } label: { Label("Settings", systemImage: "gearshape") }
-                    .buttonStyle(IslandFooterButton())
+                .frame(width: 200, alignment: .topLeading)
             }
         }
         .padding(.horizontal, 18)
-        .padding(.top, 10)
-        .padding(.bottom, 14)
+        .padding(.top, 12)
+        .padding(.bottom, 16)
     }
 
-    private func section(_ title: String) -> some View {
-        Text(title).font(.system(size: 10, weight: .bold)).foregroundStyle(.white.opacity(0.42)).kerning(0.8)
+    private var header: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(model.observationPaused ? Color.gray : !model.needsYou.isEmpty ? LiveTone.attention.color
+                      : model.working ? LiveTone.working.color : LiveTone.done.color)
+                .frame(width: 7, height: 7)
+            Text(statusText).font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
+            Spacer()
+            iconButton(model.observationPaused ? "play.fill" : "pause.fill",
+                       help: model.observationPaused ? "Resume observation" : "Pause observation") { controller.togglePause() }
+            iconButton("gauge.with.dots.needle.33percent", help: "Open the dashboard") { controller.open(.dashboard) }
+            iconButton("gearshape.fill", help: "Settings") { controller.open(.settings("activity")) }
+        }
     }
 
-    private func row(_ item: LiveItem) -> some View {
+    private var statusText: String {
+        if model.observationPaused { return "Observation paused" }
+        if !model.needsYou.isEmpty { return model.needsYou.count == 1 ? "1 thing needs you" : "\(model.needsYou.count) things need you" }
+        if model.now.count == 1 { return "Working on 1 thing" }
+        if model.now.count > 1 { return "Working on \(model.now.count) things" }
+        return model.privateMode ? "Idle · Private mode" : "Idle"
+    }
+
+    private func iconButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 28, height: 22)
+                .background(Capsule().fill(Color.white.opacity(0.09)))
+                .foregroundStyle(.white.opacity(0.85))
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityLabel(help)
+    }
+
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title.uppercased()).font(.system(size: 9.5, weight: .bold)).kerning(0.8).foregroundStyle(.white.opacity(0.4))
+            content()
+        }
+    }
+
+    private func quiet(_ text: String) -> some View {
+        Text(text).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.45)).padding(.vertical, 2)
+    }
+
+    private func liveRow(_ item: LiveItem) -> some View {
         HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(LinearGradient(colors: [item.tone.color, item.tone.color.opacity(0.6)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                .frame(width: 30, height: 30)
-                .overlay(Image(systemName: item.symbol).font(.system(size: 12, weight: .bold)).foregroundStyle(.white))
+            iconFor(item)
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
-                Text(item.detail).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+                Text(item.title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                Text(item.detail).font(.system(size: 11)).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
                     .id(item.detail)
                     .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .opacity))
             }
             Spacer(minLength: 6)
             if let action = item.actionTitle {
-                Button(action) { controller.open(item.target) }
-                    .buttonStyle(IslandPillButton(tint: item.tone.color))
+                Button(action) { controller.open(item.target) }.buttonStyle(IslandPillButton(tint: item.tone.color))
             } else if let start = item.startedAt, item.tone == .working {
                 Text(timerInterval: start...Date.distantFuture, countsDown: false)
-                    .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.8))
-                    .frame(width: 52, alignment: .trailing)
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.7))
+                    .frame(width: 48, alignment: .trailing)
             }
         }
         .padding(8)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(0.06)))
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(item.tone == .attention ? 0.09 : 0.06)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(item.tone == .attention ? item.tone.color.opacity(0.4) : .clear))
         .contentShape(Rectangle())
         .onTapGesture { controller.open(item.target) }
-        .animation(IslandMotion.change, value: item.detail)
+        .animation(IslandMotion.slot, value: item.detail)
+    }
+
+    @ViewBuilder
+    private func iconFor(_ item: LiveItem) -> some View {
+        if item.id.hasPrefix("tool-") {
+            IconTile(icon: IslandIcon.forTool(item.symbol, target: nil), size: 26)
+        } else {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(LinearGradient(colors: [item.tone.color, item.tone.color.opacity(0.6)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                .frame(width: 26, height: 26)
+                .overlay(Image(systemName: item.symbol).font(.system(size: 11, weight: .bold)).foregroundStyle(.white))
+        }
+    }
+
+    private func historyRow(_ entry: LiveHistoryEntry) -> some View {
+        HStack(spacing: 8) {
+            IconTile(icon: IslandIcon.forTool(entry.tool, target: entry.target), size: 18)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(entry.title).font(.system(size: 11.5, weight: .medium)).foregroundStyle(.white.opacity(0.9)).lineLimit(1)
+                Text([entry.client, LiveIslandController.ago(entry.at)].compactMap { $0 }.joined(separator: " · "))
+                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Image(systemName: entry.ok ? "checkmark" : "xmark")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(entry.ok ? LiveTone.done.color : LiveTone.problem.color)
+        }
+    }
+
+    private func scheduledRow(_ task: ScheduledTask) -> some View {
+        Button { controller.open(.settings("scheduled-tasks")) } label: {
+            HStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(task.isAI ? LiveTone.working.color.opacity(0.85) : LiveTone.done.color.opacity(0.75))
+                    .frame(width: 18, height: 18)
+                    .overlay(Image(systemName: task.isAI ? "sparkles" : "chevron.left.forwardslash.chevron.right")
+                        .font(.system(size: 8.5, weight: .bold)).foregroundStyle(.white))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(task.name).font(.system(size: 11.5, weight: .medium)).foregroundStyle(.white.opacity(0.9)).lineLimit(1)
+                    Text(scheduleLine(task)).font(.system(size: 10)).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func scheduleLine(_ task: ScheduledTask) -> String {
+        if task.state == "running" { return "Running now" }
+        if task.paused { return "Paused" }
+        if let next = task.nextRunAt { return "Next " + TaskTime.upcoming(next) }
+        if let last = task.lastRun { return last.shortLine }
+        return task.scheduleText
     }
 }
 
@@ -907,16 +1107,5 @@ private struct IslandPillButton: ButtonStyle {
             .padding(.horizontal, 10).padding(.vertical, 4)
             .background(Capsule().fill(tint.opacity(configuration.isPressed ? 0.7 : 1)))
             .foregroundStyle(.black)
-    }
-}
-
-private struct IslandFooterButton: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 11.5, weight: .medium))
-            .labelStyle(.titleAndIcon)
-            .padding(.horizontal, 9).padding(.vertical, 5)
-            .background(Capsule().fill(Color.white.opacity(configuration.isPressed ? 0.16 : 0.08)))
-            .foregroundStyle(.white.opacity(0.85))
     }
 }

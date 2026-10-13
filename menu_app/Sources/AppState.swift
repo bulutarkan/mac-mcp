@@ -182,7 +182,7 @@ final class AppState: ObservableObject {
     private var scheduledTaskNotifySince = Date().timeIntervalSince1970
     /// The live-activity island (#174) listens here; set by the app at launch.
     var onLiveToolCallStarted: ((LiveToolCall) -> Void)?
-    var onLiveToolCallFinished: ((String) -> Void)?
+    var onLiveToolCallFinished: ((String, Bool) -> Void)?
     var onScheduledRunFinished: ((TaskRun, String) -> Void)?
     private var lastPublicProcessCheckAt = 0.0
     private static let activePollIntervalSeconds = 2.5
@@ -871,7 +871,8 @@ final class AppState: ObservableObject {
             presentToolActivityEvent(payload)
         } else if kind == "call_finished" {
             ToolActivityBubbleController.shared.finish(eventID: eventID)
-            onLiveToolCallFinished?(eventID)
+            let status = String(describing: payload["status"] ?? "ok")
+            onLiveToolCallFinished?(eventID, !["error", "failed", "denied", "blocked", "timeout"].contains(status))
         }
     }
 
@@ -889,6 +890,7 @@ final class AppState: ObservableObject {
             sessionID: payload["session_id"] as? String,
             agentID: payload["agent_id"] as? String,
             client: payload["client"] as? String,
+            target: (arguments["browser"] as? String) ?? (arguments["app"] as? String),
             startedAt: (payload["started_at"] as? Double).map { Date(timeIntervalSince1970: $0) } ?? Date()
         ))
         // The bubble is one style of live activity; the island is the other.

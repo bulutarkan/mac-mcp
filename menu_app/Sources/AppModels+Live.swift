@@ -44,5 +44,18 @@ struct LiveToolCall: Equatable {
     let agentID: String?
     /// The app that made the call (ChatGPT, Claude Code, ...), when the server knows it.
     let client: String?
+    /// The browser or app the call works in ("safari", "chrome", "Reminders"), for its icon.
+    let target: String?
     let startedAt: Date
+}
+
+/// Something that happened, for the island's Recent list.
+struct LiveHistoryEntry: Identifiable, Equatable {
+    let id: String
+    let tool: String
+    let title: String
+    let client: String?
+    let target: String?
+    let at: Date
+    let ok: Bool
 }

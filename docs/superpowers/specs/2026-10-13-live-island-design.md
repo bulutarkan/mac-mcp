@@ -13,18 +13,21 @@ Priority: needs you > problem > work in progress > just finished > nothing (the 
 - **Work in progress**: MCP tool calls with their intent sentence and the AI app that made them (from the session label), delegated agents and teams (title, provider, current step, elapsed), scheduled task runs.
 - **Needs you** (orange): security approvals waiting for Allow Once / Block, human checkpoints and questions (`browser_checkpoint`, `ask_user`), tasks an AI app suggested (Review).
 - **Problems** (red): the Mac MCP server stopped answering; an agent or scheduled run failed.
-- **Indicators**: private mode shows a small eye-slash in the wing. While observation is paused the island stays quiet.
+- **Indicators**: private mode and paused observation show on the Mac MCP mark; while paused no rows slide down.
 
 Never shown: prompts, results, page text. Only intent sentences, task and agent names and states.
 
 ## States and motion
 
-- **Hidden**: nothing drawn; the window is ordered out.
-- **Compact**: black wings grow from the notch. Left: the Mac MCP icon with a thin spinning ring while work runs, a green tick / orange or red badge when something ends or needs you. Right: elapsed time for one item, "N live" for several, "Done" / "Review" / "Stopped".
-- **Peek** (about 3.5 s on an event): a row slides down under the notch: icon, title, one detail line, and a Review button for attention.
-- **Expanded** (hover or click): Now (live rows), Needs you, Up next, and a footer with Pause observation, Dashboard and Settings.
+Revised after the owner tried the first version: the island never appears and disappears, and ordinary tool calls never move it.
 
-Springs: open response 0.42 / damping 0.80, close 0.30 / 0.90. Content appears 0.10 s after the shape opens (0.18 s fade, 8 pt slide, slight blur); it leaves before the shape closes. Step changes slide in. Badges scale in. Reduce Motion uses fades only.
+- **Rest** (always, while the style is on): two small wings beside the notch. Left: the Mac MCP mark (dimmed with a pause glyph while observation is paused, an eye-slash in private mode). Right: empty.
+- **Working**: only the right slot changes, with the native icon of what is being used (Safari or Chrome for the browser, Terminal for commands, Finder for files, the app itself for app tools, a symbol otherwise) inside a thin spinning ring, plus a count when several things run. When work stops (no new call for 0.6 s) a green tick (red cross on failure) shows for 1.4 s, then the slot empties. The shape keeps its size.
+- **Waiting**: an orange count in the slot while something needs the owner.
+- **Peek** (3.5 s, 5 s for attention): a row slides down only for events that matter: an agent or scheduled run finished or failed, a new approval request, a task an AI app suggested (with Review).
+- **Expanded** (hover, after 0.16 s; closes 0.26 s after the cursor leaves): a status header with Pause, Dashboard and Settings; Needs you; Now (with elapsed time); Recent (last work with the app that did it, when, and how it ended, seeded from the activity history); Scheduled (next runs). It opens with content even when idle.
+
+Springs: open response 0.45 / damping 0.78; close 0.38 / 0.92. Content fades in 0.12 s after the shape opens and fades out before the shape closes, so the shape never snaps. Turning the style off fades the window out. Reduce Motion uses short ease curves.
 
 ## Behaviour
 
