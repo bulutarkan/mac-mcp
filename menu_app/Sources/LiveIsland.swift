@@ -797,11 +797,80 @@ private struct IslandMark: View {
     }
 }
 
+/// A thin ring with a bright arc that turns steadily around the work icon. Core Animation runs the
+/// turn on the GPU, so it keeps going whatever SwiftUI transitions do around it and costs no CPU.
+private struct SpinnerRing: NSViewRepresentable {
+    var diameter: CGFloat
+    var lineWidth: CGFloat
+
+    func makeNSView(context: Context) -> SpinnerView { SpinnerView(diameter: diameter, lineWidth: lineWidth) }
+    func updateNSView(_ view: SpinnerView, context: Context) {}
+}
+
+final class SpinnerView: NSView {
+    private let track = CAShapeLayer()
+    private let arc = CAShapeLayer()
+    private let diameter: CGFloat
+    private let lineWidth: CGFloat
+
+    init(diameter: CGFloat, lineWidth: CGFloat) {
+        self.diameter = diameter
+        self.lineWidth = lineWidth
+        super.init(frame: NSRect(x: 0, y: 0, width: diameter + 2, height: diameter + 2))
+        wantsLayer = true
+        for layer in [track, arc] {
+            layer.fillColor = NSColor.clear.cgColor
+            layer.lineWidth = lineWidth
+            layer.lineCap = .round
+            self.layer?.addSublayer(layer)
+        }
+        track.strokeColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        arc.strokeColor = NSColor(red: 0.45, green: 0.56, blue: 1.0, alpha: 1).cgColor
+        arc.strokeStart = 0
+        arc.strokeEnd = 0.28
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func layout() {
+        super.layout()
+        let box = CGRect(x: (bounds.width - diameter) / 2, y: (bounds.height - diameter) / 2, width: diameter, height: diameter)
+        let path = CGPath(ellipseIn: box, transform: nil)
+        for layer in [track, arc] {
+            layer.frame = bounds
+            layer.path = path
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else { return }
+        arc.removeAnimation(forKey: "spin")
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            // No turning: the arc breathes instead.
+            let pulse = CABasicAnimation(keyPath: "opacity")
+            pulse.fromValue = 1
+            pulse.toValue = 0.35
+            pulse.duration = 0.9
+            pulse.autoreverses = true
+            pulse.repeatCount = .infinity
+            arc.add(pulse, forKey: "spin")
+            return
+        }
+        let spin = CABasicAnimation(keyPath: "transform.rotation.z")
+        spin.fromValue = 0
+        spin.toValue = -2 * Double.pi  // clockwise
+        spin.duration = 1.15
+        spin.repeatCount = .infinity
+        spin.isRemovedOnCompletion = false
+        arc.add(spin, forKey: "spin")
+    }
+}
+
 /// The right wing: empty at rest, the icon of the current work with a ring, a tick when it ends,
 /// an orange count when something waits for the owner.
 private struct IslandSlot: View {
     let slot: LiveIslandModel.Slot
-    @MacMCPState private var spin = false
 
     var body: some View {
         ZStack {
@@ -811,16 +880,8 @@ private struct IslandSlot: View {
             case .working(let icon, let count):
                 ZStack {
                     IconTile(icon: icon, size: 16)
-                    Circle()
-                        .stroke(Color.white.opacity(0.14), lineWidth: 1.8)
-                        .frame(width: 24, height: 24)
-                    Circle()
-                        .trim(from: 0, to: 0.3)
-                        .stroke(LiveTone.working.color, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
-                        .frame(width: 24, height: 24)
-                        .rotationEffect(.degrees(spin ? 360 : 0))
-                        .animation(IslandMotion.reduceMotion ? nil : .linear(duration: 1.0).repeatForever(autoreverses: false), value: spin)
-                        .onAppear { spin = true }
+                    SpinnerRing(diameter: 24, lineWidth: 1.8)
+                        .frame(width: 26, height: 26)
                     if count > 1 {
                         Text("\(count)")
                             .font(.system(size: 8, weight: .heavy, design: .rounded))
