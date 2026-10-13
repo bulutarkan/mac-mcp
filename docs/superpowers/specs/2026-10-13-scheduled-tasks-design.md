@@ -32,10 +32,10 @@ Positioned as experimental; built so a later paid tier can attach a local quota.
 
 ## Architecture
 
-- `mcp_server/scheduled_tasks/schedule.py` — schedules: simple forms (once/daily/weekly/monthly/every N hours) and a 5-field cron subset; `next_run(schedule, after)` in the Mac's local time; plain-language `describe(schedule)`.
-- `mcp_server/scheduled_tasks/store.py` — SQLite at `paths.scheduled_tasks_db()` (`~/.mac-mcp/state/scheduled_tasks.sqlite3`, owner-only): tasks and runs; validation; approval state; retention (last 50 runs per task, 90 days).
-- `mcp_server/scheduled_tasks/runner.py` — runs one task: AI via `spawn_agent` then waits for its result; script via a subprocess with the interpreter, folder, arguments and time limit, capturing the end of the output. Honors Settings › Privacy: paused observation skips AI runs; private mode keeps only the status.
-- `mcp_server/scheduled_tasks/scheduler.py` — the in-server loop: due → run (in a worker thread), overdue by more than 2 minutes → Skipped with the reason (asleep or Mac MCP was stopped), then the next run.
+- `mcp_server/schedule_rules.py` — schedules: simple forms (once/daily/weekly/monthly/every N hours) and a 5-field cron subset; `next_run(schedule, after)` in the Mac's local time; plain-language `describe(schedule)`.
+- `mcp_server/scheduled_tasks.py` — SQLite at `paths.scheduled_tasks_db()` (`~/.mac-mcp/state/scheduled_tasks.sqlite3`, owner-only): tasks and runs; validation; approval state; retention (last 50 runs per task, 90 days).
+- `mcp_server/scheduled_task_runner.py` — runs one task: AI via `spawn_agent` then waits for its result; script via a subprocess with the interpreter, folder, arguments and time limit, capturing the end of the output. Honors Settings › Privacy: paused observation skips AI runs; private mode keeps only the status.
+- `mcp_server/scheduled_task_runner.py` (`Scheduler`) — the in-server loop: due → run (in a worker thread), overdue by more than 2 minutes → Skipped with the reason (asleep or Mac MCP was stopped), then the next run.
 - Dashboard API (`/dashboard/api/scheduled-tasks…`): list, get, create, update, delete, pause/resume, run now, approve/decline, runs.
 - MCP tool `scheduled_tasks` (list / create / update / delete / run_now): agent creations and edits become `pending_approval`; risk registry entry.
 - Menu app: `ScheduledTasksPane.swift` (list, detail, sheets) and notifications for finished runs through `AgentNotificationController.scheduleMessage`.

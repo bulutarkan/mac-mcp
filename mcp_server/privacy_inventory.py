@@ -140,6 +140,8 @@ def stores(*, measure: bool = True) -> List[Dict[str, Any]]:
          "until deleted"),
         ("provider_usage", "Agent token usage", "Tokens and cost reported by agent providers.", [paths.provider_usage_db()],
          f"{usage['retention_days']} days" if usage["enabled"] else "not recorded"),
+        ("scheduled_tasks", "Scheduled Tasks", "Your scheduled tasks and the results of their last runs.",
+         [paths.scheduled_tasks_db()], "last 50 runs per task, 90 days"),
         ("saved_logins", "Saved logins", "Sites and usernames; passwords are in your login Keychain.", [paths.vault_dir()],
          "until deleted"),
         ("audit_log", "Audit log", "Tool names, outcomes and timing, for security review.", [paths.audit_log()],

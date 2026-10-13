@@ -17,6 +17,7 @@ FEATURES = {
         "AppModels+Agents.swift",
         "AppModels+Steering.swift",
         "AppModels+Updates.swift",
+        "AppModels+ScheduledTasks.swift",
         "OnboardingChecklist.swift",
     ),
 }

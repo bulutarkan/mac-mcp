@@ -35,6 +35,7 @@ xcrun swiftc -O -parse-as-library -target "${ARCH}-apple-macos13.0" \
   "${SCRIPT_DIR}/Sources/MacMCPMenuApp.swift" \
   "${SCRIPT_DIR}/Sources/LoginItem.swift" \
   "${SCRIPT_DIR}/Sources/PrivacyPane.swift" \
+  "${SCRIPT_DIR}/Sources/ScheduledTasksPane.swift" \
   "${SCRIPT_DIR}/Sources/ConnectAppsBox.swift" \
   "${SCRIPT_DIR}/Sources/AgentNotificationController.swift" \
   "${SCRIPT_DIR}/Sources/AppState.swift" \
@@ -42,6 +43,7 @@ xcrun swiftc -O -parse-as-library -target "${ARCH}-apple-macos13.0" \
   "${SCRIPT_DIR}/Sources/AppModels+Agents.swift" \
   "${SCRIPT_DIR}/Sources/AppModels+Steering.swift" \
   "${SCRIPT_DIR}/Sources/AppModels+Updates.swift" \
+  "${SCRIPT_DIR}/Sources/AppModels+ScheduledTasks.swift" \
   "${SCRIPT_DIR}/Sources/StatusDisplay.swift" \
   "${SCRIPT_DIR}/Sources/OnboardingChecklist.swift" \
   "${SCRIPT_DIR}/Sources/OnboardingBridge.swift" \

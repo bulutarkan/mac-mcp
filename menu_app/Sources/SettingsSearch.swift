@@ -10,6 +10,7 @@ enum SettingsSearchIndex {
         "agents": "agents subagents provider codex opencode claude code model reasoning thinking default agent history retention delete keep",
         "usage": "usage tokens payload calls errors latency heatmap activity input output top tools retention record history clear privacy data memory memories export delete",
         "permissions": "permissions safety approvals security profile read only trusted access saved logins passwords sign in keychain import",
+        "scheduled": "scheduled tasks schedule cron recurring automation automate timer daily weekly monthly script run later approval review ai task",
         "privacy": "privacy pause observation private mode incognito exclude never observe apps sites do not observe stores data kept retention where data goes recipients providers",
         "apps": "apps mail messages imessage email send confirm confirmation ask before sending xcode notes calendar",
         "connections": "connections browser safari chrome mobile iphone ipad pairing public endpoint ngrok cloudflare tunnel https remote ai clients connect claude code chatgpt codex opencode setup config",

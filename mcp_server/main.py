@@ -5,6 +5,7 @@ from pathlib import Path
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -23,6 +24,7 @@ from .request_client import client_address
 from .workflow_checkpoints import clear_not_executed
 from .log_retention import start_log_rotation
 from . import privacy_inventory, privacy_policy, recipes, run_evidence
+from . import scheduled_task_runner, scheduled_tasks
 from .host_guard import HostGuard, extra_hosts_from_env
 from .public_endpoint import resolve_public_endpoint
 from .security import BASE_DIR, AuthFailureLimiter, _effective_bind_host, _loopback_host, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
@@ -1522,6 +1524,93 @@ def create_app():
         except recipes.RecipeError as exc:
             return {"ok": False, "error": exc.code.lower(), "reason_code": exc.code, "message": str(exc), **exc.extra}
 
+    def _calling_app() -> str:
+        """Who is asking, in words for the owner's Review sheet."""
+        context = current_policy_context()
+        if context.agent_id:
+            return "A Mac MCP agent"
+        try:
+            name = str(mcp.get_context().request_context.session.client_params.clientInfo.name or "")
+        except (AttributeError, LookupError, TypeError, ValueError):
+            name = ""
+        key = name.strip().lower()
+        known = {"claude-code": "Claude Code", "claude-ai": "Claude", "claude": "Claude", "codex": "Codex",
+                 "codex-mcp-client": "Codex", "openai-mcp": "ChatGPT", "chatgpt": "ChatGPT", "cursor": "Cursor",
+                 "opencode": "OpenCode", "mac-mcp-stdio": "An AI app", "gemini-cli-mcp-client": "Gemini CLI"}
+        if key in known:
+            return known[key]
+        cleaned = re.sub(r"[^A-Za-z0-9 ._()-]", "", name).strip()[:40]
+        return cleaned or "An AI app"
+
+    @mcp.tool(
+        name="scheduled_tasks",
+        title="Scheduled Tasks",
+        description=(
+            "The owner's Scheduled Tasks: AI tasks (a prompt a delegated agent runs) and scripts that run at a set "
+            "time or on a recurrence. action=list|get|create|update|delete|run_now. create/update take name, "
+            "description, kind ('ai' or 'script'), schedule, and for ai: prompt, agent (codex|claude|opencode), "
+            "model, folder; for script: script (a file path) or command, arguments, interpreter, folder. schedule is "
+            "{type:'once',at:'2026-10-20T09:00'} | {type:'daily',time:'09:00'} | {type:'weekly',time:'09:00',"
+            "weekdays:[0..6] (0=Monday)} | {type:'monthly',time:'09:00',day:1-31} | {type:'hours',every:N,"
+            "start:'08:00'} | {type:'cron',expr:'0 9 * * 1'} in the Mac's local time. Tasks you create or change "
+            "wait as 'Needs your approval' and never run until the owner approves them in Settings › Scheduled "
+            "Tasks; tell the owner to review them there. You cannot approve. run_now runs an approved task once. "
+            "Runs missed while the Mac slept are recorded as skipped, not run late."
+        ),
+        structured_output=False,
+    )
+    async def _scheduled_tasks(
+        action: str = "list",
+        task_id: Optional[str] = None,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        kind: Optional[str] = None,
+        schedule: Optional[Dict[str, Any]] = None,
+        prompt: Optional[str] = None,
+        agent: Optional[str] = None,
+        model: Optional[str] = None,
+        folder: Optional[str] = None,
+        script: Optional[str] = None,
+        command: Optional[str] = None,
+        arguments: Optional[str] = None,
+        interpreter: Optional[str] = None,
+        notify: Optional[bool] = None,
+        time_limit_minutes: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        verb = str(action or "list").strip().lower()
+        fields = {"name": name, "description": description, "kind": kind, "schedule": schedule, "prompt": prompt,
+                  "provider": agent, "model": model, "cwd": folder, "script": script, "command": command,
+                  "args": arguments, "interpreter": interpreter, "notify": notify, "timeout_min": time_limit_minutes}
+        given = {key: value for key, value in fields.items() if value is not None}
+        try:
+            if verb == "list":
+                tasks = await asyncio.to_thread(scheduled_tasks.list_tasks)
+                return {"ok": True, "tasks": tasks}
+            if verb == "create":
+                task = await asyncio.to_thread(scheduled_tasks.create_task, given, by=_calling_app())
+                return {"ok": True, "task": task, "status": "needs_approval",
+                        "message": "Saved as a suggestion. It will not run until the owner approves it in "
+                                   "Mac MCP Settings › Scheduled Tasks."}
+            if not task_id:
+                raise scheduled_tasks.TaskError("task_id_required", f"action={verb} needs task_id.")
+            if verb == "get":
+                task = await asyncio.to_thread(scheduled_tasks.get_task, task_id)
+                runs = await asyncio.to_thread(scheduled_tasks.list_runs, task_id, 10)
+                return {"ok": True, "task": task, "runs": runs}
+            if verb == "update":
+                task = await asyncio.to_thread(scheduled_tasks.update_task, task_id, given, by=_calling_app())
+                return {"ok": True, "task": task, "status": "needs_approval",
+                        "message": "Saved as a suggested change. The task keeps running as before until the owner "
+                                   "approves the change in Mac MCP Settings › Scheduled Tasks."}
+            if verb == "delete":
+                return await asyncio.to_thread(scheduled_tasks.delete_task, task_id)
+            if verb == "run_now":
+                started = await asyncio.to_thread(scheduled_task_runner.scheduler(settings).run_now, task_id)
+                return {"ok": True, **started, "message": "Started. Use action=get to see the result when it finishes."}
+            raise scheduled_tasks.TaskError("action_invalid", "action must be list, get, create, update, delete or run_now.")
+        except scheduled_tasks.TaskError as exc:
+            return exc.to_dict()
+
     # ── Search tools ────────────────────────────────────────────────────────
     @mcp.tool(name="search_files",
               description="Search file contents with grep. include_extensions filters by type e.g. ['py','js'].")
@@ -2605,6 +2694,8 @@ if os.getenv("MAC_MCP_MANAGED_SERVER") == "1":
     ax_watch.enable()
     # Finished agents' local files expire per Settings > Subagents (default 30 days).
     start_agent_history_expiry()
+    # Scheduled Tasks: sleeps until the next due run; no wakeups without active tasks.
+    scheduled_task_runner.start(load_settings())
     # Owner-only store directories (agents, teams, jobs, telemetry, memory, lessons).
     secure_content_stores([AGENTS_DIR, AGENTS_DIR.parent / "agent_teams", AGENTS_DIR.parent / "jobs"])
     if privacy_policy.privacy_setting("exclude_from_backups", False) is True:

@@ -25,6 +25,7 @@ Precedence for a setting that both sources can set is: **environment variable, t
 | Run timelines | `paths.runs_dir()` | (state root) | state root `/runs` |
 | Saved login index | `paths.vault_dir()` | (state root) | state root `/vault` |
 | Agent token usage | `paths.provider_usage_db()` | (state root) | state root `/state/provider_usage.sqlite3` |
+| Scheduled Tasks | `paths.scheduled_tasks_db()` | (state root) | state root `/state/scheduled_tasks.sqlite3` |
 | Jobs, agents, audit log | `paths.jobs_dir()`, `paths.agents_dir()`, `paths.audit_log()` | none | next to the server code (`~/mac-mcp/mcp_server/…`) |
 
 Settings, telemetry, memory and lessons default to `~/.mac-mcp` even when `MAC_MCP_STATE_DIR` points elsewhere, and job/agent records sit next to the server code. That is how they shipped. Moving them would strand existing data, so the table records it instead. To isolate a test install completely, set each override.

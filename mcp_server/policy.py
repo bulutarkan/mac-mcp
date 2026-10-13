@@ -513,6 +513,20 @@ def _context_handoff_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     )
 
 
+def _scheduled_tasks_risk(arguments: Mapping[str, Any]) -> RiskOverride:
+    action = str(arguments.get("action") or "list").strip().lower()
+    if action in {"list", "get"}:
+        return RiskOverride(capabilities=_caps(Capability.READ), destructive=False, sensitive=True,
+                            requested_access_mode=AccessMode.READ_ONLY)
+    if action == "run_now":
+        # Runs a task the owner already approved, exactly as it would run on schedule.
+        return RiskOverride(capabilities=_caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.AGENT_DELEGATION),
+                            destructive=False, sensitive=True)
+    # create/update only propose: nothing runs until the owner approves it in Settings.
+    return RiskOverride(capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE),
+                        destructive=action == "delete", sensitive=True)
+
+
 def _artifact_pipeline_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     action = str(arguments.get("action") or "").strip().lower().replace("-", "_")
     if action in {"register", "inspect"}:
@@ -653,6 +667,7 @@ RISK_REGISTRY: dict[str, RiskEntry] = {
     "mac_act": _r("mac_act", "accessibility", _caps(Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True, resolver=_mac_act_risk),
     "mac_app": _r("mac_app", "accessibility", _caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.NATIVE_ACCESSIBILITY), sensitive=True, resolver=_mac_app_risk),
     "recipe": _r("recipe", "meta", _caps(Capability.READ, Capability.LOCAL_WRITE), destructive=True, sensitive=True, resolver=_recipe_risk),
+    "scheduled_tasks": _r("scheduled_tasks", "meta", _caps(Capability.READ, Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.AGENT_DELEGATION), destructive=True, sensitive=True, resolver=_scheduled_tasks_risk),
     "computer_plan": _r("computer_plan", "meta", _caps(Capability.READ, Capability.PROCESS_CONTROL, Capability.UI_ACTION, Capability.BROWSER_CONTROL, Capability.NATIVE_ACCESSIBILITY, Capability.EXTERNAL_SIDE_EFFECT), destructive=True, sensitive=True, resolver=_computer_plan_risk),
     # Local search and HTTP
     "search_files": _r("search_files", "search", _caps(Capability.READ), sensitive=True),

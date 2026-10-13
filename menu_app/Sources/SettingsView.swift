@@ -9,6 +9,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case start
     case general
     case agents
+    case scheduled
     case activity
     case usage
     case permissions
@@ -26,6 +27,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .start: return "Get Started"
         case .general: return "General"
         case .agents: return "Agents"
+        case .scheduled: return "Scheduled Tasks"
         case .activity: return "Activity & Notifications"
         case .usage: return "Usage"
         case .permissions: return "Permissions & Safety"
@@ -43,6 +45,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .start: return "flag.checkered"
         case .general: return "slider.horizontal.3"
         case .agents: return "cpu"
+        case .scheduled: return "calendar.badge.clock"
         case .activity: return "bell.badge"
         case .usage: return "chart.bar.xaxis"
         case .permissions: return "checkmark.shield"
@@ -894,6 +897,7 @@ struct SettingsView: View {
         case .start: startPane
         case .general: generalPane
         case .agents: subagentsPane
+        case .scheduled: ScheduledTasksPane(state: state)
         case .activity: activityPane
         case .usage: usagePane
         case .permissions: permissionsPane

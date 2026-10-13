@@ -581,6 +581,17 @@ The macOS menu app can optionally notify you when delegated work finishes while 
 
 Standalone agents generate one terminal notification for completion or needs-attention states. Multi-agent teams are coalesced into one team-level terminal notification instead of one notification per child. Notification content is intentionally minimal: only a sanitized agent/team label is shown, never raw prompts, results, URLs, file paths, or secrets. Clicking an alert opens the local authenticated Operations dashboard focused on the relevant agent or team. Delivery timing, Do Not Disturb, Focus modes, and presentation remain under macOS control.
 
+## Scheduled Tasks (experimental)
+
+**Settings › Scheduled Tasks** runs work on its own at a set time or on a recurrence: once, daily, weekly (chosen days), monthly (a day of the month; 29–31 fall back to the month's last day), every few hours, or a 5-field cron expression under Advanced. Times are this Mac's local time and stay on the wall clock across daylight-saving changes.
+
+- **AI task**: a prompt that a delegated agent (Codex, Claude Code or OpenCode, whichever is on) runs in a chosen folder. The run keeps the agent's summary, full report and the files it named.
+- **Script task**: a file run with the program its type implies (`.sh/.zsh/.bash`, `.py` with a nearby `.venv` when there is one, `.js/.mjs`, `.applescript/.scpt`, `.rb`, `.pl`, or any executable), or a command line. Arguments, the program, the folder and a time limit are under Advanced. Scripts get a plain login environment, not Mac MCP's keys. The run keeps the exit status and the end of the output.
+
+Runs happen inside the Mac MCP server, which sleeps until the next due run (waking at most once a minute while tasks are active, never when none are). A run whose time passed while the Mac slept or Mac MCP was stopped is not run late: it is recorded as **Skipped** with the reason, and **Run now** runs it on demand. One run per task at a time; each task keeps its last 50 runs for at most 90 days in `~/.mac-mcp/state/scheduled_tasks.sqlite3` (owner-only). Paused observation skips AI runs; private mode keeps only how a run ended.
+
+AI apps can list tasks and suggest new ones or changes through the `scheduled_tasks` tool. A suggestion shows as **Needs your approval** and never runs (an approved task keeps running unchanged) until you approve it in Settings; agents cannot approve. A finished run can post a macOS notification that says how it ended, never the prompt or the result.
+
 ## Agent team budgets and adaptive retry
 
 ### Failure-aware team outcome and quorum

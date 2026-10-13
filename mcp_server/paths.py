@@ -66,6 +66,10 @@ def provider_usage_db() -> Path:
     return state_dir() / "state" / "provider_usage.sqlite3"
 
 
+def scheduled_tasks_db() -> Path:
+    return state_dir() / "state" / "scheduled_tasks.sqlite3"
+
+
 def jobs_dir() -> Path:
     return SERVER_DIR / "jobs"
 

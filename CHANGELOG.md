@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Scheduled Tasks (experimental, not yet in a checkpoint)
+- **Settings › Scheduled Tasks**: AI tasks (a prompt for a delegated agent) and script tasks (a file or command) that run once, daily, weekly, monthly, every few hours or on a cron expression, in local time. Cards with the last result, an Up next strip, a detail page with recent runs and full reports, Run now, Pause and Edit, and a New Task sheet that states in a sentence when the task runs; developer options sit under Advanced.
+- Runs missed while the Mac slept or Mac MCP was stopped are recorded as Skipped with the reason instead of running late. The scheduler sleeps until the next run and does not wake at all without active tasks.
+- AI apps can suggest tasks and changes with the `scheduled_tasks` tool; nothing they suggest runs until the owner approves it in Settings.
+
 ### Security fix (not yet in a checkpoint)
 - The secret-egress guard now also checks the decoded forms of an outgoing payload: base64/base64url (padded, unpadded, line-split), hex and percent-encoding, two layers deep, including tokens inside JSON. Before, a secret read on this Mac could be sent without approval by encoding it first (#7). Values of `NAME_TOKEN=` / `SERVICE_API_KEY=` style lines are now remembered when such a file is read. Encryption or splitting a secret across requests is not detected.
 

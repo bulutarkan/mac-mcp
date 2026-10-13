@@ -42,7 +42,9 @@ from .policy import (
     is_global_permission_profile,
     permission_semantics,
 )
-from . import privacy_inventory, privacy_policy
+from . import privacy_inventory, privacy_policy, schedule_rules
+from . import scheduled_tasks as task_store
+from . import scheduled_task_runner
 from .runtime_settings import (
     MEMORY_RETENTION_CHOICES, USAGE_RETENTION_CHOICES, server_setting, update_runtime_setting, usage_privacy,
 )
@@ -759,6 +761,128 @@ def create_dashboard_routes(
                              "exclude_from_backups": privacy_policy.privacy_setting("exclude_from_backups", False) is True,
                              **({"backups": backups} if backups is not None else {})})
 
+    # ── Scheduled Tasks (#175) ──────────────────────────────────────────────
+    # The owner's own screens: edits apply at once and only here can a proposal be approved.
+
+    def _task_error(exc: task_store.TaskError) -> Response:
+        return JSONResponse(exc.to_dict(), status_code=exc.status)
+
+    def _task_agents() -> list:
+        from .tools_agents import _PROVIDER_LABELS
+        from .runtime_settings import provider_enabled
+        return [{"id": key, "name": label} for key, label in _PROVIDER_LABELS.items() if provider_enabled(key)]
+
+    async def scheduled_tasks_list(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        tasks = await asyncio.to_thread(task_store.list_tasks)
+        upcoming = sorted((task for task in tasks if task["state"] == "active" and task.get("next_run_at")),
+                          key=lambda task: task["next_run_at"])
+        return JSONResponse({"ok": True, "tasks": tasks,
+                             "up_next": [{"id": task["id"], "name": task["name"], "at": task["next_run_at"]}
+                                         for task in upcoming[:3]],
+                             "agents": await asyncio.to_thread(_task_agents),
+                             "privacy": privacy_policy.policy(fresh=True)})
+
+    async def scheduled_task_save(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        body = await _json_body(request)
+        task_id = str(body.get("id") or "").strip()
+        definition = body.get("definition")
+        try:
+            if task_id:
+                task = await asyncio.to_thread(task_store.update_task, task_id, definition, by="owner")
+            else:
+                task = await asyncio.to_thread(task_store.create_task, definition, by="owner")
+        except task_store.TaskError as exc:
+            return _task_error(exc)
+        return JSONResponse({"ok": True, "task": task})
+
+    async def scheduled_task_action(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        body = await _json_body(request)
+        task_id = str(body.get("id") or "").strip()
+        action = str(body.get("action") or "").strip().lower()
+        if not re.fullmatch(r"tsk_[0-9a-f]{12}", task_id):
+            return JSONResponse({"ok": False, "error": "invalid_task_id"}, status_code=400)
+        handlers = {
+            "pause": lambda: task_store.set_paused(task_id, True),
+            "resume": lambda: task_store.set_paused(task_id, False),
+            "delete": lambda: task_store.delete_task(task_id),
+            "approve": lambda: task_store.approve(task_id),
+            "decline": lambda: task_store.decline(task_id),
+            "run_now": lambda: scheduled_task_runner.scheduler(settings).run_now(task_id),
+        }
+        if action not in handlers:
+            return JSONResponse({"ok": False, "error": "invalid_action", "allowed": sorted(handlers)}, status_code=400)
+        try:
+            result = await asyncio.to_thread(handlers[action])
+        except task_store.TaskError as exc:
+            return _task_error(exc)
+        return JSONResponse({"ok": True, "action": action, "result": result})
+
+    async def scheduled_task_runs(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        task_id = request.query_params.get("task_id", "")
+        try:
+            task = await asyncio.to_thread(task_store.get_task, task_id)
+        except task_store.TaskError as exc:
+            return _task_error(exc)
+        runs = await asyncio.to_thread(task_store.list_runs, task_id, _int_query(request, "limit", 50))
+        return JSONResponse({"ok": True, "task": task, "runs": runs})
+
+    async def scheduled_task_run(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        try:
+            run = await asyncio.to_thread(task_store.get_run, request.query_params.get("run_id", ""))
+        except task_store.TaskError as exc:
+            return _task_error(exc)
+        return JSONResponse({"ok": True, "run": run})
+
+    async def scheduled_task_finished(request: Request) -> Response:
+        """Runs that ended since a time, for the app's notifications."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        since = _float_query(request, "since", time.time() - 60)
+        runs = await asyncio.to_thread(task_store.finished_since, since)
+        return JSONResponse({"ok": True, "runs": runs, "now": time.time()})
+
+    async def scheduled_task_preview(request: Request) -> Response:
+        """The New Task sheet's live sentence: when it runs, the next runs, and what runs a script."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        body = await _json_body(request)
+        out: Dict[str, Any] = {"ok": True}
+        if "schedule" in body:
+            try:
+                schedule = schedule_rules.validate(body["schedule"])
+                now = time.time()
+                upcoming = []
+                cursor = now
+                for _ in range(3):
+                    cursor = schedule_rules.next_run(schedule, cursor)
+                    if cursor is None:
+                        break
+                    upcoming.append(cursor)
+                out["schedule"] = {"ok": True, "text": schedule_rules.describe(schedule), "next_runs": upcoming}
+            except schedule_rules.ScheduleError as exc:
+                out["schedule"] = {"ok": False, "message": str(exc)}
+        if body.get("script"):
+            out["script"] = await asyncio.to_thread(task_store.inspect_script, str(body["script"]),
+                                                    str(body.get("interpreter") or "") or None)
+        return JSONResponse(out)
+
     async def _json_body(request: Request) -> Dict[str, Any]:
         try:
             body = await request.json()
@@ -1388,6 +1512,13 @@ def create_dashboard_routes(
         Route("/dashboard/api/privacy", privacy_overview),
         Route("/dashboard/api/privacy/settings", privacy_settings, methods=["POST"]),
         Route("/dashboard/api/usage/clear", usage_clear, methods=["POST"]),
+        Route("/dashboard/api/scheduled-tasks", scheduled_tasks_list, methods=["GET"]),
+        Route("/dashboard/api/scheduled-tasks", scheduled_task_save, methods=["POST"]),
+        Route("/dashboard/api/scheduled-tasks/action", scheduled_task_action, methods=["POST"]),
+        Route("/dashboard/api/scheduled-tasks/runs", scheduled_task_runs, methods=["GET"]),
+        Route("/dashboard/api/scheduled-tasks/run", scheduled_task_run, methods=["GET"]),
+        Route("/dashboard/api/scheduled-tasks/finished", scheduled_task_finished, methods=["GET"]),
+        Route("/dashboard/api/scheduled-tasks/preview", scheduled_task_preview, methods=["POST"]),
         Route("/dashboard/api/agents/cancel", agent_cancel, methods=["POST"]),
         Route("/dashboard/api/memory", memory_view, methods=["GET"]),
         Route("/dashboard/api/memory/export", memory_export, methods=["GET"]),

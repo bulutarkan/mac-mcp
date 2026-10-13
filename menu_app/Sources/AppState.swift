@@ -178,6 +178,8 @@ final class AppState: ObservableObject {
     private var pendingSteeringGenerationID: String?
     private var pendingSteeringRestoredFromDisk = false
     private let agentNotificationTracker = AgentNotificationTransitionTracker()
+    /// Scheduled Tasks runs that ended after this time have not been announced yet.
+    private var scheduledTaskNotifySince = Date().timeIntervalSince1970
     private var lastPublicProcessCheckAt = 0.0
     private static let activePollIntervalSeconds = 2.5
     private static let idlePollIntervalSeconds = 12.0
@@ -464,6 +466,31 @@ final class AppState: ObservableObject {
             agents: notificationAgentStates(agents),
             teams: notificationTeamStates(agentTeams)
         )
+    }
+
+    /// A notification for each finished Scheduled Tasks run whose task asks for one.
+    private func announceScheduledTaskRuns() async {
+        let result = await taskAPI("dashboard/api/scheduled-tasks/finished?since=\(scheduledTaskNotifySince)")
+        guard result.ok else { return }
+        if let now = result.object["now"] as? Double { scheduledTaskNotifySince = now }
+        for raw in result.object["runs"] as? [[String: Any]] ?? [] where (raw["notify"] as? Bool) ?? true {
+            let run = TaskRun(raw)
+            let name = raw["task_name"] as? String ?? "Scheduled task"
+            // Like agent notifications, never the prompt or the result itself: only how it ended.
+            let title: String
+            let body: String
+            switch run.status {
+            case "done":
+                title = "\(name) finished"
+                body = run.duration.map { "Done in \(TaskTime.duration($0)). The result is in Scheduled Tasks." } ?? "Done. The result is in Scheduled Tasks."
+            case "skipped": title = "\(name) was skipped"; body = (run.reason ?? "It did not run") + "."
+            case "timed_out": title = "\(name) stopped"; body = "It reached its time limit."
+            default:
+                title = "\(name) failed"
+                body = run.exitCode != nil ? (run.reason ?? "It failed") + ". Details are in Scheduled Tasks." : "Details are in Scheduled Tasks."
+            }
+            _ = await AgentNotificationController.shared.scheduleMessage(title: title, body: String(body.prefix(240)))
+        }
     }
 
     private func processAgentNotificationTransitions(
@@ -918,6 +945,7 @@ final class AppState: ObservableObject {
                 secondaryIssue = secondaryIssue ?? "Agents: \(Self.issueText(for: error))"
             }
             setIfChanged(\.activeAgents, resolvedActiveAgents)
+            await announceScheduledTaskRuns()
             do {
                 let steeringEnvelope = try await steeringFetch
                 applySteeringSnapshot(steeringEnvelope)
