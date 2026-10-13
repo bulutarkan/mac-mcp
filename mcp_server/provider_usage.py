@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .runtime_settings import usage_privacy
+from . import privacy_policy
+from . import paths
 
 SCHEMA_VERSION = 1
 SOURCE_REPORT = "report"
@@ -22,8 +24,7 @@ REPORTING_PROVIDERS = frozenset({"codex", "opencode", "claude"})
 
 
 def db_path() -> Path:
-    state = Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
-    return state / "state" / "provider_usage.sqlite3"
+    return paths.provider_usage_db()
 
 
 def _local_bucket(timestamp: float) -> tuple[str, str]:
@@ -332,7 +333,7 @@ class ProviderUsageStore:
         return removed
 
     def ingest(self, record: UsageRecord) -> bool:
-        if not usage_privacy()["enabled"]:
+        if not usage_privacy()["enabled"] or not privacy_policy.keeps_records():
             return False
         provider = str(record.provider or "").strip().lower()
         if provider not in REPORTING_PROVIDERS:

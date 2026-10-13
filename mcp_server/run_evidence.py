@@ -25,9 +25,12 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional
 
+from . import privacy_policy
+
 from .data_guard import redact_sensitive_text
 from .private_storage import ensure_private_dir
 from .runtime_settings import run_evidence_privacy
+from . import paths
 
 _RUN_ID_RE = re.compile(r"^run_[0-9a-f]{12}$")
 _FILE_RE = re.compile(r"^[0-9]{2}-[A-Za-z0-9_.-]{1,64}-(before|after)\.jpg$")
@@ -38,8 +41,7 @@ _SENSITIVE_INPUT_TYPES = {"password"}
 
 
 def runs_root() -> Path:
-    state = Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
-    return ensure_private_dir(state / "runs")
+    return ensure_private_dir(paths.runs_dir())
 
 
 def valid_run_id(run_id: Any) -> bool:
@@ -152,7 +154,7 @@ def make_capture(run_id: str, call_tool: Callable[[str, Dict[str, Any]], Awaitab
 
 def capture_for_run(run_id: Optional[str], call_tool: Callable[[str, Dict[str, Any]], Awaitable[Any]]):
     """The hook to pass to execute_computer_plan, or None when evidence is off or there is no run."""
-    if not valid_run_id(run_id) or not run_evidence_privacy()["capture"]:
+    if not valid_run_id(run_id) or not run_evidence_privacy()["capture"] or not privacy_policy.keeps_records():
         return None
     return make_capture(str(run_id), call_tool)
 
@@ -168,7 +170,7 @@ def record_run(
     recipe_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Keep what a run did: its steps and outcomes, sanitized, plus references to kept evidence."""
-    if not valid_run_id(run_id):
+    if not valid_run_id(run_id) or not privacy_policy.keeps_records():
         return None
     steps = []
     evidence_count = 0

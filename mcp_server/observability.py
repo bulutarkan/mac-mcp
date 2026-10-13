@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ResourceError, ToolError
 
+from . import paths
 from .fastmcp_compat import ensure_fastmcp_settings_model_complete
 from .chatgpt_client_gate import (
     CHATGPT_PANEL_LEGACY_URIS, CHATGPT_PANEL_RESOURCE_URIS, CHATGPT_PANEL_TOOLS,
@@ -29,7 +30,7 @@ from .chatgpt_client_gate import (
 ensure_fastmcp_settings_model_complete()
 
 from .steering import SteeringManager, attach_steering, preemption_error, steering_identity_from_context
-from . import browser_tabs
+from . import browser_tabs, privacy_policy
 from .tool_summaries import COMPACT_DESCRIPTION_LIMIT, CORE_TOOL_NAMES, CORE_TOOL_SUMMARIES
 from . import audit_chain
 from . import error_contract
@@ -359,7 +360,7 @@ class TelemetryManager:
         async_writes: Optional[bool] = None,
     ) -> None:
         self.started_at = time.time()
-        telemetry_dir = Path(os.getenv("MAC_MCP_TELEMETRY_DIR", str(DEFAULT_TELEMETRY_DIR))).expanduser()
+        telemetry_dir = paths.telemetry_dir()
         telemetry_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = Path(db_path or (telemetry_dir / "telemetry.sqlite3")).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -735,8 +736,11 @@ class TelemetryManager:
         for field in _TELEMETRY_METADATA_COLUMNS:
             value = (metadata or {}).get(field, started_event.get(field))
             event[field] = sanitize_value(value, preview_chars=self.preview_chars)
-        self._insert_event(event)
-        if str(started_event.get("source") or "") == "mcp":
+        # Private mode (Settings > Privacy): the call still shows live, but no row or usage sample is kept.
+        keep = privacy_policy.keeps_records()
+        if keep:
+            self._insert_event(event)
+        if keep and str(started_event.get("source") or "") == "mcp":
             actor_class = "scoped_subagent" if str(event.get("agent_id") or "").strip() else "primary"
             try:
                 self._usage.submit(

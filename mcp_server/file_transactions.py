@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, Optional, Sequence
 
+from . import paths
 from .policy_scope import ResourceScope
 from .scoped_fs import (
     ScopedFilesystemError, scope_needs_path_guard, scoped_estimate_bytes, scoped_fingerprint,
@@ -72,11 +73,7 @@ def _now() -> float:
 
 
 def journal_root() -> Path:
-    configured = os.getenv("MAC_MCP_FILE_JOURNAL_DIR", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    state = Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
-    return state / "transactions"
+    return paths.transactions_dir()
 
 
 def _retention_s() -> int:

@@ -12,6 +12,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case activity
     case usage
     case permissions
+    case privacy
     case apps
     case connections
     case voice
@@ -28,6 +29,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .activity: return "Activity & Notifications"
         case .usage: return "Usage"
         case .permissions: return "Permissions & Safety"
+        case .privacy: return "Privacy"
         case .apps: return "Apps"
         case .connections: return "Connections"
         case .voice: return "Voice"
@@ -44,6 +46,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .activity: return "bell.badge"
         case .usage: return "chart.bar.xaxis"
         case .permissions: return "checkmark.shield"
+        case .privacy: return "hand.raised"
         case .apps: return "square.grid.2x2"
         case .connections: return "network"
         case .voice: return "waveform.and.mic"
@@ -893,6 +896,7 @@ struct SettingsView: View {
         case .activity: activityPane
         case .usage: usagePane
         case .permissions: permissionsPane
+        case .privacy: PrivacyPane(state: state)
         case .apps: appsPane
         case .connections: connectionsPane
         case .voice: voicePane

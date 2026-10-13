@@ -32,6 +32,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from . import paths
+
 RETENTION_S = 24 * 3600
 MAX_ENTRIES = 2_000
 MAX_RESULT_BYTES = 256 * 1024
@@ -53,7 +55,7 @@ class IdempotencyError(Exception):
 
 
 def journal_path() -> Path:
-    base = Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
+    base = paths.state_dir()
     return base / "idempotency.sqlite3"
 
 

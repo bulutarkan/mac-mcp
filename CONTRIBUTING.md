@@ -35,6 +35,7 @@ The source repository is the canonical development copy. Do not treat an install
 4. Preserve unrelated user or contributor work.
 5. Add or update regression tests when behavior changes.
 6. Verify the real behavior, not only syntax or exit codes.
+7. New paths and settings follow [docs/CONFIGURATION.md](docs/CONFIGURATION.md): one resolver in `mcp_server/paths.py` per location, environment before settings.json before the default.
 
 Never commit API keys, bearer tokens, cookies, `.env` secrets, private keys, dashboard tokens, browser companion tokens, or private runtime configuration.
 

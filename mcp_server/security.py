@@ -20,6 +20,8 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from fastapi import HTTPException, Request, status
 
+from . import paths
+
 BASE_DIR = Path(__file__).resolve().parent
 HOME_DIR = Path(os.getenv("MAC_MCP_HOME", str(Path.home()))).expanduser().resolve()
 
@@ -28,7 +30,7 @@ def dashboard_token_path() -> Path:
     configured = os.getenv("MAC_MCP_DASHBOARD_TOKEN_FILE", "").strip()
     if configured:
         return Path(configured).expanduser()
-    state_dir = Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
+    state_dir = paths.state_dir()
     return state_dir / "dashboard-token"
 
 

@@ -21,7 +21,7 @@ def worker_args(**extra) -> argparse.Namespace:
 
 
 class RestartWorkerRecoveryTests(unittest.TestCase):
-    def run_worker(self, *, preflight=None, start_codes=(0,), health=(True,)):
+    def run_worker(self, *, preflight=None, start_codes=(0,), health=(True,), stop_code=0, gone=True):
         statuses: list[tuple[tuple, dict]] = []
         health_results = iter(health)
         with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: "1"}, clear=False), \
@@ -30,7 +30,8 @@ class RestartWorkerRecoveryTests(unittest.TestCase):
              patch.object(cli, "_wait_for_restart_requester_exit", return_value=True), \
              patch.object(cli, "_write_restart_status", side_effect=lambda *a, **k: statuses.append((a, k))), \
              patch.object(cli.time, "sleep"), \
-             patch.object(cli, "stop", return_value=0) as stop, \
+             patch.object(cli, "stop", return_value=stop_code) as stop, \
+             patch.object(cli, "_server_gone", return_value=gone), \
              patch.object(cli, "start", side_effect=list(start_codes)) as start, \
              patch.object(cli, "_restart_health_ok", side_effect=lambda *a, **k: next(health_results)), \
              patch.object(cli, "_resolve_server_identity", return_value=(4321, "pid_record")):
@@ -46,6 +47,20 @@ class RestartWorkerRecoveryTests(unittest.TestCase):
         self.assertEqual(("failed",), state)
         self.assertEqual("preflight", details["stage"])
         self.assertTrue(details["server_left_running"])
+
+    def test_a_server_that_exits_after_the_stop_wait_is_replaced(self) -> None:
+        # 2026-10-13: uvicorn stopped listening, waited for an open stream, then exited; the stop
+        # gave up on it and the restart left Mac MCP down.
+        code, statuses, _stop, start = self.run_worker(stop_code=1, gone=True)
+        self.assertEqual(0, code)
+        self.assertEqual(1, start.call_count)
+        self.assertEqual(("succeeded",), statuses[-1][0])
+
+    def test_a_server_that_does_not_exit_stops_the_restart(self) -> None:
+        code, statuses, _stop, start = self.run_worker(stop_code=1, gone=False)
+        self.assertEqual(1, code)
+        start.assert_not_called()
+        self.assertEqual("stop", statuses[-1][1]["stage"])
 
     def test_tunnel_failure_with_a_healthy_server_is_degraded_not_retried(self) -> None:
         code, statuses, _stop, start = self.run_worker(start_codes=(1,), health=(True,))
@@ -117,6 +132,22 @@ class RestartWaitTests(unittest.TestCase):
         self.assertIn(f"{cli.RESTART_REQUESTER_ENV}=0", waiting["ProgramArguments"])
         self.assertIn(f"{cli.RESTART_REQUESTER_ENV}={os.getpid()}", plain["ProgramArguments"])
         self.assertNotIn("--wait", waiting["ProgramArguments"])
+
+
+class ServerGoneTests(unittest.TestCase):
+    def test_gone_needs_no_listener_and_no_live_recorded_process(self) -> None:
+        record = type("Record", (), {"pid": 4321})()
+        cases = [((None, []), True), ((record, []), False), ((None, [99]), False)]
+        for (found, listeners), expected in cases:
+            with self.subTest(found=found, listeners=listeners), \
+                    patch.object(cli, "read_process_record", return_value=found), \
+                    patch.object(cli, "_pid_alive", return_value=True), \
+                    patch.object(cli, "listener_pids", return_value=listeners):
+                self.assertEqual(expected, cli._server_gone(8765, timeout_s=0))
+        with patch.object(cli, "read_process_record", return_value=record), \
+                patch.object(cli, "_pid_alive", return_value=False), \
+                patch.object(cli, "listener_pids", return_value=[]):
+            self.assertTrue(cli._server_gone(8765, timeout_s=0))
 
 
 if __name__ == "__main__":

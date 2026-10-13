@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+from . import paths
+
 PRIVATE_DIR_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 
@@ -43,7 +45,7 @@ def ensure_private_dir(path: Path) -> Path:
 
 def secure_content_stores(extra_dirs: Iterable[Path] = (), *, state_dir: Optional[Path] = None) -> Dict[str, List[str]]:
     """Tighten the store directories that exist; returns what changed."""
-    state = state_dir or Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
+    state = state_dir or paths.state_dir()
     targets: List[Path] = [state] + [state / name for name in STATE_CONTENT_DIRS] + [Path(p) for p in extra_dirs]
     changed = [str(path) for path in targets if make_private(path)]
     return {"changed": changed}

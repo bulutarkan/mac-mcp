@@ -8,12 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import paths
+
 
 def settings_path() -> Path:
-    configured = os.getenv("MAC_MCP_SETTINGS_PATH", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return Path.home() / ".mac-mcp" / "settings.json"
+    return paths.settings_path()
 
 
 @dataclass(frozen=True)

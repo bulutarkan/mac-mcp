@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional
 
-from . import context_handoff
+from . import context_handoff, privacy_policy
 from .process_supervision import run_osascript
 from .security import Settings
 from .tools_browser import browser_list_tabs
@@ -395,7 +395,8 @@ def unified_read_snapshot(
         if json_bytes(fitted) > max(4_096, min(int(max_output_bytes), _MAX_OUTPUT_BUDGET)):
             fitted = _fit_snapshot(fitted, max_output_bytes)
     _stabilize_snapshot_sizes(fitted)
-    return fitted
+    # Excluded apps and sites stay listed but show no titles, addresses or text.
+    return privacy_policy.scrub(fitted)
 
 
 # context_handoff reads through this module without importing it (it is imported by it).

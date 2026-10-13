@@ -30,6 +30,7 @@ import yaml
 
 from . import policy, recipes, release_trust
 from .version import __version__
+from . import paths
 
 SCHEMA_VERSION = 1
 CATALOG_FILE = "catalog.json"
@@ -70,7 +71,7 @@ def trusted_signers_path() -> Path:
 
 
 def _state_root() -> Path:
-    state = Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
+    state = paths.state_dir()
     root = state / "catalog"
     root.mkdir(parents=True, exist_ok=True)
     os.chmod(root, 0o700)

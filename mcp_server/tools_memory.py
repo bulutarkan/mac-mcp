@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException, status
+from . import paths
 from .runtime_settings import memory_privacy
 from . import embedding_manager as embeddings
 
@@ -112,9 +113,7 @@ def _private(path: Path, mode: int) -> None:
 
 
 def _memory_root() -> Path:
-    raw = os.getenv("MAC_MCP_MEMORY_DIR", "").strip()
-    root = Path(raw).expanduser() if raw else (Path.home() / ".mac-mcp" / "memory")
-    root = root.resolve()
+    root = paths.memory_dir().resolve()
     root.mkdir(parents=True, exist_ok=True)
     _private(root, 0o700)
     return root

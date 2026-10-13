@@ -34,6 +34,7 @@ xcrun swiftc -O -parse-as-library -target "${ARCH}-apple-macos13.0" \
   "${SCRIPT_DIR}/Sources/SwiftUICompat.swift" \
   "${SCRIPT_DIR}/Sources/MacMCPMenuApp.swift" \
   "${SCRIPT_DIR}/Sources/LoginItem.swift" \
+  "${SCRIPT_DIR}/Sources/PrivacyPane.swift" \
   "${SCRIPT_DIR}/Sources/AgentNotificationController.swift" \
   "${SCRIPT_DIR}/Sources/AppState.swift" \
   "${SCRIPT_DIR}/Sources/AppModels+Dashboard.swift" \

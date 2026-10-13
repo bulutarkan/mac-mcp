@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from .runtime_settings import server_setting
+from . import paths
 
 PUBLIC_ENDPOINT_MODES = ("none", "ngrok", "cloudflare", "custom")
 CLOUDFLARE_TOKEN_FILENAME = "cloudflare-tunnel-token"
@@ -37,7 +38,7 @@ class CloudflareCredentialStatus:
 
 
 def _state_dir() -> Path:
-    return Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
+    return paths.state_dir()
 
 
 def cloudflare_token_path(override: object = None) -> Path:

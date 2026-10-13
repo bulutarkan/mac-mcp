@@ -42,6 +42,7 @@ from .policy import (
     is_global_permission_profile,
     permission_semantics,
 )
+from . import privacy_inventory, privacy_policy
 from .runtime_settings import (
     MEMORY_RETENTION_CHOICES, USAGE_RETENTION_CHOICES, server_setting, update_runtime_setting, usage_privacy,
 )
@@ -705,6 +706,40 @@ def create_dashboard_routes(
             return JSONResponse({"ok": False, "error": "usage_settings_persist_failed"}, status_code=500)
         return JSONResponse({"ok": True, **usage_privacy(fresh=True)})
 
+    async def privacy_overview(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        current = privacy_policy.policy(fresh=True)
+        return JSONResponse({"ok": True, **current, "stores": privacy_inventory.stores(),
+                             "recipients": privacy_inventory.recipients()})
+
+    async def privacy_settings(request: Request) -> Response:
+        """Pause, private mode and exclusions (Settings > Privacy). The server enforces them."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        body = await _json_body(request)
+        updates: Dict[str, Any] = {}
+        for field, key in (("paused", "observation_paused"), ("private_mode", "private_mode")):
+            if field in body:
+                if not isinstance(body[field], bool):
+                    return JSONResponse({"ok": False, "error": f"{field}_must_be_boolean"}, status_code=400)
+                updates[key] = body[field]
+        for field in ("excluded_sites", "excluded_apps"):
+            if field in body:
+                items = body[field]
+                if not isinstance(items, list) or len(items) > 500 or not all(
+                        isinstance(item, str) and 0 < len(item.strip()) <= 253 for item in items):
+                    return JSONResponse({"ok": False, "error": f"invalid_{field}"}, status_code=400)
+                updates[field] = sorted({item.strip() for item in items})
+        try:
+            for key, value in updates.items():
+                update_runtime_setting("privacy", key, value)
+        except (OSError, RuntimeError, ValueError):
+            return JSONResponse({"ok": False, "error": "privacy_settings_persist_failed"}, status_code=500)
+        return JSONResponse({"ok": True, **privacy_policy.policy(fresh=True)})
+
     async def _json_body(request: Request) -> Dict[str, Any]:
         try:
             body = await request.json()
@@ -1331,6 +1366,8 @@ def create_dashboard_routes(
         Route("/dashboard/api/events", events, methods=["GET"]),
         Route("/dashboard/api/usage", usage, methods=["GET"]),
         Route("/dashboard/api/usage/settings", usage_settings, methods=["POST"]),
+        Route("/dashboard/api/privacy", privacy_overview),
+        Route("/dashboard/api/privacy/settings", privacy_settings, methods=["POST"]),
         Route("/dashboard/api/usage/clear", usage_clear, methods=["POST"]),
         Route("/dashboard/api/agents/cancel", agent_cancel, methods=["POST"]),
         Route("/dashboard/api/memory", memory_view, methods=["GET"]),

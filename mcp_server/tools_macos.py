@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from .process_supervision import run_osascript
 from .security import Settings, truncate
 from .clipboard_guard import ClipboardBusyError, clipboard_guard
+from . import privacy_policy
 from .tool_cancellation import ToolCancelledError
 
 
@@ -62,6 +63,7 @@ def send_notification(settings: Settings, title: str, message: str, sound: str =
 
 def clipboard_get(settings: Settings) -> Dict[str, Any]:
     """Read the current clipboard contents without overlapping temporary paste transactions."""
+    privacy_policy.check_tool("clipboard_get")
     try:
         with clipboard_guard():
             proc = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5)
@@ -131,9 +133,30 @@ def set_brightness(settings: Settings, level: int) -> Dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
+def _visible_window_owners() -> Optional[List[str]]:
+    from .native_window_capture import _window_list
+
+    rows, _displays, _error = _window_list(3.0)
+    if rows is None:
+        return None
+    return [str(row.get("owner") or "") for row in rows
+            if row.get("onScreen") and int(row.get("layer") or 0) == 0]
+
+
 def screenshot(settings: Settings, path: str = str(Path.home() / "Desktop" / "screenshot.png"),
                window: bool = False) -> Dict[str, Any]:
     """Take a screenshot and save to path."""
+    privacy_policy.check_tool("screenshot")
+    if privacy_policy.policy()["excluded_apps"]:
+        owners = _visible_window_owners()
+        if owners is None:
+            # Not knowing what is on screen must not mean capturing an excluded app.
+            raise privacy_policy.PrivacyBlocked(
+                "privacy_check_unavailable",
+                "Mac MCP could not check which apps are on screen, and the owner excluded some apps, so the screen "
+                "is not captured.",
+            )
+        privacy_policy.check_screen(owners)
     args = ["screencapture", "-x"]  # -x: no sound
     if window:
         args.append("-w")  # interactive window select

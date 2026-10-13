@@ -17,7 +17,7 @@ from fastapi import HTTPException, status
 
 from .process_supervision import run_osascript
 from .security import Settings, truncate, validate_browser_url as _validate_browser_destination
-from . import applescript_host, browser_tabs, context_handoff, native_focus
+from . import applescript_host, browser_tabs, context_handoff, native_focus, privacy_policy
 from .chrome_background_bridge import chrome_background_bridge
 from .artifact_pipeline import (
     ArtifactError, drive_native_file_dialog, register_artifact, resolve_artifact, wait_for_file_dialog,
@@ -215,7 +215,7 @@ def _new_tab_window(
     browser: str, window_index: int, tab_handle: Optional[str],
 ) -> int:
     if str(tab_handle or "").strip():
-        with _tab_lease(browser, tab_handle, window_index, None, allow_rebind=True) as anchor:
+        with _tab_lease(browser, tab_handle, window_index, None, allow_rebind=True, observe=False) as anchor:
             return int(anchor.window_index)
     preferred = browser_tabs.preferred_window_for_owner(browser)
     return int(preferred if preferred is not None else window_index)
@@ -251,7 +251,11 @@ def _tab_lease(
     *,
     allow_rebind: bool = False,
     mutation: bool = False,
+    observe: bool = True,
 ) -> Iterator[browser_tabs.TabTarget]:
+    """Lease one tab. observe=False only for operations that never read or act in its page
+    (closing it, bringing it forward, finding its window); everything else meets the owner's
+    privacy rules first, against the page the tab shows now."""
     with ExitStack() as stack:
         try:
             target = stack.enter_context(
@@ -268,6 +272,8 @@ def _tab_lease(
             raise _ambiguous_tab_http_error(tab_handle) from exc
         except KeyError as exc:
             raise _stale_tab_http_error(tab_handle) from exc
+        if observe:
+            privacy_policy.check_site(target.url)
         yield target
 
 
@@ -764,6 +770,7 @@ def browser_open_url(
 ) -> Dict[str, Any]:
     b = _norm_browser(browser)
     validate_url(settings, url)
+    privacy_policy.check_site(url)
 
     if activate is not None:
         background = not bool(activate)
@@ -1070,6 +1077,10 @@ def browser_list_tabs(settings: Settings, browser: str) -> Dict[str, Any]:
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             f"Could not enumerate browser tabs: {exc}",
         ) from exc
+    for row in tabs:
+        # An excluded site's title and address are not shown; its handle still closes it.
+        if isinstance(row, dict) and privacy_policy.excluded_site(str(row.get("url") or "")):
+            row.update({"title": "[excluded by privacy settings]", "url": "", "privacy_excluded": True})
     out: Dict[str, Any] = {"ok": True, "browser": b, "tabs": tabs}
     if b == "Google Chrome":
         # Agents list tabs first, so this is where they learn whether background
@@ -1092,7 +1103,7 @@ def browser_activate_tab(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "window_index and tab_index must be >= 1")
     _require_stable_handle_for_mutation(b, tab_handle, window_index, "activate_tab")
 
-    with _tab_lease(b, tab_handle, window_index, tab_index, mutation=True) as target:
+    with _tab_lease(b, tab_handle, window_index, tab_index, mutation=True, observe=False) as target:
         guard = _tab_identity_guard(target)
         if b == "Safari":
             script = f'''
@@ -1173,7 +1184,7 @@ def browser_close_tab(
 
         closed: List[Dict[str, Any]] = []
         for handle in requested_handles:
-            with _tab_lease(b, handle, window_index, tab_index, mutation=True) as target:
+            with _tab_lease(b, handle, window_index, tab_index, mutation=True, observe=False) as target:
                 guard = _tab_identity_guard(target)
                 script = f'''
                 tell application "{b}"
@@ -1210,7 +1221,7 @@ def browser_close_tab(
     if window_index < 1 or tab_index < 1:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "window_index and tab_index must be >= 1")
 
-    with _tab_lease(b, None, window_index, tab_index, mutation=True) as target:
+    with _tab_lease(b, None, window_index, tab_index, mutation=True, observe=False) as target:
         guard = _tab_identity_guard(target)
         script = f'''
         tell application "{b}"

@@ -26,6 +26,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 from urllib.parse import urlsplit
 
 from .private_storage import ensure_private_dir
+from . import paths
 
 SERVICE = "com.bulutarkan.mac-mcp.login"
 SECURITY = "/usr/bin/security"
@@ -42,8 +43,7 @@ class VaultError(ValueError):
 
 
 def _index_path() -> Path:
-    state = Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
-    return ensure_private_dir(state / "vault") / "logins.json"
+    return ensure_private_dir(paths.vault_dir()) / "logins.json"
 
 
 def _service() -> str:

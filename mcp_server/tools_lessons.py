@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException, status
 
+from . import paths
 from . import embedding_manager as embeddings
 from .runtime_settings import privacy_setting
 
@@ -38,9 +39,7 @@ def _now() -> float:
 
 
 def _root() -> Path:
-    raw = os.getenv("MAC_MCP_LESSON_DIR", "").strip()
-    root = Path(raw).expanduser() if raw else (Path.home() / ".mac-mcp" / "role-learning")
-    root = root.resolve()
+    root = paths.lessons_dir().resolve()
     root.mkdir(parents=True, exist_ok=True)
     try:
         root.chmod(0o700)

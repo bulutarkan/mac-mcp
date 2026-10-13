@@ -283,7 +283,9 @@ class SafeLifecycleTests(unittest.TestCase):
              patch.object(cli, "_write_restart_status") as status_write, \
              patch.object(cli.time, "sleep"), \
              patch.object(cli, "stop", return_value=1) as stop, \
+             patch.object(cli, "_server_gone", return_value=False), \
              patch.object(cli, "start") as start:
+            # The old server is still there, so nothing new is started next to it.
             code = cli.restart(args)
         self.assertEqual(1, code)
         stop.assert_called_once()

@@ -1024,7 +1024,7 @@ def _restart_cli(runtime: Path, host: str, port: int) -> None:
     log = log_file.open("a", encoding="utf-8")
     proc = subprocess.Popen(
         [str(python), "-m", "uvicorn", "mcp_server.main:app", "--host", host, "--port", str(port),
-         "--timeout-graceful-shutdown", "5"],
+         "--timeout-graceful-shutdown", "3"],
         cwd=str(runtime), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
         env=server_env,
         start_new_session=True,

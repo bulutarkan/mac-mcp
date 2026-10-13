@@ -11,6 +11,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from . import paths
+
 PAIR_PREFIX = "mcpair_"
 SESSION_PREFIX = "mcpmob_"
 DEFAULT_PAIR_TTL_S = 120
@@ -26,7 +28,7 @@ MAX_MANUAL_TOTAL_ATTEMPTS = 200
 
 
 def mobile_auth_db_path() -> Path:
-    state_dir = Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
+    state_dir = paths.state_dir()
     return state_dir / "state" / "mobile_auth.sqlite3"
 
 

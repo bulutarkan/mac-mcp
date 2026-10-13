@@ -46,6 +46,7 @@ from .policy import (
 from .security import dashboard_token_path, load_settings
 from .version import __version__
 from .update_state import UpdateStateError, read_deployed_commit, read_update_state, update_root, update_state_path
+from . import paths
 
 SCHEMA_VERSION = 1
 PASS = "pass"
@@ -102,7 +103,7 @@ def result(
 
 
 def state_dir() -> Path:
-    return Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
+    return paths.state_dir()
 
 
 def runtime_root() -> Path:

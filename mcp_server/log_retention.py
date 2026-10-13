@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .data_guard import redact_sensitive_text
+from . import paths
 
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024
 DEFAULT_BACKUPS = 3
@@ -36,7 +37,7 @@ def log_limits() -> Dict[str, int]:
 
 
 def state_dir() -> Path:
-    return Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
+    return paths.state_dir()
 
 
 def managed_logs(base_dir: Optional[Path] = None) -> Dict[str, Path]:

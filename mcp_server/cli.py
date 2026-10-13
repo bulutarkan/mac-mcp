@@ -22,6 +22,7 @@ from urllib.request import Request as UrlRequest, urlopen
 
 from dotenv import load_dotenv
 
+from . import paths
 from .security import dashboard_token_path, load_settings, validate_bootstrap_security
 from .public_endpoint import (
     PublicEndpointError,
@@ -79,7 +80,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = "8000"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = PROJECT_ROOT / "mcp_server" / ".env"
-STATE_DIR = Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
+STATE_DIR = paths.state_dir()
 PID_FILE = STATE_DIR / "mac-mcp.pid"
 NGROK_PID_FILE = STATE_DIR / "ngrok.pid"
 CLOUDFLARE_PID_FILE = STATE_DIR / "cloudflared.pid"
@@ -93,7 +94,10 @@ RESTART_HANDOFF_LABEL = "com.macmcp.restart-handoff"
 RESTART_REQUESTER_WAIT_S = 5.0
 RESTART_RESPONSE_GRACE_S = 3.0
 RESTART_RECOVERY_DELAY_S = 2.0
-GRACEFUL_SHUTDOWN_S = 5
+# Kept well under the stop/restart wait (STOP_TIMEOUT_S): once uvicorn stops listening, the exiting
+# process can no longer be verified as the server, so the wait must outlast the whole shutdown.
+GRACEFUL_SHUTDOWN_S = 3
+STOP_TIMEOUT_S = 10.0
 RESTART_FINAL_STATES = frozenset({"succeeded", "failed", "degraded"})
 DEFAULT_STARTUP_HEALTH_TIMEOUT_S = 10.0
 
@@ -2262,10 +2266,14 @@ def restart(args: argparse.Namespace) -> int:
     )
     stop_args = argparse.Namespace(timeout=args.timeout, force=True, keep_intent=True)
     stop_code = stop(stop_args)
-    if stop_code != 0:
+    if stop_code != 0 and not _server_gone(target_port, timeout_s=float(args.timeout)):
         _write_restart_status("failed", stage="stop", exit_code=stop_code, helper_pid=os.getpid())
         print("Restart aborted because managed process shutdown was not verified.")
         return stop_code
+    if stop_code != 0:
+        # The old server stopped listening first and exited after the wait: it is gone now,
+        # so bring the new one up instead of leaving Mac MCP down.
+        print("The old server exited after the stop wait; starting the new one.")
 
     _write_restart_status("running", stage="starting", helper_pid=os.getpid())
     start_code = start(args)
@@ -2284,6 +2292,19 @@ def restart(args: argparse.Namespace) -> int:
         health=True,
     )
     return 0
+
+
+def _server_gone(port: int, *, timeout_s: float) -> bool:
+    """True once no Mac MCP server is recorded or listening on the port (polled, bounded)."""
+    deadline = time.time() + max(0.0, timeout_s)
+    while True:
+        record = read_process_record(PID_FILE)
+        recorded_alive = record is not None and _pid_alive(int(record.pid))
+        if not recorded_alive and not listener_pids(int(port)):
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.25)
 
 
 def credential(args: argparse.Namespace) -> int:
@@ -2761,7 +2782,7 @@ def main(argv: list[str] | None = None) -> int:
     p_start.set_defaults(func=start)
 
     p_stop = sub.add_parser("stop", help="Stop the local server and any managed public tunnel.")
-    p_stop.add_argument("--timeout", type=float, default=5)
+    p_stop.add_argument("--timeout", type=float, default=STOP_TIMEOUT_S)
     p_stop.add_argument("--force", action="store_true")
     # Internal: the supervisor's own stop before a restart keeps the "running" intent.
     p_stop.add_argument("--keep-intent", action="store_true", help=argparse.SUPPRESS)
@@ -2769,7 +2790,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_restart = sub.add_parser("restart", help="Restart the local server and apply the configured public endpoint mode.")
     add_start_flags(p_restart)
-    p_restart.add_argument("--timeout", type=float, default=5)
+    p_restart.add_argument("--timeout", type=float, default=STOP_TIMEOUT_S)
     p_restart.add_argument(
         "--wait", action="store_true",
         help="Wait until the restart finishes; exit 0 only when the server restarted healthy.",

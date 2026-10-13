@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
+from . import paths
+
 RELEASES_URL = "https://github.com/bulutarkan/mac-mcp/releases"
 _MESSAGE = (
     "This Mac MCP was installed from a package. To update, download the newer "
@@ -17,7 +19,7 @@ _MESSAGE = (
 
 
 def _marker() -> Path:
-    state = Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
+    state = paths.state_dir()
     return state / "install-kind"
 
 

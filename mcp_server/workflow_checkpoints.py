@@ -13,6 +13,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, Optional, Sequence
 
+from . import paths
+
 SCHEMA_VERSION = 1
 MAX_RECEIPTS = 512
 MAX_UNCERTAIN_EVENTS = 32
@@ -55,7 +57,7 @@ def _now() -> float:
 
 
 def _state_dir() -> Path:
-    return Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
+    return paths.state_dir()
 
 
 def workflow_root() -> Path:

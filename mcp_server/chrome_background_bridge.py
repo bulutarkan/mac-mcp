@@ -18,6 +18,8 @@ from fastapi import HTTPException, status
 from starlette.routing import WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from . import paths
+
 
 @dataclass
 class _Pending:
@@ -29,7 +31,7 @@ def chrome_companion_token_path() -> Path:
     configured = os.getenv("MAC_MCP_CHROME_BRIDGE_TOKEN_FILE", "").strip()
     if configured:
         return Path(configured).expanduser()
-    state_dir = Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
+    state_dir = paths.state_dir()
     return state_dir / "chrome-companion-token"
 
 

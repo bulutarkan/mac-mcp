@@ -21,7 +21,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from .request_client import client_address
 from .workflow_checkpoints import clear_not_executed
 from .log_retention import start_log_rotation
-from . import recipes, run_evidence
+from . import privacy_policy, recipes, run_evidence
 from .host_guard import HostGuard, extra_hosts_from_env
 from .public_endpoint import resolve_public_endpoint
 from .security import BASE_DIR, AuthFailureLimiter, _effective_bind_host, _loopback_host, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
@@ -309,6 +309,8 @@ def _log(audit_logger, tool: str, fn):
     start = time.perf_counter()
     outcome = "ok"
     try:
+        # The owner's pause and private mode (Settings > Privacy) apply to every caller.
+        privacy_policy.check_tool(tool)
         result = fn()
         return result
     except HTTPException as exc:

@@ -96,6 +96,9 @@ class HelperStartTests(unittest.TestCase):
         cmd = cli._server_command(argparse.Namespace(host="127.0.0.1", reload=False), 8765)
         self.assertEqual(str(cli.GRACEFUL_SHUTDOWN_S), cmd[cmd.index("--timeout-graceful-shutdown") + 1])
         self.assertIn("mcp_server.main:app", cmd)
+        # The stop/restart wait must outlast the whole shutdown, or a stop gives up on a server
+        # that no longer listens but has not exited yet (2026-10-13 outage).
+        self.assertGreaterEqual(cli.STOP_TIMEOUT_S, cli.GRACEFUL_SHUTDOWN_S * 3)
 
     def test_stop_unloads_the_server_job_for_the_default_install(self) -> None:
         with patch.object(cli, "STATE_DIR", self.state), patch.object(cli, "DEFAULT_STATE_DIR", self.state), \

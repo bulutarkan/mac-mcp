@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.request import urlopen
 
+from . import paths
+
 RECOVERY_LIMIT = 3
 RECOVERY_WINDOW_S = 900.0
 UNHEALTHY_PASSES_BEFORE_RESTART = 4
@@ -35,7 +37,7 @@ STATE_FILE = "supervisor-state.json"
 
 
 def state_dir() -> Path:
-    return Path(os.getenv("MAC_MCP_STATE_DIR", str(Path.home() / ".mac-mcp"))).expanduser()
+    return paths.state_dir()
 
 
 def _read_json(path: Path) -> dict[str, Any]:

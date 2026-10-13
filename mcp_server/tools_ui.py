@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from mcp.server.fastmcp.utilities.types import Image
 
+from . import privacy_policy
 from .process_supervision import run_osascript, terminate_process_group as _terminate_process_group
 from .native_action_verification import (
     ACTION_VERIFY_POLL_S as _NATIVE_ACTION_VERIFY_POLL_S,
@@ -2334,6 +2335,9 @@ def observe_ui(
         )
         if target_error is not None:
             return target_error
+        blocked = _privacy_block_app(resolved_app or normalized_app, deadline)
+        if blocked is not None:
+            return blocked
         if window_handle:
             if not resolved_window_index:
                 return _native_target_error(
@@ -2533,11 +2537,35 @@ def observe_ui(
             state_mode="full",
         )
         refresh_perception_size(payload)
+        # The frontmost app can change between the check and the capture: check what was read.
+        blocked = _privacy_block_names(payload.get("app"), payload.get("active_app"), payload.get("bundle_id"))
+        if blocked is not None:
+            return blocked
         return _format_result(payload, image_data)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
     except Exception as exc:
         return {"ok": False, "error": f"Could not observe macOS UI: {exc}"}
+
+
+def _privacy_block_names(*names: Any) -> Optional[Dict[str, Any]]:
+    """The owner's excluded apps and pause (Settings > Privacy), as a native tool error."""
+    try:
+        privacy_policy.check_app(*(str(name) for name in names if name))
+    except privacy_policy.PrivacyBlocked as exc:
+        return {"ok": False, "error": str(exc.detail), "reason_code": exc.code.upper(), "retryable": False,
+                "automatic_retry": False, "privacy_blocked": True}
+    return None
+
+
+def _privacy_block_app(app: Optional[str], deadline: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    current = privacy_policy.policy()
+    if not current["paused"] and not current["excluded_apps"]:
+        return None
+    name = app
+    if not name:
+        name, _error = _resolve_app(None, deadline)
+    return _privacy_block_names(name)
 
 
 def _resolve_app(app: Optional[str], deadline: Optional[float] = None) -> Tuple[Optional[str], Optional[str]]:
@@ -4748,6 +4776,11 @@ def act_ui(
                 mismatch["actions"] = results
                 mismatch["failed_action_index"] = index
                 return mismatch
+            blocked = _privacy_block_names(target.get("app"), actual_bundle_id)
+            if blocked is not None:
+                blocked["actions"] = results
+                blocked["failed_action_index"] = index
+                return blocked
             last_target = target
 
             human_guard = _delegated_native_human_guard(target, deadline)
