@@ -1853,6 +1853,15 @@ def status(args: argparse.Namespace) -> int:
 
     supervision = supervisor_report()
     say(_format_supervision(supervision))
+    from . import privacy_policy
+
+    rules = privacy_policy.policy(fresh=True)
+    privacy = {"paused": rules["paused"], "private_mode": rules["private_mode"],
+               "excluded_apps": len(rules["excluded_apps"]), "excluded_sites": len(rules["excluded_sites"])}
+    if rules["paused"]:
+        say("privacy: observation is PAUSED (screen, pages, clipboard and voice are not read; Settings > Privacy).")
+    if rules["private_mode"]:
+        say("privacy: private mode is on (nothing about this work is kept).")
 
     if getattr(args, "json", False):
         tunnel_pid = cloudflare_pid if public is not None and public.mode == "cloudflare" else (
@@ -1887,6 +1896,7 @@ def status(args: argparse.Namespace) -> int:
                 "error": public_error,
             },
             "stray_processes": stray,
+            "privacy": privacy,
             "supervisor": supervision,
             "remediation": remediation,
         }
@@ -2431,7 +2441,9 @@ def clients(args: argparse.Namespace) -> int:
         print(json.dumps({"ok": True, "apps": apps}))
     else:
         for app in apps:
-            state = "added" if app["added"] else ("installed" if app["installed"] else "not installed")
+            state = ("added (old setup with the key in its settings; run mac-mcp connect to update)"
+                     if app["added"] and app.get("keyless") is False
+                     else "added" if app["added"] else ("installed" if app["installed"] else "not installed"))
             print(f"{app['name']}: {state}")
     return 0
 

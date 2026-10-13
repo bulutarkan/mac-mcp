@@ -56,6 +56,8 @@ test('each AI app row says what one click will do', () => {
   const chatgpt = CLIENTS.find((c) => c.id === 'chatgpt');
   assert.equal(appRow(code, { installed: true, added: false }, false).button, 'Connect');
   assert.equal(appRow(code, { installed: true, added: true }, false).state, 'added');
+  assert.equal(appRow(code, { installed: true, added: true, keyless: false }, false).button, 'Update');
+  assert.equal(appRow(code, { installed: true, added: true, keyless: true }, false).state, 'added');
   assert.equal(appRow(code, { installed: false, added: false }, false).action, null);
   assert.equal(appRow(code, undefined, false).state, 'missing');
   assert.equal(appRow(chatgpt, undefined, false).action, 'settings');

@@ -114,15 +114,30 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 
 def _added(app: str) -> bool:
+    return _entry(app) is not None
+
+
+def _keyless(entry: Any) -> bool:
+    """The entry runs `mac-mcp stdio` (one-click setup) rather than a URL that carries the key."""
+    if not isinstance(entry, dict):
+        return False
+    command = entry.get("command")
+    parts = list(command) if isinstance(command, list) else [command, *(entry.get("args") or [])]
+    parts = [str(part) for part in parts if part]
+    return bool(parts) and Path(parts[0]).name == "mac-mcp" and "stdio" in parts[1:]
+
+
+def _entry(app: str) -> Any:
     if app == "claude-code":
         servers = (_read_json(_home() / ".claude.json") or {}).get("mcpServers")
     elif app == "codex":
         try:
             text = _codex_config().read_text(encoding="utf-8")
         except OSError:
-            return False
+            return None
         if tomllib is None:
-            return re.search(rf'^\[mcp_servers\.(?:{SERVER_NAME}|"{SERVER_NAME}")\]', text, re.M) is not None
+            found = re.search(rf'^\[mcp_servers\.(?:{SERVER_NAME}|"{SERVER_NAME}")\]', text, re.M) is not None
+            return ({"command": "mac-mcp", "args": ["stdio"]} if "stdio" in text else {}) if found else None
         try:
             servers = tomllib.loads(text).get("mcp_servers")
         except tomllib.TOMLDecodeError:
@@ -131,7 +146,10 @@ def _added(app: str) -> bool:
         servers = (_read_json(_desktop_config()) or {}).get("mcpServers")
     else:
         servers = (_read_json(_opencode_config()) or {}).get("mcp")
-    return isinstance(servers, dict) and SERVER_NAME in servers
+    if not isinstance(servers, dict) or SERVER_NAME not in servers:
+        return None
+    entry = servers[SERVER_NAME]
+    return entry if isinstance(entry, dict) else {}
 
 
 def _installed(app: str) -> bool:
@@ -145,8 +163,13 @@ def _installed(app: str) -> bool:
 
 
 def apps_status() -> list[dict[str, Any]]:
-    return [{"id": app.id, "name": app.name, "installed": _installed(app.id), "added": _added(app.id)}
-            for app in APPS]
+    rows = []
+    for app in APPS:
+        entry = _entry(app.id)
+        # keyless=False: added by hand with the API key in the app's own config; Connect updates it.
+        rows.append({"id": app.id, "name": app.name, "installed": _installed(app.id),
+                     "added": entry is not None, "keyless": _keyless(entry) if entry is not None else None})
+    return rows
 
 
 def _run_cli(run: Run, args: list[str]) -> subprocess.CompletedProcess:
@@ -160,7 +183,10 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     mode = 0o600
     if path.exists():
         mode = path.stat().st_mode & 0o777
-        shutil.copy2(path, path.with_name(path.name + ".before-mac-mcp"))
+        backup = path.with_name(path.name + ".before-mac-mcp")
+        shutil.copy2(path, backup)
+        # The old file may hold an API key (a hand-made Mac MCP entry): keep the copy owner-only.
+        os.chmod(backup, 0o600)
     fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:

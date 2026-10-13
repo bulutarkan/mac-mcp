@@ -169,6 +169,7 @@ struct SettingsView: View {
     @MacMCPState private var connectionsTab: ConnectionsTab = .browser
     @MacMCPState private var connectClient = "claude-code"
     @MacMCPState private var connectOutput = ""
+    @MacMCPState private var manualSetupExpanded = false
     @MacMCPState private var connectFailed = false
     @MacMCPState private var connectLoading = false
     @MacMCPState private var usageAggregation: UsageAggregation = .daily
@@ -2252,9 +2253,12 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 sectionLead(
                     "Connect an AI Client",
-                    subtitle: "Setup for using Mac MCP from an AI app, generated from this Mac's endpoint and authentication. The API key itself is never shown."
+                    subtitle: "Mac MCP adds itself to the AI apps on this Mac: no address or key goes into their settings."
                 )
 
+                ConnectAppsBox(state: state)
+
+                DisclosureGroup("Manual setup", isExpanded: $manualSetupExpanded) {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
@@ -2306,6 +2310,11 @@ struct SettingsView: View {
                 } label: {
                     Label("Client Setup", systemImage: "link")
                 }
+                .padding(.top, 6)
+                }
+                .onChange(of: manualSetupExpanded) { expanded in
+                    if expanded && connectOutput.isEmpty { Task { await generateConnectConfig() } }
+                }
 
                 Text("This connects an AI app to Mac MCP. Delegated agents that Mac MCP starts (Codex, OpenCode, Claude Code) are configured in Subagents.")
                     .font(.caption2)
@@ -2314,7 +2323,6 @@ struct SettingsView: View {
             }
             .padding(20)
         }
-        .task { if connectOutput.isEmpty { await generateConnectConfig() } }
     }
 
     private func generateConnectConfig() async {

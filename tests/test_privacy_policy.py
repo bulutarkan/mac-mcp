@@ -416,3 +416,49 @@ class StoreSizeTests(unittest.TestCase):
         self.assertEqual(30, measured["files"])
         self.assertGreaterEqual(measured["bytes"], 300_000)
         self.assertLess(measured["bytes"], 400_000)
+
+
+class StatusPrivacyTests(PrivacySettings):
+    def test_status_says_when_observation_is_paused(self) -> None:
+        import argparse
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from mcp_server import cli
+        from mcp_server.managed_process import ProcessValidation
+
+        self.rules(observation_paused=True, excluded_sites=["chase.com"])
+        missing = ProcessValidation("missing", None, "ngrok", None, "record_missing")
+        public = type("Public", (), {"mode": "none", "endpoint_url": None})()
+        out = StringIO()
+        with patch.object(cli, "_resolve_server_identity", return_value=(4321, "pid_record")), \
+                patch.object(cli, "_validate_managed_pid", return_value=missing), \
+                patch.object(cli, "_launchctl_pid", return_value=None), \
+                patch.object(cli, "_server_health", return_value="ok"), \
+                patch.object(cli, "resolve_public_endpoint", return_value=public), \
+                patch.object(cli, "supervisor_report", return_value={"enabled": True, "loaded": True}), \
+                redirect_stdout(out):
+            cli.status(argparse.Namespace(local_only=False, json=True))
+        report = json.loads(out.getvalue())
+        self.assertEqual({"paused": True, "private_mode": False, "excluded_apps": 0, "excluded_sites": 1},
+                         report["privacy"])
+
+
+class BackupStoreTests(unittest.TestCase):
+    def test_backups_move_to_the_trash_but_package_rollback_stays(self) -> None:
+        from mcp_server import privacy_inventory as inv
+
+        root = Path(tempfile.mkdtemp(prefix="mac-mcp-backups-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        state = root / "state"
+        (state / "backups" / "promote-1").mkdir(parents=True)
+        (state / "backups" / "promote-1" / "cli.py").write_text("x")
+        (state / "backups" / "pkg-123").mkdir()
+        trash = root / "Trash"
+        trash.mkdir()
+        with patch.dict(os.environ, {"MAC_MCP_STATE_DIR": str(state)}):
+            self.assertIn("backups", {row["key"] for row in inv.stores()})
+            result = inv.trash_stores(["backups"], trash_root=trash, stamp="t")
+        self.assertEqual(["promote-1"], [Path(row["path"]).name for row in result["moved"]])
+        self.assertTrue((state / "backups" / "pkg-123").exists())
+        self.assertTrue((trash / "Mac MCP data t" / "backups" / "promote-1" / "cli.py").exists())

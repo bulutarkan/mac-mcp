@@ -145,6 +145,8 @@ def stores(*, measure: bool = True) -> List[Dict[str, Any]]:
         ("audit_log", "Audit log", "Tool names, outcomes and timing, for security review.", [paths.audit_log()],
          "until deleted"),
         ("logs", "Server logs", "Mac MCP's own log files.", sorted(paths.state_dir().glob("*.log")), "rotated by size"),
+        ("backups", "Backups", "Copies of files kept before fixes and updates, for rolling back.",
+         [paths.state_dir() / "backups"], "until deleted"),
     ]
     out = []
     for key, name, holds, targets, kept in rows:
@@ -185,7 +187,10 @@ def recipients() -> List[Dict[str, Any]]:
 
 # Stores the owner can move to the Trash from Settings > Privacy (or mac-mcp privacy delete).
 # Settings, the saved-login index, the audit log and logs are not: they run Mac MCP itself.
-DELETABLE = ("tool_activity", "memory", "lessons", "run_evidence", "agents", "jobs", "file_history", "provider_usage")
+DELETABLE = ("tool_activity", "memory", "lessons", "run_evidence", "agents", "jobs", "file_history", "provider_usage",
+             "backups")
+# The package installer keeps its own rollback copy (backups/pkg-*) and prunes it itself.
+_KEPT_BACKUPS = "pkg-*"
 
 
 def delete_plan(keys: Iterable[str]) -> List[Dict[str, Any]]:
@@ -199,8 +204,12 @@ def trash_stores(keys: Iterable[str], *, trash_root: Path, stamp: str) -> Dict[s
     moved: List[Dict[str, str]] = []
     failed: List[Dict[str, str]] = []
     for store in delete_plan(keys):
-        for raw in store["paths"]:
-            path = Path(raw)
+        sources = [Path(raw) for raw in store["paths"]]
+        if store["key"] == "backups":
+            sources = [child for root in sources if root.is_dir() for child in sorted(root.iterdir())
+                       if not child.match(_KEPT_BACKUPS)]
+        for path in sources:
+            raw = str(path)
             if not path.exists():
                 continue
             target = folder / store["key"] / path.name

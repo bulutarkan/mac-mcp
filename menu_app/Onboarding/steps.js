@@ -88,6 +88,10 @@ function appRow(client, found, remote) {
       ? { state: 'ready', detail: 'Copies its address, then you paste it in ChatGPT', button: 'Copy address', action: 'connect' }
       : { state: 'blocked', detail: 'Needs a public address for this Mac first', button: 'Set up', action: 'settings' };
   }
+  if (found && found.added && found.keyless === false) {
+    // Added by hand earlier, with Mac MCP's key in the app's own settings.
+    return { state: 'legacy', detail: 'Added the old way, with its key in the app’s settings', button: 'Update', action: 'connect' };
+  }
   if (found && found.added) return { state: 'added', detail: 'Mac MCP is added', button: 'Set up again', action: 'connect' };
   if (found && found.installed) return { state: 'ready', detail: 'On this Mac', button: 'Connect', action: 'connect' };
   return { state: 'missing', detail: 'Not on this Mac', button: null, action: null };

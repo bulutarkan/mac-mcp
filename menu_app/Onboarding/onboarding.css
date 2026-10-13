@@ -347,6 +347,7 @@ button[disabled] { opacity: 0.5; cursor: default; }
 .app[data-state="ready"] button { background: var(--ember); color: var(--ember-ink); box-shadow: none; }
 .app[data-state="added"] { box-shadow: inset 0 0 0 1px rgba(94, 211, 160, 0.45); }
 .app[data-state="added"] span { color: var(--ok-ink); }
+.app[data-state="legacy"] button { background: var(--ember); color: var(--ember-ink); box-shadow: none; }
 .app[data-state="missing"] { opacity: 0.45; padding-block: 6px; }
 .app.is-working button { opacity: 0.6; }
 

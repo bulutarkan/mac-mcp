@@ -289,7 +289,9 @@ class HelperWarmupDeadlineTests(unittest.TestCase):
             elapsed = time.monotonic() - started
             self.assertEqual((None, "WINDOW_CAPTURE_HELPER_WARMING"), first)
             self.assertEqual((None, "WINDOW_CAPTURE_HELPER_WARMING"), second)
-            self.assertLess(elapsed, 1.5)
+            # Budgets add up to 0.5 s; the build holds 5 s. 3 s keeps that gap on slow CI runners
+            # (a hosted runner once took 1.61 s against the old 1.5 s bound).
+            self.assertLess(elapsed, 3.0)
             self.assertEqual(1, len(builds))
 
             release.set()

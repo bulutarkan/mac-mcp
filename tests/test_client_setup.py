@@ -121,5 +121,27 @@ class ClientSetupTests(unittest.TestCase):
         self.assertNotIn("secret-value", (self.home / ".config" / "opencode" / "opencode.json").read_text())
 
 
+class KeylessDetectionTests(ClientSetupTests):
+    def test_old_keyed_entries_are_told_apart_from_one_click_setup(self) -> None:
+        (self.home / ".claude.json").write_text(json.dumps({"mcpServers": {"mac-mcp": {
+            "type": "http", "url": "http://127.0.0.1:8765/mcp", "headers": {"Authorization": "Bearer k"}}}}))
+        rows = {row["id"]: row for row in client_setup.apps_status()}
+        self.assertEqual((True, False), (rows["claude-code"]["added"], rows["claude-code"]["keyless"]))
+        (self.home / ".claude.json").write_text(json.dumps({"mcpServers": {"mac-mcp": {
+            "type": "stdio", "command": str(self.cli), "args": ["stdio"]}}}))
+        self.assertTrue({row["id"]: row for row in client_setup.apps_status()}["claude-code"]["keyless"])
+        self.assertIsNone({row["id"]: row for row in client_setup.apps_status()}["codex"]["keyless"])
+
+    def test_backups_of_edited_configs_are_owner_only(self) -> None:
+        config = self.home / ".config" / "opencode" / "opencode.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"mcp": {"mac-mcp": {"type": "remote", "url": "http://x/mcp?ApiKey=k"}}}))
+        config.chmod(0o644)
+        self.tool("opencode")
+        client_setup.connect("opencode", run=self.fake_run)
+        backup = config.with_name(config.name + ".before-mac-mcp")
+        self.assertEqual(0o600, stat.S_IMODE(backup.stat().st_mode))
+
+
 if __name__ == "__main__":
     unittest.main()
