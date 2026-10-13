@@ -80,7 +80,15 @@ struct MenuBarView: View {
                 explanation: "\(count) session\(count == 1 ? "" : "s") need\(count == 1 ? "s" : "") attention.", tone: .warning
             )
         }
-        return state.connectionState.display
+        return connectionDisplay
+    }
+
+    /// Right after login the server is still starting; that is not an outage.
+    private var connectionDisplay: StatusDisplay {
+        state.startingAfterLogin
+            ? StatusDisplay(label: "Starting", symbol: "hourglass",
+                            explanation: "Mac MCP is starting after login.", tone: .neutral)
+            : state.connectionState.display
     }
 
     private var endpointStatus: StatusDisplay {
@@ -186,8 +194,8 @@ struct MenuBarView: View {
 
             if state.connectionState != .connected {
                 HStack(spacing: 8) {
-                    Image(systemName: state.connectionState.display.symbol)
-                        .foregroundStyle(state.connectionState.display.tone.color)
+                    Image(systemName: connectionDisplay.symbol)
+                        .foregroundStyle(connectionDisplay.tone.color)
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(state.connectionBannerTitle).font(.caption.weight(.semibold))
@@ -197,7 +205,7 @@ struct MenuBarView: View {
                         }
                     }
                     Spacer()
-                    if state.connectionState == .degraded || state.connectionState == .disconnected {
+                    if !state.startingAfterLogin && (state.connectionState == .degraded || state.connectionState == .disconnected) {
                         Button("Retry") { Task { await state.retryConnection() } }
                             .controlSize(.small)
                     }

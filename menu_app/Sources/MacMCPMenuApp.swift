@@ -12,6 +12,9 @@ struct MacMCPMenuApp: App {
             guard let appState else { return }
             OnboardingWindowController.shared.show(state: appState)
         }
+        // The menu bar app opens at login while start at login is on.
+        appState.syncLoginItem = { enabled in LoginItem.sync(enabled: enabled) }
+        LoginItem.sync(enabled: appState.settings.startAtLogin)
         // macmcp://recipe/run links reach the running server with the dashboard token.
         RecipeLauncher.shared.configure(
             baseURL: { [weak appState] in
@@ -51,6 +54,7 @@ struct MacMCPMenuApp: App {
 
     private var menuBarAccessibilityLabel: String {
         // Same words as the popover header and Settings (shared StatusDisplay mapping).
+        if state.startingAfterLogin { return "Mac MCP, starting" }
         if !state.serverRunning { return "Mac MCP, \(state.connectionState.display.label.lowercased())" }
         if state.hasReliableSessionSignal && state.sessionNeedsAttentionCount > 0 {
             return "Mac MCP, \(state.sessionNeedsAttentionCount) session\(state.sessionNeedsAttentionCount == 1 ? "" : "s") need attention"

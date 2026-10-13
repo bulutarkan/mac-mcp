@@ -239,6 +239,31 @@ final class AppState: ObservableObject {
         }
     }
 
+    // MARK: Start at login
+
+    /// Keeps the menu bar app's login item in step with the setting; set by the app.
+    var syncLoginItem: ((Bool) -> Void)?
+    private let launchedAt = Date()
+    /// Read once at launch: the server was meant to be running when the owner logged out.
+    private lazy var serverIntendedRunningAtLaunch: Bool = Self.serverIntentIsRunning()
+
+    /// Right after login the supervisor needs a minute to start the server: say so instead
+    /// of reporting it unreachable.
+    var startingAfterLogin: Bool {
+        connectionState != .connected && connectionState != .degraded
+            && Date().timeIntervalSince(launchedAt) < Self.loginStartGraceSeconds
+            && settings.startAtLogin && serverIntendedRunningAtLaunch
+    }
+
+    private static let loginStartGraceSeconds: TimeInterval = 180
+
+    private static func serverIntentIsRunning() -> Bool {
+        let url = stateDirectoryURL().appendingPathComponent("server-intent.json")
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return object["desired"] as? String == "running"
+    }
+
     // MARK: Onboarding tour (menu_app/Onboarding)
 
     private var tourOfferedThisLaunch = false
@@ -334,6 +359,7 @@ final class AppState: ObservableObject {
             setIfChanged(\.startAtLoginChanging, false)
             if result.code == 0 {
                 settings.startAtLogin = enabled
+                syncLoginItem?(enabled)
             } else {
                 showNotice(ActionNotice(kind: .error, message: "Couldn’t change start at login."))
             }
@@ -604,6 +630,7 @@ final class AppState: ObservableObject {
     }
 
     var connectionStatusText: String {
+        if startingAfterLogin { return "Starting…" }
         switch connectionState {
         case .connecting: return "Connecting…"
         case .connected: return "Server running · v\(version)"
@@ -613,6 +640,7 @@ final class AppState: ObservableObject {
     }
 
     var connectionBannerTitle: String {
+        if startingAfterLogin { return "Starting Mac MCP…" }
         switch connectionState {
         case .connecting: return "Connecting to Mac MCP…"
         case .connected: return "Connected"
@@ -622,6 +650,7 @@ final class AppState: ObservableObject {
     }
 
     var connectionBannerDetail: String {
+        if startingAfterLogin { return "It starts on its own after you log in. This can take a minute." }
         var parts: [String] = []
         if let connectionIssue, !connectionIssue.isEmpty { parts.append(connectionIssue) }
         if connectionState == .degraded || connectionState == .disconnected {
@@ -1270,7 +1299,9 @@ final class AppState: ObservableObject {
         consecutiveRefreshFailures += 1
         setIfChanged(\.connectionState, state)
         setIfChanged(\.connectionIssue, issue)
-        setIfChanged(\.nextPollDelaySeconds, Self.pollDelaySeconds(forFailureCount: consecutiveRefreshFailures))
+        setIfChanged(\.nextPollDelaySeconds, startingAfterLogin
+            ? Self.activePollIntervalSeconds
+            : Self.pollDelaySeconds(forFailureCount: consecutiveRefreshFailures))
         if state == .disconnected {
             pulseTask?.cancel()
             pulseTask = nil
@@ -2071,18 +2102,19 @@ final class AppState: ObservableObject {
         }
     }
 
+    private static func stateDirectoryURL() -> URL {
+        if let configured = ProcessInfo.processInfo.environment["MAC_MCP_STATE_DIR"], !configured.isEmpty {
+            return URL(fileURLWithPath: NSString(string: configured).expandingTildeInPath)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".mac-mcp")
+    }
+
     private static func dashboardTokenURL() -> URL {
         let env = ProcessInfo.processInfo.environment
         if let configured = env["MAC_MCP_DASHBOARD_TOKEN_FILE"], !configured.isEmpty {
             return URL(fileURLWithPath: NSString(string: configured).expandingTildeInPath)
         }
-        let stateDirectory: URL
-        if let configured = env["MAC_MCP_STATE_DIR"], !configured.isEmpty {
-            stateDirectory = URL(fileURLWithPath: NSString(string: configured).expandingTildeInPath)
-        } else {
-            stateDirectory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".mac-mcp")
-        }
-        return stateDirectory.appendingPathComponent("dashboard-token")
+        return stateDirectoryURL().appendingPathComponent("dashboard-token")
     }
 
     private func dashboardToken() -> String? {
