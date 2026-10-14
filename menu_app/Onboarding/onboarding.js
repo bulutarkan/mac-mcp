@@ -255,7 +255,9 @@ async function requestPermission(name) {
   // macOS shows its own window naming Mac MCP, with a button to System Settings.
   $('[data-live="permission-hint"]').hidden = false;
   try {
-    await call('requestPermission', { permission: name });
+    const result = await call('requestPermission', { permission: name });
+    // macOS could not show its prompt: say where to turn it on instead of looking refused.
+    if (result && result.prompt_error) toast(result.prompt_error);
   } catch (error) {
     toast(error.message);
   }

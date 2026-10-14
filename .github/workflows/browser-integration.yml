@@ -2,17 +2,30 @@ name: Browser Page Integration
 
 # Runs Mac MCP's real observe/find/act stack against test-owned fixture pages in a
 # throwaway headless Chrome profile (tests/test_browser_page_integration.py). It needs
-# no Accessibility/TCC permission and touches no real browser profile. Opt-in: run it
-# by hand, or let it run when the page scripts or fixtures change.
+# no Accessibility/TCC permission and touches no real browser profile. Runs by hand, and
+# on pull requests and pushes to main that change the page scripts, the visual companion
+# (the test loads visual.js directly) or the fixtures, so regressions show before merging.
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "mcp_server/tools_browser_agent.py"
+      - "mcp_server/tools_browser.py"
+      - "mcp_server/browser_sign_in.py"
+      - "menu_app/BrowserVisualCompanion/**"
+      - "tests/fixtures/browser/**"
+      - "tests/test_browser_page_integration.py"
+      - ".github/workflows/browser-integration.yml"
   push:
     branches: [main]
     paths:
       - "mcp_server/tools_browser_agent.py"
+      - "mcp_server/tools_browser.py"
       - "mcp_server/browser_sign_in.py"
+      - "menu_app/BrowserVisualCompanion/**"
       - "tests/fixtures/browser/**"
       - "tests/test_browser_page_integration.py"
+      - ".github/workflows/browser-integration.yml"
 
 permissions:
   contents: read

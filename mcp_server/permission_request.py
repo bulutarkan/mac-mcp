@@ -16,7 +16,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from .permission_probe import GRANTED, _library, accessibility_state, screen_recording_state
+from .permission_probe import DENIED, GRANTED, UNKNOWN, PERMISSIONS, _library, accessibility_state, screen_recording_state
 
 REQUESTABLE = ("accessibility", "screen_recording")
 
@@ -86,7 +86,9 @@ def fresh_state(permission: str, *, runtime: Optional[Path] = None, run: Callabl
         out = run([str(exe), "--check", _HELPER_NAMES[permission]], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return _in_process(permission)
-    return GRANTED if (out.stdout or "").strip() == GRANTED else "denied"
+    # The helper prints granted or denied; anything else means it could not tell, not a refusal.
+    answer = (out.stdout or "").strip()
+    return answer if answer in (GRANTED, DENIED) else UNKNOWN
 
 
 def permission_status(*, runtime: Optional[Path] = None, run: Callable[..., Any] = subprocess.run) -> Dict[str, Any]:
@@ -109,16 +111,32 @@ def request_permission(
     exe = _helper(runtime)
     if exe is not None:
         bundle = exe.parents[2]
+        problem = None
         try:
             # Opened as an app, Mac MCP Server asks and macOS shows its prompt; -W waits for it.
-            run(["/usr/bin/open", "-n", "-W", "-a", str(bundle), "--args", "--request", _HELPER_NAMES[permission]],
-                capture_output=True, text=True, timeout=60)
-        except (OSError, subprocess.SubprocessError):
-            pass
+            opened = run(["/usr/bin/open", "-n", "-W", "-a", str(bundle), "--args", "--request", _HELPER_NAMES[permission]],
+                         capture_output=True, text=True, timeout=60)
+            if getattr(opened, "returncode", 0) not in (0, 1):  # 1 is the helper's own "not granted"
+                problem = (getattr(opened, "stderr", "") or "").strip().splitlines()[-1:] or [f"exit {opened.returncode}"]
+                problem = problem[0]
+        except subprocess.TimeoutExpired:
+            problem = "the prompt did not answer within a minute"
+        except (OSError, subprocess.SubprocessError) as exc:
+            problem = str(exc) or exc.__class__.__name__
         state = fresh_state(permission, runtime=runtime, run=run)
-        return {"permission": permission, "state": state,
-                "restart_needed": state == GRANTED and _in_process(permission) != GRANTED}
+        result = {"permission": permission, "state": state,
+                  "restart_needed": state == GRANTED and _in_process(permission) != GRANTED}
+        if problem and state != GRANTED:
+            result["prompt_error"] = _prompt_error(permission, problem)
+        return result
     return _request_in_process(permission)
+
+
+def _prompt_error(permission: str, problem: str) -> str:
+    """What to do when macOS could not show its prompt (not the same as the owner saying no)."""
+    where = str(PERMISSIONS.get(permission, {}).get("settings_path") or "System Settings > Privacy & Security")
+    return (f"macOS could not show the permission prompt ({problem[:120]}). "
+            f"Open {where} and turn on Mac MCP there.")
 
 
 def _request_in_process(permission: str) -> Dict[str, Any]:

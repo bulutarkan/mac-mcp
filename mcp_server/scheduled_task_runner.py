@@ -241,15 +241,24 @@ def _start_agent(definition: Dict[str, Any], prompt: str, settings: Any,
     from fastapi import HTTPException
 
     from . import tools_agents
-    from .policy import environment_policy_context, reset_policy_context, set_policy_context
+    from .policy import PROFILES, environment_policy_context, reset_policy_context, set_policy_context
+    from .policy_scope import access_mode_allows
 
     limit = _limit_s(definition)
-    token = set_policy_context(environment_policy_context(actor="scheduled_task"))
+    context = environment_policy_context(actor="scheduled_task")
+    token = set_policy_context(context)
     try:
+        # The global permission profile caps scheduled agents like any other: under a read-only
+        # ceiling (Standard) the agent runs read-only instead of being refused.
+        profile = PROFILES.get(context.profile)
+        access = "workspace_write"
+        if profile is not None and not access_mode_allows(profile.access_mode_ceiling, access):
+            access = "read_only"
         spawned = tools_agents.spawn_agent(
             settings, definition.get("provider"), prompt, model=definition.get("model"),
             cwd=definition.get("cwd") or str(Path.home()), timeout_s=limit,
             title=f"Scheduled: {definition['name']}"[:120], result_style="detailed",
+            access_mode=access, parent_scope=context.scope, parent_profile=context.profile,
         )
     except HTTPException as exc:
         detail = re.sub(r"^[a-z_]+: ", "", str(exc.detail))  # "default_agent_not_configured: choose ..." → the sentence

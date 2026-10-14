@@ -370,6 +370,21 @@ class AiRunTests(StoreCase):
         self.assertEqual("failed", refused["status"])
         self.assertIn("disabled", refused["reason"])
 
+    def test_scheduled_agents_get_the_global_profile(self) -> None:
+        calls = self.fake_agents({"status": "completed", "result_envelope": {"outcome": "success"}})
+        from mcp_server import policy
+        with patch.object(policy, "permission_profile_name", return_value="standard"):
+            self.execute()
+        self.assertEqual(("standard", "read_only"), (calls["spawn"][0]["parent_profile"], calls["spawn"][0]["access_mode"]))
+        with patch.object(policy, "permission_profile_name", return_value="trusted"):
+            self.execute()
+        self.assertEqual(("trusted", "workspace_write"), (calls["spawn"][1]["parent_profile"], calls["spawn"][1]["access_mode"]))
+        # The real scope check accepts both: a Standard run is narrowed, not refused.
+        from mcp_server import tools_agents
+        for profile, access in (("standard", "read_only"), ("trusted", "workspace_write")):
+            scope, child, _ = tools_agents._requested_agent_scope(self.folder, access, None, None, profile)
+            self.assertEqual(access, scope.access_mode.value)
+
     def test_paused_observation_skips_ai_runs(self) -> None:
         calls = self.fake_agents({"status": "completed"})
         self.privacy(observation_paused=True)

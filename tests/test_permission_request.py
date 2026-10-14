@@ -144,6 +144,26 @@ class HelperPermissionTests(unittest.TestCase):
             status = requester.permission_status(runtime=self.runtime, run=self.fake_run)
         self.assertTrue(status["restart_needed"])
 
+    def test_a_helper_that_cannot_tell_is_unknown_not_denied(self) -> None:
+        def broken(cmd, **_kwargs):
+            self.calls.append([str(c) for c in cmd])
+            return __import__("subprocess").CompletedProcess(cmd, 64, "", "unknown permission\n")
+        self.assertEqual(probe.UNKNOWN, requester.fresh_state("accessibility", runtime=self.runtime, run=broken))
+
+    def test_a_prompt_macos_could_not_show_says_where_to_allow_it(self) -> None:
+        def open_fails(cmd, **kwargs):
+            if cmd[0] == "/usr/bin/open":
+                raise OSError("LaunchServices refused to open the helper")
+            return self.fake_run(cmd, **kwargs)
+        with patch.object(requester, "accessibility_state", return_value=probe.DENIED):
+            result = requester.request_permission("screen_recording", runtime=self.runtime, run=open_fails)
+        self.assertEqual("denied", result["state"])
+        self.assertIn("could not show the permission prompt", result["prompt_error"])
+        self.assertIn("Screen & System Audio Recording", result["prompt_error"])
+        with patch.object(requester, "accessibility_state", return_value=probe.DENIED):
+            shown = requester.request_permission("screen_recording", runtime=self.runtime, run=self.fake_run)
+        self.assertNotIn("prompt_error", shown, "the owner saying no is not an error")
+
     def test_without_the_helper_the_server_asks_itself(self) -> None:
         shutil.rmtree(self.runtime / ".helper")
         with patch.object(requester, "_prompt_accessibility") as prompt, \
