@@ -1,5 +1,8 @@
 ## Unreleased
 
+### A browser wait with only a time pauses
+- `browser_act` `{type: 'wait', wait_s: 1.5}` with nothing named to wait for now pauses for that long (default 1 s, at most 30 s) without touching the page. It used to wait 10 seconds for a selector nobody named, time out, and stop the rest of the actions.
+
 ### Faster page reading when a dialog is open
 - With a dialog open, `browser_observe` and action recovery looked for the dialog again for every element on the page, so a page with many components could use up the scan's time before reaching the dialog's own fields and report none. The dialog is now found once per scan and everything outside it is skipped first: on the test page with 300 components, reading a login dialog went from about 160 ms to about 14 ms.
 

@@ -4118,6 +4118,11 @@ def _wait_new_tab(browser: str, action: Dict[str, Any], own_handle: Optional[str
         cancellable_sleep(poll_s)
 
 
+_MAX_PAUSE_S = 30.0
+# Any of these names something to wait for; without one, a wait is a plain pause.
+_WAIT_CONDITION_KEYS = ("for", "condition", "selector", "text", "query", "role", "element_id", "text_match", "url_contains")
+
+
 def _wait_action(
     settings: Settings,
     browser: str,
@@ -4128,6 +4133,17 @@ def _wait_action(
     tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Prefer in-page event wakeups; preserve bounded polling as a fallback."""
+    if not any(action.get(key) not in (None, "") for key in _WAIT_CONDITION_KEYS):
+        # {type:'wait', wait_s: 1.5} pauses; it used to wait 10 s for a selector nobody named.
+        pause = action.get("wait_s", action.get("seconds", action.get("timeout_s", 1.0)))
+        try:
+            pause_s = max(0.0, min(float(pause), _MAX_PAUSE_S))
+        except (TypeError, ValueError):
+            pause_s = 1.0
+        started = time.perf_counter()
+        time.sleep(pause_s)
+        return {"ok": True, "type": "wait", "for": "time", "matched": True,
+                "duration_ms": int((time.perf_counter() - started) * 1000)}
     kind = _wait_kind(action)
     if kind == "new_tab":
         return _wait_new_tab(browser, action, tab_handle)

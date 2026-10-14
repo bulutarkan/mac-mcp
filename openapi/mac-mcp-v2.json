@@ -3464,7 +3464,7 @@
                           "type": "number"
                         },
                         "for": {
-                          "description": "wait: selector (default), text, element_removed, url_change, network_idle, dom_stable, new_tab.",
+                          "description": "wait: selector (default), text, element_removed, url_change, network_idle, dom_stable, new_tab. Omit it (and any target) to pause for wait_s.",
                           "type": "string"
                         },
                         "url_contains": {

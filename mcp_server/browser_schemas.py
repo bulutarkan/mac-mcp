@@ -132,7 +132,7 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
         "dx": {"type": "number"},
         "dy": {"type": "number"},
         "y": {"type": "number"},
-        "for": _str("wait: selector (default), text, element_removed, url_change, network_idle, dom_stable, new_tab."),
+        "for": _str("wait: selector (default), text, element_removed, url_change, network_idle, dom_stable, new_tab. Omit it (and any target) to pause for wait_s."),
         "url_contains": _str("wait for=new_tab: URL filter."),
         "selector": {"type": "string"},
         "timeout_s": {"type": "number", "minimum": 0},
