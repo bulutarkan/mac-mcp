@@ -214,6 +214,10 @@ struct HelpDiagnosticsPane: View {
             }
         case "view_logs":
             Button("View Log") { Task { await center.showLog(recovery.log ?? "server", using: state) } }
+        case "view_update_log":
+            if let raw = recovery.url, let url = URL(string: raw), url.isFileURL {
+                Button("View Update Log") { center.preview(url) }
+            }
         case "open_system_settings":
             if let raw = recovery.url, let url = URL(string: raw) {
                 Button("Open System Settings") { NSWorkspace.shared.open(url) }

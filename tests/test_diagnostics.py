@@ -277,6 +277,29 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual("warn", row["status"])
         self.assertEqual("UPDATE_LAST_RUN_FAILED", row["reason_code"])
 
+    def test_last_update_names_its_result_and_offers_its_log(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            log = Path(td) / "update-upd_1.log"
+            log.write_text("[mac-mcp update] ERROR: boom\n", encoding="utf-8")
+            path.write_text(json.dumps({
+                "status": "failed", "update_id": "upd_1", "log_path": str(log),
+                "runtime_rollback": {"status": "restored"}, "rollback_health": {"status": "passed"},
+            }), encoding="utf-8")
+            with patch("mcp_server.diagnostics.update_state_path", return_value=path):
+                failed = diagnostics._check_update_recovery_state().to_dict()
+            path.write_text(json.dumps({
+                "status": "completed", "from_short": "78bc0c1f", "to_short": "05b6e68c",
+                "release_id": "stable-2.2.0-r1", "log_path": str(Path(td) / "gone.log"),
+            }), encoding="utf-8")
+            with patch("mcp_server.diagnostics.update_state_path", return_value=path):
+                done = diagnostics._check_update_recovery_state().to_dict()
+        self.assertEqual({"action": "view_update_log", "url": log.as_uri()}, failed["details"]["recovery"])
+        self.assertEqual("upd_1", failed["details"]["update_id"])
+        self.assertEqual("pass", done["status"])
+        self.assertEqual("The last update completed: 78bc0c1f \u2192 05b6e68c, stable-2.2.0-r1.", done["summary"])
+        self.assertNotIn("recovery", done["details"], "a log that no longer exists offers no button")
+
     def test_unreachable_public_endpoint_degrades_doctor_but_not_local_verdict(self) -> None:
         local = diagnostics.result("fixture", "test", "pass", "FIXTURE_OK", "Fixture passed.")
         down = diagnostics.result(

@@ -2,7 +2,7 @@
 // A classic script (WKWebView does not load ES modules from file:// pages).
 (function () {
 'use strict';
-const { SCREENS, FIRST_REQUEST, evaluate, primaryAction, indexOf, appRow, orderedClients } = window.OnboardingSteps;
+const { SCREENS, AGENTS, FIRST_REQUEST, evaluate, primaryAction, indexOf, appRow, agentRow, orderedClients } = window.OnboardingSteps;
 
 // ---------- bridge ----------
 // The app answers every message with window.macmcp.receive({id, ok, result | error}).
@@ -66,6 +66,7 @@ let current = Math.max(0, indexOf(params.get('screen') || 'welcome'));
 let status = null;
 let evaluation = evaluate(null);
 let apps = null;
+let agentsEnabled = null;
 const appNotes = {};
 let appsRemote = null;
 let pollTimer = null;
@@ -271,6 +272,7 @@ async function loadApps() {
   } catch {
     apps = [];
   }
+  agentsEnabled = await call('agents').catch(() => null);
   renderApps();
 }
 
@@ -307,6 +309,50 @@ function renderApps() {
     }
     list.append(element);
   }
+  renderAgents();
+}
+
+// Agents Mac MCP can hand work to: only those on this Mac, each turned on by the owner.
+function renderAgents() {
+  const block = $('[data-live="agents-block"]');
+  const list = $('[data-live="agents"]');
+  list.textContent = '';
+  const rows = AGENTS.map((agent) => [agent, agentRow(agent, apps, agentsEnabled)]).filter(([, row]) => row);
+  block.hidden = rows.length === 0 || agentsEnabled === null;
+  for (const [agent, row] of rows) {
+    const element = document.createElement('li');
+    element.className = 'app';
+    element.dataset.agent = agent.id;
+    element.dataset.state = row.state;
+    const text = document.createElement('div');
+    const name = document.createElement('strong');
+    name.textContent = agent.name;
+    const detail = document.createElement('span');
+    detail.textContent = row.detail;
+    text.append(name, detail);
+    element.append(text);
+    if (row.button) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = row.button;
+      button.setAttribute('aria-label', `${row.button}: ${agent.name}`);
+      button.addEventListener('click', () => enableAgent(agent, element));
+      element.append(button);
+    }
+    list.append(element);
+  }
+}
+
+async function enableAgent(agent, element) {
+  element.classList.add('is-working');
+  $('button', element).disabled = true;
+  try {
+    agentsEnabled = await call('enableAgent', { provider: agent.id });
+    toast(`${agent.name} is on. AI apps can hand work to it.`);
+  } catch (error) {
+    toast(error.message);
+  }
+  renderAgents();
 }
 
 async function connectApp(item, element) {

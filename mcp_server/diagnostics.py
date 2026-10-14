@@ -305,6 +305,10 @@ def _check_update_recovery_state() -> CheckResult:
         "update_id": payload.get("update_id"),
         "log_path": payload.get("log_path"),
     }
+    log_path = str(payload.get("log_path") or "")
+    if log_path and Path(log_path).is_file():
+        # Help & Diagnostics shows a View Update Log button for this check.
+        details["recovery"] = {"action": "view_update_log", "url": Path(log_path).as_uri()}
     if rollback_status in {"restore_unverified", "failed"} or health_status == "failed":
         return result(
             "update.recovery", "update", FAIL, "UPDATE_ROLLBACK_DEGRADED",
@@ -318,6 +322,13 @@ def _check_update_recovery_state() -> CheckResult:
             "The last updater run failed, but no degraded rollback state is recorded.", started=started,
             remediation="Review updater state and logs before retrying the update.",
             details=details,
+        )
+    if str(payload.get("status") or "") == "completed" and payload.get("to_short"):
+        release = f", {payload['release_id']}" if payload.get("release_id") else ""
+        return result(
+            "update.recovery", "update", PASS, "UPDATE_STATE_HEALTHY",
+            f"The last update completed: {payload.get('from_short')} \u2192 {payload['to_short']}{release}.",
+            started=started, details=details,
         )
     return result(
         "update.recovery", "update", PASS, "UPDATE_STATE_HEALTHY",

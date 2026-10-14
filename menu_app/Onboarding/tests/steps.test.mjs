@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import steps from '../steps.js';
 
-const { SCREENS, CLIENTS, evaluate, primaryAction, indexOf, appRow, orderedClients } = steps;
+const { SCREENS, CLIENTS, AGENTS, evaluate, primaryAction, indexOf, appRow, agentRow, orderedClients } = steps;
 
 test('the tour comes first, then the setup in order', () => {
   assert.deepEqual(SCREENS.map((s) => s.id),
@@ -75,4 +75,14 @@ test('a grant this server cannot see yet asks for a restart', () => {
   assert.equal(e.restartNeeded, true);
   assert.equal(evaluate({ server_running: false, permission_restart_needed: true }).restartNeeded, false);
   assert.equal(evaluate({ server_running: true }).restartNeeded, false);
+});
+
+test('agents on this Mac can be turned on; others are not listed', () => {
+  const apps = [{ id: 'codex', installed: true }, { id: 'claude-code', installed: true }, { id: 'opencode', installed: false }];
+  const [codex, claude, opencode] = AGENTS;
+  assert.equal(agentRow(codex, apps, { codex: false }).action, 'enableAgent');
+  assert.equal(agentRow(claude, apps, { claude: true }).state, 'added');
+  assert.equal(agentRow(claude, apps, { claude: true }).button, null);
+  assert.equal(agentRow(opencode, apps, { opencode: false }), null);
+  assert.deepEqual(AGENTS.map((a) => a.id), ['codex', 'claude', 'opencode']);
 });

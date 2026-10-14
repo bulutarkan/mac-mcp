@@ -383,11 +383,23 @@ def _copy_file(src: Path, dst: Path) -> None:
 _UPDATER_IDENTITY = ("-c", "user.name=Mac MCP Updater", "-c", "user.email=mac-mcp-updater@localhost")
 
 
+def _source_versions(repo: Path, deployed: str, target: str, rel: str) -> set[str]:
+    """Blob ids of a file at each commit after the deployed one, up to the target."""
+    commits = _git(repo, "rev-list", f"{deployed}..{target}", "--", rel, check=False).split()
+    blobs = set()
+    for commit in commits:
+        blob = _git(repo, "rev-parse", "--verify", "--quiet", f"{commit}:{rel}", check=False).strip()
+        if blob:
+            blobs.add(blob)
+    return blobs
+
+
 def _prepare_runtime_merge(repo: Path, runtime: Path, deployed: str, target: str, temp_root: Path) -> tuple[Path, int]:
     stage = temp_root / "runtime-merge"
     _git(repo, "worktree", "add", "--quiet", "--detach", str(stage), deployed)
     old_files = _tracked_files(repo, deployed)
     overlay_count = 0
+    source_copies = []
     for rel in old_files:
         src = runtime / rel
         dst = stage / rel
@@ -395,8 +407,19 @@ def _prepare_runtime_merge(repo: Path, runtime: Path, deployed: str, target: str
             before = dst.read_bytes() if dst.exists() else None
             data = src.read_bytes()
             if before != data:
+                # A file copied from newer source (on the way to this release) is not a local
+                # customization: it takes the update's version instead of conflicting with it.
+                if _git(repo, "hash-object", "--", str(src), check=False).strip() in _source_versions(repo, deployed, target, rel):
+                    source_copies.append(rel)
+                    continue
                 _copy_file(src, dst)
                 overlay_count += 1
+    if source_copies:
+        print(
+            f"[mac-mcp update] {len(source_copies)} runtime file(s) match newer source and take this release's "
+            f"version: {', '.join(source_copies[:5])}{' …' if len(source_copies) > 5 else ''}",
+            flush=True,
+        )
     if overlay_count:
         add_paths = ["mcp_server"]
         if (stage / "menu_app").exists():
@@ -408,10 +431,16 @@ def _prepare_runtime_merge(repo: Path, runtime: Path, deployed: str, target: str
         check=False, timeout=120,
     )
     if merge.returncode != 0:
-        conflicts = _git(stage, "diff", "--name-only", "--diff-filter=U", check=False)
-        detail = conflicts.replace("\n", ", ") if conflicts else (merge.stderr or merge.stdout).strip()
+        conflicts = [line for line in _git(stage, "diff", "--name-only", "--diff-filter=U", check=False).splitlines() if line]
         _git(repo, "worktree", "remove", "--force", str(stage), check=False)
-        raise UpdateError(f"Runtime customizations conflict with the update: {detail}")
+        if not conflicts:
+            raise UpdateError(f"Runtime customizations conflict with the update: {(merge.stderr or merge.stdout).strip()}")
+        first = runtime / conflicts[0]
+        raise UpdateError(
+            f"Runtime customizations conflict with the update: {', '.join(conflicts)}. These files in {runtime} were "
+            f"changed locally and this release changes them too; nothing was changed. To take the release's version, "
+            f"move each one aside (for example: mv '{first}' '{first}.local') and run `mac-mcp update` again."
+        )
     return stage, overlay_count
 
 

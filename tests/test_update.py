@@ -718,7 +718,8 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertIn("mac-mcp update failed", failed.stderr)
         self.assertFalse(staging.exists())
 
-    def make_fixture(self, conflict: bool = False, delete_old: bool = False, deps_change: bool = False):
+    def make_fixture(self, conflict: bool = False, delete_old: bool = False, deps_change: bool = False,
+                     promoted_mid: bool = False):
         root = Path(tempfile.mkdtemp(prefix="mac-mcp-update-test-"))
         self.addCleanup(shutil.rmtree, root, True)
         source = root / "source"
@@ -740,6 +741,10 @@ class UpdateHelperTests(unittest.TestCase):
 
         remote = root / "remote.git"
         run("git", "clone", "-q", "--bare", str(source), str(remote))
+        if promoted_mid:
+            # A development commit between the releases, copied into the runtime by hand.
+            (source / "mcp_server/main.py").write_text("VALUE = 'mid'\n", encoding="utf-8")
+            run("git", "commit", "-q", "-am", "mid", cwd=source)
         (source / "mcp_server/main.py").write_text("VALUE = 'new'\nNEW_FEATURE = True\n", encoding="utf-8")
         (source / "mcp_server/new_tool.py").write_text("ENABLED = True\n", encoding="utf-8")
         if deps_change:
@@ -760,6 +765,8 @@ class UpdateHelperTests(unittest.TestCase):
         main = runtime / "mcp_server/main.py"
         if conflict:
             main.write_text("VALUE = 'custom'\n", encoding="utf-8")
+        elif promoted_mid:
+            main.write_text("VALUE = 'mid'\n", encoding="utf-8")
         elif not delete_old:
             security = runtime / "mcp_server/security.py"
             security.write_text(security.read_text(encoding="utf-8") + "# RUNTIME_CUSTOMIZATION\n", encoding="utf-8")
@@ -1412,6 +1419,26 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertEqual(old, run("git", "rev-parse", "HEAD", cwd=repo))
         self.assertEqual(before, (runtime / "mcp_server/main.py").read_text(encoding="utf-8"))
         self.assertFalse((self.update_dir / "backups").exists())
+        run("git", "worktree", "prune", cwd=repo)
+
+    def test_a_runtime_file_copied_from_newer_source_takes_the_release(self):
+        _, repo, runtime, _old, target = self.make_fixture(promoted_mid=True)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            apply_update(repo, runtime, skip_restart=True, skip_deps=True)
+        self.assertEqual(target, run("git", "rev-parse", "HEAD", cwd=repo))
+        self.assertEqual("VALUE = 'new'\nNEW_FEATURE = True\n", (runtime / "mcp_server/main.py").read_text(encoding="utf-8"))
+        self.assertIn("match newer source and take this release's version: mcp_server/main.py", out.getvalue())
+        run("git", "worktree", "prune", cwd=repo)
+
+    def test_a_real_conflict_says_which_file_and_what_to_do(self):
+        _, repo, runtime, _old, _ = self.make_fixture(conflict=True)
+        with self.assertRaises(UpdateError) as caught:
+            apply_update(repo, runtime, skip_restart=True, skip_deps=True)
+        message = str(caught.exception)
+        self.assertIn("mcp_server/main.py", message)
+        self.assertIn("nothing was changed", message)
+        self.assertIn(f"mv '{runtime.resolve() / 'mcp_server/main.py'}'", message)
         run("git", "worktree", "prune", cwd=repo)
 
     def test_dirty_repo_is_reported(self):

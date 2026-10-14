@@ -25,6 +25,13 @@ const CLIENTS = [
   { id: 'opencode', name: 'OpenCode', mark: '[ ]', needsRemote: false },
 ];
 
+// Agents Mac MCP can hand work to (Settings › Agents). Each starts off; the owner turns it on.
+const AGENTS = [
+  { id: 'codex', client: 'codex', name: 'Codex' },
+  { id: 'claude', client: 'claude-code', name: 'Claude Code' },
+  { id: 'opencode', client: 'opencode', name: 'OpenCode' },
+];
+
 const FIRST_REQUEST = 'Use Mac MCP to tell me which macOS version this Mac is running.';
 
 function indexOf(id) {
@@ -97,13 +104,26 @@ function appRow(client, found, remote) {
   return { state: 'missing', detail: 'Not on this Mac', button: null, action: null };
 }
 
+/**
+ * One agent row: on, ready to turn on, or null when it is not on this Mac (not listed).
+ * apps: what `mac-mcp clients` found; enabled: { codex: bool, ... } from Settings.
+ */
+function agentRow(agent, apps, enabled) {
+  if (enabled && enabled[agent.id] === true) {
+    return { state: 'added', detail: 'On: Mac MCP can hand work to it', button: null, action: null };
+  }
+  const found = (apps || []).find((app) => app.id === agent.client);
+  if (!found || !found.installed) return null;
+  return { state: 'ready', detail: 'On this Mac. Uses your own account with it', button: 'Turn on', action: 'enableAgent' };
+}
+
 /** Apps on this Mac first, keeping the list's order otherwise. */
 function orderedClients(apps) {
   const present = (client) => client.needsRemote || Boolean((apps || []).find((a) => a.id === client.id && a.installed));
   return [...CLIENTS.filter(present), ...CLIENTS.filter((client) => !present(client))];
 }
 
-const api = { SCREENS, CLIENTS, FIRST_REQUEST, indexOf, evaluate, primaryAction, appRow, orderedClients };
+const api = { SCREENS, CLIENTS, AGENTS, FIRST_REQUEST, indexOf, evaluate, primaryAction, appRow, agentRow, orderedClients };
 if (typeof module === 'object' && module.exports) module.exports = api;
 else root.OnboardingSteps = api;
 })(typeof window === 'object' ? window : globalThis);

@@ -209,9 +209,10 @@ class InstallerPublicEndpointTests(unittest.TestCase):
             settings = state / "settings.json"
             data = json.loads(settings.read_text(encoding="utf-8"))
             providers = data["subagents"]["providers"]
-            self.assertTrue(providers["opencode"]["enabled"])
-            self.assertTrue(providers["codex"]["enabled"])
-            self.assertTrue(providers["claude"]["enabled"])
+            # Agents start off, as with the package installer; the tour or Settings turns them on.
+            self.assertFalse(providers["opencode"]["enabled"])
+            self.assertFalse(providers["codex"]["enabled"])
+            self.assertFalse(providers["claude"]["enabled"])
             self.assertNotIn("chatgpt", providers)
             self.assertEqual(0o600, stat.S_IMODE(settings.stat().st_mode))
 

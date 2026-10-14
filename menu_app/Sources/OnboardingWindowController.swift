@@ -110,6 +110,22 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, WKNavigation
                 throw AppState.OnboardingFailure(message: "Mac MCP did not restart. Try Restart Server in the menu.")
             }
             return true
+        case .agents:
+            return Self.agentStates(state.settings)
+        case .enableAgent(let provider):
+            // Turned on here by the owner, like the switch in Settings › Agents (never on by default).
+            let settings = state.settings
+            guard !settings.providerSettingsLocked else {
+                throw AppState.OnboardingFailure(message: "Mac MCP's settings file could not be read, so agents stay off. Open Settings › Agents.")
+            }
+            settings.setProviderEnabled(provider, enabled: true)
+            do {
+                try settings.save()
+            } catch {
+                settings.setProviderEnabled(provider, enabled: false)
+                throw AppState.OnboardingFailure(message: "Could not save the setting: \(error.localizedDescription)")
+            }
+            return Self.agentStates(settings)
         case .requestPermission(let permission):
             return try await state.dashboardJSON("dashboard/api/permissions/request", body: ["permission": permission])
         case .openSystemSettings(let permission):
@@ -149,6 +165,11 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, WKNavigation
             state.recordTour(outcome)
             return true
         }
+    }
+
+    /// Which agents are on (Settings › Agents), for the tour's agent rows.
+    private static func agentStates(_ settings: SettingsStore) -> [String: Bool] {
+        Dictionary(uniqueKeysWithValues: OnboardingBridge.agentProviders.map { ($0, settings.providerEnabled($0)) })
     }
 
     private func reply(_ id: Int, ok: Bool, result: Any?, error: String?) {

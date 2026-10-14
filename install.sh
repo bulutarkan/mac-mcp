@@ -577,9 +577,10 @@ if not isinstance(subagents, dict):
 providers = subagents.setdefault("providers", {})
 if not isinstance(providers, dict):
     providers = subagents["providers"] = {}
-providers.setdefault("opencode", {}).setdefault("enabled", True)
-providers.setdefault("codex", {}).setdefault("enabled", True)
-providers.setdefault("claude", {}).setdefault("enabled", True)
+# Same as the package installer: agents start off, and the owner turns them on in the
+# first-run tour or Settings > Agents. Existing choices are kept.
+for name in ("opencode", "codex", "claude"):
+    providers.setdefault(name, {}).setdefault("enabled", False)
 tmp = path.with_name(path.name + ".tmp")
 tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 os.chmod(tmp, 0o600)
