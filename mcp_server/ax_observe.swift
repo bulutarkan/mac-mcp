@@ -167,7 +167,13 @@ func observe(_ options: [String: String], frontmost: Bool) -> (Int32, String, St
     if let pidText = options["--pid"], let pid = Int32(pidText) {
         app = NSRunningApplication(processIdentifier: pid)
     } else if let name = options["--name"] {
-        let matches = NSWorkspace.shared.runningApplications.filter { processName($0) == name }
+        // The same app answers to its bundle name, its displayed name, its executable name
+        // (what System Events calls some processes, e.g. MacMCPMenu) and its bundle id.
+        let wanted = name.lowercased()
+        let matches = NSWorkspace.shared.runningApplications.filter { candidate in
+            [processName(candidate), candidate.localizedName, candidate.executableURL?.lastPathComponent,
+             candidate.bundleIdentifier].contains { $0?.lowercased() == wanted }
+        }
         app = matches.count == 1 ? matches[0] : nil
     } else if frontmost {
         app = NSWorkspace.shared.frontmostApplication

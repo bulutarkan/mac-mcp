@@ -1806,6 +1806,25 @@ def _scan_native_windows(
     return _decorate_native_metadata(metadata), None
 
 
+def _same_app(name: str, record: Dict[str, Any]) -> bool:
+    """Whether an app name refers to the app bound to a handle.
+
+    One app answers to its displayed name, its bundle id and its executable name (System
+    Events calls some processes by the executable, e.g. MacMCPMenu for "Mac MCP")."""
+    wanted = str(name or "").strip().lower()
+    if wanted in {str(record.get("app_name") or "").lower(), str(record.get("bundle_id") or "").lower()}:
+        return True
+    pid = int(record.get("pid") or 0)
+    if pid <= 0:
+        return False
+    try:
+        command = subprocess.run(["/bin/ps", "-o", "comm=", "-p", str(pid)], capture_output=True,
+                                 text=True, timeout=2, check=False).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(command) and os.path.basename(command).lower() == wanted
+
+
 def _resolve_registered_native_target(
     app: Optional[str],
     app_handle: Optional[str],
@@ -1825,7 +1844,7 @@ def _resolve_registered_native_target(
             return None, None, None, None, _native_target_error(
                 "TARGET_HANDLE_MISMATCH", "app_handle and window_handle refer to different targets."
             )
-        if normalized_app and normalized_app.lower() != str(record.get("app_name") or "").lower():
+        if normalized_app and not _same_app(normalized_app, record):
             return None, None, None, None, _native_target_error(
                 "TARGET_HANDLE_MISMATCH", "app does not match the application bound to window_handle."
             )
@@ -1859,7 +1878,7 @@ def _resolve_registered_native_target(
                 "app_handle is unknown or expired; call mac_observe again using the application name.",
                 app_handle=app_handle,
             )
-        if normalized_app and normalized_app.lower() != str(record.get("app_name") or "").lower():
+        if normalized_app and not _same_app(normalized_app, record):
             return None, None, None, None, _native_target_error(
                 "TARGET_HANDLE_MISMATCH", "app does not match the application bound to app_handle."
             )
@@ -4150,9 +4169,14 @@ def _scroll(
             element_id = _validate_element_id(element_id)
         except ValueError as exc:
             return False, str(exc)
+        # Scroll areas expose the standard AXScroll<Direction>ByPage actions; some custom
+        # views only the short name. Use whichever the element offers.
         body = (
-            f'repeat {pages} times\n'
-            f'            perform action "{action_name}" of targetElement\n'
+            f'set scrollAction to "{action_name}"\n'
+            f'        if (name of every action of targetElement) contains "{action_name}ByPage" then '
+            f'set scrollAction to "{action_name}ByPage"\n'
+            f'        repeat {pages} times\n'
+            f'            perform action scrollAction of targetElement\n'
             f'            delay 0.1\n'
             f'        end repeat'
         )
