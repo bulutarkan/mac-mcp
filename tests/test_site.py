@@ -221,13 +221,29 @@ class ReadmeTests(unittest.TestCase):
         for promise in ("It works inside your apps", "It browses where you can see it", "It hands off work and reports back"):
             self.assertIn(promise, first)
 
+    def anchors(self, text: str) -> set:
+        text = re.sub(r"^```.*?^```", "", text, flags=re.M | re.S)
+        return {self.slug(h) for h in re.findall(r"^#{1,6} (.+)$", text, re.M)}
+
     def test_relative_links_and_anchors_resolve(self) -> None:
-        anchors = {self.slug(h) for h in re.findall(r"^#{1,6} (.+)$", self.readme, re.M)}
-        for target in re.findall(r"\]\((?!https?:|mailto:)([^)\s]+)\)", self.readme):
-            if target.startswith("#"):
-                self.assertIn(target[1:], anchors, target)
-            else:
-                self.assertTrue((ROOT / target.split("#")[0]).exists(), target)
+        # The README and the task pages it points to (#186): every file and anchor exists.
+        pages = [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]
+        for page in pages:
+            text = page.read_text()
+            for target in re.findall(r"\]\((?!https?:|mailto:)([^)\s]+)\)", text):
+                path, _, anchor = target.partition("#")
+                file = (page.parent / path).resolve() if path else page
+                with self.subTest(page=page.name, target=target):
+                    self.assertTrue(file.exists(), target)
+                    if anchor and file.suffix == ".md":
+                        self.assertIn(anchor, self.anchors(file.read_text()), target)
+
+    def test_readme_is_a_short_front_door(self) -> None:
+        # #186: the README starts people off; the manual lives in docs/ and nothing was dropped.
+        self.assertLess(self.readme.count("\n"), 120)
+        for page in ("connect", "install", "browser", "safety", "menu-app", "agents-and-tasks", "reference"):
+            self.assertIn(f"(docs/{page}.md)", self.readme)
+            self.assertIn("(../README.md)", (ROOT / "docs" / f"{page}.md").read_text())
 
 
 if __name__ == "__main__":

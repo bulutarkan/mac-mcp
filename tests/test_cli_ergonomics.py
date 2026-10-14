@@ -105,7 +105,8 @@ class CliErgonomicsTests(unittest.TestCase):
         self.assertIn("Verified stable commit: cccccccc", status_text)
         self.assertNotIn("Latest commit:", status_text)
 
-        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+        # The update notes moved from the README to the install page (#186).
+        readme = (Path(__file__).resolve().parents[1] / "docs" / "install.md").read_text(encoding="utf-8")
         self.assertIn("newest cryptographically verified stable release checkpoint", readme)
         self.assertIn("not arbitrary repository HEAD", readme)
 

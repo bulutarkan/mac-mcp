@@ -127,7 +127,8 @@ class ConnectionConfigTemplateTests(unittest.TestCase):
 
 
     def test_readme_uses_generator_as_source_of_truth(self) -> None:
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        # The connection setup moved from the README to its own page (#186).
+        readme = (ROOT / "docs" / "connect.md").read_text(encoding="utf-8")
         for client in SUPPORTED_CLIENTS:
             self.assertIn(f"mac-mcp connect-config --client {client}", readme)
         self.assertIn("Claude Desktop", readme)

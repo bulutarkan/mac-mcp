@@ -148,7 +148,8 @@ class ServerApprovalSurfaceTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         app_state = feature_source("AppState", root)
         settings_view = (root / "menu_app/Sources/SettingsView.swift").read_text(encoding="utf-8")
-        readme = (root / "README.md").read_text(encoding="utf-8")
+        # Permission profiles and approval moved from the README to the safety page (#186).
+        readme = (root / "docs" / "safety.md").read_text(encoding="utf-8")
         terminology = (root / "docs/TERMINOLOGY.md").read_text(encoding="utf-8")
 
         self.assertIn("ServerApprovalInfo", app_state)
