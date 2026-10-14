@@ -506,6 +506,9 @@ class TelemetryManager:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_time ON security_events(timestamp DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_session ON security_events(session_id, timestamp DESC)")
+        # The menu's attention card counts denied calls and displays its five
+        # newest rows.  Keep both queries on the decision/time index.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_security_events_decision_time ON security_events(decision, timestamp DESC)")
         audit_chain.ensure_schema(conn)
         ensure_usage_schema(conn)
 
@@ -909,6 +912,23 @@ class TelemetryManager:
                 params,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def attention_security_summary(self, *, hours: float = 24, recent_limit: int = 5) -> tuple[int, List[Dict[str, Any]]]:
+        """Count denied security events and fetch only the rows the attention card shows."""
+        bounded_hours = max(0.05, min(float(hours), 24 * 365))
+        bounded_limit = max(1, min(int(recent_limit), 20))
+        cutoff = time.time() - bounded_hours * 3600
+        columns = "timestamp, event_type, tool, origin, reason_code, target_summary, agent_id"
+        with closing(self._connect()) as conn, conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM security_events WHERE decision='deny' AND timestamp >= ?", (cutoff,)
+            ).fetchone()[0]
+            rows = conn.execute(
+                f"SELECT {columns} FROM security_events WHERE decision='deny' AND timestamp >= ? "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (cutoff, bounded_limit),
+            ).fetchall()
+        return int(count or 0), [dict(row) for row in rows]
 
     def active_calls(self) -> List[Dict[str, Any]]:
         now = time.time()

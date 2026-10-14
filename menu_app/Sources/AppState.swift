@@ -16,6 +16,57 @@ enum DashboardAPIError: Error {
     case httpStatus(Int)
 }
 
+/// The few argument fields used by the live-activity surfaces.  Keeping this
+/// typed lets the SSE path decode directly from its bytes instead of making a
+/// dictionary and serializing it back to JSON for `ToolEvent`.
+private struct ToolActivityStreamArguments: Decodable, Sendable {
+    let description: String?
+    let browser: String?
+    let app: String?
+}
+
+private struct ToolActivityStreamPayload: Decodable, Sendable {
+    let kind: String
+    let eventID: String?
+    let tool: String?
+    let status: String?
+    let startedAt: Double?
+    let sessionID: String?
+    let agentID: String?
+    let client: String?
+    let teamID: String?
+    let arguments: ToolActivityStreamArguments?
+    let active: [ToolActivityStreamPayload]?
+    /// Decoded from this payload's decoder rather than reconstructed from an
+    /// untyped dictionary.  `connected` payloads deliberately have no event.
+    let toolEvent: ToolEvent?
+
+    enum CodingKeys: String, CodingKey {
+        case kind, tool, status, client, arguments, active
+        case eventID = "event_id"
+        case startedAt = "started_at"
+        case sessionID = "session_id"
+        case agentID = "agent_id"
+        case teamID = "team_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try values.decode(String.self, forKey: .kind)
+        eventID = try values.decodeIfPresent(String.self, forKey: .eventID)
+        tool = try values.decodeIfPresent(String.self, forKey: .tool)
+        status = try values.decodeIfPresent(String.self, forKey: .status)
+        startedAt = try values.decodeIfPresent(Double.self, forKey: .startedAt)
+        sessionID = try values.decodeIfPresent(String.self, forKey: .sessionID)
+        agentID = try values.decodeIfPresent(String.self, forKey: .agentID)
+        client = try values.decodeIfPresent(String.self, forKey: .client)
+        teamID = try values.decodeIfPresent(String.self, forKey: .teamID)
+        arguments = try values.decodeIfPresent(ToolActivityStreamArguments.self, forKey: .arguments)
+        active = try values.decodeIfPresent([ToolActivityStreamPayload].self, forKey: .active)
+        toolEvent = try? ToolEvent(from: decoder)
+    }
+}
+
 struct ActionNotice: Identifiable, Equatable {
     enum Kind { case info, success, error, update }
     let id = UUID()
@@ -777,10 +828,12 @@ final class AppState: ObservableObject {
         return (nextActive, nextRecent)
     }
 
-    nonisolated static func toolEvent(from payload: [String: Any]) -> ToolEvent? {
-        guard JSONSerialization.isValidJSONObject(payload),
-              let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
-        return try? JSONDecoder().decode(ToolEvent.self, from: data)
+    nonisolated static func toolEvent(from data: Data) -> ToolEvent? {
+        try? JSONDecoder().decode(ToolEvent.self, from: data)
+    }
+
+    nonisolated private static func toolActivityPayload(from data: Data) -> ToolActivityStreamPayload? {
+        try? JSONDecoder().decode(ToolActivityStreamPayload.self, from: data)
     }
 
     func restartToolActivityStream() {
@@ -826,10 +879,14 @@ final class AppState: ObservableObject {
                     if Task.isCancelled { return }
                     guard line.hasPrefix("data:") else { continue }
                     let json = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                    guard
-                        let data = json.data(using: .utf8),
-                        let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-                    else { continue }
+                    guard let data = json.data(using: .utf8) else { continue }
+                    // This loop is AppState-isolated, so keep JSON decoding off
+                    // the main actor.  After the await, only state application
+                    // runs on the main actor.
+                    let payload = await Task.detached(priority: .utility) {
+                        Self.toolActivityPayload(from: data)
+                    }.value
+                    guard let payload else { continue }
                     handleToolActivityPayload(payload)
                 }
             } catch {
@@ -843,13 +900,13 @@ final class AppState: ObservableObject {
         toolActivityStreamConnected = false
     }
 
-    private func handleToolActivityPayload(_ payload: [String: Any]) {
-        let kind = String(describing: payload["kind"] ?? "")
+    private func handleToolActivityPayload(_ payload: ToolActivityStreamPayload) {
+        let kind = payload.kind
 
         if kind == "connected" {
             ToolActivityBubbleController.shared.hideImmediately()
-            guard let active = payload["active"] as? [[String: Any]] else { return }
-            setIfChanged(\.activeEvents, active.compactMap(Self.toolEvent(from:)))
+            guard let active = payload.active else { return }
+            setIfChanged(\.activeEvents, active.compactMap(\.toolEvent))
             for event in active.reversed() {
                 presentToolActivityEvent(event)
             }
@@ -857,54 +914,54 @@ final class AppState: ObservableObject {
         }
 
         let lists = Self.applyActivityStreamEvent(
-            kind: kind, event: Self.toolEvent(from: payload), active: activeEvents, recent: recentEvents
+            kind: kind, event: payload.toolEvent, active: activeEvents, recent: recentEvents
         )
         setIfChanged(\.activeEvents, lists.active)
         setIfChanged(\.recentEvents, lists.recent)
 
         // A delegated agent or team starting while idle: poll now rather than after the idle wait.
         if kind == "call_finished", !hasActiveWork,
-           let tool = payload["tool"] as? String, tool.contains("agent") || tool.contains("team") {
+           let tool = payload.tool, tool.contains("agent") || tool.contains("team") {
             wakePoll()
         }
 
-        guard let eventID = payload["event_id"] as? String, !eventID.isEmpty else { return }
+        guard let eventID = payload.eventID, !eventID.isEmpty else { return }
         if kind == "call_started" {
             presentToolActivityEvent(payload)
         } else if kind == "call_finished" {
             ToolActivityBubbleController.shared.finish(eventID: eventID)
-            let status = String(describing: payload["status"] ?? "ok")
+            let status = payload.status ?? "ok"
             onLiveToolCallFinished?(eventID, !["error", "failed", "denied", "blocked", "timeout"].contains(status))
         }
     }
 
-    private func presentToolActivityEvent(_ payload: [String: Any]) {
+    private func presentToolActivityEvent(_ payload: ToolActivityStreamPayload) {
         guard
-            let eventID = payload["event_id"] as? String,
-            let arguments = payload["arguments"] as? [String: Any],
-            let description = arguments["description"] as? String,
+            let eventID = payload.eventID,
+            let arguments = payload.arguments,
+            let description = arguments.description,
             !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
         onLiveToolCallStarted?(LiveToolCall(
             eventID: eventID,
-            tool: String(describing: payload["tool"] ?? "tool"),
+            tool: payload.tool ?? "tool",
             description: description,
-            sessionID: payload["session_id"] as? String,
-            agentID: payload["agent_id"] as? String,
-            client: payload["client"] as? String,
-            target: (arguments["browser"] as? String) ?? (arguments["app"] as? String),
-            startedAt: (payload["started_at"] as? Double).map { Date(timeIntervalSince1970: $0) } ?? Date()
+            sessionID: payload.sessionID,
+            agentID: payload.agentID,
+            client: payload.client,
+            target: arguments.browser ?? arguments.app,
+            startedAt: payload.startedAt.map { Date(timeIntervalSince1970: $0) } ?? Date()
         ))
         // The bubble is one style of live activity; the island is the other.
         guard settings.requireToolDescriptions, settings.showToolActivity, !settings.showLiveIsland else { return }
 
         ToolActivityBubbleController.shared.begin(
             eventID: eventID,
-            tool: String(describing: payload["tool"] ?? "tool"),
+            tool: payload.tool ?? "tool",
             description: description,
-            sessionID: payload["session_id"] as? String,
-            agentID: payload["agent_id"] as? String,
-            teamID: payload["team_id"] as? String
+            sessionID: payload.sessionID,
+            agentID: payload.agentID,
+            teamID: payload.teamID
         )
     }
 
@@ -918,12 +975,16 @@ final class AppState: ObservableObject {
             return
         }
         do {
-            let summary: DashboardSummary = try await fetch(base.appendingPathComponent("dashboard/api/summary"), query: ["hours": "1"])
-
             let pollEvents = Self.shouldPollActivityEvents(
                 streamConnected: toolActivityStreamConnected, seeded: streamActivitySeeded
             )
             let streamWasConnected = toolActivityStreamConnected
+            // Summary gates the state update below, but none of these requests
+            // depends on it.  Start them together so a slow summary does not
+            // delay the independent agent, session, activity, or semantics data.
+            async let summaryFetch: DashboardSummary = fetch(
+                base.appendingPathComponent("dashboard/api/summary"), query: ["hours": "1"]
+            )
             async let eventsFetch: EventsEnvelope? = fetchActivityEvents(base: base, poll: pollEvents)
             async let agentsFetch: AgentsEnvelope = fetch(base.appendingPathComponent("dashboard/api/agents"), query: ["limit": "20"])
             async let steeringFetch: SteeringEnvelope = fetch(base.appendingPathComponent("dashboard/api/steering"), query: [:])
@@ -932,6 +993,8 @@ final class AppState: ObservableObject {
             async let securityFetch: SecuritySemanticsEnvelope? = readSemantics
                 ? fetch(base.appendingPathComponent("dashboard/api/security/semantics"), query: [:])
                 : nil
+
+            let summary = try await summaryFetch
 
             setIfChanged(\.serverRunning, true)
             if !settings.onboardingDismissed { await refreshOnboarding() }

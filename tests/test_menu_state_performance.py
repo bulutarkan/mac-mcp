@@ -8,6 +8,7 @@ from tests._menu_sources import feature_files, feature_source
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_STATE = ROOT / "menu_app" / "Sources" / "AppState.swift"
+LIVE_ISLAND = ROOT / "menu_app" / "Sources" / "LiveIsland.swift"
 
 
 class MenuStatePerformanceTests(unittest.TestCase):
@@ -44,6 +45,39 @@ class MenuStatePerformanceTests(unittest.TestCase):
         self.assertIn("wakePoll()", handler)
         menu = (APP_STATE.parent / "MenuBarView.swift").read_text(encoding="utf-8")
         self.assertIn("Task { await state.refresh() }", menu)
+
+    def test_refresh_starts_summary_with_its_independent_requests(self):
+        source = feature_source("AppState")
+        refresh = source[source.index("func refresh(background: Bool = false) async"):source.index("private func settingsFailureState")]
+        summary = refresh.index("async let summaryFetch: DashboardSummary")
+        self.assertLess(summary, refresh.index("async let eventsFetch"))
+        self.assertLess(summary, refresh.index("async let agentsFetch"))
+        self.assertLess(summary, refresh.index("async let steeringFetch"))
+        self.assertLess(summary, refresh.index("async let securityFetch"))
+        self.assertGreater(refresh.index("let summary = try await summaryFetch"), refresh.index("async let securityFetch"))
+
+    def test_live_island_batches_requests_and_backs_off_without_republishing(self):
+        source = LIVE_ISLAND.read_text(encoding="utf-8")
+        poll = source[source.index("private func startPolling()"):source.index("// MARK: Building what is shown")]
+        self.assertIn("async let attentionFetch", poll)
+        self.assertIn("async let tasksFetch", poll)
+        self.assertLess(poll.index("async let attentionFetch"), poll.index("let attentionResult = await attentionFetch"))
+        self.assertLess(poll.index("async let tasksFetch"), poll.index("let tasksResult = await tasksFetch"))
+        self.assertIn("if nextAttention != attention", poll)
+        self.assertIn("if nextReviews != reviews", poll)
+        self.assertIn("if nextRunningTasks != runningTasks", poll)
+        self.assertIn("if nextScheduled != model.scheduled", poll)
+        self.assertIn("if now != model.now", source)
+        self.assertIn("if nextNeedsYou != model.needsYou", source)
+        self.assertIn("if islandContentChanged { rebuild() }", poll)
+        self.assertIn("fastIntervalSeconds: TimeInterval = 6", source)
+        self.assertIn("recentlyActiveWindowSeconds: TimeInterval = 60", source)
+        self.assertIn("idleIntervalSeconds: TimeInterval = 30", source)
+        self.assertIn("deepIdleIntervalSeconds: TimeInterval = 60", source)
+        self.assertIn("return idleFor < deepIdleAfterSeconds ? idleIntervalSeconds : deepIdleIntervalSeconds", source)
+        tool_started = source[source.index("private func toolStarted"):source.index("private func toolFinished")]
+        self.assertIn("recordWorkActivity(wake: true)", tool_started)
+        self.assertIn("pollSleepTask?.cancel()", source)
 
     def test_stable_session_diff_handles_identical_update_add_remove_at_scale(self):
         harness = r'''

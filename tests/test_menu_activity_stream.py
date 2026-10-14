@@ -25,9 +25,12 @@ DASHBOARD_TOKEN = "dashboard-test-token-0123456789-abcdefghijklmnopqrstuvwxyz"
 HARNESS = r'''
 import Foundation
 
-func event(_ id: String, _ ts: Double, _ status: String = "success") -> [String: Any] {
-    ["event_id": id, "timestamp": ts, "source": "mcp", "tool": "read_file", "status": status,
-     "duration_ms": 3, "browser_context": ["browser": "Safari", "site": "example.com", "action": "Reading"]]
+func event(_ id: String, _ ts: Double, _ status: String = "success") -> Data {
+    let payload: [String: Any] = [
+        "event_id": id, "timestamp": ts, "source": "mcp", "tool": "read_file", "status": status,
+        "duration_ms": 3, "browser_context": ["browser": "Safari", "site": "example.com", "action": "Reading"],
+    ]
+    return try! JSONSerialization.data(withJSONObject: payload)
 }
 
 @main
@@ -66,7 +69,7 @@ struct ActivityStreamHarness {
         // Unknown kinds and undecodable payloads leave the lists alone.
         let same = AppState.applyActivityStreamEvent(kind: "keepalive", event: finished, active: [started], recent: recent, now: now)
         precondition(same.active.map(\.eventID) == ["evt_a"] && same.recent.count == recent.count)
-        precondition(AppState.toolEvent(from: ["event_id": "x"]) == nil)
+        precondition(AppState.toolEvent(from: Data(#"{"event_id":"x"}"#.utf8)) == nil)
         print("ACTIVITY_STREAM_PASS")
     }
 }
@@ -103,6 +106,16 @@ class MenuActivityStreamHarnessTests(unittest.TestCase):
         stream = source[source.index("private func consumeToolActivityStream()"):source.index("private func handleToolActivityPayload")]
         self.assertIn("streamActivitySeeded = false", stream)
         self.assertGreaterEqual(stream.count("toolActivityStreamConnected = false"), 2)
+
+    def test_stream_decodes_typed_payloads_off_the_main_actor(self) -> None:
+        source = feature_source("AppState")
+        stream = source[source.index("private func consumeToolActivityStream()"):source.index("private func handleToolActivityPayload")]
+        self.assertIn("Task.detached(priority: .utility)", stream)
+        self.assertIn("Self.toolActivityPayload(from: data)", stream)
+        self.assertNotIn("JSONSerialization.jsonObject", stream)
+        self.assertNotIn("[String: Any]", stream)
+        self.assertIn("JSONDecoder().decode(ToolActivityStreamPayload.self, from: data)", source)
+        self.assertIn("toolEvent = try? ToolEvent(from: decoder)", source)
 
 
 class DashboardStreamContextTests(unittest.TestCase):

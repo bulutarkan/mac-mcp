@@ -498,17 +498,15 @@ def create_dashboard_routes(
             return denied
         pending = security_context.pending_requests() if security_context is not None else []
         try:
-            recent = telemetry.query_security_events(hours=24, limit=200)
+            blocked_count, blocked_recent = telemetry.attention_security_summary(hours=24, recent_limit=5)
         except sqlite3.Error:
-            recent = []
-        blocked = [row for row in recent if str(row.get("decision") or "") == "deny"]
-        keys = ("timestamp", "event_type", "tool", "origin", "reason_code", "target_summary", "agent_id")
+            blocked_count, blocked_recent = 0, []
         return JSONResponse(sanitize_value({
             "ok": True,
             "pending": pending,
             "answer_where": "Mac MCP Allow Once / Block prompt on this Mac",
-            "blocked_24h": len(blocked),
-            "blocked_recent": [{key: row.get(key) for key in keys} for row in blocked[:5]],
+            "blocked_24h": blocked_count,
+            "blocked_recent": blocked_recent,
         }))
 
     async def security_escalate(request: Request) -> Response:

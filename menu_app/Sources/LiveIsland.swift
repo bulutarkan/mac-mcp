@@ -233,6 +233,25 @@ final class LiveIslandModel: ObservableObject {
     }
 }
 
+/// Island data needs quick refreshes around real work, but its idle card does
+/// not need to ask the server twenty times a minute.  After one quiet minute we
+/// poll every 30 seconds; after five quiet minutes, every 60 seconds.
+private enum LiveIslandPolling {
+    static let fastIntervalSeconds: TimeInterval = 6
+    static let recentlyActiveWindowSeconds: TimeInterval = 60
+    static let idleIntervalSeconds: TimeInterval = 30
+    static let deepIdleAfterSeconds: TimeInterval = 5 * 60
+    static let deepIdleIntervalSeconds: TimeInterval = 60
+
+    static func interval(workIsActive: Bool, lastWorkAt: Date, now: Date = Date()) -> TimeInterval {
+        if workIsActive || now.timeIntervalSince(lastWorkAt) < recentlyActiveWindowSeconds {
+            return fastIntervalSeconds
+        }
+        let idleFor = now.timeIntervalSince(lastWorkAt)
+        return idleFor < deepIdleAfterSeconds ? idleIntervalSeconds : deepIdleIntervalSeconds
+    }
+}
+
 // MARK: - Controller
 
 @MainActor
@@ -250,6 +269,8 @@ final class LiveIslandController {
     private var peekTask: Task<Void, Never>?
     private var finishTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
+    private var pollSleepTask: Task<Void, Never>?
+    private var pollSleepID: UUID?
     private var hoverTask: Task<Void, Never>?
     private var mouseMonitors: [Any] = []
     private var observers: [NSObjectProtocol] = []
@@ -261,6 +282,12 @@ final class LiveIslandController {
     private var knownAttention: Set<String> = []
     private var attentionSeeded = false
     private var historySeeded = false
+    private var lastWorkAt = Date()
+    private var activeAgentIDs: Set<String> = []
+    private var scheduledRunningTaskIDs: Set<String> = []
+    /// Keep the display timestamp stable between island polls.  A fresh
+    /// `Date()` estimate would make an otherwise identical row unequal.
+    private var agentStartedAt: [String: Date] = [:]
 
     var enabled: Bool { state?.settings.showLiveIsland == true }
 
@@ -301,6 +328,9 @@ final class LiveIslandController {
     // MARK: Inputs
 
     private func toolStarted(_ call: LiveToolCall) {
+        // A stream event can arrive during a 30/60 s idle sleep.  It is the
+        // signal to restore the old fast cadence immediately.
+        recordWorkActivity(wake: true)
         finishTask?.cancel()
         finishTask = nil
         tools[call.eventID] = call
@@ -310,6 +340,7 @@ final class LiveIslandController {
 
     private func toolFinished(_ eventID: String, ok: Bool) {
         guard let call = tools.removeValue(forKey: eventID) else { return }
+        recordWorkActivity(wake: true)
         remember(LiveHistoryEntry(id: eventID, tool: call.tool, title: call.description, client: call.client,
                                   target: call.target, at: Date(), ok: ok))
         rebuild()
@@ -331,6 +362,19 @@ final class LiveIslandController {
     }
 
     private func agentsChanged(_ agents: [AgentInfo]) {
+        let nextActiveAgentIDs = Set(agents.filter(\.isActive).map(\.agentID))
+        let activeAgentsChanged = nextActiveAgentIDs != activeAgentIDs
+        let startedAgents = !nextActiveAgentIDs.subtracting(activeAgentIDs).isEmpty
+        activeAgentIDs = nextActiveAgentIDs
+        agentStartedAt = agentStartedAt.filter { nextActiveAgentIDs.contains($0.key) }
+        for agent in agents where agent.isActive && agentStartedAt[agent.agentID] == nil {
+            agentStartedAt[agent.agentID] = agent.durationMS.map { Date().addingTimeInterval(-Double($0) / 1000) } ?? Date()
+        }
+        if !nextActiveAgentIDs.isEmpty {
+            recordWorkActivity(wake: startedAgents)
+        } else if activeAgentsChanged {
+            recordWorkActivity(wake: true)
+        }
         defer { rebuild(); refreshSlot() }
         guard agentsSeeded else {
             agentStatus = Dictionary(agents.map { ($0.agentID, $0.status ?? "") }, uniquingKeysWith: { a, _ in a })
@@ -357,6 +401,7 @@ final class LiveIslandController {
     }
 
     private func scheduledRunFinished(_ run: TaskRun, name: String) {
+        recordWorkActivity()
         let tone: LiveTone = run.status == "done" ? .done : run.status == "skipped" ? .attention : .problem
         let title: String
         switch run.status {
@@ -383,57 +428,119 @@ final class LiveIslandController {
         } else {
             pollTask?.cancel()
             pollTask = nil
+            pollSleepTask?.cancel()
+            pollSleepTask = nil
+            pollSleepID = nil
             peekQueue.removeAll()
             model.peek = nil
             hideWindow()
         }
     }
 
-    // MARK: What the app does not already have
+    // MARK: Polling
 
     private func startPolling() {
         pollTask?.cancel()
+        pollSleepTask?.cancel()
+        lastWorkAt = Date()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.pollOnce()
-                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                guard let self else { return }
+                await self.pollOnce()
+                guard !Task.isCancelled else { return }
+                await self.waitForNextPoll()
             }
         }
+    }
+
+    private func recordWorkActivity(wake: Bool = false) {
+        lastWorkAt = Date()
+        if wake { wakePolling() }
+    }
+
+    private func wakePolling() {
+        pollSleepTask?.cancel()
+    }
+
+    private var islandWorkIsActive: Bool {
+        !tools.isEmpty || !activeAgentIDs.isEmpty || !scheduledRunningTaskIDs.isEmpty
+    }
+
+    private func waitForNextPoll() async {
+        let sleepID = UUID()
+        let delay = LiveIslandPolling.interval(workIsActive: islandWorkIsActive, lastWorkAt: lastWorkAt)
+        let sleeper = Task<Void, Never> {
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        }
+        pollSleepID = sleepID
+        pollSleepTask = sleeper
+        await sleeper.value
+        if pollSleepID == sleepID {
+            pollSleepTask = nil
+            pollSleepID = nil
+        }
+    }
+
+    private func pollHistoryIfNeeded(_ state: AppState) async -> (ok: Bool, object: [String: Any]) {
+        guard !historySeeded else { return (ok: false, object: [:]) }
+        return await state.taskAPI("dashboard/api/events?limit=40")
     }
 
     private func pollOnce() async {
         guard enabled, let state else { return }
         // Self-heal: the island is always on screen while its style is on.
         if !locked, !(window?.isVisible ?? false) || (window?.alphaValue ?? 0) < 0.99 { showWindow() }
-        let attentionResult = await state.taskAPI("dashboard/api/attention")
-        let tasksResult = await state.taskAPI("dashboard/api/scheduled-tasks")
-        let historyResult = historySeeded ? (ok: false, object: [String: Any]()) : await state.taskAPI("dashboard/api/events?limit=40")
+        async let attentionFetch = state.taskAPI("dashboard/api/attention")
+        async let tasksFetch = state.taskAPI("dashboard/api/scheduled-tasks")
+        async let historyFetch = pollHistoryIfNeeded(state)
+        let attentionResult = await attentionFetch
+        let tasksResult = await tasksFetch
+        let historyResult = await historyFetch
+        var islandContentChanged = false
         if attentionResult.ok {
-            attention = (attentionResult.object["pending"] as? [[String: Any]] ?? []).map { row in
+            let nextAttention = (attentionResult.object["pending"] as? [[String: Any]] ?? []).map { row in
                 let tool = row["tool"] as? String ?? ""
                 let origin = (row["origin"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                 return LiveItem(id: "approval-\(row["request_id"] as? String ?? UUID().uuidString)", symbol: "hand.raised.fill",
                                 title: "Waiting for your answer", detail: [Self.toolWords(tool), origin].compactMap { $0 }.joined(separator: " · "),
                                 tone: .attention, startedAt: nil, target: nil, actionTitle: nil)
             }
+            if nextAttention != attention {
+                attention = nextAttention
+                islandContentChanged = true
+            }
         }
         if tasksResult.ok {
             let tasks = (tasksResult.object["tasks"] as? [[String: Any]] ?? []).map(ScheduledTask.init)
-            reviews = tasks.filter { $0.proposal != nil }.map { task in
+            let nextReviews = tasks.filter { $0.proposal != nil }.map { task in
                 let by = task.proposal?["proposed_by"] as? String ?? "An AI app"
                 return LiveItem(id: "review-\(task.id)", symbol: "text.badge.checkmark",
                                 title: task.proposal?["name"] as? String ?? task.name,
                                 detail: task.approved ? "\(by) suggested a change" : "\(by) suggested this task",
                                 tone: .attention, startedAt: nil, target: .settings("scheduled-tasks"), actionTitle: "Review")
             }
-            runningTasks = tasks.filter { $0.state == "running" && !$0.isAI }.map { task in
+            let nextRunningTasks = tasks.filter { $0.state == "running" && !$0.isAI }.map { task in
                 LiveItem(id: "task-\(task.id)", symbol: "chevron.left.forwardslash.chevron.right", title: task.name,
                          detail: "Scheduled script", tone: .working, startedAt: task.lastRun?.startedAt,
                          target: .settings("scheduled-tasks"))
             }
-            model.scheduled = tasks.filter { $0.approved }.sorted {
+            let nextScheduled = tasks.filter { $0.approved }.sorted {
                 ($0.nextRunAt ?? .distantFuture) < ($1.nextRunAt ?? .distantFuture)
             }
+            let nextScheduledRunningTaskIDs = Set(tasks.filter { $0.state == "running" }.map(\.id))
+            if nextReviews != reviews {
+                reviews = nextReviews
+                islandContentChanged = true
+            }
+            if nextRunningTasks != runningTasks {
+                runningTasks = nextRunningTasks
+                islandContentChanged = true
+            }
+            if nextScheduled != model.scheduled { model.scheduled = nextScheduled }
+            if nextScheduledRunningTaskIDs != scheduledRunningTaskIDs {
+                scheduledRunningTaskIDs = nextScheduledRunningTaskIDs
+            }
+            if !nextScheduledRunningTaskIDs.isEmpty { recordWorkActivity() }
         }
         if historyResult.ok {
             historySeeded = true
@@ -448,7 +555,8 @@ final class LiveIslandController {
                                         ok: !["error", "failed", "denied", "blocked", "timeout"].contains(status))
             }
             let known = Set(model.recent.map(\.id))
-            model.recent = Array((model.recent + seeded.filter { !known.contains($0.id) }).sorted { $0.at > $1.at }.prefix(20))
+            let nextRecent = Array((model.recent + seeded.filter { !known.contains($0.id) }).sorted { $0.at > $1.at }.prefix(20))
+            if nextRecent != model.recent { model.recent = nextRecent }
         }
         let waiting = attention + reviews
         if attentionSeeded {
@@ -461,7 +569,7 @@ final class LiveIslandController {
         }
         knownAttention = Set(waiting.map(\.id))
         attentionSeeded = true
-        rebuild()
+        if islandContentChanged { rebuild() }
         refreshSlot()
     }
 
@@ -481,7 +589,7 @@ final class LiveIslandController {
             let step = agent.lastTool.map { Self.toolWords($0) } ?? (agent.phase.map { $0.capitalized } ?? "Working")
             now.append(LiveItem(id: "agent-\(agent.agentID)", symbol: "sparkles", title: Self.agentName(agent),
                                 detail: "\(Self.providerName(agent.provider)) · \(step)", tone: .working,
-                                startedAt: agent.durationMS.map { Date().addingTimeInterval(-Double($0) / 1000) },
+                                startedAt: estimatedAgentStartedAt(agent),
                                 target: .agent(agent.agentID)))
         }
         now.append(contentsOf: runningTasks)
@@ -495,9 +603,18 @@ final class LiveIslandController {
                                 tone: asking ? .attention : .working, startedAt: call.startedAt, target: .dashboard)
             if asking { waitingTools.append(item) } else { now.append(item) }
         }
-        model.now = now
-        model.needsYou = waitingTools + attention + reviews
-        model.working = !now.isEmpty
+        let nextNeedsYou = waitingTools + attention + reviews
+        if now != model.now { model.now = now }
+        if nextNeedsYou != model.needsYou { model.needsYou = nextNeedsYou }
+        if model.working != !now.isEmpty { model.working = !now.isEmpty }
+    }
+
+    private func estimatedAgentStartedAt(_ agent: AgentInfo) -> Date? {
+        guard let durationMS = agent.durationMS else { return nil }
+        if let estimated = agentStartedAt[agent.agentID] { return estimated }
+        let estimated = Date().addingTimeInterval(-Double(durationMS) / 1000)
+        agentStartedAt[agent.agentID] = estimated
+        return estimated
     }
 
     /// The right wing: what needs you first, then the icon of the current work, else empty.
@@ -520,7 +637,8 @@ final class LiveIslandController {
     private func remember(_ entry: LiveHistoryEntry) {
         var list = model.recent.filter { $0.id != entry.id }
         list.insert(entry, at: 0)
-        model.recent = Array(list.prefix(20))
+        let nextRecent = Array(list.prefix(20))
+        if nextRecent != model.recent { model.recent = nextRecent }
     }
 
     private func enqueuePeek(_ peek: LivePeek) {
@@ -987,8 +1105,8 @@ struct LiveIslandView: View {
         }
         .padding(.horizontal, 18)
         .frame(height: 54)
-        .contentShape(Rectangle())
-        .onTapGesture { controller.open(peek.target) }
+        .accessibilityElement(children: .combine)
+        .activatable("Opens it in Mac MCP") { controller.open(peek.target) }
         }
         .id(peek.id)
         .transition(.asymmetric(insertion: .move(edge: .top).combined(with: .opacity), removal: .opacity))
@@ -1110,8 +1228,8 @@ private struct IslandPanelContent: View {
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(item.tone == .attention ? 0.09 : 0.06)))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(item.tone == .attention ? item.tone.color.opacity(0.4) : .clear))
-        .contentShape(Rectangle())
-        .onTapGesture { controller.open(item.target) }
+        .accessibilityElement(children: .combine)
+        .activatable("Opens it in Mac MCP") { controller.open(item.target) }
         .animation(IslandMotion.slot, value: item.detail)
         }
     }

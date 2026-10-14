@@ -4,8 +4,13 @@ import SwiftUI
 /// Scheduled Tasks (#175) as the app reads them from /dashboard/api/scheduled-tasks: the Settings pane
 /// shows them and AppState announces finished runs.
 
-struct ScheduledTask: Identifiable {
+struct ScheduledTask: Identifiable, Equatable {
     let raw: [String: Any]
+
+    static func == (lhs: ScheduledTask, rhs: ScheduledTask) -> Bool {
+        NSDictionary(dictionary: lhs.raw).isEqual(NSDictionary(dictionary: rhs.raw))
+    }
+
     var id: String { raw["id"] as? String ?? "" }
     var name: String { raw["name"] as? String ?? "Untitled" }
     var description: String { raw["description"] as? String ?? "" }

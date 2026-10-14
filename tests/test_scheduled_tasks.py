@@ -152,6 +152,34 @@ class StoreCase(unittest.TestCase):
 
 
 class StoreTests(StoreCase):
+    def test_list_tasks_reads_latest_runs_once_and_keeps_the_public_shape(self) -> None:
+        first = store.create_task(self.ai(name="First task"), now=100)
+        second = store.create_task(self.ai(name="Second task"), now=101)
+        store.record_skip(first["id"], scheduled_for=110, reason="first", now=110)
+        store.record_skip(first["id"], scheduled_for=120, reason="newest", now=120)
+        store.record_skip(second["id"], scheduled_for=130, reason="second", now=130)
+
+        # get_task still uses the one-task lookup, so it is a useful oracle for
+        # the batch list's unchanged public result.
+        expected = [store.get_task(first["id"]), store.get_task(second["id"])]
+        statements = []
+        original_connect = store.sqlite3.connect
+
+        def traced_connect(*args, **kwargs):
+            conn = original_connect(*args, **kwargs)
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        with patch.object(store.sqlite3, "connect", side_effect=traced_connect):
+            listed = store.list_tasks()
+
+        self.assertEqual(expected, listed)
+        latest_queries = [sql for sql in statements if "latest_rank" in sql]
+        self.assertEqual(1, len(latest_queries))
+        self.assertIn("ROW_NUMBER() OVER", latest_queries[0])
+        self.assertFalse(any("SELECT * FROM runs WHERE task_id=" in sql for sql in statements))
+        self.assertEqual("newest", listed[0]["last_run"]["reason"])
+
     def test_owner_tasks_are_live_and_agent_tasks_wait_for_approval(self) -> None:
         now = ts("2026-10-13T12:00")
         mine = store.create_task(self.ai(description="For Monday's meeting."), now=now)

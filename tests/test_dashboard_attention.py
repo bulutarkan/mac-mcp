@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
@@ -74,7 +75,10 @@ class AttentionRouteTests(unittest.TestCase):
             origin=None, decision="grant", reason_code="local_user_one_shot_grant", profile=None,
             actor="dashboard-local-user", agent_id=None, target_summary="terminal:run_command",
         )
-        data = self.client.get("/dashboard/api/attention", headers=AUTH).json()
+        # The card must not hydrate and filter an arbitrary event page.  Its
+        # summary query counts every denial and reads only the five visible rows.
+        with patch.object(self.telemetry, "query_security_events", side_effect=AssertionError("unbounded read")):
+            data = self.client.get("/dashboard/api/attention", headers=AUTH).json()
         self.assertEqual(7, data["blocked_24h"])
         self.assertEqual(5, len(data["blocked_recent"]))
         self.assertEqual("SERVER_RISK_BLOCK", data["blocked_recent"][0]["event_type"])

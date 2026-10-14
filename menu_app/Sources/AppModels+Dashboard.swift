@@ -323,7 +323,7 @@ struct PrivacyFlags: Decodable, Equatable {
     }
 }
 
-struct BrowserContext: Decodable, Equatable {
+struct BrowserContext: Decodable, Equatable, Sendable {
     let browser: String?
     let tabHandle: String?
     let site: String?
@@ -339,7 +339,7 @@ struct BrowserContext: Decodable, Equatable {
     }
 }
 
-struct ToolEvent: Decodable, Identifiable, Equatable {
+struct ToolEvent: Decodable, Identifiable, Equatable, Sendable {
     let eventID: String
     let timestamp: Double
     let source: String

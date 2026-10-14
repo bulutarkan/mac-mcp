@@ -68,6 +68,11 @@ SCRIPT_TYPES: Dict[str, Dict[str, Any]] = {
 _PROGRAM_DIRS = ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin")
 
 _LOCK = threading.RLock()
+# A process commonly reads the task list many times while the menu is open.  Keep
+# the schema/WAL setup for each database file to its first connection instead of
+# doing DDL and a journal-mode round trip for every read.  The identity check
+# still initializes a replacement database at the same path.
+_DB_IDENTITIES: Dict[Path, tuple[int, int]] = {}
 
 
 class TaskError(ValueError):
@@ -92,52 +97,60 @@ def db_path() -> Path:
 def _db() -> Iterator[sqlite3.Connection]:
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        path.parent.chmod(0o700)
-    except OSError:
-        pass
     with _LOCK:
+        try:
+            identity = (path.stat().st_dev, path.stat().st_ino)
+        except OSError:
+            identity = None
+        initialize = path not in _DB_IDENTITIES or _DB_IDENTITIES[path] != identity
         conn = sqlite3.connect(path, timeout=10.0)
         conn.row_factory = sqlite3.Row
         try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS tasks (
-                    id TEXT PRIMARY KEY,
-                    definition TEXT,
-                    proposal TEXT,
-                    proposed_by TEXT,
-                    proposed_at REAL,
-                    paused INTEGER NOT NULL DEFAULT 0,
-                    created_by TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    next_run_at REAL
-                );
-                CREATE TABLE IF NOT EXISTS runs (
-                    id TEXT PRIMARY KEY,
-                    task_id TEXT NOT NULL,
-                    trigger TEXT NOT NULL,
-                    scheduled_for REAL,
-                    started_at REAL NOT NULL,
-                    finished_at REAL,
-                    status TEXT NOT NULL,
-                    reason TEXT,
-                    summary TEXT,
-                    output TEXT,
-                    exit_code INTEGER,
-                    agent_id TEXT,
-                    skipped_count INTEGER NOT NULL DEFAULT 0,
-                    detail TEXT
-                );
-                CREATE INDEX IF NOT EXISTS runs_by_task ON runs(task_id, started_at DESC);
-                """
-            )
-            try:
-                path.chmod(0o600)
-            except OSError:
-                pass
+            if initialize:
+                try:
+                    path.parent.chmod(0o700)
+                except OSError:
+                    pass
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS tasks (
+                        id TEXT PRIMARY KEY,
+                        definition TEXT,
+                        proposal TEXT,
+                        proposed_by TEXT,
+                        proposed_at REAL,
+                        paused INTEGER NOT NULL DEFAULT 0,
+                        created_by TEXT NOT NULL,
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL,
+                        next_run_at REAL
+                    );
+                    CREATE TABLE IF NOT EXISTS runs (
+                        id TEXT PRIMARY KEY,
+                        task_id TEXT NOT NULL,
+                        trigger TEXT NOT NULL,
+                        scheduled_for REAL,
+                        started_at REAL NOT NULL,
+                        finished_at REAL,
+                        status TEXT NOT NULL,
+                        reason TEXT,
+                        summary TEXT,
+                        output TEXT,
+                        exit_code INTEGER,
+                        agent_id TEXT,
+                        skipped_count INTEGER NOT NULL DEFAULT 0,
+                        detail TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS runs_by_task ON runs(task_id, started_at DESC);
+                    """
+                )
+                try:
+                    path.chmod(0o600)
+                except OSError:
+                    pass
+                stat = path.stat()
+                _DB_IDENTITIES[path] = (stat.st_dev, stat.st_ino)
             yield conn
             conn.commit()
         finally:
@@ -417,15 +430,31 @@ def _running_ids(conn: sqlite3.Connection) -> set:
     return {row["task_id"] for row in conn.execute("SELECT task_id FROM runs WHERE status='running'")}
 
 
+def _latest_runs(conn: sqlite3.Connection) -> Dict[str, sqlite3.Row]:
+    """The most recent run for every task, fetched in one set-based query.
+
+    `rowid` makes ties match SQLite's existing index order for the former
+    per-task `ORDER BY started_at DESC LIMIT 1` lookup.
+    """
+    rows = conn.execute(
+        """
+        SELECT * FROM (
+            SELECT runs.*, ROW_NUMBER() OVER (
+                PARTITION BY task_id ORDER BY started_at DESC, rowid ASC
+            ) AS latest_rank
+            FROM runs
+        ) WHERE latest_rank = 1
+        """
+    ).fetchall()
+    return {row["task_id"]: row for row in rows}
+
+
 def list_tasks() -> List[Dict[str, Any]]:
     with _db() as conn:
         running = _running_ids(conn)
         rows = conn.execute("SELECT * FROM tasks ORDER BY created_at").fetchall()
-        out = []
-        for row in rows:
-            last = conn.execute("SELECT * FROM runs WHERE task_id=? ORDER BY started_at DESC LIMIT 1",
-                                (row["id"],)).fetchone()
-            out.append(_public(row, last, row["id"] in running))
+        latest = _latest_runs(conn)
+        out = [_public(row, latest.get(row["id"]), row["id"] in running) for row in rows]
     order = {"needs_approval": 0}
     out.sort(key=lambda task: (order.get(task["state"], 1) if "proposal" not in task else 0, task["created_at"]))
     return out

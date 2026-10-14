@@ -25,7 +25,7 @@ class NativeAccessibilityTests(unittest.TestCase):
         self.assertIn("struct ActivatableRow: ViewModifier", helper)
         self.assertIn(".accessibilityAction(.default, action)", helper)
         self.assertIn(".onKeyPress(.return)", helper)
-        for name in ("ScheduledTasksPane.swift", "RunReportView.swift"):
+        for name in ("ScheduledTasksPane.swift", "RunReportView.swift", "LiveIsland.swift"):
             text = source(name)
             taps = [line for line in text.splitlines() if ".onTapGesture" in line]
             # The only tap gesture left is the helper's own, which carries the same action for
@@ -34,6 +34,8 @@ class NativeAccessibilityTests(unittest.TestCase):
         panes = source("ScheduledTasksPane.swift")
         self.assertIn('.activatable(task.approved ? "Opens the task" : "Reviews the suggestion")', panes)
         self.assertIn('row.activatable("Opens the run report")', panes)
+        # The island's rows and peek open through accessibility too (the panel never takes focus).
+        self.assertEqual(2, source("LiveIsland.swift").count('.activatable("Opens it in Mac MCP")'))
 
     def test_a_failed_first_load_offers_try_again(self) -> None:
         self.assertIn("struct LoadProblem: View", source("RunReportView.swift"))
