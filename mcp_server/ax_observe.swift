@@ -9,6 +9,12 @@
 //
 // Usage: ax_observe (--pid N | --name NAME | --frontmost) --window W
 //                   --max-depth D --max-children C --max-nodes N
+//        ax_observe --serve
+//
+// --serve keeps one process for many observations (#185): each stdin line is a JSON
+// request {"id": N, "args": [the arguments above]}, each answer one stdout line
+// {"id": N, "code": exit code, "out": records, "err": message}. Mac MCP starts it on
+// first use and stops it when idle, so an observation no longer pays for a launch.
 import AppKit
 import ApplicationServices
 import Foundation
@@ -130,64 +136,6 @@ func walk(_ element: AXUIElement, id: String, parent: String, depth: Int, maxDep
     }
 }
 
-var options: [String: String] = [:]
-var frontmost = false
-var argIndex = 1
-let args = CommandLine.arguments
-while argIndex < args.count {
-    let key = args[argIndex]
-    if key == "--frontmost" { frontmost = true; argIndex += 1; continue }
-    if argIndex + 1 < args.count { options[key] = args[argIndex + 1] }
-    argIndex += 2
-}
-
-guard AXIsProcessTrusted() else {
-    FileHandle.standardError.write("Accessibility permission is not granted (-25211)\n".data(using: .utf8)!)
-    exit(3)
-}
-
-let running = NSWorkspace.shared.runningApplications
-let app: NSRunningApplication?
-if let pidText = options["--pid"], let pid = Int32(pidText) {
-    app = NSRunningApplication(processIdentifier: pid)
-} else if let name = options["--name"] {
-    let matches = running.filter { processName($0) == name }
-    app = matches.count == 1 ? matches[0] : nil
-} else if frontmost {
-    app = NSWorkspace.shared.frontmostApplication
-} else {
-    app = nil
-}
-guard let app else {
-    FileHandle.standardError.write("Target application not found or ambiguous (-1728)\n".data(using: .utf8)!)
-    exit(4)
-}
-
-let windowIndex = Int(options["--window"] ?? "0") ?? 0
-let maxDepth = Int(options["--max-depth"] ?? "5") ?? 5
-let maxChildren = Int(options["--max-children"] ?? "30") ?? 30
-let maxNodes = Int(options["--max-nodes"] ?? "500") ?? 500
-
-let appElement = AXUIElementCreateApplication(app.processIdentifier)
-AXUIElementSetMessagingTimeout(appElement, 2.0)
-var windowsValue: CFTypeRef?
-AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString, &windowsValue)
-// System Events lists only real windows (Finder's desktop is an AXScrollArea).
-let windows = ((windowsValue as? [AXUIElement]) ?? []).filter { text(attributes($0, ["AXRole"])["AXRole"]) == "AXWindow" }
-var names: [String] = []
-var windowRecords: [(Int, AXUIElement, [String])] = []
-for (offset, window) in windows.enumerated() {
-    let wi = offset + 1
-    let a = attributes(window, ["AXTitle", "AXDocument", "AXIdentifier", "AXPosition", "AXSize", "AXSubrole", "AXFocused", "AXMain"])
-    let title = text(a["AXTitle"])
-    if !title.isEmpty { names.append(title) }
-    let (x, y) = point(a["AXPosition"])
-    let (w, h) = size(a["AXSize"])
-    windowRecords.append((wi, window, [
-        "__WINDOW__", String(wi), clean(title), clean(text(a["AXDocument"])), clean(text(a["AXIdentifier"])),
-        x, y, w, h, clean(text(a["AXSubrole"])), bool(a["AXFocused"]), bool(a["AXMain"]),
-    ]))
-}
 // System Events names a process by its bundle name, else its executable.
 func processName(_ app: NSRunningApplication) -> String {
     if let url = app.bundleURL, let name = Bundle(url: url)?.infoDictionary?["CFBundleName"] as? String, !name.isEmpty {
@@ -196,26 +144,133 @@ func processName(_ app: NSRunningApplication) -> String {
     return app.executableURL?.lastPathComponent ?? app.localizedName ?? ""
 }
 
-record([
-    "__META__", clean(processName(app)), app.isActive ? "true" : "false", String(windows.count),
-    clean(names.joined(separator: " || ")), String(app.processIdentifier), clean(app.bundleIdentifier ?? ""),
-])
-// Each walked window gets an equal share of what is left, so a large first
-// window cannot starve the rest; a small one leaves its unused share to later ones.
-var usedNodes = 0
-var remainingWindows = windowRecords.filter { windowIndex == 0 || $0.0 == windowIndex }.count
-for (wi, window, fields) in windowRecords {
-    record(fields)
-    if windowIndex == 0 || wi == windowIndex {
-        let budget = max(0, (maxNodes - usedNodes) / max(1, remainingWindows))
-        counter = 0
-        budgetHit = budget == 0
-        if budget > 0 {
-            walk(window, id: "w\(wi)", parent: "", depth: 0, maxDepth: maxDepth, maxChildren: maxChildren, maxNodes: budget)
+func parseArguments(_ args: [String]) -> ([String: String], Bool) {
+    var options: [String: String] = [:]
+    var frontmost = false
+    var argIndex = 0
+    while argIndex < args.count {
+        let key = args[argIndex]
+        if key == "--frontmost" { frontmost = true; argIndex += 1; continue }
+        if argIndex + 1 < args.count { options[key] = args[argIndex + 1] }
+        argIndex += 2
+    }
+    return (options, frontmost)
+}
+
+/// One observation as (exit code, records, error): 3 = Accessibility not granted,
+/// 4 = target app not found or ambiguous, 0 = the records.
+func observe(_ options: [String: String], frontmost: Bool) -> (Int32, String, String) {
+    guard AXIsProcessTrusted() else {
+        return (3, "", "Accessibility permission is not granted (-25211)")
+    }
+    let app: NSRunningApplication?
+    if let pidText = options["--pid"], let pid = Int32(pidText) {
+        app = NSRunningApplication(processIdentifier: pid)
+    } else if let name = options["--name"] {
+        let matches = NSWorkspace.shared.runningApplications.filter { processName($0) == name }
+        app = matches.count == 1 ? matches[0] : nil
+    } else if frontmost {
+        app = NSWorkspace.shared.frontmostApplication
+    } else {
+        app = nil
+    }
+    guard let app else {
+        return (4, "", "Target application not found or ambiguous (-1728)")
+    }
+
+    let windowIndex = Int(options["--window"] ?? "0") ?? 0
+    let maxDepth = Int(options["--max-depth"] ?? "5") ?? 5
+    let maxChildren = Int(options["--max-children"] ?? "30") ?? 30
+    let maxNodes = Int(options["--max-nodes"] ?? "500") ?? 500
+
+    records = []
+    counter = 0
+    budgetHit = false
+    let appElement = AXUIElementCreateApplication(app.processIdentifier)
+    AXUIElementSetMessagingTimeout(appElement, 2.0)
+    var windowsValue: CFTypeRef?
+    AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString, &windowsValue)
+    // System Events lists only real windows (Finder's desktop is an AXScrollArea).
+    let windows = ((windowsValue as? [AXUIElement]) ?? []).filter { text(attributes($0, ["AXRole"])["AXRole"]) == "AXWindow" }
+    var names: [String] = []
+    var windowRecords: [(Int, AXUIElement, [String])] = []
+    for (offset, window) in windows.enumerated() {
+        let wi = offset + 1
+        let a = attributes(window, ["AXTitle", "AXDocument", "AXIdentifier", "AXPosition", "AXSize", "AXSubrole", "AXFocused", "AXMain"])
+        let title = text(a["AXTitle"])
+        if !title.isEmpty { names.append(title) }
+        let (x, y) = point(a["AXPosition"])
+        let (w, h) = size(a["AXSize"])
+        windowRecords.append((wi, window, [
+            "__WINDOW__", String(wi), clean(title), clean(text(a["AXDocument"])), clean(text(a["AXIdentifier"])),
+            x, y, w, h, clean(text(a["AXSubrole"])), bool(a["AXFocused"]), bool(a["AXMain"]),
+        ]))
+    }
+
+    record([
+        "__META__", clean(processName(app)), app.isActive ? "true" : "false", String(windows.count),
+        clean(names.joined(separator: " || ")), String(app.processIdentifier), clean(app.bundleIdentifier ?? ""),
+    ])
+    // Each walked window gets an equal share of what is left, so a large first
+    // window cannot starve the rest; a small one leaves its unused share to later ones.
+    var usedNodes = 0
+    var remainingWindows = windowRecords.filter { windowIndex == 0 || $0.0 == windowIndex }.count
+    for (wi, window, fields) in windowRecords {
+        record(fields)
+        if windowIndex == 0 || wi == windowIndex {
+            let budget = max(0, (maxNodes - usedNodes) / max(1, remainingWindows))
+            counter = 0
+            budgetHit = budget == 0
+            if budget > 0 {
+                walk(window, id: "w\(wi)", parent: "", depth: 0, maxDepth: maxDepth, maxChildren: maxChildren, maxNodes: budget)
+            }
+            usedNodes += counter
+            remainingWindows -= 1
+            record(["__BUDGET__", String(wi), String(counter), String(budget), budgetHit ? "true" : "false"])
         }
-        usedNodes += counter
-        remainingWindows -= 1
-        record(["__BUDGET__", String(wi), String(counter), String(budget), budgetHit ? "true" : "false"])
+    }
+    let out = records.joined(separator: recordSeparator)
+    records = []
+    return (0, out, "")
+}
+
+/// --serve: one JSON request per stdin line, one JSON answer per stdout line, until stdin closes.
+func serve() -> Never {
+    while let line = readLine(strippingNewline: true) {
+        // Nothing drains autoreleased objects on this thread on its own: without a pool per
+        // request, every answer (~100 KB for 500 nodes) would stay in memory.
+        autoreleasepool { answer(line) }
+    }
+    exit(0)
+}
+
+func answer(_ line: String) {
+    var response: [String: Any] = ["id": NSNull(), "code": 2, "out": "", "err": "bad request"]
+    if let data = line.data(using: .utf8),
+       let request = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+       let args = request["args"] as? [String] {
+        response["id"] = request["id"] ?? NSNull()
+        // NSWorkspace updates its running and frontmost apps on the run loop; a process
+        // that never runs it would keep the list from its launch. Let pending updates in.
+        RunLoop.current.run(mode: .default, before: Date())
+        let (options, frontmost) = parseArguments(args)
+        let (code, out, err) = observe(options, frontmost: frontmost)
+        response["code"] = Int(code)
+        response["out"] = out
+        response["err"] = err
+    }
+    if var bytes = try? JSONSerialization.data(withJSONObject: response) {
+        bytes.append(0x0A)
+        FileHandle.standardOutput.write(bytes)
     }
 }
-FileHandle.standardOutput.write(records.joined(separator: recordSeparator).data(using: .utf8)!)
+
+let arguments = Array(CommandLine.arguments.dropFirst())
+if arguments.first == "--serve" { serve() }
+let (cliOptions, cliFrontmost) = parseArguments(arguments)
+let (exitCode, output, errorText) = observe(cliOptions, frontmost: cliFrontmost)
+if exitCode != 0 {
+    FileHandle.standardError.write((errorText + "\n").data(using: .utf8)!)
+    exit(exitCode)
+}
+FileHandle.standardOutput.write(output.data(using: .utf8)!)

@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Faster reading of Mac app windows (#185)
+- `mac_observe` started the native Accessibility helper as a new process for every observation, and again for the quick "has this window changed" check; starting it took about 40 ms, often more than reading the window. One helper now stays running while observations come in and stops after a minute without any, so neither pays for a launch: a 100-element window reads in about 13 ms instead of 51 ms, a 250-element one in about 30 ms instead of 67 ms, a 500-element one in about 62 ms instead of 94 ms, and the unchanged-window check takes 1.5 to 3 ms instead of about 42 ms. The output is byte-for-byte the same.
+- A helper that crashes, hangs or answers wrongly is stopped and replaced; the call it was serving runs the one-shot helper as before (a hung one reports the same time-out as before), and a call that arrives while the helper is busy runs its own. `MAC_MCP_AX_WORKER=0` keeps one process per observation.
+
 ### A browser wait with only a time pauses
 - `browser_act` `{type: 'wait', wait_s: 1.5}` with nothing named to wait for now pauses for that long (default 1 s, at most 30 s) without touching the page. It used to wait 10 seconds for a selector nobody named, time out, and stop the rest of the actions.
 

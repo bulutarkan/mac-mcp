@@ -10,14 +10,23 @@ CLI-managed server. Until it is ready, or whenever it cannot answer (not built,
 app not found by name, Accessibility refused), callers fall back to the
 AppleScript observer, so observation never depends on it. MAC_MCP_AX_NATIVE=0
 turns it off.
+
+Observations go to one long-lived helper (``--serve``) that starts on first use and
+stops after a minute without requests; a crashed helper is replaced, and a call that
+finds it busy or broken runs its own one-shot helper as before. MAC_MCP_AX_WORKER=0
+keeps the one-shot helper for every call.
 """
 from __future__ import annotations
 
+import atexit
+import json
 import os
+import select
 import subprocess
 import threading
+import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from . import swift_build
 from .tool_cancellation import (
@@ -30,10 +39,6 @@ from .tool_cancellation import (
 _SOURCE = Path(__file__).resolve().with_name("ax_observe.swift")
 _lock = threading.Lock()
 _state = {"allowed": False, "executable": None, "building": False, "disabled": False}
-
-# Exit codes from ax_observe.swift that mean "use the AppleScript observer".
-_NOT_TRUSTED = 3
-_APP_NOT_FOUND = 4
 
 
 def enable() -> None:
@@ -69,6 +74,147 @@ def _executable() -> Optional[str]:
     return None
 
 
+class _WorkerTimeout(Exception):
+    pass
+
+
+class _Worker:
+    """One long-lived ``ax-observe --serve`` process answering one request at a time (#185).
+
+    Launching the helper cost ~40 ms per observation, more than walking a typical window;
+    the worker pays it once. It stops after IDLE_S without requests, and a crashed or hung
+    worker is killed and replaced on the next request.
+    """
+
+    IDLE_S = 60.0
+
+    def __init__(self, executable: str) -> None:
+        self.executable = executable
+        self.busy = threading.Lock()
+        self.proc: Optional[subprocess.Popen] = None
+        self.sequence = 0
+        self._buffer = b""
+        self._idle: Optional[threading.Timer] = None
+
+    def _ensure(self) -> subprocess.Popen:
+        if self.proc is None or self.proc.poll() is not None:
+            self.proc = subprocess.Popen(
+                [self.executable, "--serve"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, start_new_session=True, bufsize=0,
+            )
+            self._buffer = b""
+        return self.proc
+
+    @staticmethod
+    def _close(proc: subprocess.Popen, *, gently: bool) -> None:
+        try:
+            if gently:
+                proc.stdin.close()  # end of input: the helper exits on its own
+                proc.wait(timeout=2)
+            else:
+                proc.kill()
+                proc.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                proc.kill()
+                proc.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        for pipe in (proc.stdin, proc.stdout):
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+    def kill(self) -> None:
+        proc, self.proc = self.proc, None
+        if proc is not None:
+            self._close(proc, gently=False)
+
+    def _stop_if_idle(self) -> None:
+        if self.busy.acquire(blocking=False):
+            try:
+                proc, self.proc = self.proc, None
+                if proc is not None:
+                    self._close(proc, gently=True)
+            finally:
+                self.busy.release()
+
+    def _arm_idle_timer(self) -> None:
+        if self._idle is not None:
+            self._idle.cancel()
+        self._idle = threading.Timer(self.IDLE_S, self._stop_if_idle)
+        self._idle.daemon = True
+        self._idle.start()
+
+    def request(self, args: List[str], timeout_s: float) -> Tuple[int, str, str]:
+        """(exit code, records, error) for one observation. Caller holds ``busy``.
+
+        Raises _WorkerTimeout when no answer came in time, OSError/ValueError when the
+        worker could not be started, died or answered something unreadable."""
+        proc = self._ensure()
+        self.sequence += 1
+        line = json.dumps({"id": self.sequence, "args": args}) + "\n"
+        proc.stdin.write(line.encode("utf-8"))
+        deadline = time.monotonic() + timeout_s
+        fd = proc.stdout.fileno()
+        while b"\n" not in self._buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _WorkerTimeout()
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                continue
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                raise OSError("the Accessibility helper exited")
+            self._buffer += chunk
+        raw, self._buffer = self._buffer.split(b"\n", 1)
+        answer = json.loads(raw.decode("utf-8", "replace"))
+        if not isinstance(answer, dict) or answer.get("id") != self.sequence:
+            raise ValueError("the Accessibility helper answered out of order")
+        self._arm_idle_timer()
+        return int(answer.get("code", 2)), str(answer.get("out") or ""), str(answer.get("err") or "")
+
+
+_worker: Optional[_Worker] = None
+
+
+def _worker_enabled() -> bool:
+    return os.getenv("MAC_MCP_AX_WORKER", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _shared_worker(executable: str) -> _Worker:
+    global _worker
+    with _lock:
+        if _worker is None or _worker.executable != executable:
+            if _worker is not None:
+                _worker._stop_if_idle()
+            _worker = _Worker(executable)
+        return _worker
+
+
+def _stop_worker() -> None:
+    worker = _worker
+    if worker is not None:
+        worker.kill()
+
+
+atexit.register(_stop_worker)
+
+
+def _result(code: int, out: str) -> Optional[Tuple[bool, str, str]]:
+    # ax_observe.swift exits 3 (not trusted), 4 (app not found or ambiguous) or fails
+    # otherwise: each means "use the AppleScript observer".
+    if code != 0:
+        return None
+    return True, out, ""
+
+
+def _timed_out(timeout_s: float) -> Tuple[bool, str, str]:
+    return False, "", f"Accessibility observation timed out after {timeout_s}s"
+
+
 def observe(
     *,
     app: Optional[str],
@@ -89,11 +235,36 @@ def observe(
         target = ["--name", str(app)]
     else:
         target = ["--frontmost"]
-    command = [
-        executable, *target, "--window", str(int(window_index)), "--max-depth", str(int(max_depth)),
+    args = [
+        *target, "--window", str(int(window_index)), "--max-depth", str(int(max_depth)),
         "--max-children", str(int(max_children)), "--max-nodes", str(int(max_nodes)),
     ]
     cancellation_checkpoint()
+    limit = max(0.5, float(timeout_s))
+    if _worker_enabled():
+        worker = _shared_worker(executable)
+        # A second observation while the worker is busy runs as its own process instead of waiting.
+        if worker.busy.acquire(blocking=False):
+            cleanup = register_cancellation_cleanup(worker.kill)
+            try:
+                code, out, _ = worker.request(args, limit)
+                return _result(code, out)
+            except _WorkerTimeout:
+                worker.kill()
+                return _timed_out(timeout_s)
+            except (OSError, ValueError):
+                # Crashed, could not start, or garbled: replace it next time; this call
+                # runs the one-shot helper below unless it was cancelled.
+                worker.kill()
+                cancellation_checkpoint()
+            finally:
+                unregister_cancellation_cleanup(cleanup)
+                worker.busy.release()
+    return _observe_once([executable, *args], timeout_s)
+
+
+def _observe_once(command: List[str], timeout_s: float) -> Optional[Tuple[bool, str, str]]:
+    """One helper process for one observation (the path before #185, and the fallback)."""
     try:
         proc = subprocess.Popen(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -103,17 +274,15 @@ def observe(
         return None
     cleanup = register_cancellation_cleanup(proc.kill)
     try:
-        stdout, stderr = proc.communicate(timeout=max(0.5, float(timeout_s)))
+        stdout, _ = proc.communicate(timeout=max(0.5, float(timeout_s)))
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
-        return False, "", f"Accessibility observation timed out after {timeout_s}s"
+        return _timed_out(timeout_s)
     except ToolCancelledError:
         proc.kill()
         proc.wait()
         raise
     finally:
         unregister_cancellation_cleanup(cleanup)
-    if proc.returncode in {_NOT_TRUSTED, _APP_NOT_FOUND} or proc.returncode != 0:
-        return None
-    return True, stdout.decode("utf-8", "replace"), ""
+    return _result(proc.returncode, stdout.decode("utf-8", "replace"))
