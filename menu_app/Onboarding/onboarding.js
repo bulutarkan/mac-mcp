@@ -354,7 +354,7 @@ function renderAgents() {
     element.dataset.agent = agent.id;
     element.dataset.app = agent.client;
     element.dataset.state = row.state;
-    // Same mark as the app row above, so the text sits in the text column.
+    // A small chip: the app's mark, the name, and On or a Turn on button under it.
     const mark = document.createElement('i');
     mark.className = 'app-mark';
     mark.textContent = (CLIENTS.find((client) => client.id === agent.client) || {}).mark || '';
@@ -362,18 +362,20 @@ function renderAgents() {
     const text = document.createElement('div');
     const name = document.createElement('strong');
     name.textContent = agent.name;
-    const detail = document.createElement('span');
-    detail.textContent = row.detail;
-    text.append(name, detail);
-    element.append(mark, text);
+    text.append(name);
     if (row.button) {
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = row.button;
       button.setAttribute('aria-label', `${row.button}: ${agent.name}`);
       button.addEventListener('click', () => enableAgent(agent, element));
-      element.append(button);
+      text.append(button);
+    } else {
+      const detail = document.createElement('span');
+      detail.textContent = row.detail;
+      text.append(detail);
     }
+    element.append(mark, text);
     list.append(element);
   }
 }

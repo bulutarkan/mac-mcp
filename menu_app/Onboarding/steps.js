@@ -110,11 +110,11 @@ function appRow(client, found, remote) {
  */
 function agentRow(agent, apps, enabled) {
   if (enabled && enabled[agent.id] === true) {
-    return { state: 'added', detail: 'On: Mac MCP can hand work to it', button: null, action: null };
+    return { state: 'added', detail: 'On', button: null, action: null };
   }
   const found = (apps || []).find((app) => app.id === agent.client);
   if (!found || !found.installed) return null;
-  return { state: 'ready', detail: 'On this Mac. Uses your own account with it', button: 'Turn on', action: 'enableAgent' };
+  return { state: 'ready', detail: 'Off', button: 'Turn on', action: 'enableAgent' };
 }
 
 /** Apps on this Mac first, keeping the list's order otherwise. */
