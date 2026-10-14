@@ -7,6 +7,10 @@ struct SavedLogin: Decodable, Identifiable {
     let site: String
     let username: String
     let label: String?
+    /// Also used on the site's subdomains (#178). Logins saved before that keep it on.
+    let subdomains: Bool?
+    /// False on shared hosting such as github.io, where subdomains are never used.
+    let subdomains_possible: Bool?
 }
 
 /// One usable row of a Passwords app export, as `mac-mcp logins import-preview --json` reports it.
@@ -37,7 +41,7 @@ struct SavedLoginsCard: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Agents can sign in to these sites with browser_sign_in. The password is typed into the page and is never shown to the agent or its AI provider, and only pages on the saved site get it.")
+                Text("Agents can sign in to these sites with browser_sign_in. The password is typed into the page and is never shown to the agent or its AI provider. Only pages on the saved site get it, and its subdomains only when you allow them.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -55,6 +59,17 @@ struct SavedLoginsCard: View {
                                 Text(login.username).font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
+                            Toggle("Subdomains", isOn: Binding(
+                                get: { login.subdomains ?? true },
+                                set: { on in Task { await setSubdomains(login, on) } }
+                            ))
+                            .toggleStyle(.checkbox)
+                            .font(.caption)
+                            .disabled(busy || login.subdomains_possible == false)
+                            .help(login.subdomains_possible == false
+                                  ? "Anyone can publish a site under \(login.site), so this login is only used on \(login.site) itself."
+                                  : "Also sign in on pages like accounts.\(login.site). Leave off unless you trust every subdomain of this site.")
+                            .accessibilityLabel("Also use the login for \(login.site) on its subdomains")
                             Button("Remove") { Task { await remove(login) } }
                                 .disabled(busy)
                                 .accessibilityLabel("Remove saved login for \(login.site)")
@@ -195,6 +210,19 @@ struct SavedLoginsCard: View {
         } else {
             report((json(result.output)?["message"] as? String) ?? "The login could not be saved.", failed: true)
         }
+    }
+
+    private func setSubdomains(_ login: SavedLogin, _ on: Bool) async {
+        busy = true
+        let result = await state.runCLICommand(["logins", "subdomains", login.id, on ? "on" : "off", "--json"])
+        busy = false
+        if result.code == 0 {
+            report(on ? "\(login.site) logins are also used on its subdomains." : "\(login.site) logins are used on \(login.site) only.",
+                   failed: false)
+        } else {
+            report((json(result.output)?["message"] as? String) ?? "The setting could not be changed.", failed: true)
+        }
+        await reload()
     }
 
     private func remove(_ login: SavedLogin) async {

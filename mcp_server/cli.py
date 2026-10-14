@@ -2625,16 +2625,23 @@ def logins(args: argparse.Namespace) -> int:
                 print(json.dumps({"ok": True, "logins": rows}, ensure_ascii=False))
             else:
                 for row in rows:
-                    print(f"{row['id']}  {row['site']}  {row['username']}")
+                    scope = "  (and subdomains)" if row.get("subdomains") else ""
+                    print(f"{row['id']}  {row['site']}  {row['username']}{scope}")
                 if not rows:
                     print("No saved logins.")
             return 0
         if command == "add":
             password = sys.stdin.readline()
             password = password[:-1] if password.endswith("\n") else password
-            row = login_vault.add_login(args.site, args.username, password, label=args.label)
+            row = login_vault.add_login(args.site, args.username, password, label=args.label,
+                                        subdomains=True if args.subdomains else None)
             password = ""
             print(json.dumps({"ok": True, "login": row}, ensure_ascii=False) if args.json else f"Saved login for {row['site']}.")
+            return 0
+        if command == "subdomains":
+            row = login_vault.set_subdomains(args.login_id, args.state == "on")
+            print(json.dumps({"ok": True, "login": row}, ensure_ascii=False) if args.json
+                  else f"{row['site']}: {'also on its subdomains' if row['subdomains'] else 'this site only'}.")
             return 0
         if command == "remove":
             removed = login_vault.remove_login(args.login_id)
@@ -2946,7 +2953,13 @@ def main(argv: list[str] | None = None) -> int:
     p_logins_add.add_argument("--site", required=True, help="Site URL or host name, e.g. https://github.com")
     p_logins_add.add_argument("--username", required=True)
     p_logins_add.add_argument("--label")
+    p_logins_add.add_argument("--subdomains", action="store_true",
+                              help="Also use it on the site's subdomains (never on shared hosting such as github.io).")
     p_logins_add.add_argument("--json", action="store_true")
+    p_logins_scope = logins_sub.add_parser("subdomains", help="Allow or stop a saved login on its site's subdomains.")
+    p_logins_scope.add_argument("login_id")
+    p_logins_scope.add_argument("state", choices=["on", "off"])
+    p_logins_scope.add_argument("--json", action="store_true")
     p_logins_remove = logins_sub.add_parser("remove", help="Delete a saved login and its Keychain item.")
     p_logins_remove.add_argument("login_id")
     p_logins_remove.add_argument("--json", action="store_true")

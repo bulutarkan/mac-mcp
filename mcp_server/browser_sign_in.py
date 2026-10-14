@@ -118,6 +118,11 @@ def browser_sign_in(
                     "message": "No visible username or password field on this page."}
         logins = login_vault.logins_for_host(host)
         if not logins:
+            saved = login_vault.site_allowing_subdomains_would_match(host)
+            if saved:
+                return {"ok": False, "error": "login_for_other_site", "site": host,
+                        "message": f"The saved login is only for {saved}, not {host}. The owner can allow its "
+                                   "subdomains in Mac MCP Settings > Saved Logins."}
             return {"ok": False, "error": "no_saved_login", "site": host,
                     "message": "No saved login for this site. The owner can add one in Mac MCP Settings > Saved Logins."}
         login = _choose(logins, account)

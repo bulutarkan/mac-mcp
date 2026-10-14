@@ -1,5 +1,11 @@
 ## Unreleased
 
+### Saved logins stay on their own site (#178)
+- A saved login is now filled only on the exact site it was saved for (`www.` counts as the same site). Before, a login for `example.com` was also filled on every `*.example.com` page, and a subdomain can be run by someone else.
+- Each login in **Settings › Permissions & Safety › Saved Logins** has a **Subdomains** checkbox (or `mac-mcp logins subdomains <id> on|off`, `mac-mcp logins add --subdomains`). Logins saved before this change keep it on, so nothing that worked stops working.
+- On shared hosting such as `github.io`, `netlify.app` or `blogspot.com`, where anyone can own a subdomain, a login is never used on another subdomain.
+- When a login exists only for the parent site, `browser_sign_in` says so (`login_for_other_site`) instead of reporting no saved login.
+
 ### Scheduled Tasks: data first (#175)
 - An AI task can run a script first and give the agent what it printed (**Give the agent data from a script first** in the New Task sheet, or `data_step` in the `scheduled_tasks` tool). The numbers come from the owner's script, which runs with its own access; the agent only reads and explains them. If the script fails, times out (10 minutes), prints nothing or prints more than 60,000 characters, the agent does not start and the run says why. The run report shows the data step first in Steps, with what it printed.
 - Arguments and commands can use dates that move with each run: `{today}`, `{yesterday}`, `{this_week_start}`, `{last_week_start}`, `{last_week_end}`, `{this_month_start}`, `{last_month_start}`, `{last_month_end}` and `{days_ago:N}`. The sheet has a date menu and shows how the arguments read on the next run; unknown dates are refused when saving.

@@ -34,6 +34,17 @@ MAX_LOGINS = 500
 _ID_RE = re.compile(r"^lv_[0-9a-f]{12}$")
 _HOST_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$")
 _LOOPBACK = {"localhost", "127.0.0.1", "::1"}
+# Domains where anyone can publish a site of their own as a subdomain (#178). A login
+# saved on one of them is never used on another subdomain, even when the owner allows
+# subdomains for it.
+SHARED_HOSTING = (
+    "github.io", "gitlab.io", "bitbucket.io", "pages.dev", "workers.dev", "netlify.app",
+    "vercel.app", "web.app", "firebaseapp.com", "appspot.com", "herokuapp.com", "onrender.com",
+    "fly.dev", "glitch.me", "repl.co", "surge.sh", "neocities.org", "blogspot.com",
+    "wordpress.com", "tumblr.com", "wixsite.com", "webflow.io", "notion.site", "myshopify.com",
+    "azurewebsites.net", "cloudfront.net", "s3.amazonaws.com", "googleusercontent.com",
+    "ngrok.io", "ngrok-free.app", "ngrok.app", "trycloudflare.com",
+)
 
 
 class VaultError(ValueError):
@@ -65,12 +76,29 @@ def normalize_site(value: str) -> str:
     return host
 
 
-def site_matches(saved: str, host: str) -> bool:
-    """A login saved for example.com is used on example.com and its subdomains, never on look-alikes."""
+def _shared_hosting(site: str) -> bool:
+    return any(site == suffix or site.endswith("." + suffix) for suffix in SHARED_HOSTING)
+
+
+def site_matches(saved: str, host: str, *, subdomains: bool = False) -> bool:
+    """A login saved for example.com is used on example.com (and www.), never on look-alikes.
+
+    Its subdomains only when the owner allowed them for that login, and never on a
+    shared hosting domain, where a subdomain can belong to someone else (#178).
+    """
     tab = str(host or "").strip(".").lower()
     if tab.startswith("www."):
         tab = tab[4:]
-    return bool(saved) and (tab == saved or tab.endswith("." + saved))
+    if not saved:
+        return False
+    if tab == saved:
+        return True
+    return subdomains and tab.endswith("." + saved) and not _shared_hosting(saved)
+
+
+def _subdomains(row: Dict[str, Any]) -> bool:
+    # Logins saved before #178 have no field: they keep working on subdomains as they did.
+    return bool(row.get("subdomains", True))
 
 
 def _load() -> List[Dict[str, Any]]:
@@ -101,7 +129,11 @@ def _save(rows: Sequence[Dict[str, Any]]) -> None:
 
 
 def _public(row: Dict[str, Any]) -> Dict[str, Any]:
-    return {key: row.get(key) for key in ("id", "site", "username", "label", "source", "created_at", "updated_at")}
+    public = {key: row.get(key) for key in ("id", "site", "username", "label", "source", "created_at", "updated_at")}
+    public["subdomains"] = _subdomains(row)
+    # On shared hosting the subdomain choice has no effect, so the app can say so.
+    public["subdomains_possible"] = not _shared_hosting(str(row.get("site") or ""))
+    return public
 
 
 def _keychain_write(login_id: str, site: str, password: str) -> None:
@@ -141,7 +173,9 @@ def _check_password(password: str) -> str:
 
 
 def add_login(site: str, username: str, password: str, *, label: Optional[str] = None,
-              source: str = "manual") -> Dict[str, Any]:
+              source: str = "manual", subdomains: Optional[bool] = None) -> Dict[str, Any]:
+    """Save a login. A new one is used on its exact site only unless subdomains=True;
+    saving an existing one again keeps the owner's earlier choice unless one is given."""
     host = normalize_site(site)
     user = str(username or "").strip()
     if not user or len(user) > 320:
@@ -156,10 +190,12 @@ def add_login(site: str, username: str, password: str, *, label: Optional[str] =
     _keychain_write(login_id, host, value)
     if existing:
         existing.update({"updated_at": now, "label": (label or existing.get("label") or user)[:120], "source": source})
+        if subdomains is not None:
+            existing["subdomains"] = bool(subdomains)
         row = existing
     else:
         row = {"id": login_id, "site": host, "username": user, "label": (label or user)[:120],
-               "source": source, "created_at": now, "updated_at": now}
+               "source": source, "created_at": now, "updated_at": now, "subdomains": bool(subdomains)}
         rows.append(row)
     _save(rows)
     return _public(row)
@@ -175,14 +211,35 @@ def remove_login(login_id: str) -> bool:
     return True
 
 
+def set_subdomains(login_id: str, allowed: bool) -> Dict[str, Any]:
+    """Allow or stop one saved login on its site's subdomains."""
+    rows = _load()
+    row = next((item for item in rows if item.get("id") == login_id), None)
+    if row is None:
+        raise VaultError("LOGIN_NOT_FOUND", "No such saved login.")
+    row["subdomains"] = bool(allowed)
+    row["updated_at"] = time.time()
+    _save(rows)
+    return _public(row)
+
+
 def list_logins() -> List[Dict[str, Any]]:
     return [_public(row) for row in sorted(_load(), key=lambda row: (row.get("site") or "", row.get("username") or ""))]
 
 
 def logins_for_host(host: str) -> List[Dict[str, Any]]:
     """Saved logins usable on this page host, most specific site first."""
-    rows = [row for row in _load() if site_matches(str(row.get("site") or ""), host)]
+    rows = [row for row in _load() if site_matches(str(row.get("site") or ""), host, subdomains=_subdomains(row))]
     return [_public(row) for row in sorted(rows, key=lambda row: -len(str(row.get("site") or "")))]
+
+
+def site_allowing_subdomains_would_match(host: str) -> Optional[str]:
+    """The saved site whose login would be used here if the owner allowed its subdomains."""
+    for row in sorted(_load(), key=lambda row: -len(str(row.get("site") or ""))):
+        saved = str(row.get("site") or "")
+        if not _subdomains(row) and site_matches(saved, host, subdomains=True):
+            return saved
+    return None
 
 
 # ── Passwords app export (File > Export Passwords) ─────────────────────────────

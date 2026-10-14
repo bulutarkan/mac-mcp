@@ -79,16 +79,29 @@ class SiteMatchingTests(unittest.TestCase):
                 login_vault.normalize_site(bad)
         self.assertTrue(login_vault.site_matches("github.com", "github.com"))
         self.assertTrue(login_vault.site_matches("github.com", "www.github.com"))
-        self.assertTrue(login_vault.site_matches("google.com", "accounts.google.com"))
         for lookalike in ("github.com.evil.io", "evilgithub.com", "g1thub.com", "github.co"):
             with self.subTest(host=lookalike):
                 self.assertFalse(login_vault.site_matches("github.com", lookalike))
+                self.assertFalse(login_vault.site_matches("github.com", lookalike, subdomains=True))
+
+    def test_subdomains_only_when_the_login_allows_them(self) -> None:
+        # #178: a subdomain may be run by someone else, so the exact site is the default.
+        self.assertFalse(login_vault.site_matches("google.com", "accounts.google.com"))
+        self.assertTrue(login_vault.site_matches("google.com", "accounts.google.com", subdomains=True))
+
+    def test_shared_hosting_never_shares_a_login_across_subdomains(self) -> None:
+        for saved, host in (("github.io", "evil.github.io"), ("ada.github.io", "x.ada.github.io"),
+                            ("netlify.app", "shop.netlify.app"), ("blogspot.com", "news.blogspot.com")):
+            with self.subTest(saved=saved, host=host):
+                self.assertFalse(login_vault.site_matches(saved, host, subdomains=True))
+        self.assertTrue(login_vault.site_matches("ada.github.io", "ada.github.io", subdomains=True))
 
 
 class VaultTests(VaultCase):
     def test_password_goes_to_the_keychain_on_stdin_and_nowhere_else(self) -> None:
         row = login_vault.add_login("https://github.com/login", "ada@example.com", SECRET, label="Work")
-        self.assertEqual({"id", "site", "username", "label", "source", "created_at", "updated_at"}, set(row))
+        self.assertEqual({"id", "site", "username", "label", "source", "created_at", "updated_at", "subdomains", "subdomains_possible"}, set(row))
+        self.assertFalse(row["subdomains"])
         argv, stdin = self.security.calls[-1]
         self.assertNotIn(SECRET, " ".join(argv))
         self.assertEqual(f"{SECRET}\n{SECRET}\n", stdin)
@@ -119,8 +132,57 @@ class VaultTests(VaultCase):
         with self.assertRaises(login_vault.VaultError):
             login_vault.secret_for("../../etc")
 
+    def test_new_logins_stay_on_their_site_until_the_owner_allows_subdomains(self) -> None:
+        row = login_vault.add_login("google.com", "ada", SECRET)
+        self.assertEqual([], login_vault.logins_for_host("accounts.google.com"))
+        self.assertEqual("google.com", login_vault.site_allowing_subdomains_would_match("accounts.google.com"))
+        self.assertTrue(login_vault.set_subdomains(row["id"], True)["subdomains"])
+        self.assertEqual(["ada"], [r["username"] for r in login_vault.logins_for_host("accounts.google.com")])
+        self.assertIsNone(login_vault.site_allowing_subdomains_would_match("accounts.google.com"))
+        # Saving the same login again (a new password) keeps the owner's choice.
+        self.assertTrue(login_vault.add_login("google.com", "ada", "new")["subdomains"])
+        self.assertFalse(login_vault.set_subdomains(row["id"], False)["subdomains"])
+        with self.assertRaises(login_vault.VaultError):
+            login_vault.set_subdomains("lv_000000000000", True)
+
+    def test_logins_saved_before_178_keep_working_on_subdomains(self) -> None:
+        login_vault.add_login("google.com", "ada", SECRET)
+        index = self.tmp / "state" / "vault" / "logins.json"
+        rows = json.loads(index.read_text())
+        for row in rows:
+            row.pop("subdomains", None)
+        index.write_text(json.dumps(rows))
+        self.assertTrue(login_vault.list_logins()[0]["subdomains"])
+        self.assertEqual(["ada"], [r["username"] for r in login_vault.logins_for_host("accounts.google.com")])
+
+    def test_shared_hosting_login_is_never_offered_to_a_neighbour(self) -> None:
+        row = login_vault.add_login("ada.github.io", "ada", SECRET, subdomains=True)
+        self.assertFalse(row["subdomains_possible"])
+        self.assertEqual([], login_vault.logins_for_host("x.ada.github.io"))
+        self.assertIsNone(login_vault.site_allowing_subdomains_would_match("x.ada.github.io"))
+        self.assertEqual([row["id"]], [r["id"] for r in login_vault.logins_for_host("ada.github.io")])
+
+    def test_cli_saves_and_changes_the_subdomain_choice(self) -> None:
+        import contextlib
+        import io
+        from mcp_server import cli
+
+        def run(*argv, stdin=""):
+            out = io.StringIO()
+            with patch.object(cli.sys, "stdin", io.StringIO(stdin)), contextlib.redirect_stdout(out):
+                code = cli.main(["logins", *argv])
+            return code, json.loads(out.getvalue().strip().splitlines()[-1])
+
+        code, saved = run("add", "--site", "google.com", "--username", "ada", "--subdomains", "--json", stdin=SECRET + "\n")
+        self.assertEqual(0, code)
+        self.assertTrue(saved["login"]["subdomains"])
+        code, changed = run("subdomains", saved["login"]["id"], "off", "--json")
+        self.assertEqual(0, code)
+        self.assertFalse(changed["login"]["subdomains"])
+        self.assertEqual([], login_vault.logins_for_host("accounts.google.com"))
+
     def test_logins_for_host_prefers_the_most_specific_site(self) -> None:
-        login_vault.add_login("google.com", "personal", "a")
+        login_vault.add_login("google.com", "personal", "a", subdomains=True)
         login_vault.add_login("accounts.google.com", "work", "b")
         rows = login_vault.logins_for_host("accounts.google.com")
         self.assertEqual(["work", "personal"], [row["username"] for row in rows])
@@ -201,6 +263,16 @@ class SignInTests(VaultCase):
         self.assertEqual(1, len(scripts))
         result, _ = self.run_sign_in(self.probe(password=False, username=False))
         self.assertEqual("no_login_form", result["error"])
+
+    def test_a_subdomain_gets_nothing_and_says_where_the_login_is_saved(self) -> None:
+        login_vault.add_login("github.com", "ada", SECRET)
+        result, scripts = self.run_sign_in(self.probe(host="gist.github.com"))
+        self.assertFalse(result["ok"])
+        self.assertEqual("login_for_other_site", result["error"])
+        self.assertIn("only for github.com", result["message"])
+        self.assertIn("Saved Logins", result["message"])
+        self.assertEqual(1, len(scripts))
+        self.assertNotIn(SECRET, json.dumps(result))
 
     def test_several_accounts_need_a_choice(self) -> None:
         login_vault.add_login("github.com", "ada", "a", label="Work")
