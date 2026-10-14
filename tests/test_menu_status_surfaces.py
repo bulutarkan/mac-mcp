@@ -69,14 +69,19 @@ class MenuPopoverStructureTests(unittest.TestCase):
         cls.body = cls.menu[cls.menu.index("    var body: some View {"):cls.menu.index("    private var displayAgents")]
 
     def test_first_viewport_order_is_health_actions_summary_work(self) -> None:
-        order = ["header", "actionBar", "summaryCard(proxy)", "agentCard", "activityCard", "steeringCard"]
+        # #201: header, callouts, chips, rows (running agents first), work sections, footer.
+        order = ["header", "actionBar", "chipsRow", "agentCard", "summaryCard(proxy)", "activityCard",
+                 "steeringCard", "footer"]
         positions = [self.body.index(name) for name in order]
         self.assertEqual(sorted(positions), positions)
         self.assertNotIn("attentionBanner", self.body)
         self.assertNotIn("securityCard", self.body)
 
-    def test_single_scroll_region_without_nested_lists(self) -> None:
-        self.assertEqual(1, len(re.findall(r"\bScrollView\s*[({]", self.menu)), "only the popover itself scrolls")
+    def test_scroll_regions_are_the_popover_and_the_agent_list_only(self) -> None:
+        # The owner asked for the agent list to scroll inside itself, about five rows tall (#201).
+        self.assertEqual(2, len(re.findall(r"\bScrollView\s*[({]", self.menu)))
+        card = self.menu[self.menu.index("private var agentCard"):self.menu.index("private func compactAgentRow")]
+        self.assertEqual(1, len(re.findall(r"\bScrollView\s*[({]", card)))
         self.assertNotIn("LazyVStack", self.menu)
 
     def test_header_uses_shared_connection_status_without_session_history_override(self) -> None:
@@ -90,13 +95,16 @@ class MenuPopoverStructureTests(unittest.TestCase):
         for action in ("state.stopServer()", "state.retryConnection()", "state.openDashboard()",
                        "openSettings(.connections)", "openSettings(.permissions)", "state.checkForUpdates()", "state.quitApp()"):
             self.assertIn(action, more)
-        self.assertIn('Text("More")', more)
+        self.assertIn('title: "More"', more)
+        self.assertIn('Button("Restart Server") { state.restartServer() }', more)
         self.assertIn('.accessibilityLabel("Open Settings")', self.menu)
 
     def test_summary_rows_route_to_settings_and_never_count_approvals(self) -> None:
         summary = self.menu[self.menu.index("private func summaryCard"):self.menu.index("private var agentsSummaryValue")]
-        for title in ('title: "Agents"', 'title: "Sessions"', 'title: "Endpoint"', 'title: "Safety"'):
+        for title in ('title: "Agents"', 'title: "Endpoint"', 'title: "Safety"'):
             self.assertIn(title, summary)
+        # Sessions are a chip and a section of their own (#201), not a fourth summary row.
+        self.assertNotIn('title: "Sessions"', summary)
         self.assertIn("openSettings(.connections)", summary)
         self.assertIn("openSettings(.permissions)", summary)
         self.assertIn("SafetyDisplay.make(state.securitySemantics", self.menu)
@@ -105,8 +113,13 @@ class MenuPopoverStructureTests(unittest.TestCase):
     def test_agents_show_two_rows_and_expand_inline(self) -> None:
         card = self.menu[self.menu.index("private var agentCard"):self.menu.index("private func compactAgentRow")]
         self.assertIn("activeAgents.prefix(2)", card)
-        self.assertIn('"View all agents (\\(state.agents.count))"', card)
-        self.assertIn("showAllAgents", card)
+        # The header's chevron opens and closes the list; no "Show fewer" link at its bottom.
+        self.assertIn("Button { showAllAgents.toggle() }", card)
+        self.assertIn('Image(systemName: "chevron.down")', card)
+        self.assertNotIn("Show fewer", card)
+        self.assertIn("displayAgents.prefix(Self.agentListLimit)", card)
+        self.assertIn("private static let agentListLimit = 20", self.menu)
+        self.assertIn(".frame(height: min(agentListHeight, Self.agentListVisibleHeight))", card)
 
     def test_recent_activity_is_collapsed_with_a_route_to_the_full_list(self) -> None:
         self.assertIn("@MacMCPState private var showActivity = false", self.menu)
@@ -115,6 +128,26 @@ class MenuPopoverStructureTests(unittest.TestCase):
         # No running count in the title: it changed with every call and flickered.
         self.assertIn('Label("Recent activity", systemImage: "waveform.path.ecg")', card)
         self.assertIn("Full activity in Dashboard", card)
+
+    def test_one_surface_with_tiles_chips_and_a_small_restart(self) -> None:
+        # #201: no boxes in the popover body, a small restart beside the status, chips at a glance.
+        self.assertNotIn("GroupBox", self.body)
+        header = self.menu[self.menu.index("private var header"):self.menu.index("private var chipsRow")]
+        self.assertIn('.accessibilityLabel("Restart Server")', header)
+        self.assertNotIn(".frame(maxWidth: .infinity)", header)
+        chips = self.menu[self.menu.index("private var chipsRow"):self.menu.index("private var successTint")]
+        for symbol in ('"bolt.fill"', '"checkmark.seal.fill"', '"cpu"', '"rectangle.stack"'):
+            self.assertIn(symbol, chips)
+        for label in ('Label("Recent activity", systemImage: "waveform.path.ecg")', 'Label("Sessions", systemImage: "rectangle.stack")'):
+            self.assertIn(label, self.menu)
+        self.assertEqual(2, self.menu.count(".disclosureGroupStyle(MenuDisclosureStyle())"))
+
+    def test_a_stopped_server_gets_a_prominent_start(self) -> None:
+        bar = self.menu[self.menu.index("private var actionBar"):self.menu.index("/// Settings and More close the menu")]
+        self.assertIn("let stopped = !state.serverRunning && !state.startingAfterLogin", bar)
+        start = bar[bar.index("if stopped {"):bar.index("} else if")]
+        self.assertIn("state.startServer()", start)
+        self.assertIn(".buttonStyle(.borderedProminent)", start)
 
     def test_settings_window_opens_on_requested_pane(self) -> None:
         self.assertIn("SettingsWindowController.shared.show(state: state, settings: settings, section: section)", self.menu)

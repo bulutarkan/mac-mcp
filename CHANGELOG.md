@@ -1,5 +1,11 @@
 ## Unreleased
 
+### A calmer, clearer menu (#201)
+- One surface instead of stacked boxes: rows with small colour tiles (Agents violet, Endpoint teal, Safety gray, Recent activity blue, Sessions orange; red or orange when something is wrong), separated by thin dividers, with Settings and More at the bottom.
+- Under the name, a line says what Mac MCP is doing (Ready, N agents working, Server stopped), and four chips show the tool calls and success rate of the last hour, the running agents and the sessions.
+- Restart Server is a small round button beside the status instead of a full-width bar (it is also in More). When the server is stopped, a red callout with a Start Server button takes its place; connection problems and progress use the same tinted callout.
+- The agent list opens and closes from its header's chevron, like Recent activity; it shows up to 20 recent agents in about five rows and scrolls inside. Summary rows can now be pressed by VoiceOver and other assistive tools.
+
 ### The menu fits its content; the island shows which agent works (#200, #202)
 - The menu bar popover is as tall as what it shows instead of a fixed 660 points with empty space below. Opening Recent activity, Sessions or the agent list grows it and closing shrinks it, with its top edge fixed under the menu bar; content taller than the screen scrolls.
 - While a delegated agent works, the island shows its maker's logo (Claude for Claude Code, OpenAI for Codex, OpenCode) inside the turning ring instead of a generic symbol, in the notch slot and in the panel's agent rows. An unknown provider keeps the generic symbol. A call that only starts or waits for agents no longer counts as a second piece of work.

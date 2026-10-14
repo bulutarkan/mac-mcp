@@ -18,24 +18,40 @@ struct MenuBarView: View {
     @MacMCPState private var contentHeight: CGFloat = 0
     /// The popover window: MenuBarExtra sizes it once when it opens, so later changes are applied here.
     @MacMCPState private var host = HostWindow()
+    @MacMCPState private var agentListHeight: CGFloat = 0
     // Follow the user's text size: glyph sizes scale with it.
     @ScaledMetric(relativeTo: .caption2) private var glyphScale: CGFloat = 1
 
     private static let sessionsAnchor = "sessions"
+    private static let agentsAnchor = "agents"
     private static let recentActivityLimit = 8
+    /// The agent list shows at most this many agents, about five rows tall, scrolling inside.
+    private static let agentListLimit = 20
+    private static let agentListVisibleHeight: CGFloat = 380
 
     var body: some View {
         // One scroll region: lists below expand inline instead of scrolling inside the popover.
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(spacing: 10) {
+                // One surface (#201): header, callouts, chips, then rows in groups split by dividers.
+                VStack(alignment: .leading, spacing: 10) {
                     header
                     actionBar
                     if state.showsOnboardingReminder { onboardingReminder }
+                    if state.serverRunning { chipsRow }
+                    Divider()
+                    if showsAgentSection {
+                        agentCard.id(Self.agentsAnchor)
+                        Divider()
+                    }
                     summaryCard(proxy)
-                    if state.activeAgents > 0 || !state.agents.isEmpty || !activeTeams.isEmpty { agentCard }
-                    activityCard
-                    steeringCard.id(Self.sessionsAnchor)
+                    Divider()
+                    VStack(alignment: .leading, spacing: 4) {
+                        activityCard
+                        steeringCard.id(Self.sessionsAnchor)
+                    }
+                    Divider()
+                    footer
                 }
                 .padding(14)
                 .background(GeometryReader { box in
@@ -167,6 +183,25 @@ struct MenuBarView: View {
         .accessibilityHint("Opens Get Started in Settings")
     }
 
+    /// What Mac MCP is doing, in one line under its name.
+    private var headerSubtitle: String {
+        if state.activeAgents > 0 {
+            return "\(state.activeAgents) agent\(state.activeAgents == 1 ? "" : "s") working"
+        }
+        guard state.serverRunning else { return "Server stopped" }
+        return state.totalCalls > 0 ? "Ready · your AI apps are using it" : "Ready for your AI apps"
+    }
+
+    /// The agent list shows while agents work, or when asked for from the Agents row.
+    private var showsAgentSection: Bool {
+        state.activeAgents > 0 || !activeTeams.isEmpty || showAllAgents
+    }
+
+    private func revealAgents(_ proxy: ScrollViewProxy) {
+        showAllAgents = true
+        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(Self.agentsAnchor, anchor: .top) }
+    }
+
     private func revealSessions(_ proxy: ScrollViewProxy) {
         showSessions = true
         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(Self.sessionsAnchor, anchor: .top) }
@@ -183,9 +218,10 @@ struct MenuBarView: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Mac MCP").font(.headline)
-                Text(state.version == "—" ? "Version unknown" : "v\(state.version)")
-                    .font(.caption2).foregroundStyle(.secondary)
+                Text(headerSubtitle)
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             }
+            .help(state.version == "—" ? "Version unknown" : "Mac MCP v\(state.version)")
             Spacer()
             HStack(spacing: 5) {
                 Image(systemName: status.symbol)
@@ -200,78 +236,102 @@ struct MenuBarView: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Status: \(status.label)")
             .accessibilityHint(status.explanation)
+            if state.serverRunning {
+                Button { state.restartServer() } label: {
+                    if state.busyAction != nil {
+                        ProgressView().controlSize(.small).frame(width: 16, height: 16)
+                    } else {
+                        Image(systemName: "arrow.clockwise").font(.system(size: 13, weight: .semibold))
+                            .frame(width: 26, height: 26)
+                            .background(.quaternary.opacity(0.6), in: Circle())
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(state.busyAction != nil)
+                .help("Restart Server")
+                .accessibilityLabel("Restart Server")
+            }
         }
     }
 
+    /// Small facts at a glance; each row below says more.
+    private var chipsRow: some View {
+        HStack(spacing: 6) {
+            MenuChip(symbol: "bolt.fill", text: "\(state.totalCalls)", tint: nil, help: "Tool calls in the last hour")
+            MenuChip(symbol: "checkmark.seal.fill",
+                     text: state.totalCalls > 0 ? String(format: "%.0f%%", state.successRate) : "—",
+                     tint: successTint, help: "Tool calls in the last hour that succeeded")
+            MenuChip(symbol: "cpu", text: "\(state.activeAgents) running",
+                     tint: state.activeAgents > 0 ? .accentColor : nil, help: "Agents working now")
+            MenuChip(symbol: "rectangle.stack", text: sessionsChipText, tint: nil, help: "Mac MCP sessions")
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var successTint: Color? {
+        guard state.totalCalls > 0 else { return nil }
+        if state.successRate < 50 { return .red }
+        return state.successRate < 80 ? .orange : nil
+    }
+
+    private var sessionsChipText: String {
+        guard state.hasReliableSessionSignal else { return "—" }
+        if state.sessionActiveCount > 0 { return "\(state.sessionActiveCount) active" }
+        if state.sessionIdleCount > 0 { return "\(state.sessionIdleCount) idle" }
+        return "\(state.sessionEndedCount) ended"
+    }
+
+    /// Problems and progress as tinted callouts; nothing shows while all is well.
     private var actionBar: some View {
         VStack(spacing: 8) {
-            HStack(spacing: 8) {
-                if state.serverRunning {
-                    Button { state.restartServer() } label: {
-                        Label("Restart Server", systemImage: "arrow.clockwise").frame(maxWidth: .infinity)
-                    }
-                    .accessibilityLabel("Restart Server")
-                } else {
-                    Button { state.startServer() } label: {
-                        Label("Start Server", systemImage: "play.fill").frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityLabel("Start Server")
-                }
-                moreMenu
-                Button { openSettings() } label: { Image(systemName: "gearshape") }
-                    .help("Settings (⌘,)")
-                    .accessibilityLabel("Open Settings")
-            }
-
             if state.connectionState != .connected {
-                HStack(spacing: 8) {
-                    Image(systemName: connectionDisplay.symbol)
-                        .foregroundStyle(connectionDisplay.tone.color)
-                        .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(state.connectionBannerTitle).font(.caption.weight(.semibold))
-                        if !state.connectionBannerDetail.isEmpty {
-                            Text(state.connectionBannerDetail)
-                                .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                        }
-                    }
-                    Spacer()
-                    if !state.startingAfterLogin && (state.connectionState == .degraded || state.connectionState == .disconnected) {
+                let stopped = !state.serverRunning && !state.startingAfterLogin
+                MenuCallout(tint: stopped ? .red : connectionDisplay.tone.color, symbol: connectionDisplay.symbol,
+                            title: state.connectionBannerTitle, detail: state.connectionBannerDetail) {
+                    if stopped {
+                        Button { state.startServer() } label: { Label("Start Server", systemImage: "play.fill") }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .accessibilityLabel("Start Server")
+                    } else if !state.startingAfterLogin && (state.connectionState == .degraded || state.connectionState == .disconnected) {
                         Button("Retry") { Task { await state.retryConnection() } }
                             .controlSize(.small)
                     }
                 }
-                .padding(.horizontal, 9).padding(.vertical, 7)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
 
             if let action = state.busyAction {
-                HStack(spacing: 8) {
+                MenuCallout(tint: .accentColor, symbol: nil, title: action, detail: "") {
                     ProgressView().controlSize(.small)
-                    Text(action).font(.caption).foregroundStyle(.secondary)
-                    Spacer()
                 }
             } else if let notice = state.actionNotice {
-                HStack(spacing: 8) {
-                    Image(systemName: notice.symbolName)
-                        .foregroundStyle(noticeColor(notice.kind))
-                        .accessibilityHidden(true)
-                    Text(notice.message).font(.caption.weight(.medium))
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer()
+                MenuCallout(tint: noticeColor(notice.kind), symbol: notice.symbolName, title: notice.message, detail: "") {
+                    EmptyView()
                 }
-                .padding(.horizontal, 9).padding(.vertical, 7)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .transition(.move(edge: .top).combined(with: .opacity))
                 .animation(.easeInOut(duration: 0.2), value: state.actionNotice?.id)
             }
         }
     }
 
+    /// Settings and More close the menu, as in other menu bar apps.
+    private var footer: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Button { openSettings() } label: {
+                MenuRow(symbol: "gearshape.fill", tint: .gray, title: "Settings…") {
+                    Text("⌘,").font(.callout).foregroundStyle(.tertiary)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open Settings")
+            moreMenu
+        }
+    }
+
     private var moreMenu: some View {
         Menu {
             if state.serverRunning {
+                Button("Restart Server") { state.restartServer() }
                 Button("Stop Server") { state.stopServer() }
             }
             Button("Refresh Status") { Task { await state.retryConnection() } }
@@ -293,10 +353,17 @@ struct MenuBarView: View {
             Divider()
             Button("Quit Mac MCP") { state.quitApp() }
         } label: {
-            Text("More")
+            MenuRow(symbol: "ellipsis", tint: .gray, title: "More") {
+                Image(systemName: "chevron.right").font(.system(size: 10 * glyphScale, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
         }
-        .fixedSize()
-        .help("Stop, refresh, dashboard, settings and updates")
+        // Button style with a plain look keeps the row's tile and chevron; the borderless menu
+        // style would draw only its title.
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .help("Restart, stop, refresh, privacy, dashboard, tour, updates and quit")
         .accessibilityLabel("More actions")
     }
 
@@ -305,62 +372,42 @@ struct MenuBarView: View {
     private func summaryCard(_ proxy: ScrollViewProxy) -> some View {
         let endpoint = endpointStatus
         let safety = safetyStatus
-        return GroupBox {
-            VStack(spacing: 0) {
-                summaryRow(symbol: "cpu", color: agentsSummaryColor, title: "Agents", value: agentsSummaryValue,
-                           valueColor: failedAgentCount > 0 ? .red : .primary,
-                           hint: "Opens the dashboard") { state.openDashboard() }
-                Divider()
-                summaryRow(symbol: "rectangle.stack", color: sessionsSummaryColor, title: "Sessions", value: sessionsSummaryValue,
-                           valueColor: .primary,
-                           hint: "Shows sessions and steering") { revealSessions(proxy) }
-                Divider()
-                summaryRow(symbol: endpoint.symbol, color: endpoint.tone == .neutral ? .secondary : endpoint.tone.color,
-                           title: "Endpoint", value: endpoint.label,
-                           valueColor: endpoint.tone == .warning ? .orange : .primary,
-                           hint: "Review Connections in Settings") { openSettings(.connections) }
-                    .help("Review Connections · \(endpoint.explanation)")
-                Divider()
-                summaryRow(symbol: safety.symbol, color: safety.tone == .neutral ? .secondary : safety.tone.color,
-                           title: "Safety", value: safety.label,
-                           valueColor: safety.tone == .warning ? .orange : .primary,
-                           hint: "Review safety in Settings") { openSettings(.permissions) }
-                    .help("Review safety · \(safety.explanation)")
-                Text(routineMetricsLine)
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 6)
+        return VStack(alignment: .leading, spacing: 2) {
+            summaryRow(symbol: "cpu", color: failedAgentCount > 0 ? .red : MenuPalette.violet, title: "Agents",
+                       value: agentsSummaryValue, valueColor: failedAgentCount > 0 ? .red : .secondary,
+                       hint: state.agents.isEmpty ? "Opens the dashboard" : "Shows the agent list") {
+                if state.agents.isEmpty { state.openDashboard() } else { revealAgents(proxy) }
             }
+            summaryRow(symbol: endpoint.symbol, color: endpoint.tone == .warning ? .orange : MenuPalette.teal,
+                       title: "Endpoint", value: endpoint.label,
+                       valueColor: endpoint.tone == .warning ? .orange : .secondary,
+                       hint: "Review Connections in Settings") { openSettings(.connections) }
+                .help("Review Connections · \(endpoint.explanation)")
+            summaryRow(symbol: safety.symbol, color: safety.tone == .warning ? .orange : .gray,
+                       title: "Safety", value: safety.label,
+                       valueColor: safety.tone == .warning ? .orange : .secondary,
+                       hint: "Review safety in Settings") { openSettings(.permissions) }
+                .help("Review safety · \(safety.explanation)")
         }
     }
 
     private func summaryRow(symbol: String, color: Color, title: String, value: String, valueColor: Color,
                             hint: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: symbol)
-                    .font(.caption)
-                    .foregroundStyle(color)
-                    .frame(width: 18)
-                Text(title)
-                    .font(.caption).foregroundStyle(.secondary)
-                    .frame(width: 62, alignment: .leading)
-                Text(value)
-                    .font(.caption.weight(.semibold)).foregroundStyle(valueColor)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
+            MenuRow(symbol: symbol, tint: color, title: title) {
+                Text(value).font(.callout).foregroundStyle(valueColor).lineLimit(1)
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 9 * glyphScale, weight: .semibold))
+                    .font(.system(size: 10 * glyphScale, weight: .semibold))
                     .foregroundStyle(.tertiary)
             }
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title), \(value)")
         .accessibilityHint(hint)
         .accessibilityAddTraits(.isButton)
+        // Combining the children dropped the button's press action: give the row its own.
+        .accessibilityAction { action() }
     }
 
     private var agentsSummaryValue: String {
@@ -373,235 +420,211 @@ struct MenuBarView: View {
         return parts.joined(separator: " · ")
     }
 
-    private var agentsSummaryColor: Color {
-        if failedAgentCount > 0 { return .red }
-        return state.activeAgents > 0 ? .accentColor : .secondary
-    }
-
-    private var sessionsSummaryValue: String {
-        guard state.hasReliableSessionSignal else {
-            return state.hasSteeringSnapshot ? "Last snapshot · stale" : "Unavailable"
-        }
-        var parts: [String] = []
-        if state.sessionActiveCount > 0 { parts.append("\(state.sessionActiveCount) active") }
-        if state.sessionIdleCount > 0 { parts.append("\(state.sessionIdleCount) idle") }
-        if state.sessionEndedCount > 0 { parts.append("\(state.sessionEndedCount) ended") }
-        return parts.isEmpty ? "No recent sessions" : parts.joined(separator: " · ")
-    }
-
-    private var sessionsSummaryColor: Color {
-        guard state.hasReliableSessionSignal else { return .secondary }
-        return state.sessionActiveCount > 0 ? .accentColor : .secondary
-    }
-
-    private var routineMetricsLine: String {
-        guard state.serverRunning else { return "Tool call metrics appear when the server is running." }
-        return "\(state.totalCalls) tool call\(state.totalCalls == 1 ? "" : "s") in the last hour · "
-            + String(format: "%.0f%% success", state.successRate)
-    }
-
     // MARK: Sessions
 
     private var steeringCard: some View {
-        GroupBox {
-            DisclosureGroup(isExpanded: $showSessions) {
-                VStack(alignment: .leading, spacing: 9) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "timer").font(.caption2).foregroundStyle(.secondary)
-                            .accessibilityHidden(true)
-                        Text("Keep idle").font(.caption2).foregroundStyle(.secondary)
-                        Spacer()
-                        TextField("10", text: $sessionMinutesText)
-                            .textFieldStyle(.roundedBorder)
-                            .multilineTextAlignment(.trailing)
-                            .frame(width: 48)
-                            .accessibilityLabel("Keep idle sessions, minutes")
-                            .onChange(of: sessionMinutesText) { value in
-                                let digits = value.filter(\.isNumber)
-                                if digits != value { sessionMinutesText = digits; return }
-                                if !digits.isEmpty, Int(digits) == 0 { sessionMinutesText = "" }
-                            }
-                            .onSubmit { applySessionRetention() }
-                        Text("min").font(.caption2).foregroundStyle(.secondary)
-                        Button { applySessionRetention() } label: {
-                            Image(systemName: "checkmark").font(.caption2.weight(.semibold))
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Apply session retention")
-                        .accessibilityLabel("Apply session retention")
-                    }
-
-                    if state.steeringSnapshotStale && state.hasSteeringSnapshot {
-                        HStack(spacing: 7) {
-                            Image(systemName: "clock.arrow.circlepath")
-                                .foregroundStyle(.orange)
-                            Text("Last successful session snapshot · stale")
-                                .font(.caption2.weight(.medium))
-                            Spacer()
-                            Button("Retry") { Task { await state.retryConnection() } }
-                                .controlSize(.mini)
-                        }
-                        .padding(.horizontal, 8).padding(.vertical, 6)
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    } else if state.steeringSnapshotStale || state.connectionState == .disconnected {
-                        HStack(spacing: 7) {
-                            Image(systemName: "wifi.slash").foregroundStyle(.red)
-                            Text("Session data unavailable")
-                                .font(.caption2.weight(.medium))
-                            Spacer()
-                            Button("Retry") { Task { await state.retryConnection() } }
-                                .controlSize(.mini)
-                        }
-                        .padding(.horizontal, 8).padding(.vertical, 6)
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    }
-
-                    if let browserEvent = state.activeBrowserEvents.first,
-                       let context = state.resolvedBrowserContext(for: browserEvent) {
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack(spacing: 8) {
-                                ProgressView().controlSize(.small)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(state.activeBrowserEvents.count == 1 ? "Browser automation active" : "\(state.activeBrowserEvents.count) browser tasks active")
-                                        .font(.caption.weight(.semibold))
-                                    Text(browserActivityLabel(context))
-                                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                                }
-                                Spacer()
-                                if context.canShowTab {
-                                    Button("Show Tab") { state.showBrowserTab(browserEvent) }
-                                        .controlSize(.small)
-                                        .help("Bring this real browser tab to the front")
-                                }
-                            }
-                            Text("Visible, non-focus-stealing browser automation · not headless.")
-                                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        }
-                        .padding(8)
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    }
-
-                    let sessionGroups = state.steeringSessionGroups
-                    if sessionGroups.totalItemCount == 0 {
-                        HStack(spacing: 8) {
-                            Image(systemName: "rectangle.stack.badge.minus").foregroundStyle(.secondary)
-                                .accessibilityHidden(true)
-                            Text(state.steeringSnapshotStale
-                                 ? (state.hasSteeringSnapshot ? "Last session snapshot contains no sessions." : "Session data unavailable.")
-                                 : state.steeringEmptyMessage)
-                                .font(.caption).foregroundStyle(.secondary)
-                            Spacer()
-                        }.padding(.vertical, 3)
-                    } else {
-                        if state.steeringSessions.count > 1 {
-                            Text("Choose the Mac MCP logical session you want to steer.").font(.caption2).foregroundStyle(.secondary)
-                        }
-                        // Inline list: the popover's single scroll view handles long lists.
-                        VStack(spacing: 6) {
-                            if !sessionGroups.active.isEmpty {
-                                sessionSectionHeader("Active", count: sessionGroups.active.count, symbol: "bolt.fill", color: .accentColor)
-                                ForEach(sessionGroups.active) { session in sessionRow(session) }
-                            }
-                            if !sessionGroups.recent.isEmpty {
-                                sessionSectionHeader("Recent", count: sessionGroups.recent.count, symbol: "clock", color: .secondary)
-                                ForEach(sessionGroups.recent) { session in sessionRow(session) }
-                            }
-                            if !sessionGroups.ended.isEmpty {
-                                sessionSectionHeader("Ended", count: sessionGroups.ended.count, symbol: "clock.arrow.circlepath", color: .secondary)
-                                ForEach(sessionGroups.ended, id: \.id) { event in terminalSessionRow(event) }
-                            }
-                        }
-                    }
-
-                    HStack(spacing: 7) {
-                        TextField("Prompt", text: $state.steeringPrompt)
-                            .textFieldStyle(.roundedBorder)
-                            .accessibilityLabel("Steering prompt")
-                            .onSubmit { state.sendSteering() }
-                        Button { state.sendSteering() } label: {
-                            if state.steeringSending { ProgressView().controlSize(.small) }
-                            else { Image(systemName: "paperplane.fill") }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .help("Send to the selected session")
-                        .accessibilityLabel(state.steeringSending ? "Sending" : "Send to the selected session")
-                        .disabled(state.steeringSending || state.steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.selectedSteeringSessionID == nil || state.steeringSnapshotStale || state.connectionState == .disconnected)
-                    }
-                    Text(state.steeringStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                }
-                .padding(.top, 8)
-            } label: {
-                HStack {
-                    Label("Sessions", systemImage: "rectangle.stack").help("Mac MCP logical sessions; not raw provider identities")
+        DisclosureGroup(isExpanded: $showSessions) {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 6) {
+                    Image(systemName: "timer").font(.caption2).foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Text("Keep idle").font(.caption2).foregroundStyle(.secondary)
                     Spacer()
-                    if !showSessions && state.hasReliableSessionSignal {
-                        if state.sessionActiveCount > 0 {
-                            Text("\(state.sessionActiveCount) active").font(.caption2.weight(.semibold)).foregroundStyle(Color.accentColor)
-                        } else if state.sessionEndedCount > 0 {
-                            Text("\(state.sessionEndedCount) ended").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                        } else if state.sessionIdleCount > 0 {
-                            Text("\(state.sessionIdleCount) idle").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    TextField("10", text: $sessionMinutesText)
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 48)
+                        .accessibilityLabel("Keep idle sessions, minutes")
+                        .onChange(of: sessionMinutesText) { value in
+                            let digits = value.filter(\.isNumber)
+                            if digits != value { sessionMinutesText = digits; return }
+                            if !digits.isEmpty, Int(digits) == 0 { sessionMinutesText = "" }
                         }
+                        .onSubmit { applySessionRetention() }
+                    Text("min").font(.caption2).foregroundStyle(.secondary)
+                    Button { applySessionRetention() } label: {
+                        Image(systemName: "checkmark").font(.caption2.weight(.semibold))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Apply session retention")
+                    .accessibilityLabel("Apply session retention")
+                }
+
+                if state.steeringSnapshotStale && state.hasSteeringSnapshot {
+                    HStack(spacing: 7) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .foregroundStyle(.orange)
+                        Text("Last successful session snapshot · stale")
+                            .font(.caption2.weight(.medium))
+                        Spacer()
+                        Button("Retry") { Task { await state.retryConnection() } }
+                            .controlSize(.mini)
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                } else if state.steeringSnapshotStale || state.connectionState == .disconnected {
+                    HStack(spacing: 7) {
+                        Image(systemName: "wifi.slash").foregroundStyle(.red)
+                        Text("Session data unavailable")
+                            .font(.caption2.weight(.medium))
+                        Spacer()
+                        Button("Retry") { Task { await state.retryConnection() } }
+                            .controlSize(.mini)
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+
+                if let browserEvent = state.activeBrowserEvents.first,
+                   let context = state.resolvedBrowserContext(for: browserEvent) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(state.activeBrowserEvents.count == 1 ? "Browser automation active" : "\(state.activeBrowserEvents.count) browser tasks active")
+                                    .font(.caption.weight(.semibold))
+                                Text(browserActivityLabel(context))
+                                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            Spacer()
+                            if context.canShowTab {
+                                Button("Show Tab") { state.showBrowserTab(browserEvent) }
+                                    .controlSize(.small)
+                                    .help("Bring this real browser tab to the front")
+                            }
+                        }
+                        Text("Visible, non-focus-stealing browser automation · not headless.")
+                            .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(8)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+
+                let sessionGroups = state.steeringSessionGroups
+                if sessionGroups.totalItemCount == 0 {
+                    HStack(spacing: 8) {
+                        Image(systemName: "rectangle.stack.badge.minus").foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                        Text(state.steeringSnapshotStale
+                             ? (state.hasSteeringSnapshot ? "Last session snapshot contains no sessions." : "Session data unavailable.")
+                             : state.steeringEmptyMessage)
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                    }.padding(.vertical, 3)
+                } else {
+                    if state.steeringSessions.count > 1 {
+                        Text("Choose the Mac MCP logical session you want to steer.").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    // Inline list: the popover's single scroll view handles long lists.
+                    VStack(spacing: 6) {
+                        if !sessionGroups.active.isEmpty {
+                            sessionSectionHeader("Active", count: sessionGroups.active.count, symbol: "bolt.fill", color: .accentColor)
+                            ForEach(sessionGroups.active) { session in sessionRow(session) }
+                        }
+                        if !sessionGroups.recent.isEmpty {
+                            sessionSectionHeader("Recent", count: sessionGroups.recent.count, symbol: "clock", color: .secondary)
+                            ForEach(sessionGroups.recent) { session in sessionRow(session) }
+                        }
+                        if !sessionGroups.ended.isEmpty {
+                            sessionSectionHeader("Ended", count: sessionGroups.ended.count, symbol: "clock.arrow.circlepath", color: .secondary)
+                            ForEach(sessionGroups.ended, id: \.id) { event in terminalSessionRow(event) }
+                        }
+                    }
+                }
+
+                HStack(spacing: 7) {
+                    TextField("Prompt", text: $state.steeringPrompt)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Steering prompt")
+                        .onSubmit { state.sendSteering() }
+                    Button { state.sendSteering() } label: {
+                        if state.steeringSending { ProgressView().controlSize(.small) }
+                        else { Image(systemName: "paperplane.fill") }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .help("Send to the selected session")
+                    .accessibilityLabel(state.steeringSending ? "Sending" : "Send to the selected session")
+                    .disabled(state.steeringSending || state.steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.selectedSteeringSessionID == nil || state.steeringSnapshotStale || state.connectionState == .disconnected)
+                }
+                Text(state.steeringStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack {
+                Label("Sessions", systemImage: "rectangle.stack")
+                    .labelStyle(MenuTileLabelStyle(tint: MenuPalette.ember))
+                    .help("Mac MCP logical sessions; not raw provider identities")
+                Spacer()
+                if !showSessions && state.hasReliableSessionSignal {
+                    if state.sessionActiveCount > 0 {
+                        Text("\(state.sessionActiveCount) active").font(.caption2.weight(.semibold)).foregroundStyle(Color.accentColor)
+                    } else if state.sessionEndedCount > 0 {
+                        Text("\(state.sessionEndedCount) ended").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    } else if state.sessionIdleCount > 0 {
+                        Text("\(state.sessionIdleCount) idle").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                     }
                 }
             }
         }
+        .disclosureGroupStyle(MenuDisclosureStyle())
     }
 
     // MARK: Agents
 
     private var agentCard: some View {
         let activeAgents = state.agents.filter(\.isActive)
-        return GroupBox {
+        return VStack(alignment: .leading, spacing: 6) {
+            // The header opens and closes the full list, like Recent activity's chevron.
+            Button { showAllAgents.toggle() } label: {
+                HStack(spacing: 6) {
+                    Label(state.activeAgents > 0 ? "Active Work" : "Agents", systemImage: "cpu")
+                        .labelStyle(MenuTileLabelStyle(tint: MenuPalette.violet))
+                    Spacer()
+                    if state.activeAgents > 0 {
+                        RobotRunner(active: true)
+                            .frame(width: 44, height: 46)
+                            .scaleEffect(0.5)
+                            .frame(width: 22, height: 18)
+                    }
+                    if !state.agents.isEmpty {
+                        Text("\(min(state.agents.count, Self.agentListLimit)) recent")
+                            .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                    }
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(showAllAgents ? 180 : 0))
+                        .accessibilityHidden(true)
+                }
+                .padding(.vertical, 5)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(showAllAgents ? "Collapses the agent list" : "Lists the recent agents with details")
             VStack(spacing: 6) {
                 ForEach(activeTeams.prefix(2)) { team in
                     teamRow(team)
                 }
                 if showAllAgents {
-                    ForEach(Array(displayAgents.enumerated()), id: \.element.id) { index, agent in
-                        if index > 0 { Divider() }
-                        agentRow(agent)
+                    // At most 20 agents, about five rows tall; the rest scroll inside the list.
+                    ScrollView {
+                        VStack(spacing: 6) {
+                            ForEach(Array(displayAgents.prefix(Self.agentListLimit).enumerated()), id: \.element.id) { index, agent in
+                                if index > 0 { Divider() }
+                                agentRow(agent)
+                            }
+                        }
+                        .background(GeometryReader { box in
+                            Color.clear.preference(key: AgentListHeight.self, value: box.size.height)
+                        })
                     }
-                } else if activeAgents.isEmpty {
-                    Text("No agents running.")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 2)
+                    .frame(height: min(agentListHeight, Self.agentListVisibleHeight))
+                    .onPreferenceChange(AgentListHeight.self) { agentListHeight = $0 }
                 } else {
                     ForEach(Array(activeAgents.prefix(2).enumerated()), id: \.element.id) { index, agent in
                         if index > 0 { Divider() }
                         compactAgentRow(agent)
                     }
-                }
-                if !state.agents.isEmpty && (showAllAgents || state.agents.count > min(activeAgents.count, 2)) {
-                    Divider()
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.15)) { showAllAgents.toggle() }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(showAllAgents ? "Show fewer" : "View all agents (\(state.agents.count))")
-                                .font(.caption.weight(.medium))
-                            Image(systemName: showAllAgents ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 9 * glyphScale, weight: .semibold))
-                                .accessibilityHidden(true)
-                            Spacer()
-                        }
-                        .foregroundStyle(Color.accentColor)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityHint(showAllAgents ? "Collapses the agent list" : "Lists every recent agent with details")
-                }
-            }
-        } label: {
-            HStack {
-                Label(state.activeAgents > 0 ? "Active Work" : "Agents", systemImage: "cpu")
-                Spacer()
-                if state.activeAgents > 0 {
-                    RobotRunner(active: true)
-                        .frame(width: 44, height: 46)
-                        .scaleEffect(0.5)
-                        .frame(width: 22, height: 18)
                 }
             }
         }
@@ -764,55 +787,55 @@ struct MenuBarView: View {
         let events = displayActivityEvents
         let errorCount = events.filter { $0.status.lowercased() == "error" }.count
         let liveCount = events.filter { $0.status.lowercased() == "running" }.count
-        return GroupBox {
-            DisclosureGroup(isExpanded: $showActivity) {
-                VStack(alignment: .leading, spacing: 5) {
-                    if state.connectionState == .disconnected && events.isEmpty {
-                        activityEmptyText("Disconnected · tool activity unavailable.")
-                    } else if state.connectionState == .degraded && events.isEmpty {
-                        activityEmptyText("Tool activity is temporarily unavailable.")
-                    } else if state.serverRunning && events.isEmpty {
-                        activityEmptyText("No tool calls recorded in the last hour.")
-                    } else if !state.serverRunning {
-                        activityEmptyText("Start the server or retry the connection to see live tool activity.")
-                    } else {
-                        ForEach(Array(events.prefix(Self.recentActivityLimit).enumerated()), id: \.element.id) { index, event in
-                            if index > 0 { Divider() }
-                            activityRow(event)
-                        }
-                        if !state.browserActionStatus.isEmpty {
-                            Text(state.browserActionStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                        }
+        return DisclosureGroup(isExpanded: $showActivity) {
+            VStack(alignment: .leading, spacing: 5) {
+                if state.connectionState == .disconnected && events.isEmpty {
+                    activityEmptyText("Disconnected · tool activity unavailable.")
+                } else if state.connectionState == .degraded && events.isEmpty {
+                    activityEmptyText("Tool activity is temporarily unavailable.")
+                } else if state.serverRunning && events.isEmpty {
+                    activityEmptyText("No tool calls recorded in the last hour.")
+                } else if !state.serverRunning {
+                    activityEmptyText("Start the server or retry the connection to see live tool activity.")
+                } else {
+                    ForEach(Array(events.prefix(Self.recentActivityLimit).enumerated()), id: \.element.id) { index, event in
+                        if index > 0 { Divider() }
+                        activityRow(event)
                     }
-                    Button { state.openDashboard() } label: {
-                        HStack(spacing: 4) {
-                            Text(events.count > Self.recentActivityLimit
-                                 ? "Full activity in Dashboard (\(events.count))"
-                                 : "Full activity in Dashboard")
-                                .font(.caption.weight(.medium))
-                            Image(systemName: "arrow.up.forward").font(.system(size: 9 * glyphScale, weight: .semibold))
-                                .accessibilityHidden(true)
-                        }
-                        .foregroundStyle(Color.accentColor)
+                    if !state.browserActionStatus.isEmpty {
+                        Text(state.browserActionStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                     }
-                    .buttonStyle(.plain)
-                    .padding(.top, 4)
-                    .accessibilityHint("Opens the dashboard in your browser")
                 }
-                .padding(.top, 8)
-            } label: {
-                HStack(spacing: 6) {
-                    Label("Recent activity", systemImage: "waveform.path.ecg")
-                    Spacer()
-                    if errorCount > 0 {
-                        Label("\(errorCount) failed", systemImage: "xmark.circle.fill")
-                            .font(.caption2.weight(.semibold)).foregroundStyle(.red)
-                    } else if liveCount > 0 {
-                        Text("\(liveCount) live").font(.caption2.weight(.semibold)).foregroundStyle(Color.accentColor)
+                Button { state.openDashboard() } label: {
+                    HStack(spacing: 4) {
+                        Text(events.count > Self.recentActivityLimit
+                             ? "Full activity in Dashboard (\(events.count))"
+                             : "Full activity in Dashboard")
+                            .font(.caption.weight(.medium))
+                        Image(systemName: "arrow.up.forward").font(.system(size: 9 * glyphScale, weight: .semibold))
+                            .accessibilityHidden(true)
                     }
+                    .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 4)
+                .accessibilityHint("Opens the dashboard in your browser")
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 6) {
+                Label("Recent activity", systemImage: "waveform.path.ecg")
+                    .labelStyle(MenuTileLabelStyle(tint: .blue))
+                Spacer()
+                if errorCount > 0 {
+                    Label("\(errorCount) failed", systemImage: "xmark.circle.fill")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(.red)
+                } else if liveCount > 0 {
+                    Text("\(liveCount) live").font(.caption2.weight(.semibold)).foregroundStyle(Color.accentColor)
                 }
             }
         }
+        .disclosureGroupStyle(MenuDisclosureStyle())
     }
 
     private func activityEmptyText(_ text: String) -> some View {
@@ -1548,4 +1571,143 @@ private struct HostWindowReader: NSViewRepresentable {
     func updateNSView(_ view: NSView, context: Context) {
         DispatchQueue.main.async { if let window = view.window { found(window) } }
     }
+}
+
+// MARK: - Menu building blocks (#201)
+
+/// Mac MCP's own colours, from the first-run tour's tokens.
+private enum MenuPalette {
+    static let violet = Color(red: 0.545, green: 0.486, blue: 0.965)
+    static let teal = Color(red: 0.29, green: 0.74, blue: 0.68)
+    static let ember = Color(red: 0.96, green: 0.6, blue: 0.24)
+}
+
+/// A small filled square with a white symbol, like the System Settings sidebar.
+private struct MenuIconTile: View {
+    let symbol: String
+    let tint: Color
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 5, style: .continuous)
+            .fill(tint.gradient)
+            .frame(width: 20, height: 20)
+            .overlay(Image(systemName: symbol).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white))
+            .accessibilityHidden(true)
+    }
+}
+
+/// One menu row: tile, title, then whatever trails it (a value, a shortcut, a chevron).
+private struct MenuRow<Trailing: View>: View {
+    let symbol: String
+    let tint: Color
+    let title: String
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        HStack(spacing: 10) {
+            MenuIconTile(symbol: symbol, tint: tint)
+            Text(title).font(.callout)
+            Spacer(minLength: 8)
+            trailing
+        }
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
+    }
+}
+
+/// A Label drawn as a menu row title: its icon in a colour tile.
+private struct MenuTileLabelStyle: LabelStyle {
+    let tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(tint.gradient)
+                .frame(width: 20, height: 20)
+                .overlay(configuration.icon.font(.system(size: 11, weight: .semibold)).foregroundStyle(.white))
+                .accessibilityHidden(true)
+            configuration.title.font(.callout)
+        }
+    }
+}
+
+/// A disclosure row with its chevron on the right, opening without an animation of its own
+/// (the menu window follows the content, #200).
+private struct MenuDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { configuration.isExpanded.toggle() } label: {
+                HStack(spacing: 6) {
+                    configuration.label
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(configuration.isExpanded ? 180 : 0))
+                        .accessibilityHidden(true)
+                }
+                .padding(.vertical, 5)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(configuration.isExpanded ? "Collapses this section" : "Expands this section")
+            if configuration.isExpanded {
+                configuration.content.padding(.leading, 30)
+            }
+        }
+    }
+}
+
+/// A compact fact in a capsule: symbol and value; tinted when it needs a glance.
+private struct MenuChip: View {
+    let symbol: String
+    let text: String
+    let tint: Color?
+    let help: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: symbol).foregroundStyle(tint ?? .secondary)
+            Text(text).foregroundStyle(tint ?? .primary)
+        }
+        .font(.caption2.weight(.semibold))
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background((tint ?? Color.primary).opacity(tint == nil ? 0.07 : 0.14), in: Capsule())
+        .help(help)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(help): \(text)")
+    }
+}
+
+/// A tinted callout for problems and progress: symbol, title, detail and an optional control.
+private struct MenuCallout<Control: View>: View {
+    let tint: Color
+    let symbol: String?
+    let title: String
+    let detail: String
+    @ViewBuilder var control: Control
+
+    var body: some View {
+        HStack(spacing: 9) {
+            if let symbol {
+                Image(systemName: symbol).foregroundStyle(tint).accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.caption.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                if !detail.isEmpty {
+                    Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
+            Spacer(minLength: 6)
+            control
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(tint.opacity(0.35)))
+    }
+}
+
+/// The agent list's own height, so a short list takes only its rows.
+private struct AgentListHeight: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
