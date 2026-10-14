@@ -579,7 +579,7 @@ struct SettingsView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             Spacer()
-                            Toggle("", isOn: requireToolDescriptionsBinding)
+                            Toggle("Require Tool Descriptions", isOn: requireToolDescriptionsBinding)
                                 .labelsHidden()
                                 .toggleStyle(.switch)
                         }
@@ -617,7 +617,7 @@ struct SettingsView: View {
                                 ProgressView()
                                     .controlSize(.small)
                             } else {
-                                Toggle("", isOn: agentCompletionNotificationsBinding)
+                                Toggle("Completion & attention alerts", isOn: agentCompletionNotificationsBinding)
                                     .labelsHidden()
                                     .toggleStyle(.switch)
                             }
@@ -2609,7 +2609,7 @@ struct SettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer()
-                    Toggle("", isOn: $settings.decisionAccelerationEnabled)
+                    Toggle("OpenAI Decisions for ambiguous targets", isOn: $settings.decisionAccelerationEnabled)
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .onChange(of: settings.decisionAccelerationEnabled) { _ in
@@ -3478,7 +3478,7 @@ struct SettingsView: View {
                     Text(subtitle).font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Toggle("", isOn: providerBinding(id))
+                Toggle(title, isOn: providerBinding(id))
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .disabled(settings.providerSettingsLocked)
@@ -3607,7 +3607,7 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Toggle("", isOn: isOn)
+            Toggle(title, isOn: isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
         }

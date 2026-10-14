@@ -11,6 +11,7 @@ struct RunReportSheet: View {
     let run: TaskRun
     @Environment(\.dismiss) private var dismiss
     @MacMCPState private var full: TaskRun?
+    @MacMCPState private var fullProblem: String?
     @MacMCPState private var tab = "result"
 
     private var shown: TaskRun { full ?? run }
@@ -34,6 +35,9 @@ struct RunReportSheet: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    if let problem = fullProblem {
+                        LoadProblem(message: problem) { await loadFull() }
+                    }
                     if tab == "steps" && isAgent {
                         StepsTimeline(steps: steps)
                     } else {
@@ -59,9 +63,16 @@ struct RunReportSheet: View {
             .padding(.horizontal, 22).padding(.vertical, 12)
         }
         .frame(width: 720, height: 640)
-        .task {
-            let result = await state.taskAPI("dashboard/api/scheduled-tasks/run?run_id=\(run.id)")
-            if result.ok, let raw = result.object["run"] as? [String: Any] { full = TaskRun(raw) }
+        .task { await loadFull() }
+    }
+
+    private func loadFull() async {
+        let result = await state.taskAPI("dashboard/api/scheduled-tasks/run?run_id=\(run.id)")
+        if result.ok, let raw = result.object["run"] as? [String: Any] {
+            full = TaskRun(raw)
+            fullProblem = nil
+        } else {
+            fullProblem = "Only the summary of this run could be loaded; its full report and steps are missing."
         }
     }
 
@@ -253,7 +264,7 @@ private struct StepRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(open ? nil : 3)
                     .fixedSize(horizontal: false, vertical: true)
-                    .onTapGesture { withAnimation { open.toggle() } }
+                    .activatable(open ? "Show less" : "Show all of this thinking") { withAnimation { open.toggle() } }
             }
         case "message":
             if let text { MarkdownText(source: text, compact: true) }
@@ -578,4 +589,69 @@ struct MarkdownText: View {
 
 private extension String {
     var nilIfEmpty: String? { trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self }
+}
+
+// MARK: - Rows that open
+
+/// A row that opens on a click, with the same action for accessibility (VoiceOver and Mac MCP's
+/// own mac_act press it) and, on macOS 14 and later, for the keyboard (Return or Space when focused).
+struct ActivatableRow: ViewModifier {
+    let hint: String?
+    let action: () -> Void
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let row = content
+            .contentShape(Rectangle())
+            .onTapGesture(perform: action)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction(.default, action)
+            .accessibilityHint(hint.map { Text($0) } ?? Text(""))
+        if #available(macOS 14.0, *) {
+            row
+                .focusable()
+                .onKeyPress(.return) { action(); return .handled }
+                .onKeyPress(.space) { action(); return .handled }
+        } else {
+            row
+        }
+    }
+}
+
+extension View {
+    func activatable(_ hint: String? = nil, perform action: @escaping () -> Void) -> some View {
+        modifier(ActivatableRow(hint: hint, action: action))
+    }
+}
+
+/// What a pane shows when its first load failed: what happened and a way to try again,
+/// instead of a spinner or an empty list that looks like "nothing here".
+struct LoadProblem: View {
+    let message: String
+    let retry: () async -> Void
+    @MacMCPState private var retrying = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle").foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text(message).font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            if retrying {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Try Again") {
+                    retrying = true
+                    Task {
+                        await retry()
+                        retrying = false
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.05)))
+    }
 }

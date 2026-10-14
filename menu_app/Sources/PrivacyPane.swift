@@ -31,10 +31,12 @@ struct PrivacyPane: View {
                     Text("What Mac MCP may look at, what it keeps, and where your data can go. Mac MCP enforces these rules itself; an AI app cannot turn them off.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                if !message.isEmpty {
+                if !loaded, !message.isEmpty {
+                    LoadProblem(message: message) { await load() }
+                } else if !message.isEmpty {
                     Text(message).font(.caption).foregroundStyle(.secondary)
                 }
-                if !loaded {
+                if !loaded, message.isEmpty {
                     ProgressView().controlSize(.small)
                 }
 

@@ -66,6 +66,7 @@ let current = Math.max(0, indexOf(params.get('screen') || 'welcome'));
 let status = null;
 let evaluation = evaluate(null);
 let apps = null;
+let appsProblem = null;
 let agentsEnabled = null;
 const appNotes = {};
 let appsRemote = null;
@@ -269,8 +270,11 @@ async function requestPermission(name) {
 async function loadApps() {
   try {
     apps = await call('apps');
-  } catch {
+    appsProblem = null;
+  } catch (error) {
+    // Not finding the apps is not the same as there being none: say so and offer a retry.
     apps = [];
+    appsProblem = error.message || 'Mac MCP could not look for AI apps on this Mac.';
   }
   agentsEnabled = await call('agents').catch(() => null);
   renderApps();
@@ -280,6 +284,25 @@ function renderApps() {
   appsRemote = evaluation.remote;
   const list = $('[data-live="apps"]');
   list.textContent = '';
+  if (appsProblem) {
+    const element = document.createElement('li');
+    element.className = 'app';
+    element.dataset.state = 'problem';
+    const text = document.createElement('div');
+    const name = document.createElement('strong');
+    name.textContent = 'Could not look for AI apps';
+    const detail = document.createElement('span');
+    detail.textContent = appsProblem;
+    text.append(name, detail);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'Try again';
+    button.addEventListener('click', () => { apps = null; loadApps(); });
+    element.append(text, button);
+    list.append(element);
+    renderAgents();
+    return;
+  }
   for (const item of orderedClients(apps)) {
     const row = appRow(item, (apps || []).find((found) => found.id === item.id), evaluation.remote);
     const element = document.createElement('li');

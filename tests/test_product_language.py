@@ -63,6 +63,18 @@ class ProductLanguageTests(unittest.TestCase):
             self.assertIn(phrase, site.lower())
         self.assertIn("not a sandbox", front.lower())
 
+    def test_first_run_tour_promises_only_what_the_product_does(self):
+        # The tour is the first thing a new owner reads (#180): approvals are optional (Server
+        # Approval is off by default), ChatGPT needs a public address, browser work is visible.
+        tour = (ROOT / "menu_app" / "Onboarding" / "index.html").read_text(encoding="utf-8").lower()
+        for phrase in ("never leaves your mac", "everything runs on this mac", "asks you before anything sensitive",
+                       "risky actions wait for your answer", "so there is nothing to copy or paste",
+                       "browses in the background", "invisible", "hidden browser", "sandboxed"):
+            self.assertNotIn(phrase, tour)
+        for phrase in ("visible, non-focus-stealing", "permission profile", "server approval can ask",
+                       "goes to that app’s provider", "public address"):
+            self.assertIn(phrase, tour)
+
 
 if __name__ == "__main__":
     unittest.main()

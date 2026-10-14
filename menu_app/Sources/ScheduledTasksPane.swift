@@ -139,7 +139,7 @@ struct ScheduledTasksPane: View {
                     .disabled(!loaded)
                 }
 
-                if !message.isEmpty {
+                if loaded, !message.isEmpty {
                     Label(message, systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -166,7 +166,11 @@ struct ScheduledTasksPane: View {
                 }
 
                 if !loaded {
-                    ProgressView().controlSize(.small).frame(maxWidth: .infinity)
+                    if message.isEmpty {
+                        ProgressView().controlSize(.small).frame(maxWidth: .infinity)
+                    } else {
+                        LoadProblem(message: message) { await load() }
+                    }
                 } else if tasks.isEmpty {
                     emptyState
                 } else {
@@ -263,13 +267,11 @@ struct ScheduledTasksPane: View {
         }
         .taskCard(highlight: waiting ? .orange : nil, hovering: hovering)
         .opacity(task.paused ? 0.55 : 1)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if task.approved { openTaskID = task.id } else { reviewing = task }
-        }
         .onHover { inside in hovered = inside ? task.id : (hovered == task.id ? nil : hovered) }
         .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
+        .activatable(task.approved ? "Opens the task" : "Reviews the suggestion") {
+            if task.approved { openTaskID = task.id } else { reviewing = task }
+        }
     }
 
     private func subtitle(_ task: ScheduledTask) -> Text {
@@ -316,6 +318,7 @@ private struct TaskDetailView: View {
     let onChanged: () async -> Void
 
     @MacMCPState private var runs: [TaskRun] = []
+    @MacMCPState private var runsProblem: String?
     @MacMCPState private var openRun: TaskRun?
     @MacMCPState private var confirmDelete = false
     @MacMCPState private var busy = false
@@ -384,7 +387,9 @@ private struct TaskDetailView: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("RECENT RUNS").font(.caption2.weight(.semibold)).foregroundStyle(.secondary).kerning(0.6)
-                    if runs.isEmpty {
+                    if let problem = runsProblem, runs.isEmpty {
+                        LoadProblem(message: problem) { await loadRuns() }
+                    } else if runs.isEmpty {
                         Text(task.nextRunAt.map { "No runs yet. The first one is \(TaskTime.upcoming($0))." } ?? "No runs yet.")
                             .font(.callout).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -475,8 +480,9 @@ private struct TaskDetailView: View {
         .padding(.vertical, 7)
     }
 
+    @ViewBuilder
     private func runRow(_ run: TaskRun) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+        let row = HStack(alignment: .top, spacing: 10) {
             Image(systemName: run.symbol).foregroundStyle(run.color).font(.body)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -493,8 +499,12 @@ private struct TaskDetailView: View {
             }
         }
         .padding(.vertical, 9)
-        .contentShape(Rectangle())
-        .onTapGesture { if run.status != "skipped" { openRun = run } }
+        .accessibilityElement(children: .combine)
+        if run.status == "skipped" {
+            row
+        } else {
+            row.activatable("Opens the run report") { openRun = run }
+        }
     }
 
     private func runMeta(_ run: TaskRun) -> String {
@@ -521,7 +531,12 @@ private struct TaskDetailView: View {
 
     private func loadRuns() async {
         let result = await state.taskAPI("dashboard/api/scheduled-tasks/runs?task_id=\(task.id)")
-        if result.ok { runs = (result.object["runs"] as? [[String: Any]] ?? []).map(TaskRun.init) }
+        if result.ok {
+            runs = (result.object["runs"] as? [[String: Any]] ?? []).map(TaskRun.init)
+            runsProblem = nil
+        } else {
+            runsProblem = "The run history could not be loaded. " + (result.object["message"] as? String ?? "")
+        }
     }
 
     private func act(_ action: String) {
