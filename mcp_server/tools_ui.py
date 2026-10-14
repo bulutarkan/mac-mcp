@@ -4719,7 +4719,9 @@ def act_ui(
 
         requested_app = _normalize_app(app)
         stored_app = str(stored.get("active_app")) if stored else None
-        if requested_app and stored_app and requested_app.lower() != stored_app.lower():
+        if requested_app and stored_app and not _same_app(requested_app, {
+            "app_name": stored_app, "bundle_id": stored.get("bundle_id"), "pid": stored.get("app_pid"),
+        }):
             return {"ok": False, "error": "app does not match the application in observation_id"}
 
         stored_nodes = (stored or {}).get("nodes", {})

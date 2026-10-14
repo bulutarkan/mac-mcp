@@ -42,8 +42,11 @@ _state = {"allowed": False, "executable": None, "building": False, "disabled": F
 
 
 def enable() -> None:
+    """Allow the native observer and get its helper ready now, so the first observation
+    after a start or an update does not take the AppleScript path while it builds."""
     with _lock:
         _state["allowed"] = True
+    _executable()
 
 
 def _build() -> None:
@@ -132,13 +135,16 @@ class _Worker:
             self._close(proc, gently=False)
 
     def _stop_if_idle(self) -> None:
-        if self.busy.acquire(blocking=False):
-            try:
-                proc, self.proc = self.proc, None
-                if proc is not None:
-                    self._close(proc, gently=True)
-            finally:
-                self.busy.release()
+        if not self.busy.acquire(blocking=False):
+            return
+        try:
+            proc, self.proc = self.proc, None
+        finally:
+            # Close outside the lock: a request arriving meanwhile starts a fresh helper
+            # instead of finding this one busy and paying for a one-shot launch.
+            self.busy.release()
+        if proc is not None:
+            self._close(proc, gently=True)
 
     def _arm_idle_timer(self) -> None:
         if self._idle is not None:

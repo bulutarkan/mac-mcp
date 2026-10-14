@@ -63,6 +63,17 @@ class GateTests(unittest.TestCase):
             self.assertIsNone(self.observe())
         popen.assert_not_called()
 
+    def test_enable_starts_the_build_so_the_first_observation_is_native(self) -> None:
+        # After a start or update the first read used to take the AppleScript path (5-9 s).
+        reset_state()
+        with patch.object(ax_native.threading, "Thread") as thread:
+            ax_native.enable()
+        thread.assert_called_once()
+        reset_state()
+        with patch.dict(os.environ, {"MAC_MCP_AX_NATIVE": "0"}), patch.object(ax_native.threading, "Thread") as thread:
+            ax_native.enable()
+        thread.assert_not_called()
+
     def test_first_enabled_call_builds_once_in_the_background_and_falls_back(self) -> None:
         reset_state(allowed=True)
         with patch.object(ax_native.threading, "Thread") as thread:

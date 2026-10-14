@@ -3,6 +3,8 @@
 ### Mac apps are read natively by any of their names
 - `mac_observe` asked the native Accessibility helper for an app by its bundle name only, so an app named by its executable (System Events calls Mac MCP's menu app `MacMCPMenu`) or bundle id was not found and every read fell back to AppleScript: 3 to 9 seconds instead of tens of milliseconds. The helper now accepts the displayed name, the bundle name, the executable name or the bundle id (an ambiguous name still falls back).
 - `mac_act` and `mac_observe` no longer refuse a window or app handle with `TARGET_HANDLE_MISMATCH` when the app is named differently from how the handle recorded it (for example `MacMCPMenu` for `Mac MCP`).
+- The first `mac_observe` after Mac MCP starts or updates is native too: the helper is made ready when the server starts instead of on the first read, which used to take the AppleScript path (5 to 9 seconds).
+- `mac_act`'s observation check accepts the same names, so acting on an observation of `MacMCPMenu` no longer fails with "app does not match the application in observation_id".
 - Native `scroll` uses the `AXScrollDownByPage` (and up, left, right) action that scroll areas offer; it asked for `AXScrollDown`, which they do not have, and failed.
 
 ### Faster reading of Mac app windows (#185)
