@@ -145,6 +145,8 @@ def _launch_locked_update(
         "--remote", remote,
         "--deferred-seconds", "0.8",
         "--lock-fd", str(lock_fd),
+        "--update-id", update_id,
+        "--log-path", str(log_path),
     ]
     if launchd_label:
         cmd.extend(["--launchd-label", launchd_label])

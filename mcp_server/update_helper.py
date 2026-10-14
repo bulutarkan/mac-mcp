@@ -39,6 +39,7 @@ if __package__:
         read_deployed_commit,
         read_update_state,
         update_root,
+        update_state_path,
         write_deployed_commit,
         write_update_state,
     )
@@ -68,6 +69,7 @@ else:
         read_deployed_commit,
         read_update_state,
         update_root,
+        update_state_path,
         write_deployed_commit,
         write_update_state,
     )
@@ -187,6 +189,20 @@ def _write_state_commit(runtime: Path, commit: str) -> None:
 def _write_update_state(runtime: Path, payload: dict) -> None:
     del runtime
     write_update_state(payload)
+
+
+def _write_final_state(runtime: Path, payload: dict) -> None:
+    """The completed/failed record, read back: a final state that did not land is said in the log."""
+    _write_update_state(runtime, payload)
+    persisted = read_update_state()
+    if not isinstance(persisted, dict) or persisted.get("status") != payload.get("status") or (
+        payload.get("update_id") and persisted.get("update_id") != payload.get("update_id")
+    ):
+        print(
+            f"[mac-mcp update] WARNING: could not record the final update state ({payload.get('status')}) "
+            f"in {update_state_path()}; this log is the record of this update.",
+            flush=True,
+        )
 
 def _release_marker_state(repo: Path, commit: str) -> tuple[bool, bool]:
     changed = _git(
@@ -1768,6 +1784,8 @@ def apply_update(
     skip_restart: bool = False,
     skip_deps: bool = False,
     deferred_seconds: float = 0.0,
+    update_id: str | None = None,
+    log_path: str | None = None,
 ) -> dict:
     if deferred_seconds > 0:
         time.sleep(deferred_seconds)
@@ -1871,6 +1889,9 @@ def apply_update(
         "post_merge_head": info.target_commit,
         "runtime_sync_started": False,
     }
+    # The id and log of the update the CLI or the update tool started, so state and log match up.
+    launch = {key: value for key, value in (("update_id", update_id), ("log_path", log_path)) if value}
+    journal.update(launch)
 
     def checkpoint(status: str, **extra: object) -> None:
         journal.update(extra)
@@ -2075,12 +2096,13 @@ def apply_update(
                 else None
             ),
         }
-        _write_update_state(runtime_path, {"status": "completed", **result})
+        result.update(launch)
+        _write_final_state(runtime_path, {"status": "completed", **result})
         print(f"[mac-mcp update] Update complete: {_short(info.deployed_commit)} -> {_short(info.target_commit)}", flush=True)
         backups = prune_update_backups(protect=[backup] if backup else [])
         if backups.get("removed") or backups.get("failures"):
             result["backup_retention"] = backups
-            _write_update_state(runtime_path, {"status": "completed", **result})
+            _write_final_state(runtime_path, {"status": "completed", **result})
             print(f"[mac-mcp update] Backup retention: {_format_cleanup(backups)}", flush=True)
         return result
     except Exception as exc:
@@ -2226,7 +2248,8 @@ def apply_update(
             failed_state["repo_pre_update_commit"] = pre_update_head
         if post_merge_head is not None:
             failed_state["repo_post_merge_commit"] = post_merge_head
-        _write_update_state(runtime_path, failed_state)
+        failed_state.update(launch)
+        _write_final_state(runtime_path, failed_state)
         raise
     finally:
         if stage is not None:
@@ -2250,6 +2273,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--launchd-label", default=os.getenv("MAC_MCP_LAUNCHD_LABEL", DEFAULT_LAUNCHD_LABEL), help=argparse.SUPPRESS)
     p.add_argument("--cleanup-staging-dir", default=None, help=argparse.SUPPRESS)
     p.add_argument("--lock-fd", type=int, default=None, help=argparse.SUPPRESS)
+    p.add_argument("--update-id", default=None, help=argparse.SUPPRESS)
+    p.add_argument("--log-path", default=None, help=argparse.SUPPRESS)
     return p
 
 
@@ -2284,6 +2309,7 @@ def main(argv: list[str] | None = None) -> int:
             repo=args.repo, runtime=args.runtime, branch=args.branch, remote=args.remote,
             launchd_label=args.launchd_label, skip_restart=args.skip_restart,
             skip_deps=args.skip_deps, deferred_seconds=args.deferred_seconds,
+            update_id=args.update_id, log_path=args.log_path,
         )
         return 0
     except UpdateError as exc:

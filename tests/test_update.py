@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import signal
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -350,6 +352,9 @@ class UpdateHelperTests(unittest.TestCase):
             )
         self.assertTrue(payload["update_started"])
         self.assertEqual(journal, json.loads(state_path.read_text(encoding="utf-8")))
+        cmd = [str(part) for part in captured["cmd"]]
+        self.assertEqual(payload["update_id"], cmd[cmd.index("--update-id") + 1])
+        self.assertEqual(payload["log_path"], cmd[cmd.index("--log-path") + 1])
         helper = Path(captured["cmd"][1])
         self.addCleanup(shutil.rmtree, helper.parent, True)
 
@@ -1145,6 +1150,32 @@ class UpdateHelperTests(unittest.TestCase):
         state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
         self.assertEqual("completed", state["status"])
         self.assertEqual("passed", state["health_gate"]["status"])
+
+    def test_the_update_id_and_log_reach_the_final_state(self):
+        _, repo, runtime, _old, _target = self.make_fixture()
+        with patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health"), \
+                patch("mcp_server.update_helper._health_ok", return_value=True), \
+                patch("mcp_server.update_helper._target_supports_health_gate", return_value=False):
+            result = apply_update(repo, runtime, skip_deps=True, update_id="upd_test123", log_path="/tmp/upd_test123.log")
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(("completed", "upd_test123", "/tmp/upd_test123.log"),
+                         (state["status"], state["update_id"], state["log_path"]))
+        self.assertEqual("upd_test123", result["update_id"])
+
+    def test_a_final_state_that_did_not_land_is_said_in_the_log(self):
+        from mcp_server import update_helper
+        out = io.StringIO()
+        with patch.object(update_helper, "write_update_state", lambda payload: None), \
+                patch.object(update_helper, "read_update_state", return_value={"status": "restarting"}), \
+                redirect_stdout(out):
+            update_helper._write_final_state(Path("/tmp"), {"status": "completed", "update_id": "upd_x"})
+        self.assertIn("could not record the final update state (completed)", out.getvalue())
+        quiet = io.StringIO()
+        with patch.object(update_helper, "write_update_state", lambda payload: None), \
+                patch.object(update_helper, "read_update_state", return_value={"status": "completed", "update_id": "upd_x"}), \
+                redirect_stdout(quiet):
+            update_helper._write_final_state(Path("/tmp"), {"status": "completed", "update_id": "upd_x"})
+        self.assertEqual("", quiet.getvalue())
 
     def test_post_update_gate_failure_rolls_back_and_reports_critical_check(self):
         _, repo, runtime, old, target = self.make_fixture()

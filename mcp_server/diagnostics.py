@@ -302,6 +302,8 @@ def _check_update_recovery_state() -> CheckResult:
         "update_status": payload.get("status"),
         "runtime_rollback_status": rollback_status or None,
         "rollback_health_status": health_status or None,
+        "update_id": payload.get("update_id"),
+        "log_path": payload.get("log_path"),
     }
     if rollback_status in {"restore_unverified", "failed"} or health_status == "failed":
         return result(
