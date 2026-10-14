@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import steps from '../steps.js';
 
 const { SCREENS, CLIENTS, AGENTS, evaluate, primaryAction, indexOf, appRow, agentRow, orderedClients } = steps;
@@ -49,6 +50,15 @@ test('ChatGPT is marked as needing remote access; local clients are not', () => 
   assert.equal(chatgpt.needsRemote, true);
   assert.equal(CLIENTS.find((c) => c.id === 'claude-code').needsRemote, false);
   assert.ok(CLIENTS.every((c) => typeof c.name === 'string' && c.name.length > 0));
+});
+
+test('every app shows its maker\'s logo, and each logo file ships with the page', () => {
+  for (const client of CLIENTS) {
+    assert.ok(existsSync(new URL(`../logos/${client.logo}.png`, import.meta.url)), client.id);
+  }
+  const logo = (id) => CLIENTS.find((c) => c.id === id).logo;
+  assert.equal(logo('claude-desktop'), logo('claude-code'));
+  assert.equal(logo('chatgpt'), logo('codex'));
 });
 
 test('each AI app row says what one click will do', () => {

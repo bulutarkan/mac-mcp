@@ -286,6 +286,15 @@ async function loadApps() {
   renderApps();
 }
 
+/** The maker's logo for a row; the name next to it says which app it is. */
+function logoMark(client) {
+  const mark = document.createElement('img');
+  mark.className = 'app-mark';
+  mark.src = `logos/${client.logo}.png`;
+  mark.alt = '';
+  return mark;
+}
+
 function renderApps() {
   appsRemote = evaluation.remote;
   const list = $('[data-live="apps"]');
@@ -315,10 +324,7 @@ function renderApps() {
     element.className = 'app';
     element.dataset.app = item.id;
     element.dataset.state = row.state;
-    const mark = document.createElement('i');
-    mark.className = 'app-mark';
-    mark.textContent = item.mark;
-    mark.setAttribute('aria-hidden', 'true');
+    const mark = logoMark(item);
     const text = document.createElement('div');
     const name = document.createElement('strong');
     name.textContent = item.name;
@@ -355,10 +361,7 @@ function renderAgents() {
     element.dataset.app = agent.client;
     element.dataset.state = row.state;
     // A small chip: the app's mark, the name, and On or a Turn on button under it.
-    const mark = document.createElement('i');
-    mark.className = 'app-mark';
-    mark.textContent = (CLIENTS.find((client) => client.id === agent.client) || {}).mark || '';
-    mark.setAttribute('aria-hidden', 'true');
+    const mark = logoMark(CLIENTS.find((client) => client.id === agent.client));
     const text = document.createElement('div');
     const name = document.createElement('strong');
     name.textContent = agent.name;

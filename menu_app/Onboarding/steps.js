@@ -17,12 +17,13 @@ const SCREENS = [
 ];
 
 // Apps `mac-mcp connect` sets up; the app does the setup, never this page.
+// logo: logos/<name>.png, one per maker (Claude's two apps share one, as do OpenAI's).
 const CLIENTS = [
-  { id: 'claude-desktop', name: 'Claude Desktop', mark: '✳', needsRemote: false },
-  { id: 'claude-code', name: 'Claude Code', mark: '>_', needsRemote: false },
-  { id: 'chatgpt', name: 'ChatGPT', mark: '◎', needsRemote: true },
-  { id: 'codex', name: 'Codex', mark: '{ }', needsRemote: false },
-  { id: 'opencode', name: 'OpenCode', mark: '[ ]', needsRemote: false },
+  { id: 'claude-desktop', name: 'Claude Desktop', logo: 'claude', needsRemote: false },
+  { id: 'claude-code', name: 'Claude Code', logo: 'claude', needsRemote: false },
+  { id: 'chatgpt', name: 'ChatGPT', logo: 'openai', needsRemote: true },
+  { id: 'codex', name: 'Codex', logo: 'openai', needsRemote: false },
+  { id: 'opencode', name: 'OpenCode', logo: 'opencode', needsRemote: false },
 ];
 
 // Agents Mac MCP can hand work to (Settings › Agents). Each starts off; the owner turns it on.

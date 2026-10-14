@@ -336,7 +336,7 @@ button[disabled] { opacity: 0.5; cursor: default; }
 /* Agents are small chips in one row: name and On, or a Turn on button. */
 .agents .apps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .agents .app { grid-template-columns: 24px minmax(0, 1fr); gap: 8px; padding: 6px 8px; border-radius: 10px; }
-.agents .app-mark { width: 24px; height: 24px; border-radius: 6px; font-size: 12px; }
+.agents .app-mark { width: 24px; height: 24px; border-radius: 6px; }
 .agents .app strong { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agents .app button { display: block; margin-top: 3px; padding: 4px 10px; font-size: 12px; }
 .agents[hidden] { display: none; }
@@ -349,14 +349,7 @@ button[disabled] { opacity: 0.5; cursor: default; }
 }
 /* A row without a mark (the "could not look" row) gives its text the mark's column too. */
 .app:not(:has(.app-mark)) { grid-template-columns: 1fr auto; }
-.app-mark {
-  width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center;
-  font: 600 15px/1 var(--sans); color: var(--night); background: var(--haze);
-}
-.app[data-app="claude-desktop"] .app-mark, .app[data-app="claude-code"] .app-mark { background: #e3a27f; }
-.app[data-app="chatgpt"] .app-mark { background: var(--teal); }
-.app[data-app="codex"] .app-mark { background: var(--violet); color: #fff; }
-.app[data-app="opencode"] .app-mark { background: var(--paper); }
+.app-mark { display: block; width: 28px; height: 28px; border-radius: 7px; object-fit: cover; }
 .app strong { display: block; font-size: 14px; }
 .app span { display: block; font-size: 12px; line-height: 1.4; color: var(--haze); }
 .app button { padding: 7px 12px; font-size: 13px; white-space: nowrap; }
