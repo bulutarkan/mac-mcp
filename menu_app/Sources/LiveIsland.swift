@@ -94,6 +94,26 @@ extension LiveTone {
 enum IslandIcon: Hashable {
     case app(String)      // bundle identifier or app name
     case symbol(String)
+    case provider(String) // a maker's logo from Onboarding/logos: claude, openai, opencode
+
+    /// The logo of the agent's maker; an unknown provider keeps the generic agent symbol.
+    static func forProvider(_ provider: String?) -> IslandIcon {
+        let id = (provider ?? "").lowercased()
+        if id == "claude" { return .provider("claude") }
+        if id == "codex" || id.hasPrefix("chatgpt") { return .provider("openai") }
+        if id == "opencode" { return .provider("opencode") }
+        return .symbol("sparkles")
+    }
+
+    private static var logos: [String: NSImage] = [:]
+
+    static func logo(_ name: String) -> NSImage? {
+        if let cached = logos[name] { return cached }
+        guard let url = Bundle.main.url(forResource: name, withExtension: "png", subdirectory: "Onboarding/logos"),
+              let image = NSImage(contentsOf: url) else { return nil }
+        logos[name] = image
+        return image
+    }
 
     static func forTool(_ tool: String, target: String?) -> IslandIcon {
         let target = (target ?? "").trimmingCharacters(in: .whitespaces)
@@ -149,6 +169,13 @@ private struct IconTile: View {
             }
         case .symbol(let name):
             symbol(name)
+        case .provider(let name):
+            if let image = IslandIcon.logo(name) {
+                Image(nsImage: image).resizable().interpolation(.high).frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
+            } else {
+                symbol("sparkles")
+            }
         }
     }
 
@@ -577,6 +604,10 @@ final class LiveIslandController {
 
     private func runningAgents() -> [AgentInfo] { (state?.agents ?? []).filter(\.isActive) }
 
+    private func newestRunningAgent() -> AgentInfo? {
+        runningAgents().min { ($0.durationMS ?? .max) < ($1.durationMS ?? .max) }
+    }
+
     private func rebuild() {
         guard let state else { return }
         var now: [LiveItem] = []
@@ -587,7 +618,8 @@ final class LiveIslandController {
         let agents = runningAgents()
         for agent in agents {
             let step = agent.lastTool.map { Self.toolWords($0) } ?? (agent.phase.map { $0.capitalized } ?? "Working")
-            now.append(LiveItem(id: "agent-\(agent.agentID)", symbol: "sparkles", title: Self.agentName(agent),
+            // `symbol` carries the provider here; the row turns it into the maker's logo.
+            now.append(LiveItem(id: "agent-\(agent.agentID)", symbol: agent.provider ?? "", title: Self.agentName(agent),
                                 detail: "\(Self.providerName(agent.provider)) · \(step)", tone: .working,
                                 startedAt: estimatedAgentStartedAt(agent),
                                 target: .agent(agent.agentID)))
@@ -623,9 +655,19 @@ final class LiveIslandController {
         if !model.needsYou.isEmpty {
             slot = .waiting(count: model.needsYou.count)
         } else if let call = tools.values.max(by: { $0.startedAt < $1.startedAt }) {
-            slot = .working(IslandIcon.forTool(call.tool, target: call.target), count: tools.count + runningAgents().count)
-        } else if !runningAgents().isEmpty || !runningTasks.isEmpty {
-            slot = .working(.symbol("sparkles"), count: runningAgents().count + runningTasks.count)
+            var icon = IslandIcon.forTool(call.tool, target: call.target)
+            // Starting or waiting for agents: show who does the work, not a generic agent symbol.
+            if icon == .symbol("sparkles"), let agent = newestRunningAgent() { icon = IslandIcon.forProvider(agent.provider) }
+            // A call that only starts or waits for agents is not extra work beside them.
+            let agentCalls = runningAgents().isEmpty ? 0 : tools.values.filter {
+                IslandIcon.forTool($0.tool, target: $0.target) == .symbol("sparkles")
+            }.count
+            slot = .working(icon, count: max(1, tools.count - agentCalls + runningAgents().count))
+        } else if let agent = newestRunningAgent() {
+            // The maker of the agent that started last; the count covers the rest.
+            slot = .working(IslandIcon.forProvider(agent.provider), count: runningAgents().count + runningTasks.count)
+        } else if !runningTasks.isEmpty {
+            slot = .working(.symbol("calendar.badge.clock"), count: runningTasks.count)
         } else if finishTask != nil {
             return  // the tick is showing; it clears itself
         } else {
@@ -1238,6 +1280,8 @@ private struct IslandPanelContent: View {
     private func iconFor(_ item: LiveItem) -> some View {
         if item.id.hasPrefix("tool-") {
             IconTile(icon: IslandIcon.forTool(item.symbol, target: nil), size: 26)
+        } else if item.id.hasPrefix("agent-") {
+            IconTile(icon: IslandIcon.forProvider(item.symbol), size: 26)
         } else {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(LinearGradient(colors: [item.tone.color, item.tone.color.opacity(0.6)], startPoint: .topLeading, endPoint: .bottomTrailing))

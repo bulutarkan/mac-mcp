@@ -14,6 +14,9 @@ struct MenuBarView: View {
     @MacMCPState private var sessionMinutesText = ""
     @MacMCPState private var showAllAgents = false
     @MacMCPState private var showActivity = false
+    /// The content's own height (#200): the menu is as tall as what it shows, up to the screen.
+    @MacMCPState private var contentHeight: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     // Follow the user's text size: glyph sizes scale with it.
     @ScaledMetric(relativeTo: .caption2) private var glyphScale: CGFloat = 1
 
@@ -34,9 +37,21 @@ struct MenuBarView: View {
                     steeringCard.id(Self.sessionsAnchor)
                 }
                 .padding(14)
+                .background(GeometryReader { box in
+                    Color.clear.preference(key: MenuContentHeight.self, value: box.size.height)
+                })
             }
         }
-        .frame(width: 400, height: 660)
+        .frame(width: 400, height: menuHeight)
+        .onPreferenceChange(MenuContentHeight.self) { measured in
+            guard abs(measured - contentHeight) > 0.5 else { return }
+            // The first measurement sets the size as the menu opens; later ones grow or shrink it.
+            if contentHeight == 0 || reduceMotion {
+                contentHeight = measured
+            } else {
+                withAnimation(.easeInOut(duration: 0.2)) { contentHeight = measured }
+            }
+        }
         .background(.regularMaterial)
         .task {
             audio.refresh()
@@ -46,6 +61,13 @@ struct MenuBarView: View {
                 sessionMinutesText = String(settings.steeringSessionMinutes)
             }
         }
+    }
+
+    /// As tall as the content, never taller than the screen allows; longer content scrolls.
+    private var menuHeight: CGFloat {
+        let screen = (NSScreen.main?.visibleFrame.height ?? 900) - 40
+        let limit = max(320, min(screen, 820))
+        return contentHeight > 0 ? min(contentHeight, limit) : min(660, limit)
     }
 
     private var displayAgents: [AgentInfo] {
@@ -1485,4 +1507,10 @@ struct RobotRunner: View {
         let swing = moving ? CGFloat(phase) * 6 : 0
         var limbs = Path(); limbs.move(to: CGPoint(x: centerX, y: bodyY + 14)); limbs.addLine(to: CGPoint(x: centerX - 7 + swing, y: bodyY + 21)); limbs.move(to: CGPoint(x: centerX, y: bodyY + 14)); limbs.addLine(to: CGPoint(x: centerX + 7 - swing, y: bodyY + 21)); limbs.move(to: CGPoint(x: centerX, y: bodyY + 8)); limbs.addLine(to: CGPoint(x: centerX - 10 - swing * 0.7, y: bodyY + 12)); limbs.move(to: CGPoint(x: centerX, y: bodyY + 8)); limbs.addLine(to: CGPoint(x: centerX + 10 + swing * 0.7, y: bodyY + 12)); canvas.stroke(limbs, with: .color(stroke), style: StrokeStyle(lineWidth: 2, lineCap: .round))
     }
+}
+
+/// The height of the menu's content, measured where it is laid out (#200).
+private struct MenuContentHeight: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }

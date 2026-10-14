@@ -1,5 +1,9 @@
 ## Unreleased
 
+### The menu fits its content; the island shows which agent works (#200, #202)
+- The menu bar popover is as tall as what it shows instead of a fixed 660 points with empty space below. Opening Recent activity, Sessions or the agent list grows it with a short animation (none with Reduce Motion), closing shrinks it, and content taller than the screen scrolls.
+- While a delegated agent works, the island shows its maker's logo (Claude for Claude Code, OpenAI for Codex, OpenCode) inside the turning ring instead of a generic symbol, in the notch slot and in the panel's agent rows. An unknown provider keeps the generic symbol. A call that only starts or waits for agents no longer counts as a second piece of work.
+
 ### Mac apps are read natively by any of their names
 - `mac_observe` asked the native Accessibility helper for an app by its bundle name only, so an app named by its executable (System Events calls Mac MCP's menu app `MacMCPMenu`) or bundle id was not found and every read fell back to AppleScript: 3 to 9 seconds instead of tens of milliseconds. The helper now accepts the displayed name, the bundle name, the executable name or the bundle id (an ambiguous name still falls back).
 - `mac_act` and `mac_observe` no longer refuse a window or app handle with `TARGET_HANDLE_MISMATCH` when the app is named differently from how the handle recorded it (for example `MacMCPMenu` for `Mac MCP`).
