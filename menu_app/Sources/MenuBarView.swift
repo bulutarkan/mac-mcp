@@ -28,7 +28,6 @@ struct MenuBarView: View {
                     header
                     actionBar
                     if state.showsOnboardingReminder { onboardingReminder }
-                    if needsAttention { attentionBanner(proxy) }
                     summaryCard(proxy)
                     if state.activeAgents > 0 || !state.agents.isEmpty || !activeTeams.isEmpty { agentCard }
                     activityCard
@@ -58,7 +57,7 @@ struct MenuBarView: View {
     }
 
     private var failedAgentCount: Int {
-        state.agents.filter { ["failed", "timeout", "stalled"].contains(agentPhaseKey($0)) }.count
+        state.recentAgentFailureCount
     }
 
     private var displayActivityEvents: [ToolEvent] {
@@ -66,20 +65,8 @@ struct MenuBarView: View {
         return state.activeEvents + state.recentEvents.filter { !activeIDs.contains($0.id) }
     }
 
-    private var needsAttention: Bool {
-        state.hasReliableSessionSignal && state.sessionNeedsAttentionCount > 0
-            && (state.connectionState == .connected || state.connectionState == .degraded)
-    }
-
-    /// Header status: the shared connection label, or "Needs attention" when a session is waiting.
+    /// Header status reflects connection and privacy only; normal session history never overrides it.
     private var headerStatus: StatusDisplay {
-        if needsAttention {
-            let count = state.sessionNeedsAttentionCount
-            return StatusDisplay(
-                label: "Needs attention", symbol: "exclamationmark.triangle.fill",
-                explanation: "\(count) session\(count == 1 ? "" : "s") need\(count == 1 ? "s" : "") attention.", tone: .warning
-            )
-        }
         if state.privacyFlags?.paused == true {
             return StatusDisplay(label: "Paused", symbol: "pause.circle.fill",
                                  explanation: "Observation is paused (Settings › Privacy).", tone: .warning)
@@ -276,23 +263,6 @@ struct MenuBarView: View {
         .accessibilityLabel("More actions")
     }
 
-    private func attentionBanner(_ proxy: ScrollViewProxy) -> some View {
-        let count = state.sessionNeedsAttentionCount
-        return HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-                .accessibilityHidden(true)
-            Text("\(count) session\(count == 1 ? "" : "s") need\(count == 1 ? "s" : "") attention")
-                .font(.caption.weight(.semibold))
-            Spacer()
-            Button("Review") { revealSessions(proxy) }
-                .controlSize(.small)
-                .accessibilityHint("Opens the sessions list")
-        }
-        .padding(.horizontal, 9).padding(.vertical, 7)
-        .background(Color.orange.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
     // MARK: Summary
 
     private func summaryCard(_ proxy: ScrollViewProxy) -> some View {
@@ -305,7 +275,7 @@ struct MenuBarView: View {
                            hint: "Opens the dashboard") { state.openDashboard() }
                 Divider()
                 summaryRow(symbol: "rectangle.stack", color: sessionsSummaryColor, title: "Sessions", value: sessionsSummaryValue,
-                           valueColor: needsAttention ? .orange : .primary,
+                           valueColor: .primary,
                            hint: "Shows sessions and steering") { revealSessions(proxy) }
                 Divider()
                 summaryRow(symbol: endpoint.symbol, color: endpoint.tone == .neutral ? .secondary : endpoint.tone.color,
@@ -360,6 +330,9 @@ struct MenuBarView: View {
         var parts: [String] = []
         if failedAgentCount > 0 { parts.append("\(failedAgentCount) failed") }
         parts.append(state.activeAgents > 0 ? "\(state.activeAgents) running" : "None running")
+        if failedAgentCount == 0, state.activeAgents == 0, let lastRunAt = state.lastAgentRunAt {
+            parts.append("Last run \(relativeTime(lastRunAt))")
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -373,15 +346,14 @@ struct MenuBarView: View {
             return state.hasSteeringSnapshot ? "Last snapshot · stale" : "Unavailable"
         }
         var parts: [String] = []
-        let attention = state.sessionNeedsAttentionCount
-        if attention > 0 { parts.append("\(attention) need\(attention == 1 ? "s" : "") attention") }
         if state.sessionActiveCount > 0 { parts.append("\(state.sessionActiveCount) active") }
-        return parts.isEmpty ? "None active" : parts.joined(separator: " · ")
+        if state.sessionIdleCount > 0 { parts.append("\(state.sessionIdleCount) idle") }
+        if state.sessionEndedCount > 0 { parts.append("\(state.sessionEndedCount) ended") }
+        return parts.isEmpty ? "No recent sessions" : parts.joined(separator: " · ")
     }
 
     private var sessionsSummaryColor: Color {
         guard state.hasReliableSessionSignal else { return .secondary }
-        if state.sessionNeedsAttentionCount > 0 { return .orange }
         return state.sessionActiveCount > 0 ? .accentColor : .secondary
     }
 
@@ -489,11 +461,6 @@ struct MenuBarView: View {
                         }
                         // Inline list: the popover's single scroll view handles long lists.
                         VStack(spacing: 6) {
-                            if !sessionGroups.needsAttention.isEmpty || !sessionGroups.terminalAttention.isEmpty {
-                                sessionSectionHeader("Needs Attention", count: sessionGroups.needsAttention.count + sessionGroups.terminalAttention.count, symbol: "exclamationmark.triangle.fill", color: .red)
-                                ForEach(sessionGroups.needsAttention) { session in sessionRow(session) }
-                                ForEach(sessionGroups.terminalAttention, id: \.id) { event in terminalSessionRow(event) }
-                            }
                             if !sessionGroups.active.isEmpty {
                                 sessionSectionHeader("Active", count: sessionGroups.active.count, symbol: "bolt.fill", color: .accentColor)
                                 ForEach(sessionGroups.active) { session in sessionRow(session) }
@@ -501,6 +468,10 @@ struct MenuBarView: View {
                             if !sessionGroups.recent.isEmpty {
                                 sessionSectionHeader("Recent", count: sessionGroups.recent.count, symbol: "clock", color: .secondary)
                                 ForEach(sessionGroups.recent) { session in sessionRow(session) }
+                            }
+                            if !sessionGroups.ended.isEmpty {
+                                sessionSectionHeader("Ended", count: sessionGroups.ended.count, symbol: "clock.arrow.circlepath", color: .secondary)
+                                ForEach(sessionGroups.ended, id: \.id) { event in terminalSessionRow(event) }
                             }
                         }
                     }
@@ -527,10 +498,12 @@ struct MenuBarView: View {
                     Label("Sessions", systemImage: "rectangle.stack").help("Mac MCP logical sessions; not raw provider identities")
                     Spacer()
                     if !showSessions && state.hasReliableSessionSignal {
-                        if state.sessionNeedsAttentionCount > 0 {
-                            Text("\(state.sessionNeedsAttentionCount) attention").font(.caption2.weight(.semibold)).foregroundStyle(.orange)
-                        } else if state.sessionActiveCount > 0 {
+                        if state.sessionActiveCount > 0 {
                             Text("\(state.sessionActiveCount) active").font(.caption2.weight(.semibold)).foregroundStyle(Color.accentColor)
+                        } else if state.sessionEndedCount > 0 {
+                            Text("\(state.sessionEndedCount) ended").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                        } else if state.sessionIdleCount > 0 {
+                            Text("\(state.sessionIdleCount) idle").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -661,6 +634,12 @@ struct MenuBarView: View {
                     if agent.isActive {
                         agentStopButton(agent)
                     }
+                }
+
+                if agent.isFailure {
+                    Text(agentFailureDisplay(agent))
+                        .font(.caption2)
+                        .foregroundStyle(agent.isRecentFailure(at: state.agentFailureReferenceTime) ? Color.red : Color.secondary)
                 }
 
                 HStack(spacing: 6) {
@@ -1177,6 +1156,9 @@ struct MenuBarView: View {
     }
 
     private func agentPhaseColor(_ agent: AgentInfo) -> Color {
+        if agent.isFailure && !agent.isRecentFailure(at: state.agentFailureReferenceTime) {
+            return .secondary
+        }
         switch agentPhaseKey(agent) {
         case "completed": return .green
         case "failed": return .red
@@ -1185,6 +1167,11 @@ struct MenuBarView: View {
         case "starting", "reasoning", "tool", "finalizing": return .accentColor
         default: return .secondary
         }
+    }
+
+    private func agentFailureDisplay(_ agent: AgentInfo) -> String {
+        guard let endedAt = agent.endedAt else { return agentPhaseLabel(agent) }
+        return "\(agentPhaseLabel(agent)) · \(relativeTime(endedAt))"
     }
 
     private func providerName(_ provider: String?) -> String {
@@ -1369,11 +1356,11 @@ struct MenuBarView: View {
 
     private func terminalSessionRow(_ event: SteeringRecent) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: sessionLifecycleSymbol(event.effectiveLifecycleState) ?? "exclamationmark.circle.fill")
+            Image(systemName: sessionLifecycleSymbol(event.effectiveLifecycleState) ?? "clock.arrow.circlepath")
                 .foregroundStyle(sessionLifecycleColor(event.effectiveLifecycleState))
                 .font(.caption)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Previous session").font(.caption.weight(.semibold))
+                Text("Ended session").font(.caption.weight(.semibold))
                 HStack(spacing: 4) {
                     Text(sessionLifecycleLabel(event.effectiveLifecycleState)).font(.caption2).foregroundStyle(.secondary)
                     if let transitionedAt = event.transitionedAt {
@@ -1393,29 +1380,28 @@ struct MenuBarView: View {
         case .queued: return "Steering queued"
         case .delivered: return "Steering delivered"
         case .acknowledged: return "Steering acknowledged"
-        case .failed: return "Delivery failed; retry pending"
-        case .disconnected: return "Disconnected"
-        case .expired: return "Expired"
-        case .unknown: return "Unknown lifecycle"
+        case .failed: return "Delivery not completed"
+        case .disconnected: return "Ended"
+        case .expired: return "Ended after idle"
+        case .unknown: return "Status unavailable"
         }
     }
 
     private func sessionLifecycleSymbol(_ state: SteeringLifecycleState) -> String? {
         switch state {
-        case .queued: return "clock.badge.exclamationmark.fill"
+        case .queued: return "clock.fill"
         case .delivered: return "paperplane.circle.fill"
-        case .failed: return "exclamationmark.triangle.fill"
+        case .failed: return "arrow.uturn.backward.circle"
         case .disconnected: return "wifi.slash"
-        case .expired: return "clock.badge.xmark"
-        case .ready, .acknowledged, .unknown: return nil
+        case .expired: return "clock"
+        case .unknown: return "questionmark.circle"
+        case .ready, .acknowledged: return nil
         }
     }
 
     private func sessionLifecycleColor(_ state: SteeringLifecycleState) -> Color {
         switch state {
-        case .queued: return .orange
-        case .delivered: return .accentColor
-        case .failed, .disconnected, .expired: return .red
+        case .queued, .delivered: return .accentColor
         default: return .secondary
         }
     }

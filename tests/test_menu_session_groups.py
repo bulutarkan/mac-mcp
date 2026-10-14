@@ -38,10 +38,9 @@ struct FixtureHarness {
             retentionMinutes: 2,
             now: now
         )
-        precondition(groups.needsAttention.map(\.sessionID) == ["s-failed"])
-        precondition(groups.active.map(\.sessionID) == ["s-active", "s-queued"])
-        precondition(groups.recent.map(\.sessionID) == ["s-idle"])
-        precondition(groups.terminalAttention.map(\.sessionID) == ["s-ended"])
+        precondition(groups.active.map(\.sessionID) == ["s-active"])
+        precondition(groups.recent.map(\.sessionID) == ["s-queued", "s-failed", "s-idle"])
+        precondition(groups.ended.map(\.sessionID) == ["s-ended"])
         precondition(groups.totalItemCount == 5)
         precondition(groups.sectionCount == 3)
 
@@ -52,7 +51,7 @@ struct FixtureHarness {
             now: 2_100
         )
         precondition(shorterRetention.recent.isEmpty)
-        precondition(shorterRetention.terminalAttention.isEmpty)
+        precondition(shorterRetention.ended.isEmpty)
         print("SESSION_GROUPING_FIXTURES_PASS")
     }
 }

@@ -90,6 +90,7 @@ class AgentResilienceDashboardTests(unittest.TestCase):
                 "title": "Child title",
                 "provider": "codex",
                 "model": "gpt-test",
+                "ended_at": 123.0,
             }
             team = {
                 "team_id": "team_notify",
@@ -133,6 +134,7 @@ class AgentResilienceDashboardTests(unittest.TestCase):
             self.assertEqual("completed_with_failures", row["status"])
             self.assertEqual(5, row["work_count"])
             self.assertEqual(5, row["terminal_count"])
+            self.assertEqual(123.0, payload["agents"][0]["ended_at"])
             self.assertNotIn("failure_reasons", row)
             self.assertNotIn("result_fan_in", row)
             self.assertNotIn("scope", row)

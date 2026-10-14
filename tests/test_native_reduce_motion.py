@@ -11,7 +11,8 @@ class NativeReduceMotionTests(unittest.TestCase):
     def test_menu_bar_pulse_stops_with_reduce_motion_and_follows_changes(self) -> None:
         state = feature_source("AppState")
         should = state[state.index("private var shouldPulse: Bool"):state.index("private func observeReduceMotion")]
-        self.assertIn("activeAgents > 0 && !reduceMotion", should)
+        # Pulses for any active work: a running agent or an MCP call in flight (hasActiveWork).
+        self.assertIn("hasActiveWork && !reduceMotion", should)
         self.assertIn("NSWorkspace.shared.accessibilityDisplayShouldReduceMotion", state)
         self.assertIn("NSWorkspace.accessibilityDisplayOptionsDidChangeNotification", state)
         observer = state[state.index("private func observeReduceMotion"):]

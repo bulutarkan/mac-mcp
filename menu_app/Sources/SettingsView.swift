@@ -2563,7 +2563,7 @@ struct SettingsView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Steering session visibility")
                                 .font(.subheadline.weight(.semibold))
-                            Text("How long inactive delegated sessions stay visible in the control surface.")
+                            Text("How long idle and ended sessions stay visible as neutral history in the control surface.")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }

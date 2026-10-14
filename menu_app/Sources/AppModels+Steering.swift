@@ -162,7 +162,6 @@ struct SteeringEnvelope: Decodable {
 }
 
 enum SteeringSessionSection: String {
-    case needsAttention
     case active
     case recent
 }
@@ -178,35 +177,30 @@ struct SteeringSessionDiff: Equatable {
 }
 
 struct SteeringSessionGroups {
-    let needsAttention: [SteeringSession]
     let active: [SteeringSession]
     let recent: [SteeringSession]
-    let terminalAttention: [SteeringRecent]
+    /// Closed transport sessions are history, not an owner alert.
+    let ended: [SteeringRecent]
 
     var totalItemCount: Int {
-        needsAttention.count + active.count + recent.count + terminalAttention.count
+        active.count + recent.count + ended.count
     }
 
     var sectionCount: Int {
         var count = 0
-        if !needsAttention.isEmpty || !terminalAttention.isEmpty { count += 1 }
         if !active.isEmpty { count += 1 }
         if !recent.isEmpty { count += 1 }
+        if !ended.isEmpty { count += 1 }
         return count
     }
 }
 
 struct SteeringSessionGrouping {
     static func section(for session: SteeringSession) -> SteeringSessionSection {
-        let lifecycle = session.effectiveLifecycleState
-        let hasError = !(session.lastError ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if hasError || [.failed, .disconnected, .expired, .unknown].contains(lifecycle) {
-            return .needsAttention
-        }
-        if session.effectiveActivityState == .working
-            || [.queued, .delivered].contains(lifecycle)
-            || session.pendingCount > 0
-            || (session.awaitingAcknowledgementCount ?? 0) > 0 {
+        // Steering has no user-response state. Queued and delivered messages continue
+        // automatically, so only an in-flight MCP call is active work. Everything else
+        // is neutral session history, including delivery failures and terminal states.
+        if session.effectiveActivityState == .working || session.activeCalls > 0 {
             return .active
         }
         return .recent
@@ -234,9 +228,6 @@ struct SteeringSessionGrouping {
         let cutoff = now - retentionSeconds
         let liveSessionIDs = Set(sessions.map(\.sessionID))
 
-        let needsAttention = sessions
-            .filter { section(for: $0) == .needsAttention }
-            .sorted { ($0.lastTransitionAt ?? $0.lastActivityAt) > ($1.lastTransitionAt ?? $1.lastActivityAt) }
         let active = sessions
             .filter { section(for: $0) == .active }
             .sorted {
@@ -247,19 +238,17 @@ struct SteeringSessionGrouping {
             .filter { section(for: $0) == .recent && $0.lastActivityAt >= cutoff }
             .sorted { $0.lastActivityAt > $1.lastActivityAt }
 
-        var seenTerminalSessionIDs = Set<String>()
-        let terminalAttention = recentEvents.filter { event in
+        var seenEndedSessionIDs = Set<String>()
+        let ended = recentEvents.filter { event in
             guard event.kind == "session", !liveSessionIDs.contains(event.sessionID) else { return false }
-            guard [.failed, .disconnected, .expired, .unknown].contains(event.effectiveLifecycleState) else { return false }
             guard let transitionedAt = event.transitionedAt, transitionedAt >= cutoff else { return false }
-            return seenTerminalSessionIDs.insert(event.sessionID).inserted
+            return seenEndedSessionIDs.insert(event.sessionID).inserted
         }
 
         return SteeringSessionGroups(
-            needsAttention: needsAttention,
             active: active,
             recent: recent,
-            terminalAttention: terminalAttention
+            ended: ended
         )
     }
 }

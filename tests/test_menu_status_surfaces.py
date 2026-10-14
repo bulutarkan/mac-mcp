@@ -1,7 +1,7 @@
 """Menu-bar popover and shared status labels (#61-#65).
 
-The popover shows health, active work and attention first; server, endpoint and
-safety wording comes from one shared mapping that both the popover and Settings use.
+The popover keeps normal session history calm; server, endpoint and safety wording
+comes from one shared mapping that both the popover and Settings use.
 """
 from __future__ import annotations
 
@@ -68,22 +68,25 @@ class MenuPopoverStructureTests(unittest.TestCase):
         cls.menu = (SOURCES / "MenuBarView.swift").read_text(encoding="utf-8")
         cls.body = cls.menu[cls.menu.index("    var body: some View {"):cls.menu.index("    private var displayAgents")]
 
-    def test_first_viewport_order_is_health_actions_attention_summary_work(self) -> None:
-        order = ["header", "actionBar", "attentionBanner(proxy)", "summaryCard(proxy)", "agentCard", "activityCard", "steeringCard"]
+    def test_first_viewport_order_is_health_actions_summary_work(self) -> None:
+        order = ["header", "actionBar", "summaryCard(proxy)", "agentCard", "activityCard", "steeringCard"]
         positions = [self.body.index(name) for name in order]
         self.assertEqual(sorted(positions), positions)
+        self.assertNotIn("attentionBanner", self.body)
         self.assertNotIn("securityCard", self.body)
 
     def test_single_scroll_region_without_nested_lists(self) -> None:
         self.assertEqual(1, len(re.findall(r"\bScrollView\s*[({]", self.menu)), "only the popover itself scrolls")
         self.assertNotIn("LazyVStack", self.menu)
 
-    def test_header_uses_shared_status_and_attention_override(self) -> None:
+    def test_header_uses_shared_connection_status_without_session_history_override(self) -> None:
         self.assertIn("state.connectionState.display", self.menu)
-        self.assertIn('label: "Needs attention"', self.menu)
+        self.assertIn("return connectionDisplay", self.menu)
+        self.assertNotIn('label: "Needs attention"', self.menu)
+        self.assertNotIn("sessionNeedsAttentionCount", self.menu)
 
     def test_secondary_actions_live_in_a_labeled_more_menu(self) -> None:
-        more = self.menu[self.menu.index("private var moreMenu"):self.menu.index("private func attentionBanner")]
+        more = self.menu[self.menu.index("private var moreMenu"):self.menu.index("    // MARK: Summary")]
         for action in ("state.stopServer()", "state.retryConnection()", "state.openDashboard()",
                        "openSettings(.connections)", "openSettings(.permissions)", "state.checkForUpdates()", "state.quitApp()"):
             self.assertIn(action, more)
@@ -115,6 +118,25 @@ class MenuPopoverStructureTests(unittest.TestCase):
 
     def test_settings_window_opens_on_requested_pane(self) -> None:
         self.assertIn("SettingsWindowController.shared.show(state: state, settings: settings, section: section)", self.menu)
+
+    def test_menu_bar_icon_is_reserved_for_activity(self) -> None:
+        app = (SOURCES / "MacMCPMenuApp.swift").read_text(encoding="utf-8")
+        self.assertIn('return state.pulse ? "cpu.fill" : "cpu"', app)
+        self.assertIn("state.activeAgents > 0", app)
+        self.assertNotIn("sessionNeedsAttentionCount", app)
+        self.assertNotIn("exclamationmark.triangle.fill", app)
+
+    def test_ended_and_idle_sessions_use_neutral_history_words(self) -> None:
+        grouping = (SOURCES / "AppModels+Steering.swift").read_text(encoding="utf-8")
+        settings = (SOURCES / "SettingsView.swift").read_text(encoding="utf-8")
+        self.assertIn("let ended: [SteeringRecent]", grouping)
+        self.assertNotIn("needsAttention", grouping)
+        self.assertNotIn("terminalAttention", grouping)
+        self.assertIn('sessionSectionHeader("Ended"', self.menu)
+        self.assertIn('case .disconnected: return "Ended"', self.menu)
+        self.assertIn('case .expired: return "Ended after idle"', self.menu)
+        self.assertNotIn('sessionSectionHeader("Needs Attention"', self.menu)
+        self.assertIn("idle and ended sessions stay visible as neutral history", settings)
 
 
 @unittest.skipUnless(shutil.which("xcrun"), "Swift toolchain is not installed")

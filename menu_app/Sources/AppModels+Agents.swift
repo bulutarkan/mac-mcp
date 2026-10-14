@@ -14,6 +14,9 @@ struct AgentResourceActivity: Decodable, Equatable {
 }
 
 struct AgentInfo: Decodable, Identifiable, Equatable {
+    /// Failed runs remain noteworthy for a short handoff window, not indefinitely.
+    static let recentFailureWindow: TimeInterval = 4 * 60 * 60
+
     let agentID: String
     let teamID: String?
     let teamTaskID: String?
@@ -40,8 +43,29 @@ struct AgentInfo: Decodable, Identifiable, Equatable {
     let lastThrottledAt: Double?
     let lastThrottleReason: String?
     let cooldownUntil: Double?
+    let endedAt: Double?
     var id: String { agentID }
     var isActive: Bool { status == "starting" || status == "running" }
+
+    /// Matches the menu's terminal status precedence without treating historical
+    /// failures as a permanent alert.
+    var isFailure: Bool {
+        let terminalStatus = status?.lowercased()
+        let phaseKey: String
+        if let terminalStatus,
+           ["completed", "failed", "cancelled", "timeout", "stalled"].contains(terminalStatus) {
+            phaseKey = terminalStatus
+        } else {
+            phaseKey = (phase ?? status ?? "").lowercased()
+        }
+        return ["failed", "timeout", "stalled"].contains(phaseKey)
+    }
+
+    func isRecentFailure(at now: Double = Date().timeIntervalSince1970) -> Bool {
+        guard isFailure, let endedAt else { return false }
+        let age = now - endedAt
+        return age >= 0 && age < Self.recentFailureWindow
+    }
     enum CodingKeys: String, CodingKey {
         case agentID = "agent_id"
         case teamID = "team_id"
@@ -64,6 +88,7 @@ struct AgentInfo: Decodable, Identifiable, Equatable {
         case lastThrottledAt = "last_throttled_at"
         case lastThrottleReason = "last_throttle_reason"
         case cooldownUntil = "cooldown_until"
+        case endedAt = "ended_at"
     }
 }
 

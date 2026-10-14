@@ -104,6 +104,8 @@ final class AppState: ObservableObject {
     @Published var permissionProfileChanging = false
     @Published var serverApprovalProfileChanging = false
     @Published var agents: [AgentInfo] = []
+    /// Advances on each successful agent refresh so failures age out while the menu is open.
+    @Published private(set) var agentFailureReferenceTime = Date().timeIntervalSince1970
     @Published private(set) var agentTeams: [AgentTeamInfo] = []
     @Published private(set) var agentNotificationAuthorizationState: AgentNotificationAuthorizationState = .notDetermined
     @Published private(set) var agentNotificationPermissionChanging = false
@@ -636,7 +638,7 @@ final class AppState: ObservableObject {
 
     private var shouldPulse: Bool {
         // With Reduce Motion the menu bar keeps the static active symbol instead of blinking.
-        activeAgents > 0 && !reduceMotion
+        hasActiveWork && !reduceMotion
     }
 
     private func observeReduceMotion() {
@@ -959,6 +961,7 @@ final class AppState: ObservableObject {
                 )
                 setIfChanged(\.agents, agentsEnvelope.agents)
                 setIfChanged(\.agentTeams, teams)
+                agentFailureReferenceTime = Date().timeIntervalSince1970
                 resolvedActiveAgents = agentsEnvelope.agents.filter(\.isActive).count
             } catch {
                 secondaryIssue = secondaryIssue ?? "Agents: \(Self.issueText(for: error))"
@@ -1993,12 +1996,17 @@ final class AppState: ObservableObject {
         )
     }
 
-    var sessionNeedsAttentionCount: Int {
-        let groups = steeringSessionGroups
-        return groups.needsAttention.count + groups.terminalAttention.count
+    var sessionActiveCount: Int { steeringSessionGroups.active.count }
+    var sessionIdleCount: Int { steeringSessionGroups.recent.count }
+    var sessionEndedCount: Int { steeringSessionGroups.ended.count }
+
+    var recentAgentFailureCount: Int {
+        agents.filter { $0.isRecentFailure(at: agentFailureReferenceTime) }.count
     }
 
-    var sessionActiveCount: Int { steeringSessionGroups.active.count }
+    var lastAgentRunAt: Double? {
+        agents.compactMap(\.endedAt).max()
+    }
 
     var hasReliableSessionSignal: Bool {
         !steeringSnapshotStale && connectionState != .disconnected
@@ -2007,8 +2015,7 @@ final class AppState: ObservableObject {
     var steeringEmptyMessage: String {
         if let event = steeringRecent.first(where: { $0.kind == "session" }) {
             switch event.effectiveLifecycleState {
-            case .expired: return "Last agent session expired."
-            case .disconnected: return "Last transport session disconnected."
+            case .expired, .disconnected, .failed: return "Last session ended."
             default: break
             }
         }

@@ -50,7 +50,6 @@ struct MacMCPMenuApp: App {
 
     private var menuBarSymbol: String {
         if !state.serverRunning { return "server.rack" }
-        if state.hasReliableSessionSignal && state.sessionNeedsAttentionCount > 0 { return "exclamationmark.triangle.fill" }
         if state.activeAgents > 0 || (state.hasReliableSessionSignal && state.sessionActiveCount > 0) {
             return state.pulse ? "cpu.fill" : "cpu"
         }
@@ -61,9 +60,6 @@ struct MacMCPMenuApp: App {
         // Same words as the popover header and Settings (shared StatusDisplay mapping).
         if state.startingAfterLogin { return "Mac MCP, starting" }
         if !state.serverRunning { return "Mac MCP, \(state.connectionState.display.label.lowercased())" }
-        if state.hasReliableSessionSignal && state.sessionNeedsAttentionCount > 0 {
-            return "Mac MCP, \(state.sessionNeedsAttentionCount) session\(state.sessionNeedsAttentionCount == 1 ? "" : "s") need attention"
-        }
         if state.activeAgents > 0 || (state.hasReliableSessionSignal && state.sessionActiveCount > 0) {
             return "Mac MCP, active work"
         }
