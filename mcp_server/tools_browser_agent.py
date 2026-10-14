@@ -1056,11 +1056,14 @@ function __mcpLayer(el){{var chain=[],cur=el,res=null,guard=0;
     var pos='';try{{pos=__mcpStyle(cur).position;}}catch(e){{}}if(pos==='fixed'||pos==='sticky'){{res=cur;break;}}cur=__mcpParent(cur);}}
   for(var c=0;c<chain.length;c++)layerMemo.set(chain[c],res);return res;}}
 var focusEl=document.activeElement,focusLayer=(ranked&&focusEl&&focusEl!==document.body&&focusEl!==document.documentElement)?__mcpLayer(focusEl):null;
+/* The open modal is found once per scan, and what lies outside it is skipped before the costly
+   visibility check: finding it per element re-read the whole page for every element. */
+var topModal=__mcpTopBlockingModal();
 for(var i=0;i<all.length && (ranked || picked.length<{max_elements});i++){{
   var el=all[i];
   if(ranked&&(picked.length>=1500||Date.now()-scanStart>400)){{scanComplete=false;break;}}
+  if(topModal&&el!==topModal&&!__mcpComposedContains(topModal,el))continue;
   if(!__mcpSemanticVisible(el)) continue;
-  var modalScope=__mcpModalScope(el);if(modalScope.active&&!modalScope.inside)continue;
   var actionable=__mcpActionable(el);
   if(scope==='interactive' && !actionable) continue;
   if(scope==='visible' && !actionable){{
@@ -1128,7 +1131,7 @@ return __mcpB64({{
   ok:true, observation_id:obs, dom_revision:s.mutationRevision,
   url:location.href,title:document.title,scroll:{{x:scrollX,y:scrollY}},
   viewport:{{w:innerWidth,h:innerHeight}},window_metrics:metrics,
-  scope:scope,modal_scope:(function(){{var m=__mcpTopBlockingModal();return m?{{active:true,element_id:__mcpId(m,s),role:__mcpRole(m),text:__mcpText(m).slice(0,120)}}:{{active:false}};}})(),element_count:elements.length,elements:elements,
+  scope:scope,modal_scope:(function(){{var m=topModal;return m?{{active:true,element_id:__mcpId(m,s),role:__mcpRole(m),text:__mcpText(m).slice(0,120)}}:{{active:false}};}})(),element_count:elements.length,elements:elements,
   ordering:ranked?'foreground_first':'document',eligible_count:ranked?eligible:undefined,omitted_count:ranked&&eligible>elements.length?eligible-elements.length:undefined,
   scan_complete:ranked&&!scanComplete?false:undefined,
   closed_shadow_hosts:__mcpClosedShadowHosts(all),

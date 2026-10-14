@@ -1,5 +1,8 @@
 ## Unreleased
 
+### Faster page reading when a dialog is open
+- With a dialog open, `browser_observe` and action recovery looked for the dialog again for every element on the page, so a page with many components could use up the scan's time before reaching the dialog's own fields and report none. The dialog is now found once per scan and everything outside it is skipped first: on the test page with 300 components, reading a login dialog went from about 160 ms to about 14 ms.
+
 ### Saved logins stay on their own site (#178)
 - A saved login is now filled only on the exact site it was saved for (`www.` counts as the same site). Before, a login for `example.com` was also filled on every `*.example.com` page, and a subdomain can be run by someone else.
 - Each login in **Settings › Permissions & Safety › Saved Logins** has a **Subdomains** checkbox (or `mac-mcp logins subdomains <id> on|off`, `mac-mcp logins add --subdomains`). Logins saved before this change keep it on, so nothing that worked stops working.

@@ -365,10 +365,12 @@ function __mcpRecoverAction(a,s){
   var id=String(a&&a.element_id||''), byId=id?__mcpRecoverElement(id,s):null;if(byId)return byId;
   var query=__mcpNorm(a&&(a.query||a.target||a.text_match||a.target_text)||''), wantedRole=__mcpNorm(a&&a.role||'');
   if(!query&&!wantedRole)return null;
-  var qTokens=query.split(' ').filter(Boolean),all=__mcpQueryAll('*'),ranked=[];
+  var qTokens=query.split(' ').filter(Boolean),all=__mcpQueryAll('*'),ranked=[],topModal=__mcpTopBlockingModal();
   for(var i=0;i<all.length;i++){
-    var el=all[i];if(!el.isConnected||!__mcpSemanticVisible(el)||!__mcpActionable(el))continue;
-    var modalScope=__mcpModalScope(el);if(modalScope.active&&!modalScope.inside)continue;
+    var el=all[i];if(!el.isConnected)continue;
+    /* Outside the open modal: skipped before the costly checks; the modal is found once, not per element. */
+    if(topModal&&el!==topModal&&!__mcpComposedContains(topModal,el))continue;
+    if(!__mcpSemanticVisible(el)||!__mcpActionable(el))continue;
     var role=__mcpNorm(__mcpRole(el));if(wantedRole&&role!==wantedRole)continue;
     var d=__mcpDescribe(el,s),fields=[d.text||'',d.aria_label||'',d.placeholder||'',d.name||'',d.title||'',d.value||'',d.context||'',d.association_text||''],score=wantedRole?2:0;
     for(var j=0;j<fields.length;j++){
