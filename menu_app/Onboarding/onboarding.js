@@ -2,7 +2,7 @@
 // A classic script (WKWebView does not load ES modules from file:// pages).
 (function () {
 'use strict';
-const { SCREENS, AGENTS, FIRST_REQUEST, evaluate, primaryAction, indexOf, appRow, agentRow, orderedClients } = window.OnboardingSteps;
+const { SCREENS, CLIENTS, AGENTS, FIRST_REQUEST, evaluate, primaryAction, indexOf, appRow, agentRow, orderedClients } = window.OnboardingSteps;
 
 // ---------- bridge ----------
 // The app answers every message with window.macmcp.receive({id, ok, result | error}).
@@ -42,9 +42,10 @@ const demoStatus = {
 const demoApps = [
   { id: 'claude-desktop', installed: true, added: false },
   { id: 'claude-code', installed: true, added: true },
-  { id: 'codex', installed: false, added: false },
+  { id: 'codex', installed: true, added: true },
   { id: 'opencode', installed: false, added: false },
 ];
+const demoAgents = { codex: false, claude: true, opencode: false };
 
 function demo(action, args) {
   const replies = {
@@ -54,6 +55,11 @@ function demo(action, args) {
       const app = demoApps.find((item) => item.id === args.client);
       if (app) app.added = true;
       return { ok: true, next: 'Quit Claude and open it again, then ask it something about your Mac.' };
+    },
+    agents: () => ({ ...demoAgents }),
+    enableAgent: () => {
+      demoAgents[args.provider] = true;
+      return { ...demoAgents };
     },
   };
   return Promise.resolve(replies[action] ? replies[action]() : { ok: true });
@@ -346,14 +352,20 @@ function renderAgents() {
     const element = document.createElement('li');
     element.className = 'app';
     element.dataset.agent = agent.id;
+    element.dataset.app = agent.client;
     element.dataset.state = row.state;
+    // Same mark as the app row above, so the text sits in the text column.
+    const mark = document.createElement('i');
+    mark.className = 'app-mark';
+    mark.textContent = (CLIENTS.find((client) => client.id === agent.client) || {}).mark || '';
+    mark.setAttribute('aria-hidden', 'true');
     const text = document.createElement('div');
     const name = document.createElement('strong');
     name.textContent = agent.name;
     const detail = document.createElement('span');
     detail.textContent = row.detail;
     text.append(name, detail);
-    element.append(text);
+    element.append(mark, text);
     if (row.button) {
       const button = document.createElement('button');
       button.type = 'button';

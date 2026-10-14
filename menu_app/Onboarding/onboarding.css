@@ -336,6 +336,8 @@ button[disabled] { opacity: 0.5; cursor: default; }
   background: var(--well); box-shadow: inset 0 0 0 1px var(--glass-edge);
   transition: box-shadow 0.3s, opacity 0.3s;
 }
+/* A row without a mark (the "could not look" row) gives its text the mark's column too. */
+.app:not(:has(.app-mark)) { grid-template-columns: 1fr auto; }
 .app-mark {
   width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center;
   font: 600 15px/1 var(--sans); color: var(--night); background: var(--haze);
