@@ -16,7 +16,8 @@ struct MenuBarView: View {
     @MacMCPState private var showActivity = false
     /// The content's own height (#200): the menu is as tall as what it shows, up to the screen.
     @MacMCPState private var contentHeight: CGFloat = 0
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The popover window: MenuBarExtra sizes it once when it opens, so later changes are applied here.
+    @MacMCPState private var host = HostWindow()
     // Follow the user's text size: glyph sizes scale with it.
     @ScaledMetric(relativeTo: .caption2) private var glyphScale: CGFloat = 1
 
@@ -42,15 +43,17 @@ struct MenuBarView: View {
                 })
             }
         }
-        .frame(width: 400, height: menuHeight)
+        .frame(width: 400, height: menuHeight, alignment: .top)
+        .background(HostWindowReader { window in
+            host.window = window
+            fitWindow(animated: false)
+        })
+        .onChange(of: menuHeight) { _ in fitWindow(animated: false) }
         .onPreferenceChange(MenuContentHeight.self) { measured in
+            // No animation of its own: the window follows the content as a section opens or
+            // closes, frame by frame with its top edge fixed, so nothing moves twice.
             guard abs(measured - contentHeight) > 0.5 else { return }
-            // The first measurement sets the size as the menu opens; later ones grow or shrink it.
-            if contentHeight == 0 || reduceMotion {
-                contentHeight = measured
-            } else {
-                withAnimation(.easeInOut(duration: 0.2)) { contentHeight = measured }
-            }
+            contentHeight = measured
         }
         .background(.regularMaterial)
         .task {
@@ -68,6 +71,18 @@ struct MenuBarView: View {
         let screen = (NSScreen.main?.visibleFrame.height ?? 900) - 40
         let limit = max(320, min(screen, 820))
         return contentHeight > 0 ? min(contentHeight, limit) : min(660, limit)
+    }
+
+    /// Resize the popover window to the menu's height, keeping its top edge under the menu bar.
+    private func fitWindow(animated: Bool) {
+        guard let window = host.window else { return }
+        var frame = window.frame
+        let height = menuHeight
+        guard abs(frame.height - height) > 0.5 else { return }
+        let top = frame.maxY
+        frame.size.height = height
+        frame.origin.y = top - height
+        window.setFrame(frame, display: true, animate: animated)
     }
 
     private var displayAgents: [AgentInfo] {
@@ -1513,4 +1528,24 @@ struct RobotRunner: View {
 private struct MenuContentHeight: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// Holds the popover's window without keeping it alive.
+private final class HostWindow {
+    weak var window: NSWindow?
+}
+
+/// Reports the window the menu is shown in, once it is in one.
+private struct HostWindowReader: NSViewRepresentable {
+    let found: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { if let window = view.window { found(window) } }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        DispatchQueue.main.async { if let window = view.window { found(window) } }
+    }
 }

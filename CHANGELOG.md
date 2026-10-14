@@ -1,7 +1,7 @@
 ## Unreleased
 
 ### The menu fits its content; the island shows which agent works (#200, #202)
-- The menu bar popover is as tall as what it shows instead of a fixed 660 points with empty space below. Opening Recent activity, Sessions or the agent list grows it with a short animation (none with Reduce Motion), closing shrinks it, and content taller than the screen scrolls.
+- The menu bar popover is as tall as what it shows instead of a fixed 660 points with empty space below. Opening Recent activity, Sessions or the agent list grows it and closing shrinks it, with its top edge fixed under the menu bar; content taller than the screen scrolls.
 - While a delegated agent works, the island shows its maker's logo (Claude for Claude Code, OpenAI for Codex, OpenCode) inside the turning ring instead of a generic symbol, in the notch slot and in the panel's agent rows. An unknown provider keeps the generic symbol. A call that only starts or waits for agents no longer counts as a second piece of work.
 
 ### Mac apps are read natively by any of their names
