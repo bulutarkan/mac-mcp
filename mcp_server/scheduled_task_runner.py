@@ -4,6 +4,10 @@ The loop sleeps until the next due run and never polls on a fixed beat: it wakes
 time comes, when a task changes, and at most once a minute while tasks are active (to notice
 sleep and clock changes). With no active tasks it does not wake at all.
 
+An AI task with a data step runs its script first (like a script task, for at most
+DATA_TIMEOUT_MIN minutes) and gives the agent what it printed. If the script fails or prints
+nothing, the agent is not started and the run says why.
+
 A run whose time passed more than OVERDUE_S ago (the Mac was asleep, or Mac MCP was not
 running) is not run late: it is recorded as Skipped with the reason, and the owner can Run now.
 """
@@ -52,16 +56,24 @@ def _clean_env() -> Dict[str, str]:
     return env
 
 
-def script_command(definition: Dict[str, Any]) -> Tuple[List[str], str]:
-    """The argv and folder a script task runs with (also shown on the Review sheet)."""
+def script_command(definition: Dict[str, Any], at: Optional[float] = None) -> Tuple[List[str], str]:
+    """The argv and folder a script (or a data step) runs with, its dates filled in for a run at `at`."""
     if definition.get("command"):
-        return ["/bin/zsh", "-lc", definition["command"]], definition.get("cwd") or str(Path.home())
+        return ["/bin/zsh", "-lc", store.expand_dates(definition["command"], at)], definition.get("cwd") or str(Path.home())
     info = store.inspect_script(definition["script"], definition.get("interpreter"))
     if not info["ok"]:
         raise store.TaskError(info["error"], info["message"])
-    args = shlex.split(definition.get("args") or "")
+    args = shlex.split(store.expand_dates(definition.get("args") or "", at))
     argv = ([info["program"]] if info.get("program") else []) + [info["path"], *args]
     return argv, definition.get("cwd") or info["folder"]
+
+
+def describe_program(definition: Dict[str, Any], at: Optional[float] = None) -> str:
+    """The script or command as the owner reads it, e.g. "report.py --since 2026-10-06"."""
+    if definition.get("command"):
+        return store.expand_dates(definition["command"], at)
+    args = store.expand_dates(definition.get("args") or "", at)
+    return " ".join(part for part in (Path(definition.get("script") or "").name, args) if part)
 
 
 def _limit_s(definition: Dict[str, Any]) -> int:
@@ -86,16 +98,20 @@ def _last_line(text: str) -> str:
     return ""
 
 
-def run_script(definition: Dict[str, Any], run_id: str) -> Dict[str, Any]:
-    """Run a script task to the end (or its time limit) and say how it went."""
+def _head(path: Path, limit: int) -> Tuple[str, int]:
+    """The first `limit` characters of a log and its full size in bytes."""
     try:
-        argv, cwd = script_command(definition)
-    except store.TaskError as exc:
-        return {"status": "failed", "reason": str(exc)}
-    logs = paths.state_dir() / "state" / "scheduled_runs"
-    logs.mkdir(parents=True, exist_ok=True)
-    log_path = logs / f"{run_id}.log"
-    limit = _limit_s(definition)
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            return handle.read(limit * 4).decode("utf-8", errors="replace")[:limit], size
+    except OSError:
+        return "", 0
+
+
+def _run_logged(argv: List[str], cwd: str, limit_s: int, log_path: Path,
+                read: Callable[[Path], Any]) -> Dict[str, Any]:
+    """Run argv with the clean environment, its output in an owner-only log that is read, then removed."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with log_path.open("wb") as out:
             os.chmod(log_path, 0o600)
@@ -103,10 +119,10 @@ def run_script(definition: Dict[str, Any], run_id: str) -> Dict[str, Any]:
                 proc = subprocess.Popen(argv, cwd=cwd, env=_clean_env(), stdin=subprocess.DEVNULL, stdout=out,
                                         stderr=subprocess.STDOUT, start_new_session=True)
             except OSError as exc:
-                return {"status": "failed", "reason": f"It could not start: {exc.strerror or exc}"}
+                return {"error": str(exc.strerror or exc)}
             timed_out = False
             try:
-                code = proc.wait(timeout=limit)
+                code = proc.wait(timeout=limit_s)
             except subprocess.TimeoutExpired:
                 timed_out = True
                 for sig in (signal.SIGTERM, signal.SIGKILL):
@@ -120,11 +136,27 @@ def run_script(definition: Dict[str, Any], run_id: str) -> Dict[str, Any]:
                     except subprocess.TimeoutExpired:
                         continue
                 code = proc.returncode
-        output = _tail(log_path)
+        return {"code": code, "timed_out": timed_out, "read": read(log_path)}
     finally:
         log_path.unlink(missing_ok=True)
+
+
+def _logs_dir() -> Path:
+    return paths.state_dir() / "state" / "scheduled_runs"
+
+
+def run_script(definition: Dict[str, Any], run_id: str) -> Dict[str, Any]:
+    """Run a script task to the end (or its time limit) and say how it went."""
+    try:
+        argv, cwd = script_command(definition)
+    except store.TaskError as exc:
+        return {"status": "failed", "reason": str(exc)}
+    ran = _run_logged(argv, cwd, _limit_s(definition), _logs_dir() / f"{run_id}.log", _tail)
+    if "error" in ran:
+        return {"status": "failed", "reason": f"It could not start: {ran['error']}"}
+    code, output = ran["code"], ran["read"]
     last = _last_line(output)
-    if timed_out:
+    if ran["timed_out"]:
         minutes = int(definition.get("timeout_min") or store.DEFAULT_TIMEOUT_MIN["script"])
         return {"status": "timed_out", "reason": f"Stopped at its {minutes}-minute time limit",
                 "summary": last, "output": output, "exit_code": code}
@@ -134,9 +166,78 @@ def run_script(definition: Dict[str, Any], run_id: str) -> Dict[str, Any]:
     return {"status": "failed", "reason": reason, "summary": last, "output": output, "exit_code": code}
 
 
+def run_data_step(definition: Dict[str, Any], run_id: str, at: Optional[float] = None) -> Dict[str, Any]:
+    """Run an AI task's data step. ok=True carries what the script printed, for the agent."""
+    step = definition["data_step"]
+    at = time.time() if at is None else at
+    shown = describe_program(step, at)
+    label = Path(step["script"]).name if step.get("script") else "the command"
+    started = time.time()
+    try:
+        argv, cwd = script_command(step, at)
+    except store.TaskError as exc:
+        return {"ok": False, "reason": f"The data step could not run: {exc}", "label": label, "shown": shown}
+    ran = _run_logged(argv, cwd, store.DATA_TIMEOUT_MIN * 60, _logs_dir() / f"{run_id}.data.log",
+                      lambda path: _head(path, store.DATA_LIMIT))
+    info: Dict[str, Any] = {"label": label, "shown": shown, "duration_s": round(time.time() - started, 1)}
+    if "error" in ran:
+        return {**info, "ok": False, "reason": f"The data step could not start: {ran['error']}"}
+    text, size = ran["read"]
+    info.update({"exit_code": ran["code"], "output": text})
+    if ran["timed_out"]:
+        return {**info, "ok": False, "reason": f"The data step ran past {store.DATA_TIMEOUT_MIN} minutes and was stopped, "
+                                               "so the agent was not started"}
+    if ran["code"] != 0:
+        how = f"exited with code {ran['code']}" if ran["code"] and ran["code"] > 0 else f"was stopped by signal {-(ran['code'] or 0)}"
+        return {**info, "ok": False, "reason": f"The data step {how}, so the agent was not started"}
+    if not text.strip():
+        return {**info, "ok": False, "reason": "The data step printed nothing, so the agent was not started"}
+    if len(text) >= store.DATA_LIMIT and size > len(text.encode("utf-8")):
+        return {**info, "ok": False, "reason": f"The data step printed more than {store.DATA_LIMIT:,} characters, "
+                                               "too much to hand to the agent. Have the script print a summary, or "
+                                               "write the full data to a file and print its path."}
+    return {**info, "ok": True}
+
+
+def data_prompt(prompt: str, data: Dict[str, Any], at: float) -> str:
+    """The owner's prompt with the data step's output after it."""
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(at))
+    return (f"{prompt}\n\n---\nData for this run, printed just now ({when}) by `{data['shown']}`. "
+            "Take numbers and facts from it; do not invent values it does not contain. If it looks incomplete "
+            "or wrong, say so in your report.\n\n<data>\n" + data["output"].strip() + "\n</data>\n")
+
+
+def _data_step_view(data: Dict[str, Any]) -> Dict[str, Any]:
+    """The data step as shown in the run report: first in the steps, with what it printed."""
+    return {"kind": "data", "status": "done" if data.get("ok") else "failed",
+            "title": f"Got the data from {data['label']}" if data.get("ok") else "The data step failed",
+            "detail": data["shown"], "output": (data.get("output") or "")[: store.OUTPUT_LIMIT],
+            "duration_s": data.get("duration_s"), "exit_code": data.get("exit_code")}
+
+
 def run_ai(definition: Dict[str, Any], run_id: str, settings: Any,
            on_agent: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
-    """Start a delegated agent with the task's prompt and wait for its result."""
+    """Start a delegated agent with the task's prompt (and its data step's output) and wait for its result."""
+    prompt = definition["prompt"]
+    data: Optional[Dict[str, Any]] = None
+    if definition.get("data_step"):
+        at = time.time()
+        data = run_data_step(definition, run_id, at)
+        if not data["ok"]:
+            return {"status": "failed", "reason": data["reason"], "summary": _last_line(data.get("output") or ""),
+                    "output": data.get("output") or "", "exit_code": data.get("exit_code"),
+                    "detail": {"data": _data_step_view(data)}}
+        prompt = data_prompt(prompt, data, at)
+    result = _start_agent(definition, prompt, settings, on_agent)
+    if data is not None:
+        detail = result.setdefault("detail", {})
+        detail["data"] = _data_step_view(data)
+        detail["steps"] = [detail["data"], *(detail.get("steps") or [])]
+    return result
+
+
+def _start_agent(definition: Dict[str, Any], prompt: str, settings: Any,
+                 on_agent: Optional[Callable[[str], None]]) -> Dict[str, Any]:
     from fastapi import HTTPException
 
     from . import tools_agents
@@ -146,7 +247,7 @@ def run_ai(definition: Dict[str, Any], run_id: str, settings: Any,
     token = set_policy_context(environment_policy_context(actor="scheduled_task"))
     try:
         spawned = tools_agents.spawn_agent(
-            settings, definition.get("provider"), definition["prompt"], model=definition.get("model"),
+            settings, definition.get("provider"), prompt, model=definition.get("model"),
             cwd=definition.get("cwd") or str(Path.home()), timeout_s=limit,
             title=f"Scheduled: {definition['name']}"[:120], result_style="detailed",
         )

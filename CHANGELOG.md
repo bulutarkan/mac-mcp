@@ -1,3 +1,10 @@
+## Unreleased
+
+### Scheduled Tasks: data first (#175)
+- An AI task can run a script first and give the agent what it printed (**Give the agent data from a script first** in the New Task sheet, or `data_step` in the `scheduled_tasks` tool). The numbers come from the owner's script, which runs with its own access; the agent only reads and explains them. If the script fails, times out (10 minutes), prints nothing or prints more than 60,000 characters, the agent does not start and the run says why. The run report shows the data step first in Steps, with what it printed.
+- Arguments and commands can use dates that move with each run: `{today}`, `{yesterday}`, `{this_week_start}`, `{last_week_start}`, `{last_week_end}`, `{this_month_start}`, `{last_month_start}`, `{last_month_end}` and `{days_ago:N}`. The sheet has a date menu and shows how the arguments read on the next run; unknown dates are refused when saving.
+- The Agent and Works in fields in the New Task sheet are aligned to the left.
+
 ## [2.2.0] - 2026-10-13
 
 **In short:** schedule AI tasks and scripts and read a report of each run; see what your AI is doing in an optional island beside the notch; and the guard against leaking secrets now also catches encoded ones. Mac MCP also has a product page and a 40-second demo.

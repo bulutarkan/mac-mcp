@@ -5,8 +5,13 @@ command line). Its definition is one JSON object:
 
     {"name", "description", "kind": "ai"|"script", "schedule": {...schedule_rules...},
      "notify": bool, "timeout_min": int,
-     # ai:     "prompt", "provider", "model", "cwd"
+     # ai:     "prompt", "provider", "model", "cwd",
+     #         "data_step": {"script" or "command", "interpreter", "args"} (optional)
      # script: "script" (a file) or "command", "interpreter", "args", "cwd"}
+
+An AI task's data step runs a script first and hands what it printed to the agent, so the
+numbers come from the owner's script (with the owner's credentials) and the agent only reads
+them. Arguments and commands can name dates relative to the run, such as {last_week_start}.
 
 The owner's edits apply at once. An agent's create or edit is kept as a *proposal* next to
 the approved definition: the task keeps running what the owner approved (or, for a new
@@ -19,12 +24,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import shlex
 import sqlite3
 import threading
 import time
 from contextlib import contextmanager
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -39,6 +46,8 @@ DEFAULT_TIMEOUT_MIN = {"ai": 30, "script": 10}
 MAX_TIMEOUT_MIN = 6 * 60
 OUTPUT_LIMIT = 20_000
 SUMMARY_LIMIT = 4_000
+DATA_LIMIT = 60_000
+DATA_TIMEOUT_MIN = 10
 
 # What each script type is run with when the owner does not pick a program in Advanced.
 SCRIPT_TYPES: Dict[str, Dict[str, Any]] = {
@@ -228,6 +237,97 @@ def inspect_script(path_text: str, interpreter: Optional[str] = None) -> Dict[st
     return info
 
 
+# ── Dates in arguments ───────────────────────────────────────────────────────
+
+# {token}: what it means, in the run's local time. Values are YYYY-MM-DD; weeks start on Monday.
+DATE_TOKENS: Dict[str, str] = {
+    "today": "Today",
+    "yesterday": "Yesterday",
+    "this_week_start": "This week's Monday",
+    "last_week_start": "Last week's Monday",
+    "last_week_end": "Last week's Sunday",
+    "this_month_start": "The 1st of this month",
+    "last_month_start": "The 1st of last month",
+    "last_month_end": "The last day of last month",
+}
+_TOKEN_RE = re.compile(r"\{([a-z_]+)(?::(\d{1,3}))?\}")
+
+
+def _date_value(name: str, number: Optional[str], day: date) -> Optional[date]:
+    if name == "days_ago":
+        return day - timedelta(days=int(number)) if number is not None else None
+    if number is not None:
+        return None
+    monday = day - timedelta(days=day.weekday())
+    first = day.replace(day=1)
+    last_month_end = first - timedelta(days=1)
+    return {
+        "today": day, "yesterday": day - timedelta(days=1),
+        "this_week_start": monday, "last_week_start": monday - timedelta(days=7),
+        "last_week_end": monday - timedelta(days=1),
+        "this_month_start": first, "last_month_start": last_month_end.replace(day=1),
+        "last_month_end": last_month_end,
+    }.get(name)
+
+
+def _day(at: Optional[float]) -> date:
+    return datetime.fromtimestamp(time.time() if at is None else at).date()
+
+
+def expand_dates(text: str, at: Optional[float] = None) -> str:
+    """{last_week_start} and friends replaced by dates for a run at `at` (now if not given)."""
+    day = _day(at)
+
+    def value(match: "re.Match[str]") -> str:
+        resolved = _date_value(match.group(1), match.group(2), day)
+        return resolved.isoformat() if resolved else match.group(0)
+    return _TOKEN_RE.sub(value, text or "")
+
+
+def date_choices(at: Optional[float] = None) -> List[Dict[str, str]]:
+    """The date tokens with what each one means on a run at `at`, for the New Task sheet."""
+    day = _day(at)
+    choices = [{"token": "{%s}" % name, "label": label, "value": _date_value(name, None, day).isoformat()}
+               for name, label in DATE_TOKENS.items()]
+    choices.append({"token": "{days_ago:7}", "label": "7 days ago (any number up to 366)",
+                    "value": _date_value("days_ago", "7", day).isoformat()})
+    return choices
+
+
+def check_dates(text: str, field: str) -> None:
+    for match in _TOKEN_RE.finditer(text or ""):
+        name, number = match.group(1), match.group(2)
+        if name == "days_ago" and number is not None and int(number) <= 366:
+            continue
+        if name in DATE_TOKENS and number is None:
+            continue
+        known = ", ".join("{%s}" % key for key in DATE_TOKENS) + ", {days_ago:N}"
+        raise TaskError(f"{field}_date_unknown", f"{match.group(0)} is not a date Mac MCP knows. Use one of {known}.")
+
+
+def _program(raw: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+    """A script file or a command line, with its arguments and program, checked for running."""
+    script = _text(raw.get("script"), prefix + "script", 1024)
+    command = _text(raw.get("command"), prefix + "command", 4000)
+    if bool(script) == bool(command):
+        where = "for the data step" if prefix else "under Advanced"
+        raise TaskError(prefix + "script_or_command", f"Choose a script file, or enter a command {where} (not both).")
+    args = _text(raw.get("args"), prefix + "args", 2000)
+    try:
+        shlex.split(args)
+    except ValueError as exc:
+        raise TaskError(prefix + "args_invalid", f"The arguments could not be read: {exc}.") from exc
+    check_dates(args, prefix + "args")
+    check_dates(command, prefix + "command")
+    interpreter = _text(raw.get("interpreter"), prefix + "interpreter", 1024) or None
+    if script:
+        info = inspect_script(script, interpreter)
+        if not info["ok"]:
+            raise TaskError(info["error"], info["message"])
+        script = info["path"]
+    return {"script": script or None, "command": command or None, "args": args, "interpreter": interpreter}
+
+
 def validate_definition(raw: Any) -> Dict[str, Any]:
     """The definition in normal form, or TaskError with a message the owner can act on."""
     if not isinstance(raw, dict):
@@ -255,23 +355,15 @@ def validate_definition(raw: Any) -> Dict[str, Any]:
         definition["prompt"] = _text(raw.get("prompt"), "prompt", 8000, required=True)
         definition["provider"] = _text(raw.get("provider"), "provider", 40) or None
         definition["model"] = _text(raw.get("model"), "model", 120) or None
+        data = raw.get("data_step")
+        if data is not None and not isinstance(data, dict):
+            raise TaskError("data_step_invalid", "data_step must be an object with a script or a command.")
+        if data and any(str(data.get(key) or "").strip() for key in ("script", "command")):
+            definition["data_step"] = _program(data, "data_")
         return definition
-    script = _text(raw.get("script"), "script", 1024)
-    command = _text(raw.get("command"), "command", 4000)
-    if bool(script) == bool(command):
-        raise TaskError("script_or_command", "Choose a script file, or enter a command under Advanced (not both).")
-    args = _text(raw.get("args"), "args", 2000)
-    try:
-        shlex.split(args)
-    except ValueError as exc:
-        raise TaskError("args_invalid", f"The arguments could not be read: {exc}.") from exc
-    interpreter = _text(raw.get("interpreter"), "interpreter", 1024) or None
-    if script:
-        info = inspect_script(script, interpreter)
-        if not info["ok"]:
-            raise TaskError(info["error"], info["message"])
-        script = info["path"]
-    definition.update({"script": script or None, "command": command or None, "args": args, "interpreter": interpreter})
+    if raw.get("data_step"):
+        raise TaskError("data_step_ai_only", "Only AI tasks have a data step; a script task already runs a script.")
+    definition.update(_program(raw))
     return definition
 
 

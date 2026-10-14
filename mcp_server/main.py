@@ -1535,7 +1535,10 @@ def create_app():
             "The owner's Scheduled Tasks: AI tasks (a prompt a delegated agent runs) and scripts that run at a set "
             "time or on a recurrence. action=list|get|create|update|delete|run_now. create/update take name, "
             "summary (what the task is for), kind ('ai' or 'script'), schedule, and for ai: prompt, agent (codex|claude|opencode), "
-            "model, folder; for script: script (a file path) or command, arguments, interpreter, folder. schedule is "
+            "model, folder, and optional data_step {script or command, arguments} that runs first and hands its output to "
+            "the agent; for script: script (a file path) or command, arguments, interpreter, folder. Arguments and "
+            "commands may use {today}, {yesterday}, {last_week_start}, {last_week_end}, {last_month_start}, "
+            "{last_month_end} or {days_ago:N}. schedule is "
             "{type:'once',at:'2026-10-20T09:00'} | {type:'daily',time:'09:00'} | {type:'weekly',time:'09:00',"
             "weekdays:[0..6] (0=Monday)} | {type:'monthly',time:'09:00',day:1-31} | {type:'hours',every:N,"
             "start:'08:00'} | {type:'cron',expr:'0 9 * * 1'} in the Mac's local time. Tasks you create or change "
@@ -1562,11 +1565,16 @@ def create_app():
         interpreter: Optional[str] = None,
         notify: Optional[bool] = None,
         time_limit_minutes: Optional[int] = None,
+        data_step: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         verb = str(action or "list").strip().lower()
         fields = {"name": name, "description": summary, "kind": kind, "schedule": schedule, "prompt": prompt,
                   "provider": agent, "model": model, "cwd": folder, "script": script, "command": command,
-                  "args": arguments, "interpreter": interpreter, "notify": notify, "timeout_min": time_limit_minutes}
+                  "args": arguments, "interpreter": interpreter, "notify": notify, "timeout_min": time_limit_minutes,
+                  "data_step": None if data_step is None else {
+                      "script": data_step.get("script"), "command": data_step.get("command"),
+                      "args": data_step.get("arguments", data_step.get("args")),
+                      "interpreter": data_step.get("interpreter")}}
         given = {key: value for key, value in fields.items() if value is not None}
         try:
             if verb == "list":

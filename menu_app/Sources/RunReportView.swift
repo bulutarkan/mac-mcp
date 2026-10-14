@@ -197,6 +197,7 @@ private struct StepRow: View {
         case "thinking": return ("brain", .purple)
         case "message": return ("text.bubble", .accentColor)
         case "command": return ("terminal", .teal)
+        case "data": return ("tablecells", .green)
         case "files": return ("doc.badge.ellipsis", .orange)
         case "search": return ("globe", .blue)
         case "todo": return ("checklist", .indigo)
@@ -256,7 +257,7 @@ private struct StepRow: View {
             }
         case "message":
             if let text { MarkdownText(source: text, compact: true) }
-        case "command":
+        case "command", "data":
             if let detail {
                 Text(detail)
                     .font(.system(.caption, design: .monospaced))
@@ -289,10 +290,10 @@ private struct StepRow: View {
                 KeyValueList(object: inputs)
             }
             if let output {
-                Text(kind == "command" ? "Printed" : "Got back").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                Text(kind == "command" || kind == "data" ? "Printed" : "Got back").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                 if let object = ReadableJSON.object(output) {
                     KeyValueList(object: object)
-                } else if kind == "command" {
+                } else if kind == "command" || kind == "data" {
                     ConsoleText(text: output, maxHeight: 220)
                 } else {
                     Text(output).font(.callout).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)

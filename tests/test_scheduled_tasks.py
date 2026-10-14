@@ -534,6 +534,142 @@ class DashboardApiTests(StoreCase):
                              json={"schedule": {"type": "cron", "expr": "nope"}}).json()
         self.assertFalse(broken["schedule"]["ok"])
 
+    def test_preview_shows_dates_for_the_next_run_and_checks_the_data_script(self) -> None:
+        client = self.client()
+        preview = client.post("/dashboard/api/scheduled-tasks/preview", headers=AUTH, json={
+            "schedule": {"type": "weekly", "time": "09:00", "weekdays": [0]},
+            "data": {"script": str(self.script("d.py", "print(1)")), "args": "--since {last_week_start}"},
+            "args": "--day {yesterday}"}).json()
+        next_run = preview["schedule"]["next_runs"][0]
+        self.assertEqual("--since " + store.expand_dates("{last_week_start}", next_run), preview["data"]["next_run"])
+        self.assertEqual("--day " + store.expand_dates("{yesterday}", next_run), preview["args"]["next_run"])
+        self.assertEqual("Python script", preview["data"]["script"]["label"])
+        self.assertEqual(store.date_choices(next_run), preview["dates"])
+        wrong = client.post("/dashboard/api/scheduled-tasks/preview", headers=AUTH,
+                            json={"data": {"command": "echo {last_monday}"}}).json()
+        self.assertFalse(wrong["data"]["ok"])
+        self.assertIn("{last_monday}", wrong["data"]["message"])
+
+
+class DateTokenTests(unittest.TestCase):
+    def test_dates_relative_to_the_run(self) -> None:
+        wednesday = ts("2026-10-14T09:00")
+        text = ("{today} {yesterday} {this_week_start} {last_week_start} {last_week_end} "
+                "{this_month_start} {last_month_start} {last_month_end} {days_ago:7}")
+        self.assertEqual("2026-10-14 2026-10-13 2026-10-12 2026-10-05 2026-10-11 "
+                         "2026-10-01 2026-09-01 2026-09-30 2026-10-07", store.expand_dates(text, wednesday))
+        new_year = ts("2026-01-01T08:00")  # a Thursday
+        self.assertEqual("2025-12-01 2025-12-31 2025-12-22 2025-12-28",
+                         store.expand_dates("{last_month_start} {last_month_end} {last_week_start} {last_week_end}", new_year))
+        monday = ts("2026-10-12T09:00")
+        self.assertEqual("2026-10-12 2026-10-05", store.expand_dates("{this_week_start} {last_week_start}", monday))
+
+    def test_other_braces_are_left_alone_and_unknown_dates_are_refused(self) -> None:
+        untouched = "awk '{print $1}' ${HOME} {a,b} '{\"k\": 1}' {FOO}"
+        self.assertEqual(untouched, store.expand_dates(untouched, ts("2026-10-14T09:00")))
+        store.check_dates(untouched, "args")
+        for bad in ("{last_monday}", "{days_ago}", "{today:3}", "{days_ago:400}"):
+            with self.subTest(bad), self.assertRaises(store.TaskError) as caught:
+                store.check_dates(f"--since {bad}", "args")
+            self.assertIn("{last_week_start}", str(caught.exception))
+        choices = store.date_choices(ts("2026-10-14T09:00"))
+        self.assertEqual({"token": "{last_week_start}", "label": "Last week's Monday", "value": "2026-10-05"}, choices[3])
+        self.assertEqual("{days_ago:7}", choices[-1]["token"])
+
+
+class DataStepTests(AiRunTests):
+    def data_task(self, body: str, args: str = "", **step):
+        script = self.script("data.py", body)
+        definition = store.validate_definition(self.ai(provider="codex", cwd=str(self.folder), data_step={
+            "script": str(script), "args": args, "interpreter": os.sys.executable, **step}))
+        task = store.create_task(definition)
+        run_id = store.start_run(task["id"], trigger="manual")
+        return definition, runner.execute(task["id"], run_id, definition, settings=None)
+
+    def test_the_agent_gets_the_scripts_output_and_the_report_shows_it_first(self) -> None:
+        calls = self.fake_agents({"status": "completed", "provider": "codex",
+                                  "result_envelope": {"outcome": "success", "summary": "Spend up 4%."},
+                                  "result_full": {"text": "Report"}})
+        with patch.dict(os.environ, {"MCP_API_KEY": "must-not-leak"}):
+            definition, result = self.data_task(
+                "import os, sys, json\nprint(json.dumps({'args': sys.argv[1:], 'key': os.environ.get('MCP_API_KEY', 'absent')}))\n",
+                args="--since {last_week_start} --until {last_week_end}")
+        self.assertEqual(str(self.script("data.py", "").resolve()).replace("/private", ""),
+                         definition["data_step"]["script"].replace("/private", ""))
+        self.assertEqual("done", result["status"])
+        prompt = calls["spawn"][0]["prompt"]
+        self.assertTrue(prompt.startswith("Summarize last week's leads.\n\n---\nData for this run"))
+        self.assertIn('"key": "absent"', prompt)  # the script runs with the clean environment
+        self.assertIn("<data>\n{", prompt)
+        expected = store.expand_dates("{last_week_start}")
+        self.assertIn(f'"--since", "{expected}"', prompt)
+        first = result["detail"]["steps"][0]
+        self.assertEqual(("data", "done", "Got the data from data.py"), (first["kind"], first["status"], first["title"]))
+        self.assertIn(f"data.py --since {expected}", first["detail"])
+        self.assertEqual(first, result["detail"]["data"])
+
+    def test_a_failing_or_silent_data_step_does_not_start_the_agent(self) -> None:
+        calls = self.fake_agents({"status": "completed"})
+        cases = {
+            "exit": ("import sys\nprint('token expired')\nsys.exit(2)\n", "exited with code 2"),
+            "silent": ("pass\n", "printed nothing"),
+            "too much": (f"print('x' * {store.DATA_LIMIT + 10})\n", "more than 60,000 characters"),
+        }
+        for name, (body, reason) in cases.items():
+            with self.subTest(name):
+                _, result = self.data_task(body)
+                self.assertEqual("failed", result["status"])
+                self.assertIn(reason, result["reason"])
+                self.assertEqual(("data", "failed"), (result["detail"]["data"]["kind"], result["detail"]["data"]["status"]))
+                self.assertNotIn("agent_id", result["detail"])
+        _, expired = self.data_task("import sys\nprint('token expired')\nsys.exit(2)\n")
+        self.assertEqual(("token expired", 2), (expired["summary"], expired["exit_code"]))
+        self.assertEqual([], calls["spawn"])
+        self.assertEqual([], list((self.dir / "state" / "state" / "scheduled_runs").iterdir()))
+
+    def test_data_step_time_limit(self) -> None:
+        self.fake_agents({"status": "completed"})
+        with patch.object(store, "DATA_TIMEOUT_MIN", 1 / 60):
+            _, result = self.data_task("import time\ntime.sleep(20)\n")
+        self.assertEqual("failed", result["status"])
+        self.assertIn("was stopped", result["reason"])
+
+    def test_paused_observation_skips_before_the_data_step(self) -> None:
+        marker = self.folder / "ran"
+        self.fake_agents({"status": "completed"})
+        self.privacy(observation_paused=True)
+        _, result = self.data_task(f"open({str(marker)!r}, 'w').write('x')\nprint(1)\n")
+        self.assertEqual("skipped", result["status"])
+        self.assertFalse(marker.exists())
+
+
+class DataStepStoreTests(StoreCase):
+    def test_saved_with_the_task_removed_with_an_empty_step_and_ai_only(self) -> None:
+        script = str(self.script("data.sh", "echo 1\n"))
+        task = store.create_task(self.ai(data_step={"script": script, "args": "--day {yesterday}"}))
+        self.assertEqual({"script": script, "command": None, "args": "--day {yesterday}", "interpreter": None},
+                         task["data_step"])
+        edited = store.update_task(task["id"], {"data_step": {}})
+        self.assertNotIn("data_step", edited)
+        command = store.update_task(task["id"], {"data_step": {"command": "echo {today}"}})
+        self.assertEqual("echo {today}", command["data_step"]["command"])
+        with self.assertRaises(store.TaskError) as caught:
+            store.create_task(self.sh(data_step={"command": "echo 1"}))
+        self.assertEqual("data_step_ai_only", caught.exception.code)
+        with self.assertRaises(store.TaskError) as caught:
+            store.create_task(self.ai(data_step={"command": "echo {last_monday}"}))
+        self.assertEqual("data_command_date_unknown", caught.exception.code)
+        with self.assertRaises(store.TaskError) as caught:
+            store.create_task(self.ai(data_step={"script": script, "command": "echo 1"}))
+        self.assertEqual("data_script_or_command", caught.exception.code)
+
+    def test_script_tasks_fill_in_dates_too(self) -> None:
+        definition = store.validate_definition({"name": "Cmd", "kind": "script", "command": "echo day={yesterday}",
+                                                "schedule": {"type": "daily", "time": "09:00"}})
+        task = store.create_task(definition)
+        result = runner.execute(task["id"], store.start_run(task["id"], trigger="manual"), definition, settings=None)
+        self.assertEqual(f"day={store.expand_dates('{yesterday}')}", result["summary"])
+
 
 class McpToolTests(StoreCase):
     @classmethod
@@ -560,6 +696,13 @@ class McpToolTests(StoreCase):
         listed = self.call(action="list")
         self.assertEqual([task_id], [t["id"] for t in listed["tasks"]])
         self.assertEqual("action_invalid", self.call(action="approve", task_id=task_id)["error"])
+
+    def test_agents_can_suggest_a_data_step_for_the_owner_to_review(self) -> None:
+        created = self.call(action="create", name="Weekly ad report", kind="ai", prompt="Summarize it.",
+                            schedule={"type": "weekly", "time": "09:00", "weekdays": [0]},
+                            data_step={"command": "python3 report.py --since {last_week_start}"})
+        self.assertEqual("needs_approval", created["status"])
+        self.assertEqual("python3 report.py --since {last_week_start}", created["task"]["proposal"]["data_step"]["command"])
 
     def test_listing_works_with_intent_descriptions_on(self) -> None:
         # Every tool gains a required "description" (intent) field; a tool argument of that name breaks listing.

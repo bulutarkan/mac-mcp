@@ -888,6 +888,24 @@ def create_dashboard_routes(
         if body.get("script"):
             out["script"] = await asyncio.to_thread(task_store.inspect_script, str(body["script"]),
                                                     str(body.get("interpreter") or "") or None)
+        # Dates in arguments, as they will read on the next run.
+        upcoming_runs = (out.get("schedule") or {}).get("next_runs") or []
+        at = upcoming_runs[0] if upcoming_runs else time.time()
+        out["dates"] = task_store.date_choices(at)
+        for key, program in (("args", {"args": body.get("args"), "command": body.get("command")}),
+                             ("data", body.get("data") if isinstance(body.get("data"), dict) else None)):
+            if not program:
+                continue
+            try:
+                for field in ("args", "command"):
+                    task_store.check_dates(str(program.get(field) or ""), field)
+                out[key] = {"ok": True, "next_run": task_store.expand_dates(
+                    str(program.get("command") or program.get("args") or ""), at)}
+            except task_store.TaskError as exc:
+                out[key] = {"ok": False, "message": str(exc)}
+            if key == "data" and program.get("script"):
+                out[key]["script"] = await asyncio.to_thread(task_store.inspect_script, str(program["script"]),
+                                                             str(program.get("interpreter") or "") or None)
         return JSONResponse(out)
 
     async def _json_body(request: Request) -> Dict[str, Any]:

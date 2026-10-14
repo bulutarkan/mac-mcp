@@ -431,6 +431,10 @@ private struct TaskDetailView: View {
             factRow("calendar", "Next run", task.paused ? "Paused" : task.nextRunAt.map { TaskTime.upcoming($0).capitalizedFirst } ?? "No more runs")
             Divider()
             if task.isAI {
+                if let step = task.raw["data_step"] as? [String: Any] {
+                    factRow("tablecells", "Data first", Self.program(step), mono: true, lines: 2)
+                    Divider()
+                }
                 factRow("text.bubble", "Asks the agent", task.raw["prompt"] as? String ?? "", lines: 4)
             } else if let command = task.raw["command"] as? String {
                 factRow("terminal", "Runs", command, mono: true)
@@ -443,6 +447,13 @@ private struct TaskDetailView: View {
             factRow("bell", "When it finishes", task.notify ? "Notifies you" : "No notification")
         }
         .taskCard()
+    }
+
+    /// A script with its arguments, or a command, as one line.
+    static func program(_ step: [String: Any]) -> String {
+        if let command = step["command"] as? String, !command.isEmpty { return command }
+        let name = (step["script"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? ""
+        return [name, step["args"] as? String ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     static func tilde(_ path: String) -> String {
@@ -560,6 +571,12 @@ final class TaskEditorModel: ObservableObject, Identifiable {
     @Published var command = ""
     @Published var args = ""
     @Published var interpreter = ""
+    @Published var dataOn = false
+    @Published var dataUsesCommand = false
+    @Published var dataScript = ""
+    @Published var dataCommand = ""
+    @Published var dataArgs = ""
+    @Published var dataInterpreter = ""
     @Published var when: TaskWhen = .weekly
     @Published var time = TaskEditorModel.clock(9, 0)
     @Published var onceAt = Calendar.current.date(byAdding: .day, value: 1, to: TaskEditorModel.clock(9, 0)) ?? Date()
@@ -587,6 +604,14 @@ final class TaskEditorModel: ObservableObject, Identifiable {
         command = raw["command"] as? String ?? ""
         args = raw["args"] as? String ?? ""
         interpreter = raw["interpreter"] as? String ?? ""
+        if let step = raw["data_step"] as? [String: Any] {
+            dataOn = true
+            dataScript = step["script"] as? String ?? ""
+            dataCommand = step["command"] as? String ?? ""
+            dataUsesCommand = !dataCommand.isEmpty
+            dataArgs = step["args"] as? String ?? ""
+            dataInterpreter = step["interpreter"] as? String ?? ""
+        }
         notify = task.notify
         timeoutMin = raw["timeout_min"] as? Int ?? 0
         let schedule = task.schedule
@@ -648,6 +673,7 @@ final class TaskEditorModel: ObservableObject, Identifiable {
             out["prompt"] = prompt
             out["provider"] = provider
             out["model"] = model
+            out["data_step"] = dataOn ? dataStep : [String: Any]()  // empty removes it on an edit
         } else {
             let useCommand = !command.trimmingCharacters(in: .whitespaces).isEmpty
             out["script"] = useCommand ? "" : script
@@ -658,9 +684,21 @@ final class TaskEditorModel: ObservableObject, Identifiable {
         return out
     }
 
+    /// The data step as the server reads it: a file with its arguments, or a command.
+    var dataStep: [String: Any] {
+        dataUsesCommand ? ["command": dataCommand]
+            : ["script": dataScript, "args": dataArgs, "interpreter": dataInterpreter]
+    }
+
+    var dataStepReady: Bool {
+        !(dataUsesCommand ? dataCommand : dataScript).trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     var previewKey: String {
-        let data = (try? JSONSerialization.data(withJSONObject: ["s": schedule, "f": script, "i": interpreter, "k": isAI],
-                                                options: [.sortedKeys])) ?? Data()
+        let data = (try? JSONSerialization.data(withJSONObject: [
+            "s": schedule, "f": script, "i": interpreter, "k": isAI, "a": args, "c": command,
+            "d": dataOn ? dataStep : [:],
+        ], options: [.sortedKeys])) ?? Data()
         return String(decoding: data, as: UTF8.self)
     }
 }
@@ -675,6 +713,9 @@ private struct TaskEditorSheet: View {
     @MacMCPState private var firstRun: Date?
     @MacMCPState private var scheduleProblem = ""
     @MacMCPState private var scriptInfo: [String: Any]?
+    @MacMCPState private var dates: [[String: String]] = []
+    @MacMCPState private var dataPreview: [String: Any]?
+    @MacMCPState private var argsPreview: [String: Any]?
     @MacMCPState private var error = ""
     @MacMCPState private var saving = false
 
@@ -731,7 +772,10 @@ private struct TaskEditorSheet: View {
 
     private var canSave: Bool {
         guard !model.name.trimmingCharacters(in: .whitespaces).isEmpty, scheduleProblem.isEmpty else { return false }
-        if model.isAI { return !model.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if model.isAI {
+            return !model.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && (!model.dataOn || model.dataStepReady) && (dataPreview?["ok"] as? Bool) != false
+        }
         if model.when == .weekly && model.cron.isEmpty && model.weekdays.isEmpty { return false }
         return !model.script.isEmpty || !model.command.trimmingCharacters(in: .whitespaces).isEmpty
     }
@@ -788,6 +832,7 @@ private struct TaskEditorSheet: View {
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                     .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.15)))
             }
+            dataSection
             HStack(alignment: .top, spacing: 12) {
                 field("Agent") {
                     Picker("", selection: $model.provider) {
@@ -797,10 +842,11 @@ private struct TaskEditorSheet: View {
                         }
                     }
                     .labelsHidden()
+                    .fixedSize()
                 }
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 field("Works in") { folderButton(placeholder: "Home folder") }
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             if agents.isEmpty {
                 Label("No agent is turned on. Turn one on in Settings › Agents first.", systemImage: "exclamationmark.triangle")
@@ -850,14 +896,176 @@ private struct TaskEditorSheet: View {
         }
     }
 
-    private var scriptLine: String {
-        guard let info = scriptInfo else { return DetailPath.folder(model.script) }
+    private var scriptLine: String { Self.scriptLine(path: model.script, info: scriptInfo) }
+
+    private static func scriptLine(path: String, info: [String: Any]?) -> String {
+        guard let info else { return DetailPath.folder(path) }
         if (info["ok"] as? Bool) == false { return info["message"] as? String ?? "Can’t run this file." }
         var line = info["label"] as? String ?? "Script"
         if let program = info["program"] as? String, info["program_source"] as? String == "venv" {
             line += " · runs with " + TaskDetailView.tilde(program)
         }
-        return line + " · " + DetailPath.folder(model.script)
+        return line + " · " + DetailPath.folder(path)
+    }
+
+    // MARK: Data first
+
+    private static let dataTint = Color.green
+
+    @ViewBuilder
+    private var dataSection: some View {
+        if model.dataOn {
+            dataCard.transition(.opacity.combined(with: .move(edge: .top)))
+        } else {
+            Button {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) { model.dataOn = true }
+            } label: {
+                HStack(spacing: 10) {
+                    dataTile
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Give the agent data from a script first").font(.callout.weight(.medium))
+                        Text("Your script gets the numbers; the agent reads and explains them.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "plus.circle.fill").font(.title3).foregroundStyle(Self.dataTint.opacity(0.85))
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1.2, dash: [5, 4]))
+                    .foregroundStyle(Color.secondary.opacity(0.45)))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Give the agent data from a script first")
+        }
+    }
+
+    private var dataTile: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Self.dataTint.opacity(0.15)).frame(width: 30, height: 30)
+            Image(systemName: "tablecells").font(.system(size: 13, weight: .semibold)).foregroundStyle(Self.dataTint)
+        }
+    }
+
+    private var dataCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                dataTile
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Data first").font(.callout.weight(.semibold))
+                    Text("Runs before the agent, for up to 10 minutes").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Picker("", selection: $model.dataUsesCommand) {
+                    Text("File").tag(false)
+                    Text("Command").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) { model.dataOn = false }
+                } label: {
+                    Image(systemName: "xmark.circle.fill").font(.title3).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Remove the data step")
+                .accessibilityLabel("Remove the data step")
+            }
+            if model.dataUsesCommand {
+                HStack(spacing: 6) {
+                    TextField("e.g. python3 ~/scripts/report.py --since {last_week_start}", text: $model.dataCommand)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.callout, design: .monospaced))
+                    dateMenu($model.dataCommand)
+                }
+            } else {
+                dataScriptRow
+                HStack(spacing: 6) {
+                    TextField("Arguments, e.g. --since {last_week_start}", text: $model.dataArgs)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.callout, design: .monospaced))
+                    dateMenu($model.dataArgs)
+                }
+            }
+            nextRunLine(dataPreview, source: model.dataUsesCommand ? model.dataCommand : model.dataArgs,
+                        prefix: model.dataUsesCommand || model.dataScript.isEmpty ? "" : URL(fileURLWithPath: model.dataScript).lastPathComponent)
+            Label("What it prints goes to the agent, and so to its provider. If it fails or prints nothing, the agent doesn’t start and the run says why.",
+                  systemImage: "info.circle")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Self.dataTint.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Self.dataTint.opacity(0.28)))
+    }
+
+    private var dataScriptRow: some View {
+        Button { chooseDataScript() } label: {
+            HStack(spacing: 10) {
+                Image(systemName: model.dataScript.isEmpty ? "doc.badge.plus" : "doc.text")
+                    .font(.body).foregroundStyle(.secondary).frame(width: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(model.dataScript.isEmpty ? "Choose a script…" : URL(fileURLWithPath: model.dataScript).lastPathComponent)
+                        .font(.callout.weight(.medium))
+                    let info = dataPreview?["script"] as? [String: Any]
+                    Text(model.dataScript.isEmpty ? "Python, shell, Node or any program that prints the data"
+                                                  : Self.scriptLine(path: model.dataScript, info: info))
+                        .font(.caption)
+                        .foregroundStyle((info?["ok"] as? Bool) == false ? Color.red : Color.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if !model.dataScript.isEmpty { Text("Change").font(.caption).foregroundStyle(Color.accentColor) }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.primary.opacity(0.1)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Inserts a date that moves with each run, such as {last_week_start}.
+    private func dateMenu(_ text: Binding<String>) -> some View {
+        Menu {
+            Section("Dates that move with each run") {
+                ForEach(dates, id: \.self) { choice in
+                    Button("\(choice["label"] ?? "")   \(choice["value"] ?? "")") {
+                        let current = text.wrappedValue
+                        let space = current.isEmpty || current.hasSuffix(" ") ? "" : " "
+                        text.wrappedValue = current + space + (choice["token"] ?? "")
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "calendar.badge.plus")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(dates.isEmpty)
+        .help("Insert a date that moves with each run")
+        .accessibilityLabel("Insert a date")
+    }
+
+    /// "Next run: report.py --since 2026-10-06", shown once the text names a date.
+    @ViewBuilder
+    private func nextRunLine(_ preview: [String: Any]?, source: String, prefix: String) -> some View {
+        if let preview, (preview["ok"] as? Bool) == false {
+            Label(preview["message"] as? String ?? "", systemImage: "exclamationmark.circle.fill")
+                .font(.caption).foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if source.contains("{"), let resolved = preview?["next_run"] as? String, resolved != source {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("Next run").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text([prefix, resolved].filter { !$0.isEmpty }.joined(separator: " "))
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+            }
+        }
     }
 
     private var whenSection: some View {
@@ -973,14 +1181,26 @@ private struct TaskEditorSheet: View {
                         }
                     }
                     field("Arguments", optional: true) {
-                        TextField("e.g. --week last --output ~/Desktop/reports", text: $model.args)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.callout, design: .monospaced))
+                        HStack(spacing: 6) {
+                            TextField("e.g. --since {last_week_start} --output ~/Desktop/reports", text: $model.args)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(.callout, design: .monospaced))
+                            dateMenu($model.args)
+                        }
+                        if model.command.trimmingCharacters(in: .whitespaces).isEmpty {
+                            nextRunLine(argsPreview, source: model.args, prefix: "")
+                        }
                     }
                     field("Or run a command instead of a file", optional: true) {
-                        TextField("e.g. shortcuts run \"Daily Backup\"", text: $model.command)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(.callout, design: .monospaced))
+                        HStack(spacing: 6) {
+                            TextField("e.g. shortcuts run \"Daily Backup\"", text: $model.command)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(.callout, design: .monospaced))
+                            dateMenu($model.command)
+                        }
+                        if !model.command.trimmingCharacters(in: .whitespaces).isEmpty {
+                            nextRunLine(argsPreview, source: model.command, prefix: "")
+                        }
                     }
                     field("Works in", optional: true) { folderButton(placeholder: "The script's folder") }
                 }
@@ -1053,6 +1273,16 @@ private struct TaskEditorSheet: View {
         }
     }
 
+    private func chooseDataScript() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose Script"
+        if !model.dataScript.isEmpty { panel.directoryURL = URL(fileURLWithPath: model.dataScript).deletingLastPathComponent() }
+        if panel.runModal() == .OK, let url = panel.url { model.dataScript = url.path }
+    }
+
     private func chooseInterpreter() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -1071,6 +1301,12 @@ private struct TaskEditorSheet: View {
             body["script"] = model.script
             body["interpreter"] = model.interpreter
         }
+        if !model.isAI {
+            let command = model.command.trimmingCharacters(in: .whitespaces)
+            body["args"] = command.isEmpty ? model.args : ""
+            body["command"] = command
+        }
+        if model.isAI, model.dataOn { body["data"] = model.dataStep }
         let result = await state.taskAPI("dashboard/api/scheduled-tasks/preview", body: body)
         guard result.ok else { return }
         if let schedule = result.object["schedule"] as? [String: Any] {
@@ -1086,6 +1322,9 @@ private struct TaskEditorSheet: View {
             scheduleProblem = "Pick at least one day."
         }
         scriptInfo = result.object["script"] as? [String: Any]
+        dates = result.object["dates"] as? [[String: String]] ?? dates
+        dataPreview = result.object["data"] as? [String: Any]
+        argsPreview = result.object["args"] as? [String: Any]
     }
 
     private func save() {
@@ -1308,6 +1547,12 @@ private struct TaskReviewSheet: View {
         let schedule = value("schedule_text")
         out.append(Row(title: "When", value: schedule, before: before("schedule_text", schedule)))
         if (proposal["kind"] as? String) == "ai" {
+            let step = (proposal["data_step"] as? [String: Any]).map(TaskDetailView.program) ?? ""
+            let oldStep = (current["data_step"] as? [String: Any]).map(TaskDetailView.program) ?? ""
+            if !step.isEmpty || !oldStep.isEmpty {
+                out.append(Row(title: "Data first", value: step.isEmpty ? "None" : step,
+                               before: isNew || step == oldStep ? nil : (oldStep.isEmpty ? "—" : oldStep), mono: true))
+            }
             let prompt = value("prompt")
             out.append(Row(title: "Asks the agent", value: prompt, before: before("prompt", prompt)))
             let agent = value("provider").isEmpty ? "Default agent" : value("provider").capitalized
