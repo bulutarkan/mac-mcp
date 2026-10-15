@@ -1,5 +1,8 @@
 ## Unreleased
 
+### Antigravity, pi, Cline, Kilo Code and Goose as AI apps
+- Mac MCP can now be added to these five CLIs too, so an `agy`, `pi`, `cline`, `kilo` or `goose` you start yourself can use your Mac. They appear with Connect in the tour, in Settings › Connections and in `mac-mcp clients` / `mac-mcp connect --client antigravity|pi|cline|kilo|goose`. Antigravity and pi are set up through their own `mcp add`; Cline, Kilo Code and Goose get `mac-mcp stdio` in their config (`cline_mcp_settings.json`, `kilo.json`, Goose's `config.yaml` as a stdio extension) next to the servers already there, with the old file kept as `*.before-mac-mcp`. No address or key goes into any of them.
+
 ### Antigravity, pi, Cline, Kilo Code and Goose as agents
 - Five more agent providers, off by default and turned on in Settings › Subagents or in the tour: Antigravity (`agy`, on the owner's Google sign-in), pi, Cline, Kilo Code and Goose. Each runs headless with only the scoped Mac MCP server, and its tool calls show properly in run reports, the menu and the island: Mac MCP's own tools by name, shell commands as commands, file writes as files, failures as failed. The island shows each one's own logo while it works.
 - Token usage is recorded per agent and appears in Settings › Usage once the agent is on; follow-up messages continue the same session (not for Cline, whose CLI cannot resume a session headless).

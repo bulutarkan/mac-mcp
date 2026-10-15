@@ -26,6 +26,11 @@ const CLIENTS = [
   { id: 'opencode', name: 'OpenCode', logo: 'opencode', needsRemote: false },
   { id: 'kimi', name: 'Kimi Code', logo: 'kimi', needsRemote: false },
   { id: 'grok', name: 'Grok Build', logo: 'grok', needsRemote: false },
+  { id: 'antigravity', name: 'Antigravity', logo: 'antigravity', needsRemote: false },
+  { id: 'pi', name: 'pi', logo: 'pi', needsRemote: false },
+  { id: 'cline', name: 'Cline', logo: 'cline', needsRemote: false },
+  { id: 'kilo', name: 'Kilo Code', logo: 'kilo', needsRemote: false },
+  { id: 'goose', name: 'Goose', logo: 'goose', needsRemote: false },
 ];
 
 // Agents Mac MCP can hand work to (Settings › Agents). Each starts off; the owner turns it on.

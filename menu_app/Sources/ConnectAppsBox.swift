@@ -11,7 +11,8 @@ struct ConnectAppsBox: View {
     @MacMCPState private var working: String?
     @MacMCPState private var loaded = false
 
-    private static let order = ["claude-code", "codex", "opencode", "claude-desktop", "kimi", "grok"]
+    private static let order = ["claude-code", "codex", "opencode", "claude-desktop", "kimi", "grok",
+                                "antigravity", "pi", "cline", "kilo", "goose"]
 
     var body: some View {
         GroupBox {

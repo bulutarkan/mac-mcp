@@ -2,8 +2,9 @@
 
 Each app gets `mac-mcp stdio` as a command-based MCP server, so its config holds
 no address and no key; the bridge adds the key from Mac MCP's own .env. Apps
-with a CLI for this (Claude Code, Codex, Grok Build) are set up through it; for the
-others Mac MCP edits the JSON config itself, keeping everything else in the file.
+with a CLI for this (Claude Code, Codex, Grok Build, Antigravity, pi) are set up through
+it; for the others Mac MCP edits the JSON (Goose: YAML) config itself, keeping everything
+else in the file.
 """
 from __future__ import annotations
 
@@ -48,7 +49,14 @@ APPS = (
     App("opencode", "OpenCode", "Start OpenCode again, then ask it something about your Mac."),
     App("kimi", "Kimi Code", "Start a new Kimi Code session, then ask it something about your Mac."),
     App("grok", "Grok Build", "Start a new Grok Build session, then ask it something about your Mac."),
+    App("antigravity", "Antigravity", "Start a new agy session, then ask it something about your Mac."),
+    App("pi", "pi", "Start a new pi session, then ask it something about your Mac."),
+    App("cline", "Cline", "Start a new Cline session, then ask it something about your Mac."),
+    App("kilo", "Kilo Code", "Start a new Kilo Code session, then ask it something about your Mac."),
+    App("goose", "Goose", "Start a new Goose session, then ask it something about your Mac."),
 )
+# The CLI each app is started with, where it differs from the app id.
+_BINARIES = {"claude-code": "claude", "antigravity": "agy"}
 # Apps whose own CLI adds and removes MCP servers: (executable, remove args, add args before the command).
 _CLI_SETUP = {
     "claude-code": ("claude", ["mcp", "remove", SERVER_NAME, "--scope", "user"],
@@ -56,6 +64,8 @@ _CLI_SETUP = {
     "codex": ("codex", ["mcp", "remove", SERVER_NAME], ["mcp", "add", SERVER_NAME, "--"]),
     "grok": ("grok", ["--no-auto-update", "mcp", "remove", SERVER_NAME],
              ["--no-auto-update", "mcp", "add", SERVER_NAME, "--"]),
+    "antigravity": ("agy", ["mcp", "remove", SERVER_NAME], ["mcp", "add", SERVER_NAME, "--"]),
+    "pi": ("pi", ["mcp", "remove", SERVER_NAME], ["mcp", "add", SERVER_NAME, "--"]),
 }
 APP_IDS = tuple(app.id for app in APPS)
 
@@ -113,6 +123,40 @@ def _kimi_mcp_config() -> Path:
 
 def _grok_config() -> Path:
     return Path(os.environ.get("GROK_HOME") or _home() / ".grok") / "config.toml"
+
+
+def _agy_mcp_config() -> Path:
+    return _home() / ".gemini" / "config" / "mcp_config.json"
+
+
+def _pi_mcp_config() -> Path:
+    return Path(os.environ.get("PI_CODING_AGENT_DIR") or _home() / ".pi" / "agent") / "mcp.json"
+
+
+def _cline_mcp_config() -> Path:
+    return Path(os.environ.get("CLINE_DIR") or _home() / ".cline") / "data" / "settings" / "cline_mcp_settings.json"
+
+
+def _kilo_config() -> Path:
+    folder = Path(os.environ.get("XDG_CONFIG_HOME") or _home() / ".config") / "kilo"
+    for name in ("kilo.jsonc", "kilo.json"):
+        if (folder / name).exists():
+            return folder / name
+    return folder / "kilo.json"
+
+
+def _goose_config() -> Path:
+    return Path(os.environ.get("XDG_CONFIG_HOME") or _home() / ".config") / "goose" / "config.yaml"
+
+
+def _goose_extensions() -> Any:
+    import yaml
+
+    try:
+        data = yaml.safe_load(_goose_config().read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    return data.get("extensions") if isinstance(data, dict) else None
 
 
 def _toml_servers(path: Path, table: str) -> Any:
@@ -181,6 +225,20 @@ def _entry(app: str) -> Any:
         servers = (_read_json(_kimi_mcp_config()) or {}).get("mcpServers")
     elif app == "grok":
         servers = _toml_servers(_grok_config(), "mcp_servers")
+    elif app == "antigravity":
+        servers = (_read_json(_agy_mcp_config()) or {}).get("mcpServers")
+    elif app == "pi":
+        servers = (_read_json(_pi_mcp_config()) or {}).get("mcpServers")
+    elif app == "cline":
+        servers = (_read_json(_cline_mcp_config()) or {}).get("mcpServers")
+    elif app == "kilo":
+        servers = (_read_json(_kilo_config()) or {}).get("mcp")
+    elif app == "goose":
+        servers = _goose_extensions()
+        entry = servers.get(SERVER_NAME) if isinstance(servers, dict) else None
+        # Goose names the command `cmd`.
+        return None if entry is None else (
+            {"command": entry.get("cmd"), "args": entry.get("args") or []} if isinstance(entry, dict) else {})
     else:
         servers = (_read_json(_opencode_config()) or {}).get("mcp")
     if not isinstance(servers, dict) or SERVER_NAME not in servers:
@@ -196,9 +254,9 @@ def _installed(app: str) -> bool:
         return _which("codex") is not None
     if app == "claude-desktop":
         return _desktop_app() is not None
-    if app in ("kimi", "grok"):
-        return _which(app) is not None
-    return _which("opencode") is not None or _opencode_dir().exists()
+    if app == "opencode":
+        return _which("opencode") is not None or _opencode_dir().exists()
+    return _which(_BINARIES.get(app, app)) is not None
 
 
 def apps_status() -> list[dict[str, Any]]:
@@ -251,6 +309,47 @@ def _edit_json(path: Path, label: str, update: Callable[[dict[str, Any]], None])
     _write_json(path, data)
 
 
+def _add_goose(command: list[str]) -> None:
+    """Goose keeps its extensions in YAML; the rest of the file is kept as it was read."""
+    import yaml
+
+    path = _goose_config()
+    data: dict[str, Any] = {}
+    if path.exists():
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            loaded = None
+        if loaded is not None and not isinstance(loaded, dict):
+            loaded = None
+        if loaded is None and path.read_text(encoding="utf-8", errors="replace").strip():
+            raise SetupError(f"Goose's settings file ({path}) could not be read, so Mac MCP leaves it as it is. "
+                             "Add Mac MCP by hand with the manual setup.")
+        data = loaded or {}
+    extensions = data.get("extensions")
+    data["extensions"] = extensions if isinstance(extensions, dict) else {}
+    data["extensions"][SERVER_NAME] = {
+        "enabled": True, "type": "stdio", "name": SERVER_NAME, "cmd": command[0], "args": command[1:],
+        "envs": {}, "env_keys": [], "timeout": 300, "bundled": None, "description": "Mac MCP",
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = 0o600
+    if path.exists():
+        mode = path.stat().st_mode & 0o777
+        backup = path.with_name(path.name + ".before-mac-mcp")
+        shutil.copy2(path, backup)
+        os.chmod(backup, 0o600)
+    fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            yaml.safe_dump(data, handle, sort_keys=False, allow_unicode=True)
+        os.chmod(temp, mode)
+        os.replace(temp, path)
+    except BaseException:
+        Path(temp).unlink(missing_ok=True)
+        raise
+
+
 def connect(app: str, *, run: Run = subprocess.run) -> dict[str, Any]:
     """Add Mac MCP to the app, replacing an earlier Mac MCP entry. Returns what to do next."""
     meta = next((item for item in APPS if item.id == app), None)
@@ -288,6 +387,25 @@ def connect(app: str, *, run: Run = subprocess.run) -> dict[str, Any]:
             data["mcpServers"][SERVER_NAME] = {"transport": "stdio", "command": command[0], "args": command[1:]}
 
         _edit_json(_kimi_mcp_config(), meta.name, add_kimi)
+    elif app in ("cline", "kilo", "goose"):
+        if _which(app) is None:
+            raise SetupError(f"{meta.name} is not installed on this Mac.")
+        if app == "cline":
+            def add_cline(data: dict[str, Any]) -> None:
+                servers = data.get("mcpServers")
+                data["mcpServers"] = servers if isinstance(servers, dict) else {}
+                data["mcpServers"][SERVER_NAME] = {"command": command[0], "args": command[1:]}
+
+            _edit_json(_cline_mcp_config(), meta.name, add_cline)
+        elif app == "kilo":
+            def add_kilo(data: dict[str, Any]) -> None:
+                servers = data.get("mcp")
+                data["mcp"] = servers if isinstance(servers, dict) else {}
+                data["mcp"][SERVER_NAME] = {"type": "local", "command": command, "enabled": True}
+
+            _edit_json(_kilo_config(), meta.name, add_kilo)
+        else:
+            _add_goose(command)
     else:
         def add_opencode(data: dict[str, Any]) -> None:
             data.setdefault("$schema", "https://opencode.ai/config.json")

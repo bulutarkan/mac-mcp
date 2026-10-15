@@ -143,7 +143,10 @@ test('the apps card shows what needs a click, then one row for the apps already 
   assert.equal(groups.present, 4);
   assert.equal(groups.all.length, CLIENTS.length);
   // Apps not on this Mac come last, in list order.
-  assert.deepEqual(groups.all.slice(-3).map(({ client }) => client.id), ['opencode', 'kimi', 'grok']);
+  assert.deepEqual(groups.all.slice(-8).map(({ client }) => client.id),
+    ['opencode', 'kimi', 'grok', 'antigravity', 'pi', 'cline', 'kilo', 'goose']);
+  // Every agent with a CLI of its own is also an AI app Mac MCP can be added to.
+  for (const agent of AGENTS) assert.ok(CLIENTS.some((client) => client.id === agent.client), agent.id);
 });
 
 test('the first call is said in words, not as a tool name', () => {

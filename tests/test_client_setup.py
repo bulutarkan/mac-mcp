@@ -25,7 +25,7 @@ class ClientSetupTests(unittest.TestCase):
         self.cli.chmod(0o755)
         env = patch.dict(os.environ, {"HOME": str(self.home), "PATH": str(self.cli.parent),
                                       "MAC_MCP_CLI": "", "CODEX_HOME": "", "XDG_CONFIG_HOME": "",
-                                      "KIMI_CODE_HOME": "", "GROK_HOME": ""})
+                                      "KIMI_CODE_HOME": "", "GROK_HOME": "", "PI_CODING_AGENT_DIR": "", "CLINE_DIR": ""})
         env.start()
         self.addCleanup(env.stop)
         # Only the temp home: the real /opt/homebrew/bin may hold the apps' CLIs.
@@ -143,6 +143,72 @@ class ClientSetupTests(unittest.TestCase):
         apps = {item["id"]: item for item in client_setup.apps_status()}
         self.assertFalse(apps["kimi"]["installed"])
         self.assertFalse(apps["grok"]["installed"])
+
+    def test_antigravity_and_pi_are_added_through_their_cli(self) -> None:
+        for app, binary, config in (("antigravity", "agy", self.home / ".gemini" / "config" / "mcp_config.json"),
+                                    ("pi", "pi", self.home / ".pi" / "agent" / "mcp.json")):
+            with self.subTest(app=app):
+                tool = self.tool(binary)
+                self.calls = []
+
+                def run(args, config=config, **kwargs):
+                    self.calls.append(list(args))
+                    if "add" in args:
+                        config.parent.mkdir(parents=True, exist_ok=True)
+                        config.write_text(json.dumps({"mcpServers": {"mac-mcp": {"command": str(self.cli), "args": ["stdio"]}}}))
+                    return subprocess.CompletedProcess(args, 0, "", "")
+
+                client_setup.connect(app, run=run)
+                self.assertEqual([str(tool), "mcp", "add", "mac-mcp", "--", str(self.cli), "stdio"], self.calls[-1])
+                status = {item["id"]: item for item in client_setup.apps_status()}[app]
+                self.assertEqual((True, True, True), (status["installed"], status["added"], status["keyless"]))
+
+    def test_cline_kilo_and_goose_keep_the_owners_own_servers(self) -> None:
+        cline = self.home / ".cline" / "data" / "settings" / "cline_mcp_settings.json"
+        kilo = self.home / ".config" / "kilo" / "kilo.json"
+        goose = self.home / ".config" / "goose" / "config.yaml"
+        for path in (cline, kilo, goose):
+            path.parent.mkdir(parents=True)
+        cline.write_text(json.dumps({"mcpServers": {"github": {"url": "https://example.invalid"}}}))
+        kilo.write_text(json.dumps({"model": "openrouter/x", "mcp": {"github": {"type": "remote"}}}))
+        goose.write_text("GOOSE_PROVIDER: openrouter\nextensions:\n  developer:\n    enabled: true\n    type: platform\n")
+        for app in ("cline", "kilo", "goose"):
+            self.tool(app)
+            result = client_setup.connect(app, run=self.fake_run)
+            self.assertIn("ask it something about your Mac", result["next"])
+        self.assertEqual([], self.calls)
+        servers = json.loads(cline.read_text())["mcpServers"]
+        self.assertEqual({"url": "https://example.invalid"}, servers["github"])
+        self.assertEqual({"command": str(self.cli), "args": ["stdio"]}, servers["mac-mcp"])
+        data = json.loads(kilo.read_text())
+        self.assertEqual(("openrouter/x", {"type": "remote"}), (data["model"], data["mcp"]["github"]))
+        self.assertEqual({"type": "local", "command": [str(self.cli), "stdio"], "enabled": True}, data["mcp"]["mac-mcp"])
+        import yaml
+        config = yaml.safe_load(goose.read_text())
+        self.assertEqual("openrouter", config["GOOSE_PROVIDER"])
+        self.assertEqual("platform", config["extensions"]["developer"]["type"])
+        self.assertEqual((str(self.cli), ["stdio"], "stdio"),
+                         tuple(config["extensions"]["mac-mcp"][key] for key in ("cmd", "args", "type")))
+        self.assertTrue(goose.with_name("config.yaml.before-mac-mcp").exists())
+        apps = {item["id"]: item for item in client_setup.apps_status()}
+        for app in ("cline", "kilo", "goose"):
+            self.assertEqual((True, True, True), (apps[app]["installed"], apps[app]["added"], apps[app]["keyless"]), app)
+
+    def test_an_unreadable_goose_config_is_left_alone(self) -> None:
+        self.tool("goose")
+        goose = self.home / ".config" / "goose" / "config.yaml"
+        goose.parent.mkdir(parents=True)
+        goose.write_text("extensions: [unclosed\n")
+        with self.assertRaisesRegex(client_setup.SetupError, "could not be read"):
+            client_setup.connect("goose", run=self.fake_run)
+        self.assertEqual("extensions: [unclosed\n", goose.read_text())
+
+    def test_the_new_apps_not_installed_are_reported(self) -> None:
+        for app in ("antigravity", "pi", "cline", "kilo", "goose"):
+            with self.assertRaises(client_setup.SetupError):
+                client_setup.connect(app, run=self.fake_run)
+        apps = {item["id"]: item for item in client_setup.apps_status()}
+        self.assertFalse(any(apps[app]["installed"] for app in ("antigravity", "pi", "cline", "kilo", "goose")))
 
     def test_status_lists_installed_and_added_apps(self) -> None:
         self.tool("claude")
