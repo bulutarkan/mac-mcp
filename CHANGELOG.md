@@ -1,5 +1,9 @@
 ## Unreleased
 
+### The island's clicks follow its shape (#203)
+- The island lets clicks through everywhere except its current shape. That was decided only when the mouse moved, so with a resting pointer the first click after the island appeared, changed shape (a peek opening or closing, the panel resizing) or moved to another display could miss the island, or a click beside a shrunken island could be swallowed instead of reaching the menu bar. The click-through is now re-decided at each of those moments; only real mouse moves still open or close the panel, so a peek appearing under a resting pointer does not expand by itself. The island still never takes keyboard focus. Reported in a source review on Reddit (r/SwiftUI).
+- An app named by its executable or display name (for example `MacMCPMenu`) shows its own icon in the island instead of a dashed placeholder.
+
 ### A calmer, clearer menu (#201)
 - One surface instead of stacked boxes: rows with small colour tiles (Agents violet, Endpoint teal, Safety gray, Recent activity blue, Sessions orange; red or orange when something is wrong), separated by thin dividers, with Settings and More at the bottom.
 - Under the name, a line says what Mac MCP is doing (Ready, N agents working, Server stopped), and four chips show the tool calls and success rate of the last hour, the running agents and the sessions.

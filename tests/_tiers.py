@@ -8,6 +8,7 @@ tests/test_test_tiers.py keeps this list in step with the files.
 from __future__ import annotations
 
 SWIFT_ONLY = (
+    "test_live_island_hit_area",
     "test_login_item",
     "test_menu_agent_failure_aging",
     "test_menu_chatgpt_resilience",

@@ -147,6 +147,17 @@ enum IslandIcon: Hashable {
                 if FileManager.default.fileExists(atPath: candidate.path) { url = candidate; break }
             }
         }
+        if url == nil {
+            // An app named by its executable or display name (MacMCPMenu, "Mac MCP") is found
+            // among the running apps instead of showing a placeholder.
+            let wanted = key.lowercased()
+            if let running = workspace.runningApplications.first(where: { app in
+                [app.localizedName, app.bundleIdentifier, app.executableURL?.lastPathComponent].contains { $0?.lowercased() == wanted }
+            }), let icon = running.icon {
+                cache[key] = icon
+                return icon
+            }
+        }
         guard let url else { return nil }
         let image = workspace.icon(forFile: url.path)
         cache[key] = image
@@ -301,6 +312,7 @@ final class LiveIslandController {
     private var hoverTask: Task<Void, Never>?
     private var mouseMonitors: [Any] = []
     private var observers: [NSObjectProtocol] = []
+    private var shapeChanges: AnyCancellable?
     private var locked = false
     private var serverWasRunning = false
     private var attention: [LiveItem] = []
@@ -763,6 +775,8 @@ final class LiveIslandController {
             }
         }
         installMouseTracking()
+        // A pointer already over the island must not wait for a move before its first click lands.
+        updateMouseThrough(hover: false)
     }
 
     private func hideWindow() {
@@ -823,15 +837,14 @@ final class LiveIslandController {
         window?.ignoresMouseEvents = true
     }
 
-    private func updateMouseThrough() {
+    /// Let clicks through outside the island's shape. Mouse moves decide this and the hover;
+    /// a shape or position change (with the pointer still) decides only the click-through (#203),
+    /// so a peek appearing under a resting pointer does not open the panel by itself.
+    private func updateMouseThrough(hover: Bool = true) {
         guard let panel = window, panel.isVisible else { return }
-        let cursor = NSEvent.mouseLocation
-        let frame = panel.frame
-        let size = model.size
-        let rect = NSRect(x: frame.midX - size.width / 2, y: frame.maxY - size.height, width: size.width, height: size.height)
-        let inside = rect.contains(cursor)
+        let inside = IslandHitArea.takesClick(at: NSEvent.mouseLocation, in: panel.frame, size: model.size)
         if panel.ignoresMouseEvents == inside { panel.ignoresMouseEvents = !inside }
-        if inside != model.hovering { hoverChanged(inside) }
+        if hover, inside != model.hovering { hoverChanged(inside) }
     }
 
     private func observeSystem() {
@@ -840,8 +853,15 @@ final class LiveIslandController {
             Task { @MainActor in
                 guard let self, let panel = self.window else { return }
                 self.position(panel)
+                self.updateMouseThrough(hover: false)
             }
         })
+        // The shape grows and shrinks (rest, peek, expanded, a new notch or panel height) while the
+        // pointer may stay still: re-decide the click-through once the new values are set.
+        shapeChanges = Publishers.Merge3(model.$mode.map { _ in () }, model.$notch.map { _ in () },
+                                         model.$expandedHeight.map { _ in () })
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in self?.updateMouseThrough(hover: false) }
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.enabled, !self.locked else { return }
@@ -921,9 +941,7 @@ final class IslandHostingView: NSHostingView<LiveIslandView> {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let model else { return nil }
-        let size = model.size
-        let rect = NSRect(x: bounds.midX - size.width / 2, y: bounds.maxY - size.height, width: size.width, height: size.height)
-        return rect.contains(point) ? super.hitTest(point) : nil
+        return IslandHitArea.takesClick(at: point, in: bounds, size: model.size) ? super.hitTest(point) : nil
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
