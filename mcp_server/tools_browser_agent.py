@@ -166,6 +166,8 @@ _ELEMENT_READINESS_STABLE_MS = 300
 _ACTION_VERIFY_TIMEOUT_S = 0.55
 _ACTION_VERIFY_POLL_S = 0.07
 _TYPE_VERIFY_TIMEOUT_S = 1.0
+# How long a rich editor gets to re-render before typed text is read again (#205).
+_RENDER_SETTLE_S = 0.2
 _TYPE_VERIFY_POLL_S = 0.05
 _TYPE_FOCUS_SETTLE_S = 0.05
 # A DOM mutation after a click counts as its effect only when the page was quiet
@@ -2895,10 +2897,49 @@ def _verified_dom_action(
                 compact_state = post
                 break
         else:
+            # The editor took the input event (its own paste or beforeinput handling) but the text never
+            # appeared. It may hold the text without drawing it, or have dropped it: nothing seen here
+            # tells which (#205). Stop the batch, and do not invite a second paste that could enter it twice.
             result.update({
-                "ok": False, "error": "input_not_applied", "reason_code": "INPUT_NOT_APPLIED",
-                "verification": "editor_did_not_accept", "value": seen[:200], "observe_again": True,
+                "ok": False, "error": "input_unconfirmed", "reason_code": "EDITOR_RENDER_UNCONFIRMED",
+                "verification": "editor_render_unconfirmed", "value": seen[:200], "observe_again": True,
+                "outcome_unknown": True, "automatic_retry": False,
+                "hint": "The editor took the input but has not shown the text. Observe the field (or reload the "
+                        "draft) before typing again; typing again could enter the text twice.",
             })
+
+    settle_text = result.pop("_settle_text", None)
+    prior_text = result.pop("_prior_text", None)
+    if settle_text is not None and result.get("verification") == "value_applied" and typ in {"type", "type_text", "paste"}:
+        # The editor drew the text at once. A controlled editor (React) can re-render from a model that
+        # never took it and put the old text back, so read it once more after it settles (#205).
+        cancellable_sleep(_RENDER_SETTLE_S)
+        post = _run_json_js(
+            settings, browser, _element_effect_state_js(element_id),
+            window_index, tab_index, tab_handle,
+        )
+        js_calls += 1
+        seen = str(post.get("value") or post.get("text") or "")
+        folded = _fold_typed_text(seen)
+        if post.get("connected") is False:
+            result.update({"verification": "editor_rerendered_text", "editor_state_unverified": True,
+                           "observe_again": True, "rendered_after_settle": None})
+        elif folded == _fold_typed_text(str(settle_text)):
+            result["rendered_after_settle"] = True
+            compact_state = post
+        elif not folded.strip() or folded == _fold_typed_text(str(prior_text or "")):
+            # Empty again, or back to what was there before: the text is gone from the page.
+            result.update({
+                "ok": False, "error": "input_lost_after_render", "reason_code": "INPUT_LOST_AFTER_RENDER",
+                "verification": "editor_rerender_lost", "value": seen[:200], "rendered_after_settle": False,
+                "observe_again": True, "automatic_retry": False,
+                "hint": "The editor showed the text, then re-rendered without it. Observe the field before "
+                        "typing again; check the draft before any submit.",
+            })
+        else:
+            # Still there in the editor's own form (a list item, a link): not lost, not confirmed either.
+            result.update({"verification": "editor_rerendered_text", "value": seen[:200],
+                           "editor_state_unverified": True, "observe_again": True, "rendered_after_settle": False})
 
     phases["verify_ms"] = int((_phase_clock() - verify_started) * 1000)
     result["phase_ms"] = phases
@@ -4364,6 +4405,7 @@ _REACTED_VERIFICATIONS = frozenset({
 })
 _UNCONFIRMED_VERIFICATIONS = frozenset({
     "editor_model_unconfirmed", "dom_text_only", "editor_pending", "deferred_pending", "focus_settling",
+    "editor_render_unconfirmed", "editor_rerendered_text",
 })
 _CONFIRMED_VERIFICATIONS = frozenset({"value_applied", "value_applied_async"})
 _BLOCKED_ERRORS = frozenset({

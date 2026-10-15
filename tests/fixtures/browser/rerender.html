@@ -1,0 +1,52 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Rerender fixture</title>
+<style>
+body{font:14px system-ui;margin:12px}
+.editor{min-height:28px;border:1px solid #999;padding:4px;margin:6px 0 14px}
+</style></head>
+<body>
+<!-- #205: controlled rich-text editors whose model and DOM can disagree. Each handles paste
+     itself (as ProseMirror, Lexical or Draft do) and announces it with beforeinput. -->
+<p>Model only: keeps the text in its model, never draws it</p>
+<div id="model-only" class="editor" contenteditable="true" role="textbox" aria-label="Model only editor"></div>
+<p>Reverts: draws the text, then re-renders from a model that never changed</p>
+<div id="reverts" class="editor" contenteditable="true" role="textbox" aria-label="Reverting editor">Draft</div>
+<p>Consistent: model and DOM agree before and after its re-render</p>
+<div id="consistent" class="editor" contenteditable="true" role="textbox" aria-label="Consistent editor"></div>
+<p>Delayed: updates its model at once and draws it 0.3 s later</p>
+<div id="delayed" class="editor" contenteditable="true" role="textbox" aria-label="Delayed editor"></div>
+<p>Reformats: keeps the text but re-renders it in its own form (a "1. " line becomes a list item)</p>
+<div id="reformats" class="editor" contenteditable="true" role="textbox" aria-label="Reformatting editor"></div>
+<script>
+window.__models = {};
+function controlled(id, onPaste) {
+  var el = document.getElementById(id);
+  window.__models[id] = el.textContent;
+  el.addEventListener('paste', function (e) {
+    e.preventDefault();
+    var text = e.clipboardData.getData('text/plain');
+    el.dispatchEvent(new InputEvent('beforeinput', {bubbles: true, cancelable: true, inputType: 'insertFromPaste', data: text}));
+    onPaste(el, text);
+  });
+}
+controlled('model-only', function (el, text) { window.__models['model-only'] = text; });
+controlled('reverts', function (el, text) {
+  el.textContent = text;
+  setTimeout(function () { el.textContent = window.__models.reverts; }, 80);
+});
+controlled('consistent', function (el, text) {
+  window.__models.consistent = text;
+  el.textContent = text;
+  setTimeout(function () { el.textContent = window.__models.consistent; }, 80);
+});
+controlled('delayed', function (el, text) {
+  window.__models.delayed = text;
+  setTimeout(function () { el.textContent = window.__models.delayed; }, 300);
+});
+controlled('reformats', function (el, text) {
+  window.__models.reformats = text;
+  el.textContent = text;
+  setTimeout(function () { el.textContent = text.replace(/^1\. /, ''); }, 80);
+});
+</script>
+</body></html>

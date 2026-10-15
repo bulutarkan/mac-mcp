@@ -64,6 +64,9 @@ for(var i=0;i<actions.length;i++){
       var verification=pending?'editor_pending':(!applied?'input_not_applied':(method==='dom_text'?'dom_text_only':(unconfirmed?'editor_model_unconfirmed':'value_applied')));
       var typed={index:i,type:type,element_id:a.element_id,ok:applied,value:(String(el.type||'').toLowerCase()==='password'?(actual?'[hidden]':''):actual.slice(0,200)),effect_observed:applied&&!pending,verification:verification,input_method:method.replace(/_async$/,''),observe_again:!applied};
       if(pending)typed._verify_text=expectedText;
+      /* A rich editor drew the text at once; the server reads it again after the editor re-renders, since
+         a controlled editor can put its old model back (#205). Plain fields keep their value: no extra read. */
+      if(verification==='value_applied'&&(method==='paste_event'||method==='exec_command')){typed._settle_text=expectedText;typed._prior_text=priorText;}
       if(pending&&unconfirmed)typed._model_unconfirmed=true;
       /* The page drew the pasted text but nothing shows its framework took it (see __mcpPasteInsert). */
       if(verification==='editor_model_unconfirmed'){typed.editor_state_unverified=true;typed.observe_again=true;}

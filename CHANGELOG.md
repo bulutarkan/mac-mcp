@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Rich-text typing is checked after the editor re-renders (#205)
+- A rich-text editor that draws typed text at once is read again 0.2 s later, after its re-render. A controlled editor (React) can put its old model back; that is now `editor_rerender_lost` (the batch stops before any submit) instead of `value_applied`. Text the editor kept in its own form, such as a "1. " line turned into a list item, is `editor_rerendered_text`, unconfirmed but not an error.
+- When an editor takes the input but never shows the text, the step is `editor_render_unconfirmed` (outcome unconfirmed, no automatic retry) instead of `editor_did_not_accept`: nothing seen says the editor rejected it, and typing again could enter the text twice.
+- Plain inputs and textareas get no extra read. Reported on Reddit (r/PromptEngineering).
+
 ### The island's clicks follow its shape (#203)
 - The island lets clicks through everywhere except its current shape. That was decided only when the mouse moved, so with a resting pointer the first click after the island appeared, changed shape (a peek opening or closing, the panel resizing) or moved to another display could miss the island, or a click beside a shrunken island could be swallowed instead of reaching the menu bar. The click-through is now re-decided at each of those moments; only real mouse moves still open or close the panel, so a peek appearing under a resting pointer does not expand by itself. The island still never takes keyboard focus. Reported in a source review on Reddit (r/SwiftUI).
 - An app named by its executable or display name (for example `MacMCPMenu`) shows its own icon in the island instead of a dashed placeholder.

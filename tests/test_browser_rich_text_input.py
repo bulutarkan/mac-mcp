@@ -12,6 +12,7 @@ from mcp_server import tools_browser_agent as agent
 from mcp_server.security import load_settings
 
 SETTINGS = load_settings()
+ROOT_JS = __import__("pathlib").Path(__file__).resolve().parents[1] / "mcp_server" / "browser_js"
 TEXT = "Thanks for reading!"
 
 
@@ -207,13 +208,56 @@ class VerificationTests(unittest.TestCase):
         self.assertEqual(3, len(calls))  # type + two read-only checks
 
     def test_text_that_never_reaches_the_field_fails_instead_of_passing(self) -> None:
+        # #205: the editor took the event but never drew the text; it may hold it. Unknown, not "rejected",
+        # and never an invitation to paste again (which could enter the text twice).
         pending = {"ok": True, "type": "type", "verification": "editor_pending", "_verify_text": TEXT}
         with patch.object(agent, "_TYPE_VERIFY_TIMEOUT_S", 0.0001):
             result, _ = _run(pending, follow_ups=[{"text": ""}] * 50)
         self.assertFalse(result["ok"])
-        self.assertEqual("editor_did_not_accept", result["verification"])
-        self.assertEqual("INPUT_NOT_APPLIED", result["reason_code"])
+        self.assertEqual("editor_render_unconfirmed", result["verification"])
+        self.assertEqual("EDITOR_RENDER_UNCONFIRMED", result["reason_code"])
         self.assertTrue(result["observe_again"])
+        self.assertTrue(result["outcome_unknown"])
+        self.assertFalse(result["automatic_retry"])
+        self.assertEqual("unconfirmed", agent._action_outcome(result))
+
+    def test_rich_text_drawn_at_once_is_read_again_after_the_editor_re_renders(self) -> None:
+        drawn = {"ok": True, "type": "type", "verification": "value_applied", "input_method": "paste_event",
+                 "effect_observed": True, "value": TEXT, "_settle_text": TEXT, "_prior_text": "Old draft"}
+        kept, calls = _run(drawn, follow_ups=[{"connected": True, "text": TEXT}])
+        self.assertTrue(kept["ok"])
+        self.assertEqual("value_applied", kept["verification"])
+        self.assertTrue(kept["rendered_after_settle"])
+        self.assertEqual(2, len(calls))  # type + one read after the settle
+        self.assertNotIn("_settle_text", kept)
+        self.assertNotIn("_prior_text", kept)
+
+        lost, _ = _run(drawn, follow_ups=[{"connected": True, "text": "Old draft"}])
+        self.assertFalse(lost["ok"])
+        self.assertEqual("editor_rerender_lost", lost["verification"])
+        self.assertEqual("INPUT_LOST_AFTER_RENDER", lost["reason_code"])
+        self.assertFalse(lost["automatic_retry"])
+        self.assertEqual("failed", agent._action_outcome(lost))
+        emptied, _ = _run(drawn, follow_ups=[{"connected": True, "text": ""}])
+        self.assertEqual("editor_rerender_lost", emptied["verification"])
+
+        reformatted, _ = _run(drawn, follow_ups=[{"connected": True, "text": "Thanks for reading"}])
+        self.assertTrue(reformatted["ok"])
+        self.assertEqual("editor_rerendered_text", reformatted["verification"])
+        self.assertEqual("unconfirmed", agent._action_outcome(reformatted))
+
+        curly, _ = _run({**drawn, "_settle_text": "It's here"}, follow_ups=[{"connected": True, "text": "It\u2019s here"}])
+        self.assertEqual("value_applied", curly["verification"], "typographic rewrites count as the same text")
+
+    def test_plain_fields_get_no_extra_read(self) -> None:
+        typed = {"ok": True, "type": "type", "verification": "value_applied", "input_method": "value_setter",
+                 "effect_observed": True, "value": TEXT}
+        result, calls = _run(typed)
+        self.assertTrue(result["ok"])
+        self.assertEqual(1, len(calls))
+        self.assertNotIn("rendered_after_settle", result)
+        js = (ROOT_JS / "batch.js").read_text(encoding="utf-8")
+        self.assertIn("(method==='paste_event'||method==='exec_command')){typed._settle_text=expectedText;", js)
 
     def test_unannounced_page_paste_is_reported_unverified_not_accepted(self) -> None:
         drawn = {"ok": True, "type": "type", "verification": "editor_model_unconfirmed", "input_method": "paste_event",

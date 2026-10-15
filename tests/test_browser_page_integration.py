@@ -252,6 +252,54 @@ class BrowserPageIntegrationTests(unittest.TestCase):
                          tools.page.js("document.getElementById('receipt').textContent+'|'+window.__submits+'|'"
                                        "+document.querySelector('#cat summary').textContent"))
 
+    def test_rich_text_model_and_dom_disagreements_are_reported_honestly(self) -> None:
+        # #205: an editor's model and its DOM can disagree; each case gets the outcome its evidence allows.
+        tools = self.tools("rerender.html")
+
+        def type_into(label: str, text: str) -> dict:
+            result = tools.act([{"type": "type", "query": label, "role": "textbox", "text": text}])
+            return result["actions"][-1]
+
+        consistent = type_into("Consistent editor", "Hello consistent")
+        self.assertEqual("value_applied", consistent["verification"], consistent)
+        self.assertEqual("confirmed", consistent["outcome"])
+        self.assertTrue(consistent.get("rendered_after_settle"), consistent)
+
+        delayed = type_into("Delayed editor", "Hello delayed")
+        self.assertEqual("value_applied_async", delayed["verification"], delayed)
+
+        # Drawn at once, then re-rendered back to the old model: not a success.
+        reverts = type_into("Reverting editor", "Hello reverts")
+        self.assertFalse(reverts["ok"], reverts)
+        self.assertEqual("editor_rerender_lost", reverts["verification"])
+        self.assertEqual("INPUT_LOST_AFTER_RENDER", reverts["reason_code"])
+        self.assertFalse(reverts.get("automatic_retry", False))
+        self.assertEqual("Draft", tools.page.js("document.getElementById('reverts').textContent"))
+
+        # The model took the text but the DOM never showed it: unknown, not "rejected", no retry.
+        model_only = type_into("Model only editor", "Hello model")
+        self.assertFalse(model_only["ok"], model_only)
+        self.assertEqual("editor_render_unconfirmed", model_only["verification"])
+        self.assertEqual("unconfirmed", model_only["outcome"])
+        self.assertFalse(model_only.get("automatic_retry", False))
+        self.assertEqual("Hello model", tools.page.js("window.__models['model-only']"))
+
+        # The editor kept the text in its own form: not lost, not confirmed either.
+        reformats = type_into("Reformatting editor", "1. First point")
+        self.assertTrue(reformats["ok"], reformats)
+        self.assertEqual("editor_rerendered_text", reformats["verification"])
+        self.assertEqual("unconfirmed", reformats["outcome"])
+        self.assertEqual("First point", tools.page.js("document.getElementById('reformats').textContent"))
+
+    def test_a_lost_rich_text_never_reaches_the_submit_after_it(self) -> None:
+        tools = self.tools("rerender.html")
+        result = tools.act([
+            {"type": "type", "query": "Reverting editor", "role": "textbox", "text": "Lost text"},
+            {"type": "wait", "wait_s": 0.1},
+        ])
+        self.assertFalse(result["ok"], result)
+        self.assertEqual("editor_rerender_lost", result["actions"][-1]["verification"])
+
     def test_web_component_dialog_controls_are_seen_and_usable(self) -> None:
         # #165: a dialog in a shadow root with its form slotted in; inputs in their own shadow roots.
         tools = self.tools("shadow.html")
