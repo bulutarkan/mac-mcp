@@ -1,8 +1,8 @@
 """What a delegated agent did, as steps a person can read (#175 run reports).
 
 Each provider streams its own events into the agent's stdout.log: Codex `exec --json` items,
-Claude Code stream-json messages, OpenCode `run --format json` parts. This module turns them
-into one list of steps:
+Claude Code stream-json messages, OpenCode `run --format json` parts, Kimi Code stream-json
+messages and Grok Build streaming-json updates. This module turns them into one list of steps:
 
     {"kind": "thinking" | "message" | "tool" | "command" | "files" | "search" | "todo" | "error",
      "title": "plain sentence", "detail": "secondary line", "text": "longer text",
@@ -53,6 +53,9 @@ _CLAUDE_TOOLS = {
     "WebFetch": "Read a web page", "TodoWrite": "Updated its plan", "Task": "Started a helper",
     "NotebookEdit": "Edited a notebook",
 }
+_GROK_TOOLS = {"read_file": "Read a file", "list_dir": "Listed a folder", "grep": "Searched files",
+               "search_tool": "Looked for a tool", "todo_write": "Updated its plan", "web_search": "Searched the web",
+               "web_fetch": "Read a web page"}
 _OPENCODE_TOOLS = {"bash": "Ran a command", "read": "Read a file", "write": "Wrote a file", "edit": "Edited a file",
                    "grep": "Searched files", "glob": "Found files", "list": "Listed a folder", "webfetch": "Read a web page",
                    "todowrite": "Updated its plan", "patch": "Edited files"}
@@ -176,7 +179,7 @@ def _claude_tool(name: str, arguments: Any) -> Dict[str, Any]:
         return {"kind": "command", "title": str(arguments.get("description") or "Ran a command"),
                 "detail": _cut(arguments.get("command") or "", 400), "output": "", "status": "running"}
     if name in {"Edit", "Write", "MultiEdit", "NotebookEdit"}:
-        path = str(arguments.get("file_path") or arguments.get("notebook_path") or "")
+        path = str(arguments.get("file_path") or arguments.get("notebook_path") or arguments.get("path") or "")
         return {"kind": "files", "title": _CLAUDE_TOOLS.get(name, "Edited a file"),
                 "files": [{"path": path, "change": "add" if name == "Write" else "update"}], "status": "running"}
     if name == "WebSearch":
@@ -188,6 +191,45 @@ def _claude_tool(name: str, arguments: Any) -> Dict[str, Any]:
         return {"kind": "todo", "title": "Planned the work", "items": items, "status": "done"}
     return {"kind": "tool", "title": _CLAUDE_TOOLS.get(name) or _humanize(name), "detail": name,
             "input": _inputs(arguments), "output": "", "status": "running"}
+
+
+# ── Kimi Code and Grok Build ─────────────────────────────────────────────────
+
+def _kimi_call(call: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Kimi names its tools like Claude Code (Bash, Read, Write, mcp__mac-mcp__...); arguments are a JSON string."""
+    function = call.get("function") if isinstance(call.get("function"), dict) else {}
+    raw = function.get("arguments")
+    try:
+        arguments = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        arguments = {}
+    return _claude_tool(str(function.get("name") or ""), arguments if isinstance(arguments, dict) else {})
+
+
+def _grok_call(event: Dict[str, Any]) -> Dict[str, Any]:
+    name = str(event.get("toolName") or event.get("title") or "")
+    raw = event.get("rawInput") if isinstance(event.get("rawInput"), dict) else {}
+    inner = str(raw.get("tool_name") or "")
+    if name == "use_tool" and "__" in inner:
+        server, tool = inner.split("__", 1)
+        return _mcp_step(server, tool, raw.get("tool_input"), "", False, True)
+    if name == "run_terminal_command":
+        return {"kind": "command", "title": str(raw.get("description") or "Ran a command"),
+                "detail": _cut(raw.get("command") or "", 400), "output": "", "status": "running"}
+    if name in {"write", "search_replace"}:
+        path = str(raw.get("file_path") or raw.get("target_file") or "")
+        return {"kind": "files", "title": "Wrote a file" if name == "write" else "Edited a file",
+                "files": [{"path": path, "change": "add" if name == "write" else "update"}], "status": "running"}
+    return {"kind": "tool", "title": _GROK_TOOLS.get(name) or _humanize(name), "detail": name,
+            "input": _inputs(raw), "output": "", "status": "running"}
+
+
+def _grok_output(event: Dict[str, Any]) -> str:
+    parts = []
+    for item in event.get("content") or []:
+        if isinstance(item, dict) and isinstance(item.get("content"), dict):
+            parts.append(str(item["content"].get("text") or ""))
+    return "".join(parts)
 
 
 def _error_message(event: Dict[str, Any]) -> str:
@@ -230,6 +272,7 @@ def from_events(lines: List[str]) -> Dict[str, Any]:
             by_id[key] = len(steps)
         steps.append(step)
 
+    grok_text: Optional[Dict[str, Any]] = None
     for line in lines:
         try:
             event = json.loads(line)
@@ -238,6 +281,49 @@ def from_events(lines: List[str]) -> Dict[str, Any]:
         if not isinstance(event, dict):
             continue
         kind = str(event.get("type") or "")
+        role = str(event.get("role") or "")
+        # Kimi Code: chat messages with a role and no type
+        if role in {"assistant", "tool"} and not kind:
+            if role == "assistant":
+                text = _content_text(event.get("content")).split(_MARKER, 1)[0].strip()
+                if text:
+                    put(None, {"kind": "message", "title": "Said", "text": _cut(text, MAX_TEXT), "status": "done"})
+                for call in event.get("tool_calls") or []:
+                    if isinstance(call, dict):
+                        put(str(call.get("id") or "") or None, _kimi_call(call))
+            else:
+                index = by_id.get(str(event.get("tool_call_id") or ""))
+                if index is not None:
+                    step = steps[index]
+                    output = _content_text(event.get("content"))
+                    step["output"] = _readable_output(output) if step["kind"] == "tool" else _cut(output, MAX_OUTPUT)
+                    step["status"] = "done"
+            continue
+        # Grok Build: ACP session updates, the answer streamed in pieces
+        if kind in {"tool_call", "tool_call_update"} and event.get("toolCallId"):
+            grok_text = None
+            key = str(event["toolCallId"])
+            if kind == "tool_call":
+                put(key, _grok_call(event))
+            elif str(event.get("status") or "") in {"completed", "failed"} and key in by_id:
+                step = steps[by_id[key]]
+                output = _grok_output(event)
+                step["output"] = _readable_output(output) if step["kind"] == "tool" else _cut(output, MAX_OUTPUT)
+                step["status"] = "failed" if event.get("status") == "failed" else "done"
+            continue
+        if kind == "text" and "data" in event:
+            if grok_text is None:
+                grok_text = {"kind": "message", "title": "Said", "text": "", "status": "done", "_raw": ""}
+                put(None, grok_text)
+            grok_text["_raw"] += str(event.get("data") or "")
+            grok_text["text"] = _cut(grok_text["_raw"].split(_MARKER, 1)[0].strip(), MAX_TEXT)
+            continue
+        if kind == "end" and isinstance(event.get("usage"), dict):
+            raw = event["usage"]
+            usage = {"input_tokens": int(raw.get("input_tokens") or 0) + int(raw.get("cache_read_input_tokens") or 0),
+                     "output_tokens": int(raw.get("output_tokens") or 0),
+                     "reasoning_tokens": int(raw.get("reasoning_tokens") or 0)}
+            continue
         # Codex
         if kind in {"item.started", "item.updated", "item.completed"} and isinstance(event.get("item"), dict):
             item = event["item"]
@@ -313,6 +399,9 @@ def from_events(lines: List[str]) -> Dict[str, Any]:
                             "detail": tool, "input": _inputs(state.get("input")), "output": _readable_output(output),
                             "status": "failed" if failed else "done"}
                 put(str(part.get("callID") or part.get("id") or "") or None, step)
+    for step in steps:
+        step.pop("_raw", None)
+    steps[:] = [step for step in steps if not (step.get("kind") == "message" and not step.get("text"))]
     return {"steps": steps, "usage": usage}
 
 

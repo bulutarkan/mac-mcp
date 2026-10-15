@@ -358,6 +358,22 @@ def _provider_cursor_kind(provider: str, event: Mapping[str, Any]) -> Optional[s
             part = event.get("part") if isinstance(event.get("part"), Mapping) else {}
             tool = str(part.get("tool") or "")
             return "mcp_tool_event" if tool.startswith("mac-mcp_") else "native_tool_event"
+    elif provider == "kimi":
+        role = str(event.get("role") or "")
+        if role == "assistant":
+            tools = _kimi_tool_names(event)
+            if tools:
+                return "mcp_tool_event" if all(_is_mac_mcp_claude_tool(name) for name in tools) else "native_tool_event"
+            return "agent_message"
+        if role == "meta" and event_type == "session.resume_hint":
+            return "turn_completed"
+    elif provider == "grok":
+        if event_type == "tool_call":
+            return "mcp_tool_event" if _is_mac_mcp_grok_call(event) else "native_tool_event"
+        if event_type == "end":
+            return "turn_completed"
+        if event_type == "text":
+            return "agent_message"
     elif provider == "claude":
         if event_type == "system" and str(event.get("subtype") or "") == "init":
             return "session_started"
@@ -392,6 +408,31 @@ def _claude_tool_names(event: Mapping[str, Any]) -> list:
 
 def _is_mac_mcp_claude_tool(name: str) -> bool:
     return name.startswith("mcp__mac-mcp__")
+
+
+# Kimi Code and Grok Build tools that only read. Anything else they run natively (shell, file
+# writes, a tool a newer CLI adds) may have changed something, so a resume must not replay it.
+KIMI_READ_ONLY_TOOLS = frozenset({"Read", "Glob", "Grep", "FetchURL", "TodoList", "TaskList", "TaskOutput", "GetGoal",
+                                  "CronList", "EnterPlanMode", "ExitPlanMode", "WaitFor"})
+GROK_READ_ONLY_TOOLS = frozenset({"read_file", "list_dir", "grep", "todo_write", "search_tool",
+                                  "get_command_or_subagent_output", "monitor", "web_search", "web_fetch"})
+
+
+def _kimi_tool_names(event: Mapping[str, Any]) -> list:
+    calls = event.get("tool_calls") if isinstance(event.get("tool_calls"), list) else []
+    names = []
+    for call in calls:
+        function = call.get("function") if isinstance(call, Mapping) and isinstance(call.get("function"), Mapping) else {}
+        names.append(str(function.get("name") or ""))
+    return names
+
+
+def _is_mac_mcp_grok_call(event: Mapping[str, Any]) -> bool:
+    """Grok reaches MCP tools through use_tool, naming them `mac-mcp__<tool>`."""
+    if str(event.get("toolName") or "") != "use_tool":
+        return False
+    raw = event.get("rawInput") if isinstance(event.get("rawInput"), Mapping) else {}
+    return str(raw.get("tool_name") or "").startswith("mac-mcp__")
 
 
 def _record_provider_cursor(agent_id: str, provider: str, event: Mapping[str, Any]) -> None:
@@ -433,6 +474,15 @@ def note_provider_event(agent_id: str, provider: str, event: Mapping[str, Any]) 
         part = event.get("part") if isinstance(event.get("part"), Mapping) else {}
         tool = str(part.get("tool") or "")
         if tool and not tool.startswith("mac-mcp_"):
+            mark_checkpoint_unknown(agent_id, "unverified_provider_native_activity", tool=tool, event_type=event_type)
+    elif provider == "kimi" and str(event.get("role") or "") == "assistant":
+        for tool in _kimi_tool_names(event):
+            if tool and not _is_mac_mcp_claude_tool(tool) and tool not in KIMI_READ_ONLY_TOOLS:
+                mark_checkpoint_unknown(agent_id, "unverified_provider_native_activity", tool=tool, event_type="assistant")
+                break
+    elif provider == "grok" and event_type == "tool_call":
+        tool = str(event.get("toolName") or "")
+        if tool and not _is_mac_mcp_grok_call(event) and tool not in GROK_READ_ONLY_TOOLS:
             mark_checkpoint_unknown(agent_id, "unverified_provider_native_activity", tool=tool, event_type=event_type)
     elif provider == "claude" and event_type == "assistant":
         for tool in _claude_tool_names(event):

@@ -1,6 +1,6 @@
 # Agents and Scheduled Tasks
 
-Delegating work to Codex, Claude Code and OpenCode agents: resume, worktrees, admission, notifications, budgets, memory, skills, role learning and Scheduled Tasks.
+Delegating work to Codex, Claude Code and OpenCode agents (and, experimentally, Kimi Code and Grok Build): resume, worktrees, admission, notifications, budgets, memory, skills, role learning and Scheduled Tasks.
 
 [← Back to the README](../README.md)
 
@@ -86,3 +86,15 @@ Enable **Claude Code** in **Settings → Subagents** and delegate with `provider
 - **Sign-in:** `full` uses the owner's Claude Code sign-in directly. A sandboxed agent receives only the short-lived access token of that sign-in, never the refresh token, so an agent cannot rotate it and sign the owner out; a token close to expiry is renewed with `claude auth status` first. Set `MAC_MCP_CLAUDE_CODE_OAUTH_TOKEN` to a `claude setup-token` token to use a dedicated long-lived token instead. The token is scrubbed from the agent's own Bash/hook child processes.
 - **Tools:** every agent gets only the scoped Mac MCP server (`--strict-mcp-config`), not the owner's other MCP servers or connectors. Tools whose effects outlive the agent or leave Mac MCP's control (`CronCreate`, `CronDelete`, `RemoteTrigger`, `ScheduleWakeup`, `PushNotification`, `SendMessage`, `ListAgents`, `ShareOnboardingGuide`, `DesignSync`, `Workflow`, `EnterWorktree`, `ExitWorktree`) are removed in every mode, so cancel and despawn stop all of an agent's work.
 - **Replay safety:** a run that used a state-changing native tool (`Bash`, `Edit`, `Write`, `NotebookEdit`, `Task`, `Skill`, …) is never replayed automatically; read-only tools (`Read`, `Glob`, `Grep`, `WebFetch`, `WebSearch`, …) and Mac MCP's own receipted tools keep automatic retry available. Failures are classified from Claude Code's own result (`api_error_status`), not from tool output.
+
+## Kimi Code and Grok Build subagents (experimental)
+
+Off by default. Install the CLI (`npm install -g @moonshot-ai/kimi-code` or `@xai-official/grok`), sign it in or give it a model, then turn on **Kimi Code** or **Grok Build** in **Settings → Subagents** and delegate with `provider=kimi` or `provider=grok`. They work like the other providers: Mac MCP runs the CLI headless (Kimi `--prompt … --output-format stream-json`, Grok `--single … --output-format streaming-json`) and reads its event stream for phase, tool calls, session id and, for Grok, token usage; `agent_action(action=message)` continues the same session.
+
+- **Models:** Kimi offers the model aliases of the owner's `~/.kimi-code/config.toml` (its `default_model` without a model); Grok offers what `grok models` lists. Both CLIs can use any OpenAI-compatible provider, so a model set up with an API key variable (`api_key_env` in Kimi, `env_key` in Grok; `OPENROUTER_API_KEY` is also read from the Keychain) works without a subscription. Grok takes `reasoning` (`--reasoning-effort`); Kimi takes none.
+- **Sign-in:** a spawn is refused with `provider_sign_in_required` when the CLI has no way to reach a model: no `kimi login`/`grok login`, no `KIMI_API_KEY`/`XAI_API_KEY` for the server and no configured model with a key.
+- **Private home:** every agent runs with its own `KIMI_CODE_HOME`/`GROK_HOME` under its agent directory. The owner's model settings and sign-in (`credentials/`, `auth.json`) are copied in for the run and removed again when it ends or is cancelled; the owner's own MCP servers are left out and only the scoped Mac MCP server is added. A follow-up runs in its first agent's home, where the session is.
+- **Access modes:** `read_only` and `workspace_write` run the CLI and everything it starts inside the same macOS Seatbelt boundary as the other providers. Both CLIs run their tools without asking in this mode (Kimi's prompt mode always does; Grok gets `--permission-mode bypassPermissions`), so the boundary is what limits them: in `read_only` a write is refused by macOS, and Grok also loses its `write` and `search_replace` tools. Grok's scheduler and subagent tools are removed in every mode. `full` runs without a boundary.
+- **Usage:** Grok's own report is recorded once per run (Settings → Usage shows it once Grok Build is on); Kimi reports no usage, and missing usage is shown as unavailable, never as zero.
+- **Replay safety:** a run that used a native tool that can change something (shell, file writes, any tool not known to only read) is never replayed automatically; reads and Mac MCP's own receipted tools keep automatic retry available.
+- **Limits:** only Kimi Code 2.2 and Grok Build 1.0.52 were tested, against a free OpenRouter model; a CLI update that drops an option Mac MCP passes is reported as `provider_incompatible` before any work starts.

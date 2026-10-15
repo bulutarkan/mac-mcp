@@ -1239,6 +1239,8 @@ struct MenuBarView: View {
         case "opencode": return "OpenCode"
         case "codex": return "Codex"
         case "claude": return "Claude Code"
+        case "kimi": return "Kimi Code"
+        case "grok": return "Grok Build"
         case .some(let value): return value.capitalized
         case .none: return "AI"
         }

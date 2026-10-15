@@ -894,7 +894,7 @@ final class LiveIslandController {
     }
 
     static func providerName(_ provider: String?) -> String {
-        ["codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode"][provider ?? ""] ?? (provider?.capitalized ?? "Agent")
+        ["codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "kimi": "Kimi Code", "grok": "Grok Build"][provider ?? ""] ?? (provider?.capitalized ?? "Agent")
     }
 
     static func duration(_ seconds: Double) -> String {

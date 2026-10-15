@@ -707,7 +707,7 @@ def create_app():
     # ── Agent delegation tools ──────────────────────────────────────────────
     @mcp.tool(
         name="agent_catalog",
-        description="List available OpenCode, Codex, and Claude Code providers, models, reasoning options and supported access modes without starting an agent.",
+        description="List available OpenCode, Codex, Claude Code, Kimi Code and Grok Build (experimental) providers, models, reasoning options and supported access modes without starting an agent.",
     )
     async def _agent_catalog(provider: Optional[str] = None, model_filter: Optional[str] = None,
                              free_only: bool = False, limit: int = 80) -> Dict[str, Any]:
@@ -720,7 +720,7 @@ def create_app():
     @mcp.tool(
         name="spawn_agent",
         description=(
-            "Delegate one task to OpenCode, Codex, or Claude Code (provider=claude) in a non-blocking background process. "
+            "Delegate one task to OpenCode, Codex, Claude Code (provider=claude), or experimental Kimi Code (kimi) / Grok Build (grok) in a non-blocking background process. "
             "When provider/model/reasoning are omitted, Mac MCP resolves the saved Settings > Subagents Default Agent preset; "
             "explicit fields always override saved values and model/reasoning never cross provider boundaries. "
             "Claude Code takes a model alias (fable, opus, sonnet, haiku) or a claude-... id and reasoning=low|medium|high|xhigh|max. "
@@ -1534,7 +1534,7 @@ def create_app():
         description=(
             "The owner's Scheduled Tasks: AI tasks (a prompt a delegated agent runs) and scripts that run at a set "
             "time or on a recurrence. action=list|get|create|update|delete|run_now. create/update take name, "
-            "summary (what the task is for), kind ('ai' or 'script'), schedule, and for ai: prompt, agent (codex|claude|opencode), "
+            "summary (what the task is for), kind ('ai' or 'script'), schedule, and for ai: prompt, agent (codex|claude|opencode|kimi|grok), "
             "model, folder, and optional data_step {script or command, arguments} that runs first and hands its output to "
             "the agent; for script: script (a file path) or command, arguments, interpreter, folder. Arguments and "
             "commands may use {today}, {yesterday}, {last_week_start}, {last_week_end}, {last_month_start}, "

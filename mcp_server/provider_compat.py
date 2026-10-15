@@ -37,6 +37,16 @@ REQUIRED_OPTIONS: Dict[str, Sequence[Tuple[Sequence[str], Sequence[str]]]] = {
             "--model", "--effort", "--resume", "--add-dir", "--allowedTools", "--disallowedTools",
         )),
     ),
+    "kimi": (
+        (("--help",), ("--prompt", "--output-format", "stream-json", "--model", "--session", "--add-dir")),
+    ),
+    # --no-auto-update is accepted but not listed in --help, so it is not probed.
+    "grok": (
+        (("--help",), (
+            "--single", "--output-format", "streaming-json", "--permission-mode", "bypassPermissions", "--cwd",
+            "--disallowed-tools", "--model", "--reasoning-effort", "--resume",
+        )),
+    ),
 }
 
 _lock = threading.Lock()

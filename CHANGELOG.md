@@ -1,5 +1,12 @@
 ## Unreleased
 
+### Kimi Code and Grok Build as agents (experimental)
+- Two more agent providers, off by default: Kimi Code (`provider=kimi`) and Grok Build (`provider=grok`), turned on in Settings › Subagents. They run like Codex, Claude Code and OpenCode: headless, in the same macOS Seatbelt boundary for `read_only` and `workspace_write`, with only the scoped Mac MCP server, follow-up messages in the same session, cancel, run reports, resume safety and (for Grok) token usage.
+- Each agent gets a private Kimi/Grok home: the owner's model settings and sign-in are copied in for the run and removed when it ends or is cancelled; the owner's own MCP servers are left out.
+- A spawn is refused up front when the CLI cannot reach a model (no sign-in, API key or configured model).
+- Cancelling an agent now also removes its generated provider config, which held the (already revoked) scoped token; before, a cancelled OpenCode or Claude Code agent kept it on disk.
+- Tested with Kimi Code 2.2.0 and Grok Build 1.0.52 against a free OpenRouter model, end to end through an isolated Mac MCP server: reads, writes, the read-only boundary, Mac MCP tools, follow-ups and cancel.
+
 ### Native scrolls work on SwiftUI and background windows (#185 follow-up)
 - Scroll areas in SwiftUI windows (Mac MCP's own Settings included) and AppKit views of a background app answer the page-scroll action with an error, do nothing, or, in a SwiftUI list, page the other way. When the page action does not move the area's scroll bar the asked way, `mac_act` now moves the bar by one page (the visible share of the content) itself and says so (`scroll.method: "scroll_bar_value"`). At the edge it sends nothing (`scroll_at_boundary`).
 - A scroll bar that moved the other way is `scroll_wrong_direction` (`ok: false`, no automatic retry) instead of a successful scroll.

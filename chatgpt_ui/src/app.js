@@ -8,7 +8,7 @@ const compact = (x) => isNum(x)
   ? new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(Number(x))
   : 'n/a';
 const latency = (ms) => !isNum(ms) ? '—' : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
-const PROVIDERS = { codex: 'Codex', opencode: 'OpenCode', claude: 'Claude Code' };
+const PROVIDERS = { codex: 'Codex', opencode: 'OpenCode', claude: 'Claude Code', kimi: 'Kimi Code', grok: 'Grok Build' };
 const ACTIVE = new Set(['running', 'starting']);
 const FAILED = new Set(['failed', 'error', 'cancelled', 'canceled', 'timeout', 'killed']);
 const state = { data: null, connected: false, busy: false, editing: false, catalog: null };

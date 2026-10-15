@@ -63,6 +63,7 @@ from .agent_admission import (
 )
 from .workspace_arbitration import sanitize_resource_claims
 from . import provider_compat
+from . import harness_providers
 from .security_context import current_delegated_provenance
 from .provider_usage import (
     SOURCE_REPORT as PROVIDER_USAGE_SOURCE_REPORT,
@@ -70,6 +71,7 @@ from .provider_usage import (
     get_store as get_provider_usage_store,
     normalize_claude_usage,
     normalize_codex_usage,
+    normalize_grok_usage,
     normalize_opencode_usage,
 )
 
@@ -96,7 +98,7 @@ MAX_TEAM_TOKEN_BUDGET = 100000000
 TEAM_RETRY_START_SPACING_S = 0.75
 MAX_GENERIC_RETRY_BACKOFF_S = 30.0
 
-_PROVIDER_LABELS = {"opencode": "OpenCode", "codex": "Codex", "claude": "Claude Code"}
+_PROVIDER_LABELS = {"opencode": "OpenCode", "codex": "Codex", "claude": "Claude Code", **harness_providers.LABELS}
 _PROVIDER_NAMES = set(_PROVIDER_LABELS)
 _ACCESS_MODES = {"read_only", "workspace_write", "full"}
 _RESULT_STYLES = {"concise", "detailed"}
@@ -2527,6 +2529,61 @@ def _claude_sandbox_profile(agent_id: str, meta: Dict[str, Any]) -> Path:
     return profile
 
 
+def _harness_state(agent_id: str, meta: Dict[str, Any]) -> Path:
+    """Kimi Code / Grok Build state; a resumed agent shares its first agent's, where the session lives."""
+    owner_id = _codex_state_owner_agent_id(agent_id, meta)
+    root = _agent_dir(owner_id) / "provider_state" / str(meta.get("provider") or "")
+    for path in (root, root / "home", root / "tmp"):
+        path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.chmod(0o700)
+        except OSError:
+            pass
+    return root
+
+
+def _harness_sandbox_profile(agent_id: str, meta: Dict[str, Any]) -> Path:
+    provider = str(meta.get("provider") or "")
+    label = harness_providers.LABELS.get(provider, provider)
+    if not _sandbox_exec_available():
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{label} restricted access requires macOS sandbox-exec; this host cannot enforce the requested process boundary.",
+        )
+    scope = ResourceScope.from_dict(meta.get("scope"))
+    access_mode = str(meta.get("access_mode") or "workspace_write")
+    state_root = _harness_state(agent_id, meta).resolve()
+    allowed_read = {state_root, *harness_providers.install_roots(str(meta.get("binary") or ""))}
+    for raw in scope.path_roots or ():
+        allowed_read.add(Path(raw).expanduser().resolve(strict=False))
+    metadata_paths = _boundary_metadata_ancestors(sorted(allowed_read, key=str))
+    deny_specs = " ".join(f'(subpath "{_sbpl_quote(root)}")' for root in _RESTRICTED_READ_DENY_ROOTS)
+    read_specs = " ".join(f'(subpath "{_sbpl_quote(root)}")' for root in sorted(allowed_read, key=str))
+    metadata_specs = " ".join(f'(literal "{_sbpl_quote(path)}")' for path in metadata_paths)
+    write_roots = {state_root}
+    if access_mode == "workspace_write":
+        write_roots.update(Path(raw).expanduser().resolve(strict=False) for raw in (scope.path_roots or ()))
+    write_specs = " ".join(f'(subpath "{_sbpl_quote(root)}")' for root in sorted(write_roots, key=str))
+    exec_denies = "\n".join(
+        f'(deny process-exec (literal "{_sbpl_quote(path)}"))' for path in _RESTRICTED_ESCAPE_EXECUTABLES
+    )
+    profile = _agent_dir(agent_id) / "provider-boundary.sb"
+    profile.write_text(
+        "(version 1)\n"
+        "(allow default)\n"
+        f"(deny file-read* {deny_specs})\n"
+        f"(allow file-read* {read_specs})\n"
+        f"(allow file-read-metadata {metadata_specs})\n"
+        "(deny file-write*)\n"
+        f"(allow file-write* {write_specs})\n"
+        f"{_DEV_NULL_WRITE}\n"
+        f"{exec_denies}\n",
+        encoding="utf-8",
+    )
+    profile.chmod(0o600)
+    return profile
+
+
 def _provider_process_command(agent_id: str, meta: Dict[str, Any], cmd: List[str]) -> Tuple[List[str], Optional[Path]]:
     provider = str(meta.get("provider") or "").lower()
     access_mode = str(meta.get("access_mode") or "workspace_write")
@@ -2540,6 +2597,9 @@ def _provider_process_command(agent_id: str, meta: Dict[str, Any], cmd: List[str
         if provider == "claude":
             profile = _claude_sandbox_profile(agent_id, meta)
             return [str(_SANDBOX_EXEC), "-f", str(profile), *cmd], profile
+        if provider in harness_providers.PROVIDERS:
+            profile = _harness_sandbox_profile(agent_id, meta)
+            return [str(_SANDBOX_EXEC), "-f", str(profile), *cmd], profile
     return cmd, None
 
 
@@ -2551,6 +2611,15 @@ def _provider_env(agent_id: str, meta: Dict[str, Any], scoped_token: str) -> Tup
     else:
         env.pop("MAC_MCP_AGENT_TOKEN", None)
     cleanup_root: Optional[Path] = None
+    if provider in harness_providers.PROVIDERS:
+        state_root = _harness_state(agent_id, meta)
+        home = harness_providers.prepare_home(
+            provider, state_root, str(meta.get("mcp_endpoint") or "http://127.0.0.1:8765/mcp"), scoped_token,
+        )
+        env.update(harness_providers.provider_env(provider, home, state_root, _harness_keychain_value))
+        # The scoped Mac MCP credential is in the private CLI config, not in the agent's shell environment.
+        env.pop("MAC_MCP_AGENT_TOKEN", None)
+        return env, None
     if provider == "codex" and str(meta.get("access_mode") or "workspace_write") != "full":
         state_root = _restricted_codex_state(agent_id, meta)
         env.update({
@@ -2643,6 +2712,16 @@ def _provider_env(agent_id: str, meta: Dict[str, Any], scoped_token: str) -> Tup
         config_path.chmod(0o600)
         env["XDG_CONFIG_HOME"] = str(cleanup_root)
     return env, cleanup_root
+
+
+def _harness_keychain_value(name: str) -> Optional[str]:
+    """An API key a Kimi/Grok model setting names, from the Keychain when the server has no such variable."""
+    if name != "OPENROUTER_API_KEY":
+        return None
+    user = os.getenv("USER") or Path.home().name
+    service = os.getenv("MAC_MCP_OPENROUTER_KEYCHAIN_SERVICE", "openrouter-api-key").strip()
+    account = os.getenv("MAC_MCP_OPENROUTER_KEYCHAIN_ACCOUNT", user).strip()
+    return _keychain_secret(service, account)
 
 
 def _cleanup_provider_config(path: Optional[Path]) -> None:
@@ -2756,6 +2835,8 @@ def _find_binary(provider: str) -> Optional[str]:
             "/opt/homebrew/bin/claude",
             "/usr/local/bin/claude",
         ]
+    elif provider in harness_providers.PROVIDERS:
+        candidates = [provider_setting(provider, "binary_path", ""), *harness_providers.binary_candidates(provider)]
     else:
         return None
     for candidate in candidates:
@@ -3109,6 +3190,20 @@ def _access_mode_info(provider: str, access_mode: str) -> Dict[str, Any]:
                 "Claude Code restricted access is unavailable because macOS sandbox-exec is not available; the request is refused."
             ),
         }
+    if provider in harness_providers.PROVIDERS:
+        available = _sandbox_exec_available()
+        label = harness_providers.LABELS[provider]
+        return {
+            "enforced": available,
+            "boundary": "macos_seatbelt" if available else "unsupported",
+            "note": (
+                f"{label} runs inside a Mac MCP macOS Seatbelt boundary with scoped filesystem roots and a private "
+                f"{label} home holding a copy of the owner's model settings and sign-in for the run. {label} itself "
+                "runs its tools without asking; the boundary is what limits them."
+                if available else
+                f"{label} restricted access is unavailable because macOS sandbox-exec is not available; the request is refused."
+            ),
+        }
     return {"enforced": False, "boundary": "unsupported", "note": "Provider process boundary is unsupported."}
 
 
@@ -3132,6 +3227,12 @@ def _validate_provider_access_mode(provider: str, access_mode: str) -> None:
             status.HTTP_409_CONFLICT,
             "Claude Code restricted access is unavailable: macOS sandbox-exec is missing, so Mac MCP refuses to rely on Claude Code's own permission checks alone.",
         )
+    if provider in harness_providers.PROVIDERS and not _sandbox_exec_available():
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{harness_providers.LABELS[provider]} restricted access is unavailable: macOS sandbox-exec is missing, and its "
+            "prompt mode runs tools without asking, so Mac MCP refuses to start it.",
+        )
 
 def _require_provider_sign_in(provider: str, access_mode: str, binary: Optional[str]) -> None:
     """Fail at spawn, before worktrees and admission, when a sandboxed agent could not sign in."""
@@ -3139,6 +3240,13 @@ def _require_provider_sign_in(provider: str, access_mode: str, binary: Optional[
         token, reason = _claude_sandbox_token(binary)
         if not token:
             raise _claude_sign_in_error(reason)
+    provider = str(provider or "").lower()
+    if provider in harness_providers.PROVIDERS:
+        ready, reason = harness_providers.sign_in_state(provider, _harness_keychain_value)
+        if not ready:
+            raise HTTPException(status.HTTP_409_CONFLICT, {
+                "error": "provider_sign_in_required", "provider": provider, "message": reason,
+            })
 
 
 def _requested_agent_scope(
@@ -3400,6 +3508,49 @@ def agent_catalog(
                 for mode in sorted(_ACCESS_MODES)
             },
         }
+    for harness in sorted(harness_providers.PROVIDERS):
+        if requested not in (None, harness) or not provider_enabled(harness):
+            continue
+        binary = _find_binary(harness)
+        all_models, default_model = harness_providers.models(harness, binary, _base_env())
+        matched = all_models
+        if model_filter:
+            q = model_filter.lower().strip()
+            matched = [m for m in matched if q in m.lower()]
+        ready, sign_in_note = harness_providers.sign_in_state(harness, _harness_keychain_value)
+        providers[harness] = {
+            "available": bool(binary),
+            "experimental": True,
+            "version": _version(binary),
+            "signed_in": ready,
+            "sign_in_note": sign_in_note or None,
+            "model_count": len(all_models),
+            "matched_count": len(matched),
+            "models": matched[:limit],
+            "model_items": _legacy_model_items(matched[:limit], source=f"{harness}_config"),
+            "models_truncated": len(matched) > limit,
+            "default_model": default_model,
+            "default_reasoning": None,
+            "reasoning_values": ["low", "medium", "high"] if harness == "grok" else [],
+            "catalog_source": f"{harness}_config" if all_models else "unavailable",
+            "catalog_fetched_at": None,
+            "catalog_freshness": "fresh" if all_models else "unavailable",
+            "catalog_error": None,
+            "model_note": (
+                "Model aliases from the owner's ~/.kimi-code/config.toml; without a model its default_model is used."
+                if harness == "kimi" else
+                "Models `grok models` lists for the owner's sign-in and config; without a model its default is used."
+            ),
+            "supports_resume": True,
+            "scoped_mcp": True,
+            "access_modes": {
+                mode: {
+                    "supported": mode == "full" or _sandbox_exec_available(),
+                    **_access_mode_info(harness, mode),
+                }
+                for mode in sorted(_ACCESS_MODES)
+            },
+        }
     return {"ok": True, "providers": providers}
 
 
@@ -3580,6 +3731,28 @@ def _validate_provider_model_selection(
                     status.HTTP_400_BAD_REQUEST,
                     f"unsupported_reasoning: Codex model {match.get('id')!r} supports {supported}, not {selected_reasoning!r}.",
                 )
+        return result
+
+    if provider in harness_providers.PROVIDERS:
+        models, default_model = harness_providers.models(provider, binary, _base_env())
+        label = harness_providers.LABELS[provider]
+        result["catalog_source"] = f"{provider}_config" if models else "unavailable"
+        result["catalog_freshness"] = "fresh" if models else "unavailable"
+        if selected_model and models and selected_model not in models:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"unsupported_model: {label} model {selected_model!r} is not one of {models}.",
+            )
+        if selected_reasoning and selected_reasoning != "none" and (
+            provider == "kimi" or selected_reasoning not in {"low", "medium", "high"}
+        ):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"unsupported_reasoning: {label} takes "
+                + ("no reasoning setting." if provider == "kimi" else "low, medium or high."),
+            )
+        result["validated"] = bool(selected_model and models)
+        result["default_model"] = default_model
         return result
 
     if provider == "opencode":
@@ -4706,7 +4879,7 @@ def _spawn_internal(
         "lesson_context_chars": lesson_context_chars,
         "lesson_candidate_ids": [],
         "scope": scope.to_dict(),
-        "scoped_mcp": provider in {"opencode", "codex", "claude"},
+        "scoped_mcp": provider in {"opencode", "codex", "claude", *harness_providers.PROVIDERS},
         "mcp_endpoint": os.getenv("MAC_MCP_AGENT_ENDPOINT", "http://127.0.0.1:8765/mcp"),
         "result_style": result_style,
         "result_contract_version": RESULT_ENVELOPE_VERSION,
@@ -5817,6 +5990,12 @@ def _agent_action_single(
         get_scoped_credential_store().revoke_agent(agent_id)
         browser_tabs.release_agent_leases(agent_id)
         still_running = _stop_agent_processes(agent_id, meta, sig_name)
+        if not still_running:
+            # The stopped worker never reaches its own cleanup: remove the generated provider config
+            # (it carries the now revoked scoped token) and a Kimi/Grok sign-in copy here.
+            _cleanup_provider_config(_agent_dir(agent_id) / "provider_config")
+            if str(meta.get("provider") or "") in harness_providers.PROVIDERS:
+                harness_providers.remove_credentials(str(meta["provider"]), _harness_state(agent_id, meta))
         meta = _settle_cancellation(agent_id, still_running)
         result = {"ok": True, **_public_meta(agent_id, meta)}
         if still_running:
@@ -6397,6 +6576,13 @@ def _build_provider_command(
     resume_session_id = meta.get("resume_session_id")
     access_mode = meta.get("access_mode", "workspace_write")
 
+    if provider in harness_providers.PROVIDERS:
+        _validate_provider_access_mode(provider, access_mode)
+        roots = sorted({
+            _canonical_boundary_path(raw) for raw in (ResourceScope.from_dict(meta.get("scope")).path_roots or ())
+        })
+        return harness_providers.command({**meta, "extra_roots": roots, "cwd": _canonical_boundary_path(meta["cwd"])}, prompt)
+
     if provider == "opencode":
         _validate_provider_access_mode(provider, access_mode)
         cmd = [binary, "run", "--format", "json", "--auto", "--dir", meta["cwd"]]
@@ -6584,6 +6770,8 @@ def _apply_provider_event(meta: Dict[str, Any], event: Dict[str, Any], now: floa
 
     if provider == "claude":
         _apply_claude_event(meta, event, event_type, now)
+    elif provider in harness_providers.PROVIDERS:
+        harness_providers.apply_event(meta, event, now, _note_unknown_event)
     elif provider == "codex":
         item = event.get("item") if isinstance(event.get("item"), dict) else {}
         event_model = event.get("model") or event.get("model_slug") or event.get("model_id")
@@ -6885,6 +7073,43 @@ def _ingest_provider_usage_event(
         _accumulate_agent_usage(agent_id, event_key, normalized.total_tokens)
         return
 
+    if provider == "grok":
+        if event_type != "end":
+            return
+        usage = event.get("usage") if isinstance(event.get("usage"), dict) else None
+        normalized = normalize_grok_usage(usage)
+        if not normalized.recognized:
+            if usage:
+                store.diagnostic_increment("unknown_usage_schema_grok")
+            return
+        session_id = str(event.get("sessionId") or saved.get("session_id") or "").strip()
+        request_id = str(event.get("requestId") or "").strip()
+        if not session_id or not request_id:
+            store.diagnostic_increment("invalid_identity_grok")
+            return
+        event_key = f"grok:{session_id}:{request_id}"
+        store.ingest(ProviderUsageRecord(
+            event_key=event_key,
+            provider="grok",
+            session_id=session_id,
+            event_id=request_id,
+            timestamp=timestamp,
+            agent_id=agent_id,
+            model=model,
+            model_verified=model_verified,
+            source=PROVIDER_USAGE_SOURCE_REPORT,
+            requested_model=requested_model,
+            effective_model=effective_model,
+            input_tokens=normalized.input_tokens,
+            output_tokens=normalized.output_tokens,
+            reasoning_tokens=normalized.reasoning_tokens,
+            cache_read_tokens=normalized.cache_read_tokens,
+            cache_write_tokens=normalized.cache_write_tokens,
+            total_tokens=normalized.total_tokens,
+        ))
+        _accumulate_agent_usage(agent_id, event_key, normalized.total_tokens)
+        return
+
     if event_type != "step_finish":
         return
     part = event.get("part") if isinstance(event.get("part"), dict) else {}
@@ -6962,7 +7187,7 @@ def _accumulate_agent_usage(agent_id: str, event_key: str, total_tokens: int) ->
 
 
 # Providers whose CLI reports token usage that Mac MCP can count.
-_USAGE_REPORTING_PROVIDERS = {"codex", "opencode", "claude"}
+_USAGE_REPORTING_PROVIDERS = {"codex", "opencode", "claude", "grok"}
 
 
 def _agent_token_usage(meta: Dict[str, Any]) -> tuple[int, bool]:
@@ -7126,6 +7351,8 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
         if boundary_profile is not None:
             boundary_profile.unlink(missing_ok=True)
         _cleanup_provider_config(cleanup_root)
+        if str(meta.get("provider") or "") in harness_providers.PROVIDERS:
+            harness_providers.remove_credentials(str(meta["provider"]), _harness_state(agent_id, meta))
 
         if credential_id:
             def clear_credential(current: Dict[str, Any]) -> Optional[bool]:
@@ -7319,6 +7546,8 @@ def _worker(agent_id: str) -> int:
         result, session_id, usage = _extract_opencode(stdout_path)
     elif meta["provider"] == "claude":
         result, session_id, usage = _extract_claude(stdout_path)
+    elif meta["provider"] in harness_providers.PROVIDERS:
+        result, session_id, usage = harness_providers.extract(meta["provider"], stdout_path)
     else:
         session_id = _extract_codex_session(stdout_path)
         usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else None

@@ -957,6 +957,8 @@ struct SettingsView: View {
                 providerRow(id: "opencode", title: "OpenCode", subtitle: "External OpenCode CLI provider")
                 providerRow(id: "codex", title: "Codex", subtitle: "External Codex CLI provider")
                 providerRow(id: "claude", title: "Claude Code", subtitle: "External Claude Code CLI provider (your Claude sign-in)")
+                providerRow(id: "kimi", title: "Kimi Code", subtitle: "Experimental · Kimi Code CLI (your kimi login or model providers)")
+                providerRow(id: "grok", title: "Grok Build", subtitle: "Experimental · Grok Build CLI (your grok login, XAI_API_KEY or models)")
 
                 Text("Disabled providers are hidden from the agent catalog and cannot be spawned. Changes apply live to new agent requests.")
                     .font(.caption2)
@@ -1326,6 +1328,14 @@ struct SettingsView: View {
                                         symbol: "sparkles",
                                         usage: state.providerUsageSummary?.providers["claude"]
                                     )
+                                    // Experimental: shown once Grok Build is on or has reported usage.
+                                    if settings.grokEnabled || state.providerUsageSummary?.providers["grok"] != nil {
+                                        providerUsageCard(
+                                            title: "Grok Build",
+                                            symbol: "hammer",
+                                            usage: state.providerUsageSummary?.providers["grok"]
+                                        )
+                                    }
                                 }
                             }
 
@@ -3190,7 +3200,7 @@ struct SettingsView: View {
         if !current.isEmpty && !values.contains(current) {
             values.append(current)
         }
-        let order = ["opencode", "codex", "claude"]
+        let order = ["opencode", "codex", "claude", "kimi", "grok"]
         return values.sorted {
             (order.firstIndex(of: $0) ?? 99) < (order.firstIndex(of: $1) ?? 99)
         }
@@ -3794,6 +3804,8 @@ struct SettingsView: View {
         case "opencode": return "OpenCode"
         case "codex": return "Codex"
         case "claude": return "Claude Code"
+        case "kimi": return "Kimi Code"
+        case "grok": return "Grok Build"
         default: return id
         }
     }

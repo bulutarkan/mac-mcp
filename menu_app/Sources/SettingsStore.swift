@@ -104,6 +104,8 @@ struct MenuSettings: Codable {
                     "opencode": Provider(enabled: false, binary_path: nil),
                     "codex": Provider(enabled: false, binary_path: nil),
                     "claude": Provider(enabled: false, binary_path: nil),
+                    "kimi": Provider(enabled: false, binary_path: nil),
+                    "grok": Provider(enabled: false, binary_path: nil),
                 ],
                 defaultAgent: nil
             ),
@@ -145,9 +147,13 @@ final class SettingsStore: ObservableObject {
     @Published var opencodeEnabled = false
     @Published var codexEnabled = false
     @Published var claudeEnabled = false
+    @Published var kimiEnabled = false
+    @Published var grokEnabled = false
     @Published var opencodeBinaryPath = ""
     @Published var codexBinaryPath = ""
     @Published var claudeBinaryPath = ""
+    @Published var kimiBinaryPath = ""
+    @Published var grokBinaryPath = ""
     @Published var defaultAgentProvider = ""
     @Published var defaultAgentModel = ""
     @Published var defaultAgentReasoning = ""
@@ -256,9 +262,13 @@ final class SettingsStore: ObservableObject {
         opencodeEnabled = providerConfigValid ? (providers["opencode"]?.enabled ?? false) : false
         codexEnabled = providerConfigValid ? (providers["codex"]?.enabled ?? false) : false
         claudeEnabled = providerConfigValid ? (providers["claude"]?.enabled ?? false) : false
+        kimiEnabled = providerConfigValid ? (providers["kimi"]?.enabled ?? false) : false
+        grokEnabled = providerConfigValid ? (providers["grok"]?.enabled ?? false) : false
         opencodeBinaryPath = providers["opencode"]?.binary_path ?? ""
         codexBinaryPath = providers["codex"]?.binary_path ?? ""
         claudeBinaryPath = providers["claude"]?.binary_path ?? ""
+        kimiBinaryPath = providers["kimi"]?.binary_path ?? ""
+        grokBinaryPath = providers["grok"]?.binary_path ?? ""
         defaultAgentProvider = current.subagents?.defaultAgent?.provider ?? ""
         defaultAgentModel = current.subagents?.defaultAgent?.model ?? ""
         defaultAgentReasoning = current.subagents?.defaultAgent?.reasoning ?? ""
@@ -300,6 +310,8 @@ final class SettingsStore: ObservableObject {
                     "opencode": .init(enabled: opencodeEnabled, binary_path: opencodeBinaryPath.nilIfEmpty),
                     "codex": .init(enabled: codexEnabled, binary_path: codexBinaryPath.nilIfEmpty),
                     "claude": .init(enabled: claudeEnabled, binary_path: claudeBinaryPath.nilIfEmpty),
+                    "kimi": .init(enabled: kimiEnabled, binary_path: kimiBinaryPath.nilIfEmpty),
+                    "grok": .init(enabled: grokEnabled, binary_path: grokBinaryPath.nilIfEmpty),
                 ],
                 defaultAgent: defaultAgentProvider.nilIfEmpty.map {
                     .init(provider: $0, model: defaultAgentModel.nilIfEmpty, reasoning: defaultAgentReasoning.nilIfEmpty)
@@ -358,6 +370,8 @@ final class SettingsStore: ObservableObject {
         case "opencode": return opencodeEnabled
         case "codex": return codexEnabled
         case "claude": return claudeEnabled
+        case "kimi": return kimiEnabled
+        case "grok": return grokEnabled
         default: return false
         }
     }
@@ -367,6 +381,8 @@ final class SettingsStore: ObservableObject {
         case "opencode": opencodeEnabled = enabled
         case "codex": codexEnabled = enabled
         case "claude": claudeEnabled = enabled
+        case "kimi": kimiEnabled = enabled
+        case "grok": grokEnabled = enabled
         default: return
         }
     }

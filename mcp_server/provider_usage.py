@@ -20,7 +20,7 @@ SOURCE_NATIVE_TOKENIZER = "native_tokenizer"
 SOURCE_ESTIMATE = "estimate"
 RETENTION_DAYS = 400
 COMPONENTS = ("input", "output", "reasoning", "cache_read", "cache_write", "total")
-REPORTING_PROVIDERS = frozenset({"codex", "opencode", "claude"})
+REPORTING_PROVIDERS = frozenset({"codex", "opencode", "claude", "grok"})
 
 
 def db_path() -> Path:
@@ -120,6 +120,30 @@ def normalize_claude_usage(usage: Any) -> NormalizedUsage:
     return NormalizedUsage(
         input_tokens, output_tokens, reasoning, cache_read, cache_write,
         total, True, False,
+    )
+
+
+def normalize_grok_usage(usage: Any) -> NormalizedUsage:
+    """Grok Build's `end` event: the whole run's usage. Like Claude, input excludes cached
+    tokens and reasoning is part of output; total_tokens is reported."""
+    if not isinstance(usage, Mapping):
+        return NormalizedUsage(None, None, None, None, None, None, False, False)
+    known = {"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "total_tokens"}
+    if not (known & set(usage.keys())):
+        return NormalizedUsage(None, None, None, None, None, None, False, False)
+    input_tokens = _nonnegative_int(usage.get("input_tokens"))
+    output_tokens = _nonnegative_int(usage.get("output_tokens"))
+    reasoning = _nonnegative_int(usage.get("reasoning_tokens"))
+    cache_read = _nonnegative_int(usage.get("cache_read_input_tokens"))
+    cache_write = _nonnegative_int(usage.get("cache_creation_input_tokens"))
+    total = _nonnegative_int(usage.get("total_tokens"))
+    if total is None and input_tokens is not None and output_tokens is not None:
+        total = sum(int(value or 0) for value in (input_tokens, output_tokens, cache_read, cache_write))
+    components = (input_tokens, output_tokens, reasoning, cache_read, cache_write)
+    total_only = total is not None and all(value is None for value in components)
+    return NormalizedUsage(
+        input_tokens, output_tokens, reasoning, cache_read, cache_write,
+        total, total is not None or any(value is not None for value in components), total_only,
     )
 
 
