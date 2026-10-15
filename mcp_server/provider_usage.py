@@ -20,7 +20,7 @@ SOURCE_NATIVE_TOKENIZER = "native_tokenizer"
 SOURCE_ESTIMATE = "estimate"
 RETENTION_DAYS = 400
 COMPONENTS = ("input", "output", "reasoning", "cache_read", "cache_write", "total")
-REPORTING_PROVIDERS = frozenset({"codex", "opencode", "claude", "grok"})
+REPORTING_PROVIDERS = frozenset({"codex", "opencode", "claude", "grok", "antigravity", "pi", "kilo", "cline", "goose"})
 
 
 def db_path() -> Path:

@@ -37,7 +37,15 @@ const AGENTS = [
   { id: 'opencode', client: 'opencode', name: 'OpenCode', logo: 'opencode' },
   { id: 'kimi', client: 'kimi', name: 'Kimi Code', logo: 'kimi' },
   { id: 'grok', client: 'grok', name: 'Grok Build', logo: 'grok' },
+  { id: 'antigravity', client: 'antigravity', name: 'Antigravity', logo: 'antigravity' },
+  { id: 'pi', client: 'pi', name: 'pi', logo: 'pi' },
+  { id: 'cline', client: 'cline', name: 'Cline', logo: 'cline' },
+  { id: 'kilo', client: 'kilo', name: 'Kilo Code', logo: 'kilo' },
+  { id: 'goose', client: 'goose', name: 'Goose', logo: 'goose' },
 ];
+
+// A logo stack shows this many; the rest wait behind a +N that opens them in place.
+const STACK_LIMIT = 5;
 
 const FIRST_REQUEST = 'Use Mac MCP to tell me which macOS version this Mac is running.';
 
@@ -138,9 +146,17 @@ function agentsSummary(agents, apps, state) {
   else if (on.length === 1) title = `${on[0]} is on`;
   else title = `${on.length} agents are on`;
   const parts = [];
-  if (on.length > 1) parts.push(on.join(', '));
-  if (off.length) parts.push(`${list(off)} ${off.length === 1 ? 'is' : 'are'} off`);
+  // Names while they fit on a line; past three, a number says the rest.
+  if (on.length > 1) parts.push(on.length > 3 ? `${on.slice(0, 3).join(', ')} +${on.length - 3}` : on.join(', '));
+  if (off.length > 3) parts.push(on.length ? `${off.length} others are off` : `${off.length} on this Mac, all off`);
+  else if (off.length) parts.push(`${list(off)} ${off.length === 1 ? 'is' : 'are'} off`);
   return { rows, title, detail: parts.join(' · '), count: `${on.length} on · ${off.length} off` };
+}
+
+/** A logo stack's first STACK_LIMIT items, and the rest that a +N stands for. */
+function stackParts(items, limit = STACK_LIMIT) {
+  const all = items || [];
+  return { shown: all.slice(0, limit), extra: all.slice(limit) };
 }
 
 /**
@@ -183,7 +199,7 @@ function orderedClients(apps) {
 
 const api = {
   SCREENS, CLIENTS, AGENTS, FIRST_REQUEST, indexOf, evaluate, primaryAction, appRow, agentRow, orderedClients,
-  agentsSummary, appGroups, callSentence,
+  agentsSummary, appGroups, callSentence, stackParts, STACK_LIMIT,
 };
 if (typeof module === 'object' && module.exports) module.exports = api;
 else root.OnboardingSteps = api;

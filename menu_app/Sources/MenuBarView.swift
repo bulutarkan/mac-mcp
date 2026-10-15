@@ -1235,15 +1235,8 @@ struct MenuBarView: View {
     }
 
     private func providerName(_ provider: String?) -> String {
-        switch provider?.lowercased() {
-        case "opencode": return "OpenCode"
-        case "codex": return "Codex"
-        case "claude": return "Claude Code"
-        case "kimi": return "Kimi Code"
-        case "grok": return "Grok Build"
-        case .some(let value): return value.capitalized
-        case .none: return "AI"
-        }
+        guard let provider else { return "AI" }
+        return AgentProviders.name(provider) ?? provider.capitalized
     }
 
     private func modelName(_ model: String?) -> String {
@@ -1291,8 +1284,7 @@ struct MenuBarView: View {
     }
 
     private func cleanToolName(_ tool: String) -> String {
-        var value = tool
-        for prefix in ["mac-mcp_", "mac_mcp_", "mcp_"] where value.hasPrefix(prefix) { value.removeFirst(prefix.count) }
+        let value = AgentProviders.toolName(tool)
         if value == "command_execution" { return "Terminal command" }
         return value
     }

@@ -78,7 +78,10 @@ class OwnerHomes(unittest.TestCase):
 
 class CatalogAndConfigTests(unittest.TestCase):
     def test_providers_are_known_and_named(self) -> None:
-        self.assertEqual({"kimi": "Kimi Code", "grok": "Grok Build"}, harness.LABELS)
+        self.assertEqual({"kimi": "Kimi Code", "grok": "Grok Build"},
+                         {k: harness.LABELS[k] for k in ("kimi", "grok")})
+        self.assertEqual({"pi", "kilo", "antigravity", "cline", "goose"},
+                         set(harness.LABELS) - {"kimi", "grok"})
         self.assertTrue({"kimi", "grok"} <= agents._PROVIDER_NAMES)
         self.assertEqual("Kimi Code", agents._PROVIDER_LABELS["kimi"])
 

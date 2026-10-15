@@ -13,7 +13,13 @@ class IslandProviderLogoTests(unittest.TestCase):
     def test_each_provider_maps_to_a_logo_that_ships_with_the_app(self) -> None:
         body = ISLAND.split("static func forProvider", 1)[1].split("private static var logos", 1)[0]
         logos = set(re.findall(r'\.provider\("([a-z]+)"\)', body))
-        self.assertEqual({"claude", "openai", "opencode", "kimi", "grok"}, logos)
+        self.assertEqual({"claude", "openai"}, logos)
+        # Every other agent's logo is named after its provider id.
+        self.assertIn("if AgentProviders.names[id] != nil { return .provider(id) }", body)
+        store = (ROOT / "menu_app" / "Sources" / "SettingsStore.swift").read_text(encoding="utf-8")
+        names = store.split("static let names: [String: String] = [", 1)[1].split("]", 1)[0]
+        logos |= set(re.findall(r'"([a-z]+)": "', names)) - {"codex"}
+        self.assertTrue({"opencode", "kimi", "grok", "antigravity", "pi", "cline", "kilo", "goose"} <= logos)
         for name in logos:
             self.assertTrue((ROOT / "menu_app" / "Onboarding" / "logos" / f"{name}.png").exists(), name)
         self.assertIn('id == "codex"', body)
@@ -21,6 +27,18 @@ class IslandProviderLogoTests(unittest.TestCase):
         self.assertIn('subdirectory: "Onboarding/logos"', ISLAND)
         build = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")
         self.assertIn('"${SCRIPT_DIR}/Onboarding" "${RESOURCES}/"', build)
+
+    def test_every_agents_tool_names_read_the_same(self) -> None:
+        # pi, Goose, Cline, Kilo and Antigravity prefix Mac MCP's tools differently; the island and the
+        # menu strip the server first, and know the agents' own shell and file tools.
+        store = (ROOT / "menu_app" / "Sources" / "SettingsStore.swift").read_text(encoding="utf-8")
+        self.assertIn("static func toolName(_ raw: String) -> String", store)
+        words = ISLAND.split("static func toolWords", 1)[1].split("static func ago", 1)[0]
+        self.assertIn("let name = AgentProviders.toolName(tool)", words)
+        for native in ('"shell": "Running a command"', '"view_file": "Reading a file"', '"editor": "Editing a file"'):
+            self.assertIn(native, words)
+        menu = (ROOT / "menu_app" / "Sources" / "MenuBarView.swift").read_text(encoding="utf-8")
+        self.assertIn("let value = AgentProviders.toolName(tool)", menu)
 
     def test_running_agents_show_their_logo_in_the_slot_and_the_panel(self) -> None:
         self.assertIn("slot = .working(IslandIcon.forProvider(agent.provider)", ISLAND)

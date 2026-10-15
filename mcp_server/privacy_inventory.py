@@ -184,6 +184,11 @@ def recipients() -> List[Dict[str, Any]]:
          "sends": "Task prompts and the files and tool results those agents read."},
         {"key": "grok", "name": "Grok Build's model provider", "active": provider_enabled("grok", False),
          "sends": "Task prompts and the files and tool results those agents read."},
+        {"key": "antigravity", "name": "Google (Antigravity agents)", "active": provider_enabled("antigravity", False),
+         "sends": "Task prompts and the files and tool results those agents read."},
+        *({"key": key, "name": f"{name}'s model provider", "active": provider_enabled(key, False),
+           "sends": "Task prompts and the files and tool results those agents read."}
+          for key, name in (("pi", "pi"), ("cline", "Cline"), ("kilo", "Kilo Code"), ("goose", "Goose"))),
         {"key": "voice", "name": "Groq (voice transcription)", "active": tool_enabled("ask_user_voice", default=False),
          "sends": "Audio of voice questions, when you answer by voice."},
         {"key": "decisions", "name": "OpenAI (decision acceleration)", "active": decisions.get("enabled") is True,
@@ -231,7 +236,12 @@ def trash_stores(keys: Iterable[str], *, trash_root: Path, stamp: str) -> Dict[s
 _PROVIDER_VENDORS = {"codex": "OpenAI (Codex)", "claude": "Anthropic (Claude Code)",
                      "opencode": "the model provider OpenCode is set up with",
                      "kimi": "the model provider Kimi Code is set up with",
-                     "grok": "the model provider Grok Build is set up with"}
+                     "grok": "the model provider Grok Build is set up with",
+                     "antigravity": "Google (Antigravity)",
+                     "pi": "the model provider pi is set up with",
+                     "cline": "the model provider Cline is set up with",
+                     "kilo": "the model provider Kilo Code is set up with",
+                     "goose": "the model provider Goose is set up with"}
 
 
 def with_provider_notice(result: Any) -> Any:

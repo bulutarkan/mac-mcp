@@ -4,7 +4,7 @@
 'use strict';
 const {
   SCREENS, CLIENTS, AGENTS, FIRST_REQUEST, evaluate, primaryAction, indexOf, appRow, agentRow,
-  agentsSummary, appGroups, callSentence,
+  agentsSummary, appGroups, callSentence, stackParts,
 } = window.OnboardingSteps;
 
 // ---------- bridge ----------
@@ -49,7 +49,7 @@ const demoApps = [
   { id: 'opencode', installed: false, added: false },
 ];
 const demoAgents = { enabled: { codex: true, claude: true, opencode: false, kimi: false, grok: false },
-  installed: { codex: true, claude: true, opencode: true, kimi: true, grok: true } };
+  installed: { codex: true, claude: true, opencode: true, kimi: true, grok: true, antigravity: true, pi: true, cline: true, kilo: true, goose: true } };
 
 function demo(action, args) {
   const replies = {
@@ -88,6 +88,8 @@ let appsProblem = null;
 let agentsState = null;
 let popupKind = null;
 let popupReturn = null;
+// Stacks whose +N was clicked stay open when the card redraws.
+const openStacks = new Set();
 const appNotes = {};
 let appsRemote = null;
 let pollTimer = null;
@@ -359,13 +361,33 @@ function appElement(item, row) {
   return element;
 }
 
-/** The makers' logos, slightly overlapping, in one small row. */
-function fillStack(stack, items) {
+/**
+ * The makers' logos, slightly overlapping, in one small row. Past five, a +N stands for the
+ * rest; clicking it opens them in place (the row it sits in keeps its own click).
+ */
+function fillStack(stack, items, key) {
   stack.textContent = '';
-  for (const item of items) {
+  const { shown, extra } = stackParts(items);
+  const open = extra.length > 0 && openStacks.has(key);
+  stack.classList.toggle('is-open', open);
+  for (const item of [...shown, ...extra]) {
     const mark = logoMark(item);
-    mark.className = '';
+    mark.className = shown.includes(item) ? '' : 'extra';
+    mark.title = item.name;
     stack.append(mark);
+  }
+  if (extra.length) {
+    const more = document.createElement('span');
+    more.className = 'more';
+    more.textContent = `+${extra.length}`;
+    more.title = extra.map((item) => item.name).join(', ');
+    more.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openStacks.add(key);
+      stack.classList.add('is-open');
+    });
+    stack.append(more);
   }
   return stack;
 }
@@ -413,7 +435,7 @@ function renderApps() {
     if (hidden) detail.textContent += ` · ${hidden} more to set up`;
     const stack = document.createElement('span');
     stack.className = 'stack';
-    element.append(fillStack(stack, groups.added.map(({ client }) => client)), text);
+    element.append(fillStack(stack, groups.added.map(({ client }) => client), 'apps'), text);
   } else {
     element.dataset.state = 'more';
     const text = document.createElement('div');
@@ -443,7 +465,7 @@ function renderAgents() {
   $('[data-live="agents-count"]').textContent = summary.count;
   $('[data-live="agents-title"]').textContent = summary.title;
   $('[data-live="agents-detail"]').textContent = summary.detail;
-  fillStack($('[data-live="agents-stack"]'), summary.rows.map(([agent]) => agent));
+  fillStack($('[data-live="agents-stack"]'), summary.rows.map(([agent]) => agent), 'agents');
   if (popupKind === 'agents') renderPopup();
 }
 

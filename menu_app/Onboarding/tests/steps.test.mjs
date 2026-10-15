@@ -5,7 +5,7 @@ import steps from '../steps.js';
 
 const {
   SCREENS, CLIENTS, AGENTS, evaluate, primaryAction, indexOf, appRow, agentRow, orderedClients,
-  agentsSummary, appGroups, callSentence,
+  agentsSummary, appGroups, callSentence, stackParts, STACK_LIMIT,
 } = steps;
 
 test('the tour comes first, then the setup in order', () => {
@@ -101,7 +101,7 @@ test('agents on this Mac can be switched on and off; others are not listed', () 
   // Agents without an AI app of their own are found by the server.
   assert.equal(agentRow(kimi, apps, state).detail, 'Off');
   assert.equal(agentRow(grok, apps, state), null);
-  assert.deepEqual(AGENTS.map((a) => a.id), ['codex', 'claude', 'opencode', 'kimi', 'grok']);
+  assert.deepEqual(AGENTS.map((a) => a.id), ['codex', 'claude', 'opencode', 'kimi', 'grok', 'antigravity', 'pi', 'cline', 'kilo', 'goose']);
   for (const agent of AGENTS) assert.ok(existsSync(new URL(`../logos/${agent.logo}.png`, import.meta.url)), agent.id);
 });
 
@@ -115,6 +115,19 @@ test('the agents row sums them up in one line, whatever their number', () => {
   assert.equal(summary.count, '2 on · 3 off');
   assert.equal(agentsSummary(AGENTS, apps, { enabled: { codex: true } }).title, 'Codex is on');
   assert.equal(agentsSummary(AGENTS, apps, { enabled: {} }).title, 'No agent is on yet');
+  // Past three names, a number says the rest.
+  const many = { enabled: { codex: true, claude: true, opencode: true, kimi: true }, installed: { kimi: true, grok: true, antigravity: true, pi: true, cline: true, kilo: true, goose: true } };
+  assert.equal(agentsSummary(AGENTS, apps, many).detail, 'Codex, Claude Code, OpenCode +1 · 6 others are off');
+  assert.equal(agentsSummary(AGENTS, apps, { enabled: {}, installed: many.installed }).detail, '10 on this Mac, all off');
+});
+
+test('a logo stack shows five and keeps the rest behind a +N', () => {
+  assert.equal(STACK_LIMIT, 5);
+  const { shown, extra } = stackParts(AGENTS);
+  assert.deepEqual(shown.map((a) => a.id), ['codex', 'claude', 'opencode', 'kimi', 'grok']);
+  assert.deepEqual(extra.map((a) => a.id), ['antigravity', 'pi', 'cline', 'kilo', 'goose']);
+  assert.equal(stackParts(AGENTS.slice(0, 5)).extra.length, 0);
+  assert.deepEqual(stackParts(null), { shown: [], extra: [] });
 });
 
 test('the apps card shows what needs a click, then one row for the apps already set up', () => {

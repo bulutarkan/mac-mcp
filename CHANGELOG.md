@@ -1,5 +1,14 @@
 ## Unreleased
 
+### Antigravity, pi, Cline, Kilo Code and Goose as agents
+- Five more agent providers, off by default and turned on in Settings › Subagents or in the tour: Antigravity (`agy`, on the owner's Google sign-in), pi, Cline, Kilo Code and Goose. Each runs headless with only the scoped Mac MCP server, and its tool calls show properly in run reports, the menu and the island: Mac MCP's own tools by name, shell commands as commands, file writes as files, failures as failed. The island shows each one's own logo while it works.
+- Token usage is recorded per agent and appears in Settings › Usage once the agent is on; follow-up messages continue the same session (not for Cline, whose CLI cannot resume a session headless).
+- Antigravity runs with full access only: its sign-in is read with `/usr/bin/security`, which the restricted boundary refuses so that no agent can read other Keychain secrets.
+- A run that used a native tool that may have changed something is never replayed automatically, as for the other providers.
+
+### Tour › Connect: five logos, then +N
+- A logo stack shows five logos; the rest wait behind a small +N that opens them in place when clicked. The agents row names at most three, then says how many more are on or off.
+
 ### Kimi Code and Grok Build as AI apps
 - Besides handing them work as agents, Mac MCP can now be added to Kimi Code and Grok Build themselves, so a `kimi` or `grok` you start yourself can use your Mac too. They appear with Connect in the tour, in Settings › Connections and in `mac-mcp clients` / `mac-mcp connect --client kimi|grok`. Kimi gets `mac-mcp stdio` in `~/.kimi-code/mcp.json` next to the servers already there (the old file is kept as `mcp.json.before-mac-mcp`); Grok is set up through `grok mcp add`. No address or key goes into either.
 

@@ -959,6 +959,11 @@ struct SettingsView: View {
                 providerRow(id: "claude", title: "Claude Code", subtitle: "External Claude Code CLI provider (your Claude sign-in)")
                 providerRow(id: "kimi", title: "Kimi Code", subtitle: "External Kimi Code CLI provider (your kimi login or model providers)")
                 providerRow(id: "grok", title: "Grok Build", subtitle: "External Grok Build CLI provider (your grok login, XAI_API_KEY or models)")
+                providerRow(id: "antigravity", title: "Antigravity", subtitle: "External Antigravity CLI provider (your agy Google sign-in)")
+                providerRow(id: "pi", title: "pi", subtitle: "External pi coding agent provider (your pi login or API keys)")
+                providerRow(id: "cline", title: "Cline", subtitle: "External Cline CLI provider (your cline sign-in or API keys)")
+                providerRow(id: "kilo", title: "Kilo Code", subtitle: "External Kilo Code CLI provider (your kilo sign-in or API keys)")
+                providerRow(id: "goose", title: "Goose", subtitle: "External Goose CLI provider (your goose provider and key)")
 
                 Text("Disabled providers are hidden from the agent catalog and cannot be spawned. Changes apply live to new agent requests.")
                     .font(.caption2)
@@ -1312,28 +1317,17 @@ struct SettingsView: View {
                                     Spacer()
                                 }
                             } else {
-                                HStack(alignment: .top, spacing: 10) {
-                                    providerUsageCard(
-                                        title: "Codex",
-                                        symbol: "terminal",
-                                        usage: state.providerUsageSummary?.providers["codex"]
-                                    )
-                                    providerUsageCard(
-                                        title: "OpenCode",
-                                        symbol: "chevron.left.forwardslash.chevron.right",
-                                        usage: state.providerUsageSummary?.providers["opencode"]
-                                    )
-                                    providerUsageCard(
-                                        title: "Claude Code",
-                                        symbol: "sparkles",
-                                        usage: state.providerUsageSummary?.providers["claude"]
-                                    )
-                                    // Experimental: shown once Grok Build is on or has reported usage.
-                                    if settings.grokEnabled || state.providerUsageSummary?.providers["grok"] != nil {
+                                // Three cards a row; the agents beyond the first three once they are on or have reported usage.
+                                LazyVGrid(
+                                    columns: Array(repeating: GridItem(.flexible(), spacing: 10, alignment: .top), count: 3),
+                                    alignment: .leading,
+                                    spacing: 10
+                                ) {
+                                    ForEach(usageCards, id: \.id) { card in
                                         providerUsageCard(
-                                            title: "Grok Build",
-                                            symbol: "hammer",
-                                            usage: state.providerUsageSummary?.providers["grok"]
+                                            title: card.title,
+                                            symbol: card.symbol,
+                                            usage: state.providerUsageSummary?.providers[card.id]
                                         )
                                     }
                                 }
@@ -1421,6 +1415,29 @@ struct SettingsView: View {
             }
             .padding(22)
         }
+    }
+
+    private struct UsageCard {
+        let id: String
+        let title: String
+        let symbol: String
+    }
+
+    private var usageCards: [UsageCard] {
+        let always = [
+            UsageCard(id: "codex", title: "Codex", symbol: "terminal"),
+            UsageCard(id: "opencode", title: "OpenCode", symbol: "chevron.left.forwardslash.chevron.right"),
+            UsageCard(id: "claude", title: "Claude Code", symbol: "sparkles"),
+        ]
+        let more = [
+            UsageCard(id: "grok", title: "Grok Build", symbol: "hammer"),
+            UsageCard(id: "antigravity", title: "Antigravity", symbol: "arrow.up.circle"),
+            UsageCard(id: "pi", title: "pi", symbol: "function"),
+            UsageCard(id: "kilo", title: "Kilo Code", symbol: "k.circle"),
+            UsageCard(id: "cline", title: "Cline", symbol: "c.circle"),
+            UsageCard(id: "goose", title: "Goose", symbol: "bird"),
+        ].filter { settings.providerEnabled($0.id) || state.providerUsageSummary?.providers[$0.id] != nil }
+        return always + more
     }
 
     private func providerUsageCard(
@@ -3200,7 +3217,7 @@ struct SettingsView: View {
         if !current.isEmpty && !values.contains(current) {
             values.append(current)
         }
-        let order = ["opencode", "codex", "claude", "kimi", "grok"]
+        let order = ["opencode", "codex", "claude", "kimi", "grok"] + AgentProviders.more
         return values.sorted {
             (order.firstIndex(of: $0) ?? 99) < (order.firstIndex(of: $1) ?? 99)
         }
@@ -3800,13 +3817,6 @@ struct SettingsView: View {
     }
 
     private func providerDisplayName(_ id: String) -> String {
-        switch id {
-        case "opencode": return "OpenCode"
-        case "codex": return "Codex"
-        case "claude": return "Claude Code"
-        case "kimi": return "Kimi Code"
-        case "grok": return "Grok Build"
-        default: return id
-        }
+        AgentProviders.name(id) ?? id
     }
 }

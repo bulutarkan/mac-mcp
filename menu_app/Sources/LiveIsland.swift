@@ -94,16 +94,15 @@ extension LiveTone {
 enum IslandIcon: Hashable {
     case app(String)      // bundle identifier or app name
     case symbol(String)
-    case provider(String) // a maker's logo from Onboarding/logos: claude, openai, opencode, kimi, grok
+    case provider(String) // a maker's logo from Onboarding/logos: claude, openai, opencode, kimi, grok, …
 
     /// The logo of the agent's maker; an unknown provider keeps the generic agent symbol.
     static func forProvider(_ provider: String?) -> IslandIcon {
         let id = (provider ?? "").lowercased()
         if id == "claude" { return .provider("claude") }
         if id == "codex" || id.hasPrefix("chatgpt") { return .provider("openai") }
-        if id == "opencode" { return .provider("opencode") }
-        if id == "kimi" { return .provider("kimi") }
-        if id == "grok" { return .provider("grok") }
+        // The other agents' logos are named after their provider id.
+        if AgentProviders.names[id] != nil { return .provider(id) }
         return .symbol("sparkles")
     }
 
@@ -630,7 +629,7 @@ final class LiveIslandController {
     }
 
     private func rebuild() {
-        guard let state else { return }
+        guard state != nil else { return }
         var now: [LiveItem] = []
         if serverWasRunning && !serverRunningNow {
             now.append(LiveItem(id: "server", symbol: "bolt.horizontal.circle", title: "Mac MCP stopped answering",
@@ -903,7 +902,7 @@ final class LiveIslandController {
     }
 
     static func providerName(_ provider: String?) -> String {
-        ["codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "kimi": "Kimi Code", "grok": "Grok Build"][provider ?? ""] ?? (provider?.capitalized ?? "Agent")
+        AgentProviders.name(provider) ?? (provider?.capitalized ?? "Agent")
     }
 
     static func duration(_ seconds: Double) -> String {
@@ -920,9 +919,20 @@ final class LiveIslandController {
             "spawn_agents": "Starting agents", "wait_agents": "Waiting for agents", "ask_user": "Asking you",
             "http_request": "Calling a web service", "scheduled_tasks": "Scheduled Tasks", "tool_invoke": "Using a tool",
             "tool_discover": "Finding a tool",
+            // The agents' own tools
+            "Bash": "Running a command", "bash": "Running a command", "shell": "Running a command",
+            "run_commands": "Running a command", "command_execution": "Running a command",
+            "Read": "Reading a file", "read": "Reading a file", "view_file": "Reading a file", "read_files": "Reading files",
+            "Write": "Writing a file", "write": "Writing a file", "write_to_file": "Writing a file",
+            "Edit": "Editing a file", "edit": "Editing a file", "editor": "Editing a file",
+            "replace_file_content": "Editing a file", "file_change": "Editing a file",
+            "Grep": "Searching files", "grep": "Searching files", "grep_search": "Searching files",
+            "Glob": "Finding files", "glob": "Finding files", "find_by_name": "Finding files",
+            "list_dir": "Looking in a folder", "ls": "Looking in a folder",
         ]
-        if let words = known[tool] { return words }
-        let spaced = tool.replacingOccurrences(of: "_", with: " ")
+        let name = AgentProviders.toolName(tool)
+        if let words = known[name] { return words }
+        let spaced = name.replacingOccurrences(of: "_", with: " ")
         return spaced.prefix(1).uppercased() + spaced.dropFirst()
     }
 

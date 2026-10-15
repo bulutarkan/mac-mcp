@@ -1,6 +1,6 @@
 # Agents and Scheduled Tasks
 
-Delegating work to Codex, Claude Code and OpenCode agents (and, experimentally, Kimi Code and Grok Build): resume, worktrees, admission, notifications, budgets, memory, skills, role learning and Scheduled Tasks.
+Delegating work to Codex, Claude Code and OpenCode agents (and Kimi Code, Grok Build, Antigravity, pi, Cline, Kilo Code and Goose): resume, worktrees, admission, notifications, budgets, memory, skills, role learning and Scheduled Tasks.
 
 [← Back to the README](../README.md)
 
@@ -98,3 +98,21 @@ Off by default. Install the CLI (`npm install -g @moonshot-ai/kimi-code` or `@xa
 - **Usage:** Grok's own report is recorded once per run (Settings → Usage shows it once Grok Build is on); Kimi reports no usage, and missing usage is shown as unavailable, never as zero.
 - **Replay safety:** a run that used a native tool that can change something (shell, file writes, any tool not known to only read) is never replayed automatically; reads and Mac MCP's own receipted tools keep automatic retry available.
 - **Limits:** only Kimi Code 2.2 and Grok Build 1.0.52 were tested, against a free OpenRouter model; a CLI update that drops an option Mac MCP passes is reported as `provider_incompatible` before any work starts.
+
+## Antigravity, pi, Cline, Kilo Code and Goose subagents
+
+Off by default, like Kimi and Grok: install the CLI, sign it in or give it a model, then turn it on in **Settings → Subagents** (or with its switch in the tour's Connect screen) and delegate with `provider=antigravity|pi|cline|kilo|goose`. A model is `provider/model`, for example `openrouter/nvidia/nemotron-3-super-120b-a12b:free`; `OPENROUTER_API_KEY` is also read from the Keychain. Each one's own event stream gives phase, every tool call (Mac MCP's own named as such, its shell commands and file writes as commands and files in run reports and the menu), the answer, the session id and token usage, which Settings → Usage shows per agent.
+
+| Agent | CLI (tested) | Headless run | Private state per agent | Follow-ups |
+|---|---|---|---|---|
+| Antigravity | `agy` 1.3.5 | `agy --print … --output-format stream-json` | none: runs on the owner's sign-in | `--conversation <id>` |
+| pi | `pi` 1.2.0 (`@earendil-works/pi-coding-agent`) | `pi --print --mode json` | `PI_CODING_AGENT_DIR` (copy of `auth.json`, `models.json`) | `--session <id>` |
+| Cline | `cline` 3.0.71 | `cline --json --auto-approve true` | `--config`/`--data-dir` (copy of `providers.json`) | not available headless |
+| Kilo Code | `kilo` 7.8.12 (`@kilocode/cli`) | `kilo run --format json --auto` | `XDG_*` dirs | `--session <id>` |
+| Goose | `goose` 1.54.0 | `goose run --output-format stream-json` | `GOOSE_PATH_ROOT`, no keyring | `--resume --name <agent>` |
+
+- **Mac MCP's tools:** each gets only the scoped Mac MCP server in its private config, never the owner's own MCP servers. Antigravity's sign-in lives in the owner's Keychain and `~/.gemini`, so it runs with the owner's HOME; its scoped server reaches it as an added workspace folder (`--add-dir`) holding `.agents/mcp_config.json`, and the owner's agy configuration is never changed.
+- **Access modes:** pi, Cline, Kilo Code and Goose run inside the same macOS Seatbelt boundary as the other providers in `read_only` and `workspace_write`. Antigravity runs with `access_mode=full` only: agy reads its sign-in with `/usr/bin/security`, which the boundary refuses so that no agent can read the owner's other Keychain secrets; a restricted spawn is refused with that reason.
+- **Follow-ups:** Cline 3.0's `--id` opens its interactive chat, which `--json` refuses, so a Cline agent offers no session to continue (`supports_resume: false`).
+- **Replay safety:** as for the others, a run that used a native tool that can change something is never replayed automatically; reads and Mac MCP's own tools keep automatic retry available.
+- **Tested:** each end to end through an isolated Mac MCP server with its own shell, a file write and a Mac MCP tool, then a follow-up in the same session (Antigravity with Gemini 3.8 Flash, the others with a free OpenRouter model).

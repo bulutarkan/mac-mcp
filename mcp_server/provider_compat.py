@@ -47,6 +47,21 @@ REQUIRED_OPTIONS: Dict[str, Sequence[Tuple[Sequence[str], Sequence[str]]]] = {
             "--disallowed-tools", "--model", "--reasoning-effort", "--resume",
         )),
     ),
+    "pi": (
+        (("--help",), ("--print", "--mode", "--model", "--session", "--no-approve", "--no-skills", "--no-context-files")),
+    ),
+    "kilo": (
+        (("run", "--help"), ("--format", "--auto", "--dir", "--model", "--session")),
+    ),
+    "antigravity": (
+        (("--help",), ("--print", "--output-format", "--model", "--conversation", "--dangerously-skip-permissions")),
+    ),
+    "cline": (
+        (("--help",), ("--json", "--auto-approve", "--cwd", "--config", "--data-dir", "--provider", "--model")),
+    ),
+    "goose": (
+        (("run", "--help"), ("--text", "--output-format", "--resume", "--name", "--no-profile", "--model")),
+    ),
 }
 
 _lock = threading.Lock()

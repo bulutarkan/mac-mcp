@@ -29,7 +29,9 @@ struct OnboardingMessage: Equatable {
 enum OnboardingBridge {
     static let permissions: Set<String> = ["accessibility", "screen_recording"]
     static let clients: Set<String> = ["claude-code", "codex", "opencode", "claude-desktop", "chatgpt", "kimi", "grok"]
-    static let agentProviders: Set<String> = ["codex", "claude", "opencode", "kimi", "grok"]
+    static let agentProviders: Set<String> = [
+        "codex", "claude", "opencode", "kimi", "grok", "antigravity", "pi", "cline", "kilo", "goose",
+    ]
     static let sections: Set<String> = ["start", "general", "connections", "permissions", "help"]
     static let outcomes: Set<String> = ["completed", "skipped"]
     static let copyLimit = 4096

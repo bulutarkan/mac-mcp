@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, Optional, Sequence
 
-from . import paths
+from . import extra_harness_providers, paths
 
 SCHEMA_VERSION = 1
 MAX_RECEIPTS = 512
@@ -374,6 +374,12 @@ def _provider_cursor_kind(provider: str, event: Mapping[str, Any]) -> Optional[s
             return "turn_completed"
         if event_type == "text":
             return "agent_message"
+    elif provider in extra_harness_providers.LABELS:
+        calls = extra_harness_providers.tool_calls(provider, dict(event))
+        if calls:
+            return "mcp_tool_event" if all(mac_mcp for _, mac_mcp in calls) else "native_tool_event"
+        if extra_harness_providers.turn_finished(provider, dict(event)):
+            return "turn_completed"
     elif provider == "claude":
         if event_type == "system" and str(event.get("subtype") or "") == "init":
             return "session_started"
@@ -484,6 +490,12 @@ def note_provider_event(agent_id: str, provider: str, event: Mapping[str, Any]) 
         tool = str(event.get("toolName") or "")
         if tool and not _is_mac_mcp_grok_call(event) and tool not in GROK_READ_ONLY_TOOLS:
             mark_checkpoint_unknown(agent_id, "unverified_provider_native_activity", tool=tool, event_type=event_type)
+    elif provider in extra_harness_providers.LABELS:
+        read_only = extra_harness_providers.READ_ONLY_TOOLS.get(provider, frozenset())
+        for tool, mac_mcp in extra_harness_providers.tool_calls(provider, dict(event)):
+            if tool and not mac_mcp and tool not in read_only:
+                mark_checkpoint_unknown(agent_id, "unverified_provider_native_activity", tool=tool, event_type=event_type or "event")
+                break
     elif provider == "claude" and event_type == "assistant":
         for tool in _claude_tool_names(event):
             if tool and not _is_mac_mcp_claude_tool(tool) and tool not in CLAUDE_READ_ONLY_TOOLS:

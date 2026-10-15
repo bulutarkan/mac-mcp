@@ -105,9 +105,7 @@ struct RunReportSheet: View {
 
     private var agentLabel: String? {
         guard isAgent else { return nil }
-        let provider = (shown.detail?["provider"] as? String).map {
-            ["codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "kimi": "Kimi Code", "grok": "Grok Build"][$0] ?? $0.capitalized
-        }
+        let provider = (shown.detail?["provider"] as? String).map { AgentProviders.name($0) ?? $0.capitalized }
         let model = shown.detail?["model"] as? String
         return [provider, model].compactMap { $0 }.joined(separator: " · ").nilIfEmpty
     }

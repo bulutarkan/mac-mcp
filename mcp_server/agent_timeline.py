@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 MAX_STEPS = 200
 MAX_TEXT = 4000
@@ -224,6 +224,101 @@ def _grok_call(event: Dict[str, Any]) -> Dict[str, Any]:
             "input": _inputs(raw), "output": "", "status": "running"}
 
 
+# ── Antigravity, pi and Goose ────────────────────────────────────────────────
+
+_AGY_TOOLS = {"view_file": "Read a file", "list_dir": "Listed a folder", "find_by_name": "Found files",
+              "grep_search": "Searched files", "search_web": "Searched the web", "read_url_content": "Read a web page",
+              "command_status": "Checked a command"}
+_PI_TOOLS = {"read": "Read a file", "ls": "Listed a folder", "grep": "Searched files", "find": "Found files"}
+
+
+def _file_step(name: str, path: Any, wrote: bool) -> Dict[str, Any]:
+    return {"kind": "files", "title": "Wrote a file" if wrote else "Edited a file",
+            "files": [{"path": str(path or ""), "change": "add" if wrote else "update"}], "status": "running"}
+
+
+def _agy_call(info: Dict[str, Any], fallback: Any = "") -> Dict[str, Any]:
+    """agy reaches MCP servers through call_mcp_tool and names its own tools in snake_case."""
+    name = str(info.get("name") or fallback or "")
+    params = info.get("parameters") if isinstance(info.get("parameters"), dict) else {}
+    if name == "call_mcp_tool":
+        return _mcp_step(str(params.get("ServerName") or ""), str(params.get("ToolName") or ""),
+                         params.get("Arguments"), "", False, True)
+    if name == "run_command":
+        return {"kind": "command", "title": "Ran a command", "detail": _cut(params.get("CommandLine") or "", 400),
+                "output": "", "status": "running"}
+    if name in {"write_to_file", "replace_file_content", "multi_replace_file_content"}:
+        return _file_step(name, params.get("TargetFile"), name == "write_to_file")
+    return {"kind": "tool", "title": _AGY_TOOLS.get(name) or _humanize(name), "detail": name,
+            "input": _inputs(params), "output": "", "status": "running"}
+
+
+def _pi_call(name: str, arguments: Any) -> Dict[str, Any]:
+    """pi names MCP tools mcp__<server>__<tool> (mac_mcp for mac-mcp) and its own in lower case."""
+    arguments = arguments if isinstance(arguments, dict) else {}
+    if name.startswith("mcp__"):
+        return _claude_tool(name, arguments)
+    if name == "bash":
+        return {"kind": "command", "title": "Ran a command", "detail": _cut(arguments.get("command") or "", 400),
+                "output": "", "status": "running"}
+    if name in {"write", "edit"}:
+        return _file_step(name, arguments.get("path"), name == "write")
+    return {"kind": "tool", "title": _PI_TOOLS.get(name) or _humanize(name), "detail": name,
+            "input": _inputs(arguments), "output": "", "status": "running"}
+
+
+def _goose_call(name: str, arguments: Any) -> Dict[str, Any]:
+    """Goose names extension tools <extension>__<tool>; its developer tools are shell, write, edit, …"""
+    arguments = arguments if isinstance(arguments, dict) else {}
+    tool = name.split("__", 1)[1] if name.startswith("developer__") else name
+    if "__" in tool:
+        server, inner = tool.split("__", 1)
+        return _mcp_step(server, inner, arguments, "", False, True)
+    if tool == "shell":
+        return {"kind": "command", "title": "Ran a command", "detail": _cut(arguments.get("command") or "", 400),
+                "output": "", "status": "running"}
+    if tool in {"write", "edit", "text_editor"}:
+        return _file_step(tool, arguments.get("path"), tool == "write")
+    return {"kind": "tool", "title": _humanize(tool), "detail": tool, "input": _inputs(arguments),
+            "output": "", "status": "running"}
+
+
+def _cline_call(name: str, arguments: Any) -> Dict[str, Any]:
+    """Cline names MCP tools <server>__<tool>; its own are run_commands, editor, read_files, …"""
+    arguments = arguments if isinstance(arguments, dict) else {}
+    if "__" in name:
+        server, tool = name.split("__", 1)
+        return _mcp_step(server, tool, arguments, "", False, True)
+    if name == "run_commands":
+        commands = arguments.get("commands") if isinstance(arguments.get("commands"), list) else []
+        return {"kind": "command", "title": "Ran a command" if len(commands) < 2 else "Ran commands",
+                "detail": _cut("; ".join(str(command) for command in commands), 400), "output": "", "status": "running"}
+    if name == "editor":
+        return _file_step(name, arguments.get("path"), "old_text" not in arguments)
+    return {"kind": "tool", "title": _humanize(name), "detail": name, "input": _inputs(arguments),
+            "output": "", "status": "running"}
+
+
+def _cline_output(event: Dict[str, Any]) -> Tuple[str, bool]:
+    """A tool's output and whether it failed: run_commands lists {result, success} per command."""
+    output = event.get("output")
+    failed = bool(event.get("error"))
+    if isinstance(output, list):
+        failed = failed or any(isinstance(item, dict) and item.get("success") is False for item in output)
+        text = "\n".join(str(item.get("result") or item.get("error") or "") if isinstance(item, dict) else str(item)
+                         for item in output)
+    elif isinstance(output, dict):
+        failed = failed or bool(output.get("isError")) or bool(output.get("error"))
+        if output.get("error"):
+            return str(output["error"]), True
+        text = _content_text(output.get("content")) if "content" in output else str(output.get("result") or "")
+    else:
+        text = str(output or "")
+    if event.get("error"):
+        text = str(event["error"].get("message") if isinstance(event["error"], dict) else event["error"])
+    return text, failed
+
+
 def _grok_output(event: Dict[str, Any]) -> str:
     parts = []
     for item in event.get("content") or []:
@@ -282,6 +377,121 @@ def from_events(lines: List[str]) -> Dict[str, Any]:
             continue
         kind = str(event.get("type") or "")
         role = str(event.get("role") or "")
+        # Antigravity: init, step_update and result under "event"; the answer streams in text_delta pieces
+        if event.get("event") == "step_update" and isinstance(event.get("step_update"), dict):
+            update = event["step_update"]
+            key = "agy:" + str(update.get("conversation_id") or "") + ":" + str(update.get("step_index") or 0)
+            state = str(update.get("state") or "").upper()
+            info = update.get("tool_info") if isinstance(update.get("tool_info"), dict) else {}
+            if update.get("step_type") == "tool":
+                if key not in by_id:
+                    put(key, _agy_call(info, update.get("tool_name")))
+                if state in {"DONE", "ERROR"} and key in by_id:
+                    step = steps[by_id[key]]
+                    error = info.get("error") if isinstance(info.get("error"), dict) else {}
+                    output = str(error.get("message") or info.get("output") or "")
+                    step["output"] = _readable_output(output) if step["kind"] == "tool" else _cut(output, MAX_OUTPUT)
+                    step["status"] = "failed" if state == "ERROR" else "done"
+            elif update.get("step_type") == "agent_response" and update.get("text_delta"):
+                if key not in by_id:
+                    put(key, {"kind": "message", "title": "Said", "text": "", "status": "done", "_raw": ""})
+                if key in by_id:
+                    step = steps[by_id[key]]
+                    step["_raw"] += str(update["text_delta"])
+                    step["text"] = _cut(step["_raw"].split(_MARKER, 1)[0].strip(), MAX_TEXT)
+            continue
+        if event.get("event") == "result" and isinstance(event.get("result"), dict):
+            res = event["result"]
+            if str(res.get("status") or "") != "SUCCESS":
+                put(None, {"kind": "error", "title": "Ran into a problem",
+                           "text": _cut(str(res.get("response") or res.get("status") or "Unknown error"), MAX_TEXT),
+                           "status": "failed"})
+            raw = res.get("usage") if isinstance(res.get("usage"), dict) else {}
+            usage = {"input_tokens": int(raw.get("input_tokens") or 0) + int(raw.get("cache_read_tokens") or 0),
+                     "output_tokens": int(raw.get("output_tokens") or 0),
+                     "reasoning_tokens": int(raw.get("thinking_tokens") or 0)}
+            continue
+        # pi: tool_execution_* events and assistant message_end events (thinking blocks are not the answer)
+        if kind in {"tool_execution_start", "tool_execution_end"}:
+            key = str(event.get("toolCallId") or "") or None
+            if kind == "tool_execution_start":
+                put(key, _pi_call(str(event.get("toolName") or ""), event.get("args")))
+            elif key in by_id:
+                step = steps[by_id[key]]
+                output = _content_text((event.get("result") or {}).get("content") if isinstance(event.get("result"), dict) else event.get("result"))
+                step["output"] = _readable_output(output) if step["kind"] == "tool" else _cut(output, MAX_OUTPUT)
+                step["status"] = "failed" if event.get("isError") else "done"
+            continue
+        if kind == "message_end" and isinstance(event.get("message"), dict):
+            message = event["message"]
+            if message.get("role") == "assistant":
+                text = "".join(str(block.get("text") or "") for block in message.get("content") or []
+                               if isinstance(block, dict) and block.get("type") == "text")
+                text = text.split(_MARKER, 1)[0].strip()
+                if text:
+                    put(None, {"kind": "message", "title": "Said", "text": _cut(text, MAX_TEXT), "status": "done"})
+                raw = message.get("usage") if isinstance(message.get("usage"), dict) else {}
+                if raw:
+                    usage = {"input_tokens": usage.get("input_tokens", 0) + int(raw.get("input") or 0) + int(raw.get("cacheRead") or 0),
+                             "output_tokens": usage.get("output_tokens", 0) + int(raw.get("output") or 0)}
+            continue
+        # Cline: agent_event content_start/content_end per tool; run_result is the final answer
+        if kind == "agent_event" and isinstance(event.get("event"), dict):
+            inner = event["event"]
+            if inner.get("contentType") == "tool" and inner.get("toolCallId"):
+                key = "cline:" + str(inner["toolCallId"])
+                if inner.get("type") == "content_start":
+                    put(key, _cline_call(str(inner.get("toolName") or ""), inner.get("input")))
+                elif inner.get("type") == "content_end" and key in by_id:
+                    step = steps[by_id[key]]
+                    output, failed = _cline_output(inner)
+                    step["output"] = _readable_output(output) if step["kind"] == "tool" else _cut(output, MAX_OUTPUT)
+                    step["status"] = "failed" if failed else "done"
+            continue
+        if kind == "run_result":
+            text = str(event.get("text") or "").split(_MARKER, 1)[0].strip()
+            if text:
+                put(None, {"kind": "message", "title": "Said", "text": _cut(text, MAX_TEXT), "status": "done"})
+            if str(event.get("finishReason") or "completed") != "completed":
+                put(None, {"kind": "error", "title": "Ran into a problem",
+                           "text": _cut(str(event.get("finishReason")), MAX_TEXT), "status": "failed"})
+            raw = event.get("usage") if isinstance(event.get("usage"), dict) else {}
+            usage = {"input_tokens": int(raw.get("inputTokens") or 0),
+                     "output_tokens": int(raw.get("outputTokens") or 0)}
+            continue
+        # Goose: messages stream in pieces under one id; tool requests and responses are content blocks
+        if kind == "message" and isinstance(event.get("message"), dict):
+            message = event["message"]
+            for block in message.get("content") or []:
+                if not isinstance(block, dict):
+                    continue
+                typ = block.get("type")
+                if typ == "toolRequest":
+                    call = block.get("toolCall") if isinstance(block.get("toolCall"), dict) else {}
+                    value = call.get("value") if isinstance(call.get("value"), dict) else call
+                    put("goose:" + str(block.get("id") or ""), _goose_call(str(value.get("name") or ""), value.get("arguments")))
+                elif typ == "toolResponse":
+                    key = "goose:" + str(block.get("id") or "")
+                    if key in by_id:
+                        step = steps[by_id[key]]
+                        result = block.get("toolResult") if isinstance(block.get("toolResult"), dict) else {}
+                        value = result.get("value") if isinstance(result.get("value"), dict) else {}
+                        output = _content_text(value.get("content"))
+                        step["output"] = _readable_output(output) if step["kind"] == "tool" else _cut(output, MAX_OUTPUT)
+                        step["status"] = "failed" if value.get("isError") or result.get("status") == "error" else "done"
+                elif typ == "text" and message.get("role") == "assistant":
+                    key = "goose-text:" + str(message.get("id") or "")
+                    if key not in by_id:
+                        put(key, {"kind": "message", "title": "Said", "text": "", "status": "done", "_raw": ""})
+                    if key in by_id:
+                        step = steps[by_id[key]]
+                        step["_raw"] += str(block.get("text") or "")
+                        step["text"] = _cut(step["_raw"].split(_MARKER, 1)[0].strip(), MAX_TEXT)
+            continue
+        if kind == "complete" and "input_tokens" in event:
+            usage = {"input_tokens": int(event.get("input_tokens") or 0),
+                     "output_tokens": int(event.get("output_tokens") or 0)}
+            continue
         # Kimi Code: chat messages with a role and no type
         if role in {"assistant", "tool"} and not kind:
             if role == "assistant":

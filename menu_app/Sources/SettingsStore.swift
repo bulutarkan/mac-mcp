@@ -1,6 +1,34 @@
 import Combine
 import Foundation
 
+/// The agent CLIs Mac MCP can hand work to, by the id the server and settings use.
+enum AgentProviders {
+    static let names: [String: String] = [
+        "codex": "Codex", "claude": "Claude Code", "opencode": "OpenCode", "kimi": "Kimi Code", "grok": "Grok Build",
+        "antigravity": "Antigravity", "pi": "pi", "cline": "Cline", "kilo": "Kilo Code", "goose": "Goose",
+    ]
+    /// Agents kept in `SettingsStore.moreProviders*` rather than a field each.
+    static let more = ["antigravity", "pi", "cline", "kilo", "goose"]
+
+    static func name(_ id: String?) -> String? {
+        guard let id else { return nil }
+        return names[id.lowercased()]
+    }
+
+    /// A tool as an agent's CLI names it, without its MCP server: mcp__mac-mcp__read_file (Claude
+    /// Code, Kimi, Antigravity), mcp__mac_mcp__read_file (pi), mac-mcp__read_file (Goose, Cline),
+    /// mac-mcp_read_file (OpenCode, Kilo) are all read_file.
+    static func toolName(_ raw: String) -> String {
+        var value = raw
+        if value.hasPrefix("mcp__"), let range = value.dropFirst(5).range(of: "__") {
+            return String(value[range.upperBound...])
+        }
+        if let range = value.range(of: "__") { return String(value[range.upperBound...]) }
+        for prefix in ["mac-mcp_", "mac_mcp_", "mcp_"] where value.hasPrefix(prefix) { value.removeFirst(prefix.count) }
+        return value
+    }
+}
+
 struct MenuSettings: Codable {
     struct ExperimentalTool: Codable { var enabled: Bool }
     struct Voice: Codable {
@@ -106,7 +134,7 @@ struct MenuSettings: Codable {
                     "claude": Provider(enabled: false, binary_path: nil),
                     "kimi": Provider(enabled: false, binary_path: nil),
                     "grok": Provider(enabled: false, binary_path: nil),
-                ],
+                ].merging(AgentProviders.more.map { ($0, Provider(enabled: false, binary_path: nil)) }) { current, _ in current },
                 defaultAgent: nil
             ),
             apps: Apps(mail: AppSend(confirm_send: true), messages: AppSend(confirm_send: true))
@@ -154,6 +182,8 @@ final class SettingsStore: ObservableObject {
     @Published var claudeBinaryPath = ""
     @Published var kimiBinaryPath = ""
     @Published var grokBinaryPath = ""
+    @Published var moreProvidersEnabled: [String: Bool] = [:]
+    @Published var moreProvidersBinaryPath: [String: String] = [:]
     @Published var defaultAgentProvider = ""
     @Published var defaultAgentModel = ""
     @Published var defaultAgentReasoning = ""
@@ -269,6 +299,10 @@ final class SettingsStore: ObservableObject {
         claudeBinaryPath = providers["claude"]?.binary_path ?? ""
         kimiBinaryPath = providers["kimi"]?.binary_path ?? ""
         grokBinaryPath = providers["grok"]?.binary_path ?? ""
+        moreProvidersEnabled = Dictionary(uniqueKeysWithValues: AgentProviders.more.map {
+            ($0, providerConfigValid ? (providers[$0]?.enabled ?? false) : false)
+        })
+        moreProvidersBinaryPath = Dictionary(uniqueKeysWithValues: AgentProviders.more.map { ($0, providers[$0]?.binary_path ?? "") })
         defaultAgentProvider = current.subagents?.defaultAgent?.provider ?? ""
         defaultAgentModel = current.subagents?.defaultAgent?.model ?? ""
         defaultAgentReasoning = current.subagents?.defaultAgent?.reasoning ?? ""
@@ -312,7 +346,9 @@ final class SettingsStore: ObservableObject {
                     "claude": .init(enabled: claudeEnabled, binary_path: claudeBinaryPath.nilIfEmpty),
                     "kimi": .init(enabled: kimiEnabled, binary_path: kimiBinaryPath.nilIfEmpty),
                     "grok": .init(enabled: grokEnabled, binary_path: grokBinaryPath.nilIfEmpty),
-                ],
+                ].merging(AgentProviders.more.map {
+                    ($0, .init(enabled: moreProvidersEnabled[$0] ?? false, binary_path: moreProvidersBinaryPath[$0]?.nilIfEmpty))
+                }) { current, _ in current },
                 defaultAgent: defaultAgentProvider.nilIfEmpty.map {
                     .init(provider: $0, model: defaultAgentModel.nilIfEmpty, reasoning: defaultAgentReasoning.nilIfEmpty)
                 },
@@ -372,7 +408,7 @@ final class SettingsStore: ObservableObject {
         case "claude": return claudeEnabled
         case "kimi": return kimiEnabled
         case "grok": return grokEnabled
-        default: return false
+        default: return moreProvidersEnabled[id] ?? false
         }
     }
 
@@ -383,7 +419,9 @@ final class SettingsStore: ObservableObject {
         case "claude": claudeEnabled = enabled
         case "kimi": kimiEnabled = enabled
         case "grok": grokEnabled = enabled
-        default: return
+        default:
+            guard AgentProviders.more.contains(id) else { return }
+            moreProvidersEnabled[id] = enabled
         }
     }
 

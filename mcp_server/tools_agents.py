@@ -2103,6 +2103,12 @@ _RESTRICTED_READ_DENY_ROOTS = ("/Users", "/private/tmp", "/private/var/tmp", "/p
 # Git and other CLIs open /dev/null read-write; writing to it grants no
 # filesystem power, so read-only children can still run `git status`.
 _DEV_NULL_WRITE = '(allow file-write-data (literal "/dev/null"))'
+# agy reads its Google sign-in from the Keychain through /usr/bin/security, which the restricted
+# boundary refuses so that no agent can read the owner's other Keychain secrets.
+_ANTIGRAVITY_FULL_ONLY = (
+    "Antigravity reads its Google sign-in from the macOS Keychain with /usr/bin/security, which Mac MCP's "
+    "restricted boundary blocks so agents cannot read other Keychain secrets; use access_mode=full."
+)
 _RESTRICTED_ESCAPE_EXECUTABLES = (
     "/usr/bin/security", "/usr/bin/osascript", "/usr/bin/open", "/usr/bin/shortcuts",
     "/bin/launchctl", "/usr/bin/sudo", "/usr/bin/su",
@@ -2616,7 +2622,10 @@ def _provider_env(agent_id: str, meta: Dict[str, Any], scoped_token: str) -> Tup
         home = harness_providers.prepare_home(
             provider, state_root, str(meta.get("mcp_endpoint") or "http://127.0.0.1:8765/mcp"), scoped_token,
         )
-        env.update(harness_providers.provider_env(provider, home, state_root, _harness_keychain_value))
+        env.update(harness_providers.provider_env(
+            provider, home, state_root, _harness_keychain_value,
+            selected_model=str(meta.get("model") or ""),
+        ))
         # The scoped Mac MCP credential is in the private CLI config, not in the agent's shell environment.
         env.pop("MAC_MCP_AGENT_TOKEN", None)
         return env, None
@@ -3190,6 +3199,8 @@ def _access_mode_info(provider: str, access_mode: str) -> Dict[str, Any]:
                 "Claude Code restricted access is unavailable because macOS sandbox-exec is not available; the request is refused."
             ),
         }
+    if provider == "antigravity" and access_mode != "full":
+        return {"enforced": False, "boundary": "unsupported", "note": _ANTIGRAVITY_FULL_ONLY}
     if provider in harness_providers.PROVIDERS:
         available = _sandbox_exec_available()
         label = harness_providers.LABELS[provider]
@@ -3227,6 +3238,8 @@ def _validate_provider_access_mode(provider: str, access_mode: str) -> None:
             status.HTTP_409_CONFLICT,
             "Claude Code restricted access is unavailable: macOS sandbox-exec is missing, so Mac MCP refuses to rely on Claude Code's own permission checks alone.",
         )
+    if provider == "antigravity" and access_mode != "full":
+        raise HTTPException(status.HTTP_409_CONFLICT, _ANTIGRAVITY_FULL_ONLY)
     if provider in harness_providers.PROVIDERS and not _sandbox_exec_available():
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -3531,7 +3544,11 @@ def agent_catalog(
             "models_truncated": len(matched) > limit,
             "default_model": default_model,
             "default_reasoning": None,
-            "reasoning_values": ["low", "medium", "high"] if harness == "grok" else [],
+            "reasoning_values": {
+                "grok": ["low", "medium", "high"],
+                "antigravity": ["low", "medium", "high", "xhigh", "max"],
+                "cline": ["none", "low", "medium", "high", "xhigh"],
+            }.get(harness, []),
             "catalog_source": f"{harness}_config" if all_models else "unavailable",
             "catalog_fetched_at": None,
             "catalog_freshness": "fresh" if all_models else "unavailable",
@@ -3540,12 +3557,14 @@ def agent_catalog(
                 "Model aliases from the owner's ~/.kimi-code/config.toml; without a model its default_model is used."
                 if harness == "kimi" else
                 "Models `grok models` lists for the owner's sign-in and config; without a model its default is used."
+                if harness == "grok" else
+                "Models depend on the owner's own sign-in and configuration of this CLI; without a model its default is used."
             ),
-            "supports_resume": True,
+            "supports_resume": harness not in harness_providers.extra.NO_RESUME,
             "scoped_mcp": True,
             "access_modes": {
                 mode: {
-                    "supported": mode == "full" or _sandbox_exec_available(),
+                    "supported": mode == "full" or (harness != "antigravity" and _sandbox_exec_available()),
                     **_access_mode_info(harness, mode),
                 }
                 for mode in sorted(_ACCESS_MODES)
@@ -3743,13 +3762,16 @@ def _validate_provider_model_selection(
                 status.HTTP_400_BAD_REQUEST,
                 f"unsupported_model: {label} model {selected_model!r} is not one of {models}.",
             )
-        if selected_reasoning and selected_reasoning != "none" and (
-            provider == "kimi" or selected_reasoning not in {"low", "medium", "high"}
-        ):
+        supported_efforts = {
+            "kimi": (), "grok": ("low", "medium", "high"),
+            "pi": (), "kilo": (), "antigravity": ("low", "medium", "high", "xhigh", "max"),
+            "cline": ("none", "low", "medium", "high", "xhigh"), "goose": (),
+        }.get(provider, ())
+        if selected_reasoning and selected_reasoning != "none" and selected_reasoning not in supported_efforts:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 f"unsupported_reasoning: {label} takes "
-                + ("no reasoning setting." if provider == "kimi" else "low, medium or high."),
+                + (", ".join(supported_efforts) if supported_efforts else "no reasoning setting."),
             )
         result["validated"] = bool(selected_model and models)
         result["default_model"] = default_model
@@ -7110,6 +7132,42 @@ def _ingest_provider_usage_event(
         _accumulate_agent_usage(agent_id, event_key, normalized.total_tokens)
         return
 
+    if provider in harness_providers.extra.LABELS:
+        report = harness_providers.extra.usage_report(provider, event)
+        if not report:
+            return
+        event_id, counts = report
+        total = counts["total"]
+        if total is None and counts["input"] is not None and counts["output"] is not None:
+            # Input already counts cached tokens for these CLIs; reasoning is part of output.
+            total = counts["input"] + counts["output"]
+        if total is None:
+            store.diagnostic_increment(f"unknown_usage_schema_{provider}")
+            return
+        session_id = str(saved.get("session_id") or saved.get("resume_session_id") or f"agent:{agent_id}").strip()
+        event_key = f"{provider}:{agent_id}:{event_id}"
+        store.ingest(ProviderUsageRecord(
+            event_key=event_key,
+            provider=provider,
+            session_id=session_id,
+            event_id=event_id,
+            timestamp=timestamp,
+            agent_id=agent_id,
+            model=model,
+            model_verified=model_verified,
+            source=PROVIDER_USAGE_SOURCE_REPORT,
+            requested_model=requested_model,
+            effective_model=effective_model,
+            input_tokens=counts["input"],
+            output_tokens=counts["output"],
+            reasoning_tokens=counts["reasoning"],
+            cache_read_tokens=counts["cache_read"],
+            cache_write_tokens=counts["cache_write"],
+            total_tokens=total,
+        ))
+        _accumulate_agent_usage(agent_id, event_key, total)
+        return
+
     if event_type != "step_finish":
         return
     part = event.get("part") if isinstance(event.get("part"), dict) else {}
@@ -7187,7 +7245,7 @@ def _accumulate_agent_usage(agent_id: str, event_key: str, total_tokens: int) ->
 
 
 # Providers whose CLI reports token usage that Mac MCP can count.
-_USAGE_REPORTING_PROVIDERS = {"codex", "opencode", "claude", "grok"}
+_USAGE_REPORTING_PROVIDERS = {"codex", "opencode", "claude", "grok", "pi", "kilo", "cline", "goose", "antigravity"}
 
 
 def _agent_token_usage(meta: Dict[str, Any]) -> tuple[int, bool]:
@@ -7281,8 +7339,11 @@ def _run_provider_attempt(agent_id: str, meta: Dict[str, Any], prompt: str, atte
     boundary_profile: Optional[Path] = None
     try:
         claude_mcp_config = (cleanup_root / _CLAUDE_MCP_CONFIG_NAME) if cleanup_root is not None else None
+        cmd_meta = meta
+        if str(meta.get("provider") or "") in harness_providers.extra.LABELS:
+            cmd_meta = {**meta, "private_home": str(_harness_state(agent_id, meta) / (str(meta["provider"]) + "-home"))}
         cmd = _build_provider_command(
-            meta, prompt, result_path, shell_home=env.get("HOME"),
+            cmd_meta, prompt, result_path, shell_home=env.get("HOME"),
             mcp_config_path=claude_mcp_config if claude_mcp_config is not None and claude_mcp_config.is_file() else None,
         )
         cmd, boundary_profile = _provider_process_command(agent_id, meta, cmd)
@@ -7446,6 +7507,11 @@ def _worker(agent_id: str) -> int:
             stdout_offset = stdout_path.stat().st_size if stdout_path.exists() else 0
             stderr_offset = stderr_path.stat().st_size if stderr_path.exists() else 0
             exit_code, stop_reason = _run_provider_attempt(agent_id, latest, attempt_prompt, attempt_index)
+            if exit_code == 0 and stop_reason is None and str(latest.get("provider") or "") in harness_providers.PROVIDERS:
+                provider_stop = harness_providers.stop_reason_failure(str(latest["provider"]), stdout_path)
+                if provider_stop:
+                    exit_code = 1
+                    stop_reason = f"provider_stop:{provider_stop}"
             final_reason = stop_reason
             latest = _read_meta(agent_id)
             if latest.get("status") == "cancelled" or stop_reason == "cancelled":
@@ -7548,6 +7614,9 @@ def _worker(agent_id: str) -> int:
         result, session_id, usage = _extract_claude(stdout_path)
     elif meta["provider"] in harness_providers.PROVIDERS:
         result, session_id, usage = harness_providers.extract(meta["provider"], stdout_path)
+        if meta["provider"] == "goose" and not session_id:
+            # Goose resume by the deterministic per-agent session name.
+            session_id = str(meta.get("resume_session_id") or meta.get("agent_id") or "") or None
     else:
         session_id = _extract_codex_session(stdout_path)
         usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else None

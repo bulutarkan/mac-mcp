@@ -21,7 +21,9 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-LABELS: Dict[str, str] = {"kimi": "Kimi Code", "grok": "Grok Build"}
+from . import extra_harness_providers as extra
+
+LABELS: Dict[str, str] = {"kimi": "Kimi Code", "grok": "Grok Build", **extra.LABELS}
 PROVIDERS = frozenset(LABELS)
 
 # Grok tools that outlive or escape one delegated run (Mac MCP schedules and fans out work itself),
@@ -40,6 +42,8 @@ _DEFAULT_MODEL_RE = re.compile(r'^\s*default_model\s*=\s*"([^"]+)"\s*$', re.M)
 # Installation and the owner's configuration
 
 def binary_candidates(provider: str) -> List[Optional[str]]:
+    if provider in extra.LABELS:
+        return extra.binary_candidates(provider)
     home = Path.home()
     name = "kimi" if provider == "kimi" else "grok"
     return [
@@ -114,6 +118,8 @@ def grok_models(binary: str, env: Dict[str, str]) -> Tuple[List[str], Optional[s
 
 
 def models(provider: str, binary: Optional[str], env: Dict[str, str]) -> Tuple[List[str], Optional[str]]:
+    if provider in extra.LABELS:
+        return extra.models(provider, binary, env)
     if provider == "kimi":
         return kimi_models(owner_config_text("kimi"))
     if binary:
@@ -152,6 +158,8 @@ def install_roots(binary: str) -> List[Path]:
 
 def sign_in_state(provider: str, keychain_lookup: Callable[[str], Optional[str]]) -> Tuple[bool, str]:
     """Whether the CLI can reach a model: a sign-in, an API key, or a configured model provider."""
+    if provider in extra.LABELS:
+        return extra.sign_in_state(provider, keychain_lookup)
     home = owner_home(provider)
     config = owner_config_text(provider)
     keys = referenced_env_names(config)
@@ -220,6 +228,8 @@ def prepare_home(
     provider: str, state_root: Path, mcp_endpoint: str, scoped_token: str,
 ) -> Path:
     """Seed the agent's private CLI home from the owner's and add Mac MCP's scoped server."""
+    if provider in extra.LABELS:
+        return extra.prepare_home(provider, state_root, mcp_endpoint, scoped_token)
     home = private_home(state_root, provider)
     _private_dir(home)
     source = owner_home(provider)
@@ -257,6 +267,9 @@ def prepare_home(
 
 def remove_credentials(provider: str, state_root: Path) -> None:
     """The sign-in copy does not outlive the run; the next run copies a fresh one."""
+    if provider in extra.LABELS:
+        extra.remove_credentials(provider, state_root)
+        return
     home = private_home(state_root, provider)
     for path in [*credential_paths(provider, home), home / "mcp.json"]:
         if path.is_dir():
@@ -276,8 +289,11 @@ def remove_credentials(provider: str, state_root: Path) -> None:
 
 def provider_env(
     provider: str, home: Path, state_root: Path, keychain_lookup: Callable[[str], Optional[str]],
+    selected_model: str = "",
 ) -> Dict[str, str]:
     """Variables the CLI needs: its private home and the API keys its model settings name."""
+    if provider in extra.LABELS:
+        return extra.provider_env(provider, home, state_root, keychain_lookup, model=selected_model)
     env = {
         "HOME": str(state_root / "home"),
         "TMPDIR": str(state_root / "tmp"),
@@ -304,6 +320,8 @@ def provider_env(
 
 def command(meta: Dict[str, Any], prompt: str) -> List[str]:
     provider = str(meta.get("provider") or "")
+    if provider in extra.LABELS:
+        return extra.command(meta, prompt)
     binary = str(meta["binary"])
     access_mode = str(meta.get("access_mode") or "workspace_write")
     model = str(meta.get("model") or "").strip()
@@ -365,6 +383,9 @@ def _kimi_text(content: Any) -> str:
 
 def apply_event(meta: Dict[str, Any], event: Dict[str, Any], now: float, note_unknown: Callable[[Dict[str, Any], str], None]) -> None:
     provider = str(meta.get("provider") or "")
+    if provider in extra.LABELS:
+        extra.apply_event(meta, event, now, note_unknown)
+        return
     if provider == "kimi":
         role = str(event.get("role") or "")
         if role == "assistant":
@@ -450,6 +471,8 @@ def _events(path: Path) -> List[Dict[str, Any]]:
 
 def extract(provider: str, stdout_path: Path) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
     """The final answer, the session id to resume and the usage of the last attempt."""
+    if provider in extra.LABELS:
+        return extra.extract(provider, stdout_path)
     events = _events(stdout_path)
     session_id: Optional[str] = None
     usage: Optional[Dict[str, Any]] = None
@@ -479,6 +502,8 @@ def extract(provider: str, stdout_path: Path) -> Tuple[str, Optional[str], Optio
 
 def stop_reason_failure(provider: str, stdout_path: Path) -> Optional[str]:
     """A Grok run that ended for another reason than finishing its turn did not finish its task."""
+    if provider in extra.LABELS:
+        return extra.stop_reason_failure(provider, stdout_path)
     if provider != "grok":
         return None
     reason = None

@@ -338,9 +338,9 @@ button[disabled] { opacity: 0.5; cursor: default; }
   overflow-y: auto; place-items: start center; align-content: start; padding: 18px 20px;
 }
 /* Colours of the Connect card only (the shared tokens above mirror the site's). */
-.screens { --raised: #1b2238; --ring: #1c2238; --switch-off: rgba(236, 239, 246, 0.18); --scrim: rgba(8, 11, 22, 0.55); --shimmer: rgba(236, 239, 246, 0.08); }
+.screens { --raised: #1b2238; --ring: #1c2238; --chip: #2c3550; --switch-off: rgba(236, 239, 246, 0.18); --scrim: rgba(8, 11, 22, 0.55); --shimmer: rgba(236, 239, 246, 0.08); }
 @media (prefers-color-scheme: light) {
-  .screens { --raised: #ffffff; --ring: #ffffff; --switch-off: rgba(21, 27, 46, 0.18); --scrim: rgba(21, 27, 46, 0.18); --shimmer: rgba(21, 27, 46, 0.06); }
+  .screens { --raised: #ffffff; --ring: #ffffff; --chip: #e6e9f1; --switch-off: rgba(21, 27, 46, 0.18); --scrim: rgba(21, 27, 46, 0.18); --shimmer: rgba(21, 27, 46, 0.06); }
 }
 
 /* While the apps and agents are looked up: a loader the size of the card, then the card fades in. */
@@ -383,7 +383,27 @@ button[disabled] { opacity: 0.5; cursor: default; }
   filter: drop-shadow(1.5px 0 0 var(--ring)) drop-shadow(-1.5px 0 0 var(--ring))
           drop-shadow(0 1.5px 0 var(--ring)) drop-shadow(0 -1.5px 0 var(--ring));
 }
-.stack img + img { margin-left: -7px; }
+.stack img + img, .stack .more { margin-left: -7px; }
+/* Past five logos a +N stands for the rest; clicked, the rest grow out of it in place. */
+.stack .more {
+  /* Positioned so it paints above the logos, whose filter lifts them into their own layer. */
+  position: relative; z-index: 1;
+  display: grid; place-items: center; min-width: 26px; height: 26px; padding: 0 5px; border-radius: 7px; cursor: pointer;
+  font: 600 11px/1 var(--sans); color: var(--paper); background: var(--chip);
+  box-shadow: 0 0 0 1.5px var(--ring);
+  transition: transform 0.15s var(--ease), opacity 0.2s var(--ease), min-width 0.3s var(--ease), padding 0.3s var(--ease), margin 0.3s var(--ease);
+}
+.stack .more:hover { transform: scale(1.08); }
+.stack img.extra { width: 0; margin-left: 0; opacity: 0; transition: width 0.3s var(--ease), margin 0.3s var(--ease), opacity 0.3s var(--ease); }
+.stack.is-open img.extra { width: 26px; margin-left: -7px; opacity: 1; }
+.stack.is-open img.extra:nth-of-type(n+7) { transition-delay: 0.04s; }
+.stack.is-open .more { min-width: 0; width: 0; padding: 0; margin-left: 0; opacity: 0; pointer-events: none; overflow: hidden; }
+/* Open, the stack takes its own line above the row's text. */
+.agent-strip:has(.stack.is-open), .apps .app.summary:has(.stack.is-open) { grid-template-columns: 1fr auto; row-gap: 8px; }
+.agent-strip .stack.is-open, .apps .app.summary .stack.is-open { grid-column: 1 / -1; }
+@media (prefers-reduced-motion: reduce) {
+  .stack img.extra, .stack .more { transition: none; }
+}
 /* More specific than the mark-less row rule below: the logos take the mark's column. */
 .apps .app.summary { grid-template-columns: auto 1fr auto; }
 .apps .app.summary[data-state="more"] { grid-template-columns: 1fr auto; }
