@@ -5,6 +5,7 @@
 
 ### Tour › Connect fits any number of apps and agents
 - The card keeps one height: apps that need a click first (at most two), then one row for the apps Mac MCP is already added to, with their logos, and All apps for the full list. Agents are one row with every agent's logo; Choose opens the list with a switch for each, Kimi Code and Grok Build included.
+- While the apps and agents are looked up, the card shows a loader ("Looking for AI apps on this Mac…") and fades in once both answered, instead of an empty card that filled in row by row. Both lookups run at the same time, and the agent lookup no longer waits for the model catalogs.
 - Instead of "Connected. Your AI app called run_command.", a small card says what happened in words ("Mac MCP is connected · Your AI app ran a command on this Mac.") or, while waiting, what to do. The First request screen uses the same card.
 
 ### Kimi Code and Grok Build as agents (experimental)

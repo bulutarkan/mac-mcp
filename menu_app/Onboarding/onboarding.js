@@ -70,7 +70,10 @@ function demo(action, args) {
       return JSON.parse(JSON.stringify(demoAgents));
     },
   };
-  return Promise.resolve(replies[action] ? replies[action]() : { ok: true });
+  const reply = replies[action] ? replies[action]() : { ok: true };
+  // ?delay=ms makes the slow lookups as slow as on a real Mac, to see the loader.
+  const delay = ['apps', 'agents'].includes(action) ? Number(params.get('delay')) || 0 : 0;
+  return new Promise((resolve) => setTimeout(() => resolve(reply), delay));
 }
 
 // ---------- state ----------
@@ -80,6 +83,7 @@ let current = Math.max(0, indexOf(params.get('screen') || 'welcome'));
 let status = null;
 let evaluation = evaluate(null);
 let apps = null;
+let appsLoading = false;
 let appsProblem = null;
 let agentsState = null;
 let popupKind = null;
@@ -281,17 +285,36 @@ async function requestPermission(name) {
 }
 
 // The AI apps on this Mac, each with one button: Mac MCP does the setup itself.
+// Both lookups run together; the card shows a loader until both answered, then fades in
+// whole instead of filling in row by row.
 async function loadApps() {
-  try {
-    apps = await call('apps');
+  if (appsLoading) return;
+  appsLoading = true;
+  setCardLoading(true);
+  const [found, agents] = await Promise.allSettled([call('apps'), call('agents')]);
+  if (found.status === 'fulfilled') {
+    apps = found.value;
     appsProblem = null;
-  } catch (error) {
+  } else {
     // Not finding the apps is not the same as there being none: say so and offer a retry.
     apps = [];
-    appsProblem = error.message || 'Mac MCP could not look for AI apps on this Mac.';
+    appsProblem = (found.reason && found.reason.message) || 'Mac MCP could not look for AI apps on this Mac.';
   }
-  agentsState = await call('agents').catch(() => null);
+  agentsState = agents.status === 'fulfilled' ? agents.value : null;
+  appsLoading = false;
   renderApps();
+  setCardLoading(false);
+}
+
+function setCardLoading(loading) {
+  const card = $('.connect-card');
+  card.toggleAttribute('data-loading', loading);
+  card.setAttribute('aria-busy', String(loading));
+  card.classList.remove('is-revealed');
+  if (!loading) {
+    void card.offsetWidth;  // restart the reveal when the list is loaded again
+    card.classList.add('is-revealed');
+  }
 }
 
 /** A status card: a pulse while waiting, a tick when done, a title and one line. */

@@ -140,7 +140,11 @@
           <p class="note">Prefer to set it up by hand? <button type="button" class="link" data-action="manual-setup">Open the manual setup</button></p>
         </div>
         <div class="stage-wrap">
-          <div class="stage plain connect-card">
+          <div class="stage plain connect-card" data-loading aria-busy="true">
+            <div class="card-loading" role="status">
+              <div class="loading-head"><span class="spinner" aria-hidden="true"></span><span>Looking for AI apps on this Mac…</span></div>
+              <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton tall"></div>
+            </div>
             <div class="group">
               <div class="group-head"><h2 id="h-apps">Your AI apps</h2><span class="count" data-live="apps-count"></span></div>
               <ul class="apps" data-live="apps" aria-labelledby="h-apps"></ul>

@@ -112,7 +112,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, WKNavigation
             return true
         case .agents:
             // Agents without an AI app of their own (Kimi Code, Grok Build) are found by the server.
-            if state.providerStatuses.isEmpty { await state.refreshProviders() }
+            if state.providerStatuses.isEmpty { await state.refreshProviderDetection() }
             return Self.agentStates(state)
         case .enableAgent(let provider), .disableAgent(let provider):
             // Switched here by the owner, like the switch in Settings › Agents (never on by default).

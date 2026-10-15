@@ -50,7 +50,7 @@ class NativeAccessibilityTests(unittest.TestCase):
 
     def test_the_tour_does_not_mistake_a_failed_scan_for_no_apps(self) -> None:
         tour = (ONBOARDING / "onboarding.js").read_text(encoding="utf-8")
-        self.assertIn("appsProblem = error.message", tour)
+        self.assertIn("appsProblem = (found.reason && found.reason.message)", tour)
         self.assertIn("Could not look for AI apps", tour)
         self.assertIn("Try again", tour)
 

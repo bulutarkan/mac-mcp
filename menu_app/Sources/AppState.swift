@@ -1293,6 +1293,16 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Only which provider CLIs the server found on this Mac (no model catalogs), for the tour.
+    func refreshProviderDetection() async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
+        if let envelope: ProvidersEnvelope = try? await fetch(
+            base.appendingPathComponent("dashboard/api/providers"), query: [:], timeout: 8.0
+        ) {
+            setIfChanged(\.providerStatuses, envelope.providers)
+        }
+    }
+
     func refreshProviders() async {
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else {
             setIfChanged(\.providerSettingsState, .error("Could not load providers because the server URL is invalid."))

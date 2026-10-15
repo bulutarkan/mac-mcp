@@ -140,3 +140,14 @@ test('the first call is said in words, not as a tool name', () => {
   assert.equal(callSentence('something_new'), 'Your AI app used Mac MCP.');
   assert.equal(callSentence(null), 'Your AI app used Mac MCP.');
 });
+
+test('the Connect card loads apps and agents together and shows them at once', async () => {
+  const { readFileSync } = await import('node:fs');
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const script = readFileSync(new URL('../onboarding.js', import.meta.url), 'utf8');
+  // The card starts as a loader, not as an empty list that fills in row by row.
+  assert.match(html, /class="stage plain connect-card" data-loading aria-busy="true"/);
+  assert.match(html, /Looking for AI apps on this Mac/);
+  assert.match(script, /Promise\.allSettled\(\[call\('apps'\), call\('agents'\)\]\)/);
+  assert.match(script, /if \(appsLoading\) return;/);
+});
