@@ -2893,7 +2893,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Add Mac MCP to an AI app on this Mac in one step (ChatGPT: copy its connector address).",
     )
     p_connect_app.add_argument("--client", required=True, choices=("claude-code", "codex", "claude-desktop",
-                                                                   "opencode", "chatgpt"))
+                                                                   "opencode", "kimi", "grok", "chatgpt"))
     p_connect_app.add_argument("--json", action="store_true", help="Print the outcome as JSON.")
     p_connect_app.set_defaults(func=connect_app)
 

@@ -2,8 +2,8 @@
 
 Each app gets `mac-mcp stdio` as a command-based MCP server, so its config holds
 no address and no key; the bridge adds the key from Mac MCP's own .env. Apps
-with a CLI for this (Claude Code, Codex) are set up through it; for the others
-Mac MCP edits the JSON config itself, keeping everything else in the file.
+with a CLI for this (Claude Code, Codex, Grok Build) are set up through it; for the
+others Mac MCP edits the JSON config itself, keeping everything else in the file.
 """
 from __future__ import annotations
 
@@ -46,7 +46,17 @@ APPS = (
     App("codex", "Codex", "Start a new Codex session, then ask it something about your Mac."),
     App("claude-desktop", "Claude Desktop", "Quit Claude and open it again, then ask it something about your Mac."),
     App("opencode", "OpenCode", "Start OpenCode again, then ask it something about your Mac."),
+    App("kimi", "Kimi Code", "Start a new Kimi Code session, then ask it something about your Mac."),
+    App("grok", "Grok Build", "Start a new Grok Build session, then ask it something about your Mac."),
 )
+# Apps whose own CLI adds and removes MCP servers: (executable, remove args, add args before the command).
+_CLI_SETUP = {
+    "claude-code": ("claude", ["mcp", "remove", SERVER_NAME, "--scope", "user"],
+                    ["mcp", "add", "--scope", "user", SERVER_NAME, "--"]),
+    "codex": ("codex", ["mcp", "remove", SERVER_NAME], ["mcp", "add", SERVER_NAME, "--"]),
+    "grok": ("grok", ["--no-auto-update", "mcp", "remove", SERVER_NAME],
+             ["--no-auto-update", "mcp", "add", SERVER_NAME, "--"]),
+}
 APP_IDS = tuple(app.id for app in APPS)
 
 Run = Callable[..., subprocess.CompletedProcess]
@@ -97,6 +107,29 @@ def _opencode_dir() -> Path:
     return Path(base) / "opencode"
 
 
+def _kimi_mcp_config() -> Path:
+    return Path(os.environ.get("KIMI_CODE_HOME") or _home() / ".kimi-code") / "mcp.json"
+
+
+def _grok_config() -> Path:
+    return Path(os.environ.get("GROK_HOME") or _home() / ".grok") / "config.toml"
+
+
+def _toml_servers(path: Path, table: str) -> Any:
+    """The MCP server tables of a TOML config (`[<table>.<name>]`); Python 3.10 has no tomllib."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if tomllib is None:
+        found = re.search(rf'^\[{table}\.(?:{SERVER_NAME}|"{SERVER_NAME}")\]', text, re.M) is not None
+        return {SERVER_NAME: {"command": "mac-mcp", "args": ["stdio"]} if "stdio" in text else {}} if found else None
+    try:
+        return tomllib.loads(text).get(table)
+    except tomllib.TOMLDecodeError:
+        return None
+
+
 def _opencode_config() -> Path:
     folder = _opencode_dir()
     for name in ("opencode.jsonc", "opencode.json", "config.json"):
@@ -144,6 +177,10 @@ def _entry(app: str) -> Any:
             servers = None
     elif app == "claude-desktop":
         servers = (_read_json(_desktop_config()) or {}).get("mcpServers")
+    elif app == "kimi":
+        servers = (_read_json(_kimi_mcp_config()) or {}).get("mcpServers")
+    elif app == "grok":
+        servers = _toml_servers(_grok_config(), "mcp_servers")
     else:
         servers = (_read_json(_opencode_config()) or {}).get("mcp")
     if not isinstance(servers, dict) or SERVER_NAME not in servers:
@@ -159,6 +196,8 @@ def _installed(app: str) -> bool:
         return _which("codex") is not None
     if app == "claude-desktop":
         return _desktop_app() is not None
+    if app in ("kimi", "grok"):
+        return _which(app) is not None
     return _which("opencode") is not None or _opencode_dir().exists()
 
 
@@ -218,19 +257,14 @@ def connect(app: str, *, run: Run = subprocess.run) -> dict[str, Any]:
     if meta is None:
         raise SetupError(f"unknown app: {app}")
     command = bridge_command()
-    if app in ("claude-code", "codex"):
-        binary = _which("claude" if app == "claude-code" else "codex")
+    if app in _CLI_SETUP:
+        executable, remove_args, add_args = _CLI_SETUP[app]
+        binary = _which(executable)
         if binary is None:
             raise SetupError(f"{meta.name} is not installed on this Mac.")
-        if app == "claude-code":
-            remove = [binary, "mcp", "remove", SERVER_NAME, "--scope", "user"]
-            add = [binary, "mcp", "add", "--scope", "user", SERVER_NAME, "--", *command]
-        else:
-            remove = [binary, "mcp", "remove", SERVER_NAME]
-            add = [binary, "mcp", "add", SERVER_NAME, "--", *command]
         if _added(app):
-            _run_cli(run, remove)
-        result = _run_cli(run, add)
+            _run_cli(run, [binary, *remove_args])
+        result = _run_cli(run, [binary, *add_args, *command])
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip().splitlines()
             raise SetupError(f"{meta.name} did not accept Mac MCP: {detail[-1] if detail else 'no details'}")
@@ -244,6 +278,16 @@ def connect(app: str, *, run: Run = subprocess.run) -> dict[str, Any]:
             data["mcpServers"][SERVER_NAME] = {"command": command[0], "args": command[1:]}
 
         _edit_json(_desktop_config(), meta.name, add_desktop)
+    elif app == "kimi":
+        if _which("kimi") is None:
+            raise SetupError("Kimi Code is not installed on this Mac.")
+
+        def add_kimi(data: dict[str, Any]) -> None:
+            servers = data.get("mcpServers")
+            data["mcpServers"] = servers if isinstance(servers, dict) else {}
+            data["mcpServers"][SERVER_NAME] = {"transport": "stdio", "command": command[0], "args": command[1:]}
+
+        _edit_json(_kimi_mcp_config(), meta.name, add_kimi)
     else:
         def add_opencode(data: dict[str, Any]) -> None:
             data.setdefault("$schema", "https://opencode.ai/config.json")

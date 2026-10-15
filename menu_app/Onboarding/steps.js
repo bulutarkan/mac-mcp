@@ -24,6 +24,8 @@ const CLIENTS = [
   { id: 'chatgpt', name: 'ChatGPT', logo: 'openai', needsRemote: true },
   { id: 'codex', name: 'Codex', logo: 'openai', needsRemote: false },
   { id: 'opencode', name: 'OpenCode', logo: 'opencode', needsRemote: false },
+  { id: 'kimi', name: 'Kimi Code', logo: 'kimi', needsRemote: false },
+  { id: 'grok', name: 'Grok Build', logo: 'grok', needsRemote: false },
 ];
 
 // Agents Mac MCP can hand work to (Settings › Agents). Each starts off; the owner turns it on.
@@ -33,8 +35,8 @@ const AGENTS = [
   { id: 'codex', client: 'codex', name: 'Codex', logo: 'openai' },
   { id: 'claude', client: 'claude-code', name: 'Claude Code', logo: 'claude' },
   { id: 'opencode', client: 'opencode', name: 'OpenCode', logo: 'opencode' },
-  { id: 'kimi', name: 'Kimi Code', logo: 'kimi' },
-  { id: 'grok', name: 'Grok Build', logo: 'grok' },
+  { id: 'kimi', client: 'kimi', name: 'Kimi Code', logo: 'kimi' },
+  { id: 'grok', client: 'grok', name: 'Grok Build', logo: 'grok' },
 ];
 
 const FIRST_REQUEST = 'Use Mac MCP to tell me which macOS version this Mac is running.';

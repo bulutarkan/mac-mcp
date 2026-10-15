@@ -129,7 +129,8 @@ test('the apps card shows what needs a click, then one row for the apps already 
   assert.deepEqual(groups.added.map(({ client }) => client.id), ['claude-code', 'codex']);
   assert.equal(groups.present, 4);
   assert.equal(groups.all.length, CLIENTS.length);
-  assert.equal(groups.all[groups.all.length - 1].client.id, 'opencode');
+  // Apps not on this Mac come last, in list order.
+  assert.deepEqual(groups.all.slice(-3).map(({ client }) => client.id), ['opencode', 'kimi', 'grok']);
 });
 
 test('the first call is said in words, not as a tool name', () => {

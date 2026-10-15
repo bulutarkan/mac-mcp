@@ -1,5 +1,8 @@
 ## Unreleased
 
+### Kimi Code and Grok Build as AI apps
+- Besides handing them work as agents, Mac MCP can now be added to Kimi Code and Grok Build themselves, so a `kimi` or `grok` you start yourself can use your Mac too. They appear with Connect in the tour, in Settings › Connections and in `mac-mcp clients` / `mac-mcp connect --client kimi|grok`. Kimi gets `mac-mcp stdio` in `~/.kimi-code/mcp.json` next to the servers already there (the old file is kept as `mcp.json.before-mac-mcp`); Grok is set up through `grok mcp add`. No address or key goes into either.
+
 ### The island no longer shows a finished agent as still working
 - The island rebuilt its Now list from the app's agent list while that list was still being replaced (a published value arrives before it is stored), so an agent that had just finished stayed under Now, its timer running, while Recent already said it finished. It stayed there until another agent changed. Now and the server-stopped row now use the values as they arrive.
 

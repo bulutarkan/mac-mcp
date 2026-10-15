@@ -24,7 +24,8 @@ class ClientSetupTests(unittest.TestCase):
         self.cli.write_text("#!/bin/sh\n")
         self.cli.chmod(0o755)
         env = patch.dict(os.environ, {"HOME": str(self.home), "PATH": str(self.cli.parent),
-                                      "MAC_MCP_CLI": "", "CODEX_HOME": "", "XDG_CONFIG_HOME": ""})
+                                      "MAC_MCP_CLI": "", "CODEX_HOME": "", "XDG_CONFIG_HOME": "",
+                                      "KIMI_CODE_HOME": "", "GROK_HOME": ""})
         env.start()
         self.addCleanup(env.stop)
         # Only the temp home: the real /opt/homebrew/bin may hold the apps' CLIs.
@@ -104,6 +105,44 @@ class ClientSetupTests(unittest.TestCase):
         client_setup.connect("opencode", run=self.fake_run)
         data = json.loads((self.home / ".config" / "opencode" / "opencode.json").read_text())
         self.assertEqual({"type": "local", "command": [str(self.cli), "stdio"], "enabled": True}, data["mcp"]["mac-mcp"])
+
+    def test_kimi_gets_a_stdio_server_beside_the_owners_own(self) -> None:
+        self.tool("kimi")
+        config = self.home / ".kimi-code" / "mcp.json"
+        config.parent.mkdir()
+        config.write_text(json.dumps({"mcpServers": {"github": {"url": "https://example.invalid"}}}))
+        result = client_setup.connect("kimi", run=self.fake_run)
+        servers = json.loads(config.read_text())["mcpServers"]
+        self.assertEqual({"url": "https://example.invalid"}, servers["github"])
+        self.assertEqual({"transport": "stdio", "command": str(self.cli), "args": ["stdio"]}, servers["mac-mcp"])
+        self.assertEqual([], self.calls)
+        self.assertIn("new Kimi Code session", result["next"])
+
+    def test_grok_is_added_through_its_cli(self) -> None:
+        grok = self.tool("grok")
+        config = self.home / ".grok" / "config.toml"
+        config.parent.mkdir()
+        config.write_text('[mcp_servers.mac-mcp]\nurl = "http://127.0.0.1:8765/mcp"\n')
+
+        def run(args, **kwargs):
+            self.calls.append(list(args))
+            config.write_text(f'[mcp_servers.mac-mcp]\ncommand = "{self.cli}"\nargs = ["stdio"]\n')
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        client_setup.connect("grok", run=run)
+        self.assertEqual([str(grok), "--no-auto-update", "mcp", "remove", "mac-mcp"], self.calls[0])
+        self.assertEqual([str(grok), "--no-auto-update", "mcp", "add", "mac-mcp", "--", str(self.cli), "stdio"],
+                         self.calls[1])
+        app = {item["id"]: item for item in client_setup.apps_status()}["grok"]
+        self.assertEqual((True, True, True), (app["installed"], app["added"], app["keyless"]))
+
+    def test_kimi_and_grok_not_installed_are_reported(self) -> None:
+        for app in ("kimi", "grok"):
+            with self.assertRaises(client_setup.SetupError):
+                client_setup.connect(app, run=self.fake_run)
+        apps = {item["id"]: item for item in client_setup.apps_status()}
+        self.assertFalse(apps["kimi"]["installed"])
+        self.assertFalse(apps["grok"]["installed"])
 
     def test_status_lists_installed_and_added_apps(self) -> None:
         self.tool("claude")
