@@ -1,5 +1,15 @@
 ## Unreleased
 
+### Native scrolls work on SwiftUI and background windows (#185 follow-up)
+- Scroll areas in SwiftUI windows (Mac MCP's own Settings included) and AppKit views of a background app answer the page-scroll action with an error, do nothing, or, in a SwiftUI list, page the other way. When the page action does not move the area's scroll bar the asked way, `mac_act` now moves the bar by one page (the visible share of the content) itself and says so (`scroll.method: "scroll_bar_value"`). At the edge it sends nothing (`scroll_at_boundary`).
+- A scroll bar that moved the other way is `scroll_wrong_direction` (`ok: false`, no automatic retry) instead of a successful scroll.
+- A scroll area without an anchor row lost its readable scroll bar to a parsing slip (stripping the output also stripped its empty fields), so scrolls there were `scroll_unverified`; they are verified now.
+- An action on one of two look-alike elements (two scroll areas, say) checks which is which by the labels below them. AppleScript took 1.4 to 3.9 seconds to read those in a SwiftUI window, past the 1.2-second readiness budget, so the action always failed with `READINESS_PROBE_FAILED`. The native helper reads them now; AppleScript only when the helper is unavailable or stopped at its node budget.
+- When observation fell back to AppleScript, an element's actions came back run together as one name (`AXScrollLeftByPageAXScrollRightByPage…`); they are a list again.
+
+### The remaining page scripts are .js assets (#107 follow-up)
+- The DOM capture, observe, find, extract and scan page scripts moved out of Python f-strings into `mcp_server/browser_js/`, like batch and wait before them. The scripts sent to pages are byte-for-byte the same (35 inputs compared, including quotes, backslashes and placeholder-like data).
+
 ### Rich-text typing is checked after the editor re-renders (#205)
 - A rich-text editor that draws typed text at once is read again 0.2 s later, after its re-render. A controlled editor (React) can put its old model back; that is now `editor_rerender_lost` (the batch stops before any submit) instead of `value_applied`. Text the editor kept in its own form, such as a "1. " line turned into a list item, is `editor_rerendered_text`, unconfirmed but not an error.
 - When an editor takes the input but never shows the text, the step is `editor_render_unconfirmed` (outcome unconfirmed, no automatic retry) instead of `editor_did_not_accept`: nothing seen says the editor rejected it, and typing again could enter the text twice.

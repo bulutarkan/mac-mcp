@@ -251,6 +251,10 @@ def scroll_outcome(before: Dict[str, Any], after: Dict[str, Any], direction: str
     if isinstance(start, (int, float)) and isinstance(end, (int, float)):
         base.update(offset_before=round(float(start), 4), offset_after=round(float(end), 4), signal="scroll_bar")
         if abs(float(end) - float(start)) > _SCROLL_EPSILON:
+            # SwiftUI lists can page the other way (#185): movement alone is not the scroll asked for.
+            if (float(end) > float(start)) != forward:
+                return {**base, "verification": "scroll_wrong_direction", "effect_observed": False,
+                        "reason_code": "SCROLL_WRONG_DIRECTION"}
             return {**base, "verification": "scroll_observed", "effect_observed": True}
         at_edge = float(start) >= 1 - _SCROLL_EPSILON if forward else float(start) <= _SCROLL_EPSILON
         if at_edge:

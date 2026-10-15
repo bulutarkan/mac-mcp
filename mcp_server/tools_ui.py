@@ -91,6 +91,8 @@ _OBSERVATION_DELTA_MAX_CHANGED = 12
 _NATIVE_FINGERPRINT_STATE_DEPTH = 2
 _NATIVE_FINGERPRINT_STATE_MAX_CHILDREN = 24
 _NATIVE_FINGERPRINT_STATE_MAX_NODES = 80
+# Nodes the native label read before an action may walk to reach its target's subtree.
+_NATIVE_SUBTREE_NODE_BUDGET = 1500
 _MAX_OBSERVATIONS = 64
 # Estimated memory the cached observations may retain; least recently used
 # entries are evicted first, and the newest one is always kept.
@@ -507,7 +509,11 @@ on nodeRecord(nodeRef, nodeId, parentId, fs, rs)
         end try
         try
             set actionNames to name of actions of nodeRef
+            -- Python splits this list on commas; the default delimiter ran the names together.
+            set oldDelims to AppleScript's text item delimiters
+            set AppleScript's text item delimiters to ","
             set actionText to actionNames as text
+            set AppleScript's text item delimiters to oldDelims
         end try
         try
             set childCountText to (count of UI elements of nodeRef) as text
@@ -3274,7 +3280,11 @@ tell application "System Events"
                 set childCountText to count of UI elements of targetElement as text
             end try
             try
-                set actionText to name of actions of targetElement as text
+                set actionNames to name of actions of targetElement
+                set oldDelims to AppleScript's text item delimiters
+                set AppleScript's text item delimiters to ","
+                set actionText to actionNames as text
+                set AppleScript's text item delimiters to oldDelims
             end try
             try
                 set identifierText to value of attribute "AXIdentifier" of targetElement as text
@@ -3358,9 +3368,16 @@ def _probe_native_action_state(
     label_child_limit: int = _NATIVE_SUBTREE_CHILD_LIMIT,
     label_limit: int = 0,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    # Labels through AppleScript cost several Apple Events each: under twin scroll areas
+    # of a SwiftUI window that took 1.4-3.9 s, past the readiness budget, so the target
+    # could never be acted on. The native observer reads them in one pass instead.
+    labels = _native_subtree_labels(
+        app, element_id, app_pid=app_pid, child_limit=label_child_limit, deadline=deadline,
+    ) if label_limit else None
     ok, stdout, stderr = _run_osascript(
         _native_action_state_script(
-            app, element_id, app_pid=app_pid, label_child_limit=label_child_limit, label_limit=label_limit,
+            app, element_id, app_pid=app_pid, label_child_limit=label_child_limit,
+            label_limit=0 if labels is not None else label_limit,
         ),
         timeout_s=_operation_timeout(deadline, 8),
     )
@@ -3369,7 +3386,40 @@ def _probe_native_action_state(
     state = _parse_native_action_state(stdout)
     if state.get("probe_error"):
         return None, str(state["probe_error"])
+    if labels is not None:
+        state["subtree_labels"] = labels
     return state, None
+
+
+def _native_subtree_labels(
+    app: str,
+    element_id: str,
+    *,
+    app_pid: Optional[int] = None,
+    child_limit: int = _NATIVE_SUBTREE_CHILD_LIMIT,
+    deadline: Optional[float] = None,
+) -> Optional[List[str]]:
+    """The labels two levels below a target, read like the observation that recorded them.
+
+    None when the native observer is unavailable, failed, lost the target or stopped at its
+    node budget: then the AppleScript probe reads the labels itself.
+    """
+    depth = len(element_id.split("/")) - 1
+    child_limit = max(1, min(int(child_limit), _NATIVE_SUBTREE_CHILD_LIMIT))
+    native = ax_native.observe(
+        app=app, app_pid=app_pid, window_index=_element_window_index(element_id) or 1,
+        max_depth=depth + 2, max_children=child_limit, max_nodes=_NATIVE_SUBTREE_NODE_BUDGET,
+        timeout_s=_operation_timeout(deadline, 2),
+    )
+    if native is None or not native[0]:
+        return None
+    metadata, nodes = _parse_observation(native[1])
+    if any(item.get("truncated") for item in metadata.get("node_budget") or ()):
+        return None
+    by_id = {str(node.get("element_id")): node for node in nodes}
+    if element_id not in by_id:
+        return None
+    return _native_observed_subtree_labels(by_id, element_id, max_depth=depth + 2, max_children=child_limit)
 
 
 def _compact_readiness_state(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -3676,7 +3726,11 @@ tell application "System Events"
                 set heightText to item 2 of ts as text
             end try
             try
-                set actionText to name of actions of targetElement as text
+                set actionNames to name of actions of targetElement
+                set oldDelims to AppleScript's text item delimiters
+                set AppleScript's text item delimiters to ","
+                set actionText to actionNames as text
+                set AppleScript's text item delimiters to oldDelims
             end try
             try
                 set childCountText to count of UI elements of targetElement as text
@@ -4141,6 +4195,81 @@ def _key(
     return ok, error or "key sent"
 
 
+_SCROLL_BAR_FALLBACK_MESSAGE = (
+    "the app ignored its page-scroll action, so its scroll bar was moved by a page instead"
+)
+
+
+def _scroll_bar_fallback_body(direction: str, pages: int) -> str:
+    """Page-scroll the target, then check the nearest scroll area's bar (#185).
+
+    SwiftUI scroll areas answer AXScroll*ByPage with an error and do nothing, or move the
+    other way. When the bar did not move as asked (and is not at that edge), set its value
+    by the same number of pages from where it started: a page is the visible share of
+    the content (the knob's share of the bar), less a little overlap like a page key.
+    """
+    horizontal = direction in {"left", "right"}
+    forward = direction in {"down", "right"}
+    bar_attribute = "AXHorizontalScrollBar" if horizontal else "AXVerticalScrollBar"
+    axis_item = 1 if horizontal else 2
+    moved = "barAfter > barBefore + 0.001" if forward else "barAfter < barBefore - 0.001"
+    at_edge = "barBefore ≥ 0.999" if forward else "barBefore ≤ 0.001"
+    sign = "+" if forward else "-"
+    return f'''        set barRef to missing value
+        set barBefore to missing value
+        try
+            set cur to targetElement
+            repeat 9 times
+                if (role of cur as text) is "AXScrollArea" then
+                    set barRef to value of attribute "{bar_attribute}" of cur
+                    exit repeat
+                end if
+                set cur to value of attribute "AXParent" of cur
+            end repeat
+            set barBefore to (value of barRef) as real
+        end try
+        -- Already at that edge: nothing to scroll, and an inverted page action would move it away.
+        if barBefore is not missing value then
+            if {at_edge} then return "at_edge"
+        end if
+        set actionError to ""
+        try
+            repeat {pages} times
+                perform action scrollAction of targetElement
+                delay 0.1
+            end repeat
+        on error errText
+            set actionError to errText
+        end try
+        set outcomeText to "page_action"
+        if barBefore is not missing value then
+            delay 0.15
+            set barAfter to barBefore
+            try
+                set barAfter to (value of barRef) as real
+            end try
+            if not ({moved}) then
+                set knobShare to 0.1
+                try
+                    set knobRef to first UI element of barRef whose role is "AXValueIndicator"
+                    set knobSize to size of knobRef
+                    set barSize to size of barRef
+                    set knobShare to (item {axis_item} of knobSize) / (item {axis_item} of barSize)
+                end try
+                if knobShare ≤ 0 or knobShare ≥ 1 then set knobShare to 0.1
+                set targetValue to barBefore {sign} (knobShare / (1 - knobShare)) * 0.9 * {pages}
+                if targetValue < 0 then set targetValue to 0
+                if targetValue > 1 then set targetValue to 1
+                try
+                    set value of attribute "AXValue" of barRef to targetValue
+                    set outcomeText to "scroll_bar_value"
+                end try
+            end if
+        end if
+        if outcomeText is "page_action" and actionError is not "" then error actionError
+        return outcomeText'''
+
+
 def _scroll(
     app: str,
     action: Dict[str, Any],
@@ -4175,16 +4304,18 @@ def _scroll(
             f'set scrollAction to "{action_name}"\n'
             f'        if (name of every action of targetElement) contains "{action_name}ByPage" then '
             f'set scrollAction to "{action_name}ByPage"\n'
-            f'        repeat {pages} times\n'
-            f'            perform action scrollAction of targetElement\n'
-            f'            delay 0.1\n'
-            f'        end repeat'
+            + _scroll_bar_fallback_body(direction, pages)
         )
-        ok, _, error = _run_osascript(
+        ok, stdout, error = _run_osascript(
             _target_script(app, element_id, body, activate=activate_target, app_pid=app_pid),
             timeout_s=_operation_timeout(deadline, 30),
         )
         if ok:
+            outcome = str(stdout or "").strip()
+            if outcome == "scroll_bar_value":
+                return True, _SCROLL_BAR_FALLBACK_MESSAGE
+            if outcome == "at_edge":
+                return True, "already at that edge, so nothing was scrolled"
             return True, "semantic scroll completed"
         if app_pid is not None or not activate_target:
             return False, error or "semantic scroll failed for stable/background native target; key fallback disabled"
@@ -4267,8 +4398,11 @@ return "__SCROLL__" & fs & foundText & fs & vText & fs & hText & fs & anchorText
 
 def _parse_native_scroll_state(raw: str) -> Dict[str, Any]:
     fields = str(raw or "").strip().split(_FIELD_SEPARATOR)
-    if len(fields) < 5 or fields[0] != "__SCROLL__":
+    if fields[0] != "__SCROLL__" or len(fields) < 2:
         return {}
+    # strip() also takes the separators of empty trailing fields (no anchors, no
+    # horizontal bar), which once dropped a readable vertical bar with them.
+    fields += [""] * (5 - len(fields))
 
     def ratio(text: str) -> Optional[float]:
         try:
@@ -5418,6 +5552,8 @@ def act_ui(
                 result["verification"] = scroll["verification"]
                 result["effect_observed"] = scroll.get("effect_observed")
                 result["scroll"] = {k: v for k, v in scroll.items() if k not in {"verification", "effect_observed"}}
+                if result.get("message") == _SCROLL_BAR_FALLBACK_MESSAGE:
+                    result["scroll"]["method"] = "scroll_bar_value"
                 delta_structural_refresh = True
                 delta_refresh_reasons.append("scroll_effect")
                 if scroll["verification"] == "scroll_not_observed":
@@ -5425,6 +5561,12 @@ def act_ui(
                         "ok": False, "error": "action_no_effect", "reason_code": "ACTION_NO_EFFECT",
                         "automatic_retry": False, "observe_again": True,
                         "message": "scroll was accepted but the scroll position did not move and is not at an edge",
+                    })
+                elif scroll["verification"] == "scroll_wrong_direction":
+                    result.update({
+                        "ok": False, "error": "scroll_wrong_direction", "reason_code": "SCROLL_WRONG_DIRECTION",
+                        "automatic_retry": False, "observe_again": True,
+                        "message": "the scroll position moved, but the other way than asked",
                     })
             elif result.get("ok") and handoff_details is not None and handoff_details.get("verified"):
                 result["verification"] = "semantic_handoff_verified"
