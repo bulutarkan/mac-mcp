@@ -94,7 +94,7 @@ extension LiveTone {
 enum IslandIcon: Hashable {
     case app(String)      // bundle identifier or app name
     case symbol(String)
-    case provider(String) // a maker's logo from Onboarding/logos: claude, openai, opencode
+    case provider(String) // a maker's logo from Onboarding/logos: claude, openai, opencode, kimi, grok
 
     /// The logo of the agent's maker; an unknown provider keeps the generic agent symbol.
     static func forProvider(_ provider: String?) -> IslandIcon {
@@ -102,6 +102,8 @@ enum IslandIcon: Hashable {
         if id == "claude" { return .provider("claude") }
         if id == "codex" || id.hasPrefix("chatgpt") { return .provider("openai") }
         if id == "opencode" { return .provider("opencode") }
+        if id == "kimi" { return .provider("kimi") }
+        if id == "grok" { return .provider("grok") }
         return .symbol("sparkles")
     }
 

@@ -13,7 +13,7 @@ class IslandProviderLogoTests(unittest.TestCase):
     def test_each_provider_maps_to_a_logo_that_ships_with_the_app(self) -> None:
         body = ISLAND.split("static func forProvider", 1)[1].split("private static var logos", 1)[0]
         logos = set(re.findall(r'\.provider\("([a-z]+)"\)', body))
-        self.assertEqual({"claude", "openai", "opencode"}, logos)
+        self.assertEqual({"claude", "openai", "opencode", "kimi", "grok"}, logos)
         for name in logos:
             self.assertTrue((ROOT / "menu_app" / "Onboarding" / "logos" / f"{name}.png").exists(), name)
         self.assertIn('id == "codex"', body)
