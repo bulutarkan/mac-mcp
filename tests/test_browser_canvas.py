@@ -71,8 +71,8 @@ class TrustedKeyTests(unittest.TestCase):
 
 class CanvasObservationTests(unittest.TestCase):
     def test_observation_records_its_viewport_and_flags_canvas_pages(self) -> None:
-        source = Path(agent.__file__).read_text(encoding="utf-8")
-        self.assertIn("view:{{sx:scrollX,sy:scrollY,w:innerWidth,h:innerHeight}}", source)
+        source = agent._observe_js("interactive", 40)
+        self.assertIn("view:{sx:scrollX,sy:scrollY,w:innerWidth,h:innerHeight}", source)
         self.assertIn("canvas:canvasHint", source)
 
     @unittest.skipUnless(shutil.which("node"), "node not installed")

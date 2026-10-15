@@ -562,86 +562,14 @@ def _dom_capture_start_js(
     state_key = state_key or f"{_DOM_CAPTURE_STATE_PREFIX}_{uuid.uuid4().hex}"
     mode_js = json.dumps(mode)
     element_js = json.dumps(element_id)
-    return f'''(function(){{
-var h2c=window.{_DOM_RASTERIZER_GLOBAL};
-var stateKey={json.dumps(state_key)};
-if(typeof h2c!=="function") return JSON.stringify({{ok:false,error:"rasterizer_unavailable"}});
-var mode={mode_js}, elementId={element_js};
-var agent=window.__macMcpBrowserAgent;
-var target=document.documentElement;
-if(mode==="element"){{
-  target=agent&&agent.elements&&elementId?agent.elements[elementId]:null;
-  if(!target||!target.isConnected) return JSON.stringify({{ok:false,error:"element_not_available",element_id:elementId}});
-}}
-var de=document.documentElement, body=document.body||de;
-var fullW=Math.max(Number(de.scrollWidth||0),Number(de.clientWidth||0),Number(body.scrollWidth||0),Number(body.clientWidth||0),Number(innerWidth||0));
-var fullH=Math.max(Number(de.scrollHeight||0),Number(de.clientHeight||0),Number(body.scrollHeight||0),Number(body.clientHeight||0),Number(innerHeight||0));
-var rect=mode==="element"?target.getBoundingClientRect():null;
-var rawW=mode==="element"?Number(rect.width||0):(mode==="viewport"?Number(innerWidth||0):fullW);
-var rawH=mode==="element"?Number(rect.height||0):(mode==="viewport"?Number(innerHeight||0):fullH);
-if(!isFinite(rawW)||!isFinite(rawH)||rawW<=0||rawH<=0) return JSON.stringify({{ok:false,error:"render_not_ready",reason_code:mode==="element"?"ELEMENT_ZERO_BOUNDS":"ZERO_CONTENT_BOUNDS",retryable:true,raw_width:rawW,raw_height:rawH}});
-var sourceW=Math.max(1,Math.ceil(rawW));
-var actualH=Math.max(1,Math.ceil(rawH));
-var sourceH=mode==="full_page"?Math.min(actualH,{_DOM_CAPTURE_MAX_CSS_HEIGHT}):actualH;
-var truncated=mode==="full_page"&&actualH>sourceH;
-var pixelBudget=7500000;
-var maxOutputWidth=mode==="viewport"?1100:1280;
-var scale=Math.min(1,maxOutputWidth/sourceW,Math.sqrt(pixelBudget/Math.max(1,sourceW*sourceH)));
-scale=Math.max(0.20,scale);
-var bg=getComputedStyle(de).backgroundColor;
-if(!bg||bg==="rgba(0, 0, 0, 0)"||bg==="transparent") bg=getComputedStyle(body).backgroundColor;
-if(!bg||bg==="rgba(0, 0, 0, 0)"||bg==="transparent") bg="#ffffff";
-var started=Date.now();
-window[stateKey]={{status:"running",meta:{{mode:mode,capture_method:"dom_rasterizer",background_safe:true,tab_activated:false,disk_write:false,source_width:sourceW,source_height:sourceH,actual_height:actualH,truncated:truncated,scale:scale}}}};
-var opts={{
-  logging:false,useCORS:true,allowTaint:false,imageTimeout:mode==="full_page"?1500:700,removeContainer:true,
-  foreignObjectRendering:false,backgroundColor:bg,scale:scale,
-  windowWidth:innerWidth,windowHeight:innerHeight,
-  scrollX:mode==="full_page"?0:window.scrollX,
-  scrollY:mode==="full_page"?0:window.scrollY,
-  ignoreElements:function(el){{
-    /* The Visual Companion overlay is Mac MCP UI, not page content: its full-screen host
-       came out as a gray box over the page and its badge and frame in every capture. */
-    if(el.id==="mac-mcp-visual-companion-root") return true;
-    if(mode!=="viewport") return false;
-    try{{
-      var r=el.getBoundingClientRect();
-      return r.bottom < -120 || r.top > innerHeight+120 || r.right < -120 || r.left > innerWidth+120;
-    }}catch(e){{return false;}}
-  }},
-  onclone:function(doc){{
-    try{{
-      var st=doc.createElement("style");
-      st.textContent="*,*::before,*::after{{animation:none!important;transition:none!important;caret-color:transparent!important;}}";
-      (doc.head||doc.documentElement).appendChild(st);
-    }}catch(e){{}}
-  }}
-}};
-if(mode==="viewport"){{opts.x=window.scrollX;opts.y=window.scrollY;opts.width=sourceW;opts.height=sourceH;}}
-if(mode==="full_page"){{opts.x=0;opts.y=0;opts.width=sourceW;opts.height=sourceH;}}
-h2c(target,opts).then(function(canvas){{
-  try{{
-    var output=canvas;
-    var data=output.toDataURL("image/jpeg",0.58);
-    var limit={_DOM_CAPTURE_MAX_DATA_URL_CHARS};
-    if(data.length>limit&&output.width>320&&output.height>240){{
-      var factor=Math.max(0.35,Math.min(0.92,Math.sqrt(limit/data.length)*0.90));
-      var resized=document.createElement("canvas");
-      resized.width=Math.max(1,Math.round(output.width*factor));
-      resized.height=Math.max(1,Math.round(output.height*factor));
-      var ctx=resized.getContext("2d",{{alpha:false}});
-      ctx.fillStyle=bg;ctx.fillRect(0,0,resized.width,resized.height);
-      ctx.drawImage(output,0,0,resized.width,resized.height);
-      output=resized;
-      data=output.toDataURL("image/jpeg",0.52);
-    }}
-    var meta=window[stateKey].meta;
-    meta.output_width=output.width;meta.output_height=output.height;meta.elapsed_ms=Date.now()-started;meta.data_url_chars=data.length;
-    window[stateKey]={{status:"done",meta:meta,data:data}};
-  }}catch(e){{window[stateKey]={{status:"error",error:String(e&&e.message||e)}};}}
-}}).catch(function(e){{window[stateKey]={{status:"error",error:String(e&&e.message||e)}};}});
-return JSON.stringify({{ok:true,status:"running",mode:mode,source_width:sourceW,source_height:sourceH,scale:scale,truncated:truncated}});
-}})()'''
+    return _fill_js(_browser_js("dom_capture.js"), {
+        "__RASTERIZER__": _DOM_RASTERIZER_GLOBAL,
+        "__STATE_KEY__": json.dumps(state_key),
+        "__MODE__": mode_js,
+        "__ELEMENT_ID__": element_js,
+        "__MAX_CSS_HEIGHT__": str(_DOM_CAPTURE_MAX_CSS_HEIGHT),
+        "__MAX_DATA_URL_CHARS__": str(_DOM_CAPTURE_MAX_DATA_URL_CHARS),
+    })
 
 
 def _dom_capture_status_js(state_key: str, wait_ms: int = 0) -> str:
@@ -1013,133 +941,11 @@ def _bootstrap_functions_source() -> str:
 
 def _observe_js(scope: str, max_elements: int) -> str:
     scope_js = json.dumps(scope)
-    return f'''(function(){{
-{_browser_state_bootstrap()}
-function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
-function __mcpOwnText(el){{
-  var out=[];
-  try{{Array.from(el.childNodes||[]).forEach(function(n){{if(n.nodeType===3){{var t=String(n.textContent||'').replace(/\\s+/g,' ').trim();if(t)out.push(t);}}}});}}catch(e){{}}
-  return out.join(' ').trim().slice(0,240);
-}}
-function __mcpContentCandidate(el,actionable){{
-  if(actionable) return true;
-  var tag=(el.tagName||'').toLowerCase();
-  if(/^h[1-6]$/.test(tag)) return true;
-  if(tag==='img' && (el.getAttribute('alt')||'').trim()) return true;
-  var own=__mcpOwnText(el);
-  if(own.length>=2) return true;
-  var cls=String(el.className||'').toLowerCase(), id=String(el.id||'').toLowerCase();
-  var cardish=/(^|[-_ ])(card|item|listing|result|row|advert|product|property)([-_ ]|$)/.test(cls+' '+id);
-  if((tag==='article'||tag==='tr'||tag==='li'||cardish)){{
-    var txt=__mcpText(el);
-    if(txt.length>=2 && txt.length<=700) return true;
-  }}
-  return false;
-}}
-var s=__mcpState();
-__mcpSettleHidden();
-__mcpStartMutationWatch(s,5000);
-__mcpVisual('Inspecting',null,'',1800);
-Object.keys(s.elements).forEach(function(k){{var e=s.elements[k];if(!e||!e.isConnected){{delete s.elements[k];delete s.targetFp[k];}}}});
-var scope={scope_js};
-var all=__mcpQueryAll('*');
-var elements=[],picked=[];
-/* Interactive and visible scopes rank what the user is working in ahead of page order: a floating
-   composer, drawer or popover is usually appended last, so a DOM-order cut drops it behind hundreds
-   of links further down the page. Order: the layer holding focus, other fixed/sticky layers (the
-   one later in the page first, as overlays are appended after the header), the viewport, then the
-   rest; within each group fields and text buttons come before icon-only buttons, and nameless
-   controls (empty wrappers) go after every named one. Content scopes keep reading order. The scan
-   is bounded in time and size. */
-var ranked=(scope==='interactive'||scope==='visible'),eligible=0,scanComplete=true,scanStart=Date.now();
-var layerMemo=new Map(),layerOrder=new Map();
-function __mcpLayer(el){{var chain=[],cur=el,res=null,guard=0;
-  while(cur&&cur.nodeType===1&&guard++<60){{if(layerMemo.has(cur)){{res=layerMemo.get(cur);break;}}chain.push(cur);
-    var pos='';try{{pos=__mcpStyle(cur).position;}}catch(e){{}}if(pos==='fixed'||pos==='sticky'){{res=cur;break;}}cur=__mcpParent(cur);}}
-  for(var c=0;c<chain.length;c++)layerMemo.set(chain[c],res);return res;}}
-var focusEl=document.activeElement,focusLayer=(ranked&&focusEl&&focusEl!==document.body&&focusEl!==document.documentElement)?__mcpLayer(focusEl):null;
-/* The open modal is found once per scan, and what lies outside it is skipped before the costly
-   visibility check: finding it per element re-read the whole page for every element. */
-var topModal=__mcpTopBlockingModal();
-for(var i=0;i<all.length && (ranked || picked.length<{max_elements});i++){{
-  var el=all[i];
-  if(ranked&&(picked.length>=1500||Date.now()-scanStart>400)){{scanComplete=false;break;}}
-  if(topModal&&el!==topModal&&!__mcpComposedContains(topModal,el))continue;
-  if(!__mcpSemanticVisible(el)) continue;
-  var actionable=__mcpActionable(el);
-  if(scope==='interactive' && !actionable) continue;
-  if(scope==='visible' && !actionable){{
-    var txt=__mcpText(el);
-    if(!txt || txt.length<2) continue;
-  }}
-  if((scope==='content'||scope==='leaf') && !__mcpContentCandidate(el,actionable)) continue;
-  var rank=0;
-  if(ranked){{
-    var layer=__mcpLayer(el),rect=el.getBoundingClientRect();
-    var inView=rect.width>0&&rect.height>0&&rect.bottom>0&&rect.right>0&&rect.top<innerHeight&&rect.left<innerWidth;
-    rank=(focusLayer&&layer===focusLayer)?0:(layer?1:(inView?2:3));
-    if(layer&&!layerOrder.has(layer))layerOrder.set(layer,i);
-    var label=String(el.getAttribute('aria-label')||el.getAttribute('title')||__mcpPlaceholder(el)||'');
-    if(!/^(input|textarea|select)$/i.test(el.tagName||'')&&!el.isContentEditable&&!String(el.textContent||'').replace(/[\\s\\u200b\\u00a0]+/g,''))rank+=label?0.25:4;
-  }}
-  picked.push({{el:el,actionable:actionable,rank:rank,order:i,layer:Math.floor(rank)%4===1?layerOrder.get(layer):0}});
-}}
-eligible=picked.length;
-if(ranked)picked.sort(function(a,b){{return a.rank-b.rank||b.layer-a.layer||a.order-b.order;}});
-picked=picked.slice(0,{max_elements});
-for(var pi=0;pi<picked.length;pi++){{
-  var el=picked[pi].el,actionable=picked[pi].actionable;
-  var desc=__mcpDescribe(el,s);
-  __mcpRememberTarget(el,desc.element_id,s);
-  if((scope==='content'||scope==='leaf') && !actionable){{
-    var own=__mcpOwnText(el);
-    if(own) desc.text=own;
-    if(!desc.text && (el.getAttribute('alt')||'')) desc.text=String(el.getAttribute('alt')).slice(0,240);
-  }}
-  elements.push(desc);
-}}
-var obs='bobs_'+s.pageToken+'_'+Date.now().toString(36);
-s.observations[obs]=s.mutationRevision;
-s.observationMeta[obs]={{scope:scope,max_elements:{max_elements},view:{{sx:scrollX,sy:scrollY,w:innerWidth,h:innerHeight}},
-  ids:__mcpVisibleControls(s).map(function(x){{return x.id;}}),url:location.href}};
-s.lastSeen={{ids:s.observationMeta[obs].ids,url:location.href,title:document.title}};
-// Canvas apps draw their controls: say so, and where, instead of returning an empty-looking page.
-var canvasHint=(function(){{var vw=innerWidth*innerHeight,best=null,area=0;
-  Array.from(document.querySelectorAll('canvas')).forEach(function(c){{if(!__mcpVisible(c))return;var r=c.getBoundingClientRect();
-    var a=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0))*Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));if(a>area){{area=a;best=c;}}}});
-  if(!best||area<vw*0.25)return undefined;var r=best.getBoundingClientRect();
-  return {{canvas_heavy:true,element_id:__mcpId(best,s),rect:{{x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)}},coverage:Math.round(area/vw*100)/100,
-    hint:'Controls are drawn in a canvas: observe with visual=viewport, then browser_act click/hover with x,y (viewport CSS px) and this observation_id; keys with input_mode=trusted.'}};}})();
-var metrics={{screenX:screenX,screenY:screenY,outerWidth:outerWidth,outerHeight:outerHeight,innerWidth:innerWidth,innerHeight:innerHeight,devicePixelRatio:devicePixelRatio}};
-// Child frames: same-origin ones are already walked above; cross-origin ones are named so they are not silently missing.
-var frameList=(function(){{var out=[],found=[],scanned=0;
-  // Frames can sit inside open shadow roots (web components) and below the fold; find both, bounded.
-  (function collect(root,depth){{
-    try{{Array.from(root.querySelectorAll('iframe,frame')).forEach(function(f){{if(found.length<30)found.push(f);}});}}catch(e){{}}
-    if(depth>=4||found.length>=30)return;
-    var all=[];try{{all=root.querySelectorAll('*');}}catch(e){{}}
-    for(var i=0;i<all.length&&scanned<4000;i++){{scanned++;if(all[i].shadowRoot)collect(all[i].shadowRoot,depth+1);}}
-  }})(document,0);
-  found.forEach(function(f){{
-  var shown=false;try{{var st=getComputedStyle(f),fr=f.getBoundingClientRect();shown=st.display!=='none'&&st.visibility!=='hidden'&&fr.width>0&&fr.height>0;}}catch(e){{}}
-  if(out.length>=15||!shown)return;var r=f.getBoundingClientRect(),src=String(f.src||''),same=false;
-  try{{same=!!(f.contentDocument&&f.contentDocument.documentElement);}}catch(e){{same=false;}}
-  var origin='';try{{origin=src?new URL(src,location.href).origin:'';}}catch(e){{}}
-  out.push({{element_id:__mcpId(f,s),origin:origin,src:src.slice(0,160),title:String(f.title||f.name||'').slice(0,80),
-    rect:{{x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)}},same_origin:same,
-    hint:same?undefined:'Cross-origin frame: observe/act inside it with frame=<part of its URL> (Chrome).'}});}});
-  return out.length?out:undefined;}})();
-return __mcpB64({{
-  ok:true, observation_id:obs, dom_revision:s.mutationRevision,
-  url:location.href,title:document.title,scroll:{{x:scrollX,y:scrollY}},
-  viewport:{{w:innerWidth,h:innerHeight}},window_metrics:metrics,
-  scope:scope,modal_scope:(function(){{var m=topModal;return m?{{active:true,element_id:__mcpId(m,s),role:__mcpRole(m),text:__mcpText(m).slice(0,120)}}:{{active:false}};}})(),element_count:elements.length,elements:elements,
-  ordering:ranked?'foreground_first':'document',eligible_count:ranked?eligible:undefined,omitted_count:ranked&&eligible>elements.length?eligible-elements.length:undefined,
-  scan_complete:ranked&&!scanComplete?false:undefined,
-  closed_shadow_hosts:__mcpClosedShadowHosts(all),
-  canvas:canvasHint,frames:frameList
-}});
-}})()'''
+    return _fill_js(_browser_js("observe.js"), {
+        "__BOOTSTRAP__": _browser_state_bootstrap(),
+        "__SCOPE__": scope_js,
+        "__MAX_ELEMENTS__": str(max_elements),
+    })
 
 
 def _conditional_observe_js(
@@ -1751,61 +1557,16 @@ def _find_candidates_js(
     # so collection is capped by the scan limit and trimmed after scoping.
     collect_limit = _WITHIN_SCAN_LIMIT if scoped else max_candidates
     within_block = _within_scope_js(within, within_element_id, within_levels) if scoped else ""
-    return f'''(function(){{
-{_browser_state_bootstrap()}
-function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
-function norm(v){{return String(v||'').normalize('NFKD').toLowerCase().replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9çğıöşü]+/g,' ').replace(/\\s+/g,' ').trim();}}
-var offscreen=new Set();
-function rendered(el){{
-  if(!el||el.nodeType!==1) return false;
-  if(__mcpSemanticVisible(el)) return true;
-  var st=__mcpStyle(el); if(st.display==='none'||st.visibility==='hidden'||parseFloat(st.opacity||'1')===0) return false;
-  var r=__mcpTopRect(el); if(r.width<1||r.height<1) return false;
-  if(r.bottom>0&&r.right>0&&r.top<innerHeight&&r.left<innerWidth) return false;
-  var cur=__mcpParent(el),g=0;while(cur&&g++<20){{var cs=__mcpStyle(cur);if(cs.display==='none'||cs.visibility==='hidden'||String(cur.getAttribute&&cur.getAttribute('aria-hidden')||'').toLowerCase()==='true')return false;cur=__mcpParent(cur);}}
-  offscreen.add(el); return true;
-}}
-function level(actual,wanted){{
-  var a=norm(actual),w=norm(wanted); if(!a||!w)return 0;
-  if(a===w)return 5;
-  if(a.indexOf(w+' ')===0||a.indexOf(w+'-')===0)return 4;
-  var at=a.split(' '),wt=w.split(' '); if(wt.length&&wt.every(function(t){{return at.indexOf(t)>=0;}}))return 3;
-  if(w.length>=4&&a.indexOf(w)>=0)return 2;
-  return 0;
-}}
-__mcpSettleHidden();var s=__mcpState(), q={q_js}, wantedRole={role_js}, wantedText={text_js}, actionableOnly={actionable_js};
-__mcpVisual('Finding',null,'',1600);
-var out=[],els=[],modal=__mcpTopBlockingModal();
-var all=__mcpQueryAll('*');
-for(var i=0;i<all.length&&out.length<{collect_limit};i++){{
-  var el=all[i]; if(!rendered(el))continue;
-  if(modal&&el!==modal&&!__mcpComposedContains(modal,el))continue;
-  var d=__mcpDescribe(el,s); d.actionable=__mcpActionable(el); if(offscreen.has(el))d.offscreen=true;
-  if(actionableOnly && !d.actionable)continue;
-  if(wantedRole&&norm(d.role)!==wantedRole)continue;
-  var fields=[d.text||'',d.aria_label||'',d.placeholder||'',d.name||'',d.title||'',d.value||'',d.context||'',d.association_text||''];
-  fields.push(fields.filter(Boolean).join(' '));
-  if(wantedText){{var tl=0;fields.forEach(function(v){{tl=Math.max(tl,level(v,wantedText));}});if(!tl)continue;}}
-  if(q){{
-    var ql=0;fields.forEach(function(v){{ql=Math.max(ql,level(v,q));}});
-    if(d.options){{d.options.forEach(function(o){{ql=Math.max(ql,level(o.text||'',q),level(o.value||'',q));}});}}
-    if(!ql)continue;
-  }}
-  out.push(d);els.push(el);
-}}
-function contains(a,b){{try{{if(a.contains(b))return true;}}catch(e){{}}return __mcpComposedContains(a,b);}}
-var withinInfo=null;
-{within_block}
-if(out.length>{max_candidates}){{out=out.slice(0,{max_candidates});els=els.slice(0,{max_candidates});}}
-for(var fi=0;fi<els.length;fi++)__mcpRememberTarget(els[fi],out[fi].element_id,s);
-for(var ci=0;ci<els.length;ci++){{
-  var nested=[];
-  for(var cj=0;cj<els.length&&nested.length<12;cj++){{if(ci!==cj&&els[ci]!==els[cj]&&contains(els[ci],els[cj]))nested.push(out[cj].element_id);}}
-  if(nested.length)out[ci].nested_match_ids=nested;
-}}
-var obs='bobs_'+s.pageToken+'_'+Date.now().toString(36);s.observations[obs]=s.mutationRevision;
-return __mcpB64({{ok:true,observation_id:obs,dom_revision:s.mutationRevision,url:location.href,title:document.title,modal_scope:modal?{{active:true,element_id:__mcpId(modal,s),role:__mcpRole(modal),text:__mcpText(modal).slice(0,120)}}:{{active:false}},within:withinInfo,elements:out}});
-}})()'''
+    return _fill_js(_browser_js("find.js"), {
+        "__BOOTSTRAP__": _browser_state_bootstrap(),
+        "__QUERY__": q_js,
+        "__ROLE__": role_js,
+        "__TEXT__": text_js,
+        "__ACTIONABLE_ONLY__": actionable_js,
+        "__COLLECT_LIMIT__": str(collect_limit),
+        "__WITHIN_BLOCK__": within_block,
+        "__MAX_CANDIDATES__": str(max_candidates),
+    })
 
 
 def _browser_find_impl(
@@ -3109,173 +2870,12 @@ def _extract_action_js(fields: List[Dict[str, Any]], max_chars: int) -> str:
     specs = json.dumps(fields, ensure_ascii=False)
     aliases = json.dumps(_SEMANTIC_EXTRACT_ALIASES, ensure_ascii=False)
     budget = max(256, min(int(max_chars), 20_000))
-    return f'''(function(){{
-{_browser_state_bootstrap()}
-function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
-__mcpVisual('Reading',null,'',1800);
-var specs={specs}, aliases={aliases}, budget={budget}, data={{}}, counts={{}}, truncated=false, used=0;
-function readValue(el, attr){{
-  attr=String(attr||'text');
-  if(attr==='text') return String(el.innerText||el.textContent||'').trim();
-  if(attr==='html') return String(el.innerHTML||'');
-  if(attr==='value') return String(el.type||'').toLowerCase()==='password'?(el.value?'[hidden]':''):String(el.value==null?'':el.value);
-  if(attr==='href') return String(el.href||el.getAttribute('href')||'');
-  if(attr==='aria_label') return String(el.getAttribute('aria-label')||'');
-  return String(el.getAttribute(attr)||'');
-}}
-function clean(v){{return String(v==null?'':v).replace(/\\s+/g,' ').trim();}}
-function norm(v){{
-  return clean(v).toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').replace(/[ıİ]/g,'i').replace(/[^a-z0-9₺€$%.,:/+\\- ]+/g,' ').replace(/\\s+/g,' ').trim();
-}}
-function visible(el){{
-  try{{var st=getComputedStyle(el),r=el.getBoundingClientRect();return st.display!=='none'&&st.visibility!=='hidden'&&Number(st.opacity||1)!==0&&r.width>0&&r.height>0;}}catch(e){{return false;}}
-}}
-function termHit(text, term){{
-  var t=norm(term); if(!t) return 0;
-  if(text===t) return 180;
-  if(text.indexOf(t)>=0) return 105+Math.min(35,t.length);
-  var words=t.split(' ').filter(Boolean), hits=0;
-  for(var i=0;i<words.length;i++) if(words[i].length>1&&text.indexOf(words[i])>=0) hits++;
-  return hits&&hits===words.length?70+hits*5:0;
-}}
-function semanticTerms(sp,name){{
-  var target=String(sp.semantic||name||''), key=norm(target), out=[target];
-  Object.keys(aliases).forEach(function(aliasKey){{
-    var nk=norm(aliasKey);
-    if(key===nk||key.indexOf(nk)>=0||nk.indexOf(key)>=0) out=out.concat(aliases[aliasKey]||[]);
-  }});
-  if(Array.isArray(sp.terms)) out=out.concat(sp.terms);
-  var seen={{}}, unique=[];
-  out.forEach(function(v){{var n=norm(v);if(n&&!seen[n]){{seen[n]=true;unique.push(v);}}}});
-  return unique;
-}}
-var semanticCache=null;
-function semanticCandidates(){{
-  if(semanticCache!==null) return semanticCache;
-  var nodes=[]; semanticCache=[];
-  try{{nodes=__mcpQueryAll('h1,h2,h3,h4,h5,h6,p,li,dt,dd,label,button,a,span,strong,b,small,div');}}catch(e){{return semanticCache;}}
-  if(nodes.length>6000) nodes=nodes.slice(0,6000);
-  for(var i=0;i<nodes.length;i++){{
-    var el=nodes[i]; if(!visible(el)) continue;
-    var aria=clean(el.getAttribute&&el.getAttribute('aria-label')||''), title=clean(el.getAttribute&&el.getAttribute('title')||'');
-    var raw=clean(el.innerText||el.textContent||aria||title||''); if(!raw||raw.length>520) continue;
-    var childText=0, href='', itemId='';
-    try{{for(var c=0;c<el.children.length;c++) if(clean(el.children[c].innerText||el.children[c].textContent||'')) childText++;}}catch(e){{}}
-    try{{href=String(el.href||el.getAttribute('href')||'');itemId=String(el.getAttribute('data-item-id')||'');}}catch(e){{}}
-    semanticCache.push({{el:el,raw:raw,text:norm(raw),childText:childText,tag:String(el.tagName||'').toLowerCase(),href:href,aria:aria,title:title,itemId:itemId}});
-  }}
-  return semanticCache;
-}}
-function semanticValues(sp,name,maxItems){{
-  var semantic=norm(sp.semantic||name), terms=semanticTerms(sp,name), candidates=semanticCandidates();
-  var ranked=[], seen={{}};
-  for(var i=0;i<candidates.length;i++){{
-    var candidate=candidates[i], el=candidate.el, raw=candidate.raw, text=candidate.text, score=0;
-    for(var j=0;j<terms.length;j++) score=Math.max(score,termHit(text,terms[j]));
-    if(semantic.indexOf('price')>=0||semantic.indexOf('fiyat')>=0){{
-      if(/[₺€$]|\\b(?:tl|try|eur|usd)\\b/i.test(raw)&&/\\d/.test(raw)) score=Math.max(score,150);
-    }}
-    if(semantic.indexOf('rating')>=0||semantic.indexOf('score')>=0||semantic.indexOf('puan')>=0){{
-      if(/^\\s*(?:[0-9](?:[.,][0-9])?|10(?:[.,]0)?)\\s*(?:\\/\\s*(?:5|10))?\\s*$/.test(raw)) score=Math.max(score,135);
-    }}
-    if(semantic.indexOf('hours')>=0||semantic.indexOf('opening')>=0||semantic.indexOf('calisma saat')>=0||semantic.indexOf('çalışma saat')>=0){{
-      if(/(?:open|closed|closes|opens|açık|acik|kapalı|kapali|kapanış saati|kapanis saati|çalışma saatleri|calisma saatleri)/i.test(raw)) score=Math.max(score,175);
-      if(/\\b(?:[01]?\\d|2[0-3])[:.]?[0-5]\\d\\b/.test(raw)&&/(?:open|closed|açık|acik|kapalı|kapali|kapan|saat)/i.test(raw)) score+=45;
-    }}
-    if(semantic.indexOf('address')>=0||semantic.indexOf('location')>=0||semantic.indexOf('adres')>=0||semantic.indexOf('konum')>=0){{
-      var addressMeta=[candidate.itemId,candidate.aria,candidate.title].join(' ');
-      var structuralAddress=/(?:^|[^a-z])address(?:$|[^a-z])|(?:^|[^a-z])adres(?:$|[^a-z])/i.test(addressMeta);
-      if(structuralAddress) score=Math.max(score,260);
-      if(/^(?:adres|address)\\s*:/i.test(candidate.aria||'')) score=Math.max(score,280);
-      if(/(?:\\b(?:cad(?:desi)?|cd\\.?|sok(?:ak)?|sk\\.?|bulv(?:arı|ari)?|blv\\.?|mah(?:allesi)?|apt\\.?|street|st\\.?|road|rd\\.?|avenue|ave\\.?|boulevard|blvd\\.?)\\b|\\bno[:.]?\\s*\\d)/i.test(raw)) score=Math.max(score,170);
-      if(/street view|sokak görünümü|sokak gorunumu/i.test(raw)) score-=260;
-      if(raw.length>180&&!structuralAddress) score-=140;
-    }}
-    if(semantic.indexOf('website')>=0||semantic.indexOf('web site')>=0||semantic.indexOf('homepage')>=0){{
-      var websiteHint=/website|web sitesi|web site|official website|official site|resmi site|homepage|authority/i.test([raw,candidate.aria,candidate.title,candidate.itemId].join(' '));
-      if(websiteHint&&/^https?:\\/\\//i.test(candidate.href||'')) score=Math.max(score,220);
-      else if(websiteHint) score=Math.max(score,165);
-    }}
-    if(semantic.indexOf('price')>=0||semantic.indexOf('fiyat')>=0){{
-      if(/maxipuan|puan kazan|kampanya|\\bindirim\\b/i.test(raw)) score-=90;
-      if(/^\\s*[0-9][0-9., ]*\\s*(?:tl|try|₺|eur|€|usd|\\$)\\s*$/i.test(raw)) score+=85;
-    }}
-    if(semantic.indexOf('cancellation')>=0||semantic.indexOf('iptal')>=0){{
-      if(/ücretsiz iptal|ucretsiz iptal|free cancellation|iptal edilemez|non[- ]?refundable|iade edilemez/i.test(raw)) score+=110;
-      if(/paketi|garantisi|fiyat farkı|fiyat farki/i.test(raw)) score-=80;
-    }}
-    if(semantic.indexOf('payment')>=0||semantic.indexOf('odeme')>=0){{
-      if(/otele ödeme|otele odeme|otelde ödeme|otelde odeme|tesiste ödeme|tesiste odeme|pay at property|pay later|prepayment|ön ödeme|on odeme/i.test(raw)) score+=120;
-    }}
-    if(semantic.indexOf('parking')>=0||semantic.indexOf('otopark')>=0){{
-      if(/otoparka sahip değildir|otoparka sahip degildir|otopark yok|otopark var|ücretsiz otopark|ucretsiz otopark|free parking|parking available|no parking/i.test(raw)) score+=100;
-      if(/\\byorum\\b|\\bkahvalt/i.test(raw)&&raw.length>180) score-=50;
-    }}
-    if(semantic.indexOf('breakfast')>=0||semantic.indexOf('kahvalti')>=0){{
-      if(/kahvaltı dahil|kahvalti dahil|breakfast included/i.test(raw)) score+=120;
-      if(raw.length>160) score-=70;
-    }}
-    if(semantic.indexOf('rating')>=0||semantic.indexOf('score')>=0||semantic.indexOf('puan')>=0){{
-      if(/^\\s*[0-9]+\\s*$/.test(raw)) score-=120;
-      if(/^\\s*(?:[0-9][.,][0-9]|10[.,]0)\\s*$/.test(raw)) score+=120;
-    }}
-    if(score<=0) continue;
-    if(candidate.childText===0) score+=18;
-    if(raw.length<=80) score+=20; else if(raw.length<=180) score+=10;
-    if(/^(p|li|dt|dd|label|span|strong|b|small|h[1-6])$/.test(candidate.tag)) score+=8;
-    var snippet=raw;
-    if((semantic.indexOf('address')>=0||semantic.indexOf('location')>=0||semantic.indexOf('adres')>=0||semantic.indexOf('konum')>=0)&&/^(?:adres|address)\\s*:/i.test(candidate.aria||'')){{
-      snippet=String(candidate.aria||'').replace(/^(?:adres|address)\\s*:\\s*/i,'').trim();
-    }}
-    if((semantic.indexOf('website')>=0||semantic.indexOf('web site')>=0||semantic.indexOf('homepage')>=0)&&candidate.href){{
-      try{{
-        var websiteUrl=new URL(candidate.href,location.href);
-        if(/(^|\\.)google\\./i.test(websiteUrl.hostname)&&websiteUrl.pathname==='/url'){{
-          snippet=websiteUrl.searchParams.get('q')||websiteUrl.searchParams.get('url')||websiteUrl.href;
-        }}else snippet=websiteUrl.href;
-      }}catch(e){{snippet=candidate.href;}}
-    }}
-    if(raw.length<=80&&terms.some(function(term){{return norm(raw)===norm(term);}})){{
-      var parent=el.parentElement, parentText=parent?clean(parent.innerText||parent.textContent||''):'';
-      if(parentText&&parentText!==raw&&parentText.length<=240) snippet=parentText;
-    }}
-    var sig=norm(snippet); if(!sig||seen[sig]) continue; seen[sig]=true;
-    ranked.push({{score:score,text:snippet}});
-  }}
-  ranked.sort(function(a,b){{return b.score-a.score||a.text.length-b.text.length;}});
-  var values=[], valueSeen={{}};
-  for(var k=0;k<ranked.length&&values.length<maxItems;k++){{
-    var sig=norm(ranked[k].text); if(valueSeen[sig]) continue; valueSeen[sig]=true; values.push(ranked[k].text);
-  }}
-  return values;
-}}
-function bounded(v){{
-  v=String(v==null?'':v);
-  var remaining=Math.max(0,budget-used);
-  if(v.length>remaining){{v=v.slice(0,remaining);truncated=true;}}
-  used+=v.length; return v;
-}}
-for(var i=0;i<specs.length;i++){{
-  var sp=specs[i]||{{}}, name=String(sp.name||('field_'+i));
-  var maxItems=Math.max(1,Math.min(Number(sp.max_items||10),100)), vals=[];
-  if(sp.semantic){{
-    vals=semanticValues(sp,name,maxItems); counts[name]=vals.length; vals=vals.map(bounded);
-  }}else{{
-    var sel=String(sp.selector||'body'), els=[];
-    try{{els=__mcpQueryAll(sel);}}catch(e){{data[name]=null;counts[name]=0;continue;}}
-    counts[name]=els.length;
-    vals=els.slice(0,maxItems).map(function(el){{return bounded(readValue(el,sp.attr));}});
-  }}
-  if(sp.regex){{
-    try{{
-      var re=new RegExp(String(sp.regex),String(sp.flags||''));
-      vals=vals.map(function(v){{var m=v.match(re); return m?(m[1]!==undefined?m[1]:m[0]):null;}}).filter(function(v){{return v!==null;}});
-    }}catch(e){{}}
-  }}
-  data[name]=sp.all?vals:(vals.length?vals[0]:null);
-}}
-return __mcpB64({{ok:true,type:'extract',url:location.href,title:document.title,data:data,matched_counts:counts,truncated:truncated,chars:used}});
-}})()'''
+    return _fill_js(_browser_js("extract.js"), {
+        "__BOOTSTRAP__": _browser_state_bootstrap(),
+        "__SPECS__": specs,
+        "__ALIASES__": aliases,
+        "__BUDGET__": str(budget),
+    })
 
 def _extract_action(
     settings: Settings,
@@ -3604,54 +3204,12 @@ _SCAN_PAYLOAD_BYTES = 48_000
 def _scan_step_js(container_id: str, item_selector: str, key_field: str) -> str:
     """Read the items rendered in a scroll container, then scroll it by most of one screen."""
     cid, sel, field = json.dumps(container_id), json.dumps(item_selector), json.dumps(key_field)
-    return f"""(function(){{
-{_browser_state_bootstrap()}
-function __mcpB64(obj){{return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));}}
-var s=__mcpState(), cid={cid}, sel={sel}, field={field}, box=null, doc=document.scrollingElement||document.documentElement;
-function scrollable(el){{
-  try{{var st=getComputedStyle(el);return /(auto|scroll|overlay)/.test(st.overflowY)&&el.scrollHeight>el.clientHeight+20;}}catch(e){{return false;}}
-}}
-if(cid){{box=__mcpRecoverElement(cid,s);if(!box)return __mcpB64({{ok:false,error:'stale_element',reason_code:'ELEMENT_DETACHED',observe_again:true}});
-  var up=box;while(up&&up!==document.body&&!scrollable(up))up=up.parentElement;if(up&&up!==document.body)box=up;else if(!scrollable(box))box=doc;}}
-var candidates=[];
-function rowsOf(el){{
-  // A list container holds many children of one shape (often under a single sizing wrapper).
-  var parent=el;while(parent.children.length===1)parent=parent.children[0];
-  var shapes={{}},best=0;Array.from(parent.children).forEach(function(c){{var k=c.tagName+'.'+String(c.className||'');shapes[k]=(shapes[k]||0)+1;if(shapes[k]>best)best=shapes[k];}});
-  return best;
-}}
-if(!cid){{
-  document.querySelectorAll('*').forEach(function(el){{if(!scrollable(el))return;var r=el.getBoundingClientRect();
-    var a=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0))*Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));
-    var rows=rowsOf(el);
-    // A list scrolled out of view is still the list; other containers count only when visible.
-    if(a<=0&&rows<3)return;candidates.push({{el:el,area:a,rows:rows}});}});
-  // Prefer the container with the most repeated rows; area breaks ties and decides when nothing repeats.
-  candidates.sort(function(x,y){{var rx=x.rows>=3?x.rows:0,ry=y.rows>=3?y.rows:0;return (ry-rx)||(y.area-x.area);}});
-  var pick=candidates[0];
-  box=(pick&&(pick.rows>=3||pick.area>innerWidth*innerHeight*0.15))?pick.el:doc;
-}}
-var root=(box===doc)?document.body:box, items=[];
-if(sel){{try{{items=Array.from(root.querySelectorAll(sel));}}catch(e){{return __mcpB64({{ok:false,error:'invalid_item_selector'}});}}}}
-else{{
-  // Only guess the rows when the caller did not name them; a named selector that matches nothing returns nothing.
-  items=Array.from(root.querySelectorAll('[role=listitem],[role=row],[role=article],[role=option],li,tr,article'));
-  if(!items.length){{var parent=root;while(parent.children.length===1)parent=parent.children[0];items=Array.from(parent.children);}}
-}}
-function clean(v){{return String(v==null?'':v).replace(/\\s+/g,' ').trim();}}
-var out=[];
-for(var i=0;i<items.length&&out.length<400;i++){{var el=items[i],text=clean(el.innerText||el.textContent);if(!text)continue;
-  var link=el.matches('a[href]')?el:el.querySelector('a[href]'),href=link?String(link.href||''):'';
-  var key=field==='href'?href:text.toLowerCase();if(!key)continue;out.push({{key:key.slice(0,300),text:text.slice(0,200),href:href.slice(0,500)}});}}
-var top=(box===doc)?scrollY:box.scrollTop, height=(box===doc)?doc.scrollHeight:box.scrollHeight, view=(box===doc)?innerHeight:box.clientHeight;
-var atEnd=top+view>=height-2;
-if(!atEnd){{if(box===doc)scrollBy(0,Math.round(view*0.85));else box.scrollTop=top+Math.round(view*0.85);}}
-// Lazy loaders (infinite scroll) fetch more on a scroll event near the end, even when nothing can move.
-try{{(box===doc?window:box).dispatchEvent(new Event('scroll'));}}catch(e){{}}
-var info={{tag:(box===doc)?'document':box.tagName.toLowerCase(),element_id:(box===doc)?null:__mcpId(box,s),scroll_top:Math.round(top),scroll_height:Math.round(height),viewport:Math.round(view)}};
-var others=candidates.filter(function(c){{return c.el!==box;}}).slice(0,4).map(function(c){{return {{element_id:__mcpId(c.el,s),tag:c.el.tagName.toLowerCase(),rows:c.rows,text:clean(c.el.innerText||'').slice(0,60)}};}});
-return __mcpB64({{ok:true,items:out,at_end:atEnd,container:info,other_containers:others}});
-}})()"""
+    return _fill_js(_browser_js("scan_step.js"), {
+        "__BOOTSTRAP__": _browser_state_bootstrap(),
+        "__CONTAINER_ID__": cid,
+        "__ITEM_SELECTOR__": sel,
+        "__KEY_FIELD__": field,
+    })
 
 
 def _scan_action(
