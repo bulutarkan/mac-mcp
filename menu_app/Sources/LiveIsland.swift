@@ -329,6 +329,11 @@ final class LiveIslandController {
     /// Keep the display timestamp stable between island polls.  A fresh
     /// `Date()` estimate would make an otherwise identical row unequal.
     private var agentStartedAt: [String: Date] = [:]
+    /// The latest agents and server state as they were published. @Published emits before it
+    /// stores the new value, so reading `state.agents` inside the sink still gave the old list:
+    /// a finished agent stayed under Now, its timer running, until something else changed.
+    private var agentsSnapshot: [AgentInfo] = []
+    private var serverRunningNow = false
 
     var enabled: Bool { state?.settings.showLiveIsland == true }
 
@@ -343,6 +348,7 @@ final class LiveIslandController {
             self?.model.observationPaused = flags?.paused == true
         }.store(in: &subscriptions)
         state.$serverRunning.removeDuplicates().sink { [weak self] running in
+            self?.serverRunningNow = running
             if running { self?.serverWasRunning = true }
             self?.rebuild()
         }.store(in: &subscriptions)
@@ -403,6 +409,7 @@ final class LiveIslandController {
     }
 
     private func agentsChanged(_ agents: [AgentInfo]) {
+        agentsSnapshot = agents
         let nextActiveAgentIDs = Set(agents.filter(\.isActive).map(\.agentID))
         let activeAgentsChanged = nextActiveAgentIDs != activeAgentIDs
         let startedAgents = !nextActiveAgentIDs.subtracting(activeAgentIDs).isEmpty
@@ -616,7 +623,7 @@ final class LiveIslandController {
 
     // MARK: Building what is shown
 
-    private func runningAgents() -> [AgentInfo] { (state?.agents ?? []).filter(\.isActive) }
+    private func runningAgents() -> [AgentInfo] { agentsSnapshot.filter(\.isActive) }
 
     private func newestRunningAgent() -> AgentInfo? {
         runningAgents().min { ($0.durationMS ?? .max) < ($1.durationMS ?? .max) }
@@ -625,7 +632,7 @@ final class LiveIslandController {
     private func rebuild() {
         guard let state else { return }
         var now: [LiveItem] = []
-        if serverWasRunning && !state.serverRunning {
+        if serverWasRunning && !serverRunningNow {
             now.append(LiveItem(id: "server", symbol: "bolt.horizontal.circle", title: "Mac MCP stopped answering",
                                 detail: "Start it from the menu bar", tone: .problem, startedAt: nil, target: nil))
         }
