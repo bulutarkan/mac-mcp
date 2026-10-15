@@ -133,15 +133,33 @@
         <div class="copy">
           <h1 id="h-connect">Connect your AI app.</h1>
           <p>Choose the app you use. Apps on this Mac get Mac MCP added for them, with nothing to copy or paste. ChatGPT runs in the cloud, so it first needs a public address for this Mac, which you then paste into ChatGPT.</p>
-          <p class="waiting" data-live="connect-state"><span class="pulse"></span>Waiting for your AI app to call Mac MCP</p>
+          <div class="status-card" data-live="connect-state" role="status">
+            <span class="status-icon" aria-hidden="true"><i class="pulse"></i></span>
+            <div><strong>Waiting for your AI app</strong><span>Open it and ask something about your Mac, like “Which macOS am I on?”</span></div>
+          </div>
           <p class="note">Prefer to set it up by hand? <button type="button" class="link" data-action="manual-setup">Open the manual setup</button></p>
         </div>
-        <div class="stage plain">
-          <ul class="apps" data-live="apps" aria-label="AI apps"></ul>
-          <div class="agents" data-live="agents-block" hidden>
-            <h2 id="h-agents">Agents Mac MCP can hand work to</h2>
-            <ul class="apps" data-live="agents" aria-labelledby="h-agents"></ul>
-            <p class="note">Each uses your own account with it. Change them in Settings › Agents.</p>
+        <div class="stage-wrap">
+          <div class="stage plain connect-card">
+            <div class="group">
+              <div class="group-head"><h2 id="h-apps">Your AI apps</h2><span class="count" data-live="apps-count"></span></div>
+              <ul class="apps" data-live="apps" aria-labelledby="h-apps"></ul>
+            </div>
+            <div class="group agents" data-live="agents-block" hidden>
+              <div class="group-head"><h2 id="h-agents">Agents Mac MCP can hand work to</h2><span class="count" data-live="agents-count"></span></div>
+              <button type="button" class="agent-strip" data-action="open-agents" aria-haspopup="dialog" aria-describedby="h-agents">
+                <span class="stack" data-live="agents-stack" aria-hidden="true"></span>
+                <span class="strip-text"><strong data-live="agents-title"></strong><span data-live="agents-detail"></span></span>
+                <span class="go">Choose ›</span>
+              </button>
+              <p class="note">Each uses your own account with it. Change them later in Settings › Agents.</p>
+            </div>
+          </div>
+          <div class="scrim" data-live="scrim" hidden></div>
+          <div class="popup" role="dialog" aria-modal="true" aria-labelledby="popup-title" data-live="popup" hidden>
+            <header><h3 id="popup-title" data-live="popup-title"></h3><button type="button" class="quiet" data-action="close-popup">Done</button></header>
+            <ul class="apps list" data-live="popup-list"></ul>
+            <footer><p data-live="popup-note"></p></footer>
           </div>
         </div>
       </section>
@@ -150,7 +168,10 @@
         <div class="copy">
           <h1 id="h-request">Try your first request.</h1>
           <p>Paste this into your AI app. It only reads; nothing on your Mac changes.</p>
-          <p class="waiting" data-live="request-state"><span class="pulse"></span>Waiting for the request to arrive</p>
+          <div class="status-card" data-live="request-state" role="status">
+            <span class="status-icon" aria-hidden="true"><i class="pulse"></i></span>
+            <div><strong>Waiting for the request</strong><span>Paste it into your AI app and send it.</span></div>
+          </div>
         </div>
         <div class="stage plain">
           <div class="prompt">

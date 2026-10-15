@@ -111,21 +111,25 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, WKNavigation
             }
             return true
         case .agents:
-            return Self.agentStates(state.settings)
-        case .enableAgent(let provider):
-            // Turned on here by the owner, like the switch in Settings › Agents (never on by default).
+            // Agents without an AI app of their own (Kimi Code, Grok Build) are found by the server.
+            if state.providerStatuses.isEmpty { await state.refreshProviders() }
+            return Self.agentStates(state)
+        case .enableAgent(let provider), .disableAgent(let provider):
+            // Switched here by the owner, like the switch in Settings › Agents (never on by default).
+            let enabled = action == .enableAgent(provider)
             let settings = state.settings
             guard !settings.providerSettingsLocked else {
-                throw AppState.OnboardingFailure(message: "Mac MCP's settings file could not be read, so agents stay off. Open Settings › Agents.")
+                throw AppState.OnboardingFailure(message: "Mac MCP's settings file could not be read, so agents stay as they are. Open Settings › Agents.")
             }
-            settings.setProviderEnabled(provider, enabled: true)
+            let previous = settings.providerEnabled(provider)
+            settings.setProviderEnabled(provider, enabled: enabled)
             do {
                 try settings.save()
             } catch {
-                settings.setProviderEnabled(provider, enabled: false)
+                settings.setProviderEnabled(provider, enabled: previous)
                 throw AppState.OnboardingFailure(message: "Could not save the setting: \(error.localizedDescription)")
             }
-            return Self.agentStates(settings)
+            return Self.agentStates(state)
         case .requestPermission(let permission):
             return try await state.dashboardJSON("dashboard/api/permissions/request", body: ["permission": permission])
         case .openSystemSettings(let permission):
@@ -167,9 +171,15 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, WKNavigation
         }
     }
 
-    /// Which agents are on (Settings › Agents), for the tour's agent rows.
-    private static func agentStates(_ settings: SettingsStore) -> [String: Bool] {
-        Dictionary(uniqueKeysWithValues: OnboardingBridge.agentProviders.map { ($0, settings.providerEnabled($0)) })
+    /// Which agents are on (Settings › Agents) and which the server found on this Mac,
+    /// for the tour's agent row and its list.
+    private static func agentStates(_ state: AppState) -> [String: [String: Bool]] {
+        let providers = OnboardingBridge.agentProviders
+        let enabled = Dictionary(uniqueKeysWithValues: providers.map { ($0, state.settings.providerEnabled($0)) })
+        let installed = Dictionary(uniqueKeysWithValues: providers.map { id in
+            (id, state.providerStatuses.first(where: { $0.id == id })?.detected == true)
+        })
+        return ["enabled": enabled, "installed": installed]
     }
 
     private func reply(_ id: Int, ok: Bool, result: Any?, error: String?) {

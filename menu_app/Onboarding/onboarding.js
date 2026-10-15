@@ -2,7 +2,10 @@
 // A classic script (WKWebView does not load ES modules from file:// pages).
 (function () {
 'use strict';
-const { SCREENS, CLIENTS, AGENTS, FIRST_REQUEST, evaluate, primaryAction, indexOf, appRow, agentRow, orderedClients } = window.OnboardingSteps;
+const {
+  SCREENS, CLIENTS, AGENTS, FIRST_REQUEST, evaluate, primaryAction, indexOf, appRow, agentRow,
+  agentsSummary, appGroups, callSentence,
+} = window.OnboardingSteps;
 
 // ---------- bridge ----------
 // The app answers every message with window.macmcp.receive({id, ok, result | error}).
@@ -45,7 +48,8 @@ const demoApps = [
   { id: 'codex', installed: true, added: true },
   { id: 'opencode', installed: false, added: false },
 ];
-const demoAgents = { codex: false, claude: true, opencode: false };
+const demoAgents = { enabled: { codex: true, claude: true, opencode: false, kimi: false, grok: false },
+  installed: { codex: true, claude: true, opencode: true, kimi: true, grok: true } };
 
 function demo(action, args) {
   const replies = {
@@ -56,10 +60,14 @@ function demo(action, args) {
       if (app) app.added = true;
       return { ok: true, next: 'Quit Claude and open it again, then ask it something about your Mac.' };
     },
-    agents: () => ({ ...demoAgents }),
+    agents: () => JSON.parse(JSON.stringify(demoAgents)),
     enableAgent: () => {
-      demoAgents[args.provider] = true;
-      return { ...demoAgents };
+      demoAgents.enabled[args.provider] = true;
+      return JSON.parse(JSON.stringify(demoAgents));
+    },
+    disableAgent: () => {
+      demoAgents.enabled[args.provider] = false;
+      return JSON.parse(JSON.stringify(demoAgents));
     },
   };
   return Promise.resolve(replies[action] ? replies[action]() : { ok: true });
@@ -73,7 +81,9 @@ let status = null;
 let evaluation = evaluate(null);
 let apps = null;
 let appsProblem = null;
-let agentsEnabled = null;
+let agentsState = null;
+let popupKind = null;
+let popupReturn = null;
 const appNotes = {};
 let appsRemote = null;
 let pollTimer = null;
@@ -155,16 +165,14 @@ function renderLive() {
     $(`.settings-row[data-mirror="${name}"]`).classList.toggle('is-granted', granted);
   }
   // Connect
-  const connectState = $('[data-live="connect-state"]');
-  connectState.classList.toggle('is-done', e.connect);
-  connectState.lastChild.textContent = e.connect
-    ? `Connected. Your AI app called ${e.firstTool || 'Mac MCP'}.`
-    : 'Waiting for your AI app to call Mac MCP';
+  setStatus($('[data-live="connect-state"]'), e.connect,
+    e.connect
+      ? ['Mac MCP is connected', callSentence(e.firstTool)]
+      : ['Waiting for your AI app', 'Open it and ask something about your Mac, like “Which macOS am I on?”']);
   if (apps && appsRemote !== e.remote) renderApps();
   // First request
-  const requestState = $('[data-live="request-state"]');
-  requestState.classList.toggle('is-done', e.request);
-  requestState.lastChild.textContent = e.request ? 'It worked. Your AI app can use your Mac.' : 'Waiting for the request to arrive';
+  setStatus($('[data-live="request-state"]'), e.request,
+    e.request ? ['It worked', 'Your AI app can use your Mac.'] : ['Waiting for the request', 'Paste it into your AI app and send it.']);
   if (e.request && SCREENS[current].id === 'request' && !celebrated) {
     celebrated = true;
     $('.burst').classList.add('is-on');
@@ -282,8 +290,16 @@ async function loadApps() {
     apps = [];
     appsProblem = error.message || 'Mac MCP could not look for AI apps on this Mac.';
   }
-  agentsEnabled = await call('agents').catch(() => null);
+  agentsState = await call('agents').catch(() => null);
   renderApps();
+}
+
+/** A status card: a pulse while waiting, a tick when done, a title and one line. */
+function setStatus(card, done, [title, line]) {
+  card.classList.toggle('is-done', done);
+  $('.status-icon', card).innerHTML = done ? '✓' : '<i class="pulse"></i>';
+  $(':scope > div > strong', card).textContent = title;
+  $(':scope > div > span', card).textContent = line;
 }
 
 /** The maker's logo for a row; the name next to it says which app it is. */
@@ -293,6 +309,42 @@ function logoMark(client) {
   mark.src = `logos/${client.logo}.png`;
   mark.alt = '';
   return mark;
+}
+
+function appElement(item, row) {
+  const element = document.createElement('li');
+  element.className = 'app';
+  element.dataset.app = item.id;
+  element.dataset.state = row.state;
+  const text = document.createElement('div');
+  const name = document.createElement('strong');
+  name.textContent = item.name;
+  const detail = document.createElement('span');
+  detail.textContent = appNotes[item.id] || row.detail;
+  text.append(name, detail);
+  element.append(logoMark(item), text);
+  if (row.button) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = row.button;
+    button.setAttribute('aria-label', `${row.button}: ${item.name}`);
+    button.addEventListener('click', () => (row.action === 'settings'
+      ? call('openSettings', { section: 'connections' })
+      : connectApp(item, element)));
+    element.append(button);
+  }
+  return element;
+}
+
+/** The makers' logos, slightly overlapping, in one small row. */
+function fillStack(stack, items) {
+  stack.textContent = '';
+  for (const item of items) {
+    const mark = logoMark(item);
+    mark.className = '';
+    stack.append(mark);
+  }
+  return stack;
 }
 
 function renderApps() {
@@ -315,80 +367,122 @@ function renderApps() {
     button.addEventListener('click', () => { apps = null; loadApps(); });
     element.append(text, button);
     list.append(element);
+    $('[data-live="apps-count"]').textContent = '';
     renderAgents();
     return;
   }
-  for (const item of orderedClients(apps)) {
-    const row = appRow(item, (apps || []).find((found) => found.id === item.id), evaluation.remote);
-    const element = document.createElement('li');
-    element.className = 'app';
-    element.dataset.app = item.id;
-    element.dataset.state = row.state;
-    const mark = logoMark(item);
+  // Rows that need a click first; the apps Mac MCP is already added to share one row.
+  const groups = appGroups(apps, evaluation.remote);
+  $('[data-live="apps-count"]').textContent = groups.present ? `${groups.added.length} of ${groups.present} added` : '';
+  const shown = groups.action.slice(0, 2);
+  const hidden = groups.action.length - shown.length;
+  for (const { client, row } of shown) list.append(appElement(client, row));
+  const element = document.createElement('li');
+  element.className = 'app summary';
+  if (groups.added.length) {
+    element.dataset.state = 'added';
     const text = document.createElement('div');
     const name = document.createElement('strong');
-    name.textContent = item.name;
+    name.textContent = `Added to ${groups.added.length} ${groups.added.length === 1 ? 'app' : 'apps'}`;
     const detail = document.createElement('span');
-    detail.textContent = appNotes[item.id] || row.detail;
+    detail.textContent = groups.added.map(({ client }) => client.name).join(', ');
     text.append(name, detail);
-    element.append(mark, text);
-    if (row.button) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = row.button;
-      button.setAttribute('aria-label', `${row.button}: ${item.name}`);
-      button.addEventListener('click', () => (row.action === 'settings'
-        ? call('openSettings', { section: 'connections' })
-        : connectApp(item, element)));
-      element.append(button);
-    }
-    list.append(element);
+    if (hidden) detail.textContent += ` · ${hidden} more to set up`;
+    const stack = document.createElement('span');
+    stack.className = 'stack';
+    element.append(fillStack(stack, groups.added.map(({ client }) => client)), text);
+  } else {
+    element.dataset.state = 'more';
+    const text = document.createElement('div');
+    const name = document.createElement('strong');
+    name.textContent = hidden ? `${hidden} more ${hidden === 1 ? 'app' : 'apps'} to set up` : 'Other AI apps';
+    const detail = document.createElement('span');
+    detail.textContent = 'See every app Mac MCP can be added to';
+    text.append(name, detail);
+    element.append(text);
   }
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = 'All apps';
+  button.setAttribute('aria-haspopup', 'dialog');
+  button.addEventListener('click', () => openPopup('apps', button));
+  element.append(button);
+  list.append(element);
   renderAgents();
+  if (popupKind === 'apps') renderPopup();
 }
 
-// Agents Mac MCP can hand work to: only those on this Mac, each turned on by the owner.
+// Agents Mac MCP can hand work to: one row whatever their number; the list opens in a popup.
 function renderAgents() {
   const block = $('[data-live="agents-block"]');
-  const list = $('[data-live="agents"]');
+  const summary = agentsSummary(AGENTS, apps, agentsState);
+  block.hidden = summary.rows.length === 0 || agentsState === null;
+  $('[data-live="agents-count"]').textContent = summary.count;
+  $('[data-live="agents-title"]').textContent = summary.title;
+  $('[data-live="agents-detail"]').textContent = summary.detail;
+  fillStack($('[data-live="agents-stack"]'), summary.rows.map(([agent]) => agent));
+  if (popupKind === 'agents') renderPopup();
+}
+
+// ---------- popup: every app, or every agent with its switch ----------
+function openPopup(kind, opener) {
+  popupKind = kind;
+  popupReturn = opener || null;
+  $('[data-live="scrim"]').hidden = false;
+  $('[data-live="popup"]').hidden = false;
+  renderPopup();
+  $('[data-action="close-popup"]').focus();
+}
+
+function closePopup() {
+  if (!popupKind) return;
+  popupKind = null;
+  $('[data-live="scrim"]').hidden = true;
+  $('[data-live="popup"]').hidden = true;
+  if (popupReturn) popupReturn.focus();
+  popupReturn = null;
+}
+
+function renderPopup() {
+  const list = $('[data-live="popup-list"]');
   list.textContent = '';
-  const rows = AGENTS.map((agent) => [agent, agentRow(agent, apps, agentsEnabled)]).filter(([, row]) => row);
-  block.hidden = rows.length === 0 || agentsEnabled === null;
-  for (const [agent, row] of rows) {
+  if (popupKind === 'apps') {
+    $('[data-live="popup-title"]').textContent = 'All AI apps';
+    $('[data-live="popup-note"]').textContent = 'Apps that are not on this Mac are listed at the end.';
+    for (const { client, row } of appGroups(apps, evaluation.remote).all) list.append(appElement(client, row));
+    return;
+  }
+  $('[data-live="popup-title"]').textContent = 'Agents Mac MCP can hand work to';
+  $('[data-live="popup-note"]').textContent = 'Each uses your own account with it. Change them later in Settings › Agents.';
+  for (const [agent, row] of agentsSummary(AGENTS, apps, agentsState).rows) {
     const element = document.createElement('li');
     element.className = 'app';
     element.dataset.agent = agent.id;
-    element.dataset.app = agent.client;
     element.dataset.state = row.state;
-    // A small chip: the app's mark, the name, and On or a Turn on button under it.
-    const mark = logoMark(CLIENTS.find((client) => client.id === agent.client));
     const text = document.createElement('div');
     const name = document.createElement('strong');
     name.textContent = agent.name;
-    text.append(name);
-    if (row.button) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = row.button;
-      button.setAttribute('aria-label', `${row.button}: ${agent.name}`);
-      button.addEventListener('click', () => enableAgent(agent, element));
-      text.append(button);
-    } else {
-      const detail = document.createElement('span');
-      detail.textContent = row.detail;
-      text.append(detail);
-    }
-    element.append(mark, text);
+    const detail = document.createElement('span');
+    detail.textContent = row.detail;
+    text.append(name, detail);
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'switch';
+    toggle.setAttribute('role', 'switch');
+    toggle.setAttribute('aria-checked', String(row.on));
+    toggle.setAttribute('aria-label', agent.name);
+    toggle.addEventListener('click', () => setAgent(agent, !row.on, element));
+    element.append(logoMark(agent), text, toggle);
     list.append(element);
   }
 }
 
-async function enableAgent(agent, element) {
+async function setAgent(agent, on, element) {
   element.classList.add('is-working');
   $('button', element).disabled = true;
   try {
-    agentsEnabled = await call('enableAgent', { provider: agent.id });
-    toast(`${agent.name} is on. AI apps can hand work to it.`);
+    agentsState = await call(on ? 'enableAgent' : 'disableAgent', { provider: agent.id });
+    toast(on ? `${agent.name} is on. AI apps can hand work to it.` : `${agent.name} is off.`);
   } catch (error) {
     toast(error.message);
   }
@@ -424,8 +518,17 @@ function wire() {
     link.addEventListener('click', () => call('openSystemSettings', { permission: link.dataset.permission }));
   }
   $('[data-action="manual-setup"]').addEventListener('click', () => call('openSettings', { section: 'connections' }));
+  const strip = $('[data-action="open-agents"]');
+  strip.addEventListener('click', () => openPopup('agents', strip));
+  $('[data-action="close-popup"]').addEventListener('click', closePopup);
+  $('[data-live="scrim"]').addEventListener('click', closePopup);
   $('[data-action="copy-prompt"]').addEventListener('click', () => copy(FIRST_REQUEST, 'Copied. Paste it into your AI app.'));
   document.addEventListener('keydown', (event) => {
+    if (popupKind) {
+      // The popup keeps the keys: Escape closes it, nothing moves the tour behind it.
+      if (event.key === 'Escape') closePopup();
+      return;
+    }
     if (event.target.closest && event.target.closest('pre')) return;
     if (event.key === 'ArrowRight' && SCREENS[current].kind === 'tour') show(current + 1);
     else if (event.key === 'ArrowLeft') show(current - 1);

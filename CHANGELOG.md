@@ -1,5 +1,12 @@
 ## Unreleased
 
+### The island no longer shows a finished agent as still working
+- The island rebuilt its Now list from the app's agent list while that list was still being replaced (a published value arrives before it is stored), so an agent that had just finished stayed under Now, its timer running, while Recent already said it finished. It stayed there until another agent changed. Now and the server-stopped row now use the values as they arrive.
+
+### Tour › Connect fits any number of apps and agents
+- The card keeps one height: apps that need a click first (at most two), then one row for the apps Mac MCP is already added to, with their logos, and All apps for the full list. Agents are one row with every agent's logo; Choose opens the list with a switch for each, Kimi Code and Grok Build included.
+- Instead of "Connected. Your AI app called run_command.", a small card says what happened in words ("Mac MCP is connected · Your AI app ran a command on this Mac.") or, while waiting, what to do. The First request screen uses the same card.
+
 ### Kimi Code and Grok Build as agents (experimental)
 - Two more agent providers, off by default: Kimi Code (`provider=kimi`) and Grok Build (`provider=grok`), turned on in Settings › Subagents. They run like Codex, Claude Code and OpenCode: headless, in the same macOS Seatbelt boundary for `read_only` and `workspace_write`, with only the scoped Mac MCP server, follow-up messages in the same session, cancel, run reports, resume safety and (for Grok) token usage.
 - Each agent gets a private Kimi/Grok home: the owner's model settings and sign-in are copied in for the run and removed when it ends or is cancelled; the owner's own MCP servers are left out.

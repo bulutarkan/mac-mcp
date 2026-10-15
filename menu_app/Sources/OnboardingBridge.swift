@@ -15,6 +15,7 @@ enum OnboardingAction: Equatable {
     case connectApp(String)
     case agents
     case enableAgent(String)
+    case disableAgent(String)
     case copy(String)
     case openSettings(String)
     case finish(String)
@@ -28,7 +29,7 @@ struct OnboardingMessage: Equatable {
 enum OnboardingBridge {
     static let permissions: Set<String> = ["accessibility", "screen_recording"]
     static let clients: Set<String> = ["claude-code", "codex", "opencode", "claude-desktop", "chatgpt"]
-    static let agentProviders: Set<String> = ["codex", "claude", "opencode"]
+    static let agentProviders: Set<String> = ["codex", "claude", "opencode", "kimi", "grok"]
     static let sections: Set<String> = ["start", "general", "connections", "permissions", "help"]
     static let outcomes: Set<String> = ["completed", "skipped"]
     static let copyLimit = 4096
@@ -54,6 +55,7 @@ enum OnboardingBridge {
         case "connectApp": action = value("client", in: clients).map(OnboardingAction.connectApp)
         case "agents": action = .agents
         case "enableAgent": action = value("provider", in: agentProviders).map(OnboardingAction.enableAgent)
+        case "disableAgent": action = value("provider", in: agentProviders).map(OnboardingAction.disableAgent)
         case "openSettings": action = value("section", in: sections).map(OnboardingAction.openSettings)
         case "finish": action = value("outcome", in: outcomes).map(OnboardingAction.finish)
         case "copy":

@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import steps from '../steps.js';
 
-const { SCREENS, CLIENTS, AGENTS, evaluate, primaryAction, indexOf, appRow, agentRow, orderedClients } = steps;
+const {
+  SCREENS, CLIENTS, AGENTS, evaluate, primaryAction, indexOf, appRow, agentRow, orderedClients,
+  agentsSummary, appGroups, callSentence,
+} = steps;
 
 test('the tour comes first, then the setup in order', () => {
   assert.deepEqual(SCREENS.map((s) => s.id),
@@ -87,12 +90,53 @@ test('a grant this server cannot see yet asks for a restart', () => {
   assert.equal(evaluate({ server_running: true }).restartNeeded, false);
 });
 
-test('agents on this Mac can be turned on; others are not listed', () => {
+test('agents on this Mac can be switched on and off; others are not listed', () => {
   const apps = [{ id: 'codex', installed: true }, { id: 'claude-code', installed: true }, { id: 'opencode', installed: false }];
-  const [codex, claude, opencode] = AGENTS;
-  assert.equal(agentRow(codex, apps, { codex: false }).action, 'enableAgent');
-  assert.equal(agentRow(claude, apps, { claude: true }).state, 'added');
-  assert.equal(agentRow(claude, apps, { claude: true }).button, null);
-  assert.equal(agentRow(opencode, apps, { opencode: false }), null);
-  assert.deepEqual(AGENTS.map((a) => a.id), ['codex', 'claude', 'opencode']);
+  const [codex, claude, opencode, kimi, grok] = AGENTS;
+  const state = { enabled: { codex: false, claude: true, kimi: false }, installed: { kimi: true } };
+  assert.equal(agentRow(codex, apps, state).action, 'enableAgent');
+  assert.equal(agentRow(claude, apps, state).state, 'added');
+  assert.equal(agentRow(claude, apps, state).action, 'disableAgent');
+  assert.equal(agentRow(opencode, apps, state), null);
+  // Agents without an AI app of their own are found by the server.
+  assert.equal(agentRow(kimi, apps, state).detail, 'Off');
+  assert.equal(agentRow(grok, apps, state), null);
+  assert.deepEqual(AGENTS.map((a) => a.id), ['codex', 'claude', 'opencode', 'kimi', 'grok']);
+  for (const agent of AGENTS) assert.ok(existsSync(new URL(`../logos/${agent.logo}.png`, import.meta.url)), agent.id);
+});
+
+test('the agents row sums them up in one line, whatever their number', () => {
+  const apps = [{ id: 'codex', installed: true }, { id: 'claude-code', installed: true }, { id: 'opencode', installed: true }];
+  const state = { enabled: { codex: true, claude: true }, installed: { kimi: true, grok: true } };
+  const summary = agentsSummary(AGENTS, apps, state);
+  assert.equal(summary.rows.length, 5);
+  assert.equal(summary.title, '2 agents are on');
+  assert.equal(summary.detail, 'Codex, Claude Code · OpenCode, Kimi Code and Grok Build are off');
+  assert.equal(summary.count, '2 on · 3 off');
+  assert.equal(agentsSummary(AGENTS, apps, { enabled: { codex: true } }).title, 'Codex is on');
+  assert.equal(agentsSummary(AGENTS, apps, { enabled: {} }).title, 'No agent is on yet');
+});
+
+test('the apps card shows what needs a click, then one row for the apps already set up', () => {
+  const apps = [
+    { id: 'claude-desktop', installed: true, added: false },
+    { id: 'claude-code', installed: true, added: true },
+    { id: 'codex', installed: true, added: true },
+    { id: 'opencode', installed: false, added: false },
+  ];
+  const groups = appGroups(apps, false);
+  assert.deepEqual(groups.action.map(({ client }) => client.id), ['claude-desktop', 'chatgpt']);
+  assert.deepEqual(groups.added.map(({ client }) => client.id), ['claude-code', 'codex']);
+  assert.equal(groups.present, 4);
+  assert.equal(groups.all.length, CLIENTS.length);
+  assert.equal(groups.all[groups.all.length - 1].client.id, 'opencode');
+});
+
+test('the first call is said in words, not as a tool name', () => {
+  assert.equal(callSentence('run_command'), 'Your AI app ran a command on this Mac.');
+  assert.equal(callSentence('read_file'), 'Your AI app read files on this Mac.');
+  assert.equal(callSentence('browser_observe'), 'Your AI app looked at a web page.');
+  assert.equal(callSentence('get_system_info'), 'Your AI app checked this Mac.');
+  assert.equal(callSentence('something_new'), 'Your AI app used Mac MCP.');
+  assert.equal(callSentence(null), 'Your AI app used Mac MCP.');
 });

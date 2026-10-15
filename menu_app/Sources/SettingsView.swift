@@ -957,8 +957,8 @@ struct SettingsView: View {
                 providerRow(id: "opencode", title: "OpenCode", subtitle: "External OpenCode CLI provider")
                 providerRow(id: "codex", title: "Codex", subtitle: "External Codex CLI provider")
                 providerRow(id: "claude", title: "Claude Code", subtitle: "External Claude Code CLI provider (your Claude sign-in)")
-                providerRow(id: "kimi", title: "Kimi Code", subtitle: "Experimental · Kimi Code CLI (your kimi login or model providers)")
-                providerRow(id: "grok", title: "Grok Build", subtitle: "Experimental · Grok Build CLI (your grok login, XAI_API_KEY or models)")
+                providerRow(id: "kimi", title: "Kimi Code", subtitle: "External Kimi Code CLI provider (your kimi login or model providers)")
+                providerRow(id: "grok", title: "Grok Build", subtitle: "External Grok Build CLI provider (your grok login, XAI_API_KEY or models)")
 
                 Text("Disabled providers are hidden from the agent catalog and cannot be spawned. Changes apply live to new agent requests.")
                     .font(.caption2)

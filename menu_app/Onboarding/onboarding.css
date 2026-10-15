@@ -319,10 +319,17 @@ button[disabled] { opacity: 0.5; cursor: default; }
 .settings-row.is-granted .toggle { background: var(--ok); }
 .settings-row.is-granted .toggle::after { translate: 16px 0; }
 
-.waiting { display: flex; align-items: center; gap: 10px; font-size: 13px; }
-.waiting.is-done { color: var(--ok); }
-.pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--ember); box-shadow: 0 0 0 0 rgba(255, 180, 94, 0.6); animation: pulse 1.6s infinite; }
-.waiting.is-done .pulse { background: var(--ok); animation: none; }
+/* Connection status: a small card saying what happened (or what to do), not a tool name. */
+.status-card {
+  display: grid; grid-template-columns: 30px 1fr; gap: 12px; align-items: center; margin: 4px 0 18px; max-width: 34ch;
+  padding: 12px 14px; border-radius: 14px; background: rgba(236, 239, 246, 0.04); box-shadow: inset 0 0 0 1px var(--glass-edge);
+}
+.status-card strong { display: block; font-size: 14px; color: var(--paper); }
+.status-card div span { display: block; font-size: 12.5px; line-height: 1.45; color: var(--haze); }
+.status-card .status-icon { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: rgba(255, 180, 94, 0.14); }
+.status-card.is-done { box-shadow: inset 0 0 0 1px rgba(94, 211, 160, 0.4); background: rgba(94, 211, 160, 0.07); }
+.status-card.is-done .status-icon { background: var(--ok); color: #0d2a1e; font: 700 15px/1 var(--sans); }
+.pulse { display: block; width: 9px; height: 9px; border-radius: 50%; background: var(--ember); box-shadow: 0 0 0 0 rgba(255, 180, 94, 0.6); animation: pulse 1.6s infinite; }
 @keyframes pulse { 70% { box-shadow: 0 0 0 10px rgba(255, 180, 94, 0); } 100% { box-shadow: 0 0 0 0 rgba(255, 180, 94, 0); } }
 
 .stage.plain:has(.apps) {
@@ -330,16 +337,63 @@ button[disabled] { opacity: 0.5; cursor: default; }
   height: auto; min-height: 0; max-height: calc(100% - 24px);
   overflow-y: auto; place-items: start center; align-content: start; padding: 18px 20px;
 }
-.agents { width: 100%; max-width: 440px; margin-top: 14px; display: grid; gap: 6px; }
-.agents h2 { font-size: 13px; margin: 0; }
-.agents .note { margin: 0; font-size: 12px; color: var(--haze); }
-/* Agents are small chips in one row: name and On, or a Turn on button. */
-.agents .apps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.agents .app { grid-template-columns: 24px minmax(0, 1fr); gap: 8px; padding: 6px 8px; border-radius: 10px; }
-.agents .app-mark { width: 24px; height: 24px; border-radius: 6px; }
-.agents .app strong { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.agents .app button { display: block; margin-top: 3px; padding: 4px 10px; font-size: 12px; }
-.agents[hidden] { display: none; }
+/* Colours of the Connect card only (the shared tokens above mirror the site's). */
+.screens { --raised: #1b2238; --ring: #1c2238; --switch-off: rgba(236, 239, 246, 0.18); --scrim: rgba(8, 11, 22, 0.55); }
+@media (prefers-color-scheme: light) {
+  .screens { --raised: #ffffff; --ring: #ffffff; --switch-off: rgba(21, 27, 46, 0.18); --scrim: rgba(21, 27, 46, 0.18); }
+}
+
+/* The Connect card keeps one height whatever the number of apps and agents. */
+.stage-wrap { position: relative; display: grid; place-items: center; align-self: stretch; }
+.connect-card { width: 100%; max-width: 470px; gap: 16px; }
+.group { display: grid; gap: 8px; width: 100%; }
+.group[hidden] { display: none; }
+.group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.group-head h2 { margin: 0; font-size: 13px; }
+.group-head .count { font-size: 12px; color: var(--haze); white-space: nowrap; }
+.group .note { margin: 0; font-size: 12px; color: var(--haze); }
+.connect-card .apps { max-width: none; }
+
+/* Logos slightly overlapping; a ring that follows each logo's own shape keeps them apart. */
+.stack { display: flex; align-items: center; }
+.app .stack, .agent-strip .stack { display: flex; }
+.stack img {
+  display: block; width: 26px; height: 26px;
+  filter: drop-shadow(1.5px 0 0 var(--ring)) drop-shadow(-1.5px 0 0 var(--ring))
+          drop-shadow(0 1.5px 0 var(--ring)) drop-shadow(0 -1.5px 0 var(--ring));
+}
+.stack img + img { margin-left: -7px; }
+/* More specific than the mark-less row rule below: the logos take the mark's column. */
+.apps .app.summary { grid-template-columns: auto 1fr auto; }
+.apps .app.summary[data-state="more"] { grid-template-columns: 1fr auto; }
+
+.agent-strip {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; width: 100%;
+  padding: 10px 12px; border-radius: 12px; text-align: left; font: inherit; color: inherit;
+  background: var(--well); box-shadow: inset 0 0 0 1px var(--glass-edge);
+}
+.agent-strip strong { display: block; font-size: 14px; }
+.agent-strip .strip-text span { display: block; font-size: 12px; color: var(--haze); line-height: 1.4; }
+.agent-strip .go { color: var(--ember); font-size: 13px; font-weight: 600; white-space: nowrap; }
+
+/* Every app, or every agent with its switch, over the card. */
+.scrim { position: absolute; inset: 0; z-index: 2; border-radius: 18px; background: var(--scrim); }
+.scrim[hidden], .popup[hidden] { display: none; }
+.popup {
+  position: absolute; z-index: 3; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(440px, 100%); max-height: min(470px, 100%);
+  display: grid; grid-template-rows: auto 1fr auto; border-radius: 16px; overflow: hidden;
+  background: var(--raised); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55), inset 0 0 0 1px var(--glass-edge);
+}
+.popup header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 10px; }
+.popup header h3 { margin: 0; font: 600 16px/1.3 var(--serif); }
+.popup .list { overflow-y: auto; padding: 0 12px 6px; align-content: start; max-width: none; }
+.popup footer { padding: 10px 16px 14px; border-top: 1px solid var(--glass-edge); }
+.popup footer p { margin: 0; font-size: 11.5px; color: var(--haze); }
+.app .switch { position: relative; width: 36px; height: 21px; padding: 0; border-radius: 11px; background: var(--switch-off); box-shadow: none; }
+.app .switch::after { content: ""; position: absolute; left: 2px; top: 2px; width: 17px; height: 17px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); transition: left 0.2s var(--ease); }
+.app .switch[aria-checked="true"] { background: var(--ok); }
+.app .switch[aria-checked="true"]::after { left: 17px; }
+.app[data-state="off"] { box-shadow: inset 0 0 0 1px var(--glass-edge); }
 .apps { list-style: none; margin: 0; padding: 0; width: 100%; max-width: 440px; display: grid; gap: 6px; }
 .app {
   display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 10px;

@@ -27,10 +27,14 @@ const CLIENTS = [
 ];
 
 // Agents Mac MCP can hand work to (Settings › Agents). Each starts off; the owner turns it on.
+// client: the AI app of the same CLI, whose install also tells that the agent is there.
+// logo: logos/<name>.png.
 const AGENTS = [
-  { id: 'codex', client: 'codex', name: 'Codex' },
-  { id: 'claude', client: 'claude-code', name: 'Claude Code' },
-  { id: 'opencode', client: 'opencode', name: 'OpenCode' },
+  { id: 'codex', client: 'codex', name: 'Codex', logo: 'openai' },
+  { id: 'claude', client: 'claude-code', name: 'Claude Code', logo: 'claude' },
+  { id: 'opencode', client: 'opencode', name: 'OpenCode', logo: 'opencode' },
+  { id: 'kimi', name: 'Kimi Code', logo: 'kimi' },
+  { id: 'grok', name: 'Grok Build', logo: 'grok' },
 ];
 
 const FIRST_REQUEST = 'Use Mac MCP to tell me which macOS version this Mac is running.';
@@ -107,15 +111,66 @@ function appRow(client, found, remote) {
 
 /**
  * One agent row: on, ready to turn on, or null when it is not on this Mac (not listed).
- * apps: what `mac-mcp clients` found; enabled: { codex: bool, ... } from Settings.
+ * apps: what `mac-mcp clients` found; agents: { enabled: { codex: bool, ... }, installed: { ... } }
+ * from Settings and the server's provider detection.
  */
-function agentRow(agent, apps, enabled) {
-  if (enabled && enabled[agent.id] === true) {
-    return { state: 'added', detail: 'On', button: null, action: null };
+function agentRow(agent, apps, agents) {
+  const enabled = (agents && agents.enabled) || {};
+  const installed = (agents && agents.installed) || {};
+  if (enabled[agent.id] === true) {
+    return { state: 'added', on: true, detail: 'On', action: 'disableAgent' };
   }
-  const found = (apps || []).find((app) => app.id === agent.client);
-  if (!found || !found.installed) return null;
-  return { state: 'ready', detail: 'Off', button: 'Turn on', action: 'enableAgent' };
+  const found = agent.client && (apps || []).find((app) => app.id === agent.client && app.installed);
+  if (!found && installed[agent.id] !== true) return null;
+  return { state: 'off', on: false, detail: 'Off', action: 'enableAgent' };
+}
+
+/** The agents on this Mac and the line that sums them up in one row. */
+function agentsSummary(agents, apps, state) {
+  const rows = agents.map((agent) => [agent, agentRow(agent, apps, state)]).filter(([, row]) => row);
+  const on = rows.filter(([, row]) => row.on).map(([agent]) => agent.name);
+  const off = rows.filter(([, row]) => !row.on).map(([agent]) => agent.name);
+  const list = (names) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`);
+  let title;
+  if (on.length === 0) title = 'No agent is on yet';
+  else if (on.length === 1) title = `${on[0]} is on`;
+  else title = `${on.length} agents are on`;
+  const parts = [];
+  if (on.length > 1) parts.push(on.join(', '));
+  if (off.length) parts.push(`${list(off)} ${off.length === 1 ? 'is' : 'are'} off`);
+  return { rows, title, detail: parts.join(' · '), count: `${on.length} on · ${off.length} off` };
+}
+
+/**
+ * The Connect card keeps one height whatever the number of apps: rows that need a click,
+ * then the apps Mac MCP is already added to in one row. Apps not on this Mac only appear
+ * under All apps.
+ */
+function appGroups(apps, remote) {
+  const rows = orderedClients(apps).map((client) => ({ client, row: appRow(client, (apps || []).find((found) => found.id === client.id), remote) }));
+  return {
+    all: rows,
+    action: rows.filter(({ row }) => row.state !== 'added' && row.state !== 'missing'),
+    added: rows.filter(({ row }) => row.state === 'added'),
+    present: rows.filter(({ row }) => row.state !== 'missing').length,
+  };
+}
+
+// What the AI app's first call did, in words: the tool name means nothing to most people.
+const CALL_WORDS = [
+  [/^(run_command|run_commands_parallel|start_background_job)$/, 'ran a command on this Mac'],
+  [/^(read_file|read_multiple_files|list_directory|search_files|file_info)$/, 'read files on this Mac'],
+  [/^(write_file|edit_file|move_file|create_directory)$/, 'changed a file on this Mac'],
+  [/^browser_/, 'looked at a web page'],
+  [/^(mac_|screenshot)/, 'looked at an app on this Mac'],
+  [/system_info$/, 'checked this Mac'],
+  [/^memory_/, 'searched its memory'],
+];
+
+function callSentence(tool) {
+  const name = String(tool || '');
+  const found = CALL_WORDS.find(([pattern]) => pattern.test(name));
+  return `Your AI app ${found ? found[1] : 'used Mac MCP'}.`;
 }
 
 /** Apps on this Mac first, keeping the list's order otherwise. */
@@ -124,7 +179,10 @@ function orderedClients(apps) {
   return [...CLIENTS.filter(present), ...CLIENTS.filter((client) => !present(client))];
 }
 
-const api = { SCREENS, CLIENTS, AGENTS, FIRST_REQUEST, indexOf, evaluate, primaryAction, appRow, agentRow, orderedClients };
+const api = {
+  SCREENS, CLIENTS, AGENTS, FIRST_REQUEST, indexOf, evaluate, primaryAction, appRow, agentRow, orderedClients,
+  agentsSummary, appGroups, callSentence,
+};
 if (typeof module === 'object' && module.exports) module.exports = api;
 else root.OnboardingSteps = api;
 })(typeof window === 'object' ? window : globalThis);
