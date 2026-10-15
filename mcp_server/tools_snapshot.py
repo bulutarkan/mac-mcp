@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional
 
-from . import context_handoff, privacy_policy
+from . import context_handoff, privacy_policy, screen_lock
 from .process_supervision import run_osascript
 from .security import Settings
 from .tools_browser import browser_list_tabs
@@ -222,7 +222,11 @@ def _read_system(settings: Settings, **_: Any) -> Dict[str, Any]:
     result = get_system_info(settings)
     if not result.get("ok"):
         raise RuntimeError(str(result.get("error") or result.get("stderr") or "could not read system info"))
-    return _parse_system_stdout(str(result.get("stdout") or ""))
+    system = _parse_system_stdout(str(result.get("stdout") or ""))
+    locked = screen_lock.is_screen_locked()
+    if locked is not None:
+        system["screen_locked"] = locked
+    return system
 
 
 _SECTION_READERS: Dict[str, Callable[..., Dict[str, Any]]] = {

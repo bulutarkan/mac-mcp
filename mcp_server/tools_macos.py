@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from .process_supervision import run_osascript
 from .security import Settings, truncate
 from .clipboard_guard import ClipboardBusyError, clipboard_guard
-from . import privacy_policy
+from . import privacy_policy, screen_lock
 from .tool_cancellation import ToolCancelledError
 
 
@@ -147,6 +147,8 @@ def screenshot(settings: Settings, path: str = str(Path.home() / "Desktop" / "sc
                window: bool = False) -> Dict[str, Any]:
     """Take a screenshot and save to path."""
     privacy_policy.check_tool("screenshot")
+    if screen_lock.is_screen_locked():
+        return screen_lock.locked_error("screenshot")
     if privacy_policy.policy()["excluded_apps"]:
         owners = _visible_window_owners()
         if owners is None:

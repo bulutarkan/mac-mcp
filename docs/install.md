@@ -145,3 +145,5 @@ Grant only the permissions required by the tools you use:
 - **Screen Recording** for protected screen capture;
 - **Automation** when macOS asks permission to control Safari, Chrome, System Events, Reminders, or other apps;
 - **Microphone** for `ask_user_voice`.
+
+While the screen is locked, macOS hides app windows from Accessibility and screen capture shows the lock screen. `mac_observe`, `mac_act` and `screenshot` then return `SCREEN_LOCKED` instead of a misleading error, and `mac_snapshot` reports `screen_locked` in its system section. Shell commands, file tools, browser page tools and AppleScript to scriptable apps keep working on a locked Mac, as long as it stays awake.

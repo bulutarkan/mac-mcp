@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from mcp.server.fastmcp.utilities.types import Image
 
-from . import privacy_policy
+from . import privacy_policy, screen_lock
 from .process_supervision import run_osascript, terminate_process_group as _terminate_process_group
 from .native_action_verification import (
     ACTION_VERIFY_POLL_S as _NATIVE_ACTION_VERIFY_POLL_S,
@@ -2575,6 +2575,8 @@ def _observe_ui(
 def observe_ui(*args: Any, **kwargs: Any) -> Any:
     """Read a macOS app/window Accessibility tree, then check what was read against the owner's
     privacy rules: the frontmost app can change between the check before capture and the capture."""
+    if screen_lock.is_screen_locked():
+        return screen_lock.locked_error("mac_observe")
     result = _observe_ui(*args, **kwargs)
     text = result[0] if isinstance(result, list) and result else result
     if isinstance(text, str) and text.startswith("{"):
@@ -4830,6 +4832,9 @@ def act_ui(
 ) -> Any:
     """Perform bounded macOS UI actions against re-resolved native app/window handles."""
     cancellation_checkpoint()
+    if screen_lock.is_screen_locked():
+        # Input sent now would reach the lock screen's password field, not the app.
+        return screen_lock.locked_error("mac_act")
     deadline = time.monotonic() + _ACTION_BUDGET_S
     try:
         resolved_state_mode, legacy_full_screenshot = _normalize_action_state_mode(
