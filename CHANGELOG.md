@@ -4,12 +4,12 @@
 - A run's contents (result, output, each step's text and inputs) are removed after **Settings › Privacy › Scheduled task run details**: 7, 30 (default) or 90 days. How the run ended, when, its usage and checks stay for the run's 90 days. The report says when the details were removed, and nothing is read back from the agent's files afterwards.
 - Known secrets (tokens, `NAME=value` keys, bearer headers, private keys) are masked before a run is written.
 - Each step with inputs or a command gets a keyed fingerprint (HMAC under a key that stays on this Mac), and each run one over its steps, so two runs that did the same thing can be told apart from ones that did not, even after their contents are gone.
-- A run followed after a restart in private mode is marked private like any other, and Settings › Privacy says how long agent folders and run contents are kept.
+- Contents expire on time even when no task runs: whenever runs are read, when the scheduler wakes and when the period is changed. A run followed after a restart in private mode is marked private like any other, and Settings › Privacy says how long agent folders and run contents are kept.
 
 ### Browser companions show whether they work (#188)
-- Settings › Connections › Browser shows the Chrome companion live: **Connected** with its version, **Reload in Chrome…** when the loaded companion is older than the server (missing a feature it should report, even on the same version number), or Chrome Setup… when it is not loaded. Safari's state refreshes while the pane is open, not only when the app starts. The Get Started checklist says which ones are on.
+- Settings › Connections › Browser shows the Chrome companion live: **Connected** with its version, **Reload in Chrome…** when the loaded companion is older than the server (missing a feature it should report, even on the same version number), or Chrome Setup… when it is not loaded (Chrome Beta, Dev, Canary and Chromium count as Chrome). Safari's state refreshes while the pane is open, not only when the app starts. The Get Started checklist says which ones are on.
 - Chrome Setup… also copies the companion's folder path, so in Load unpacked ⌘⇧G and ⌘V go straight to it, and Mac MCP announces "Chrome companion connected" once it is loaded, with no check by hand.
-- The tour's Permissions step has an optional Browsers line: Safari Enable, Chrome Set up, each turning to On or Connected by itself.
+- The tour has an optional Browsers step after Permissions: Safari Enable and Chrome Set up, each turning to On or Connected by itself; Skip for now moves on.
 - The server keeps the companion's version and when it last spoke; `GET /dashboard/api/diagnostics/runtime` reports them as `chrome_companion`. What a Chrome Web Store listing would take is in docs/chrome-web-store.md.
 
 ### Scheduled Tasks can check that a run made what it should (#198)
@@ -18,7 +18,7 @@
 - A failed or skipped run is never checked, so a check never turns a failure into a success, and nothing is run again on its own. Private mode keeps only whether the checks passed.
 
 ### Less memory and less work behind each tool call (#184)
-- Usage metering no longer keeps an unbounded number of raw tool results while an agent keeps calling tools: past 16 MB of waiting results (`MAC_MCP_USAGE_BATCH_BYTES`) the batch is measured and written without waiting for a pause. Under a steady stream of 1 MB results the queue's memory stays at about 16 MB instead of growing with every call (78 MB after six seconds in the benchmark, and rising).
+- Usage metering no longer keeps an unbounded number of raw tool results while an agent keeps calling tools: past 16 MB of waiting results (`MAC_MCP_USAGE_BATCH_BYTES`) the batch is measured and written without waiting for a pause. With a steady stream of 1 MB results that the meter keeps up with, its memory stayed at about 16 MB instead of growing with every call (78 MB after six seconds in the benchmark, and rising); a stream faster than the meter is still bounded by the queue's 2,048 results.
 - The usage token count runs about 2.5 times faster (a 5 MB result: 0.93 s → 0.42 s) and counts exactly as before; the metric's definition (`mac_mcp_payload_v1`) is unchanged and pinned by a test.
 - A tool result whose text ends in half an emoji (text cut in JavaScript) is recorded again; measuring its size used to throw, and the call never reached the activity history.
 - The first memory search after a new embedding model arrives answers within a short budget (0.75 s, `MAC_MCP_MEMORY_MIGRATION_BUDGET_S`) and re-embeds the remaining day files in the background; until then older notes are found through their previous vectors and the word match.

@@ -10,7 +10,7 @@ const {
 
 test('the tour comes first, then the setup in order', () => {
   assert.deepEqual(SCREENS.map((s) => s.id),
-    ['welcome', 'apps', 'browser', 'safety', 'start', 'permissions', 'connect', 'request', 'done']);
+    ['welcome', 'apps', 'browser', 'safety', 'start', 'permissions', 'browsers', 'connect', 'request', 'done']);
   assert.equal(indexOf('start'), 4);
 });
 
@@ -176,8 +176,10 @@ test('browser companions are read from the status and never block setup', () => 
   const live = evaluate({ server_running: true, browsers: { safari: 'on', chrome: 'reload' } });
   assert.deepEqual(live.browsers, { safari: 'on', chrome: 'reload', any: true });
   assert.equal(evaluate({ server_running: true, browsers: { safari: 'nonsense', chrome: 42 } }).browsers.safari, 'unknown');
-  // Optional: the permissions screen's button does not wait for them.
-  assert.equal(primaryAction('permissions', live).action, 'next');
+  // Optional: their own screen sits under Permissions on the rail and never waits for them.
+  assert.equal(SCREENS.find((s) => s.id === 'browsers').rail, 'Permissions');
+  assert.deepEqual(primaryAction('browsers', none), { label: 'Skip for now', action: 'next' });
+  assert.deepEqual(primaryAction('browsers', live), { label: 'Continue', action: 'next' });
 
   assert.deepEqual(browserRow('safari', 'on'), { done: true, state: 'On', button: null,
     detail: 'On. Mac MCP frames the Safari tab it works in.' });

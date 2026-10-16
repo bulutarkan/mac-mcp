@@ -148,10 +148,15 @@ def _db() -> Iterator[sqlite3.Connection]:
                     """
                 )
                 columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
-                if "verification" not in columns:  # databases from before output checks (#198)
-                    conn.execute("ALTER TABLE runs ADD COLUMN verification TEXT")
-                if "details_expired_at" not in columns:  # before contents expired on their own (#199)
-                    conn.execute("ALTER TABLE runs ADD COLUMN details_expired_at REAL")
+                # Databases from before output checks (#198) and expiring contents (#199). Two
+                # processes may open an old database at once; the second finds the column there.
+                for column, kind in (("verification", "TEXT"), ("details_expired_at", "REAL")):
+                    if column not in columns:
+                        try:
+                            conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {kind}")
+                        except sqlite3.OperationalError as exc:
+                            if "duplicate column" not in str(exc).lower():
+                                raise
                 try:
                     path.chmod(0o600)
                 except OSError:
@@ -488,6 +493,7 @@ def _latest_runs(conn: sqlite3.Connection) -> Dict[str, sqlite3.Row]:
 
 def list_tasks() -> List[Dict[str, Any]]:
     with _db() as conn:
+        _expire_contents(conn, time.time())  # reads never hand back expired contents
         running = _running_ids(conn)
         rows = conn.execute("SELECT * FROM tasks ORDER BY created_at").fetchall()
         latest = _latest_runs(conn)
@@ -711,6 +717,7 @@ def record_skip(task_id: str, *, scheduled_for: float, reason: str, count: int =
 
 def list_runs(task_id: str, limit: int = RUNS_PER_TASK) -> List[Dict[str, Any]]:
     with _db() as conn:
+        _expire_contents(conn, time.time())  # reads never hand back expired contents
         rows = conn.execute("SELECT * FROM runs WHERE task_id=? ORDER BY started_at DESC LIMIT ?",
                             (task_id, max(1, min(int(limit), RUNS_PER_TASK)))).fetchall()
     return [_run_public(row, brief=True) for row in rows]
@@ -718,6 +725,7 @@ def list_runs(task_id: str, limit: int = RUNS_PER_TASK) -> List[Dict[str, Any]]:
 
 def get_run(run_id: str) -> Dict[str, Any]:
     with _db() as conn:
+        _expire_contents(conn, time.time())  # reads never hand back expired contents
         row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
     if row is None:
         raise TaskError("run_not_found", "That run is no longer in the history.", 404)
@@ -733,6 +741,7 @@ def running_runs() -> List[Dict[str, Any]]:
 def finished_since(since: float) -> List[Dict[str, Any]]:
     """Runs that ended after `since`, with their task's name and notify choice (for notifications)."""
     with _db() as conn:
+        _expire_contents(conn, time.time())  # reads never hand back expired contents
         rows = conn.execute("SELECT runs.*, tasks.definition AS def FROM runs JOIN tasks ON tasks.id=runs.task_id"
                             " WHERE runs.finished_at>? ORDER BY runs.finished_at", (since,)).fetchall()
     out = []
@@ -747,7 +756,21 @@ def _prune(conn: sqlite3.Connection, task_id: str, now: float) -> None:
     conn.execute("DELETE FROM runs WHERE task_id=? AND status!='running' AND id NOT IN"
                  " (SELECT id FROM runs WHERE task_id=? ORDER BY started_at DESC LIMIT ?)",
                  (task_id, task_id, RUNS_PER_TASK))
+    _expire(conn, now)
+
+
+def apply_retention(now: Optional[float] = None) -> None:
+    """Drop runs past 90 days and contents past the owner's period, with no run finishing (#199)."""
+    with _db() as conn:
+        _expire(conn, time.time() if now is None else now)
+
+
+def _expire(conn: sqlite3.Connection, now: float) -> None:
     conn.execute("DELETE FROM runs WHERE status!='running' AND started_at<?", (now - RUN_RETENTION_DAYS * 86400,))
+    _expire_contents(conn, now)
+
+
+def _expire_contents(conn: sqlite3.Connection, now: float) -> None:
     # The contents go first (Settings > Privacy > run details); how the run ended stays (#199).
     cutoff = now - run_detail_privacy()["retention_days"] * 86400
     for row in conn.execute(

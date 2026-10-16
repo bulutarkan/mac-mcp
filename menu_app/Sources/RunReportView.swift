@@ -189,7 +189,8 @@ struct RunReportSheet: View {
                     .accessibilityElement(children: .combine)
                 }
                 if shown.checks.isEmpty {
-                    Text("Private mode was on, so only the outcome of the checks was kept.")
+                    Text((shown.verification?["error"] as? String)
+                         ?? "Private mode was on, so only the outcome of the checks was kept.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

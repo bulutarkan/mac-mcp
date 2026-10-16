@@ -114,11 +114,6 @@
               <button type="button" data-action="request">Allow</button>
             </div>
           </div>
-          <div class="browser-line" role="group" aria-label="Browser companions, optional">
-            <span class="browser-line-title">Browsers <em>optional</em></span>
-            <span class="browser-chip" data-browser="safari"><strong>Safari</strong> <span data-live="safari-state">Checking…</span><button type="button" data-action="setup-browser" hidden>Enable</button></span>
-            <span class="browser-chip" data-browser="chrome"><strong>Chrome</strong> <span data-live="chrome-state">Checking…</span><button type="button" data-action="setup-browser" hidden>Set up</button></span>
-          </div>
           <p class="note" data-live="permission-hint" hidden>Turn on Mac MCP in the window macOS opened. Nothing opened? Open <button type="button" class="link" data-action="open-settings-pane" data-permission="accessibility">Accessibility</button> or <button type="button" class="link" data-action="open-settings-pane" data-permission="screen_recording">Screen Recording</button> settings. Mac MCP restarts by itself once it is allowed.</p>
         </div>
         <div class="stage plain" aria-hidden="true">
@@ -129,6 +124,35 @@
               <div class="settings-row" data-mirror="accessibility"><img src="../Assets/AppIcon.png" alt=""><span>Mac MCP</span><i class="toggle"></i></div>
               <h2>Screen &amp; System Audio Recording</h2>
               <div class="settings-row" data-mirror="screen_recording"><img src="../Assets/AppIcon.png" alt=""><span>Mac MCP</span><i class="toggle"></i></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="browsers" aria-labelledby="h-browsers">
+        <div class="copy">
+          <h1 id="h-browsers">Let it work in your browser.</h1>
+          <p>Optional. With a small companion, Mac MCP works in a Safari or Chrome tab in the background and frames the tab it touches. Set up either one now, or later in Settings.</p>
+          <div class="perms">
+            <div class="perm" data-browser="safari">
+              <div><strong>Safari</strong><span data-live="safari-detail">Checking Safari…</span></div>
+              <button type="button" data-action="setup-browser" hidden>Enable</button>
+            </div>
+            <div class="perm" data-browser="chrome">
+              <div><strong>Google Chrome</strong><span data-live="chrome-detail">Checking Chrome…</span></div>
+              <button type="button" data-action="setup-browser" hidden>Set up</button>
+            </div>
+          </div>
+        </div>
+        <div class="stage desk" aria-hidden="true">
+          <div class="wallpaper"></div>
+          <div class="menubar"><span></span><span></span><span></span></div>
+          <div class="win browser companion">
+            <div class="lights"><i></i><i></i><i></i><u class="url"></u></div>
+            <div class="form">
+              <div class="field"><small></small><div class="input"><span class="filled">Ayşe Yılmaz</span></div></div>
+              <div class="field"><small></small><div class="input"><span class="filled late">ayse@example.com</span></div></div>
+              <div class="submit"></div>
             </div>
           </div>
         </div>

@@ -363,11 +363,13 @@ class UsageCollector:
                 batch.append(sample)
                 held += max(0, int(sample.size_hint or 0))
 
-            while len(batch) < self.queue_size:
+            while len(batch) < self.queue_size and held < self.batch_bytes:
                 try:
-                    batch.append(self._queue.get_nowait())
+                    sample = self._queue.get_nowait()
                 except queue.Empty:
                     break
+                batch.append(sample)
+                held += max(0, int(sample.size_hint or 0))
 
             try:
                 self._write_batch(batch)

@@ -11,6 +11,7 @@ const SCREENS = [
   { id: 'safety', kind: 'tour', rail: 'Tour' },
   { id: 'start', kind: 'setup', rail: 'Start' },
   { id: 'permissions', kind: 'setup', rail: 'Permissions' },
+  { id: 'browsers', kind: 'setup', rail: 'Permissions' },
   { id: 'connect', kind: 'setup', rail: 'Connect' },
   { id: 'request', kind: 'setup', rail: 'First request' },
   { id: 'done', kind: 'finish', rail: 'Done' },
@@ -125,6 +126,8 @@ function primaryAction(id, evaluation) {
       return e.start ? { label: 'Continue', action: 'next' } : { label: 'Start Mac MCP', action: 'startServer' };
     case 'permissions':
       return { label: e.permissions.done ? 'Continue' : 'Allow later', action: 'next' };
+    case 'browsers':
+      return { label: e.browsers.any ? 'Continue' : 'Skip for now', action: 'next' };
     case 'connect':
       return { label: e.connect ? 'Continue' : 'Skip for now', action: 'next' };
     case 'request':

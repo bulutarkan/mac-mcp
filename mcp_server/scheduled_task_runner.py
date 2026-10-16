@@ -532,6 +532,7 @@ class Scheduler:
         while not self._stop.is_set():
             self.wakeups += 1
             try:
+                store.apply_retention()  # also on start: contents expire with no run finishing (#199)
                 self.tick()
                 delay = self.sleep_for()
             except Exception:

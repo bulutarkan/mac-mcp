@@ -1869,7 +1869,7 @@ struct SettingsView: View {
                                 .help("Refresh companion status")
                         } else if chrome.connected {
                             Button("Reload in Chrome…") { state.openChromeExtensionSetup() }
-                        } else if state.chromeInstalled {
+                        } else {
                             Button("Chrome Setup…") { state.openChromeExtensionSetup() }
                         }
                     }
@@ -1902,8 +1902,10 @@ struct SettingsView: View {
             return "Connected, but older than this Mac MCP: reload it once at chrome://extensions."
         }
         if chrome.connected { return "Chrome tabs work in the background: page actions and capture without bringing Chrome forward." }
-        if !state.chromeInstalled { return "Google Chrome is not installed. Safari works without it." }
-        if !chrome.checked { return "Checking Chrome…" }
+        if !chrome.checked {
+            return state.serverRunning ? "Checking Chrome…" : "Start Mac MCP to see whether the Chrome companion is connected."
+        }
+        if !state.chromeInstalled { return "Google Chrome is not installed (Chrome Beta, Canary and Chromium work too). Safari works without it." }
         return "Not connected. Chrome Setup loads the companion once; after that Chrome tabs work in the background."
     }
 

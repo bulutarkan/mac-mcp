@@ -345,6 +345,22 @@ class UsageCollectorTests(unittest.TestCase):
             self.assertGreater(processed_while_busy, 0)
             self.assertTrue(collector.wait_idle(5.0))
 
+    def test_a_backlog_is_measured_in_budget_sized_batches(self) -> None:
+        # A producer faster than the meter leaves a backlog; draining it must not take it all at once.
+        with tempfile.TemporaryDirectory() as td:
+            collector = UsageCollector(Path(td) / "telemetry.sqlite3", queue_size=64, batch_bytes=2_000)
+            with patch.object(collector, "_ensure_worker", return_value=None):
+                for _ in range(20):
+                    collector.submit(UsageSample(
+                        timestamp=time.time(), tool="fixture", actor_class="primary", status="success",
+                        duration_ms=1, arguments={}, result={"text": "z"}, size_hint=1_000))
+            sizes: list = []
+            with patch.object(collector, "_write_batch", side_effect=lambda batch: sizes.append(len(batch))), \
+                    patch("mcp_server.usage_metering._USAGE_IDLE_EXIT_S", 0.2):
+                collector._worker_loop()
+            self.assertEqual(20, sum(sizes))
+            self.assertLessEqual(max(sizes), 2)
+
     def test_telemetry_hands_the_result_size_to_usage(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3", usage_enabled=True)

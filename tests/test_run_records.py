@@ -68,6 +68,20 @@ class FingerprintTests(Case):
         run_records._key_cache.clear()
         self.assertNotEqual(a, run_records.fingerprint({"path": "/a", "mode": "r"}))
 
+    def test_a_broken_or_open_key_file_is_replaced_or_closed(self) -> None:
+        key = self.dir / "state" / "state" / "run-fingerprint.key"
+        key.parent.mkdir(parents=True, exist_ok=True)
+        key.write_bytes(b"")  # a crash between creating and writing it
+        first = run_records.fingerprint({"a": 1})
+        self.assertGreaterEqual(len(key.read_bytes()), 32)
+        self.assertEqual(0o600, stat.S_IMODE(key.stat().st_mode))
+        run_records._key_cache.clear()
+        self.assertEqual(first, run_records.fingerprint({"a": 1}))  # the replacement is the one kept
+        key.chmod(0o644)
+        run_records._key_cache.clear()
+        run_records.fingerprint({"a": 1})
+        self.assertEqual(0o600, stat.S_IMODE(key.stat().st_mode))
+
     def test_a_plain_hash_of_a_guessable_value_is_not_what_is_stored(self) -> None:
         import hashlib
         value = {"path": "/a"}
@@ -112,6 +126,21 @@ class StoredRunTests(Case):
             self.assertNotIn(leaked, rendered)
         self.assertEqual(run["detail"]["steps_fp"], detail["steps_fp"])
         self.assertEqual("done", kept["status"])
+
+    def test_contents_expire_without_any_new_run(self) -> None:
+        # Paused tasks finish no runs; reading the history must not hand back expired contents.
+        run = self.agent_run(now=time.time() - 40 * 86400)
+        self.assertIsNone(store.get_run(run["id"])["summary"])
+        self.assertFalse(store.list_runs(run["task_id"])[0]["summary"])
+        fresh = self.agent_run(now=time.time() - 10 * 86400)
+        self.settings({"run_detail_retention_days": 7})
+        store.apply_retention()
+        conn = sqlite3.connect(store.db_path())
+        try:
+            summary = conn.execute("SELECT summary FROM runs WHERE id=?", (fresh["id"],)).fetchone()[0]
+        finally:
+            conn.close()
+        self.assertIsNone(summary)
 
     def test_the_owner_picks_the_period(self) -> None:
         old = time.time() - 40 * 86400

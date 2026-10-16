@@ -177,11 +177,10 @@ function renderLive() {
   // Browser companions: optional, set up from here or later in Settings.
   for (const name of ['safari', 'chrome']) {
     const view = browserRow(name, e.browsers[name]);
-    const chip = $(`.browser-chip[data-browser="${name}"]`);
-    chip.classList.toggle('is-done', view.done);
-    chip.title = view.detail;
-    $(`[data-live="${name}-state"]`).textContent = view.state;
-    const button = $('button', chip);
+    const row = $(`.perm[data-browser="${name}"]`);
+    row.classList.toggle('is-granted', view.done);
+    $(`[data-live="${name}-detail"]`).textContent = view.detail;
+    const button = $('button', row);
     button.hidden = !view.button;
     if (view.button) {
       button.textContent = view.button;
@@ -577,7 +576,7 @@ function wire() {
   for (const row of $$('.perm[data-perm]')) {
     $('button', row).addEventListener('click', () => requestPermission(row.dataset.perm));
   }
-  for (const row of $$('.browser-chip[data-browser]')) {
+  for (const row of $$('.perm[data-browser]')) {
     $('button', row).addEventListener('click', async () => {
       try {
         await call('setupBrowser', { browser: row.dataset.browser });

@@ -764,6 +764,8 @@ def create_dashboard_routes(
             return JSONResponse({"ok": False, "error": "privacy_settings_persist_failed"}, status_code=500)
         if "exclude_from_backups" in updates:
             backups = await asyncio.to_thread(privacy_inventory.set_backup_exclusion, updates["exclude_from_backups"])
+        if "run_detail_retention_days" in updates:
+            await asyncio.to_thread(task_store.apply_retention)  # "applies right away" means now
         return JSONResponse({"ok": True, **privacy_policy.policy(fresh=True),
                              "run_detail_retention_days": run_detail_privacy()["retention_days"],
                              "exclude_from_backups": privacy_policy.privacy_setting("exclude_from_backups", False) is True,

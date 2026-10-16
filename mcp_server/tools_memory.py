@@ -380,7 +380,9 @@ def _content_hash(entry: MemoryEntry) -> str:
 
 def _connect(root: Path) -> sqlite3.Connection:
     index = _index_path(root)
-    conn = sqlite3.connect(str(index))
+    # The background re-embedding holds a write while the model works (up to the worker's 20 s
+    # answer limit); a save waits for it rather than failing with "database is locked".
+    conn = sqlite3.connect(str(index), timeout=_SQLITE_WAIT_S)
     conn.row_factory = sqlite3.Row
     conn.executescript(
         """
@@ -512,7 +514,8 @@ def _sync_index(root: Path, conn: sqlite3.Connection) -> Dict[str, int]:
 # on that; the rest is re-embedded behind it, and rows still on the old backend score through
 # their own fallback vectors and the lexical match meanwhile.
 _VECTOR_MIGRATION_BUDGET_S = 0.75
-_VECTOR_MIGRATION_PAUSE_S = 0.05
+_VECTOR_MIGRATION_PAUSE_S = 0.25  # room for saves and searches to use the embedding worker
+_SQLITE_WAIT_S = 30.0
 _vector_migrations: Dict[Tuple[str, str], threading.Thread] = {}
 _vector_migrations_lock = threading.Lock()
 

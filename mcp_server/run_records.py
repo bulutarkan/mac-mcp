@@ -42,28 +42,39 @@ def _key_path() -> str:
     return str(paths.state_dir() / "state" / "run-fingerprint.key")
 
 
+def _read_key(path: str) -> bytes:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except FileNotFoundError:
+        return b""
+
+
 def _key() -> bytes:
     path = _key_path()
     with _key_lock:
         cached = _key_cache.get(path)
         if cached:
             return cached
-        try:
-            with open(path, "rb") as handle:
-                key = handle.read()
-        except FileNotFoundError:
-            key = b""
+        key = _read_key(path)
         if len(key) < 32:
+            # Missing, or left empty or short by a crash mid-write: write a new one in full,
+            # then keep whatever ended up on disk so every process agrees on it.
             os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-            key = secrets.token_bytes(32)
-            try:
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-            except FileExistsError:
-                with open(path, "rb") as handle:  # another thread or process won the race
-                    key = handle.read()
+            temporary = f"{path}.{os.getpid()}.{secrets.token_hex(4)}"
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(secrets.token_bytes(32))
+            if len(_read_key(path)) < 32:
+                os.replace(temporary, path)
             else:
-                with os.fdopen(fd, "wb") as handle:
-                    handle.write(key)
+                os.unlink(temporary)  # another process finished first
+            key = _read_key(path)
+        try:
+            if os.stat(path).st_mode & 0o077:
+                os.chmod(path, 0o600)
+        except OSError:
+            pass
         _key_cache[path] = key
         return key
 

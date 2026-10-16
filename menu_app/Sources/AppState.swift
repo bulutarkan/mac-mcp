@@ -233,6 +233,7 @@ final class AppState: ObservableObject {
     @Published private(set) var safariExtensionRegistered = false
     @Published private(set) var safariExtensionStatus = "Checking…"
     @Published private(set) var chromeCompanion = ChromeCompanionStatus()
+    @Published private(set) var chromeBrowserInstalled = true
     private var chromeCompanionWatch: Task<Void, Never>?
 
     let settings = SettingsStore()
@@ -627,12 +628,22 @@ final class AppState: ObservableObject {
         return ["safari": safari, "chrome": chrome]
     }
 
-    var chromeInstalled: Bool {
-        NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") != nil
+    /// Chrome or another Chromium build the companion loads in; looked up when the status refreshes.
+    var chromeInstalled: Bool { chromeBrowserInstalled }
+
+    private static let chromiumBrowsers = [
+        "com.google.Chrome", "com.google.Chrome.beta", "com.google.Chrome.dev", "com.google.Chrome.canary",
+        "org.chromium.Chromium",
+    ]
+
+    private static func chromiumBrowserInstalled() -> Bool {
+        chromiumBrowsers.contains { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil }
     }
 
     /// The server's view of the Chrome companion; the last known state stays if the server does not answer.
     func refreshChromeCompanion() async {
+        let installed = Self.chromiumBrowserInstalled()
+        if installed != chromeBrowserInstalled { chromeBrowserInstalled = installed }
         let result = await taskAPI("dashboard/api/diagnostics/runtime")
         guard result.ok else { return }
         let raw = result.object["chrome_companion"] as? [String: Any]
@@ -729,7 +740,7 @@ final class AppState: ObservableObject {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(extensionSourceURL.path, forType: .string)
         }
-        if let chromeURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") {
+        if let chromeURL = Self.chromiumBrowsers.lazy.compactMap({ NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }).first {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = true
             configuration.arguments = ["chrome://extensions/"]
