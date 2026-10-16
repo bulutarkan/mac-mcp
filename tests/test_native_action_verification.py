@@ -112,6 +112,34 @@ class NativeReadinessLogicTests(unittest.TestCase):
         ready = tools_ui._parse_native_action_state(sep.join(["__STATE__", "true"] + [""] * 36 + ["|3:2,0"]))
         self.assertEqual("|3:2,0", ready["window_layout"])
 
+    def test_effect_state_merged_into_the_delta_reports_empty_attributes_as_empty(self) -> None:
+        # The probe reads AppleScript's "missing value" for an empty title; observations report "".
+        node = {"element_id": "w1/2/1", "role": "AXButton", "subrole": "", "title": "", "description": "Show Sidebar",
+                "value": "", "position": {"x": 1, "y": 2, "width": 3, "height": 4}}
+        merged = tools_ui._merge_effect_state_into_node(node, {
+            "connected": True, "role": "AXButton", "subrole": "missing value", "title": "missing value",
+            "description": "Hide Sidebar", "value": "missing value",
+        })
+        self.assertEqual(("", "", "", "Hide Sidebar"),
+                         (merged["subrole"], merged["title"], merged["value"], merged["description"]))
+
+    def test_the_delta_takes_only_what_the_action_changed_from_the_probe(self) -> None:
+        # System Events reads a SwiftUI sidebar button's description as the generic "button" both before
+        # and after the click; the observation's own label ("Usage") must survive the merge.
+        node = {"element_id": "w2/1/8", "role": "AXButton", "subrole": "", "title": "", "description": "Usage",
+                "value": "", "selected": False}
+        before = {"connected": True, "role": "AXButton", "description": "button", "selected": False, "enabled": True}
+        after = {"connected": True, "role": "AXButton", "description": "button", "selected": True, "enabled": True}
+        merged = tools_ui._merge_effect_state_into_node(node, after, before)
+        self.assertEqual(("Usage", True), (merged["description"], merged["selected"]))
+
+    def test_a_pane_opening_inside_the_window_refreshes_the_whole_observation(self) -> None:
+        # Finder's Preview pane: the button is unchanged, the window gained a pane (#220).
+        self.assertTrue(tools_ui._effect_state_requires_structural_refresh(
+            state(window_layout="|3:2,0,2"), state(window_layout="|3:3,0,2")))
+        self.assertFalse(tools_ui._effect_state_requires_structural_refresh(
+            state(window_layout="|3:2,0,2"), state(window_layout="|3:2,0,2")))
+
     def test_verification_scope_keeps_non_element_actions_out(self) -> None:
         self.assertTrue(verification_required("click", "w1/1"))
         self.assertTrue(verification_required("paste", "w1/1"))

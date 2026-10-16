@@ -1656,7 +1656,7 @@ def _normalize_action_state_mode(
 
 
 def _merge_effect_state_into_node(
-    node: Optional[Dict[str, Any]], state: Dict[str, Any],
+    node: Optional[Dict[str, Any]], state: Dict[str, Any], before: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     if not node:
         return None
@@ -1664,11 +1664,16 @@ def _merge_effect_state_into_node(
         return None
     merged = copy.deepcopy(node)
     for key in (
-        "role", "subrole", "title", "description", "value", "enabled",
+        "role", "subrole", "title", "description", "value", "selected", "enabled",
         "focused", "child_count", "actions",
     ):
         if key in state and state.get(key) is not None:
-            merged[key] = copy.deepcopy(state.get(key))
+            value = state.get(key)
+            # The observation's labels are richer than System Events' (a SwiftUI button's description reads
+            # as "button"), so only what the action changed comes from the probe.
+            if before is not None and key in before and before.get(key) == value:
+                continue
+            merged[key] = _ax_text(value) if isinstance(value, str) else copy.deepcopy(value)
     position = state.get("position")
     if isinstance(position, dict) and all(position.get(k) is not None for k in ("x", "y", "width", "height")):
         merged["position"] = copy.deepcopy(position)
@@ -1686,7 +1691,7 @@ def _effect_state_requires_structural_refresh(
         if before.get(key) and after.get(key) and before.get(key) != after.get(key):
             return True
     for key in (
-        "child_count", "window_title", "window_count", "window_child_count",
+        "child_count", "window_title", "window_count", "window_child_count", "window_layout",
         "sheet_count", "popover_count", "menu_count",
     ):
         if key in before and key in after and before.get(key) != after.get(key):
@@ -5603,7 +5608,7 @@ def act_ui(
                         delta_refresh_reasons.append("structural_effect")
                     elif original_element_id is not None:
                         base_node = delta_updates.get(original_element_id, node)
-                        merged_node = _merge_effect_state_into_node(base_node, verification_state)
+                        merged_node = _merge_effect_state_into_node(base_node, verification_state, before_state)
                         if merged_node is None:
                             delta_structural_refresh = True
                             delta_refresh_reasons.append("target_detached")
