@@ -6,6 +6,13 @@
 - It ignores the mouse, never takes focus and stays out of screen captures, so agents never see it in their own screenshots. It carries a verb and a control kind only, never titles or typed text.
 - Coordinate input, which moves the real pointer, shows no second cursor. Turn it off in Settings › Activity & Notifications › Agent cursor on the desktop.
 
+### Session details in the menu
+- Each session row under Sessions shows how long the session has been open and how many tool calls it made, plus a queued or undelivered prompt as before. Clicking the row selects it for prompts and opens a small panel beside it with the session's status, start time and age, its call count, the calls running now and the current or last tool.
+- Calls are counted per request, denied and preempted ones included; a parallel batch counts once. An older server shows the count as "—" rather than 0.
+
+### Activity toggles that stay as you set them
+- Turning the agent cursor back on, or the Live Island off, now lasts. Before, the change held only until Settings reopened or the app relaunched.
+
 ### A new Mac MCP mark
 - One thin line draws an M; the browser companion's pointer, turned upright, carries on its right leg. Champagne on dark backgrounds, bronze on light ones.
 - The app icon is the mark on an obsidian tile, with hand-tuned 16, 32 and 64 px sizes for Finder and small Dock views. The menu bar shows the mark itself: dimmed while the server is stopped, with a dot while work runs.
