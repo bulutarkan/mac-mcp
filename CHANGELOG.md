@@ -7,6 +7,14 @@
 - `clients`, `connect`, `connect-config`, `update`, `logs` and `privacy delete` have the same look: `clients` shows which AI apps have Mac MCP and suggests the next `connect`; `connect` and `update` run as live steps (a failed update shows the end of its log); `update --check` compares the installed commit with the newest verified release; `logs` and the `connect-config` snippet stay raw so they can be copied as they are; `privacy delete` previews what it would move and, with `--yes`, stops, moves and starts again step by step.
 - The remaining commands have the same look too: `dashboard`, `credential`, `autostart`, `recipe`, `logins`, `catalog`, `conformance`, `repair` and `uninstall`. `repair --yes` and `uninstall --yes` run as live steps, and `repair` keeps pip's and the app installer's output under its step unless that step fails. `uninstall` lists each part with its path. `conformance` groups its checks like `doctor`. `catalog enable-script` shows the held script raw, exactly as it would run. A Cloudflare token or a login password typed into the terminal (`credential cloudflare save`, `logins add`) is now read without being echoed. Piped input works as before.
 
+### Browser extraction and scan you can trust (#215)
+- `browser_act` and `browser_do` take one extraction field shape (`name`, `selector`, `attr`, `all`, `max_items`). A missing field, a broken CSS selector or a broken regex is an error; a selector never falls back to the whole page.
+- Extracted text and `scan` leave out scripts, styles, templates, `noscript` and hidden content. Results say how many matched, how many came back and where they were cut, and a cut result can be continued from where it stopped.
+- `scan` reads and scrolls several times in one call, and `next_cursor` continues after an item, text, size, step or time limit. A cursor is refused after a navigation, a scroll in between or five minutes.
+
+### Settings no longer hides the Live Island
+- Opening Settings closed the Live Island together with the menu popup. Now only the popup closes.
+
 ### Antigravity, pi, Cline, Kilo Code and Goose as AI apps
 - Mac MCP can now be added to these five CLIs too, so an `agy`, `pi`, `cline`, `kilo` or `goose` you start yourself can use your Mac. They appear with Connect in the tour, in Settings › Connections and in `mac-mcp clients` / `mac-mcp connect --client antigravity|pi|cline|kilo|goose`. Antigravity and pi are set up through their own `mcp add`; Cline, Kilo Code and Goose get `mac-mcp stdio` in their config (`cline_mcp_settings.json`, `kilo.json`, Goose's `config.yaml` as a stdio extension) next to the servers already there, with the old file kept as `*.before-mac-mcp`. No address or key goes into any of them.
 
