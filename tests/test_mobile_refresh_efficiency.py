@@ -111,7 +111,9 @@ class SharedVisualSystemTests(unittest.TestCase):
         dashboard_css = (ROOT / "dashboard" / "dashboard.css").read_text(encoding="utf-8")
         mobile_css = (ROOT / "mobile" / "mobile.css").read_text(encoding="utf-8")
         self.assertEqual(self.token_block(dashboard_css), self.token_block(mobile_css))
-        mark = re.search(r'<svg viewBox="0 0 32 32">.*?</svg>', (ROOT / "dashboard" / "index.html").read_text(encoding="utf-8")).group(0)
+        # The same monogram, byte for byte (#204).
+        mark = re.search(r'<svg viewBox="0 0 64 64">.*?</svg>', (ROOT / "dashboard" / "index.html").read_text(encoding="utf-8")).group(0)
+        self.assertIn('d="M14 49 V15 L32 33 L50 15 V29"', mark)
         mobile_html = (ROOT / "mobile" / "index.html").read_text(encoding="utf-8")
         self.assertIn(mark, mobile_html)
         self.assertNotIn('<div class="mark">M</div>', mobile_html)

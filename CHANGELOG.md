@@ -1,5 +1,11 @@
 ## Unreleased
 
+### A new Mac MCP mark
+- One thin line draws an M; the browser companion's pointer, turned upright, carries on its right leg. Champagne on dark backgrounds, bronze on light ones.
+- The app icon is the mark on an obsidian tile, with hand-tuned 16, 32 and 64 px sizes for Finder and small Dock views. The menu bar shows the mark itself: dimmed while the server is stopped, with a dot while work runs.
+- The same mark is in the menu header, the Live Island, the tour, the site (header, island, social image), the demo video and its poster (so the README too), the mobile page (with home-screen icons), the dashboard and the ChatGPT panel.
+- `assets/brand/` holds the SVG sources; `scripts/build_brand.py` renders every image from them and `--check` keeps them in step.
+
 ### The CLI has a look of its own
 - In a terminal, `mac-mcp`, `--help`, `status`, `start`, `stop`, `restart` and `doctor` open with the same header, line their facts up in one column and end with one sentence that says what happened, plus the command to run next when something is wrong. `mac-mcp` alone lists the commands in groups (Everyday, Connect, Troubleshoot, Advanced) under a one-line status.
 - `start`, `stop` and `restart` show each step live, with its time; in a terminal `restart` now waits for the outcome. `doctor` groups its checks and folds the ones that passed (`--verbose` lists every check).
