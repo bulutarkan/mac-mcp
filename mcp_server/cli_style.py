@@ -75,8 +75,10 @@ def background_is_light(reply: bytes) -> Optional[bool]:
 
 
 def _ask_background(stream) -> Optional[bool]:
-    """Ask the terminal behind `stream` for its background colour, waiting at most 0.15 s.
-    Only a real terminal is asked; anything else (a test stream, a pipe) gets None."""
+    """Ask the terminal behind `stream` for its background colour, waiting at most 0.15 s in
+    all. Only a real terminal whose foreground job is this one is asked: a background job
+    would be stopped by the terminal (SIGTTOU), and anything else (a test stream, a pipe)
+    gets None. Keys typed meanwhile stay in the input (TCSANOW, never a flush)."""
     try:
         if not os.isatty(stream.fileno()):
             return None
@@ -84,30 +86,38 @@ def _ask_background(stream) -> Optional[bool]:
         return None
     if "answer" in _background_cache:
         return _background_cache["answer"]
-    answer = None
     try:
         import select
         import termios
+        import time
         import tty
-
+    except ImportError:
+        return None
+    answer = None
+    try:
         fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
         try:
-            saved = termios.tcgetattr(fd)
-            try:
-                tty.setraw(fd)
-                os.write(fd, b"\x1b]11;?\x07")
-                reply = b""
-                while not (reply.endswith(b"\x07") or reply.endswith(b"\x1b\\")):
-                    ready, _, _ = select.select([fd], [], [], 0.15)
-                    if not ready:
-                        break
-                    reply += os.read(fd, 64)
-                answer = background_is_light(reply)
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+            if os.tcgetpgrp(fd) == os.getpgrp():
+                saved = termios.tcgetattr(fd)
+                try:
+                    tty.setraw(fd, termios.TCSANOW)
+                    os.write(fd, b"\x1b]11;?\x07")
+                    reply = b""
+                    deadline = time.monotonic() + 0.15
+                    while not (reply.endswith(b"\x07") or reply.endswith(b"\x1b\\")):
+                        left = deadline - time.monotonic()
+                        if left <= 0:
+                            break
+                        ready, _, _ = select.select([fd], [], [], left)
+                        if not ready:
+                            break
+                        reply += os.read(fd, 64)
+                    answer = background_is_light(reply)
+                finally:
+                    termios.tcsetattr(fd, termios.TCSANOW, saved)
         finally:
             os.close(fd)
-    except (OSError, ImportError, ValueError):
+    except (OSError, ValueError, termios.error):  # termios.error is not an OSError
         answer = None
     _background_cache["answer"] = answer
     return answer
@@ -205,10 +215,18 @@ class Style:
         prefix = f"{self.paint(symbol, tone)} " if symbol else ""
         self.write(f"{INDENT}{prefix}{text}")
 
-    def summary(self, tone: str, text: str, next_command: Optional[str] = None) -> None:
-        """The closing sentence; long ones wrap under their own first word."""
-        plain = text + (f" — try: {next_command}" if next_command else "")
-        lines = textwrap.wrap(plain, self.width - len(INDENT) - 2, break_on_hyphens=False) or [""]
+    def summary(self, tone: str, text: str, next_command: Optional[str] = None, note: str = "") -> None:
+        """The closing sentence; long ones wrap under their own first word. `note` is a dim
+        aside after it, kept whole."""
+        # The command never breaks across lines: its spaces are held by a non-space while wrapping.
+        glue = "\u2063"
+        plain = text + (f" — try:{glue}{next_command.replace(' ', glue)}" if next_command else "")
+        room = self.width - len(INDENT) - 2
+        lines = [line.replace(glue, " ") for line in textwrap.wrap(plain, room, break_on_hyphens=False)] or [""]
+        # The note joins the last line when it fits, else takes a line of its own.
+        tail = ""
+        if note and len(lines[-1]) + 3 + len(note) <= room:
+            tail = "   " + self.paint(note, dim=True)
         self.write()
         for index, line in enumerate(lines):
             painted = self.paint(line, bold=True)
@@ -216,7 +234,9 @@ class Style:
                 head, _, rest = line.partition(next_command)
                 painted = self.paint(head, bold=True) + self.paint(next_command, "brand") + self.paint(rest, bold=True)
             lead = f"{self.paint(SYMBOLS[tone], tone, bold=True)} " if index == 0 else "  "
-            self.write(f"{INDENT}{lead}{painted}")
+            self.write(f"{INDENT}{lead}{painted}{tail if index == len(lines) - 1 else ''}")
+        if note and not tail:
+            self.write(f"{INDENT}  {self.paint(note, dim=True)}")
 
 
 

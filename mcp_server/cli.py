@@ -1546,6 +1546,8 @@ def start(args: argparse.Namespace) -> int:
     with steps.step("Started the server", failed_label="Start the server") as state:
         code = _start_server(args)
         state.ok = code == 0
+        if code == 0 and "already running" in state.printed:
+            state.label = "The server was already running"
     if code != 0:
         style.summary("error", "Mac MCP did not start", next_command="mac-mcp doctor")
         return code
@@ -1619,6 +1621,8 @@ def stop(args: argparse.Namespace) -> int:
     steps = Steps(style)
     _record_intent("stopped", None)
     port = _default_port()
+    unverifiable = False
+    was_running = True
     with steps.step("Stopped the server", failed_label="Stop the server") as state:
         server_pid, server_source = _resolve_server_identity(port)
         if server_pid:
@@ -1626,17 +1630,26 @@ def stop(args: argparse.Namespace) -> int:
         elif server_source in {"pid_unverifiable", "foreign_listener", "ambiguous_listener", "adoption_failed"}:
             print(f"Refusing to stop mac-mcp: server ownership is not verifiable ({server_source}).")
             state.ok = False
+            unverifiable = True
         else:
             PID_FILE.unlink(missing_ok=True)
+            state.label = "The server was not running"
+            was_running = False
     server_ok = state.ok
     with steps.step("Stopped the public tunnel", failed_label="Stop the public tunnel") as state:
-        state.ok = _stop_pid(NGROK_PID_FILE, "ngrok", args.timeout, args.force) and _stop_cloudflare(args.timeout, args.force)
+        # Both, as the plain stop does: a failed ngrok stop must not leave cloudflared running.
+        ngrok_ok = _stop_pid(NGROK_PID_FILE, "ngrok", args.timeout, args.force)
+        cloudflare_ok = _stop_cloudflare(args.timeout, args.force)
+        state.ok = ngrok_ok and cloudflare_ok
     tunnel_ok = state.ok
     if server_ok and STATE_DIR.resolve() == DEFAULT_STATE_DIR.resolve() and _server_job_plist_path().exists():
         _unload_server_job()
     if server_ok and tunnel_ok:
-        style.summary("ok", "Stopped — AI apps can no longer reach this Mac.")
+        style.summary("ok", "Stopped — AI apps can no longer reach this Mac." if was_running else "Mac MCP was not running.")
         return 0
+    if unverifiable:
+        style.summary("error", "Mac MCP cannot tell that the program on its port is its own", next_command="mac-mcp status")
+        return 1
     style.summary("error", "Something did not stop", next_command="mac-mcp stop --force")
     return 1
 
@@ -2441,6 +2454,7 @@ _RESTART_STAGES = {
     "starting": ("Started the server", "Start the server"),
     "verifying": ("Checked that it answers", "Check that it answers"),
     "recovering": ("Recovered after a failed start", "Recover after a failed start"),
+    "public_endpoint": ("Connected the public tunnel", "Connect the public tunnel"),
 }
 
 
@@ -2461,6 +2475,23 @@ def _restart_themed(args: argparse.Namespace, style) -> int:
 
 
 def _watch_restart(style, steps, args: argparse.Namespace, since: float) -> int:
+    try:
+        return _watch_restart_stages(style, steps, since)
+    except BaseException:
+        # Ctrl+C or a broken status file: fix the step's line and bring the cursor back.
+        if steps.active:
+            steps.end(False, failed_label=steps.running_label)
+        raise
+
+
+def _restart_updated_at(payload: dict) -> float:
+    try:
+        return float(payload.get("updated_at") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _watch_restart_stages(style, steps, since: float) -> int:
     deadline = time.time() + 2 * _startup_health_timeout_s() + RESTART_REQUESTER_WAIT_S + 60
     current: str | None = None
     payload: dict = {}
@@ -2468,12 +2499,17 @@ def _watch_restart(style, steps, args: argparse.Namespace, since: float) -> int:
         payload = _read_restart_status()
         state = str(payload.get("state") or "")
         stage = str(payload.get("stage") or "")
-        if state in RESTART_FINAL_STATES and float(payload.get("updated_at") or 0) >= since:
+        if state in RESTART_FINAL_STATES and _restart_updated_at(payload) >= since:
             break
         if stage in _RESTART_STAGES and stage != current:
             if current is not None:
-                steps.end(True)
-            steps.begin(_RESTART_STAGES[stage][0])
+                # Recovering means the step before it failed.
+                if stage == "recovering":
+                    steps.end(False, failed_label=_RESTART_STAGES[current][1])
+                else:
+                    steps.end(True)
+            done, doing = _RESTART_STAGES[stage]
+            steps.begin(done, running=doing)
             current = stage
         time.sleep(0.25)
     else:
@@ -2483,7 +2519,9 @@ def _watch_restart(style, steps, args: argparse.Namespace, since: float) -> int:
         return 3
     state = str(payload.get("state"))
     if current is not None:
-        steps.end(state == "succeeded", str(payload.get("error") or ""), _RESTART_STAGES[current][1])
+        # Degraded: the server is up; only a tunnel step on screen failed.
+        ok = state == "succeeded" or (state == "degraded" and current != "public_endpoint")
+        steps.end(ok, str(payload.get("error") or ""), _RESTART_STAGES[current][1])
     if state == "succeeded":
         retried = " · after one recovery attempt" if payload.get("recovered_after_retry") else ""
         style.summary("ok", f"Restarted — pid {payload.get('server_pid')}{retried}")
@@ -3210,8 +3248,9 @@ def main(argv: list[str] | None = None) -> int:
     _load_env()
     parser = build_parser()
     words = list(sys.argv[1:] if argv is None else argv)
-    style = Style.for_stream()
-    if style is not None and (not words or words in (["-h"], ["--help"])):
+    # Only the home screen is drawn here; each command decides on its own theme.
+    style = Style.for_stream() if not words or words in (["-h"], ["--help"]) else None
+    if style is not None:
         from .cli_views import render_home
         render_home(style, __version__, None if words else _home_running())
         return 0

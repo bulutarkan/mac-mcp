@@ -386,5 +386,134 @@ class DoctorScreen(ThemedTestCase):
         self.assertTrue(out.getvalue().lstrip().startswith("{"))
 
 
+class ReviewFindings(ThemedTestCase):
+    """Fixes from the whole-branch review of the CLI theme."""
+
+    def test_interrupting_the_restart_watch_fixes_the_line_and_shows_the_cursor(self) -> None:
+        def payloads():
+            yield {"state": "running", "stage": "stopping", "updated_at": 2e9}
+            raise KeyboardInterrupt
+        feed = payloads()
+        out = FakeTTY()
+        with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: ""}), \
+             patch.object(cli, "_spawn_detached_restart", return_value=0), \
+             patch.object(cli, "_read_restart_status", side_effect=lambda: next(feed)), \
+             patch.object(cli.time, "sleep"), redirect_stdout(out), self.assertRaises(KeyboardInterrupt):
+            cli.restart(argparse.Namespace(wait=False, timeout=5.0))
+        raw = out.getvalue()
+        self.assertIn("✗ Stop the server", visible(raw))
+        self.assertIn("\x1b[?25h", raw.rsplit("Stop the server", 1)[1])
+
+    def test_themed_stop_stops_cloudflared_even_when_ngrok_fails(self) -> None:
+        out = FakeTTY()
+        with patch.object(cli, "_record_intent"), \
+             patch.object(cli, "_resolve_server_identity", return_value=(4321, "pid_record")), \
+             patch.object(cli, "_stop_pid", side_effect=lambda path, *a: path != cli.NGROK_PID_FILE), \
+             patch.object(cli, "_stop_cloudflare", return_value=True) as cloudflare, \
+             patch.object(cli, "_server_job_plist_path", return_value=cli.Path("/nonexistent/job.plist")), \
+             redirect_stdout(out):
+            code = cli.stop(argparse.Namespace(timeout=5.0, force=False, keep_intent=False))
+        self.assertEqual(1, code)
+        cloudflare.assert_called_once()
+
+    def test_themed_stop_when_nothing_was_running(self) -> None:
+        out = FakeTTY()
+        with patch.object(cli, "_record_intent"), \
+             patch.object(cli, "_resolve_server_identity", return_value=(None, "not_running")), \
+             patch.object(cli, "PID_FILE", cli.Path("/nonexistent/server.pid")), \
+             patch.object(cli, "_stop_pid", return_value=True), patch.object(cli, "_stop_cloudflare", return_value=True), \
+             patch.object(cli, "_server_job_plist_path", return_value=cli.Path("/nonexistent/job.plist")), \
+             redirect_stdout(out):
+            cli.stop(argparse.Namespace(timeout=5.0, force=False, keep_intent=False))
+        self.assertTrue(visible(out.getvalue()).rstrip("\n").endswith("✓ Mac MCP was not running."), visible(out.getvalue()))
+
+    def test_themed_stop_with_unverifiable_ownership_points_to_status(self) -> None:
+        out = FakeTTY()
+        with patch.object(cli, "_record_intent"), \
+             patch.object(cli, "_resolve_server_identity", return_value=(None, "foreign_listener")), \
+             patch.object(cli, "_stop_pid", return_value=True), patch.object(cli, "_stop_cloudflare", return_value=True), \
+             patch.object(cli, "_server_job_plist_path", return_value=cli.Path("/nonexistent/job.plist")), \
+             redirect_stdout(out):
+            code = cli.stop(argparse.Namespace(timeout=5.0, force=False, keep_intent=False))
+        self.assertEqual(1, code)
+        self.assertIn("try: mac-mcp status", visible(out.getvalue()))
+
+    def test_only_the_home_screen_asks_for_a_style_in_main(self) -> None:
+        with patch.object(cli.Style, "for_stream", side_effect=AssertionError("no style for --version")), \
+             redirect_stdout(FakeTTY()), self.assertRaises(SystemExit):
+            cli.main(["--version"])
+
+    def test_a_successful_start_keeps_its_warnings_and_says_already_running(self) -> None:
+        out = FakeTTY()
+        public = type("Public", (), {"mode": "none", "endpoint_url": None})()
+
+        def server(args):
+            print("mac-mcp is already running (pid 4321).")
+            print("Warning: crash supervisor could not be loaded (launchctl failed).")
+            return 0
+
+        with patch.object(cli, "_public_endpoint_config", return_value=public), \
+             patch.object(cli, "validate_bootstrap_security"), patch.object(cli, "load_settings"), \
+             patch.object(cli, "_record_intent"), patch.object(cli, "_start_server", side_effect=server), \
+             patch.object(cli, "_stop_unselected_public_processes"), \
+             patch.object(cli, "_resolve_server_identity", return_value=(4321, "pid_record")), redirect_stdout(out):
+            cli.start(argparse.Namespace(host="127.0.0.1", port=8765))
+        text = visible(out.getvalue())
+        self.assertIn("✓ The server was already running", text)
+        self.assertIn("⚠ Warning: crash supervisor could not be loaded (launchctl failed).", text)
+
+    def test_restart_steps_agree_with_the_outcome(self) -> None:
+        def run(stages):
+            feed = iter(stages)
+            out = FakeTTY()
+            with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: ""}), \
+                 patch.object(cli, "_spawn_detached_restart", return_value=0), \
+                 patch.object(cli, "_read_restart_status", side_effect=lambda: next(feed)), \
+                 patch.object(cli.time, "sleep"), redirect_stdout(out):
+                cli.restart(argparse.Namespace(wait=False, timeout=5.0))
+            return visible(out.getvalue())
+        recovered = run([{"state": "running", "stage": "starting", "updated_at": 2e9},
+                         {"state": "running", "stage": "recovering", "updated_at": 2e9},
+                         {"state": "succeeded", "server_pid": 7, "recovered_after_retry": True, "updated_at": 2e9}])
+        self.assertIn("✗ Start the server", recovered)
+        self.assertIn("✓ Recovered after a failed start", recovered)
+        degraded = run([{"state": "running", "stage": "starting", "updated_at": 2e9},
+                        {"state": "running", "stage": "public_endpoint", "updated_at": 2e9},
+                        {"state": "degraded", "updated_at": 2e9}])
+        self.assertIn("✓ Started the server", degraded)
+        self.assertIn("✗ Connect the public tunnel", degraded)
+
+    def test_local_only_degraded_status_does_not_suggest_local_only(self) -> None:
+        report = StatusScreen.report(self, ok=True, state="degraded", exit_code=0,
+                                     public_endpoint={"tunnel_running": False, "route": None},
+                                     remediation=["Run mac-mcp restart to start the cloudflare tunnel, or use --local-only to ignore it."])
+        out = FakeTTY()
+        cli_views.render_status(Style.for_stream(out, env=TTY_ENV), report)
+        summary = " ".join(visible(out.getvalue()).rstrip("\n").split("\n\n")[-1].split())
+        self.assertNotIn("--local-only", summary)
+        self.assertIn("public address is not available", summary)
+        self.assertTrue(summary.startswith("✓ Running here"), summary)
+
+    def test_everything_fits_an_80_column_terminal(self) -> None:
+        for argv in (["doctor", "--help"], ["start", "--help"], ["restart", "--help"], ["status", "--help"]):
+            with self.subTest(argv=argv):
+                _, text = self.run_main(argv)
+                self.assertTrue(all(len(line) <= 80 for line in text.split("\n")), [l for l in text.split("\n") if len(l) > 80])
+
+    def test_home_fits_40_columns(self) -> None:
+        out = FakeTTY()
+        cli_views.render_home(Style.for_stream(out, env={**TTY_ENV, "COLUMNS": "40"}), "2.2.0", True)
+        lines = visible(out.getvalue()).split("\n")
+        self.assertTrue(all(len(line) <= 40 for line in lines), [l for l in lines if len(l) > 40])
+
+    def test_doctor_hint_stays_whole_when_the_summary_wraps(self) -> None:
+        out = FakeTTY()
+        report = DoctorScreen.report(self, ("runtime.python", "pass", "ok", None))
+        cli_views.render_doctor(Style.for_stream(out, env={**TTY_ENV, "COLUMNS": "50"}), report, False, None)
+        text = visible(out.getvalue())
+        self.assertIn("(--verbose: every check)", text)
+        self.assertTrue(all(len(line) <= 50 for line in text.split("\n")), text)
+
+
 if __name__ == "__main__":
     unittest.main()

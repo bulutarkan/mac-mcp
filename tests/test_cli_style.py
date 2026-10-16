@@ -144,5 +144,50 @@ class StdioStaysLean(unittest.TestCase):
         self.assertEqual("False False", out.stdout.strip(), out.stderr)
 
 
+class BackgroundQuerySafety(unittest.TestCase):
+    """The OSC 11 probe never runs where it could stop or break the command."""
+
+    class Stream:
+        def fileno(self):
+            return 1
+
+    def setUp(self) -> None:
+        cli_style._background_cache.clear()
+        self.addCleanup(cli_style._background_cache.clear)
+
+    def test_a_background_job_is_not_asked(self) -> None:
+        import termios
+        from unittest.mock import patch
+        with patch.object(cli_style.os, "isatty", return_value=True), \
+             patch.object(cli_style.os, "open", return_value=99), patch.object(cli_style.os, "close"), \
+             patch.object(cli_style.os, "tcgetpgrp", return_value=111), patch.object(cli_style.os, "getpgrp", return_value=222), \
+             patch.object(termios, "tcgetattr", side_effect=AssertionError("must not touch the terminal")):
+            self.assertIsNone(cli_style._ask_background(self.Stream()))
+
+    def test_a_terminal_error_is_not_a_crash(self) -> None:
+        import termios
+        from unittest.mock import patch
+        with patch.object(cli_style.os, "isatty", return_value=True), \
+             patch.object(cli_style.os, "open", return_value=99), patch.object(cli_style.os, "close"), \
+             patch.object(cli_style.os, "tcgetpgrp", return_value=5), patch.object(cli_style.os, "getpgrp", return_value=5), \
+             patch.object(termios, "tcgetattr", side_effect=termios.error(5, "Input/output error")):
+            self.assertIsNone(cli_style._ask_background(self.Stream()))
+
+    def test_typeahead_is_kept(self) -> None:
+        import termios
+        import tty
+        from unittest.mock import patch
+        calls = []
+        with patch.object(cli_style.os, "isatty", return_value=True), \
+             patch.object(cli_style.os, "open", return_value=99), patch.object(cli_style.os, "close"), \
+             patch.object(cli_style.os, "tcgetpgrp", return_value=5), patch.object(cli_style.os, "getpgrp", return_value=5), \
+             patch.object(termios, "tcgetattr", return_value=[]), patch.object(termios, "tcsetattr"), \
+             patch.object(tty, "setraw", side_effect=lambda fd, when=termios.TCSAFLUSH: calls.append(when)), \
+             patch.object(cli_style.os, "write"), \
+             patch("select.select", return_value=([], [], [])):
+            cli_style._ask_background(self.Stream())
+        self.assertEqual([termios.TCSANOW], calls)
+
+
 if __name__ == "__main__":
     unittest.main()

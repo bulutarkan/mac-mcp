@@ -44,8 +44,9 @@ argument parser), never the screens or the live steps.
 
 Why: the menu app parses CLI text. `DoctorReport.parse` reads `doctor`'s `[PASS]`/`[WARN]`
 lines, `AppState.notice(for:result:)` turns `start`/`restart` output into notices, and
-`applyUpdateCheckOutput` reads `update`. The installer runs `mac-mcp start` and `--version`.
-All of them run the CLI without a terminal.
+`applyUpdateCheckOutput` reads `update`. All of them run the CLI without a terminal. The
+installer runs `mac-mcp --version` without one and `mac-mcp start` with the installer's own
+terminal, so an interactive install shows the themed start; it reads only the exit code.
 
 ## Theme
 

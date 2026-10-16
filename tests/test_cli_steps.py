@@ -78,5 +78,26 @@ class StepsTests(unittest.TestCase):
         )
 
 
+class StepWidth(unittest.TestCase):
+    def test_lines_fit_a_narrow_terminal_and_reasons_wrap(self) -> None:
+        stream = FakeTTY()
+        style = Style.for_stream(stream, env={"TERM": "xterm-256color"}, width=40)
+        steps = Steps(style)
+        with steps.step("Stopped the server", failed_label="Stop the server"):
+            pass
+        with steps.step("Started the server", failed_label="Start the server") as state:
+            print("Cloudflare Tunnel credential is missing; save it in Settings > Advanced > Cloudflare before starting.")
+            state.ok = False
+        lines = visible(stream.getvalue()).rstrip("\n").split("\n")
+        self.assertTrue(all(len(line) <= 40 for line in lines), lines)
+
+    def test_the_spinner_says_what_is_being_done(self) -> None:
+        stream = FakeTTY()
+        steps = Steps(Style.for_stream(stream, env={"TERM": "xterm-256color"}, width=60))
+        with steps.step("Started the server", failed_label="Start the server"):
+            pass
+        self.assertIn("Start the server…", strip_ansi(stream.getvalue()))
+
+
 if __name__ == "__main__":
     unittest.main()

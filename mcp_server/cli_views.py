@@ -50,8 +50,13 @@ def render_home(style: Style, version: str, running: Optional[bool]) -> None:
     width = max(len(name) for _, names in GROUPS for name in names)
     for title, names in GROUPS:
         style.write(f"{INDENT}{style.paint(title, bold=True)}")
+        lead = len(INDENT) + 2 + width + 2
         for name in names:
-            style.write(f"{INDENT}  {style.paint(name.ljust(width), 'brand')}  {SHORT_HELP[name]}")
+            # A description wraps under itself on a narrow terminal.
+            parts = textwrap.wrap(SHORT_HELP[name], max(12, style.width - lead)) or [""]
+            style.write(f"{INDENT}  {style.paint(name.ljust(width), 'brand')}  {parts[0]}")
+            for part in parts[1:]:
+                style.write(" " * lead + part)
         style.write()
     # The advanced commands wrap under their own start, never back to the margin.
     lead = len(INDENT) + len("Advanced  ")
@@ -75,6 +80,8 @@ def render_command_help(style: Style, parser: argparse.ArgumentParser) -> None:
         for line in textwrap.wrap(about, style.width - len(INDENT)):
             style.write(f"{INDENT}{line}")
         style.write()
+    name_room = max(20, style.width - len(INDENT) - 2)
+    help_room = max(20, style.width - len(INDENT) - 6)
     options = [action for action in parser._actions if action.help != argparse.SUPPRESS]
     if options:
         style.write(f"{INDENT}{style.paint('Options', bold=True)}")
@@ -82,10 +89,12 @@ def render_command_help(style: Style, parser: argparse.ArgumentParser) -> None:
             names = ", ".join(action.option_strings) or action.dest
             if action.choices and not action.option_strings:
                 names = "{" + ",".join(map(str, action.choices)) + "}"
-            style.write(f"{INDENT}  {style.paint(names, 'brand')}")
+            for part in textwrap.wrap(names, name_room, break_on_hyphens=False) or [names]:
+                style.write(f"{INDENT}  {style.paint(part, 'brand')}")
             if action.help:
                 text = action.help % vars(action) if "%(" in action.help else action.help
-                style.write(f"{INDENT}      {style.paint(text, dim=True)}")
+                for part in textwrap.wrap(text, help_room):
+                    style.write(f"{INDENT}      {style.paint(part, dim=True)}")
     example = EXAMPLES.get(top)
     if example:
         style.write()
@@ -166,6 +175,9 @@ def render_status(style: Style, report: dict) -> None:
         style.summary("error", "Mac MCP is not answering", next_command="mac-mcp restart")
     elif state == "port_conflict":
         style.summary("error", remediation or f"Port {server['port']} is taken")
+    elif state == "degraded" and report.get("exit_code") == 0:
+        # status --local-only: the local server is what was asked about.
+        style.summary("ok", "Running here — the public address is not available, and this check leaves it out.")
     else:
         style.summary("warn", remediation or "The public address is not available")
 
@@ -230,7 +242,7 @@ def render_doctor(style: Style, report: dict, verbose: bool, support_path: Optio
         style.write(f"{INDENT}Support bundle  {support_path}")
     fails = sum(1 for check in report.get("checks", []) if check.get("status") == "fail")
     warns = sum(1 for check in report.get("checks", []) if check.get("status") == "warn")
-    hint = "   " + style.paint("(--verbose: every check)", dim=True) if not verbose else ""
+    hint = "" if verbose else "(--verbose: every check)"
     if fails:
         parts = [f"{fails} problem{'s' if fails != 1 else ''}"] + ([f"{warns} warning{'s' if warns != 1 else ''}"] if warns else [])
         style.summary("error", " and ".join(parts) + " — fix them, then run: mac-mcp doctor")
@@ -239,4 +251,4 @@ def render_doctor(style: Style, report: dict, verbose: bool, support_path: Optio
     elif warns:
         style.summary("warn", f"{warns} thing{'s' if warns != 1 else ''} to look at")
     else:
-        style.summary("ok", "Everything Mac MCP needs is in place." + hint)
+        style.summary("ok", "Everything Mac MCP needs is in place.", note=hint)
