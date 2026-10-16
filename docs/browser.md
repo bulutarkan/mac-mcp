@@ -24,6 +24,28 @@ Mac MCP can inspect and interact with Safari and Chrome tabs in the background w
 
 This is designed for workflows where an AI agent keeps working in one or more background browser tabs while the Mac remains usable normally.
 
+### Bounded extraction and long-page scans
+
+Read static rendered records with the existing `browser_act`, or the same action inside `browser_do`:
+
+```json
+{"type":"extract","fields":[{"name":"reviews","selector":"div.review","attr":"text","all":true,"max_items":100}],"max_chars":6000}
+```
+
+Each field requires a unique `name` and a CSS `selector` (or a `semantic` name). Missing fields and invalid CSS are errors; they never default to the page body. Text projection excludes scripts, styles, templates and hidden content, including hidden composed ancestors. Attribute projection still supports the existing `attr` contract; explicit `html` reads raw markup. `browser_do(extract=["price","rating"])` remains the semantic shortcut.
+
+`matched_counts` counts selector matches; `fields[name]` reports `matched_count`, `eligible_count` (rendered/visible), `returned_count`, `has_more` and `continuation`. When partial, merge that field's `{offset,text_offset}` continuation into its next extraction spec **on the same unchanged document**. A long record is returned in exact text chunks; append chunks in order. `text_offset` is a browser UTF-16 offset, not a Python character count. `browser_do` preserves these counts and positions even when its 8 KB response budget cuts content. Extraction covers currently rendered matches, not the site's total review badge or unloaded pages.
+
+For long or virtualized lists, one `browser_act` scan performs multiple bounded scroll/read steps internally:
+
+```json
+{"type":"scan","item_selector":".review","max_items":100,"max_chars":12000,"max_steps":50}
+```
+
+A partial scan returns `next_cursor`; pass it as `cursor` with the same selector, key field and tab. It drains every pending rendered row before scrolling, retains distinct identical rows, and splits long text into chunks carrying `record_id`, `text_offset` and `text_complete`. Group/append chunks by `record_id`. `key_field="href"` explicitly deduplicates by link; the default uses stable item IDs/data keys when available, otherwise DOM identity plus content. Remounts without stable identity may appear twice; this favors coverage over silently dropping distinct rows.
+
+Cursor state is document-local, expires after five idle minutes, and is bounded to four sessions and 10,000 tracked records. Navigation, expiry, changed selector/container or intervening scroll rejects a cursor; observe before starting another scan. Item, character, byte, step, time and state limits return an explicit partial result. `no_usable_candidates` is not completion. `complete=true` means the observed list reached its end and produced no new rows across settled reads; it does not prove that a site's delayed loader, other tab or pagination has no more content. Check the reported scope/counts against any declared total. Three calls is a target for bounded static extraction, never a reason to omit the rest of a long page.
+
 ### Faster decisions on look-alike targets with the OpenAI Decisions API
 
 Real pages are full of near-duplicates: a **Continue** button under both Shipping and Billing, **Reply** next to **Reply all**, two **25** cells in a two-month date picker. A typical agent stops there, observes the page again and spends another model round trip choosing. Mac MCP can settle it inside the same `browser_act` call instead.

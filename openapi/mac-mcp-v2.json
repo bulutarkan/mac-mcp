@@ -3362,6 +3362,22 @@
                               "decision"
                             ]
                           }
+                        },
+                        {
+                          "if": {
+                            "properties": {
+                              "type": {
+                                "enum": [
+                                  "extract"
+                                ]
+                              }
+                            }
+                          },
+                          "then": {
+                            "required": [
+                              "fields"
+                            ]
+                          }
                         }
                       ],
                       "properties": {
@@ -3487,9 +3503,72 @@
                         },
                         "fields": {
                           "items": {
-                            "type": "string"
+                            "oneOf": [
+                              {
+                                "required": [
+                                  "selector"
+                                ]
+                              },
+                              {
+                                "required": [
+                                  "semantic"
+                                ]
+                              }
+                            ],
+                            "properties": {
+                              "name": {
+                                "maxLength": 80,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "selector": {
+                                "maxLength": 1000,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "semantic": {
+                                "maxLength": 1000,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              "attr": {
+                                "description": "text (default) or attribute name",
+                                "type": "string"
+                              },
+                              "all": {
+                                "type": "boolean"
+                              },
+                              "max_items": {
+                                "maximum": 100,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              "offset": {
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "text_offset": {
+                                "minimum": 0,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "name"
+                            ],
+                            "type": "object"
                           },
+                          "maxItems": 20,
+                          "minItems": 1,
                           "type": "array"
+                        },
+                        "max_chars": {
+                          "maximum": 20000,
+                          "minimum": 256,
+                          "type": "integer"
+                        },
+                        "cursor": {
+                          "description": "scan: next_cursor from the previous result; same tab, selector and key_field.",
+                          "type": "string"
                         },
                         "item_selector": {
                           "type": "string"

@@ -243,11 +243,84 @@ def _clip_browser_value(value: Any, *, max_string: int, max_items: int, depth: i
     return value
 
 
+def _fit_extraction_page(payload: Dict[str, Any], budget: int) -> Dict[str, Any]:
+    """Pack exact prefixes, moving continuation only for content actually returned."""
+    out = dict(payload)
+    if "state" in out:
+        out.pop("state")
+        out["state_truncated"] = True
+    for key in ("url", "title"):
+        if isinstance(out.get(key), str):
+            out[key] = out[key][:500]
+    if "errors" in out:
+        out["errors"] = _clip_browser_value(out["errors"], max_string=200, max_items=2)
+    out.update(data={}, fields={}, complete=False, truncated=True, output_truncated=True)
+    source_fields = payload["fields"]
+    for name, meta in source_fields.items():
+        start = int(meta.get("offset", 0))
+        more = start < int(meta.get("eligible_count", 0))
+        out["fields"][name] = {**meta, "returned_count": 0, "has_more": more,
+            "continuation": {"offset": start, "text_offset": int(meta.get("text_offset", 0))} if more else None}
+        out["data"][name] = [] if isinstance(payload.get("data", {}).get(name), list) else None
+    # A caller can ask for fewer fields if metadata alone exceeds the budget.
+    # Return an explicit failure, never a successful apparently complete page.
+    if _browser_json_bytes(out) > budget:
+        return {"ok": False, "error": "extraction_metadata_budget", "complete": False,
+                "truncated": True, "output_truncated": True, "tab_handle": payload.get("tab_handle"),
+                "hint": "Repeat extraction with fewer fields or use browser_act."}
+    exhausted = False
+    for name, meta in source_fields.items():
+        raw = payload.get("data", {}).get(name)
+        values = raw if isinstance(raw, list) else [] if raw is None else [raw]
+        for index, value in enumerate(values):
+            value = str(value)
+            def put(length: int) -> None:
+                chunks = values[:index] + [value[:length]]
+                out["data"][name] = chunks if isinstance(raw, list) else chunks[0]
+                if length < len(value):
+                    continuation = {"offset": int(meta.get("offset", 0)) + index,
+                                    "text_offset": (int(meta.get("text_offset", 0)) if index == 0 else 0) + len(value[:length].encode("utf-16-le")) // 2}
+                elif index + 1 < len(values):
+                    continuation = {"offset": int(meta.get("offset", 0)) + index + 1, "text_offset": 0}
+                else:
+                    continuation = meta.get("continuation")
+                out["fields"][name] = {**meta, "returned_count": len(chunks),
+                    "has_more": continuation is not None, "continuation": continuation}
+            put(len(value))
+            if _browser_json_bytes(out) <= budget:
+                continue
+            low, high = 0, len(value)
+            while low < high:
+                mid = (low + high + 1) // 2
+                put(mid)
+                if _browser_json_bytes(out) <= budget:
+                    low = mid
+                else:
+                    high = mid - 1
+            if low:
+                put(low)
+            else:
+                chunks = values[:index]
+                out["data"][name] = chunks if isinstance(raw, list) else None
+                continuation = {"offset": int(meta.get("offset", 0)) + index,
+                                "text_offset": int(meta.get("text_offset", 0)) if index == 0 else 0}
+                out["fields"][name] = {**meta, "returned_count": index, "has_more": True, "continuation": continuation}
+            exhausted = True
+            break
+        if exhausted:
+            break
+    out["truncated"] = any(meta.get("has_more") for meta in out["fields"].values())
+    out["complete"] = not out["truncated"]
+    return out
+
+
 def _fit_browser_do_output(payload: Dict[str, Any], budget_bytes: int = _BROWSER_DO_OUTPUT_BUDGET_BYTES) -> Dict[str, Any]:
     """Keep normal browser_do responses bounded; debug mode bypasses this helper."""
     budget = max(1_024, min(int(budget_bytes), 64_000))
     if _browser_json_bytes(payload) <= budget:
         return payload
+    if payload.get("fields") and isinstance(payload.get("data"), dict):
+        return _fit_extraction_page(payload, budget)
 
     out = dict(payload)
     out["output_truncated"] = True
@@ -1819,7 +1892,8 @@ def create_app():
             "optional close_after. For research use extract=['price','cancellation','parking','rating'] for compact semantic reads. "
             "For interactive, multi-step work on a page use browser_observe -> batched browser_act -> verify instead. "
             "Leave return_state='none' normally; debug=true can expose raw/full state. "
-            "Existing actions and selector-based extract remain supported."
+            "For selector reads use actions=[{type:'extract',fields:[{name:'reviews',selector:'.review',all:true}]}]. "
+            "fields in the result reports counts and exact continuation offsets; partial output never means a full-page read."
         ),
     )
     async def _browser_do(browser: str, url: Optional[str] = None,
@@ -1893,10 +1967,16 @@ def create_app():
             data: Dict[str, Any] = {}
             final_url = None
             final_title = None
+            extraction_meta: Dict[str, Any] = {}
             errors = []
             for item in result.get("actions") or []:
                 if item.get("type") == "extract" and isinstance(item.get("data"), dict):
                     data.update(item["data"])
+                    for key in ("matched_counts", "fields"):
+                        extraction_meta.setdefault(key, {}).update(item.get(key) or {})
+                    extraction_meta["truncated"] = bool(extraction_meta.get("truncated") or item.get("truncated"))
+                    extraction_meta["complete"] = not extraction_meta["truncated"]
+                    extraction_meta["coverage"] = "currently_rendered_matches"
                     final_url = item.get("url") or final_url
                     final_title = item.get("title") or final_title
                 if item.get("ok") is False or item.get("matched") is False:
@@ -1914,6 +1994,7 @@ def create_app():
                 "closed": closed,
                 "mutation_dispatched": bool(result.get("mutation_dispatched") or opened),
             }
+            compact.update(extraction_meta)
             if progress:
                 compact["progress"] = progress
             if errors:

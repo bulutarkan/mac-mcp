@@ -49,7 +49,7 @@ class BrowserDoProgressTests(unittest.TestCase):
             "no_state": ([{"type": "click", "element_id": "e_1"}], None),
             "no_revision": ([{"type": "click", "element_id": "e_1"}], {"url": "https://example.test/x", "title": "X"}),
             "stale": (
-                [{"type": "click", "element_id": "e_1"}, {"type": "extract", "fields": ["price"]}],
+                [{"type": "click", "element_id": "e_1"}, {"type": "extract", "fields": [{"name": "price", "semantic": "price"}]}],
                 {"url": "https://example.test/x", "title": "X", "dom_revision": 2},
             ),
         }

@@ -46,7 +46,9 @@ class ScanLoopTests(unittest.TestCase):
 
     def test_item_step_and_payload_caps(self) -> None:
         many = [_page(*[f"row {step}-{i}" for i in range(10)]) for step in range(10)]
-        self.assertEqual(("max_items", 15), (lambda r: (r["stopped"], r["count"]))(self._scan(many, max_items=15)))
+        # The page transport now bounds each batch by the remaining item budget.
+        capped = [many[0], {**many[1], "items": many[1]["items"][:5]}]
+        self.assertEqual(("max_items", 15), (lambda r: (r["stopped"], r["count"]))(self._scan(capped, max_items=15)))
         self.assertEqual("max_steps", self._scan(many, max_steps=2)["stopped"])
         big = [_page(*[("x" * 190) + f"{step}-{i}" for i in range(400)]) for step in range(3)]
         self.assertEqual("payload_budget", self._scan(big, max_items=500)["stopped"])

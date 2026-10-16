@@ -14,7 +14,7 @@ from typing import Annotated, Any, Callable, Dict, List, Literal, Mapping, Optio
 
 from pydantic import AfterValidator, BeforeValidator, WithJsonSchema
 
-from .tools_browser_agent import _ACT_TYPE_ALIASES, _ACT_TYPES, _MAX_ACTIONS, _fill_values_problem
+from .tools_browser_agent import _ACT_TYPE_ALIASES, _ACT_TYPES, _MAX_ACTIONS, _fill_values_problem, _extract_fields_problem
 
 _TEXT_TYPES = ("type", "type_text", "paste")
 # Words an agent uses to ask for a change to part of the text. Text actions replace the whole
@@ -69,6 +69,10 @@ def validate_action(index: int, action: Any) -> Dict[str, Any]:
         problem = _fill_values_problem(action.get("values"))
         if problem:
             raise ValueError(f"actions[{index}] (fill) {problem}")
+    if typ == "extract":
+        problem = _extract_fields_problem(action.get("fields"))
+        if problem:
+            raise ValueError(f"actions[{index}] (extract) {problem}")
     if typ in _TEXT_TYPES and action.get("text") is None and not action.get("handoff_id"):
         raise ValueError(f"actions[{index}] ({typ}) needs text (or handoff_id from context_handoff)")
     if "expect" in action and not isinstance(action["expect"], dict):
@@ -138,7 +142,20 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
         "timeout_s": {"type": "number", "minimum": 0},
         "wait_s": {"type": "number", "minimum": 0},
         "required": {"type": "boolean"},
-        "fields": {"type": "array", "items": {"type": "string"}},
+        "fields": {"type": "array", "minItems": 1, "maxItems": 20, "items": {
+            "type": "object", "properties": {
+                "name": {"type": "string", "minLength": 1, "maxLength": 80},
+                "selector": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "semantic": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "attr": _str("text (default) or attribute name"),
+                "all": {"type": "boolean"},
+                "max_items": {"type": "integer", "minimum": 1, "maximum": 100},
+                "offset": {"type": "integer", "minimum": 0},
+                "text_offset": {"type": "integer", "minimum": 0},
+            }, "required": ["name"], "oneOf": [{"required": ["selector"]}, {"required": ["semantic"]}],
+        }},
+        "max_chars": {"type": "integer", "minimum": 256, "maximum": 20000},
+        "cursor": _str("scan: next_cursor from the previous result; same tab, selector and key_field."),
         "item_selector": {"type": "string"},
         "key_field": {"type": "string", "enum": ["text", "href"]},
         "max_items": {"type": "integer", "minimum": 1, "maximum": 500},
@@ -159,6 +176,7 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
          "then": {"anyOf": [{"required": ["text"]}, {"required": ["handoff_id"]}]}},
         {"if": {"properties": {"type": {"enum": list(_KEY_TYPES)}}}, "then": {"required": ["key"]}},
         {"if": {"properties": {"type": {"enum": ["dialog"]}}}, "then": {"required": ["decision"]}},
+        {"if": {"properties": {"type": {"enum": ["extract"]}}}, "then": {"required": ["fields"]}},
     ],
 }
 

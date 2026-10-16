@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Extraction fixture</title></head><body>
+<nav>UNRELATED NAVIGATION</nav>
+<section id="reviews"><div id="review_1">Review One<script type="application/json">SCRIPT PAYLOAD</script><span hidden>HIDDEN CHILD</span><template>TEMPLATE PAYLOAD</template></div><div id="review_2">Review Two</div><div id="review_3">Review Three</div><div id="review_hidden" hidden>HIDDEN REVIEW</div></section>
+<div id="large" style="height:240px;overflow:auto"></div>
+<div id="virtual" style="height:160px;overflow:auto"><div id="spacer" style="height:3200px;position:relative"></div></div>
+<div id="empty"><script type="application/json">SCRIPT ONLY</script><style>.nothing{color:red}</style><span hidden>HIDDEN ONLY</span></div>
+<script>
+for(let i=0;i<450;i++){let el=document.createElement('article');el.id='large_'+i;el.textContent='Record '+i;document.getElementById('large').appendChild(el);}
+function draw(){let box=document.getElementById('virtual'),s=document.getElementById('spacer');s.replaceChildren();let start=Math.min(76,Math.floor(box.scrollTop/40));for(let i=start;i<Math.min(80,start+5);i++){let el=document.createElement('article');el.id='virtual_'+i;el.textContent='Virtual '+i;el.style.cssText='position:absolute;top:'+i*40+'px;height:40px';s.appendChild(el);}}
+document.getElementById('virtual').addEventListener('scroll',draw);draw();
+let long=document.createElement('p');long.id='long_text';long.textContent='BEGIN '+ 'x'.repeat(9000)+' END';document.body.appendChild(long);
+</script></body></html>
