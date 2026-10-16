@@ -1633,7 +1633,10 @@ def create_app():
             "model, folder, and optional data_step {script or command, arguments} that runs first and hands its output to "
             "the agent; for script: script (a file path) or command, arguments, interpreter, folder. Arguments and "
             "commands may use {today}, {yesterday}, {last_week_start}, {last_week_end}, {last_month_start}, "
-            "{last_month_end} or {days_ago:N}. schedule is "
+            "{last_month_end} or {days_ago:N}. Optional expected_files [{path, min_bytes (default 1), "
+            "written_this_run (default true)}] (at most 5; a relative path is inside the folder): after a run that "
+            "finished, each file is checked by size and time (never opened) and the run is marked verified or "
+            "check failed; [] removes the checks. schedule is "
             "{type:'once',at:'2026-10-20T09:00'} | {type:'daily',time:'09:00'} | {type:'weekly',time:'09:00',"
             "weekdays:[0..6] (0=Monday)} | {type:'monthly',time:'09:00',day:1-31} | {type:'hours',every:N,"
             "start:'08:00'} | {type:'cron',expr:'0 9 * * 1'} in the Mac's local time. Tasks you create or change "
@@ -1661,6 +1664,7 @@ def create_app():
         notify: Optional[bool] = None,
         time_limit_minutes: Optional[int] = None,
         data_step: Optional[Dict[str, Any]] = None,
+        expected_files: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         verb = str(action or "list").strip().lower()
         fields = {"name": name, "description": summary, "kind": kind, "schedule": schedule, "prompt": prompt,
@@ -1669,7 +1673,8 @@ def create_app():
                   "data_step": None if data_step is None else {
                       "script": data_step.get("script"), "command": data_step.get("command"),
                       "args": data_step.get("arguments", data_step.get("args")),
-                      "interpreter": data_step.get("interpreter")}}
+                      "interpreter": data_step.get("interpreter")},
+                  "verify": expected_files}
         given = {key: value for key, value in fields.items() if value is not None}
         try:
             if verb == "list":

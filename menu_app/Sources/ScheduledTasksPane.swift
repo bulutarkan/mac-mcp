@@ -449,6 +449,10 @@ private struct TaskDetailView: View {
             Divider()
             factRow("folder", "Works in", task.cwd.map(Self.tilde) ?? (task.isAI ? "Home folder" : "The script's folder"))
             Divider()
+            if let checks = Self.checks(task.raw["verify"]) {
+                factRow("checkmark.seal", "Checks", checks, mono: true, lines: 5)
+                Divider()
+            }
             factRow("bell", "When it finishes", task.notify ? "Notifies you" : "No notification")
         }
         .taskCard()
@@ -459,6 +463,18 @@ private struct TaskDetailView: View {
         if let command = step["command"] as? String, !command.isEmpty { return command }
         let name = (step["script"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? ""
         return [name, step["args"] as? String ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    /// The expected files of a task, one per line, or nil when it has none.
+    static func checks(_ value: Any?) -> String? {
+        guard let checks = value as? [[String: Any]], !checks.isEmpty else { return nil }
+        return checks.map { check in
+            var line = tilde(check["path"] as? String ?? "")
+            let least = check["min_bytes"] as? Int ?? 1
+            if least > 1 { line += " · at least \(ByteCountFormatter.string(fromByteCount: Int64(least), countStyle: .file))" }
+            if (check["written_this_run"] as? Bool) ?? true { line += " · written by the run" }
+            return line
+        }.joined(separator: "\n")
     }
 
     static func tilde(_ path: String) -> String {
@@ -513,7 +529,9 @@ private struct TaskDetailView: View {
         switch run.status {
         case "running": parts.append("Running…")
         case "skipped": parts.append(run.skippedCount > 1 ? "Skipped \(run.skippedCount) runs" : "Skipped")
-        case "done": if let d = run.duration { parts.append(TaskTime.duration(d)) }
+        case "done":
+            if let d = run.duration { parts.append(TaskTime.duration(d)) }
+            if run.checkFailed { parts.append("Check failed") } else if run.verificationState == "verified" { parts.append("Checked") }
         case "timed_out": parts.append("Stopped at the time limit")
         default: parts.append("Failed" + (run.duration.map { " after \(TaskTime.duration($0))" } ?? ""))
         }
@@ -602,6 +620,10 @@ final class TaskEditorModel: ObservableObject, Identifiable {
     @Published var notify = true
     @Published var timeoutMin = 0
     @Published var showAdvanced = false
+    /// The first output check (#198) is edited here; checks an AI app added beyond it are kept as they are.
+    @Published var expectedFile = ""
+    private var firstCheck: [String: Any] = [:]
+    private var otherChecks: [[String: Any]] = []
 
     init() {}
 
@@ -629,6 +651,12 @@ final class TaskEditorModel: ObservableObject, Identifiable {
         }
         notify = task.notify
         timeoutMin = raw["timeout_min"] as? Int ?? 0
+        if let checks = raw["verify"] as? [[String: Any]], let first = checks.first {
+            firstCheck = first
+            expectedFile = TaskRun.displayPath(first["path"] as? String ?? "")
+            otherChecks = Array(checks.dropFirst())
+            showAdvanced = true
+        }
         let schedule = task.schedule
         let type = schedule["type"] as? String ?? "weekly"
         if let clock = schedule["time"] as? String ?? schedule["start"] as? String { time = Self.parse(clock) }
@@ -684,6 +712,14 @@ final class TaskEditorModel: ObservableObject, Identifiable {
             "schedule": schedule, "notify": notify, "cwd": cwd,
         ]
         if timeoutMin > 0 { out["timeout_min"] = timeoutMin }
+        var checks = otherChecks
+        let expected = expectedFile.trimmingCharacters(in: .whitespaces)
+        if !expected.isEmpty {
+            var first = firstCheck
+            first["path"] = expected
+            checks.insert(first, at: 0)
+        }
+        out["verify"] = checks  // empty removes the checks on an edit
         if isAI {
             out["prompt"] = prompt
             out["provider"] = provider
@@ -1219,6 +1255,14 @@ private struct TaskEditorSheet: View {
                     }
                     field("Works in", optional: true) { folderButton(placeholder: "The script's folder") }
                 }
+                field("Check the result", optional: true) {
+                    TextField("A file the run should leave, e.g. ~/Desktop/reports/weekly.csv", text: $model.expectedFile)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.callout, design: .monospaced))
+                    Text("After a run that finishes, Mac MCP checks the file is there, is not empty and was written by that run. It never opens the file.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 field("Time limit") {
                     Picker("", selection: $model.timeoutMin) {
                         Text("Default (\(model.isAI ? 30 : 10) minutes)").tag(0)
@@ -1241,7 +1285,7 @@ private struct TaskEditorSheet: View {
             HStack {
                 Text("Advanced").font(.callout.weight(.medium))
                 Spacer()
-                Text(model.isAI ? "model, time limit, cron" : "program, arguments, command, cron")
+                Text(model.isAI ? "model, check, time limit, cron" : "program, arguments, command, check, cron")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -1585,6 +1629,12 @@ private struct TaskReviewSheet: View {
         }
         let folder = value("cwd")
         out.append(Row(title: "Works in", value: folder.isEmpty ? ((proposal["kind"] as? String) == "ai" ? "Home folder" : "The script's folder") : TaskDetailView.tilde(folder), before: nil))
+        let checks = TaskDetailView.checks(proposal["verify"]) ?? ""
+        let oldChecks = TaskDetailView.checks(current["verify"]) ?? ""
+        if !checks.isEmpty || !oldChecks.isEmpty {
+            out.append(Row(title: "Checks", value: checks.isEmpty ? "None" : checks,
+                           before: isNew || checks == oldChecks ? nil : (oldChecks.isEmpty ? "—" : oldChecks), mono: true))
+        }
         out.append(Row(title: "Time limit", value: "\(proposal["timeout_min"] as? Int ?? 0) minutes", before: nil))
         return out
     }

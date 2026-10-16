@@ -557,6 +557,10 @@ final class AppState: ObservableObject {
             let title: String
             let body: String
             switch run.status {
+            case "done" where run.checkFailed:
+                title = "\(name) finished, but its check failed"
+                let problem = run.checkProblem ?? "its check failed"
+                body = problem.prefix(1).uppercased() + problem.dropFirst() + ". Details are in Scheduled Tasks."
             case "done":
                 title = "\(name) finished"
                 body = run.duration.map { "Done in \(TaskTime.duration($0)). The result is in Scheduled Tasks." } ?? "Done. The result is in Scheduled Tasks."

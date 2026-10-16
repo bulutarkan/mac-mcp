@@ -44,8 +44,43 @@ struct TaskRun: Identifiable {
     var startedAt: Date { Date(timeIntervalSince1970: raw["started_at"] as? Double ?? 0) }
     var scheduledFor: Date? { (raw["scheduled_for"] as? Double).map { Date(timeIntervalSince1970: $0) } }
     var detail: [String: Any]? { raw["detail"] as? [String: Any] }
+    /// The owner's output checks (#198): "verified" or "failed"; nil when the task has none or the run did not finish.
+    var verification: [String: Any]? { raw["verification"] as? [String: Any] }
+    var verificationState: String? { verification?["state"] as? String }
+    var checkFailed: Bool { status == "done" && verificationState == "failed" }
+    var checks: [[String: Any]] { verification?["checks"] as? [[String: Any]] ?? [] }
+
+    /// "report.csv is missing"; in Private mode only the outcome is kept.
+    var checkProblem: String? {
+        guard checkFailed else { return nil }
+        return checks.first(where: { ($0["ok"] as? Bool) != true }).map(Self.checkLine) ?? "its check failed"
+    }
+
+    static func checkLine(_ check: [String: Any]) -> String {
+        let name = (check["path"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? "The file"
+        if (check["ok"] as? Bool) == true {
+            let size = ByteCountFormatter.string(fromByteCount: Int64(check["size"] as? Int ?? 0), countStyle: .file)
+            return "\(name) is there (\(size))"
+        }
+        switch check["problem"] as? String {
+        case "missing": return "\(name) is missing"
+        case "too_small": return "\(name) is smaller than expected"
+        case "not_written_this_run": return "\(name) was not written by this run"
+        case "link": return "\(name) is a link, not a file"
+        case "not_a_file": return "\(name) is not a file"
+        case "unreadable": return "\(name) could not be checked"
+        default: return "\(name) did not pass its check"
+        }
+    }
+
+    static func displayPath(_ path: String) -> String {
+        let home = NSHomeDirectory()
+        return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
+    }
 
     var symbol: String {
+        if checkFailed { return "exclamationmark.triangle.fill" }
+        if status == "done" && verificationState == "verified" { return "checkmark.seal.fill" }
         switch status {
         case "done": return "checkmark.circle.fill"
         case "skipped": return "forward.end.circle.fill"
@@ -56,6 +91,7 @@ struct TaskRun: Identifiable {
     }
 
     var color: Color {
+        if checkFailed { return .orange }
         switch status {
         case "done": return .green
         case "skipped": return .orange
@@ -68,7 +104,7 @@ struct TaskRun: Identifiable {
     var shortLine: String {
         let when = TaskTime.relativeDay(scheduledFor ?? startedAt)
         switch status {
-        case "done": return "Done \(when)"
+        case "done": return checkProblem.map { "Done \(when), but \($0)" } ?? "Done \(when)"
         case "running": return "Running now"
         case "skipped":
             let many = skippedCount > 1 ? "Skipped \(skippedCount) runs" : "Skipped \(when)"

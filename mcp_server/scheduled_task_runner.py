@@ -19,6 +19,7 @@ import os
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -355,6 +356,60 @@ def _agent_steps(agent_id: str, report: str) -> Dict[str, Any]:
     return {"steps": steps, "usage": timeline["usage"]}
 
 
+# ── Output checks (#198) ─────────────────────────────────────────────────────
+
+# File times can be a little behind the clock that stamped the run's start.
+_MTIME_SLACK_S = 2.0
+
+
+def check_outputs(checks: List[Dict[str, Any]], started_at: float, now: Optional[float] = None) -> Dict[str, Any]:
+    """The owner's expected files, checked by metadata only: never opened, links not followed."""
+    results = []
+    for check in checks:
+        entry: Dict[str, Any] = {"path": check["path"], "min_bytes": check["min_bytes"],
+                                 "written_this_run": check["written_this_run"], "ok": False}
+        try:
+            info = os.lstat(check["path"])
+        except FileNotFoundError:
+            problem: Optional[str] = "missing"
+        except OSError:
+            problem = "unreadable"
+        else:
+            if stat.S_ISLNK(info.st_mode):
+                problem = "link"
+            elif not stat.S_ISREG(info.st_mode):
+                problem = "not_a_file"
+            else:
+                entry["size"] = info.st_size
+                entry["modified_at"] = info.st_mtime
+                if info.st_size < check["min_bytes"]:
+                    problem = "too_small"
+                elif check["written_this_run"] and info.st_mtime < started_at - _MTIME_SLACK_S:
+                    problem = "not_written_this_run"
+                else:
+                    problem = None
+        if problem:
+            entry["problem"] = problem
+        else:
+            entry["ok"] = True
+        results.append(entry)
+    return {"state": "verified" if all(item["ok"] for item in results) else "failed",
+            "checks": results, "checked_at": time.time() if now is None else now}
+
+
+def _verification(run_id: str, definition: Dict[str, Any], status: str, private: bool) -> Optional[Dict[str, Any]]:
+    # Only a run that finished can be checked: a check never turns a failure into a success.
+    if status != "done" or not definition.get("verify"):
+        return None
+    try:
+        started_at = float(store.get_run(run_id)["started_at"])
+        verification = check_outputs(definition["verify"], started_at)
+    except Exception:
+        log.exception("output checks for run %s could not run", run_id)
+        verification = {"state": "failed", "checks": [], "error": "The checks could not run."}
+    return {"state": verification["state"]} if private else verification
+
+
 def execute(task_id: str, run_id: str, definition: Dict[str, Any], settings: Any) -> Dict[str, Any]:
     """Run one task and record the result, honoring Settings › Privacy."""
     privacy = privacy_policy.policy(fresh=True)
@@ -373,8 +428,10 @@ def execute(task_id: str, run_id: str, definition: Dict[str, Any], settings: Any
         # Private mode: keep that it ran and how it ended, not what it printed or said.
         result = {key: result.get(key) for key in ("status", "reason", "exit_code")}
         result["detail"] = {"private_mode": True}
+    verification = _verification(run_id, definition, result["status"], privacy["private_mode"])
     return store.finish_run(run_id, result["status"], reason=result.get("reason"), summary=result.get("summary"),
-                            output=result.get("output"), exit_code=result.get("exit_code"), detail=result.get("detail"))
+                            output=result.get("output"), exit_code=result.get("exit_code"), detail=result.get("detail"),
+                            verification=verification)
 
 
 # ── The loop ─────────────────────────────────────────────────────────────────
@@ -448,10 +505,13 @@ class Scheduler:
 
     def _follow_agent(self, run_id: str, agent_id: str, deadline: float) -> None:
         result = wait_for_agent(agent_id, self.settings, deadline=deadline)
-        if privacy_policy.policy(fresh=True)["private_mode"]:
+        private = privacy_policy.policy(fresh=True)["private_mode"]
+        if private:
             result = {key: result.get(key) for key in ("status", "reason")}
+        task_id = store.get_run(run_id)["task_id"]
+        verification = _verification(run_id, store.definition_of(task_id) or {}, result["status"], private)
         store.finish_run(run_id, result["status"], reason=result.get("reason"), summary=result.get("summary"),
-                         output=result.get("output"), detail=result.get("detail"))
+                         output=result.get("output"), detail=result.get("detail"), verification=verification)
 
     # The thread
 

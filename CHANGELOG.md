@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Scheduled Tasks can check that a run made what it should (#198)
+- **Check the result** under Advanced: name a file the run should leave. After a run that finished, Mac MCP checks it is there, is not empty and was written by that run, by its size and time only (it never opens the file; a link or a folder fails). The run stays Done and reads **Checked** or **Done, but report.csv is missing**, in the history, the run report and the notification.
+- AI apps can suggest checks with the `scheduled_tasks` tool (`expected_files`, up to five, with a smallest size and whether this run must have written the file); like any suggestion, they apply only after you approve them.
+- A failed or skipped run is never checked, so a check never turns a failure into a success, and nothing is run again on its own. Private mode keeps only whether the checks passed.
+
 ### Less memory and less work behind each tool call (#184)
 - Usage metering no longer keeps an unbounded number of raw tool results while an agent keeps calling tools: past 16 MB of waiting results (`MAC_MCP_USAGE_BATCH_BYTES`) the batch is measured and written without waiting for a pause. Under a steady stream of 1 MB results the queue's memory stays at about 16 MB instead of growing with every call (78 MB after six seconds in the benchmark, and rising).
 - The usage token count runs about 2.5 times faster (a 5 MB result: 0.93 s → 0.42 s) and counts exactly as before; the metric's definition (`mac_mcp_payload_v1`) is unchanged and pinned by a test.

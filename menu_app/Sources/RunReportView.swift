@@ -141,6 +141,7 @@ struct RunReportSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(shown.color.opacity(0.10)))
         }
+        checksBox
         if (shown.detail?["private_mode"] as? Bool) == true {
             Label("Private mode was on, so the result was not kept.", systemImage: "eye.slash")
                 .font(.callout).foregroundStyle(.secondary)
@@ -157,6 +158,39 @@ struct RunReportSheet: View {
             }
         } else if let summary = shown.summary {
             Text(summary).font(.callout)
+        }
+    }
+
+    /// The owner's output checks (#198): whether the files the run should leave are there.
+    @ViewBuilder
+    private var checksBox: some View {
+        if let state = shown.verificationState {
+            let passed = state == "verified"
+            let tint: Color = passed ? .green : .orange
+            VStack(alignment: .leading, spacing: 6) {
+                Label(passed ? "Checks passed" : "Check failed",
+                      systemImage: passed ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    .font(.callout.weight(.semibold)).foregroundStyle(tint)
+                ForEach(Array(shown.checks.enumerated()), id: \.offset) { _, check in
+                    let ok = (check["ok"] as? Bool) == true
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: ok ? "checkmark" : "xmark").font(.caption.weight(.bold))
+                            .foregroundStyle(ok ? Color.green : Color.orange)
+                        Text(TaskRun.checkLine(check)).font(.callout)
+                        Text(TaskRun.displayPath(check["path"] as? String ?? ""))
+                            .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+                if shown.checks.isEmpty {
+                    Text("Private mode was on, so only the outcome of the checks was kept.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(tint.opacity(0.10)))
         }
     }
 

@@ -594,6 +594,113 @@ class DashboardApiTests(StoreCase):
         self.assertIn("{last_monday}", wrong["data"]["message"])
 
 
+class OutputCheckTests(StoreCase):
+    """#198: "it ran" and "it made what it should" are told apart, when the owner asks for a check."""
+
+    def run_with(self, body: str, verify, **extra):
+        definition = store.validate_definition(self.sh(body, cwd=str(self.folder), verify=verify, **extra))
+        task = store.create_task(definition)
+        run_id = store.start_run(task["id"], trigger="manual")
+        return runner.execute(task["id"], run_id, definition, settings=None)
+
+    def test_checks_are_validated_and_relative_paths_follow_the_task_folder(self) -> None:
+        definition = store.validate_definition(self.sh(cwd=str(self.folder), verify=[{"path": "out/report.csv"}]))
+        self.assertEqual([{"path": str(self.folder / "out/report.csv"), "min_bytes": 1, "written_this_run": True}],
+                         definition["verify"])
+        self.assertNotIn("verify", store.validate_definition(self.sh()))
+        for bad, code in (([{"path": "report.csv"}], "verify_needs_folder"),
+                          ([{"path": ""}], "verify_path_required"),
+                          ([{"path": "/tmp/a", "min_bytes": -1}], "verify_min_bytes_invalid"),
+                          ([{"path": "/tmp/a", "written_this_run": "yes"}], "verify_written_invalid"),
+                          ([{"path": f"/tmp/{n}"} for n in range(6)], "verify_too_many"),
+                          ("report.csv", "verify_invalid")):
+            with self.subTest(code=code), self.assertRaises(store.TaskError) as caught:
+                store.validate_definition(self.sh(verify=bad))
+            self.assertEqual(code, caught.exception.code)
+
+    def test_exit_zero_without_the_file_is_done_but_not_verified(self) -> None:
+        result = self.run_with("echo finished\n", [{"path": "report.csv"}])
+        self.assertEqual("done", result["status"])
+        self.assertEqual("failed", result["verification"]["state"])
+        check = result["verification"]["checks"][0]
+        self.assertEqual((False, "missing"), (check["ok"], check["problem"]))
+
+    def test_a_file_written_by_this_run_is_verified(self) -> None:
+        result = self.run_with("printf 'a,b\\n1,2\\n' > report.csv\n", [{"path": "report.csv", "min_bytes": 5}])
+        self.assertEqual(("done", "verified"), (result["status"], result["verification"]["state"]))
+        check = result["verification"]["checks"][0]
+        self.assertEqual((True, 8), (check["ok"], check["size"]))
+        self.assertNotIn("a,b", json.dumps(result["verification"]))  # metadata only, never the contents
+
+    def test_too_small_old_or_linked_files_fail_their_check(self) -> None:
+        small = self.run_with(": > empty.csv\n", [{"path": "empty.csv", "min_bytes": 10}])
+        self.assertEqual("too_small", small["verification"]["checks"][0]["problem"])
+        old = self.folder / "old.csv"
+        old.write_text("kept from yesterday")
+        os.utime(old, (time.time() - 3600, time.time() - 3600))
+        stale = self.run_with("echo nothing new\n", [{"path": "old.csv"}])
+        self.assertEqual("not_written_this_run", stale["verification"]["checks"][0]["problem"])
+        any_age = self.run_with("echo nothing new\n", [{"path": "old.csv", "written_this_run": False}])
+        self.assertEqual("verified", any_age["verification"]["state"])
+        (self.folder / "link.csv").symlink_to(old)
+        linked = self.run_with("touch old.csv\n", [{"path": "link.csv"}])
+        self.assertEqual("link", linked["verification"]["checks"][0]["problem"])
+        (self.folder / "folder.csv").mkdir()
+        folder = self.run_with("echo hi\n", [{"path": "folder.csv"}])
+        self.assertEqual("not_a_file", folder["verification"]["checks"][0]["problem"])
+
+    def test_a_failed_run_stays_failed_and_is_not_checked(self) -> None:
+        (self.folder / "report.csv").write_text("written before the failure")
+        result = self.run_with("exit 3\n", [{"path": "report.csv", "written_this_run": False}])
+        self.assertEqual("failed", result["status"])
+        self.assertIsNone(result["verification"])
+        unchecked = self.run_with("echo hi\n", None)
+        self.assertIsNone(unchecked["verification"])
+
+    def test_private_mode_keeps_only_whether_the_checks_passed(self) -> None:
+        self.privacy(private_mode=True)
+        result = self.run_with("echo x > report.csv\n", [{"path": "report.csv"}])
+        self.assertEqual({"state": "verified"}, result["verification"])
+
+    def test_history_lists_carry_the_outcome_and_old_databases_gain_the_column(self) -> None:
+        result = self.run_with("echo finished\n", [{"path": "report.csv"}])
+        brief = store.list_runs(result["task_id"])[0]
+        self.assertEqual("failed", brief["verification"]["state"])
+        self.assertEqual("failed", store.get_task(result["task_id"])["last_run"]["verification"]["state"])
+        # A database from before #198 has no verification column; opening it adds one.
+        import sqlite3
+        path = store.db_path()
+        conn = sqlite3.connect(path)
+        conn.execute("ALTER TABLE runs DROP COLUMN verification")
+        conn.commit()
+        conn.close()
+        store._DB_IDENTITIES.clear()
+        self.assertIsNone(store.get_run(result["id"])["verification"])
+        again = self.run_with("echo x > report.csv\n", [{"path": "report.csv"}])
+        self.assertEqual("verified", again["verification"]["state"])
+
+
+class AiOutputCheckTests(AiRunTests):
+    def test_an_agent_that_says_done_without_the_file_is_not_verified(self) -> None:
+        self.fake_agents({"status": "completed", "result_envelope": {"outcome": "success", "summary": "Report saved."}})
+        definition = store.validate_definition(self.ai(provider="codex", cwd=str(self.folder),
+                                                       verify=[{"path": "report.xlsx"}]))
+        task = store.create_task(definition)
+        run_id = store.start_run(task["id"], trigger="manual")
+        result = runner.execute(task["id"], run_id, definition, settings=None)
+        self.assertEqual(("done", "failed"), (result["status"], result["verification"]["state"]))
+
+    def test_a_run_followed_after_a_restart_is_checked_too(self) -> None:
+        self.fake_agents({"status": "completed", "result_envelope": {"outcome": "success"}})
+        definition = store.validate_definition(self.ai(provider="codex", cwd=str(self.folder),
+                                                       verify=[{"path": "report.xlsx"}]))
+        task = store.create_task(definition)
+        run_id = store.start_run(task["id"], trigger="manual")
+        store.note_agent(run_id, "agent_abc")
+        runner.Scheduler(settings=None)._follow_agent(run_id, "agent_abc", time.time() + 30)
+        self.assertEqual("failed", store.get_run(run_id)["verification"]["state"])
+
+
 class DateTokenTests(unittest.TestCase):
     def test_dates_relative_to_the_run(self) -> None:
         wednesday = ts("2026-10-14T09:00")
@@ -746,6 +853,17 @@ class McpToolTests(StoreCase):
                             data_step={"command": "python3 report.py --since {last_week_start}"})
         self.assertEqual("needs_approval", created["status"])
         self.assertEqual("python3 report.py --since {last_week_start}", created["task"]["proposal"]["data_step"]["command"])
+
+    def test_agents_can_suggest_output_checks_for_the_owner_to_review(self) -> None:
+        created = self.call(action="create", name="Nightly export", kind="script", command="echo hi",
+                            folder=str(self.folder), schedule={"type": "daily", "time": "02:00"},
+                            expected_files=[{"path": "export.csv", "min_bytes": 100}])
+        proposal = created["task"]["proposal"]
+        self.assertEqual([{"path": str(self.folder / "export.csv"), "min_bytes": 100, "written_this_run": True}],
+                         proposal["verify"])
+        store.approve(created["task"]["id"])
+        cleared = self.call(action="update", task_id=created["task"]["id"], expected_files=[])
+        self.assertNotIn("verify", cleared["task"]["proposal"])
 
     def test_listing_works_with_intent_descriptions_on(self) -> None:
         # Every tool gains a required "description" (intent) field; a tool argument of that name breaks listing.

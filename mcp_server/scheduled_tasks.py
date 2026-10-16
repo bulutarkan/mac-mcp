@@ -46,6 +46,7 @@ DEFAULT_TIMEOUT_MIN = {"ai": 30, "script": 10}
 MAX_TIMEOUT_MIN = 6 * 60
 OUTPUT_LIMIT = 20_000
 SUMMARY_LIMIT = 4_000
+MAX_OUTPUT_CHECKS = 5
 DATA_LIMIT = 60_000
 DATA_TIMEOUT_MIN = 10
 
@@ -145,6 +146,9 @@ def _db() -> Iterator[sqlite3.Connection]:
                     CREATE INDEX IF NOT EXISTS runs_by_task ON runs(task_id, started_at DESC);
                     """
                 )
+                columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
+                if "verification" not in columns:  # databases from before output checks (#198)
+                    conn.execute("ALTER TABLE runs ADD COLUMN verification TEXT")
                 try:
                     path.chmod(0o600)
                 except OSError:
@@ -192,6 +196,32 @@ def _folder(value: Any, field: str = "cwd") -> Optional[str]:
     if not folder.is_dir():
         raise TaskError(f"{field}_missing", f"The folder {text} does not exist.")
     return str(folder)
+
+
+def _output_checks(raw: Any, cwd: Optional[str]) -> List[Dict[str, Any]]:
+    """Files the owner expects a run to leave behind (#198); checked by size and time, never read."""
+    if not isinstance(raw, list):
+        raise TaskError("verify_invalid", "verify must be a list of files to check, such as [{\"path\": \"report.csv\"}].")
+    if len(raw) > MAX_OUTPUT_CHECKS:
+        raise TaskError("verify_too_many", f"A task can check at most {MAX_OUTPUT_CHECKS} files.")
+    checks = []
+    for item in raw:
+        item = item if isinstance(item, dict) else {"path": item}
+        text = _text(item.get("path"), "verify_path", 1024, required=True)
+        path = Path(text).expanduser()
+        if not path.is_absolute():
+            if not cwd:
+                raise TaskError("verify_needs_folder",
+                                f"{text} is a relative path; give the full path, or choose the task's folder.")
+            path = Path(cwd) / path
+        min_bytes = item.get("min_bytes", 1)
+        if not isinstance(min_bytes, int) or isinstance(min_bytes, bool) or min_bytes < 0:
+            raise TaskError("verify_min_bytes_invalid", "The smallest size must be a whole number of bytes (0 or more).")
+        written = item.get("written_this_run", True)
+        if not isinstance(written, bool):
+            raise TaskError("verify_written_invalid", "written_this_run must be true or false.")
+        checks.append({"path": os.path.normpath(str(path)), "min_bytes": min_bytes, "written_this_run": written})
+    return checks
 
 
 def find_program(name: str) -> Optional[str]:
@@ -364,6 +394,8 @@ def validate_definition(raw: Any) -> Dict[str, Any]:
         "timeout_min": timeout,
         "cwd": _folder(raw.get("cwd")),
     }
+    if raw.get("verify"):
+        definition["verify"] = _output_checks(raw["verify"], definition["cwd"])
     if kind == "ai":
         definition["prompt"] = _text(raw.get("prompt"), "prompt", 8000, required=True)
         definition["provider"] = _text(raw.get("provider"), "provider", 40) or None
@@ -420,6 +452,7 @@ def _run_public(row: sqlite3.Row, *, brief: bool = False) -> Dict[str, Any]:
     run["summary"] = (row["summary"] or "")[:300] if brief else row["summary"]
     if row["finished_at"] and row["status"] != "skipped":
         run["duration_s"] = round(row["finished_at"] - row["started_at"], 1)
+    run["verification"] = _load(row["verification"])
     if not brief:
         run["output"] = row["output"]
         run["detail"] = _load(row["detail"])
@@ -635,15 +668,18 @@ def note_agent(run_id: str, agent_id: str) -> None:
 
 def finish_run(run_id: str, status: str, *, reason: Optional[str] = None, summary: Optional[str] = None,
                output: Optional[str] = None, exit_code: Optional[int] = None,
-               detail: Optional[Dict[str, Any]] = None, now: Optional[float] = None) -> Dict[str, Any]:
+               detail: Optional[Dict[str, Any]] = None, verification: Optional[Dict[str, Any]] = None,
+               now: Optional[float] = None) -> Dict[str, Any]:
     if status not in RUN_STATUSES or status == "running":
         raise ValueError(f"bad run status {status}")
     now = time.time() if now is None else now
     with _db() as conn:
         conn.execute(
-            "UPDATE runs SET status=?, finished_at=?, reason=?, summary=?, output=?, exit_code=?, detail=? WHERE id=?",
+            "UPDATE runs SET status=?, finished_at=?, reason=?, summary=?, output=?, exit_code=?, detail=?,"
+            " verification=? WHERE id=?",
             (status, now, reason, (summary or "")[:SUMMARY_LIMIT] or None,
-             (output or "")[-OUTPUT_LIMIT:] or None, exit_code, json.dumps(detail) if detail else None, run_id),
+             (output or "")[-OUTPUT_LIMIT:] or None, exit_code, json.dumps(detail) if detail else None,
+             json.dumps(verification) if verification else None, run_id),
         )
         row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         _prune(conn, row["task_id"], now)
