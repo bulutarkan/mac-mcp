@@ -23,6 +23,7 @@ from urllib.request import Request as UrlRequest, urlopen
 from dotenv import load_dotenv
 
 from . import paths
+from .cli_style import Style, ThemedArgumentParser
 from .security import dashboard_token_path, load_settings, validate_bootstrap_security
 from .public_endpoint import (
     PublicEndpointError,
@@ -2821,11 +2822,12 @@ def logs(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    _load_env()
-    parser = argparse.ArgumentParser(description="Manage the Mac MCP local server.")
+def build_parser() -> argparse.ArgumentParser:
+    # prog is fixed so the help reads the same whatever argv[0] is (the installed CLI's is mac-mcp).
+    parser = ThemedArgumentParser(prog="mac-mcp", description="Manage the Mac MCP local server.")
     parser.add_argument("--version", action="version", version=f"mac-mcp {__version__}")
-    sub = parser.add_subparsers(dest="command", required=True)
+    # Subcommands (and theirs) are themed parsers too: argparse builds them with parser_class.
+    sub = parser.add_subparsers(dest="command", required=True, parser_class=ThemedArgumentParser)
 
     def add_start_flags(p: argparse.ArgumentParser) -> None:
         p.add_argument("--host", default=os.getenv("MAC_MCP_HOST", DEFAULT_HOST))
@@ -3025,8 +3027,45 @@ def main(argv: list[str] | None = None) -> int:
     p_update.add_argument("--skip-deps", action="store_true", help=argparse.SUPPRESS)
     p_update.set_defaults(func=update)
 
+    _remember_summaries(parser)
+    return parser
+
+
+def _remember_summaries(parser: argparse.ArgumentParser) -> None:
+    """Give every subcommand parser its one-line help, for the themed --help to show."""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            helps = {choice.dest: choice.help for choice in action._choices_actions}
+            for name, child in action.choices.items():
+                child.summary = helps.get(name) or ""
+                _remember_summaries(child)
+
+
+def main(argv: list[str] | None = None) -> int:
+    _load_env()
+    parser = build_parser()
+    words = list(sys.argv[1:] if argv is None else argv)
+    style = Style.for_stream()
+    if style is not None and (not words or words in (["-h"], ["--help"])):
+        from .cli_views import render_home
+        render_home(style, __version__, None if words else _home_running())
+        return 0
     args = parser.parse_args(argv)
     return int(args.func(args))
+
+
+def _home_running() -> bool:
+    """For the home screen's one status line: a verified server owns the port."""
+    return _resolve_server_identity(_default_port())[0] is not None
+
+
+def command_names() -> list[str]:
+    """Every top-level command, for the grouped help's test."""
+    parser = build_parser()
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return list(action.choices)
+    return []
 
 
 if __name__ == "__main__":
