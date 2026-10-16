@@ -325,3 +325,36 @@ def render_error(style: Style, command: str, message: str, next_command: Optiona
     """A command that could not run: the header, then the reason (the header leaves the gap)."""
     style.header(command)
     style.summary("error", message, next_command=next_command, gap=False)
+
+
+def _short_commit(commit: Optional[str]) -> str:
+    return (commit or "unknown")[:8]
+
+
+def render_update_check(style: Style, info) -> None:
+    """The installed commit against the newest verified stable release, and what to do."""
+    stable = _short_commit(info.target_commit)
+    if info.release_id:
+        stable += f" · {info.release_id}" + (f" (v{info.release_version})" if info.release_version else "")
+    rows = [(None, "Installed", _short_commit(info.deployed_commit), ""),
+            (None, "Verified stable", stable, ""),
+            (None, "Branch", f"{info.remote}/{info.branch}", "")]
+    if info.unverified_ahead and not info.update_available:
+        plural = "commit" if info.unverified_ahead == 1 else "commits"
+        rows.append((None, "Not released", f"{info.unverified_ahead} development {plural} ahead", "not verified yet"))
+    style.header("update")
+    style.rows(rows)
+    if info.dirty:
+        style.summary("error", "Update blocked: the repository has local changes")
+    elif info.update_available:
+        style.summary("ok", "A verified update is ready", next_command="mac-mcp update")
+    elif info.unverified_ahead:
+        style.summary("ok", "No newer verified stable release.")
+    else:
+        style.summary("ok", "Mac MCP is up to date.")
+
+
+def render_package_update(style: Style, payload: dict) -> None:
+    style.header("update")
+    style.rows([(None, "Download", str(payload.get("download_url") or ""), "")])
+    style.summary("info", str(payload.get("message") or ""))

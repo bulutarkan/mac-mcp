@@ -24,7 +24,7 @@ from urllib.request import Request as UrlRequest, urlopen
 from dotenv import load_dotenv
 
 from . import paths
-from .cli_style import Style, ThemedArgumentParser
+from .cli_style import Style, ThemedArgumentParser, home_path
 from .security import dashboard_token_path, load_settings, validate_bootstrap_security
 from .public_endpoint import (
     PublicEndpointError,
@@ -2765,6 +2765,9 @@ def conformance(args: argparse.Namespace) -> int:
 
 
 def update(args: argparse.Namespace) -> int:
+    style = Style.for_stream(json_output=bool(getattr(args, "json", False)))
+    if style is not None:
+        return _update_themed(args, style)
     try:
         if install_kind() == "pkg":
             payload = package_update_payload(check_only=bool(args.check))
@@ -2823,6 +2826,72 @@ def update(args: argparse.Namespace) -> int:
         return 1
     except UpdateError as exc:
         print(f"mac-mcp update failed: {exc}", file=sys.stderr)
+        return 1
+
+
+def _update_themed(args: argparse.Namespace, style) -> int:
+    """update in a terminal: the check as a screen, the update as steps with its log's end on failure."""
+    from .cli_steps import Steps
+    from .cli_views import render_error, render_package_update, render_update_check
+
+    headed = False  # whether a screen's header is drawn, so an error does not draw a second
+    try:
+        if install_kind() == "pkg":
+            render_package_update(style, package_update_payload(check_only=bool(args.check)))
+            return 0 if args.check else 3
+        validate_update_state()
+        if args.check:
+            info = check_update(args.repo, args.runtime, branch=args.branch, remote=args.remote, fetch=True)
+            render_update_check(style, info)
+            return 2 if info.dirty else 0
+        style.header("update")
+        headed = True
+        steps = Steps(style)
+        with steps.step("Checked for a verified release", failed_label="Check for a verified release") as state:
+            repo, runtime = resolve_update_paths(args.repo, args.runtime)
+            info = check_update(repo, runtime, branch=args.branch, remote=args.remote, fetch=True)
+            if info.dirty:
+                raise UpdateError("Repository has local changes. Commit or stash them before updating.")
+            blocker = secure_bootstrap_update_blocker(runtime) if info.update_available else None
+            if blocker is not None:
+                raise UpdateError(str(blocker.get("summary") or "Secure bootstrap migration is required before updating."))
+        if not info.update_available:
+            style.summary("ok", "Mac MCP is already up to date.")
+            return 0
+        log_path: Optional[Path] = None
+        with steps.step("Installed the update", failed_label="Install the update") as state:
+            payload, proc = launch_detached_update(
+                info, repo, runtime, branch=args.branch, remote=args.remote,
+                launchd_label=os.getenv("MAC_MCP_LAUNCHD_LABEL", "mac-mcp-uvicorn"),
+                skip_restart=getattr(args, "skip_restart", False), skip_deps=getattr(args, "skip_deps", False),
+            )
+            log_path = Path(str(payload["log_path"]))
+            return_code = proc.wait()
+            if return_code != 0:
+                state.ok = False
+                try:
+                    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                except OSError:
+                    lines = []
+                # The end of the update log says what went wrong.
+                print("\n".join(lines[-15:]))
+        if not state.ok:
+            style.summary("error", "The update did not finish", next_command="mac-mcp logs update")
+            return 1
+        style.summary("ok", f"Updated to {info.release_id or info.target_commit[:8]}", note=home_path(log_path))
+        return 0
+    except UpdateInProgress as exc:
+        where = f" Follow it in {exc.state['log_path']}." if exc.state.get("log_path") else ""
+        if headed:
+            style.summary("error", f"{exc}{where}")
+        else:
+            render_error(style, "update", f"{exc}{where}")
+        return 1
+    except UpdateError as exc:
+        if headed:
+            style.summary("error", f"Update failed: {exc}")
+        else:
+            render_error(style, "update", f"Update failed: {exc}")
         return 1
 
 

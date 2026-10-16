@@ -637,5 +637,108 @@ class ConnectConfigScreen(ThemedTestCase):
         self.assertNotIn("\n\n\n", visible(out.getvalue()))  # one blank line under the header, not two
 
 
+def _update_info(**changes):
+    from mcp_server.update_helper import UpdateInfo
+    base = dict(repo="/r", runtime="/rt", branch="main", remote="origin", deployed_commit="05b6e68c1111",
+                repo_commit="aaaa", target_commit="05b6e68c1111", behind_by=0, update_available=False, dirty=False)
+    base.update(changes)
+    return UpdateInfo(**base)
+
+
+class UpdateScreen(ThemedTestCase):
+    def check(self, info):
+        out = FakeTTY()
+        with patch.object(cli, "install_kind", return_value="git"), patch.object(cli, "validate_update_state"), \
+             patch.object(cli, "check_update", return_value=info), redirect_stdout(out):
+            code = cli.update(argparse.Namespace(check=True, json=False, repo=None, runtime=None, branch="main", remote="origin"))
+        return code, " ".join(visible(out.getvalue()).split())
+
+    def test_check_states(self) -> None:
+        code, text = self.check(_update_info())
+        self.assertEqual(0, code)
+        self.assertTrue(text.startswith("◆ Mac MCP · update"), text)
+        self.assertIn("Installed 05b6e68c", text)
+        self.assertTrue(text.endswith("✓ Mac MCP is up to date."), text)
+        code, text = self.check(_update_info(update_available=True, behind_by=2, target_commit="bbbbbbbb2222",
+                                             release_id="stable-2.2.1-r1", release_version="2.2.1"))
+        self.assertEqual(0, code)
+        self.assertIn("Verified stable bbbbbbbb · stable-2.2.1-r1 (v2.2.1)", text)
+        self.assertTrue(text.endswith("✓ A verified update is ready — try: mac-mcp update"), text)
+        code, text = self.check(_update_info(unverified_ahead=49))
+        self.assertIn("49 development commits ahead", text)
+        self.assertTrue(text.endswith("✓ No newer verified stable release."), text)
+        code, text = self.check(_update_info(dirty=True))
+        self.assertEqual(2, code)
+        self.assertTrue(text.endswith("✗ Update blocked: the repository has local changes"), text)
+
+    def test_an_error_before_any_screen_still_has_a_header(self) -> None:
+        out = FakeTTY()
+        with patch.object(cli, "install_kind", return_value="git"), \
+             patch.object(cli, "validate_update_state", side_effect=cli.UpdateError("The last update did not finish.")), \
+             redirect_stdout(out):
+            code = cli.update(argparse.Namespace(check=True, json=False, repo=None, runtime=None, branch="main", remote="origin"))
+        text = visible(out.getvalue())
+        self.assertEqual(1, code)
+        self.assertTrue(text.startswith("  ◆ Mac MCP · update\n\n  ✗ Update failed: The last update did not finish."), text)
+
+    def test_pkg_install(self) -> None:
+        out = FakeTTY()
+        with patch.object(cli, "install_kind", return_value="pkg"), redirect_stdout(out):
+            code = cli.update(argparse.Namespace(check=True, json=False))
+        text = " ".join(visible(out.getvalue()).split())
+        self.assertEqual(0, code)
+        self.assertIn("Download", text)
+        self.assertIn("ℹ", text)
+
+    def apply(self, info, return_code=0, log="step one\nstep two\n", raise_exc=None):
+        import tempfile
+        from mcp_server import update_helper
+        out, err = FakeTTY(), io.StringIO()
+        with tempfile.TemporaryDirectory() as temp:
+            log_path = cli.Path(temp) / "upd_1.log"
+            log_path.write_text(log)
+            proc = type("P", (), {"wait": lambda self: return_code})()
+            launch = patch.object(cli, "launch_detached_update",
+                                  side_effect=raise_exc or (lambda *a, **k: ({"updater_pid": 9, "log_path": str(log_path)}, proc)))
+            with patch.object(cli, "install_kind", return_value="git"), patch.object(cli, "validate_update_state"), \
+                 patch.object(cli, "resolve_update_paths", return_value=(cli.Path("/r"), cli.Path("/rt"))), \
+                 patch.object(cli, "check_update", return_value=info), \
+                 patch.object(cli, "secure_bootstrap_update_blocker", return_value=None), launch, \
+                 redirect_stdout(out), redirect_stderr(err):
+                code = cli.update(argparse.Namespace(check=False, json=False, repo=None, runtime=None, branch="main",
+                                                     remote="origin", skip_restart=False, skip_deps=False))
+        return code, re.sub(r"\d+\.\d+s", "0.0s", visible(out.getvalue())), err.getvalue()
+
+    def test_apply_success_and_up_to_date(self) -> None:
+        ready = _update_info(update_available=True, behind_by=1, target_commit="bbbbbbbb2222", release_id="stable-2.2.1-r1")
+        code, text, _ = self.apply(ready)
+        self.assertEqual(0, code)
+        self.assertIn("✓ Checked for a verified release", text)
+        self.assertIn("✓ Installed the update", text)
+        self.assertIn("✓ Updated to stable-2.2.1-r1", " ".join(text.split()))
+        self.assertNotIn("step one", text)
+        code, text, _ = self.apply(_update_info())
+        self.assertEqual(0, code)
+        self.assertIn("✓ Mac MCP is already up to date.", " ".join(text.split()))
+
+    def test_apply_failure_shows_the_end_of_the_log(self) -> None:
+        ready = _update_info(update_available=True, behind_by=1, target_commit="bbbbbbbb2222")
+        log = "".join(f"line {n}\n" for n in range(40)) + "ERROR: signature check failed\n"
+        code, text, _ = self.apply(ready, return_code=1, log=log)
+        self.assertEqual(1, code)
+        self.assertIn("✗ Install the update", text)
+        self.assertIn("ERROR: signature check failed", text)
+        self.assertNotIn("line 10\n", text)
+        self.assertIn("✗ The update did not finish — try: mac-mcp logs update", " ".join(text.split()))
+
+    def test_an_update_already_running(self) -> None:
+        ready = _update_info(update_available=True, behind_by=1, target_commit="bbbbbbbb2222")
+        code, text, err = self.apply(ready, raise_exc=cli.UpdateInProgress({"update_id": "upd_1", "log_path": "/l/upd.log"}))
+        self.assertEqual(1, code)
+        self.assertEqual("", err)
+        self.assertIn("already in progress", " ".join(text.split()))
+        self.assertIn("/l/upd.log", text)
+
+
 if __name__ == "__main__":
     unittest.main()
