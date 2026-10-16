@@ -39,7 +39,8 @@ byte-for-byte today's, when any of these holds:
 - `MAC_MCP_PLAIN=1` (new; for anyone who wants the old text in a terminal);
 - the command runs with `--json`.
 
-`mac-mcp stdio` never imports the style module.
+`mac-mcp stdio` never draws anything: it loads only the small style module (through the
+argument parser), never the screens or the live steps.
 
 Why: the menu app parses CLI text. `DoctorReport.parse` reads `doctor`'s `[PASS]`/`[WARN]`
 lines, `AppState.notice(for:result:)` turns `start`/`restart` output into notices, and
