@@ -1693,7 +1693,12 @@ def _public_endpoint_check(endpoint_url: str) -> str:
 
 
 def connect_config(args: argparse.Namespace) -> int:
+    style = Style.for_stream()
     if args.client in UNGUIDED_CLIENTS:
+        if style is not None:
+            from .cli_views import render_error
+            render_error(style, "connect-config", UNGUIDED_CLIENTS[args.client])
+            return 1
         print(f"mac-mcp connect-config: {UNGUIDED_CLIENTS[args.client]}", file=sys.stderr)
         return 1
     try:
@@ -1712,8 +1717,17 @@ def connect_config(args: argparse.Namespace) -> int:
             auth_env=args.auth_env,
         )
     except (ConnectionConfigError, PublicEndpointError) as exc:
+        if style is not None:
+            from .cli_views import render_error
+            render_error(style, "connect-config", str(exc))
+            return 1
         print(f"mac-mcp connect-config: {exc}", file=sys.stderr)
         return 1
+    if style is not None:
+        from .cli_views import render_connect_config
+        public_ok = (_public_endpoint_check(endpoint_url) == "ok") if endpoint_kind == "public" else None
+        render_connect_config(style, rendered, endpoint_kind, endpoint_url, public_ok, auth_required)
+        return 0
 
     print(f"Client: {rendered.client}")
     print(f"Target: {rendered.target}")

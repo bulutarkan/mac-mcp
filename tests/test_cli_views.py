@@ -592,5 +592,50 @@ class ConnectScreen(ThemedTestCase):
         self.assertNotIn("ApiKey", text)
 
 
+class ConnectConfigScreen(ThemedTestCase):
+    def run_config(self, client="codex", endpoint=("http://127.0.0.1:8765/mcp", "local")):
+        settings = type("S", (), {"allow_no_auth": False, "api_key": "never-printed"})()
+        out, err = FakeTTY(), io.StringIO()
+        with patch.object(cli, "_connect_config_endpoint", return_value=endpoint), \
+             patch.object(cli, "load_settings", return_value=settings), \
+             patch.object(cli, "_public_endpoint_check", return_value="unreachable"), \
+             redirect_stdout(out), redirect_stderr(err):
+            code = cli.connect_config(argparse.Namespace(client=client, endpoint="auto", name="mac-mcp", auth_env="MAC_MCP_API_KEY"))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_the_snippet_is_copyable_byte_for_byte(self) -> None:
+        from mcp_server.connection_config import render_connection_config
+        code, raw, _ = self.run_config()
+        self.assertEqual(0, code)
+        text = visible(raw)
+        self.assertTrue(text.startswith("  ◆ Mac MCP · connect-config\n\n"), text[:60])
+        self.assertIn("Client", text)
+        self.assertIn("Endpoint", text)
+        snippet = render_connection_config(client="codex", endpoint_url="http://127.0.0.1:8765/mcp", auth_required=True,
+                                           server_name="mac-mcp", auth_env="MAC_MCP_API_KEY").snippet
+        self.assertIn("\n" + snippet + "\n", raw)  # raw: no colour codes, no indent inside the snippet
+        self.assertIn("Copy into", text)
+        self.assertIn("Secret setup", text)
+        self.assertNotIn("never-printed", raw)
+        self.assertTrue(" ".join(text.split()).endswith("✓ Snippet ready — no secret is printed."), text[-120:])
+
+    def test_a_public_endpoint_that_does_not_answer_is_a_warning(self) -> None:
+        code, raw, _ = self.run_config(client="chatgpt", endpoint=("https://mac.example.com/mcp", "public"))
+        text = " ".join(visible(raw).split())
+        self.assertEqual(0, code)
+        self.assertIn("not reachable right now", text)
+        self.assertIn("⚠", text.rsplit("\n", 1)[-1])
+
+    def test_an_error_is_a_themed_line(self) -> None:
+        settings = type("S", (), {"allow_no_auth": False, "api_key": ""})()
+        out, err = FakeTTY(), io.StringIO()
+        with patch.object(cli, "_connect_config_endpoint", return_value=("http://127.0.0.1:8765/mcp", "local")), \
+             patch.object(cli, "load_settings", return_value=settings), redirect_stdout(out), redirect_stderr(err):
+            code = cli.connect_config(argparse.Namespace(client="codex", endpoint="auto", name="mac-mcp", auth_env="MAC_MCP_API_KEY"))
+        self.assertEqual(1, code)
+        self.assertIn("✗ authentication is required but MCP_API_KEY is not configured", " ".join(visible(out.getvalue()).split()))
+        self.assertNotIn("\n\n\n", visible(out.getvalue()))  # one blank line under the header, not two
+
+
 if __name__ == "__main__":
     unittest.main()

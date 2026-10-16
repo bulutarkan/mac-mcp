@@ -192,16 +192,17 @@ class Style:
         if not rows:
             return
         label_width = max(len(label) for _, label, _, _ in rows)
-        lead = len(INDENT) + 2  # the dot and its space
+        dotted = any(tone for tone, _, _, _ in rows)  # a block without dots has no dot column
+        lead = len(INDENT) + (2 if dotted else 0)
         column = lead + label_width + 2
         room = max(10, self.width - column)
         for tone, label, value, detail in rows:
-            dot = self.paint(SYMBOLS["dot"], tone) if tone else " "
+            dot = (self.paint(SYMBOLS["dot"], tone) if tone else " ") + " " if dotted else ""
             plain = value + (f" · {detail}" if detail else "")
             wrapped = textwrap.wrap(plain, room, break_long_words=True, break_on_hyphens=False) or [""]
             first = wrapped[0]
             painted = self._value(first, value, detail)
-            self.write(f"{INDENT}{dot} {self.paint(label.ljust(label_width), bold=True)}  {painted}")
+            self.write(f"{INDENT}{dot}{self.paint(label.ljust(label_width), bold=True)}  {painted}")
             for rest in wrapped[1:]:
                 self.write(" " * column + self.paint(rest, dim=True))
 
@@ -215,7 +216,8 @@ class Style:
         prefix = f"{self.paint(symbol, tone)} " if symbol else ""
         self.write(f"{INDENT}{prefix}{text}")
 
-    def summary(self, tone: str, text: str, next_command: Optional[str] = None, note: str = "") -> None:
+    def summary(self, tone: str, text: str, next_command: Optional[str] = None, note: str = "",
+                gap: bool = True) -> None:
         """The closing sentence; long ones wrap under their own first word. `note` is a dim
         aside after it, kept whole."""
         # The command never breaks across lines: its spaces are held by a non-space while wrapping.
@@ -227,7 +229,8 @@ class Style:
         tail = ""
         if note and len(lines[-1]) + 3 + len(note) <= room:
             tail = "   " + self.paint(note, dim=True)
-        self.write()
+        if gap:
+            self.write()
         for index, line in enumerate(lines):
             painted = self.paint(line, bold=True)
             if next_command and next_command in line:

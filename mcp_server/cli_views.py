@@ -282,3 +282,46 @@ def render_clients(style: Style, apps: list) -> None:
     waiting = next((app for app in present if not app.get("added")), None)
     style.summary("ok", f"Mac MCP is added to {added} of {len(present)} apps on this Mac",
                   next_command=f"mac-mcp connect --client {waiting['id']}" if waiting else None)
+
+
+def _wrapped_note(style: Style, title: str, text: str) -> None:
+    style.write(f"{INDENT}{style.paint(title, bold=True)}")
+    for line in str(text).splitlines():
+        for part in textwrap.wrap(line, style.width - len(INDENT) - 2) or [""]:
+            style.write(f"{INDENT}  {part}")
+
+
+def render_connect_config(style: Style, rendered, endpoint_kind: str, endpoint_url: str,
+                          public_ok: Optional[bool], auth_required: bool) -> None:
+    """The facts, then the snippet exactly as the app takes it (no colour, no indent)."""
+    rows = [(None, "Client", rendered.client, ""), (None, "Target", rendered.target, ""),
+            (None, "Endpoint", f"{endpoint_kind} · {endpoint_url}", "")]
+    if public_ok is not None:
+        rows.append(("ok", "Public check", "reachable", "") if public_ok else
+                    ("warn", "Public check", "not reachable right now", "the app connects once mac-mcp status says it is healthy"))
+    rows.append((None, "Authentication", "API key required · never printed" if auth_required else "disabled", ""))
+    style.header("connect-config")
+    style.rows(rows)
+    style.write()
+    style.write(f"{INDENT}{style.paint(f'Copy into {rendered.target}:', dim=True)}")
+    style.write()
+    # Raw, so a copy from the terminal pastes into the app's config unchanged.
+    style.stream.write(rendered.snippet.rstrip("\n") + "\n")
+    for title, text in (("Secret setup", rendered.secret_instruction), ("Verify", rendered.verify_instruction)):
+        if text:
+            style.write()
+            _wrapped_note(style, title, text)
+    if rendered.client == "chatgpt" and auth_required:
+        style.write()
+        _wrapped_note(style, "Note", "Use the query-key URL only because this ChatGPT connection path is header-limited; "
+                                     "upstream proxies/tunnels may observe query strings.")
+    if public_ok is False:
+        style.summary("warn", "Snippet ready, but the public address does not answer yet", next_command="mac-mcp status")
+    else:
+        style.summary("ok", "Snippet ready — no secret is printed.")
+
+
+def render_error(style: Style, command: str, message: str, next_command: Optional[str] = None) -> None:
+    """A command that could not run: the header, then the reason (the header leaves the gap)."""
+    style.header(command)
+    style.summary("error", message, next_command=next_command, gap=False)

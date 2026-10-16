@@ -107,6 +107,11 @@ class Primitives(unittest.TestCase):
             visible(stream.getvalue()),
         )
 
+    def test_a_block_without_dots_has_no_dot_column(self) -> None:
+        style, stream = self.style()
+        style.rows([(None, "Client", "codex", ""), (None, "Endpoint", "local", "")])
+        self.assertEqual("  Client    codex\n  Endpoint  local\n", visible(stream.getvalue()))
+
     def test_summary_names_the_next_command(self) -> None:
         style, stream = self.style()
         style.summary("error", "Mac MCP is not running", next_command="mac-mcp start")
