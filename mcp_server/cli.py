@@ -1864,47 +1864,52 @@ def status(args: argparse.Namespace) -> int:
     if rules["private_mode"]:
         say("privacy: private mode is on (nothing about this work is kept).")
 
+    tunnel_pid = cloudflare_pid if public is not None and public.mode == "cloudflare" else (
+        ngrok_pid if public is not None and public.mode == "ngrok" else None)
+    stray = [
+        {"name": name, "pid": pid}
+        for name, pid, mode in (("ngrok", ngrok_pid, "ngrok"), ("cloudflared", cloudflare_pid, "cloudflare"))
+        if pid is not None and (public is None or public.mode != mode)
+    ]
+    report = {
+        "ok": code == 0,
+        "state": state,
+        "exit_code": code,
+        "server": {
+            "running": server_running,
+            "pid": server_pid,
+            "identity": server_source,
+            "port": port,
+            "health": health,
+            "log": str(LOG_FILE),
+            "port_owners": port_owners,
+        },
+        "public_endpoint": {
+            "mode": public.mode if public is not None else None,
+            "url": public.endpoint_url if public is not None else None,
+            "tunnel_running": (
+                (cloudflare_running if public.mode == "cloudflare" else ngrok_running)
+                if public is not None and public.mode in {"cloudflare", "ngrok"} else None
+            ),
+            "tunnel_pid": tunnel_pid,
+            "route": public_route,
+            "error": public_error,
+        },
+        "stray_processes": stray,
+        "privacy": privacy,
+        "supervisor": supervision,
+        "remediation": remediation,
+    }
     if getattr(args, "json", False):
-        tunnel_pid = cloudflare_pid if public is not None and public.mode == "cloudflare" else (
-            ngrok_pid if public is not None and public.mode == "ngrok" else None)
-        stray = [
-            {"name": name, "pid": pid}
-            for name, pid, mode in (("ngrok", ngrok_pid, "ngrok"), ("cloudflared", cloudflare_pid, "cloudflare"))
-            if pid is not None and (public is None or public.mode != mode)
-        ]
-        report = {
-            "ok": code == 0,
-            "state": state,
-            "exit_code": code,
-            "server": {
-                "running": server_running,
-                "pid": server_pid,
-                "identity": server_source,
-                "port": port,
-                "health": health,
-                "log": str(LOG_FILE),
-                "port_owners": port_owners,
-            },
-            "public_endpoint": {
-                "mode": public.mode if public is not None else None,
-                "url": public.endpoint_url if public is not None else None,
-                "tunnel_running": (
-                    (cloudflare_running if public.mode == "cloudflare" else ngrok_running)
-                    if public is not None and public.mode in {"cloudflare", "ngrok"} else None
-                ),
-                "tunnel_pid": tunnel_pid,
-                "route": public_route,
-                "error": public_error,
-            },
-            "stray_processes": stray,
-            "privacy": privacy,
-            "supervisor": supervision,
-            "remediation": remediation,
-        }
         sys.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
-    else:
-        for line in lines:
-            sys.stdout.write(line + "\n")
+        return code
+    style = Style.for_stream()
+    if style is not None:
+        from .cli_views import render_status
+        render_status(style, report)
+        return code
+    for line in lines:
+        sys.stdout.write(line + "\n")
     return code
 
 

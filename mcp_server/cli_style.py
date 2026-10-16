@@ -146,9 +146,17 @@ class Style:
         self.write(f"{INDENT}{prefix}{text}")
 
     def summary(self, tone: str, text: str, next_command: Optional[str] = None) -> None:
-        tail = f" — try: {self.paint(next_command, 'brand')}" if next_command else ""
+        """The closing sentence; long ones wrap under their own first word."""
+        plain = text + (f" — try: {next_command}" if next_command else "")
+        lines = textwrap.wrap(plain, self.width - len(INDENT) - 2, break_on_hyphens=False) or [""]
         self.write()
-        self.write(f"{INDENT}{self.paint(SYMBOLS[tone], tone, bold=True)} {self.paint(text, bold=True)}{tail}")
+        for index, line in enumerate(lines):
+            painted = self.paint(line, bold=True)
+            if next_command and next_command in line:
+                head, _, rest = line.partition(next_command)
+                painted = self.paint(head, bold=True) + self.paint(next_command, "brand") + self.paint(rest, bold=True)
+            lead = f"{self.paint(SYMBOLS[tone], tone, bold=True)} " if index == 0 else "  "
+            self.write(f"{INDENT}{lead}{painted}")
 
     def steps(self) -> "Steps":
         from .cli_steps import Steps

@@ -102,5 +102,74 @@ class HomeAndHelp(ThemedTestCase):
         self.assertTrue(text.startswith("  ◆ Mac MCP · recipe\n"), text[:80])
 
 
+class StatusScreen(ThemedTestCase):
+    def report(self, **changes):
+        report = {
+            "ok": True, "state": "healthy", "exit_code": 0,
+            "server": {"running": True, "pid": 4321, "identity": "pid_record", "port": 8765, "health": "ok",
+                       "log": "/Users/x/.mac-mcp/mac-mcp.log", "port_owners": []},
+            "public_endpoint": {"mode": "cloudflare", "url": "https://mac.example.com/mcp", "tunnel_running": True,
+                                "tunnel_pid": 77, "route": "ok", "error": None},
+            "stray_processes": [], "privacy": {"paused": False, "private_mode": False},
+            "supervisor": {"enabled": True, "loaded": True, "intent": "running"}, "remediation": [],
+        }
+        for key, value in changes.items():
+            report[key] = {**report[key], **value} if isinstance(value, dict) and isinstance(report.get(key), dict) else value
+        return report
+
+    def render(self, report) -> str:
+        out = FakeTTY()
+        style = Style.for_stream(out, env=TTY_ENV)
+        cli_views.render_status(style, report)
+        return visible(out.getvalue())
+
+    def test_healthy(self) -> None:
+        text = self.render(self.report())
+        self.assertTrue(text.startswith("  ◆ Mac MCP · status\n\n"))
+        self.assertIn("  ● Running         pid 4321 · port 8765", text)
+        self.assertIn("  ● Public address  mac.example.com · Cloudflare", text)
+        self.assertIn("  ● Crash guard     watching", text)
+        self.assertIn("\n  Logs  ~/", text.replace("/Users/x", "~"))
+        self.assertTrue(text.rstrip("\n").endswith("✓ All good — AI apps can reach this Mac."), text)
+
+    def test_stopped_names_the_next_command(self) -> None:
+        text = self.render(self.report(ok=False, state="stopped", exit_code=1,
+                                       server={"running": False, "pid": None, "health": None},
+                                       remediation=["Start it with: mac-mcp start"]))
+        self.assertIn("● Stopped", text)
+        self.assertTrue(text.rstrip("\n").endswith("✗ Mac MCP is not running — try: mac-mcp start"), text)
+
+    def test_tunnel_down_ends_with_the_remediation(self) -> None:
+        text = self.render(self.report(ok=False, state="degraded", exit_code=2,
+                                       public_endpoint={"tunnel_running": False, "route": None},
+                                       remediation=["Run mac-mcp restart to start the cloudflare tunnel, or use --local-only to ignore it."]))
+        self.assertIn("● Public address  mac.example.com · Cloudflare · tunnel not running", text)
+        self.assertIn("⚠ Run mac-mcp restart to start the cloudflare tunnel", text)
+
+    def test_local_only_and_privacy_paused(self) -> None:
+        text = self.render(self.report(public_endpoint={"mode": "none", "url": None, "tunnel_running": None, "route": None},
+                                       privacy={"paused": True, "private_mode": False}))
+        self.assertIn("Public address  local only", text)
+        self.assertIn("● Privacy", text)
+        self.assertIn("observation paused", text)
+        self.assertIn("AI apps on this Mac can reach it.", text)
+
+    def test_status_command_uses_the_screen_and_keeps_its_exit_code(self) -> None:
+        missing = ProcessValidation("missing", None, "server", None, "record_missing")
+        public = type("Public", (), {"mode": "cloudflare", "endpoint_url": "https://mac.example.com/mcp"})()
+        out = FakeTTY()
+        with patch.object(cli, "_resolve_server_identity", return_value=(4321, "pid_record")), \
+             patch.object(cli, "_validate_managed_pid", return_value=missing), \
+             patch.object(cli, "_launchctl_pid", return_value=None), \
+             patch.object(cli, "_server_health", return_value="ok"), \
+             patch.object(cli, "CLOUDFLARE_PID_FILE", cli.Path("/nonexistent/cloudflared.pid")), \
+             patch.object(cli, "resolve_public_endpoint", return_value=public), \
+             redirect_stdout(out):
+            code = cli.status(argparse.Namespace(json=False, local_only=False))
+        self.assertEqual(2, code)
+        self.assertIn("tunnel not running", visible(out.getvalue()))
+        self.assertNotIn("overall: degraded", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -7,9 +7,11 @@ from __future__ import annotations
 import argparse
 import sys
 import textwrap
+import time
 from typing import Optional
+from urllib.parse import urlparse
 
-from .cli_style import INDENT, SYMBOLS, Style
+from .cli_style import INDENT, SYMBOLS, Style, home_path
 
 GROUPS = [
     ("Everyday", ["status", "start", "stop", "restart", "update"]),
@@ -83,3 +85,81 @@ def render_command_help(style: Style, parser: argparse.ArgumentParser) -> None:
     if example:
         style.write()
         style.write(f"{INDENT}{style.paint('Example', bold=True)}  {example}")
+
+
+_MODE_NAMES = {"cloudflare": "Cloudflare", "ngrok": "ngrok", "custom": "custom HTTPS"}
+
+
+def _host(url: Optional[str]) -> str:
+    return urlparse(url).netloc if url else ""
+
+
+def render_status(style: Style, report: dict) -> None:
+    server, public = report["server"], report["public_endpoint"]
+    state = report["state"]
+    rows = []
+    if server["running"] and server.get("health") != "unreachable":
+        rows.append(("ok", "Running", f"pid {server['pid']}", f"port {server['port']}"))
+    elif server["running"]:
+        rows.append(("warn", "Not answering", f"pid {server['pid']}", "/health does not answer"))
+    elif state == "port_conflict":
+        owners = ", ".join(f"{o['name'] or 'pid'} ({o['pid']})" for o in server.get("port_owners") or []) or "another program"
+        rows.append(("error", "Port in use", f"port {server['port']}", f"used by {owners}"))
+    elif state == "ownership_unverified":
+        rows.append(("warn", "Not verified", "a server is running that Mac MCP cannot verify", ""))
+    else:
+        rows.append(("error", "Stopped", f"not answering on port {server['port']}", ""))
+
+    mode = public.get("mode")
+    if public.get("error"):
+        rows.append(("error", "Public address", "configuration error", str(public["error"])))
+    elif mode in (None, "none"):
+        rows.append((None, "Public address", "local only", "AI apps on this Mac"))
+    else:
+        detail = _MODE_NAMES.get(mode, mode)
+        tone = "ok"
+        if public.get("tunnel_running") is False:
+            detail, tone = f"{detail} · tunnel not running", "warn"
+        elif public.get("route") == "unreachable":
+            detail, tone = f"{detail} · does not answer", "warn"
+        rows.append((tone, "Public address", _host(public.get("url")), detail))
+
+    supervisor = report.get("supervisor") or {}
+    if not supervisor.get("enabled"):
+        rows.append((None, "Crash guard", "off", ""))
+    elif not supervisor.get("loaded"):
+        rows.append(("warn", "Crash guard", "not loaded", "mac-mcp start loads it"))
+    else:
+        recovery = supervisor.get("last_recovery") or {}
+        detail = ""
+        if recovery:
+            detail = "last recovery " + time.strftime("%b %-d", time.localtime(float(recovery.get("at") or 0)))
+        if supervisor.get("backoff_until"):
+            detail = "backing off after repeated failures"
+        rows.append(("ok", "Crash guard", "watching", detail))
+
+    privacy = report.get("privacy") or {}
+    if privacy.get("paused"):
+        rows.append(("warn", "Privacy", "observation paused", "Settings › Privacy"))
+    elif privacy.get("private_mode"):
+        rows.append(("info", "Privacy", "private mode on", "nothing about this work is kept"))
+    for stray in report.get("stray_processes") or []:
+        rows.append(("warn", "Stray process", f"{stray['name']} pid {stray['pid']}", "not the selected mode"))
+
+    style.header("status")
+    style.rows(rows)
+    style.write()
+    style.write(f"{INDENT}{style.paint('Logs', bold=True)}  {style.paint(home_path(server['log']), dim=True)}")
+
+    remediation = (report.get("remediation") or [""])[0]
+    if state == "healthy":
+        local = mode in (None, "none")
+        style.summary("ok", "All good — AI apps on this Mac can reach it." if local else "All good — AI apps can reach this Mac.")
+    elif state == "stopped":
+        style.summary("error", "Mac MCP is not running", next_command="mac-mcp start")
+    elif state in ("unresponsive", "ownership_unverified"):
+        style.summary("error", "Mac MCP is not answering", next_command="mac-mcp restart")
+    elif state == "port_conflict":
+        style.summary("error", remediation or f"Port {server['port']} is taken")
+    else:
+        style.summary("warn", remediation or "The public address is not available")

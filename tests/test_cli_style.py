@@ -87,6 +87,15 @@ class Primitives(unittest.TestCase):
         style.summary("error", "Mac MCP is not running", next_command="mac-mcp start")
         self.assertEqual("\n  ✗ Mac MCP is not running — try: mac-mcp start\n", visible(stream.getvalue()))
 
+    def test_a_long_summary_wraps_under_its_text(self) -> None:
+        style, stream = self.style(width=50)
+        style.summary("error", "Port 8765 is used by Python (pid 50849). Mac MCP never stops programs it did not start.")
+        lines = visible(stream.getvalue()).strip("\n").split("\n")
+        self.assertTrue(all(len(line) <= 50 for line in lines), lines)
+        self.assertGreater(len(lines), 1)
+        self.assertTrue(lines[0].startswith("  ✗ Port 8765"), lines)
+        self.assertTrue(all(line.startswith("    ") for line in lines[1:]), lines)
+
     def test_a_narrow_terminal_wraps_values_under_their_column(self) -> None:
         style, stream = self.style(width=40)
         style.rows([("ok", "Public address", "a-very-long-host-name.example.com", "Cloudflare tunnel")])
