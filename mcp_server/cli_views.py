@@ -388,3 +388,10 @@ def render_credential_status(style: Style, state) -> None:
     else:
         style.rows([("error", "Cloudflare Tunnel", "saved but unsafe", str(state.reason))])
         style.summary("error", "The saved credential is not safe", next_command="mac-mcp credential cloudflare save")
+
+
+def dim_lines(style: Style, text: str, indent: str = INDENT) -> None:
+    """A dim aside, wrapped to the width under `indent`."""
+    for line in str(text).splitlines():
+        for part in textwrap.wrap(line, style.width - len(indent), break_on_hyphens=False) or [""]:
+            style.write(f"{indent}{style.paint(part, dim=True)}")

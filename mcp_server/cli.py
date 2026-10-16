@@ -3061,6 +3061,9 @@ def logins(args: argparse.Namespace) -> int:
     from . import login_vault
 
     command = args.logins_command
+    style = Style.for_stream(json_output=bool(getattr(args, "json", False)))
+    if style is not None:
+        return _logins_themed(args, style)
     try:
         if command == "list":
             rows = login_vault.list_logins()
@@ -3106,6 +3109,75 @@ def logins(args: argparse.Namespace) -> int:
         code = getattr(exc, "code", "invalid_arguments")
         print(json.dumps({"ok": False, "error": code, "message": str(exc)}) if getattr(args, "json", False)
               else f"mac-mcp logins: {exc}", file=sys.stderr if not getattr(args, "json", False) else sys.stdout)
+        return 1
+    return 2
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}{'' if count == 1 else 's'}"
+
+
+def _logins_themed(args: argparse.Namespace, style) -> int:
+    """logins in a terminal: sites and usernames only; a password typed here is read hidden."""
+    import shlex
+
+    from . import login_vault
+
+    command = args.logins_command
+    style.header("logins")
+    try:
+        if command == "list":
+            rows = login_vault.list_logins()
+            if not rows:
+                style.summary("info", "No saved logins", note="add one in Settings › Saved Logins", gap=False)
+                return 0
+            style.rows([(None, row["site"], row["username"],
+                         row["id"] + (" · also subdomains" if row.get("subdomains") else "")) for row in rows])
+            style.summary("ok", _plural(len(rows), "saved login"))
+            return 0
+        if command == "add":
+            if sys.stdin.isatty():
+                import getpass
+                password = getpass.getpass(f"{INDENT}Password for {args.username} at {args.site}: ")
+                style.write()
+            else:
+                password = sys.stdin.readline()
+                password = password[:-1] if password.endswith("\n") else password
+            try:
+                row = login_vault.add_login(args.site, args.username, password, label=args.label,
+                                            subdomains=True if args.subdomains else None)
+            finally:
+                password = ""
+            style.summary("ok", f"Saved the login for {row['site']}", gap=False)
+            return 0
+        if command == "subdomains":
+            row = login_vault.set_subdomains(args.login_id, args.state == "on")
+            scope = "also on its subdomains" if row["subdomains"] else "this site only"
+            style.summary("ok", f"{row['site']}: {scope}", gap=False)
+            return 0
+        if command == "remove":
+            if login_vault.remove_login(args.login_id):
+                style.summary("ok", "Removed the saved login", gap=False)
+                return 0
+            style.summary("error", "No such saved login", next_command="mac-mcp logins list", gap=False)
+            return 1
+        if command == "import-preview":
+            items = login_vault.preview_import(args.file)
+            if not items:
+                style.summary("info", "No usable logins", gap=False)
+                return 0
+            style.rows([(None, str(item["index"]), item["site"], item["username"]) for item in items])
+            style.summary("info", f"{_plural(len(items), 'login')} can be imported",
+                          next_command=f"mac-mcp logins import {shlex.quote(str(args.file))}")
+            return 0
+        if command == "import":
+            indexes = None if args.select == "all" else [int(part) for part in args.select.split(",") if part.strip()]
+            result = login_vault.import_logins(args.file, indexes, delete_file=args.delete_file)
+            style.summary("ok", f"Imported {_plural(result['imported'], 'login')} · skipped {result['skipped']}",
+                          note="export file deleted" if result["file_deleted"] else "", gap=False)
+            return 0
+    except (login_vault.VaultError, ValueError) as exc:
+        style.summary("error", str(exc), gap=False)
         return 1
     return 2
 
@@ -3194,6 +3266,9 @@ def catalog_command(args: argparse.Namespace) -> int:
 def recipe(args: argparse.Namespace) -> int:
     """List or run saved recipes for Shortcuts, Raycast and scripts."""
     _load_env()
+    style = Style.for_stream(json_output=bool(getattr(args, "json", False)))
+    if style is not None:
+        return _recipe_themed(args, style)
     if args.recipe_command == "list":
         code, body = _recipe_request("GET", "/dashboard/api/recipes")
         if args.json:
@@ -3232,6 +3307,82 @@ def recipe(args: argparse.Namespace) -> int:
     if body.get("ok"):
         return 0
     return 2 if body.get("status") == "approval_required" else 1
+
+
+def _recipe_params(item: dict) -> str:
+    return ", ".join(
+        f"{name}:{spec.get('type')}{'' if spec.get('required') and 'default' not in spec else '?'}"
+        for name, spec in (item.get("parameters") or {}).items()
+    )
+
+
+def _recipe_unreachable(style, body: dict, *, drawn: bool) -> None:
+    """The server is down or was never started: say so and name the command that starts it."""
+    text = ("Mac MCP has not been started on this Mac yet" if body.get("error") == "dashboard_token_missing"
+            else "Mac MCP is not running")
+    if drawn:
+        style.summary("error", text, next_command="mac-mcp start")
+    else:
+        from .cli_views import render_error
+        render_error(style, "recipe", text, next_command="mac-mcp start")
+
+
+def _recipe_themed(args: argparse.Namespace, style) -> int:
+    from .cli_steps import Steps
+    from .cli_views import dim_lines, render_error
+
+    if args.recipe_command == "list":
+        code, body = _recipe_request("GET", "/dashboard/api/recipes")
+        if code == 3:
+            _recipe_unreachable(style, body, drawn=False)
+            return code
+        if code:
+            render_error(style, "recipe", str(body.get("message") or body.get("error")))
+            return code
+        items = body.get("recipes") or []
+        style.header("recipe")
+        if not items:
+            style.summary("info", "No active recipes", gap=False)
+            dim_lines(style, "Save one with computer_plan(save_as_recipe=…), then activate it.", indent="    ")
+            return 0
+        style.rows([("ok" if item.get("status") == "active" else "warn", str(item.get("name") or item["recipe_id"]),
+                     item["recipe_id"], _recipe_params(item)) for item in items])
+        style.summary("ok", _plural(len(items), "recipe"))
+        return 0
+    values: dict = {}
+    for pair in args.param or []:
+        if "=" not in pair:
+            render_error(style, "recipe", f"--param must be name=value: {pair}")
+            return 1
+        key, value = pair.split("=", 1)
+        values[key.strip()] = value
+    style.header("recipe")
+    steps = Steps(style)
+    code, body = 0, {}
+    with steps.step(f"Ran {args.recipe_id}", failed_label=f"Run {args.recipe_id}") as state:
+        code, body = _recipe_request("POST", "/dashboard/api/recipes/run", {"recipe_id": args.recipe_id, "values": values})
+        if code == 0 and body.get("ok"):
+            pass
+        elif body.get("status") == "approval_required":
+            state.label = f"Ran {args.recipe_id} up to a step that needs approval"
+        else:
+            state.ok = False
+            if code != 3:
+                print(f"{body.get('status') or body.get('error')}: {body.get('message') or ''}".rstrip(": "))
+    name = body.get("name") or args.recipe_id
+    if code == 3:
+        _recipe_unreachable(style, body, drawn=True)
+        return code
+    if code == 0 and body.get("ok"):
+        style.summary("ok", f"{name} completed", note=_plural(int(body.get("steps_executed") or 0), "step"))
+        return 0
+    if body.get("status") == "approval_required":
+        style.summary("warn", f"{name} needs approval first")
+        if body.get("message"):
+            dim_lines(style, str(body["message"]), indent="    ")
+        return code or 2
+    style.summary("error", "The recipe did not complete")
+    return code or 1
 
 
 def logs(args: argparse.Namespace) -> int:

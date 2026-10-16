@@ -185,5 +185,153 @@ class AutostartScreen(ThemedTestCase):
         self.assertTrue(json.loads(raw)["start_at_login"])
 
 
+class RecipeScreen(ThemedTestCase):
+    BODY = {"recipes": [{"recipe_id": "r1", "status": "active", "name": "Morning",
+                         "parameters": {"city": {"type": "string", "required": True}, "n": {"type": "int"}}},
+                        {"recipe_id": "r2", "status": "paused", "name": "Plain"}]}
+
+    def run_recipe(self, response, **args):
+        with patch.object(cli, "_recipe_request", return_value=response) as request:
+            result = self.run_cmd(cli.recipe, NS(**{"json": False, **args}))
+        return (*result, request)
+
+    def test_list(self) -> None:
+        code, text, *_ = self.run_recipe((0, self.BODY), recipe_command="list")
+        self.assertEqual(0, code)
+        self.assertTrue(text.startswith("  ◆ Mac MCP · recipe\n\n"), text)
+        self.assertIn("● Morning  r1 · city:string, n:int?", text)
+        self.assertIn("● Plain    r2", text)
+        self.assertIn("✓ 2 recipes", text)
+
+    def test_empty(self) -> None:
+        code, text, *_ = self.run_recipe((0, {"recipes": []}), recipe_command="list")
+        self.assertEqual(0, code)
+        self.assertIn("ℹ No active recipes", text)
+        self.assertIn("computer_plan(save_as_recipe=…)", text)
+
+    def test_server_down_names_start(self) -> None:
+        down = {"error": "server_unreachable", "message": "Mac MCP is not running (x). Start it with: mac-mcp start"}
+        code, text, err, *_ = self.run_recipe((3, down), recipe_command="list")
+        self.assertEqual((3, ""), (code, err))
+        self.assertIn("✗ Mac MCP is not running — try: mac-mcp start", flat(text))
+        code, text, *_ = self.run_recipe((3, down), recipe_command="run", recipe_id="r1", param=None)
+        self.assertEqual(3, code)
+        self.assertIn("✗ Mac MCP is not running — try: mac-mcp start", flat(text))
+
+    def test_run_done(self) -> None:
+        code, text, _, _, request = self.run_recipe((0, {"ok": True, "name": "Morning", "steps_executed": 3}),
+                                                    recipe_command="run", recipe_id="r1", param=["city=Ankara"])
+        self.assertEqual(0, code)
+        self.assertIn("✓ Ran r1", text)
+        self.assertIn("✓ Morning completed   3 steps", text)
+        self.assertEqual({"recipe_id": "r1", "values": {"city": "Ankara"}}, request.call_args[0][2])
+
+    def test_run_needs_approval(self) -> None:
+        code, text, *_ = self.run_recipe((0, {"ok": False, "name": "Morning", "status": "approval_required",
+                                              "message": "Approve it in Settings"}),
+                                         recipe_command="run", recipe_id="r1", param=None)
+        self.assertEqual(2, code)
+        self.assertIn("⚠ Morning needs approval first", text)
+        self.assertIn("Approve it in Settings", text)
+
+    def test_run_failed(self) -> None:
+        code, text, *_ = self.run_recipe((0, {"ok": False, "status": "failed", "message": "step 2 broke"}),
+                                         recipe_command="run", recipe_id="r1", param=None)
+        self.assertEqual(1, code)
+        self.assertIn("✗ Run r1", text)
+        self.assertIn("failed: step 2 broke", text)
+        self.assertIn("✗ The recipe did not complete", text)
+
+    def test_bad_param(self) -> None:
+        code, text, err, *_ = self.run_recipe((0, {}), recipe_command="run", recipe_id="r1", param=["city"])
+        self.assertEqual((1, ""), (code, err))
+        self.assertIn("✗ --param must be name=value: city", text)
+
+
+class LoginsScreen(ThemedTestCase):
+    ROWS = [{"id": "l1", "site": "github.com", "username": "me", "subdomains": True, "password": "never"},
+            {"id": "l2", "site": "example.com", "username": "you", "subdomains": False}]
+
+    def logins(self, stdin=None, **args):
+        return self.run_cmd(cli.logins, NS(**{"json": False, **args}), stdin=stdin)
+
+    def test_list_never_prints_a_password(self) -> None:
+        from mcp_server import login_vault
+        with patch.object(login_vault, "list_logins", return_value=self.ROWS):
+            code, text, _, raw = self.logins(logins_command="list")
+        self.assertEqual(0, code)
+        self.assertTrue(text.startswith("  ◆ Mac MCP · logins\n\n"), text)
+        self.assertIn("github.com   me · l1 · also subdomains", text)
+        self.assertIn("example.com  you · l2", text)
+        self.assertIn("✓ 2 saved logins", text)
+        self.assertNotIn("never", raw)
+
+    def test_empty(self) -> None:
+        from mcp_server import login_vault
+        with patch.object(login_vault, "list_logins", return_value=[]):
+            code, text, *_ = self.logins(logins_command="list")
+        self.assertEqual(0, code)
+        self.assertIn("ℹ No saved logins", text)
+
+    def test_add_from_a_terminal_is_hidden(self) -> None:
+        from mcp_server import login_vault
+        with patch.object(login_vault, "add_login", return_value={"site": "github.com"}) as add, \
+             patch("getpass.getpass", return_value="pw-secret") as ask:
+            code, text, err, raw = self.logins(stdin=TTYInput(""), logins_command="add", site="github.com", username="me",
+                                               label=None, subdomains=False)
+        self.assertEqual(0, code)
+        ask.assert_called_once()
+        self.assertEqual("pw-secret", add.call_args[0][2])
+        self.assertNotIn("pw-secret", raw + err)
+        self.assertIn("✓ Saved the login for github.com", text)
+
+    def test_add_from_a_pipe(self) -> None:
+        from mcp_server import login_vault
+        with patch.object(login_vault, "add_login", return_value={"site": "github.com"}) as add, patch("getpass.getpass") as ask:
+            code, *_ = self.logins(stdin=io.StringIO("pw-1\n"), logins_command="add", site="github.com", username="me",
+                                   label=None, subdomains=False)
+        self.assertEqual(0, code)
+        ask.assert_not_called()
+        self.assertEqual("pw-1", add.call_args[0][2])
+
+    def test_subdomains_and_remove(self) -> None:
+        from mcp_server import login_vault
+        with patch.object(login_vault, "set_subdomains", return_value={"site": "github.com", "subdomains": True}):
+            code, text, *_ = self.logins(logins_command="subdomains", login_id="l1", state="on")
+        self.assertEqual(0, code)
+        self.assertIn("✓ github.com: also on its subdomains", text)
+        with patch.object(login_vault, "remove_login", return_value=True):
+            code, text, *_ = self.logins(logins_command="remove", login_id="l1")
+        self.assertEqual(0, code)
+        self.assertIn("✓ Removed the saved login", text)
+        with patch.object(login_vault, "remove_login", return_value=False):
+            code, text, *_ = self.logins(logins_command="remove", login_id="l9")
+        self.assertEqual(1, code)
+        self.assertIn("✗ No such saved login", text)
+
+    def test_import_preview_and_import(self) -> None:
+        from mcp_server import login_vault
+        items = [{"index": 0, "site": "a.com", "username": "x"}, {"index": 1, "site": "b.com", "username": "y"}]
+        with patch.object(login_vault, "preview_import", return_value=items):
+            code, text, *_ = self.logins(logins_command="import-preview", file="/f.csv")
+        self.assertEqual(0, code)
+        self.assertIn("0  a.com · x", text)
+        self.assertIn("ℹ 2 logins can be imported — try: mac-mcp logins import /f.csv", flat(text))
+        with patch.object(login_vault, "preview_import", return_value=[]):
+            code, text, *_ = self.logins(logins_command="import-preview", file="/f.csv")
+        self.assertIn("ℹ No usable logins", text)
+        with patch.object(login_vault, "import_logins", return_value={"imported": 2, "skipped": 1, "file_deleted": True}):
+            code, text, *_ = self.logins(logins_command="import", file="/f.csv", select="all", delete_file=True)
+        self.assertEqual(0, code)
+        self.assertIn("✓ Imported 2 logins · skipped 1   export file deleted", text)
+
+    def test_error(self) -> None:
+        from mcp_server import login_vault
+        with patch.object(login_vault, "remove_login", side_effect=login_vault.VaultError("locked", "The vault is locked.")):
+            code, text, err, _ = self.logins(logins_command="remove", login_id="l1")
+        self.assertEqual((1, ""), (code, err))
+        self.assertIn("✗ The vault is locked.", text)
+
+
 if __name__ == "__main__":
     unittest.main()
