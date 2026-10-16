@@ -17,6 +17,7 @@ from . import paths
 from .runtime_settings import (
     load_runtime_settings,
     memory_privacy,
+    run_detail_privacy,
     provider_enabled,
     run_evidence_privacy,
     server_setting,
@@ -124,6 +125,9 @@ def stores(*, measure: bool = True) -> List[Dict[str, Any]]:
     usage = usage_privacy()
     memory = memory_privacy()
     evidence = run_evidence_privacy()
+    run_detail = run_detail_privacy()
+    from .tools_agents import agent_retention_days  # late: tools_agents is large and imports this module's peers
+    agent_days = agent_retention_days()
     telemetry = paths.telemetry_dir()
     rows = [
         ("tool_activity", "Tool activity", "Which tools ran, when, how long and whether they worked (no prompts or results).",
@@ -134,14 +138,14 @@ def stores(*, measure: bool = True) -> List[Dict[str, Any]]:
         ("run_evidence", "Run timelines", "Steps of plans and recipes, with screenshots only if you turned them on.",
          [paths.runs_dir()], f"{evidence['retention_days']} days" + ("" if evidence["capture"] else ", screenshots off")),
         ("agents", "Delegated agents", "Prompts, output and results of agents Mac MCP started.",
-         [paths.agents_dir(), paths.agent_teams_dir()], "until deleted"),
+         [paths.agents_dir(), paths.agent_teams_dir()], f"{agent_days} days after they finish" if agent_days else "until deleted"),
         ("jobs", "Background jobs", "Output of long shell commands.", [paths.jobs_dir()], "until deleted"),
         ("file_history", "File change history", "Copies kept so file edits can be undone.", [paths.transactions_dir()],
          "until deleted"),
         ("provider_usage", "Agent token usage", "Tokens and cost reported by agent providers.", [paths.provider_usage_db()],
          f"{usage['retention_days']} days" if usage["enabled"] else "not recorded"),
         ("scheduled_tasks", "Scheduled Tasks", "Your scheduled tasks and the results of their last runs.",
-         [paths.scheduled_tasks_db()], "last 50 runs per task, 90 days"),
+         [paths.scheduled_tasks_db()], f"last 50 runs per task, 90 days; contents {run_detail['retention_days']} days"),
         ("saved_logins", "Saved logins", "Sites and usernames; passwords are in your login Keychain.", [paths.vault_dir()],
          "until deleted"),
         ("audit_log", "Audit log", "Tool names, outcomes and timing, for security review.", [paths.audit_log()],

@@ -508,6 +508,7 @@ class Scheduler:
         private = privacy_policy.policy(fresh=True)["private_mode"]
         if private:
             result = {key: result.get(key) for key in ("status", "reason")}
+            result["detail"] = {"private_mode": True}  # as execute() marks it, so the report says why
         task_id = store.get_run(run_id)["task_id"]
         verification = _verification(run_id, store.definition_of(task_id) or {}, result["status"], private)
         store.finish_run(run_id, result["status"], reason=result.get("reason"), summary=result.get("summary"),

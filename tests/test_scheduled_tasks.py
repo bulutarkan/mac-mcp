@@ -303,7 +303,7 @@ class ScriptRunTests(StoreCase):
 
     def test_python_with_arguments_in_its_folder_and_a_clean_environment(self) -> None:
         script = self.script("report.py", "import os, sys\nprint(os.getcwd())\nprint(sys.argv[1:])\n"
-                                          "print('KEY=' + os.environ.get('MCP_API_KEY', 'absent'))\n")
+                                          "print('api key passed on:', 'MCP_API_KEY' in os.environ)\n")
         with patch.dict(os.environ, {"MCP_API_KEY": "must-not-leak"}):
             result = self.run_task({"name": "Report", "kind": "script", "script": str(script),
                                     "args": "--week 'last week'", "interpreter": os.sys.executable,
@@ -311,7 +311,7 @@ class ScriptRunTests(StoreCase):
         self.assertEqual("done", result["status"])
         self.assertIn(str(self.folder.resolve()).replace("/private", ""), result["output"].replace("/private", ""))
         self.assertIn("['--week', 'last week']", result["output"])
-        self.assertIn("KEY=absent", result["output"])
+        self.assertIn("api key passed on: False", result["output"])  # (KEY=… lines are masked when stored, #199)
 
     def test_command_applescript_and_node(self) -> None:
         command = self.run_task({"name": "Cmd", "kind": "script", "command": "echo from-command && pwd",

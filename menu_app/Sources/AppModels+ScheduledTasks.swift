@@ -44,6 +44,8 @@ struct TaskRun: Identifiable {
     var startedAt: Date { Date(timeIntervalSince1970: raw["started_at"] as? Double ?? 0) }
     var scheduledFor: Date? { (raw["scheduled_for"] as? Double).map { Date(timeIntervalSince1970: $0) } }
     var detail: [String: Any]? { raw["detail"] as? [String: Any] }
+    /// When the run's contents were removed (Settings › Privacy, #199); how it ended is kept.
+    var detailsExpiredAt: Date? { (raw["details_expired_at"] as? Double).map { Date(timeIntervalSince1970: $0) } }
     /// The owner's output checks (#198): "verified" or "failed"; nil when the task has none or the run did not finish.
     var verification: [String: Any]? { raw["verification"] as? [String: Any] }
     var verificationState: String? { verification?["state"] as? String }

@@ -175,6 +175,22 @@ def run_evidence_privacy() -> dict[str, Any]:
     return {"capture": privacy_setting("run_evidence_capture", False) is True, "retention_days": days}
 
 
+# Scheduled Tasks run contents (#199): the result, output and steps' text and inputs. The run's
+# skeleton (how it ended, when, usage, fingerprints) stays for the run's own 90 days.
+RUN_DETAIL_RETENTION_CHOICES = (7, 30, 90)
+DEFAULT_RUN_DETAIL_RETENTION_DAYS = 30
+
+
+def run_detail_privacy() -> dict[str, Any]:
+    try:
+        days = int(privacy_setting("run_detail_retention_days", DEFAULT_RUN_DETAIL_RETENTION_DAYS))
+    except (TypeError, ValueError):
+        days = DEFAULT_RUN_DETAIL_RETENTION_DAYS
+    if days not in RUN_DETAIL_RETENTION_CHOICES:
+        days = min(RUN_DETAIL_RETENTION_CHOICES, key=lambda choice: abs(choice - days))
+    return {"retention_days": days}
+
+
 def security_setting(name: str, default: Any = None) -> Any:
     security = load_runtime_settings().get("security", {})
     if not isinstance(security, dict):

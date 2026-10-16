@@ -22,7 +22,7 @@ struct RunReportSheet: View {
         VStack(alignment: .leading, spacing: 0) {
             header
                 .padding(.horizontal, 22).padding(.top, 20).padding(.bottom, 12)
-            if isAgent && !steps.isEmpty {
+            if isAgent && !steps.isEmpty && shown.detailsExpiredAt == nil {
                 Picker("", selection: $tab) {
                     Text("Result").tag("result")
                     Text("Steps (\(steps.count))").tag("steps")
@@ -142,7 +142,12 @@ struct RunReportSheet: View {
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(shown.color.opacity(0.10)))
         }
         checksBox
-        if (shown.detail?["private_mode"] as? Bool) == true {
+        if shown.detailsExpiredAt != nil {
+            Label("The details of this run were removed after the time set in Settings › Privacy. How it ended, when, and its usage are kept.",
+                  systemImage: "clock.badge.xmark")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if (shown.detail?["private_mode"] as? Bool) == true {
             Label("Private mode was on, so the result was not kept.", systemImage: "eye.slash")
                 .font(.callout).foregroundStyle(.secondary)
         } else if isAgent {

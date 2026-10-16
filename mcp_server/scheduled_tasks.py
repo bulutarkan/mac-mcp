@@ -35,7 +35,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from . import paths, schedule_rules
+from . import paths, run_records, schedule_rules
+from .runtime_settings import run_detail_privacy
 
 KINDS = ("ai", "script")
 RUN_STATUSES = ("running", "done", "failed", "skipped", "timed_out")
@@ -149,6 +150,8 @@ def _db() -> Iterator[sqlite3.Connection]:
                 columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
                 if "verification" not in columns:  # databases from before output checks (#198)
                     conn.execute("ALTER TABLE runs ADD COLUMN verification TEXT")
+                if "details_expired_at" not in columns:  # before contents expired on their own (#199)
+                    conn.execute("ALTER TABLE runs ADD COLUMN details_expired_at REAL")
                 try:
                     path.chmod(0o600)
                 except OSError:
@@ -453,6 +456,7 @@ def _run_public(row: sqlite3.Row, *, brief: bool = False) -> Dict[str, Any]:
     if row["finished_at"] and row["status"] != "skipped":
         run["duration_s"] = round(row["finished_at"] - row["started_at"], 1)
     run["verification"] = _load(row["verification"])
+    run["details_expired_at"] = row["details_expired_at"]
     if not brief:
         run["output"] = row["output"]
         run["detail"] = _load(row["detail"])
@@ -673,6 +677,9 @@ def finish_run(run_id: str, status: str, *, reason: Optional[str] = None, summar
     if status not in RUN_STATUSES or status == "running":
         raise ValueError(f"bad run status {status}")
     now = time.time() if now is None else now
+    # Fingerprinted and masked for known secrets before anything is written (#199).
+    summary, output, detail = run_records.prepare(summary, output, detail)
+    reason = run_records.prepare(reason, None, None)[0]
     with _db() as conn:
         conn.execute(
             "UPDATE runs SET status=?, finished_at=?, reason=?, summary=?, output=?, exit_code=?, detail=?,"
@@ -741,6 +748,15 @@ def _prune(conn: sqlite3.Connection, task_id: str, now: float) -> None:
                  " (SELECT id FROM runs WHERE task_id=? ORDER BY started_at DESC LIMIT ?)",
                  (task_id, task_id, RUNS_PER_TASK))
     conn.execute("DELETE FROM runs WHERE status!='running' AND started_at<?", (now - RUN_RETENTION_DAYS * 86400,))
+    # The contents go first (Settings > Privacy > run details); how the run ended stays (#199).
+    cutoff = now - run_detail_privacy()["retention_days"] * 86400
+    for row in conn.execute(
+            "SELECT id, detail FROM runs WHERE status!='running' AND details_expired_at IS NULL"
+            " AND finished_at IS NOT NULL AND finished_at<?"
+            " AND (summary IS NOT NULL OR output IS NOT NULL OR detail IS NOT NULL)", (cutoff,)).fetchall():
+        skeleton = run_records.skeleton(_load(row["detail"]))
+        conn.execute("UPDATE runs SET summary=NULL, output=NULL, detail=?, details_expired_at=? WHERE id=?",
+                     (json.dumps(skeleton) if skeleton else None, now, row["id"]))
 
 
 # ── Change signal for the scheduler loop ─────────────────────────────────────

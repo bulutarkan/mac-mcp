@@ -1,5 +1,11 @@
 ## Unreleased
 
+### Scheduled task runs keep less, for less long (#199)
+- A run's contents (result, output, each step's text and inputs) are removed after **Settings › Privacy › Scheduled task run details**: 7, 30 (default) or 90 days. How the run ended, when, its usage and checks stay for the run's 90 days. The report says when the details were removed, and nothing is read back from the agent's files afterwards.
+- Known secrets (tokens, `NAME=value` keys, bearer headers, private keys) are masked before a run is written.
+- Each step with inputs or a command gets a keyed fingerprint (HMAC under a key that stays on this Mac), and each run one over its steps, so two runs that did the same thing can be told apart from ones that did not, even after their contents are gone.
+- A run followed after a restart in private mode is marked private like any other, and Settings › Privacy says how long agent folders and run contents are kept.
+
 ### Browser companions show whether they work (#188)
 - Settings › Connections › Browser shows the Chrome companion live: **Connected** with its version, **Reload in Chrome…** when the loaded companion is older than the server (missing a feature it should report, even on the same version number), or Chrome Setup… when it is not loaded. Safari's state refreshes while the pane is open, not only when the app starts. The Get Started checklist says which ones are on.
 - Chrome Setup… also copies the companion's folder path, so in Load unpacked ⌘⇧G and ⌘V go straight to it, and Mac MCP announces "Chrome companion connected" once it is loaded, with no check by hand.

@@ -46,7 +46,8 @@ from . import privacy_inventory, privacy_policy, schedule_rules
 from . import scheduled_tasks as task_store
 from . import scheduled_task_runner
 from .runtime_settings import (
-    MEMORY_RETENTION_CHOICES, USAGE_RETENTION_CHOICES, server_setting, update_runtime_setting, usage_privacy,
+    MEMORY_RETENTION_CHOICES, RUN_DETAIL_RETENTION_CHOICES, USAGE_RETENTION_CHOICES, run_detail_privacy, server_setting,
+    update_runtime_setting, usage_privacy,
 )
 from .tools_memory import memory_clear, memory_export_all, memory_overview
 from .usage_metering import clear_usage
@@ -717,6 +718,8 @@ def create_dashboard_routes(
         return JSONResponse({"ok": True, **current, "stores": privacy_inventory.stores(),
                              "recipients": privacy_inventory.recipients(),
                              "filevault": privacy_inventory.filevault_on(),
+                             "run_detail_retention_days": run_detail_privacy()["retention_days"],
+                             "run_detail_retention_choices": list(RUN_DETAIL_RETENTION_CHOICES),
                              "exclude_from_backups": privacy_policy.privacy_setting("exclude_from_backups", False) is True})
 
     async def privacy_settings(request: Request) -> Response:
@@ -726,6 +729,11 @@ def create_dashboard_routes(
             return denied
         body = await _json_body(request)
         updates: Dict[str, Any] = {}
+        if "run_detail_retention_days" in body:
+            if body["run_detail_retention_days"] not in RUN_DETAIL_RETENTION_CHOICES or isinstance(body["run_detail_retention_days"], bool):
+                return JSONResponse({"ok": False, "error": "invalid_run_detail_retention_days",
+                                     "allowed": list(RUN_DETAIL_RETENTION_CHOICES)}, status_code=400)
+            updates["run_detail_retention_days"] = int(body["run_detail_retention_days"])
         for field, key in (("paused", "observation_paused"), ("private_mode", "private_mode")):
             if field in body:
                 if not isinstance(body[field], bool):
@@ -757,6 +765,7 @@ def create_dashboard_routes(
         if "exclude_from_backups" in updates:
             backups = await asyncio.to_thread(privacy_inventory.set_backup_exclusion, updates["exclude_from_backups"])
         return JSONResponse({"ok": True, **privacy_policy.policy(fresh=True),
+                             "run_detail_retention_days": run_detail_privacy()["retention_days"],
                              "exclude_from_backups": privacy_policy.privacy_setting("exclude_from_backups", False) is True,
                              **({"backups": backups} if backups is not None else {})})
 
@@ -846,7 +855,8 @@ def create_dashboard_routes(
         except task_store.TaskError as exc:
             return _task_error(exc)
         detail = run.get("detail") or {}
-        if detail.get("agent_id") and "steps" not in detail and not detail.get("private_mode"):
+        if (detail.get("agent_id") and "steps" not in detail and not detail.get("private_mode")
+                and not run.get("details_expired_at")):  # expired contents never come back (#199)
             # Runs from before steps were kept: read them from the agent's files while those exist.
             report = str(run.get("output") or "").split("TASK_RESULT_ENVELOPE_V1", 1)[0].strip()
             run["output"] = report

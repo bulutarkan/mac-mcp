@@ -21,6 +21,8 @@ struct PrivacyPane: View {
     @MacMCPState private var newApp = ""
     @MacMCPState private var newSite = ""
     @MacMCPState private var loaded = false
+    @MacMCPState private var runDetailDays = 30
+    @MacMCPState private var runDetailChoices: [Int] = [7, 30, 90]
     @MacMCPState private var message = ""
 
     var body: some View {
@@ -102,6 +104,26 @@ struct PrivacyPane: View {
                             if index > 0 { Divider() }
                             storeRow(store)
                         }
+                        Divider()
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Scheduled task run details").font(.callout)
+                                Text("Results, output and each step’s text. How a run ended, when, and its usage stay for 90 days.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer()
+                            Picker("Keep run details", selection: Binding(get: { runDetailDays }, set: { days in
+                                runDetailDays = days
+                                save(["run_detail_retention_days": days])
+                            })) {
+                                ForEach(runDetailChoices, id: \.self) { days in Text("\(days) days").tag(days) }
+                            }
+                            .labelsHidden()
+                            .frame(width: 110)
+                            .disabled(!loaded)
+                        }
+                        .padding(.vertical, 6)
                     }
                     .padding(.vertical, 4)
                 }
@@ -314,6 +336,8 @@ struct PrivacyPane: View {
         if let value = object["exclude_from_backups"] as? Bool { excludeFromBackups = value }
         if let value = object["blocked_categories"] as? [String] { blockedCategories = value }
         if let rows = object["recipients"] as? [[String: Any]] { recipients = rows }
+        if let days = object["run_detail_retention_days"] as? Int { runDetailDays = days }
+        if let choices = object["run_detail_retention_choices"] as? [Int], !choices.isEmpty { runDetailChoices = choices }
     }
 
     private func load() async {
@@ -334,7 +358,9 @@ struct PrivacyPane: View {
                 if let object = try await state.dashboardJSON("dashboard/api/privacy/settings", body: changes) as? [String: Any] {
                     apply(object)
                     message = "Saved · applies right away"
-                    if changes.keys.contains("exclude_from_backups") { await load() }
+                    if changes.keys.contains("exclude_from_backups") || changes.keys.contains("run_detail_retention_days") {
+                        await load()  // the store list says how long things are kept
+                    }
                 }
             } catch {
                 message = "Couldn’t save. Is Mac MCP running?"
