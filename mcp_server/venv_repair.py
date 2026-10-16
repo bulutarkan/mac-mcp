@@ -128,17 +128,24 @@ def choose_interpreter(preferred: str | None = None) -> tuple[Path, dict]:
     )
 
 
-def _run(cmd: list[str], *, timeout: float = 900.0, cwd: Path | None = None) -> None:
+def _run(cmd: list[str], *, timeout: float = 900.0, cwd: Path | None = None, quiet: bool = False) -> None:
+    """Run one build command. `quiet` keeps its output off the terminal (a live screen is
+    drawn there) and puts the end of it in the error instead."""
     print("+ " + " ".join(cmd), flush=True)
-    proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None, timeout=timeout, stdin=subprocess.DEVNULL)
+    extra = {"capture_output": True, "text": True} if quiet else {}
+    proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None, timeout=timeout, stdin=subprocess.DEVNULL, **extra)
     if proc.returncode != 0:
-        raise RuntimeError(f"command failed ({proc.returncode}): {cmd[0]} {' '.join(cmd[1:3])}")
+        message = f"command failed ({proc.returncode}): {cmd[0]} {' '.join(cmd[1:3])}"
+        if quiet:
+            tail = "\n".join(((proc.stdout or "") + (proc.stderr or "")).strip().splitlines()[-10:])
+            message += ("\n" + tail) if tail else ""
+        raise RuntimeError(message)
 
 
-def _verify(venv: Path, runtime: Path) -> None:
+def _verify(venv: Path, runtime: Path, quiet: bool = False) -> None:
     python = venv / "bin" / "python"
-    _run([str(python), "-m", "pip", "check"], timeout=120)
-    _run([str(python), "-c", _IMPORT_CHECK], timeout=120, cwd=runtime)
+    _run([str(python), "-m", "pip", "check"], timeout=120, quiet=quiet)
+    _run([str(python), "-c", _IMPORT_CHECK], timeout=120, cwd=runtime, quiet=quiet)
 
 
 def _retarget_scripts(venv: Path, old: Path) -> int:
@@ -161,7 +168,7 @@ def _retarget_scripts(venv: Path, old: Path) -> int:
     return changed
 
 
-def repair(runtime: Path, *, python: str | None = None, force: bool = False) -> int:
+def repair(runtime: Path, *, python: str | None = None, force: bool = False, quiet: bool = False) -> int:
     state = inspect_venv(runtime)
     if state["status"] == "ok" and not force:
         print(f"The runtime venv is healthy (Python {state.get('version')}); nothing to repair.")
@@ -174,12 +181,12 @@ def repair(runtime: Path, *, python: str | None = None, force: bool = False) -> 
     print(f"Runtime venv: {state['status']}. Rebuilding with {interpreter} "
           f"(Python {'.'.join(map(str, info['version']))}).", flush=True)
     try:
-        _run([str(interpreter), "-m", "venv", str(staged)], timeout=300)
+        _run([str(interpreter), "-m", "venv", str(staged)], timeout=300, quiet=quiet)
         _run([str(staged / "bin" / "python"), "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
-              "--upgrade", "pip", "setuptools", "wheel"])
+              "--upgrade", "pip", "setuptools", "wheel"], quiet=quiet)
         _run([str(staged / "bin" / "python"), "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
-              "-e", str(runtime)])
-        _verify(staged, runtime)
+              "-e", str(runtime)], quiet=quiet)
+        _verify(staged, runtime, quiet)
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
         shutil.rmtree(staged, ignore_errors=True)
         print(f"Repair stopped before touching the active venv: {exc}", file=sys.stderr)
@@ -192,8 +199,8 @@ def repair(runtime: Path, *, python: str | None = None, force: bool = False) -> 
             moved = True
         os.replace(staged, venv)
         _retarget_scripts(venv, staged)
-        _verify(venv, runtime)
-        _run([str(venv / "bin" / "mac-mcp"), "--version"], timeout=60)
+        _verify(venv, runtime, quiet)
+        _run([str(venv / "bin" / "mac-mcp"), "--version"], timeout=60, quiet=quiet)
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
         failed = runtime / f".venv.failed-{stamp}"
         if venv.exists():

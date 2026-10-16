@@ -985,6 +985,9 @@ def repair(args: argparse.Namespace) -> int:
             mark = "ok " if row.ok else "fix"
             print(f"  [{mark}] {row.label}: {row.detail}" + ("" if row.ok else f" -> {row.fix}"))
 
+    style = Style.for_stream()
+    if style is not None:
+        return _repair_themed(args, style, checks)
     found = checks()
     show(found)
     broken = [row for row in found if not row.ok]
@@ -1016,6 +1019,92 @@ def repair(args: argparse.Namespace) -> int:
     print("After repair:")
     show(after)
     return 0 if all(row.ok for row in after) else 1
+
+
+_REPAIR_STEPS = {
+    "venv": ("Rebuilt the Python environment", "Rebuild the Python environment"),
+    "cli": ("Recreated the mac-mcp command", "Recreate the mac-mcp command"),
+    "supervisor": ("Reinstalled the start-at-login job", "Reinstall the start-at-login job"),
+    "app": ("Reinstalled the menu bar app", "Reinstall the menu bar app"),
+}
+
+
+def _repair_rows(rows) -> list:
+    return [("ok" if row.ok else "error", row.label, home_path(row.detail), "" if row.ok else f"fix: {row.fix}")
+            for row in rows]
+
+
+def _repair_one(key: str) -> bool:
+    """One fix, quietly: what it prints (also on stderr, also its commands) stays in the step."""
+    import contextlib
+
+    with contextlib.redirect_stderr(sys.stdout):
+        if key == "venv":
+            from .venv_repair import repair as repair_venv
+            try:
+                return repair_venv(PROJECT_ROOT, quiet=True) == 0
+            except SystemExit as exc:  # no usable Python on this Mac
+                print(exc)
+                return False
+        if key == "cli":
+            from .cli_bootstrap import ensure_cli_launcher
+            try:
+                ensure_cli_launcher(PROJECT_ROOT, default_cli_path(), strict=True)
+            except Exception as exc:  # the step shows why; the checks after say what is left
+                print(f"{type(exc).__name__}: {exc}")
+                return False
+            return True
+        if key == "supervisor":
+            _ensure_supervisor()
+            return True
+        if key == "app":
+            installer = PROJECT_ROOT / "menu_app" / "install_app.sh"
+            if STATE_DIR.resolve() != DEFAULT_STATE_DIR.resolve():
+                print("Not the default install: the menu bar app is not reinstalled from here.")
+                return False
+            if installer.is_file() and shutil.which("xcrun") and subprocess.run(
+                    ["/usr/bin/xcrun", "--find", "swiftc"], capture_output=True).returncode == 0:
+                proc = subprocess.run([str(installer)], check=False, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    print("\n".join(((proc.stdout or "") + (proc.stderr or "")).strip().splitlines()[-15:]))
+                return proc.returncode == 0
+            print("The menu bar app cannot be rebuilt here; install the latest package from "
+                  "https://github.com/bulutarkan/mac-mcp/releases to put it back.")
+            return False
+    return False
+
+
+def _repair_themed(args: argparse.Namespace, style, checks) -> int:
+    from .cli_steps import Steps
+
+    found = checks()
+    broken = [row for row in found if not row.ok]
+    style.header("repair")
+    if not getattr(args, "yes", False) or not broken:
+        style.rows(_repair_rows(found))
+        if not broken:
+            style.summary("ok", "Nothing to repair")
+        else:
+            style.summary("warn", f"{_plural(len(broken), 'part')} need{'s' if len(broken) == 1 else ''} repair",
+                          next_command="mac-mcp repair --yes")
+        return 0
+    steps = Steps(style)
+    for row in broken:
+        done, running = _REPAIR_STEPS.get(row.key, (f"Repaired {row.label}", f"Repair {row.label}"))
+        with steps.step(done, failed_label=running) as state:
+            state.ok = _repair_one(row.key)
+    after = checks()
+    style.write()
+    style.rows(_repair_rows(after))
+    left = [row for row in after if not row.ok]
+    if left:
+        style.summary("error", f"{_plural(len(left), 'part')} still need{'s' if len(left) == 1 else ''} repair",
+                      next_command="mac-mcp doctor")
+        return 1
+    # A rebuilt environment is used once the server starts on it again.
+    rebuilt = any(row.key == "venv" for row in broken)
+    style.summary("ok", f"Repaired {_plural(len(broken), 'part')}", next_command="mac-mcp restart" if rebuilt else None)
+    return 0
 
 
 def supervisor_report() -> dict:

@@ -466,5 +466,100 @@ class ConformanceScreen(ThemedTestCase):
         self.assertIn("⚠ 1 thing to look at", text)
 
 
+class RepairScreen(ThemedTestCase):
+    def checks(self, *broken):
+        from mcp_server import lifecycle
+        rows = [("venv", "Python environment", "Python 3.14", "rebuild the runtime's virtual environment"),
+                ("cli", "mac-mcp command", "/u/.local/bin/mac-mcp", "recreate the launcher for this runtime"),
+                ("app", "Menu bar app", "/u/Applications/Mac MCP.app", "reinstall the menu bar app")]
+        return [lifecycle.Check(key, label, key not in broken, detail, fix if key in broken else "")
+                for key, label, detail, fix in rows]
+
+    def run_repair(self, checks, yes=False, **patches):
+        from mcp_server import lifecycle
+        with patch.object(lifecycle, "repair_checks", side_effect=checks):
+            return self.run_cmd(cli.repair, NS(yes=yes))
+
+    def test_nothing_to_repair(self) -> None:
+        code, text, *_ = self.run_repair([self.checks()])
+        self.assertEqual(0, code)
+        self.assertTrue(text.startswith("  ◆ Mac MCP · repair\n\n"), text)
+        self.assertIn("● Python environment  Python 3.14", text)
+        self.assertIn("✓ Nothing to repair", text)
+
+    def test_preview_names_the_command(self) -> None:
+        code, text, *_ = self.run_repair([self.checks("cli")])
+        self.assertEqual(0, code)
+        self.assertIn("● mac-mcp command /u/.local/bin/mac-mcp · fix: recreate the launcher for this runtime", flat(text))
+        self.assertIn("⚠ 1 part needs repair — try: mac-mcp repair --yes", flat(text))
+
+    def test_yes_repairs_with_quiet_subprocesses(self) -> None:
+        import subprocess
+        with patch("mcp_server.venv_repair.repair", return_value=0) as venv, \
+             patch("mcp_server.cli_bootstrap.ensure_cli_launcher") as launcher, \
+             patch.object(cli, "STATE_DIR", cli.DEFAULT_STATE_DIR), patch.object(Path, "is_file", return_value=True), \
+             patch.object(cli.shutil, "which", return_value="/usr/bin/xcrun"), \
+             patch.object(cli.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "BUILD-LOG\n", "")) as run:
+            code, text, *_ = self.run_repair([self.checks("venv", "cli", "app"), self.checks()], yes=True)
+        self.assertEqual(0, code)
+        self.assertIn("✓ Rebuilt the Python environment", text)
+        self.assertIn("✓ Recreated the mac-mcp command", text)
+        self.assertIn("✓ Reinstalled the menu bar app", text)
+        self.assertIn("✓ Repaired 3 parts", text)
+        self.assertNotIn("BUILD-LOG", text)
+        self.assertTrue(venv.call_args.kwargs.get("quiet"))
+        launcher.assert_called_once()
+        self.assertTrue(all(call.kwargs.get("capture_output") for call in run.call_args_list), run.call_args_list)
+
+    def test_a_rebuilt_environment_names_restart(self) -> None:
+        with patch("mcp_server.venv_repair.repair", return_value=0):
+            code, text, *_ = self.run_repair([self.checks("venv"), self.checks()], yes=True)
+        self.assertEqual(0, code)
+        self.assertIn("✓ Repaired 1 part — try: mac-mcp restart", flat(text))
+
+    def test_a_failing_fix_shows_its_reason(self) -> None:
+        import subprocess
+        failed = subprocess.CompletedProcess([], 1, "", "swiftc: error: no such module\n")
+        with patch.object(cli, "STATE_DIR", cli.DEFAULT_STATE_DIR), patch.object(Path, "is_file", return_value=True), \
+             patch.object(cli.shutil, "which", return_value="/usr/bin/xcrun"), \
+             patch.object(cli.subprocess, "run", side_effect=[subprocess.CompletedProcess([], 0), failed]):
+            code, text, *_ = self.run_repair([self.checks("app"), self.checks("app")], yes=True)
+        self.assertEqual(1, code)
+        self.assertIn("✗ Reinstall the menu bar app", text)
+        self.assertIn("swiftc: error: no such module", text)
+        self.assertIn("✗ 1 part still needs repair — try: mac-mcp doctor", flat(text))
+
+    def test_venv_errors_on_stderr_are_kept_in_the_step(self) -> None:
+        import sys
+        def broken(*args, **kwargs):
+            print("Repair stopped before touching the active venv: pip failed", file=sys.stderr)
+            return 1
+        with patch("mcp_server.venv_repair.repair", side_effect=broken):
+            code, text, err, _ = self.run_repair([self.checks("venv"), self.checks("venv")], yes=True)
+        self.assertEqual((1, ""), (code, err))
+        self.assertIn("✗ Rebuild the Python environment", text)
+        self.assertIn("pip failed", text)
+
+
+class VenvRepairQuiet(unittest.TestCase):
+    def test_quiet_commands_capture_their_output_and_report_its_end(self) -> None:
+        import subprocess
+        from mcp_server import venv_repair
+        result = subprocess.CompletedProcess([], 1, "line 1\nERROR: no matching distribution\n", "")
+        with patch.object(venv_repair.subprocess, "run", return_value=result) as run, redirect_stdout(io.StringIO()):
+            with self.assertRaises(RuntimeError) as caught:
+                venv_repair._run(["pip", "install", "x"], quiet=True)
+        self.assertTrue(run.call_args.kwargs.get("capture_output"))
+        self.assertIn("ERROR: no matching distribution", str(caught.exception))
+
+    def test_loud_commands_are_unchanged(self) -> None:
+        import subprocess
+        from mcp_server import venv_repair
+        with patch.object(venv_repair.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run, \
+             redirect_stdout(io.StringIO()):
+            venv_repair._run(["pip", "check"])
+        self.assertNotIn("capture_output", run.call_args.kwargs)
+
+
 if __name__ == "__main__":
     unittest.main()
