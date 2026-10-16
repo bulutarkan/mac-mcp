@@ -38,9 +38,6 @@ struct ProviderUsageStyle {
     }
 }
 
-/// Providers whose CLI gives Mac MCP no token counts, so Usage says so instead of showing zero.
-private let providersWithoutUsageReports: Set<String> = ["kimi"]
-
 private struct ProviderUsageEntry: Identifiable {
     let id: String
     let title: String
@@ -117,17 +114,9 @@ struct ProviderUsageSection: View {
     private var idleTitles: [String] {
         let activeIDs = Set(active.map(\.id))
         return AgentProviders.names
-            .filter { !activeIDs.contains($0.key) && !providersWithoutUsageReports.contains($0.key) }
+            .filter { !activeIDs.contains($0.key) }
             .map(\.value)
             .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-    }
-
-    private var unreportedTitles: [String] {
-        let activeIDs = Set(active.map(\.id))
-        return providersWithoutUsageReports
-            .filter { !activeIDs.contains($0) }
-            .compactMap { AgentProviders.name($0) }
-            .sorted()
     }
 
     // MARK: Header
@@ -240,9 +229,6 @@ struct ProviderUsageSection: View {
                 VStack(alignment: .leading, spacing: 3) {
                     if !active.isEmpty, !idleTitles.isEmpty {
                         Text("No activity: \(idleTitles.joined(separator: ", "))")
-                    }
-                    if !unreportedTitles.isEmpty {
-                        Text("\(unreportedTitles.joined(separator: ", ")) doesn't report token usage.")
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)

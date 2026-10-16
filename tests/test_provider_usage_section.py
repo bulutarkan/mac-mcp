@@ -33,8 +33,22 @@ class ProviderUsageSectionTests(unittest.TestCase):
         # Rows start folded and the busiest agent comes first.
         self.assertIn("@MacMCPState private var expanded: Set<String> = []", section)
         self.assertIn("if lhs.total != rhs.total { return lhs.total > rhs.total }", section)
-        # Kimi reports no tokens; it is named as such rather than shown as zero.
-        self.assertIn('providersWithoutUsageReports: Set<String> = ["kimi"]', section)
+        # Every agent reports tokens now (Kimi from its session journal), so none is singled out.
+        self.assertNotIn("providersWithoutUsageReports", section)
+
+    def test_usage_page_leads_with_an_overview_and_folds_rare_settings(self) -> None:
+        settings = (SOURCES / "SettingsView.swift").read_text(encoding="utf-8")
+        pane = settings[settings.index("    private var usagePane: some View {"):settings.index("    private func usageOverviewCard(")]
+        order = ["usageOverviewCard(usage)", "usageActivityCard(usage)", "UsageTopToolsList(", "ProviderUsageSection(", "usageStorageCard"]
+        self.assertEqual(sorted(order, key=pane.index), order)
+        # Measurement details live in a tooltip, not their own box; data and memory settings start folded.
+        self.assertNotIn('Label("Measurement", systemImage: "ruler")', settings)
+        self.assertIn(".help(usageMeasurementHelp(usage))", settings)
+        overview = (SOURCES / "UsageOverview.swift").read_text(encoding="utf-8")
+        self.assertIn("@MacMCPState private var expanded = false", overview)
+        self.assertIn("private static let failureMark = 0.05", overview)
+        build = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")
+        self.assertIn('"${SCRIPT_DIR}/Sources/UsageOverview.swift"', build)
 
     def test_every_known_agent_has_its_own_style_and_formatting_holds(self) -> None:
         providers = _swift_block(SOURCES / "SettingsStore.swift", "enum AgentProviders {")
