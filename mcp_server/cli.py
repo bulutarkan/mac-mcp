@@ -24,7 +24,7 @@ from urllib.request import Request as UrlRequest, urlopen
 from dotenv import load_dotenv
 
 from . import paths
-from .cli_style import Style, ThemedArgumentParser, home_path
+from .cli_style import INDENT, Style, ThemedArgumentParser, home_path
 from .security import dashboard_token_path, load_settings, validate_bootstrap_security
 from .public_endpoint import (
     PublicEndpointError,
@@ -2878,7 +2878,7 @@ def _update_themed(args: argparse.Namespace, style) -> int:
         if not state.ok:
             style.summary("error", "The update did not finish", next_command="mac-mcp logs update")
             return 1
-        style.summary("ok", f"Updated to {info.release_id or info.target_commit[:8]}", note=home_path(log_path))
+        style.summary("ok", f"Updated to {info.release_id or info.target_commit[:8]}", note=f"log {home_path(log_path)}")
         return 0
     except UpdateInProgress as exc:
         where = f" Follow it in {exc.state['log_path']}." if exc.state.get("log_path") else ""
@@ -3113,6 +3113,9 @@ def logs(args: argparse.Namespace) -> int:
     else:
         path = paths[args.component]
     limits = log_limits()
+    style = Style.for_stream()
+    if style is not None:
+        return _logs_themed(args, style, paths, path, limits)
     if args.list:
         for name, item in {**paths, "update": update_logs_dir()}.items():
             try:
@@ -3128,6 +3131,40 @@ def logs(args: argparse.Namespace) -> int:
         return 1
     print(f"== {path} (last {args.lines} lines, secrets redacted)")
     print(tail_log(path, args.lines))
+    return 0
+
+
+def _logs_themed(args: argparse.Namespace, style, paths: dict, path: Path, limits: dict) -> int:
+    """logs in a terminal: a header and one line about the log, then its lines raw (copyable)."""
+    if args.list:
+        rows, total = [], 0
+        for name, item in {**paths, "update": update_logs_dir()}.items():
+            try:
+                size = item.stat().st_size if item.is_file() else sum(f.stat().st_size for f in item.glob("*.log"))
+            except OSError:
+                size = 0
+            total += size
+            rows.append((None, name, f"{size / 1024 / 1024:.1f} MB", home_path(item)))
+        style.header("logs")
+        style.rows(rows)
+        style.write()
+        style.write(f"{INDENT}" + style.paint(
+            f"Kept: {limits['max_bytes'] // (1024 * 1024)} MB × {limits['backups'] + 1} files per log, "
+            f"audit 5 MB × 4, newest {limits['update_logs_kept']} update logs", dim=True))
+        style.summary("ok", f"{len(rows)} logs · {total / 1024 / 1024:.1f} MB in all")
+        return 0
+    if not path.exists():
+        from .cli_views import render_error
+        render_error(style, "logs", f"No {args.component} log yet ({home_path(path)})")
+        return 1
+    text = tail_log(path, args.lines)
+    style.header("logs")
+    style.write(INDENT + style.paint(f"{args.component} · {home_path(path)} · last {args.lines} lines · secrets redacted", dim=True))
+    style.write()
+    # Raw: no colour, indent or wrapping, so lines can be copied or searched as they are.
+    style.stream.write(text.rstrip("\n") + "\n")
+    count = len(text.splitlines())
+    style.summary("ok", f"{count} line{'s' if count != 1 else ''}")
     return 0
 
 

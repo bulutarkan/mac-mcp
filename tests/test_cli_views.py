@@ -740,5 +740,48 @@ class UpdateScreen(ThemedTestCase):
         self.assertIn("/l/upd.log", text)
 
 
+class LogsScreen(ThemedTestCase):
+    def run_logs(self, files: dict, **args):
+        import tempfile
+        out, err = FakeTTY(), io.StringIO()
+        with tempfile.TemporaryDirectory() as temp:
+            paths = {}
+            for name, text in files.items():
+                path = cli.Path(temp) / f"{name}.log"
+                if text is not None:
+                    path.write_text(text)
+                paths[name] = path
+            updates = cli.Path(temp) / "update"
+            updates.mkdir()
+            with patch.object(cli, "managed_logs", return_value=paths), patch.object(cli, "update_logs_dir", return_value=updates), \
+                 patch.object(cli, "log_limits", return_value={"max_bytes": 10 * 1024 * 1024, "backups": 3, "update_logs_kept": 20}), \
+                 redirect_stdout(out), redirect_stderr(err):
+                code = cli.logs(argparse.Namespace(**{"component": "server", "lines": 3, "list": False, **args}))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_lines_are_written_raw(self) -> None:
+        long_line = "INFO: " + "x" * 300
+        code, raw, _ = self.run_logs({"server": "first\n" + long_line + "\nlast line\n"})
+        self.assertEqual(0, code)
+        self.assertTrue(visible(raw).startswith("  ◆ Mac MCP · logs\n\n"), raw[:80])
+        self.assertIn("\n" + long_line + "\nlast line\n", raw)  # whole, uncoloured, unindented
+        self.assertIn("secrets redacted", visible(raw))
+        self.assertIn("✓ 3 lines", visible(raw))
+
+    def test_a_missing_log(self) -> None:
+        code, raw, err = self.run_logs({"server": None})
+        self.assertEqual((1, ""), (code, err))
+        self.assertIn("✗ No server log yet", visible(raw))
+
+    def test_the_list(self) -> None:
+        code, raw, _ = self.run_logs({"server": "a\n", "cloudflared": None}, list=True)
+        text = visible(raw)
+        self.assertEqual(0, code)
+        self.assertIn("server", text)
+        self.assertIn("cloudflared", text)
+        self.assertIn("10 MB × 4 files per log", text)
+        self.assertIn("✓ 3 logs", text)
+
+
 if __name__ == "__main__":
     unittest.main()
