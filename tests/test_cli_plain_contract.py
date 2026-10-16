@@ -139,7 +139,20 @@ class PlainContract(unittest.TestCase):
         # argparse names the program after argv[0]; the installed CLI's is mac-mcp.
         with patch.object(sys, "argv", ["mac-mcp", "--help"]), redirect_stdout(out), self.assertRaises(SystemExit):
             cli.main(["--help"])
-        self.assertEqual((GOLDEN / "cli_help.txt").read_text(encoding="utf-8"), out.getvalue())
+        self.assertEqual(_unwrap_usage((GOLDEN / "cli_help.txt").read_text(encoding="utf-8")),
+                         _unwrap_usage(out.getvalue()))
+
+    def test_usage_unwrapping_keeps_the_rest_exact(self) -> None:
+        # Python 3.10's argparse moves the trailing "..." of a long usage line onto its own line.
+        wrapped = "usage: mac-mcp [-h]\n               {start,stop}\n               ...\n\nManage it.\n  a   b\n"
+        self.assertEqual("usage: mac-mcp [-h] {start,stop} ...\n\nManage it.\n  a   b\n", _unwrap_usage(wrapped))
+        self.assertNotEqual(_unwrap_usage("usage: x\n\nManage it.\n"), _unwrap_usage("usage: x\n\nManage  it.\n"))
+
+
+def _unwrap_usage(text: str) -> str:
+    """The usage block as one line; how argparse wraps it differs between Python versions."""
+    usage, sep, rest = text.partition("\n\n")
+    return " ".join(usage.split()) + sep + rest
 
 
 if __name__ == "__main__":
