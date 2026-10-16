@@ -2582,6 +2582,9 @@ def connect_app(args: argparse.Namespace) -> int:
     """One-click setup: add Mac MCP to an AI app (ChatGPT: copy its connector address)."""
     from . import client_setup
 
+    style = Style.for_stream(json_output=bool(args.json))
+    if style is not None:
+        return _connect_app_themed(args, style)
     try:
         if args.client == "chatgpt":
             result = _copy_chatgpt_address()
@@ -2597,6 +2600,30 @@ def connect_app(args: argparse.Namespace) -> int:
         print(json.dumps(result))
     else:
         print(f"Mac MCP is added to {result['name']}. {result['next']}")
+    return 0
+
+
+def _connect_app_themed(args: argparse.Namespace, style) -> int:
+    from . import client_setup
+    from .cli_steps import Steps
+
+    if args.client == "chatgpt":
+        done, doing = "Copied ChatGPT's address", "Copy ChatGPT's address"
+    else:
+        name = next((app.name for app in client_setup.APPS if app.id == args.client), args.client)
+        done, doing = f"Added Mac MCP to {name}", f"Add Mac MCP to {name}"
+    style.header("connect")
+    result: dict = {}
+    with Steps(style).step(done, failed_label=doing) as state:
+        try:
+            result = _copy_chatgpt_address() if args.client == "chatgpt" else client_setup.connect(args.client)
+        except (client_setup.SetupError, ConnectionConfigError, PublicEndpointError) as exc:
+            print(str(exc))
+            state.ok = False
+    if not state.ok:
+        style.summary("error", "Mac MCP was not added", next_command="mac-mcp clients")
+        return 1
+    style.summary("ok", str(result.get("next") or f"Mac MCP is added to {result.get('name')}."))
     return 0
 
 
@@ -2627,6 +2654,11 @@ def clients(args: argparse.Namespace) -> int:
     from . import client_setup
 
     apps = client_setup.apps_status()
+    style = Style.for_stream(json_output=bool(args.json))
+    if style is not None:
+        from .cli_views import render_clients
+        render_clients(style, apps)
+        return 0
     if args.json:
         print(json.dumps({"ok": True, "apps": apps}))
     else:

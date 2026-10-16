@@ -252,3 +252,33 @@ def render_doctor(style: Style, report: dict, verbose: bool, support_path: Optio
         style.summary("warn", f"{warns} thing{'s' if warns != 1 else ''} to look at")
     else:
         style.summary("ok", "Everything Mac MCP needs is in place.", note=hint)
+
+
+def render_clients(style: Style, apps: list) -> None:
+    """The AI apps on this Mac and whether Mac MCP is added; the rest in one line."""
+    present = [app for app in apps if app.get("installed") or app.get("added")]
+    missing = [app for app in apps if not (app.get("installed") or app.get("added"))]
+    rows = []
+    for app in present:
+        if app.get("added") and app.get("keyless") is False:
+            rows.append(("warn", app["name"], "added the old way",
+                         f"key in its settings — mac-mcp connect --client {app['id']}"))
+        elif app.get("added"):
+            rows.append(("ok", app["name"], "added", ""))
+        else:
+            rows.append(("info", app["name"], "on this Mac · not added", ""))
+    style.header("clients")
+    style.rows(rows)
+    if missing:
+        if rows:
+            style.write()
+        text = "Not on this Mac: " + " · ".join(app["name"] for app in missing)
+        for line in textwrap.wrap(text, style.width - len(INDENT)):
+            style.write(f"{INDENT}{style.paint(line, dim=True)}")
+    if not present:
+        style.summary("info", "No AI app Mac MCP knows is on this Mac.")
+        return
+    added = sum(1 for app in present if app.get("added"))
+    waiting = next((app for app in present if not app.get("added")), None)
+    style.summary("ok", f"Mac MCP is added to {added} of {len(present)} apps on this Mac",
+                  next_command=f"mac-mcp connect --client {waiting['id']}" if waiting else None)

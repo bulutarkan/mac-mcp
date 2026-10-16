@@ -6,7 +6,7 @@ import io
 import re
 import os
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 from mcp_server import cli, cli_views
@@ -513,6 +513,83 @@ class ReviewFindings(ThemedTestCase):
         text = visible(out.getvalue())
         self.assertIn("(--verbose: every check)", text)
         self.assertTrue(all(len(line) <= 50 for line in text.split("\n")), text)
+
+
+PHASE2_APPS = [
+    {"id": "codex", "name": "Codex", "installed": True, "added": True, "keyless": True},
+    {"id": "claude-desktop", "name": "Claude Desktop", "installed": True, "added": True, "keyless": False},
+    {"id": "kimi", "name": "Kimi Code", "installed": True, "added": False, "keyless": None},
+    {"id": "goose", "name": "Goose", "installed": False, "added": False, "keyless": None},
+    {"id": "pi", "name": "pi", "installed": False, "added": False, "keyless": None},
+]
+
+
+class ClientsScreen(ThemedTestCase):
+    def run_clients(self, apps):
+        from mcp_server import client_setup
+        out = FakeTTY()
+        with patch.object(client_setup, "apps_status", return_value=apps), redirect_stdout(out):
+            code = cli.clients(argparse.Namespace(json=False))
+        return code, visible(out.getvalue())
+
+    def test_added_old_way_installed_and_missing(self) -> None:
+        code, text = self.run_clients(PHASE2_APPS)
+        self.assertEqual(0, code)
+        self.assertTrue(text.startswith("  ◆ Mac MCP · clients\n\n"), text)
+        self.assertIn("● Codex           added", text)
+        self.assertIn("● Claude Desktop added the old way · key in its settings — mac-mcp connect --client claude-desktop",
+                      " ".join(text.split()))
+        self.assertIn("● Kimi Code       on this Mac · not added", text)
+        self.assertIn("Not on this Mac: Goose · pi", text)
+        self.assertIn("✓ Mac MCP is added to 2 of 3 apps on this Mac — try: mac-mcp connect --client kimi", " ".join(text.split()))
+
+    def test_no_app_on_this_mac(self) -> None:
+        code, text = self.run_clients([a for a in PHASE2_APPS if not a["installed"]])
+        self.assertEqual(0, code)
+        self.assertIn("ℹ No AI app Mac MCP knows is on this Mac.", text)
+        self.assertNotIn("try:", text)
+
+    def test_json_stays_json(self) -> None:
+        from mcp_server import client_setup
+        out = FakeTTY()
+        with patch.object(client_setup, "apps_status", return_value=PHASE2_APPS), redirect_stdout(out):
+            cli.clients(argparse.Namespace(json=True))
+        self.assertTrue(out.getvalue().startswith('{"ok": true'))
+
+
+class ConnectScreen(ThemedTestCase):
+    def connect(self, client, **mock):
+        from mcp_server import client_setup
+        out, err = FakeTTY(), io.StringIO()
+        with patch.object(client_setup, "connect", **mock), redirect_stdout(out), redirect_stderr(err):
+            code = cli.connect_app(argparse.Namespace(client=client, json=False))
+        return code, re.sub(r"\d+\.\d+s", "0.0s", visible(out.getvalue())), err.getvalue()
+
+    def test_success(self) -> None:
+        code, text, _ = self.connect("codex", return_value={"ok": True, "name": "Codex", "next": "Start a new Codex session, then ask it something about your Mac."})
+        self.assertEqual(0, code)
+        self.assertTrue(text.startswith("  ◆ Mac MCP · connect\n\n"), text)
+        self.assertIn("✓ Added Mac MCP to Codex", text)
+        self.assertIn("✓ Start a new Codex session, then ask it something about your Mac.", " ".join(text.split()))
+
+    def test_failure_shows_the_reason_and_keeps_the_code(self) -> None:
+        from mcp_server import client_setup
+        code, text, err = self.connect("kimi", side_effect=client_setup.SetupError("Kimi Code is not installed on this Mac."))
+        self.assertEqual(1, code)
+        self.assertEqual("", err)
+        self.assertIn("✗ Add Mac MCP to Kimi Code", text)
+        self.assertIn("Kimi Code is not installed on this Mac.", text)
+        self.assertIn("✗ Mac MCP was not added — try: mac-mcp clients", " ".join(text.split()))
+
+    def test_chatgpt_never_prints_the_address(self) -> None:
+        out = FakeTTY()
+        result = {"ok": True, "client": "chatgpt", "name": "ChatGPT", "copied": True, "next": "The address is copied."}
+        with patch.object(cli, "_copy_chatgpt_address", return_value=result), redirect_stdout(out):
+            code = cli.connect_app(argparse.Namespace(client="chatgpt", json=False))
+        self.assertEqual(0, code)
+        text = visible(out.getvalue())
+        self.assertIn("✓ Copied ChatGPT's address", text)
+        self.assertNotIn("ApiKey", text)
 
 
 if __name__ == "__main__":
