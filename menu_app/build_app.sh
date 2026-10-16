@@ -63,6 +63,8 @@ xcrun swiftc -O -parse-as-library -target "${ARCH}-apple-macos13.0" \
   "${SCRIPT_DIR}/Sources/ToolActivityBubbleController.swift" \
   "${SCRIPT_DIR}/Sources/KeychainStore.swift" \
   "${SCRIPT_DIR}/Sources/AudioDeviceStore.swift" \
+  "${SCRIPT_DIR}/Sources/SessionDetailPresentation.swift" \
+  "${SCRIPT_DIR}/Sources/SessionDetailView.swift" \
   "${SCRIPT_DIR}/Sources/MenuBarView.swift" \
   -o "${MACOS}/MacMCPMenu"
 

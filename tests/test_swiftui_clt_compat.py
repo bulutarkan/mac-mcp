@@ -23,8 +23,8 @@ class SwiftUICommandLineToolsCompatibilityTests(unittest.TestCase):
 
         menu = (SOURCES / "MenuBarView.swift").read_text(encoding="utf-8")
         settings = (SOURCES / "SettingsView.swift").read_text(encoding="utf-8")
-        # 9 before #200/#201 added the content height, the host window and the agent list height.
-        self.assertEqual(12, menu.count("@MacMCPState "))
+        # 9 before #200/#201 added three sizing properties; the session inspector adds one more.
+        self.assertEqual(13, menu.count("@MacMCPState "))
         self.assertEqual(19, settings.count("@MacMCPState "))
 
     def test_build_script_compiles_compatibility_source(self) -> None:

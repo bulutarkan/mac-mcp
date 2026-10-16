@@ -392,6 +392,9 @@ class ObservedFastMCPSteeringTests(unittest.TestCase):
                 self.bind_context(mcp, FakeSession(), openai_session="conversation-a")
                 await mcp.call_tool("read_file", {"path": "/tmp/third"})
                 self.assertEqual(executions, 2)
+                # Three MCP requests, including the one preempted before execution.
+                self.assertEqual(3, steering.sessions()[0]["tool_call_count"])
+                self.assertEqual(0, steering.sessions()[0]["active_calls"])
 
         asyncio.run(run())
 

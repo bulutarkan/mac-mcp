@@ -53,6 +53,8 @@ struct SteeringSession: Decodable, Identifiable, Equatable {
     let activityMS: Int
     let queued: Int
     let activeCalls: Int
+    let toolCallCount: Int?
+    let activityStartedAt: Double?
     var id: String { sessionID }
     var effectiveActivityState: SteeringActivityState {
         activityState ?? (state == "working" ? .working : .idle)
@@ -85,6 +87,8 @@ struct SteeringSession: Decodable, Identifiable, Equatable {
             && activityDisplayBucket == other.activityDisplayBucket
             && queued == other.queued
             && activeCalls == other.activeCalls
+            && toolCallCount == other.toolCallCount
+            && activityStartedAt == other.activityStartedAt
     }
     enum CodingKeys: String, CodingKey {
         case label, detail, tool, state, queued
@@ -101,6 +105,8 @@ struct SteeringSession: Decodable, Identifiable, Equatable {
         case lastActivityAt = "last_activity_at"
         case activityMS = "activity_ms"
         case activeCalls = "active_calls"
+        case toolCallCount = "tool_call_count"
+        case activityStartedAt = "activity_started_at"
     }
 }
 
