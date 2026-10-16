@@ -10,6 +10,12 @@
 - **Advanced › Usage limit**: stop the agent once a run reaches a number of tokens or a cost in dollars. Off by default; the time limit still applies.
 - Only agents that report usage while they work can keep one: tokens with Claude Code, OpenCode, Kilo Code and pi; cost with OpenCode and Kilo Code. For any other agent the limit is refused with the reason instead of being promised, and a run whose agent changed meanwhile doesn't start.
 - A stopped run says so ("Stopped at its 500,000-token limit (used 512,330)") and keeps what the agent did before the stop; the report shows the limit next to the usage. A suggested change that raises or removes a limit shows in the review.
+- No limit that can't be kept: the editor names the agents that can keep each kind (tokens: Claude Code, OpenCode, Kilo Code, pi; cost: OpenCode, Kilo Code) and keeps Save off for any other, and a cost limit stops the run when a step comes without its price, instead of letting spending pass the limit unseen.
+
+### Task sheets fit the Settings window (#222)
+- The New Task, Edit, Review and run report sheets are never taller than the Settings window (they scroll instead), so Cancel and Save stay inside it; the Edit sheet hung about 60 points below the window's edge.
+- mac_act reports why a control isn't ready ("ELEMENT_OUTSIDE_WINDOW", retryable) when there is no time left for another look, instead of starting one more probe and failing with "AppleScript timed out".
+- Scheduled Tasks no longer carries an "Experimental" badge in Settings.
 
 ### mac_act on Mac MCP's own windows, and toggles that only rename themselves (#220, #221)
 - The desktop agent cursor no longer counts as a window to Accessibility. It shifted the window numbers mac_act had just resolved, so clicks in Mac MCP's own Settings hit the empty cursor window ("Can't get UI element 1 of window 2").

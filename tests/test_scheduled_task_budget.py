@@ -54,7 +54,7 @@ class MeterTests(unittest.TestCase):
 
     def test_claude_counts_each_message_once_and_takes_the_final_result(self) -> None:
         meter = run_budget.Meter(self.path, "claude")
-        self.assertEqual({"tokens": 0, "cost_usd": None}, meter.read())  # nothing written yet
+        self.assertEqual({"tokens": 0, "cost_usd": None, "cost_unknown": False}, meter.read())  # nothing written yet
         self.write(claude_message("msg_1", 5), claude_message("msg_1", 40), {"type": "user", "message": {}})
         self.assertEqual(50, meter.read()["tokens"])  # 10 input + 40 output, the second event replaces the first
         line = json.dumps(claude_message("msg_2", 100, cache_read=1_000))
@@ -64,17 +64,34 @@ class MeterTests(unittest.TestCase):
         self.assertEqual(1_160, meter.read()["tokens"])
         self.write({"type": "result", "total_cost_usd": 0.04, "usage": {
             "input_tokens": 20, "cache_read_input_tokens": 1_000, "output_tokens": 150}})
-        self.assertEqual({"tokens": 1_170, "cost_usd": 0.04}, meter.read())
+        self.assertEqual({"tokens": 1_170, "cost_usd": 0.04, "cost_unknown": False}, meter.read())
 
     def test_opencode_and_kilo_steps_carry_tokens_and_price(self) -> None:
         meter = run_budget.Meter(self.path, "opencode")
         self.write({"type": "step_finish", "part": {"id": "p1", "cost": 0.5, "tokens": {"total": 900}}},
                    {"type": "step_finish", "part": {"id": "p2", "cost": 0.75, "tokens": {"total": 1_100}}})
-        self.assertEqual({"tokens": 2_000, "cost_usd": 1.25}, meter.read())
+        self.assertEqual({"tokens": 2_000, "cost_usd": 1.25, "cost_unknown": False}, meter.read())
         kilo = Path(str(self.path) + ".kilo")
         kilo.write_text(json.dumps({"type": "step_finish", "part": {
             "id": "k1", "tokens": {"input": 10, "output": 2, "cache": {"read": 4}}}}) + "\n")
-        self.assertEqual({"tokens": 12, "cost_usd": None}, run_budget.Meter(kilo, "kilo").read())
+        self.assertEqual({"tokens": 12, "cost_usd": None, "cost_unknown": True}, run_budget.Meter(kilo, "kilo").read())
+
+    def test_a_step_without_a_price_makes_the_cost_unknown_and_stops_a_cost_limit(self) -> None:
+        # Some OpenCode models report tokens but no price. A $ limit would then never trigger, so the
+        # run is stopped instead of spending past what the owner set.
+        meter = run_budget.Meter(self.path, "opencode")
+        self.write({"type": "step_finish", "part": {"id": "p1", "cost": 0.2, "tokens": {"total": 900}}},
+                   {"type": "step_finish", "part": {"id": "p2", "tokens": {"total": 1_100}}})
+        used = meter.read()
+        self.assertTrue(used["cost_unknown"])
+        self.assertEqual("cost_unknown", run_budget.over({"max_cost_usd": 100.0}, used))
+        self.assertIsNone(run_budget.over({"max_tokens": 50_000}, used))  # a token limit is unaffected
+        reason = run_budget.stop_reason({"max_cost_usd": 100.0}, "cost_unknown", used, "OpenCode")
+        self.assertIn("didn't report a price", reason)
+        free = run_budget.Meter(Path(str(self.path) + ".free"), "opencode")
+        Path(str(self.path) + ".free").write_text(json.dumps(
+            {"type": "step_finish", "part": {"id": "p1", "cost": 0, "tokens": {"total": 900}}}) + "\n")
+        self.assertIsNone(run_budget.over({"max_cost_usd": 1.0}, free.read()))  # a free model costs $0
 
     def test_pi_counts_each_turn(self) -> None:
         meter = run_budget.Meter(self.path, "pi")

@@ -3521,6 +3521,19 @@ def _wait_for_native_readiness(
     last_reason: Optional[str] = None
     last_signature: Optional[tuple[Any, ...]] = None
     stable_since: Optional[float] = None
+    probe_started = started
+    probe_s = 0.0
+
+    def timed_out(now: float) -> Dict[str, Any]:
+        return {
+            "ready": False,
+            "timed_out": True,
+            "reason_code": last_reason or "ELEMENT_NOT_READY",
+            "attempts": attempts,
+            "duration_ms": int((now - started) * 1000),
+            "retryable": True,
+            "state": _compact_readiness_state(last_state),
+        }
 
     while True:
         state, probe_error = _probe_native_action_state(
@@ -3531,6 +3544,10 @@ def _wait_for_native_readiness(
         )
         attempts += 1
         now = time.perf_counter()
+        probe_s = max(0.0, now - probe_started)
+        if (probe_error is not None or state is None) and last_state:
+            # A later look that ran out of time: what the earlier one found is the answer (#222).
+            return timed_out(now)
         if probe_error is not None or state is None:
             return {
                 "ready": False,
@@ -3587,17 +3604,11 @@ def _wait_for_native_readiness(
             stable_since = None
             last_signature = None
 
-        if now >= local_deadline:
-            return {
-                "ready": False,
-                "timed_out": True,
-                "reason_code": last_reason or "ELEMENT_NOT_READY",
-                "attempts": attempts,
-                "duration_ms": int((now - started) * 1000),
-                "retryable": True,
-                "state": _compact_readiness_state(last_state),
-            }
-        cancellable_sleep(min(poll_s, max(0.0, local_deadline - now)))
+        # Another look must fit in what is left; in a big window one probe takes most of a second.
+        if now + poll_s + probe_s > local_deadline:
+            return timed_out(now)
+        cancellable_sleep(poll_s)
+        probe_started = now + poll_s
 
 
 

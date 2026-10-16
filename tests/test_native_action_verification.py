@@ -183,6 +183,29 @@ class NativeVerificationIntegrationTests(unittest.TestCase):
         self.assertTrue(result["ready"])
         self.assertEqual(2, result["attempts"])
 
+    def test_readiness_reports_why_when_no_time_is_left_for_another_look(self) -> None:
+        # #222: a Save button below the window's edge. One probe of a big window takes ~0.85 s of
+        # the 1.2 s budget; starting another one ended in "AppleScript timed out" (not retryable)
+        # instead of the reason itself.
+        outside = state(position={"x": 100, "y": 900, "width": 60, "height": 24})
+        observed = {"role": "AXButton", "subrole": "", "title": "Continue"}
+        with patch.object(tools_ui, "_probe_native_action_state", side_effect=[(outside, None)]) as probe, \
+             patch.object(tools_ui.time, "perf_counter", side_effect=[0.0, 0.85]), \
+             patch.object(tools_ui.time, "sleep"):
+            result = tools_ui._wait_for_native_readiness(
+                "DemoApp", {"type": "click", "element_id": "w1/1"}, observed, app_pid=4321)
+        self.assertEqual(1, probe.call_count)
+        self.assertEqual(("ELEMENT_OUTSIDE_WINDOW", True, True),
+                         (result["reason_code"], result["timed_out"], result["retryable"]))
+        # A later probe that runs out of time also reports the reason found before it.
+        with patch.object(tools_ui, "_probe_native_action_state",
+                          side_effect=[(outside, None), (None, "AppleScript timed out after 0.25s")]), \
+             patch.object(tools_ui.time, "perf_counter", side_effect=[0.0, 0.1, 1.1]), \
+             patch.object(tools_ui.time, "sleep"):
+            late = tools_ui._wait_for_native_readiness(
+                "DemoApp", {"type": "click", "element_id": "w1/1"}, observed, app_pid=4321)
+        self.assertEqual(("ELEMENT_OUTSIDE_WINDOW", True), (late["reason_code"], late["timed_out"]))
+
     def test_effect_wait_accepts_delayed_state_change(self) -> None:
         before = state()
         after = state(sheet_count=1)

@@ -104,6 +104,7 @@ class Meter:
         self._partial = b""
         self._tokens: Dict[str, int] = {}
         self._cost: Dict[str, float] = {}
+        self._unpriced: set = set()  # steps that reported tokens but no price
         self._final: Optional[Dict[str, Any]] = None
 
     def read(self) -> Dict[str, Any]:
@@ -123,9 +124,9 @@ class Meter:
 
     def usage(self) -> Dict[str, Any]:
         if self._final is not None:
-            return dict(self._final)
+            return {**self._final, "cost_unknown": False}
         cost = round(sum(self._cost.values()), 4) if self._cost else None
-        return {"tokens": sum(self._tokens.values()), "cost_usd": cost}
+        return {"tokens": sum(self._tokens.values()), "cost_usd": cost, "cost_unknown": bool(self._unpriced)}
 
     def _event(self, line: bytes) -> None:
         try:
@@ -180,20 +181,29 @@ class Meter:
         cost = part.get("cost")
         if isinstance(cost, (int, float)) and not isinstance(cost, bool):
             self._cost[key] = float(cost)
+            self._unpriced.discard(key)
+        elif total:
+            self._unpriced.add(key)
 
 
 def over(budget: Optional[Dict[str, Any]], usage: Dict[str, Any]) -> Optional[str]:
-    """'tokens' or 'cost' once a limit is reached, else None."""
+    """'tokens' or 'cost' once a limit is reached, 'cost_unknown' when a cost limit can no longer
+    be kept (a step came without its price), else None."""
     if not budget:
         return None
     if budget.get("max_tokens") and int(usage.get("tokens") or 0) >= budget["max_tokens"]:
         return "tokens"
+    if budget.get("max_cost_usd") and usage.get("cost_unknown"):
+        return "cost_unknown"  # fail closed: an unpriced step would let spending pass the limit unseen
     if budget.get("max_cost_usd") and usage.get("cost_usd") is not None and float(usage["cost_usd"]) >= budget["max_cost_usd"]:
         return "cost"
     return None
 
 
-def stop_reason(budget: Dict[str, Any], limit: str, usage: Dict[str, Any]) -> str:
+def stop_reason(budget: Dict[str, Any], limit: str, usage: Dict[str, Any], label: Optional[str] = None) -> str:
+    if limit == "cost_unknown":
+        return (f"Stopped: {label or 'the agent'} didn't report a price for its work, so the "
+                f"${budget['max_cost_usd']:,.2f} cost limit couldn't be kept (used {int(usage.get('tokens') or 0):,} tokens)")
     if limit == "tokens":
         return f"Stopped at its {budget['max_tokens']:,}-token limit (used {int(usage.get('tokens') or 0):,})"
     return f"Stopped at its ${budget['max_cost_usd']:,.2f} cost limit (used ${float(usage.get('cost_usd') or 0):,.2f})"

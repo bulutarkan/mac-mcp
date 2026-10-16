@@ -9,6 +9,7 @@ struct RunReportSheet: View {
     @ObservedObject var state: AppState
     let taskName: String
     let run: TaskRun
+    var height: CGFloat = 640
     @Environment(\.dismiss) private var dismiss
     @MacMCPState private var full: TaskRun?
     @MacMCPState private var fullProblem: String?
@@ -62,7 +63,7 @@ struct RunReportSheet: View {
             }
             .padding(.horizontal, 22).padding(.vertical, 12)
         }
-        .frame(width: 720, height: 640)
+        .frame(width: 720, height: height)
         .task { await loadFull() }
     }
 

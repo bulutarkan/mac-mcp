@@ -75,11 +75,13 @@ struct ScheduledTasksPane: View {
     @MacMCPState private var editor: TaskEditorModel?
     @MacMCPState private var reviewing: ScheduledTask?
     @MacMCPState private var hovered: String?
+    /// The pane's height: sheets fit inside the Settings window, so their buttons stay in it (#222).
+    @MacMCPState private var paneHeight: CGFloat = 640
 
     var body: some View {
         ZStack {
             if let id = openTaskID, let task = tasks.first(where: { $0.id == id }) {
-                TaskDetailView(state: state, task: task, agents: agents,
+                TaskDetailView(state: state, task: task, agents: agents, paneHeight: paneHeight,
                                onBack: { openTaskID = nil },
                                onEdit: { editor = TaskEditorModel(task: task) },
                                onReview: { reviewing = task },
@@ -90,6 +92,9 @@ struct ScheduledTasksPane: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: openTaskID)
+        .background(GeometryReader { proxy in
+            Color.clear.onAppear { paneHeight = proxy.size.height }.onChange(of: proxy.size.height) { paneHeight = $0 }
+        })
         .task { await load() }
         .task {
             // Keep "Running now" and new results current while the page is open.
@@ -99,14 +104,15 @@ struct ScheduledTasksPane: View {
             }
         }
         .sheet(item: Binding(get: { editor }, set: { editor = $0 })) { model in
-            TaskEditorSheet(state: state, model: model, agents: agents, defaultAgent: defaultAgent) { saved in
+            TaskEditorSheet(state: state, model: model, agents: agents, defaultAgent: defaultAgent,
+                            height: SheetFit.height(700, in: paneHeight)) { saved in
                 editor = nil
                 if let saved { openTaskID = saved }
                 Task { await load() }
             }
         }
         .sheet(item: Binding(get: { reviewing }, set: { reviewing = $0 })) { task in
-            TaskReviewSheet(state: state, task: task) {
+            TaskReviewSheet(state: state, task: task, height: SheetFit.height(560, in: paneHeight)) {
                 reviewing = nil
                 Task { await load() }
             }
@@ -118,15 +124,8 @@ struct ScheduledTasksPane: View {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 8) {
-                            Text("Scheduled Tasks").font(.title2.weight(.semibold))
-                            Text("Experimental")
-                                .font(.caption2.weight(.semibold))
-                                .padding(.horizontal, 7).padding(.vertical, 2)
-                                .background(Capsule().fill(Color.accentColor.opacity(0.15)))
-                                .foregroundStyle(Color.accentColor)
-                        }
-                        Text("AI tasks and scripts that run on their own, on the schedule you choose.")
+                        Text("Scheduled Tasks").font(.title2.weight(.semibold))
+                        Text("AI tasks and scripts that run on their own: on a schedule, or when a file arrives.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -309,12 +308,21 @@ struct ScheduledTasksPane: View {
     }
 }
 
+/// A sheet as tall as it wants to be, but never taller than the Settings window it hangs from, so its
+/// Cancel and Save stay inside the window (#222). The contents scroll when the window is small.
+enum SheetFit {
+    static func height(_ ideal: CGFloat, in pane: CGFloat) -> CGFloat {
+        max(360, min(ideal, pane - 16))
+    }
+}
+
 // MARK: - Detail
 
 private struct TaskDetailView: View {
     @ObservedObject var state: AppState
     let task: ScheduledTask
     let agents: [[String: Any]]
+    let paneHeight: CGFloat
     let onBack: () -> Void
     let onEdit: () -> Void
     let onReview: () -> Void
@@ -420,7 +428,7 @@ private struct TaskDetailView: View {
             }
         }
         .sheet(item: Binding(get: { openRun }, set: { openRun = $0 })) { run in
-            RunReportSheet(state: state, taskName: task.name, run: run)
+            RunReportSheet(state: state, taskName: task.name, run: run, height: SheetFit.height(640, in: paneHeight))
         }
         .alert("Delete “\(task.name)”?", isPresented: $confirmDelete) {
             Button("Delete", role: .destructive) { act("delete") }
@@ -805,6 +813,7 @@ private struct TaskEditorSheet: View {
     @ObservedObject var model: TaskEditorModel
     let agents: [[String: Any]]
     let defaultAgent: String?
+    let height: CGFloat
     let done: (String?) -> Void
 
     @MacMCPState private var sentence = ""
@@ -864,14 +873,14 @@ private struct TaskEditorSheet: View {
             .padding(.horizontal, 22).padding(.vertical, 14)
             .background(Color(nsColor: .windowBackgroundColor).opacity(0.6))
         }
-        .frame(width: 560, height: 700)
+        .frame(width: 560, height: height)
         .task(id: model.previewKey) { await preview() }
     }
 
     private var canSave: Bool {
         guard !model.name.trimmingCharacters(in: .whitespaces).isEmpty, scheduleProblem.isEmpty else { return false }
         if model.when == .file && model.cron.isEmpty && model.watchFolder.isEmpty { return false }
-        if model.isAI && !model.usageLimitReady { return false }
+        if model.isAI && (!model.usageLimitReady || (model.usageKind != "none" && limitNote.problem)) { return false }
         if model.isAI {
             return !model.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && (!model.dataOn || model.dataStepReady) && (dataPreview?["ok"] as? Bool) != false
@@ -1324,7 +1333,12 @@ private struct TaskEditorSheet: View {
         if model.usageKind == "cost" && !agent.cost {
             return ("\(agent.name) doesn’t report its price as it works. OpenCode and Kilo Code do; or use a token limit.", true)
         }
-        return ("The agent is stopped a few seconds after it reaches the limit. The time limit still applies.", false)
+        if model.usageKind == "cost" {
+            return ("\(agent.name) reports the price of each step, so it is stopped a few seconds after the limit. "
+                    + "If a step comes without a price, the run is stopped too. The time limit still applies.", false)
+        }
+        return ("\(agent.name) reports its usage as it works, so it is stopped a few seconds after the limit. "
+                + "The time limit still applies.", false)
     }
 
     private var usageLimitField: some View {
@@ -1332,8 +1346,8 @@ private struct TaskEditorSheet: View {
             HStack(spacing: 8) {
                 Picker("", selection: $model.usageKind) {
                     Text("No limit").tag("none")
-                    Text("Tokens").tag("tokens")
-                    Text("Cost (USD)").tag("cost")
+                    Text("Tokens (Claude Code, OpenCode, Kilo Code, pi)").tag("tokens")
+                    Text("Cost in USD (OpenCode, Kilo Code)").tag("cost")
                 }
                 .labelsHidden()
                 .fixedSize()
@@ -1651,6 +1665,7 @@ private extension String {
 private struct TaskReviewSheet: View {
     @ObservedObject var state: AppState
     let task: ScheduledTask
+    let height: CGFloat
     let done: () -> Void
 
     @MacMCPState private var busy = false
@@ -1710,7 +1725,7 @@ private struct TaskReviewSheet: View {
             }
         }
         .padding(22)
-        .frame(width: 560, height: 560)
+        .frame(width: 560, height: height)
     }
 
     private var suggestedAgo: String {

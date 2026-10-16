@@ -346,7 +346,8 @@ def wait_for_agent(agent_id: str, settings: Any, *, deadline: float,
         detail["usage_limit"] = {**usage_limit, "used_tokens": used["tokens"], "used_cost_usd": used["cost_usd"],
                                  "stopped": stopped}
         if stopped:
-            return {"status": "failed", "reason": run_budget.stop_reason(usage_limit, stopped, used),
+            reason = run_budget.stop_reason(usage_limit, stopped, used, store.provider_label(provider))
+            return {"status": "failed", "reason": reason,
                     "summary": summary, "output": report, "detail": detail}
     if status == "completed" and envelope.get("outcome") != "failure":
         return {"status": "done", "summary": summary or "Finished", "output": report, "detail": detail}
