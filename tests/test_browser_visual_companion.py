@@ -329,7 +329,7 @@ class BrowserVisualCompanionTests(unittest.TestCase):
         self.assertIn("Browser Activity", menu)
         self.assertIn("openChromeExtensionSetup", app_state)
         self.assertIn("menu_app/ChromeVisualCompanion", app_state)
-        self.assertIn("focus-safe background tabs", app_state)
+        self.assertIn("choose Load unpacked, press ⌘⇧G and ⌘V", app_state)  # the copied folder path (#188)
         self.assertIn("background-safe visual capture", menu)
 
     def test_installer_explains_adhoc_safari_setup(self) -> None:

@@ -360,8 +360,11 @@ class RuntimeDiagnosticsRouteTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(
                 set(response.json()),
-                {"ok", "version", "chrome_companion_connected"},
+                {"ok", "version", "chrome_companion_connected", "chrome_companion"},
             )
+            # The companion's own state (#188): which one is loaded and whether it needs a reload, no page data.
+            self.assertEqual(set(response.json()["chrome_companion"]),
+                             {"connected", "version", "connected_at", "last_seen_at", "missing_features", "needs_reload"})
             self.assertTrue(response.json()["chrome_companion_connected"])
 
     def test_runtime_diagnostics_is_loopback_only(self) -> None:
