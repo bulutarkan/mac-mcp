@@ -75,7 +75,7 @@ OUTPUTS = [
     ("menu_app/Assets/AppIconSmall/64.png", lambda: app_icon(5.2, 0.72), (64, 64)),
     ("site/assets/img/og-image.jpg", lambda: social(1200, 630), (1200, 630)),
 ]
-COPIES = [("assets/brand/mark.svg", "site/assets/img/mark.svg")]
+COPIES = [("assets/brand/mark.svg", "site/assets/img/mark.svg"), ("assets/brand/mark.svg", "menu_app/Assets/BrandMark.svg")]
 
 
 def tool(name: str) -> str:
@@ -133,7 +133,7 @@ def main(argv: list | None = None) -> int:
     if stale:
         print("Out of date (run scripts/build_brand.py):\n  " + "\n  ".join(stale))
         return 1
-    print("brand images are up to date" if args.check else f"rendered {len(OUTPUTS)} images and {len(COPIES)} copy")
+    print("brand images are up to date" if args.check else f"rendered {len(OUTPUTS)} images and {len(COPIES)} copies")
     return 0
 
 

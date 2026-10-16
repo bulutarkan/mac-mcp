@@ -55,3 +55,26 @@ class HeaderAndIslandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TourMarkTests(unittest.TestCase):
+    """The tour's own art uses the monogram; its macOS mock-ups show the app icon, as macOS would."""
+
+    def setUp(self) -> None:
+        self.page = (ROOT / "menu_app" / "Onboarding" / "index.html").read_text(encoding="utf-8")
+
+    def test_hero_images_and_the_power_ring_use_the_vector_mark(self) -> None:
+        self.assertIn('<img class="hero-icon" src="../Assets/BrandMark.svg" alt="">', self.page)
+        self.assertIn('<img class="hero-icon small" src="../Assets/BrandMark.svg" alt="">', self.page)
+        ring = self.page[self.page.index('<div class="ring-wrap">'):][:400]
+        self.assertIn('src="../Assets/BrandMark.svg"', ring)
+
+    def test_macos_mockups_keep_the_app_icon(self) -> None:
+        approval = self.page[self.page.index('<div class="approval">'):][:200]
+        self.assertIn('src="../Assets/AppIcon.png"', approval)
+        self.assertEqual(2, self.page.count('<img src="../Assets/AppIcon.png" alt=""><span>Mac MCP</span>'))
+
+    def test_the_build_ships_the_vector_mark(self) -> None:
+        build = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")
+        self.assertIn("BrandMark.svg", build)
+        self.assertTrue((ROOT / "menu_app" / "Assets" / "BrandMark.svg").is_file())
