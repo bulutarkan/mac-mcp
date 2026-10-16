@@ -172,3 +172,18 @@ Failures carry one machine-readable contract on every transport: an MCP error en
 State-changing MCP tools accept an optional `idempotency_key` (8-128 characters). Repeating a completed call with the same key and arguments returns the first result marked `idempotent_replay` instead of running it again; the same key with different arguments is `idempotency_key_conflict`; a repeat while the first call is still running or ended with an unknown outcome is refused, never re-run. Keys are scoped to the caller (agent or authenticated actor, so a reconnected client still finds its call) and kept for 24 hours in an owner-only `~/.mac-mcp/idempotency.sqlite3`; results that look like secrets or exceed 256 KB are not stored. This is deduplication, not exactly-once execution.
 
 REST has a versioned surface generated from the MCP tool contract: `POST /api/v2/<tool>` takes the MCP tool's own input schema and runs through the same policy, approvals, telemetry, `idempotency_key` and error contract. A completed call returns the tool's result with HTTP 200 (even when it reports `ok: false`); a failure returns `{"error": {...}}` with the contract's status. The schema is published in `openapi/mac-mcp-v2.json` (API version 2.0.0, product version in `x-product-version`), regenerated with `python -m mcp_server.rest_v2 --write` and checked for drift in tests. The unversioned `/api` routes and `openapi/custom-gpt-actions.json` keep working unchanged.
+
+### Your own MCP servers
+
+Mac MCP is also an MCP client. Servers listed in `~/.mac-mcp/mcp_servers.json` (Settings › MCP Servers, or `mac-mcp mcp`) use the same `mcpServers` shape as Claude Desktop and Cursor:
+
+```json
+{"mcpServers": {
+  "exa": {"url": "https://mcp.exa.ai/mcp"},
+  "github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"], "env": {"GITHUB_TOKEN": "…"}}
+}}
+```
+
+A server with `url` is remote (Streamable HTTP; `"type": "sse"` for SSE) and may set `headers`; one with `command` is started locally over stdio with `args`, `env` and `cwd`. Optional fields: `enabled` (default true), `listed` (default true: its tools appear in the compact tool list; false: reachable through `tool_discover`/`tool_invoke` only) and `timeout_s` (per call, default 120). Server names are lowercase letters, digits, `-` and `_`, at most 24 characters.
+
+Each remote tool is registered as `<server>__<tool>` with the remote input schema and a central risk entry in family `external_mcp`: `readOnlyHint: true` gives read + network access, anything else network + external side effect, and only an explicit `destructiveHint: true` is destructive (allowed by Trusted, not Standard). Every call runs through the normal Mac MCP path (profile, delegated scope, steering, Tool Activity, idempotency, error contract) before it is forwarded; a remote `isError` result becomes a tool error. Connections are held on one background event loop, the config file is re-read when it changes, `notifications/tools/list_changed` refreshes a server's tools, and a dropped server is reconnected before the next call (a call that was already sent is never retried). Local servers' stderr goes to `~/.mac-mcp/external-mcp/<server>.stderr.log`. The dashboard API is `GET /dashboard/api/mcp-servers` and `POST /dashboard/api/mcp-servers/action`; neither returns header or env values.

@@ -16,7 +16,7 @@ import Foundation
 
 let titles = ["general": "General", "agents": "Agents", "usage": "Usage", "permissions": "Permissions & Safety",
               "connections": "Connections", "voice": "Voice", "advanced": "Advanced",
-              "activity": "Activity & Notifications"]
+              "activity": "Activity & Notifications", "mcpServers": "MCP Servers"]
 
 func sections(_ query: String) -> [String] {
     titles.keys.sorted().filter {
@@ -37,6 +37,8 @@ struct SearchHarness {
             ("notif", "activity"),
             ("usage retention", "usage"),
             ("perm", "permissions"),
+            ("mcp", "mcpServers"),
+            ("exa", "mcpServers"),
         ]
         for (query, expected) in cases {
             let found = sections(query)

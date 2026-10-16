@@ -1,5 +1,12 @@
 ## Unreleased
 
+### Your own MCP servers (Settings › MCP Servers)
+- Mac MCP now also connects to MCP servers you add: remote ones by URL (Streamable HTTP or SSE, with optional headers) and local ones by command (stdio, with optional env). Paste the `mcpServers` block from Claude Desktop, Cursor or Claude Code to add several at once.
+- Each of their tools becomes a Mac MCP tool named `<server>__<tool>` (e.g. `exa__web_search_exa`), so every AI app and agent connected to Mac MCP can use it, through `tool_discover`/`tool_invoke` or directly in the tool list ("Show in tool list", on by default). Calls pass the same permission profile, scope, Tool Activity, idempotency and error rules as Mac MCP's own tools before they are forwarded.
+- Risk comes from the server's own tool annotations: read-only tools also work in the Read Only profile; tools marked destructive need Trusted. Developer subagents may use them; browser-only subagents may not.
+- Servers connect once and stay connected; adding, turning off or removing one applies within seconds without a restart. Keys stay in `~/.mac-mcp/mcp_servers.json` (owner-only) and are never shown again in Settings, status or the CLI.
+- `mac-mcp mcp list|add|import|remove|enable|disable|test|call` does the same from the terminal.
+
 ### More done in your Mac's own apps (#194, #195, #196)
 - **Reminders:** AI apps can now add a reminder (title, list, due date or time, notes), not only list and complete them; a repeated request finds the reminder it made instead of adding a twin.
 - **Notes:** add text to the end of an existing note (`append_to_note`), read back after the change.

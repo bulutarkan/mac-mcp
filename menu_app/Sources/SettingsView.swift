@@ -15,6 +15,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case permissions
     case privacy
     case apps
+    case mcpServers
     case connections
     case voice
     case advanced
@@ -33,6 +34,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .permissions: return "Permissions & Safety"
         case .privacy: return "Privacy"
         case .apps: return "Apps"
+        case .mcpServers: return "MCP Servers"
         case .connections: return "Connections"
         case .voice: return "Voice"
         case .advanced: return "Advanced"
@@ -51,6 +53,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .permissions: return "checkmark.shield"
         case .privacy: return "hand.raised"
         case .apps: return "square.grid.2x2"
+        case .mcpServers: return "point.3.connected.trianglepath.dotted"
         case .connections: return "network"
         case .voice: return "waveform.and.mic"
         case .advanced: return "wrench.and.screwdriver"
@@ -938,6 +941,7 @@ struct SettingsView: View {
         case .permissions: permissionsPane
         case .privacy: PrivacyPane(state: state)
         case .apps: appsPane
+        case .mcpServers: McpServersPane(state: state)
         case .connections: connectionsPane
         case .voice: voicePane
         case .advanced: advancedPane

@@ -25,6 +25,7 @@ from .workflow_checkpoints import clear_not_executed
 from .log_retention import start_log_rotation
 from . import privacy_inventory, privacy_policy, recipes, run_evidence
 from . import scheduled_task_runner, scheduled_tasks
+from . import external_mcp, external_mcp_routes
 from .host_guard import HostGuard, extra_hosts_from_env
 from .public_endpoint import resolve_public_endpoint
 from .security import BASE_DIR, AuthFailureLimiter, _effective_bind_host, _loopback_host, RateLimiter, Settings, auth_failure_response_detail, authenticate, ensure_dashboard_token, load_settings, rate_limit, request_authorization, setup_audit_logger, validate_bootstrap_security
@@ -2720,6 +2721,10 @@ def create_app():
         return await _invoke_registered_tool(mcp, tool_name, arguments)
 
     register_chatgpt_panel(mcp, telemetry, settings)
+    # The owner's own MCP servers (Settings > MCP Servers) become <server>__<tool> tools here.
+    external_servers = external_mcp.attach(mcp)
+    if os.getenv("MAC_MCP_MANAGED_SERVER") == "1":
+        external_servers.start()
 
     # ── App setup ────────────────────────────────────────────────────────────
     app = mcp.streamable_http_app()
@@ -2785,6 +2790,8 @@ def create_app():
         telemetry, settings, dashboard_token, mcp.steering, mcp.security_context,
         recipe_runner=run_recipe_for_launcher,
     ))
+    from .dashboard_routes import _dashboard_guard
+    app.router.routes.extend(external_mcp_routes.create_routes(lambda request: _dashboard_guard(request, dashboard_token)))
     app.router.routes.extend(create_mobile_routes(telemetry, settings, dashboard_token, mcp.steering))
 
     # REST API — FastAPI sub-app mounted at /api

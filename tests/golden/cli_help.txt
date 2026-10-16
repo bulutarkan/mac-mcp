@@ -1,10 +1,10 @@
 usage: mac-mcp [-h] [--version]
-               {start,stop,restart,status,connect-config,connect,clients,privacy,stdio,dashboard,credential,doctor,conformance,recipe,logins,catalog,logs,uninstall,repair,autostart,update} ...
+               {start,stop,restart,status,connect-config,connect,clients,privacy,stdio,dashboard,credential,doctor,conformance,recipe,logins,mcp,catalog,logs,uninstall,repair,autostart,update} ...
 
 Manage the Mac MCP local server.
 
 positional arguments:
-  {start,stop,restart,status,connect-config,connect,clients,privacy,stdio,dashboard,credential,doctor,conformance,recipe,logins,catalog,logs,uninstall,repair,autostart,update}
+  {start,stop,restart,status,connect-config,connect,clients,privacy,stdio,dashboard,credential,doctor,conformance,recipe,logins,mcp,catalog,logs,uninstall,repair,autostart,update}
     start               Start the local server and its configured public endpoint mode.
     stop                Stop the local server and any managed public tunnel.
     restart             Restart the local server and apply the configured public endpoint mode.
@@ -24,6 +24,7 @@ positional arguments:
     conformance         Run deterministic Computer Use contract/regression checks.
     recipe              List or run saved, activated recipes (for Shortcuts, Raycast and scripts).
     logins              Saved logins that agents can use with browser_sign_in without seeing them.
+    mcp                 Your own MCP servers, offered to agents as <server>__<tool> tools.
     catalog             Review and install signed skill and recipe packs.
     logs                Show recent, redacted lines from a Mac MCP log, or --list sizes and
                         bounds.

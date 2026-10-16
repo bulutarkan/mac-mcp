@@ -35,6 +35,7 @@ xcrun swiftc -O -parse-as-library -target "${ARCH}-apple-macos13.0" \
   "${SCRIPT_DIR}/Sources/MacMCPMenuApp.swift" \
   "${SCRIPT_DIR}/Sources/LoginItem.swift" \
   "${SCRIPT_DIR}/Sources/PrivacyPane.swift" \
+  "${SCRIPT_DIR}/Sources/McpServersPane.swift" \
   "${SCRIPT_DIR}/Sources/ScheduledTasksPane.swift" \
   "${SCRIPT_DIR}/Sources/RunReportView.swift" \
   "${SCRIPT_DIR}/Sources/LiveIsland.swift" \

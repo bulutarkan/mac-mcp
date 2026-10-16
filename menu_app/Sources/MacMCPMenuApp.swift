@@ -17,7 +17,8 @@ struct MacMCPMenuApp: App {
         LoginItem.sync(enabled: appState.settings.startAtLogin)
         LiveIslandController.shared.attach(appState)
         MenuAppDelegate.openSettings = { [weak appState] pane in
-            guard let appState, let section = pane == "scheduled-tasks" ? .scheduled : SettingsSection(rawValue: pane) else { return }
+            let aliases: [String: SettingsSection] = ["scheduled-tasks": .scheduled, "mcp-servers": .mcpServers]
+            guard let appState, let section = aliases[pane] ?? SettingsSection(rawValue: pane) else { return }
             SettingsWindowController.shared.show(state: appState, settings: appState.settings, section: section)
         }
         // macmcp://recipe/run links reach the running server with the dashboard token.

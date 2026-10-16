@@ -3882,6 +3882,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_logins_import.add_argument("--json", action="store_true")
     p_logins.set_defaults(func=logins)
 
+    from . import external_mcp_cli
+    external_mcp_cli.register(sub, _recipe_request)
+
     p_catalog = sub.add_parser("catalog", help="Review and install signed skill and recipe packs.")
     catalog_sub = p_catalog.add_subparsers(dest="catalog_command", required=True)
     p_catalog_list = catalog_sub.add_parser("list", help="List catalog packs and what is installed.")

@@ -35,6 +35,7 @@ from .tool_summaries import COMPACT_DESCRIPTION_LIMIT, CORE_TOOL_NAMES, CORE_TOO
 from . import audit_chain
 from . import error_contract
 from . import idempotency
+from . import external_mcp
 from .security_context import SecurityContextManager, reset_delegated_provenance, set_delegated_provenance
 # sanitize_value lives in a leaf module so change_summary can use it without an import cycle;
 # it is still importable from here.
@@ -1321,7 +1322,7 @@ class ObservedFastMCP(FastMCP):
         extra = {
             item.strip() for item in os.getenv("MAC_MCP_CORE_EXTRA_TOOLS", "").split(",") if item.strip()
         }
-        allowed = _CORE_TOOL_NAMES | extra
+        allowed = _CORE_TOOL_NAMES | extra | external_mcp.listed_tool_names()
         compact_tools = []
         for tool in tools:
             if tool.name not in allowed:
