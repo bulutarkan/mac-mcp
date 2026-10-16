@@ -174,3 +174,23 @@ class ServerPageBrandTests(unittest.TestCase):
                     self.assertEqual(200, reply.status_code)
                     self.assertEqual("image/png", reply.headers["content-type"])
                     self.assertEqual(b"\x89PNG", reply.content[:4])
+
+
+class VideoBrandTests(unittest.TestCase):
+    """The demo video mirrors the app: the bare mark in the menu header and the island, the app icon at the end."""
+
+    def setUp(self) -> None:
+        self.components = (ROOT / "video/src/components.tsx").read_text(encoding="utf-8")
+        self.scenes = (ROOT / "video/src/scenes.tsx").read_text(encoding="utf-8")
+
+    def test_the_mark_and_the_icon_are_drawn_as_they_are(self) -> None:
+        self.assertIn('staticFile("mark.svg")', self.components)
+        icon = self.components[self.components.index("export const AppIcon"):][:300]
+        self.assertNotIn("borderRadius", icon)  # the icon has its own tile and transparent margin
+        self.assertTrue((ROOT / "video/public/mark.svg").is_file())
+
+    def test_scenes_use_the_mark_where_the_app_does(self) -> None:
+        self.assertIn("<BrandMark size={52} />", self.scenes)
+        self.assertIn("<BrandMark size={56} />", self.scenes)
+        self.assertIn("<AppIcon size={150} />", self.scenes)
+        self.assertNotIn("<AppIcon size={150} style={{ boxShadow", self.scenes)

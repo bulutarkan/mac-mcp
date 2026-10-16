@@ -83,8 +83,14 @@ export const Chip: React.FC<{ text: string; color?: string; style?: React.CSSPro
   </span>
 );
 
+/** The app icon as macOS shows it: its own rounded tile, shadow and transparent margin. */
 export const AppIcon: React.FC<{ size: number; style?: React.CSSProperties }> = ({ size, style }) => (
-  <Img src={staticFile("app-icon.png")} style={{ width: size, height: size, borderRadius: size * 0.22, ...style }} />
+  <Img src={staticFile("app-icon.png")} style={{ width: size, height: size, ...style }} />
+);
+
+/** The bare monogram, as the app's menu header and Live Island show it. */
+export const BrandMark: React.FC<{ size: number; style?: React.CSSProperties }> = ({ size, style }) => (
+  <Img src={staticFile("mark.svg")} style={{ width: size, height: size, ...style }} />
 );
 
 /** Neutral app glyphs (no vendor artwork): a tile with a simple drawn symbol. */

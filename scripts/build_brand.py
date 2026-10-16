@@ -75,7 +75,8 @@ OUTPUTS = [
     ("menu_app/Assets/AppIconSmall/64.png", lambda: app_icon(5.2, 0.72), (64, 64)),
     ("site/assets/img/og-image.jpg", lambda: social(1200, 630), (1200, 630)),
 ]
-COPIES = [("assets/brand/mark.svg", "site/assets/img/mark.svg"), ("assets/brand/mark-bronze.svg", "site/assets/img/mark-bronze.svg"), ("assets/brand/mark.svg", "menu_app/Assets/BrandMark.svg")]
+COPIES = [("assets/brand/mark.svg", "site/assets/img/mark.svg"), ("assets/brand/mark-bronze.svg", "site/assets/img/mark-bronze.svg"), ("assets/brand/mark.svg", "menu_app/Assets/BrandMark.svg"),
+          ("assets/brand/mark.svg", "video/public/mark.svg")]
 
 
 def tool(name: str) -> str:

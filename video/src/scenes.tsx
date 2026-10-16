@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion";
-import { AppIcon, Caption, Chip, Desktop, Glyph, useEnter, Window } from "./components";
+import { AppIcon, BrandMark, Caption, Chip, Desktop, Glyph, useEnter, Window } from "./components";
 import { seconds, theme } from "./theme";
 
 const clamp = { extrapolateLeft: "clamp" as const, extrapolateRight: "clamp" as const };
@@ -40,7 +40,7 @@ const Connect: React.FC = () => {
                     transformOrigin: "top right", borderRadius: 24, background: theme.glass, border: `1px solid ${theme.glassEdge}`,
                     boxShadow: "0 40px 100px rgba(0,0,0,0.5)", padding: 30 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 22 }}>
-          <AppIcon size={52} />
+          <BrandMark size={52} />
           <div style={{ fontFamily: theme.serif, fontSize: 36, fontWeight: 600 }}>Connect your AI app.</div>
         </div>
         {apps.map((name, index) => {
@@ -81,7 +81,7 @@ const Island: React.FC = () => {
                     width: notchW + wing * 2, height: h, background: "#000", borderRadius: "0 0 26px 26px",
                     display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 40px",
                     boxShadow: "0 24px 60px rgba(0,0,0,0.5)" }}>
-        <AppIcon size={56} />
+        <BrandMark size={56} />
         <div style={{ width: 72, height: 72, position: "relative", display: "grid", placeItems: "center" }}>
           {working ? (
             <>
@@ -242,7 +242,7 @@ const End: React.FC = () => {
     <AbsoluteFill style={{ background: theme.night, color: theme.paper, fontFamily: theme.sans, alignItems: "center", justifyContent: "center" }}>
       <AbsoluteFill style={{ background: `radial-gradient(900px 600px at 50% 40%, ${theme.violet}40, transparent 70%)` }} />
       <div style={{ textAlign: "center", opacity: enter, transform: `translateY(${(1 - enter) * 24}px)` }}>
-        <AppIcon size={150} style={{ boxShadow: "0 30px 80px rgba(0,0,0,0.5)" }} />
+        <AppIcon size={150} />
         <div style={{ fontFamily: theme.serif, fontSize: 84, fontWeight: 600, marginTop: 34 }}>Let your AI apps use your Mac.</div>
         <div style={{ fontSize: 34, color: theme.haze, marginTop: 18 }}>Mac MCP · Open source, MIT · bulutarkan.github.io/mac-mcp</div>
       </div>
