@@ -131,3 +131,46 @@ class SiteBrandTests(unittest.TestCase):
         self.assertIn('<link rel="icon" type="image/png" href="assets/img/app-icon-256.png">', self.page)
         self.assertIn('<link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">', self.page)
         self.assertTrue((ROOT / "site" / "assets" / "img" / "mark-bronze.svg").is_file())
+
+
+MARK_PATH = 'd="M14 49 V15 L32 33 L50 15 V29"'
+
+
+class ServerPageBrandTests(unittest.TestCase):
+    """The mobile page, the dashboard and the ChatGPT panel show the monogram on an obsidian tile."""
+
+    def test_mobile_and_dashboard_show_the_mark(self) -> None:
+        for page in ("mcp_server/mobile/index.html", "mcp_server/dashboard/index.html"):
+            with self.subTest(page=page):
+                text = (ROOT / page).read_text(encoding="utf-8")
+                self.assertIn(MARK_PATH, text)
+                self.assertNotIn("M6 8.5 16 3l10 5.5v15L16 29 6 23.5z", text)  # the old hexagon
+
+    def test_chatgpt_panel_source_and_build_show_the_mark(self) -> None:
+        for page in ("chatgpt_ui/src/index.html", "mcp_server/chatgpt_ui/control-center.html"):
+            with self.subTest(page=page):
+                text = (ROOT / page).read_text(encoding="utf-8")
+                self.assertIn(MARK_PATH, text)
+                self.assertNotIn('d="M21 19.5 34 32 21 44.5"', text)  # the old terminal prompt
+
+    def test_the_mobile_manifest_has_home_screen_icons(self) -> None:
+        import json
+        manifest = json.loads((ROOT / "mcp_server/mobile/manifest.json").read_text())
+        sizes = {icon["sizes"]: icon["src"] for icon in manifest["icons"]}
+        self.assertEqual({"192x192": "/mobile/assets/icon-192.png", "512x512": "/mobile/assets/icon-512.png"}, sizes)
+        page = (ROOT / "mcp_server/mobile/index.html").read_text(encoding="utf-8")
+        self.assertIn('<link rel="apple-touch-icon" href="/mobile/assets/icon-192.png">', page)
+
+    def test_the_server_serves_the_mobile_icons(self) -> None:
+        import tempfile
+        from starlette.testclient import TestClient
+        from tests import test_mobile_dashboard as fixture
+        with tempfile.TemporaryDirectory() as td:
+            app, _telemetry, _store = fixture.MobileDashboardTests().make_app(Path(td))
+            client = TestClient(app)
+            for name in ("icon-192.png", "icon-512.png"):
+                with self.subTest(icon=name):
+                    reply = client.get(f"/mobile/assets/{name}")
+                    self.assertEqual(200, reply.status_code)
+                    self.assertEqual("image/png", reply.headers["content-type"])
+                    self.assertEqual(b"\x89PNG", reply.content[:4])

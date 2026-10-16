@@ -101,8 +101,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
   backdrop-filter: blur(22px) saturate(130%);
 }
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.brand-mark { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid rgba(113, 174, 219, .3); border-radius: 10px; background: linear-gradient(145deg, #12263a, #0d1b29); box-shadow: inset 0 1px 0 rgba(255,255,255,.06); }
-.brand-mark svg { width: 20px; height: 20px; fill: none; stroke: var(--ice); stroke-width: 1.65; stroke-linejoin: round; }
+.brand-mark { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid rgba(255,255,255,.08); border-radius: 10px; background: linear-gradient(160deg, #34363d, #111216); box-shadow: inset 0 1px 0 rgba(255,255,255,.06); }
+.brand-mark svg { width: 23px; height: 23px; }
 .brand strong { display: block; font-size: 14px; letter-spacing: -.01em; }
 .brand-subtitle { display: block; margin-top: 1px; font-size: 11px; color: var(--muted); }
 .topbar-status { display: flex; align-items: center; gap: 14px; min-width: 0; font-size: 11px; color: var(--muted); }

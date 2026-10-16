@@ -217,6 +217,8 @@ def create_mobile_routes(
             "mobile.css": "text/css; charset=utf-8",
             "mobile.js": "text/javascript; charset=utf-8",
             "manifest.json": "application/manifest+json",
+            "icon-192.png": "image/png",  # home-screen icons (rendered by scripts/build_brand.py)
+            "icon-512.png": "image/png",
         }
         media_type = allowed.get(name)
         if media_type is None:
