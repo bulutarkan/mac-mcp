@@ -166,8 +166,10 @@ class MenuPopoverStructureTests(unittest.TestCase):
         self.assertNotIn("needsAttention", grouping)
         self.assertNotIn("terminalAttention", grouping)
         self.assertIn('sessionSectionHeader("Ended"', self.menu)
-        self.assertIn('case .disconnected: return "Ended"', self.menu)
-        self.assertIn('case .expired: return "Ended after idle"', self.menu)
+        # The lifecycle labels live on the state, shared by the row text and its icon tooltip.
+        self.assertIn('case .disconnected: return "Ended"', grouping)
+        self.assertIn('case .expired: return "Ended after idle"', grouping)
+        self.assertIn("state.label", self.menu)
         self.assertNotIn('sessionSectionHeader("Needs Attention"', self.menu)
         self.assertIn("idle and ended sessions stay visible as neutral history", settings)
 
