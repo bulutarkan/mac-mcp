@@ -96,6 +96,8 @@ struct RunReportSheet: View {
                     if let duration = shown.duration { chip(TaskTime.duration(duration), symbol: "timer") }
                     if let agent = agentLabel { chip(agent, symbol: "sparkles") }
                     if let tokens = tokenLabel { chip(tokens, symbol: "number") }
+                    if let limit = limitLabel { chip(limit, symbol: "gauge.with.dots.needle.67percent") }
+                    if let file = shown.triggerFileName { chip(file, symbol: "doc") }
                     if !isAgent, let code = shown.exitCode { chip("Exit code \(code)", symbol: "terminal") }
                 }
             }
@@ -117,6 +119,17 @@ struct RunReportSheet: View {
         let text = total >= 1000 ? String(format: "%.0fk tokens", Double(total) / 1000) : "\(total) tokens"
         if let cost = usage["cost_usd"] as? Double, cost > 0 { return text + String(format: " · $%.2f", cost) }
         return text
+    }
+
+    /// "Limit 500k tokens" or "Limit $2.00" (#211); the reason line says when the run was stopped at it.
+    private var limitLabel: String? {
+        guard let limit = shown.usageLimit else { return nil }
+        var parts: [String] = []
+        if let tokens = limit["max_tokens"] as? Int {
+            parts.append(tokens >= 1000 ? String(format: "%.0fk tokens", Double(tokens) / 1000) : "\(tokens) tokens")
+        }
+        if let cost = limit["max_cost_usd"] as? Double { parts.append(String(format: "$%.2f", cost)) }
+        return parts.isEmpty ? nil : "Limit " + parts.joined(separator: " or ")
     }
 
     private func chip(_ text: String, symbol: String) -> some View {

@@ -1636,10 +1636,14 @@ def create_app():
             "{last_month_end} or {days_ago:N}. Optional expected_files [{path, min_bytes (default 1), "
             "written_this_run (default true)}] (at most 5; a relative path is inside the folder): after a run that "
             "finished, each file is checked by size and time (never opened) and the run is marked verified or "
-            "check failed; [] removes the checks. schedule is "
+            "check failed; [] removes the checks. Optional usage_limit {max_tokens, max_cost_usd} for an ai task stops "
+            "its agent at that usage; only agents that report usage while they work can keep one (tokens: claude, "
+            "opencode, kilo, pi; cost: opencode, kilo), others are refused; {} removes it. schedule is "
             "{type:'once',at:'2026-10-20T09:00'} | {type:'daily',time:'09:00'} | {type:'weekly',time:'09:00',"
             "weekdays:[0..6] (0=Monday)} | {type:'monthly',time:'09:00',day:1-31} | {type:'hours',every:N,"
-            "start:'08:00'} | {type:'cron',expr:'0 9 * * 1'} in the Mac's local time. Tasks you create or change "
+            "start:'08:00'} | {type:'cron',expr:'0 9 * * 1'} in the Mac's local time, or {type:'folder',folder:"
+            "'~/Downloads',match:'pdf, Invoice*'} to run once for each new file there ({file} in prompt, "
+            "arguments or command is that file; existing files don't run it). Tasks you create or change "
             "wait as 'Needs your approval' and never run until the owner approves them in Settings › Scheduled "
             "Tasks; tell the owner to review them there. You cannot approve. run_now runs an approved task once. "
             "Runs missed while the Mac slept are recorded as skipped, not run late."
@@ -1665,6 +1669,7 @@ def create_app():
         time_limit_minutes: Optional[int] = None,
         data_step: Optional[Dict[str, Any]] = None,
         expected_files: Optional[List[Dict[str, Any]]] = None,
+        usage_limit: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         verb = str(action or "list").strip().lower()
         fields = {"name": name, "description": summary, "kind": kind, "schedule": schedule, "prompt": prompt,
@@ -1674,7 +1679,7 @@ def create_app():
                       "script": data_step.get("script"), "command": data_step.get("command"),
                       "args": data_step.get("arguments", data_step.get("args")),
                       "interpreter": data_step.get("interpreter")},
-                  "verify": expected_files}
+                  "verify": expected_files, "usage_limit": usage_limit}
         given = {key: value for key, value in fields.items() if value is not None}
         try:
             if verb == "list":

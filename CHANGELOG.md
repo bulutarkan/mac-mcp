@@ -1,5 +1,20 @@
 ## Unreleased
 
+### Scheduled Tasks can run when a file arrives (#193)
+- **When › New file**: a task runs once for each new file in a folder you choose, optionally only files like `pdf, Invoice*`. Files already there don't start it, a file counts once it has finished copying, and downloads still in progress are ignored.
+- The agent is told which file it was (or put `{file}` in the prompt); a script gets `{file}` in its arguments or command, quoted, and `$MAC_MCP_TRIGGER_FILE`. Run now uses the newest file. The run report and the history name the file.
+- Each file runs the task once, also across restarts, and files that arrived while Mac MCP was off are picked up. One run at a time; files the task's own run writes into the folder never start it again; at most 30 runs an hour, the rest recorded as skipped. The folder is watched with kqueue: no polling while nothing happens.
+- AI apps can suggest such a task with `scheduled_tasks` (`schedule: {type: "folder", folder, match}`); it waits for your approval like any other.
+
+### An optional usage limit for scheduled AI tasks (#211)
+- **Advanced › Usage limit**: stop the agent once a run reaches a number of tokens or a cost in dollars. Off by default; the time limit still applies.
+- Only agents that report usage while they work can keep one: tokens with Claude Code, OpenCode, Kilo Code and pi; cost with OpenCode and Kilo Code. For any other agent the limit is refused with the reason instead of being promised, and a run whose agent changed meanwhile doesn't start.
+- A stopped run says so ("Stopped at its 500,000-token limit (used 512,330)") and keeps what the agent did before the stop; the report shows the limit next to the usage. A suggested change that raises or removes a limit shows in the review.
+
+### mac_act on Mac MCP's own windows, and toggles that only rename themselves (#220, #221)
+- The desktop agent cursor no longer counts as a window to Accessibility. It shifted the window numbers mac_act had just resolved, so clicks in Mac MCP's own Settings hit the empty cursor window ("Can't get UI element 1 of window 2").
+- A toolbar toggle that only renames itself (Calculator's "Show Sidebar" → "Hide Sidebar") or opens a pane deeper in the window (Finder's Preview) is no longer reported as having no effect; the change it made shows up in the returned tree, and the observation's own labels are kept.
+
 ### Scheduled task runs keep less, for less long (#199)
 - A run's contents (result, output, each step's text and inputs) are removed after **Settings › Privacy › Scheduled task run details**: 7, 30 (default) or 90 days. How the run ended, when, its usage and checks stay for the run's 90 days. The report says when the details were removed, and nothing is read back from the agent's files afterwards.
 - Known secrets (tokens, `NAME=value` keys, bearer headers, private keys) are masked before a run is written.

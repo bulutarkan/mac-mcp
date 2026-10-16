@@ -67,6 +67,7 @@ struct ScheduledTasksPane: View {
     @MacMCPState private var tasks: [ScheduledTask] = []
     @MacMCPState private var upNext: [[String: Any]] = []
     @MacMCPState private var agents: [[String: Any]] = []
+    @MacMCPState private var defaultAgent: String?
     @MacMCPState private var observationPaused = false
     @MacMCPState private var loaded = false
     @MacMCPState private var message = ""
@@ -98,7 +99,7 @@ struct ScheduledTasksPane: View {
             }
         }
         .sheet(item: Binding(get: { editor }, set: { editor = $0 })) { model in
-            TaskEditorSheet(state: state, model: model, agents: agents) { saved in
+            TaskEditorSheet(state: state, model: model, agents: agents, defaultAgent: defaultAgent) { saved in
                 editor = nil
                 if let saved { openTaskID = saved }
                 Task { await load() }
@@ -285,6 +286,7 @@ struct ScheduledTasksPane: View {
         if let run = task.lastRun {
             return schedule + Text(" · ").foregroundColor(.secondary) + Text(run.shortLine).foregroundColor(run.color)
         }
+        if task.watchesFolder { return schedule + Text(" · Waiting for a file").foregroundColor(.secondary) }
         if task.state == "finished" { return schedule + Text(" · No more runs").foregroundColor(.secondary) }
         if let next = task.nextRunAt { return schedule + Text(" · First run \(TaskTime.upcoming(next))").foregroundColor(.secondary) }
         return schedule
@@ -299,6 +301,7 @@ struct ScheduledTasksPane: View {
         tasks = (result.object["tasks"] as? [[String: Any]] ?? []).map(ScheduledTask.init)
         upNext = result.object["up_next"] as? [[String: Any]] ?? []
         agents = result.object["agents"] as? [[String: Any]] ?? []
+        defaultAgent = result.object["default_agent"] as? String
         observationPaused = ((result.object["privacy"] as? [String: Any])?["paused"] as? Bool) == true
         message = ""
         loaded = true
@@ -390,7 +393,8 @@ private struct TaskDetailView: View {
                     if let problem = runsProblem, runs.isEmpty {
                         LoadProblem(message: problem) { await loadRuns() }
                     } else if runs.isEmpty {
-                        Text(task.nextRunAt.map { "No runs yet. The first one is \(TaskTime.upcoming($0))." } ?? "No runs yet.")
+                        Text(task.watchesFolder ? "No runs yet. It runs when a new file arrives."
+                             : task.nextRunAt.map { "No runs yet. The first one is \(TaskTime.upcoming($0))." } ?? "No runs yet.")
                             .font(.callout).foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .taskCard()
@@ -433,7 +437,11 @@ private struct TaskDetailView: View {
 
     private var facts: some View {
         VStack(spacing: 0) {
-            factRow("calendar", "Next run", task.paused ? "Paused" : task.nextRunAt.map { TaskTime.upcoming($0).capitalizedFirst } ?? "No more runs")
+            if task.watchesFolder {
+                factRow("tray.and.arrow.down", "Runs when", task.paused ? "Paused" : "A new file arrives, once for each file")
+            } else {
+                factRow("calendar", "Next run", task.paused ? "Paused" : task.nextRunAt.map { TaskTime.upcoming($0).capitalizedFirst } ?? "No more runs")
+            }
             Divider()
             if task.isAI {
                 if let step = task.raw["data_step"] as? [String: Any] {
@@ -451,6 +459,10 @@ private struct TaskDetailView: View {
             Divider()
             if let checks = Self.checks(task.raw["verify"]) {
                 factRow("checkmark.seal", "Checks", checks, mono: true, lines: 5)
+                Divider()
+            }
+            if let limit = task.usageLimit {
+                factRow("gauge.with.dots.needle.67percent", "Usage limit", "Stops at " + ScheduledTask.describeLimit(limit))
                 Divider()
             }
             factRow("bell", "When it finishes", task.notify ? "Notifies you" : "No notification")
@@ -526,6 +538,7 @@ private struct TaskDetailView: View {
     private func runMeta(_ run: TaskRun) -> String {
         var parts: [String] = []
         if run.trigger == "manual" { parts.append("Run now") }
+        if let file = run.triggerFileName { parts.append(file) }
         switch run.status {
         case "running": parts.append("Running…")
         case "skipped": parts.append(run.skippedCount > 1 ? "Skipped \(run.skippedCount) runs" : "Skipped")
@@ -577,7 +590,7 @@ private extension String {
 // MARK: - New / Edit
 
 enum TaskWhen: String, CaseIterable, Identifiable {
-    case once, daily, weekly, monthly, hours
+    case once, daily, weekly, monthly, hours, file
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -586,6 +599,7 @@ enum TaskWhen: String, CaseIterable, Identifiable {
         case .weekly: return "Weekly"
         case .monthly: return "Monthly"
         case .hours: return "Every few hours"
+        case .file: return "New file"
         }
     }
 }
@@ -617,6 +631,12 @@ final class TaskEditorModel: ObservableObject, Identifiable {
     @Published var monthDay = 1
     @Published var everyHours = 3
     @Published var cron = ""
+    /// .file (#193): the folder to watch and, optionally, which files count ("pdf, Invoice*").
+    @Published var watchFolder = ""
+    @Published var watchMatch = ""
+    /// The usage limit (#211): "none", "tokens" or "cost", and its amount as typed.
+    @Published var usageKind = "none"
+    @Published var usageAmount = ""
     @Published var notify = true
     @Published var timeoutMin = 0
     @Published var showAdvanced = false
@@ -668,7 +688,19 @@ final class TaskEditorModel: ObservableObject, Identifiable {
         case "monthly": when = .monthly; monthDay = schedule["day"] as? Int ?? 1
         case "hours": when = .hours; everyHours = schedule["every"] as? Int ?? 3
         case "cron": cron = schedule["expr"] as? String ?? ""; showAdvanced = true
+        case "folder":
+            when = .file
+            watchFolder = schedule["folder"] as? String ?? ""
+            watchMatch = schedule["match"] as? String ?? ""
         default: when = .weekly; weekdays = Set(schedule["weekdays"] as? [Int] ?? [0])
+        }
+        if let limit = task.usageLimit {
+            if let tokens = limit["max_tokens"] as? Int {
+                usageKind = "tokens"; usageAmount = String(tokens)
+            } else if let cost = limit["max_cost_usd"] as? Double {
+                usageKind = "cost"; usageAmount = String(format: "%.2f", cost)
+            }
+            showAdvanced = true
         }
         if !command.isEmpty || !args.isEmpty || !interpreter.isEmpty || !model.isEmpty { showAdvanced = true }
     }
@@ -703,8 +735,21 @@ final class TaskEditorModel: ObservableObject, Identifiable {
         case .weekly: return ["type": "weekly", "time": hhmm(time), "weekdays": weekdays.sorted()]
         case .monthly: return ["type": "monthly", "time": hhmm(time), "day": monthDay]
         case .hours: return ["type": "hours", "every": everyHours, "start": hhmm(time)]
+        case .file: return ["type": "folder", "folder": watchFolder, "match": watchMatch]
         }
     }
+
+    /// The usage limit as the server reads it; empty removes it on an edit.
+    var usageLimit: [String: Any] {
+        let amount = usageAmount.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: "")
+        switch usageKind {
+        case "tokens": return Int(amount).map { ["max_tokens": $0] } ?? [:]
+        case "cost": return Double(amount).map { ["max_cost_usd": $0] } ?? [:]
+        default: return [:]
+        }
+    }
+
+    var usageLimitReady: Bool { usageKind == "none" || !usageLimit.isEmpty }
 
     var definition: [String: Any] {
         var out: [String: Any] = [
@@ -725,6 +770,7 @@ final class TaskEditorModel: ObservableObject, Identifiable {
             out["provider"] = provider
             out["model"] = model
             out["data_step"] = dataOn ? dataStep : [String: Any]()  // empty removes it on an edit
+            out["usage_limit"] = usageLimit
         } else {
             let useCommand = !command.trimmingCharacters(in: .whitespaces).isEmpty
             out["script"] = useCommand ? "" : script
@@ -758,6 +804,7 @@ private struct TaskEditorSheet: View {
     @ObservedObject var state: AppState
     @ObservedObject var model: TaskEditorModel
     let agents: [[String: Any]]
+    let defaultAgent: String?
     let done: (String?) -> Void
 
     @MacMCPState private var sentence = ""
@@ -823,6 +870,8 @@ private struct TaskEditorSheet: View {
 
     private var canSave: Bool {
         guard !model.name.trimmingCharacters(in: .whitespaces).isEmpty, scheduleProblem.isEmpty else { return false }
+        if model.when == .file && model.cron.isEmpty && model.watchFolder.isEmpty { return false }
+        if model.isAI && !model.usageLimitReady { return false }
         if model.isAI {
             return !model.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && (!model.dataOn || model.dataStepReady) && (dataPreview?["ok"] as? Bool) != false
@@ -1081,6 +1130,15 @@ private struct TaskEditorSheet: View {
     /// Inserts a date that moves with each run, such as {last_week_start}.
     private func dateMenu(_ text: Binding<String>) -> some View {
         Menu {
+            if model.when == .file && model.cron.trimmingCharacters(in: .whitespaces).isEmpty {
+                Section("The file that started the run") {
+                    Button("Its full path   {file}") {
+                        let current = text.wrappedValue
+                        let space = current.isEmpty || current.hasSuffix(" ") ? "" : " "
+                        text.wrappedValue = current + space + "{file}"
+                    }
+                }
+            }
             Section("Dates that move with each run") {
                 ForEach(dates, id: \.self) { choice in
                     Button("\(choice["label"] ?? "")   \(choice["value"] ?? "")") {
@@ -1187,6 +1245,12 @@ private struct TaskEditorSheet: View {
                 case .daily:
                     Spacer()
                     timePicker
+                case .file:
+                    watchFolderButton
+                    TextField("Only these, e.g. pdf, Invoice*", text: $model.watchMatch)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 190)
+                        .help("Leave empty for any file. A word such as pdf means files ending in .pdf.")
                 }
             }
             .disabled(!model.cron.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -1195,7 +1259,13 @@ private struct TaskEditorSheet: View {
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: scheduleProblem.isEmpty ? "clock" : "exclamationmark.triangle")
                     .foregroundStyle(scheduleProblem.isEmpty ? Color.accentColor : Color.orange)
-                if scheduleProblem.isEmpty {
+                if scheduleProblem.isEmpty && model.when == .file && model.cron.trimmingCharacters(in: .whitespaces).isEmpty {
+                    (Text("Runs ") + Text(sentence.isEmpty ? "when a file arrives" : sentence.lowercasedFirst).fontWeight(.semibold)
+                     + Text(", once for each file, after it has finished copying. Files already there don’t start it. ")
+                     + Text(model.isAI ? "The agent is told which file it was; put {file} in the prompt to say where."
+                                       : "The script gets it as {file} in its arguments and as $MAC_MCP_TRIGGER_FILE."))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if scheduleProblem.isEmpty {
                     (Text("Runs ") + Text(sentence.isEmpty ? "…" : sentence.lowercasedFirst).fontWeight(.semibold) + Text(". ")
                      + Text(firstRun.map { "First run: \(TaskTime.upcoming($0)). " } ?? "")
                      + Text("If your Mac is asleep then, the run is skipped and shown in the history."))
@@ -1216,6 +1286,74 @@ private struct TaskEditorSheet: View {
         TimeField(date: $model.time)
     }
 
+    private var watchFolderButton: some View {
+        Button {
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.allowsMultipleSelection = false
+            panel.prompt = "Watch This Folder"
+            panel.directoryURL = URL(fileURLWithPath: model.watchFolder.isEmpty
+                                     ? NSHomeDirectory() + "/Downloads" : model.watchFolder)
+            if panel.runModal() == .OK, let url = panel.url { model.watchFolder = url.path }
+        } label: {
+            Label(model.watchFolder.isEmpty ? "Choose a folder…" : URL(fileURLWithPath: model.watchFolder).lastPathComponent,
+                  systemImage: "folder")
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .help(model.watchFolder.isEmpty ? "The folder to watch for new files" : model.watchFolder)
+    }
+
+    /// The selected agent (or the Default Agent) and the usage limits it can keep (#211).
+    private var limitAgent: (name: String, tokens: Bool, cost: Bool)? {
+        let id = model.provider.isEmpty ? (defaultAgent ?? "") : model.provider
+        guard let agent = agents.first(where: { ($0["id"] as? String) == id }) else { return nil }
+        let limits = agent["limits"] as? [String: Any] ?? [:]
+        return (agent["name"] as? String ?? id, limits["tokens"] as? Bool ?? false, limits["cost"] as? Bool ?? false)
+    }
+
+    private var limitNote: (text: String, problem: Bool) {
+        guard let agent = limitAgent else {
+            return ("Choose the agent first: whether it can be stopped at a limit depends on what it reports.", true)
+        }
+        if model.usageKind == "tokens" && !agent.tokens {
+            return ("\(agent.name) reports its usage only when it finishes, so it can’t be stopped at a token limit. "
+                    + "Claude Code, OpenCode, Kilo Code and pi can.", true)
+        }
+        if model.usageKind == "cost" && !agent.cost {
+            return ("\(agent.name) doesn’t report its price as it works. OpenCode and Kilo Code do; or use a token limit.", true)
+        }
+        return ("The agent is stopped a few seconds after it reaches the limit. The time limit still applies.", false)
+    }
+
+    private var usageLimitField: some View {
+        field("Usage limit", optional: true) {
+            HStack(spacing: 8) {
+                Picker("", selection: $model.usageKind) {
+                    Text("No limit").tag("none")
+                    Text("Tokens").tag("tokens")
+                    Text("Cost (USD)").tag("cost")
+                }
+                .labelsHidden()
+                .fixedSize()
+                if model.usageKind != "none" {
+                    TextField(model.usageKind == "tokens" ? "e.g. 500000" : "e.g. 2.00", text: $model.usageAmount)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.body.monospacedDigit())
+                        .frame(width: 130)
+                }
+                Spacer()
+            }
+            if model.usageKind != "none" {
+                let note = limitNote
+                Text(note.text)
+                    .font(.caption2).foregroundStyle(note.problem ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     private var advanced: some View {
         DisclosureGroup(isExpanded: $model.showAdvanced) {
             VStack(alignment: .leading, spacing: 12) {
@@ -1223,6 +1361,7 @@ private struct TaskEditorSheet: View {
                     field("Model", optional: true) {
                         TextField("The agent's default model", text: $model.model).textFieldStyle(.roundedBorder)
                     }
+                    usageLimitField
                 } else {
                     field("Run with", optional: true) {
                         HStack {
@@ -1285,7 +1424,7 @@ private struct TaskEditorSheet: View {
             HStack {
                 Text("Advanced").font(.callout.weight(.medium))
                 Spacer()
-                Text(model.isAI ? "model, check, time limit, cron" : "program, arguments, command, check, cron")
+                Text(model.isAI ? "model, usage limit, check, time limit, cron" : "program, arguments, command, check, cron")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -1616,6 +1755,13 @@ private struct TaskReviewSheet: View {
             out.append(Row(title: "Asks the agent", value: prompt, before: before("prompt", prompt)))
             let agent = value("provider").isEmpty ? "Default agent" : value("provider").capitalized
             out.append(Row(title: "Agent", value: agent, before: nil))
+            // A suggested change can raise or remove the limit; it is shown like the rest (#211).
+            let limit = (proposal["usage_limit"] as? [String: Any]).map(ScheduledTask.describeLimit) ?? ""
+            let oldLimit = (current["usage_limit"] as? [String: Any]).map(ScheduledTask.describeLimit) ?? ""
+            if !limit.isEmpty || !oldLimit.isEmpty {
+                out.append(Row(title: "Usage limit", value: limit.isEmpty ? "None" : "Stops at " + limit,
+                               before: isNew || limit == oldLimit ? nil : (oldLimit.isEmpty ? "None" : "Stops at " + oldLimit)))
+            }
         } else if !value("command").isEmpty {
             out.append(Row(title: "Runs command", value: value("command"), before: before("command", value("command")), mono: true))
         } else {

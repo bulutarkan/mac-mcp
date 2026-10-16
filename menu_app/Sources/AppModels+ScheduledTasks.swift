@@ -27,6 +27,17 @@ struct ScheduledTask: Identifiable, Equatable {
     var provider: String? { raw["provider"] as? String }
     var cwd: String? { raw["cwd"] as? String }
     var notify: Bool { raw["notify"] as? Bool ?? true }
+    /// Runs when a file arrives in a folder (#193) instead of at set times.
+    var watchesFolder: Bool { (schedule["type"] as? String) == "folder" }
+    /// The optional usage limit of an AI task (#211): max_tokens and/or max_cost_usd.
+    var usageLimit: [String: Any]? { (raw["usage_limit"] as? [String: Any]).flatMap { $0.isEmpty ? nil : $0 } }
+
+    static func describeLimit(_ limit: [String: Any]) -> String {
+        var parts: [String] = []
+        if let tokens = limit["max_tokens"] as? Int { parts.append(tokens.formatted() + " tokens") }
+        if let cost = limit["max_cost_usd"] as? Double { parts.append(String(format: "$%.2f", cost)) }
+        return parts.joined(separator: " or ")
+    }
 }
 
 struct TaskRun: Identifiable {
@@ -38,6 +49,11 @@ struct TaskRun: Identifiable {
     var summary: String? { (raw["summary"] as? String).flatMap { $0.isEmpty ? nil : $0 } }
     var output: String? { raw["output"] as? String }
     var trigger: String { raw["trigger"] as? String ?? "schedule" }
+    /// The file whose arrival started the run (#193).
+    var triggerFile: String? { (raw["trigger_file"] as? String).flatMap { $0.isEmpty ? nil : $0 } }
+    var triggerFileName: String? { triggerFile.map { URL(fileURLWithPath: $0).lastPathComponent } }
+    /// The usage limit and what the run used (#211); "stopped" names the limit it reached.
+    var usageLimit: [String: Any]? { detail?["usage_limit"] as? [String: Any] }
     var skippedCount: Int { raw["skipped_count"] as? Int ?? 0 }
     var exitCode: Int? { raw["exit_code"] as? Int }
     var duration: Double? { raw["duration_s"] as? Double }

@@ -6,7 +6,8 @@ command line). Its definition is one JSON object:
     {"name", "description", "kind": "ai"|"script", "schedule": {...schedule_rules...},
      "notify": bool, "timeout_min": int,
      # ai:     "prompt", "provider", "model", "cwd",
-     #         "data_step": {"script" or "command", "interpreter", "args"} (optional)
+     #         "data_step": {"script" or "command", "interpreter", "args"} (optional),
+     #         "usage_limit": {"max_tokens", "max_cost_usd"} (optional, run_budget)
      # script: "script" (a file) or "command", "interpreter", "args", "cwd"}
 
 An AI task's data step runs a script first and hands what it printed to the agent, so the
@@ -35,7 +36,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from . import paths, run_records, schedule_rules
+from . import paths, run_budget, run_records, schedule_rules
 from .runtime_settings import run_detail_privacy
 
 KINDS = ("ai", "script")
@@ -50,6 +51,9 @@ SUMMARY_LIMIT = 4_000
 MAX_OUTPUT_CHECKS = 5
 DATA_LIMIT = 60_000
 DATA_TIMEOUT_MIN = 10
+# Folder triggers (#193): how many tasks may watch a folder, and the {file} they are handed.
+MAX_FOLDER_TASKS = 20
+FILE_TOKEN = "{file}"
 
 # What each script type is run with when the owner does not pick a program in Advanced.
 SCRIPT_TYPES: Dict[str, Dict[str, Any]] = {
@@ -145,12 +149,17 @@ def _db() -> Iterator[sqlite3.Connection]:
                         detail TEXT
                     );
                     CREATE INDEX IF NOT EXISTS runs_by_task ON runs(task_id, started_at DESC);
+                    CREATE TABLE IF NOT EXISTS folder_watch (
+                        task_id TEXT PRIMARY KEY,
+                        state TEXT NOT NULL,
+                        updated_at REAL NOT NULL
+                    );
                     """
                 )
                 columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
                 # Databases from before output checks (#198) and expiring contents (#199). Two
                 # processes may open an old database at once; the second finds the column there.
-                for column, kind in (("verification", "TEXT"), ("details_expired_at", "REAL")):
+                for column, kind in (("verification", "TEXT"), ("details_expired_at", "REAL"), ("trigger_file", "TEXT")):
                     if column not in columns:
                         try:
                             conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {kind}")
@@ -348,6 +357,8 @@ def date_choices(at: Optional[float] = None) -> List[Dict[str, str]]:
 def check_dates(text: str, field: str) -> None:
     for match in _TOKEN_RE.finditer(text or ""):
         name, number = match.group(1), match.group(2)
+        if name == "file" and number is None:
+            continue
         if name == "days_ago" and number is not None and int(number) <= 366:
             continue
         if name in DATE_TOKENS and number is None:
@@ -377,6 +388,21 @@ def _program(raw: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
             raise TaskError(info["error"], info["message"])
         script = info["path"]
     return {"script": script or None, "command": command or None, "args": args, "interpreter": interpreter}
+
+
+def _usage_limit(raw: Any) -> Optional[Dict[str, Any]]:
+    try:
+        return run_budget.validate(raw)
+    except run_budget.BudgetError as exc:
+        raise TaskError(exc.code, str(exc)) from exc
+
+
+def provider_label(provider: Optional[str]) -> Optional[str]:
+    if not provider:
+        return None
+    from .tools_agents import _PROVIDER_LABELS
+
+    return _PROVIDER_LABELS.get(provider, provider)
 
 
 def validate_definition(raw: Any) -> Dict[str, Any]:
@@ -413,10 +439,31 @@ def validate_definition(raw: Any) -> Dict[str, Any]:
             raise TaskError("data_step_invalid", "data_step must be an object with a script or a command.")
         if data and any(str(data.get(key) or "").strip() for key in ("script", "command")):
             definition["data_step"] = _program(data, "data_")
-        return definition
+        limit = _usage_limit(raw.get("usage_limit"))
+        if limit:
+            provider = definition["provider"] or run_budget.default_provider()
+            problem = run_budget.unenforceable(limit, provider, provider_label(provider))
+            if problem:
+                raise TaskError("usage_limit_unenforceable", problem)
+            definition["usage_limit"] = limit
+        return _check_file_token(definition)
     if raw.get("data_step"):
         raise TaskError("data_step_ai_only", "Only AI tasks have a data step; a script task already runs a script.")
+    if _usage_limit(raw.get("usage_limit")):
+        raise TaskError("usage_limit_ai_only", "Only AI tasks have a usage limit; a script task has its time limit.")
     definition.update(_program(raw))
+    return _check_file_token(definition)
+
+
+def _check_file_token(definition: Dict[str, Any]) -> Dict[str, Any]:
+    """{file} names the file that started a run, so only a task that runs when a file arrives has one."""
+    if definition["schedule"]["type"] == "folder":
+        return definition
+    data = definition.get("data_step") or {}
+    texts = [definition.get(key) for key in ("prompt", "args", "command")] + [data.get("args"), data.get("command")]
+    if any(FILE_TOKEN in str(text or "") for text in texts):
+        raise TaskError("file_token_needs_folder",
+                        "{file} is the file that started the run, so it only works when the task runs as a file arrives.")
     return definition
 
 
@@ -437,7 +484,8 @@ def _public(row: sqlite3.Row, last: Optional[sqlite3.Row] = None, running: bool 
         **shown,
         "schedule_text": schedule_rules.describe(shown["schedule"]) if shown.get("schedule") else "",
         "state": ("needs_approval" if definition is None else "paused" if row["paused"]
-                  else "running" if running else "active" if row["next_run_at"] else "finished"),
+                  else "running" if running else "active" if row["next_run_at"] or _watches(definition)
+                  else "finished"),
         "paused": bool(row["paused"]),
         "created_by": row["created_by"],
         "created_at": row["created_at"],
@@ -454,9 +502,13 @@ def _public(row: sqlite3.Row, last: Optional[sqlite3.Row] = None, running: bool 
     return task
 
 
+def _watches(definition: Optional[Dict[str, Any]]) -> bool:
+    return bool(definition) and definition["schedule"]["type"] == "folder"
+
+
 def _run_public(row: sqlite3.Row, *, brief: bool = False) -> Dict[str, Any]:
     run = {key: row[key] for key in ("id", "task_id", "trigger", "scheduled_for", "started_at", "finished_at",
-                                      "status", "reason", "exit_code", "agent_id", "skipped_count")}
+                                      "status", "reason", "exit_code", "agent_id", "skipped_count", "trigger_file")}
     run["summary"] = (row["summary"] or "")[:300] if brief else row["summary"]
     if row["finished_at"] and row["status"] != "skipped":
         run["duration_s"] = round(row["finished_at"] - row["started_at"], 1)
@@ -519,6 +571,15 @@ def definition_of(task_id: str) -> Optional[Dict[str, Any]]:
     return _load(row["definition"]) if row else None
 
 
+def _check_folder_room(conn: sqlite3.Connection, definition: Dict[str, Any], task_id: Optional[str] = None) -> None:
+    if not _watches(definition):
+        return
+    watching = sum(1 for row in conn.execute("SELECT id, definition, proposal FROM tasks")
+                   if row["id"] != task_id and (_watches(_load(row["definition"])) or _watches(_load(row["proposal"]))))
+    if watching >= MAX_FOLDER_TASKS:
+        raise TaskError("too_many_folder_tasks", f"At most {MAX_FOLDER_TASKS} tasks can wait for files.")
+
+
 def create_task(raw: Any, *, by: str = "owner", now: Optional[float] = None) -> Dict[str, Any]:
     """The owner's task is live at once; anyone else's waits for the owner's approval."""
     definition = validate_definition(raw)
@@ -528,6 +589,7 @@ def create_task(raw: Any, *, by: str = "owner", now: Optional[float] = None) -> 
     with _db() as conn:
         if conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] >= MAX_TASKS:
             raise TaskError("too_many_tasks", f"Mac MCP keeps at most {MAX_TASKS} scheduled tasks.")
+        _check_folder_room(conn, definition)
         conn.execute(
             "INSERT INTO tasks (id, definition, proposal, proposed_by, proposed_at, paused, created_by, created_at,"
             " updated_at, next_run_at) VALUES (?,?,?,?,?,0,?,?,?,?)",
@@ -549,6 +611,7 @@ def update_task(task_id: str, raw: Any, *, by: str = "owner", now: Optional[floa
         base = _load(row["proposal"]) if by != "owner" and row["proposal"] else _load(row["definition"]) or _load(row["proposal"]) or {}
         merged = {**base, **(raw if isinstance(raw, dict) else {})}
         definition = validate_definition(merged)
+        _check_folder_room(conn, definition, task_id)
         if by == "owner":
             conn.execute(
                 "UPDATE tasks SET definition=?, proposal=NULL, proposed_by=NULL, proposed_at=NULL, updated_at=?,"
@@ -618,6 +681,7 @@ def delete_task(task_id: str) -> Dict[str, Any]:
     with _db() as conn:
         found = conn.execute("DELETE FROM tasks WHERE id=?", (task_id,)).rowcount
         conn.execute("DELETE FROM runs WHERE task_id=?", (task_id,))
+        conn.execute("DELETE FROM folder_watch WHERE task_id=?", (task_id,))
     if not found:
         raise TaskError("task_not_found", "That task no longer exists.", 404)
     _changed()
@@ -658,15 +722,15 @@ def up_next(limit: int = 1) -> List[Dict[str, Any]]:
 # ── Runs ─────────────────────────────────────────────────────────────────────
 
 def start_run(task_id: str, *, trigger: str, scheduled_for: Optional[float] = None,
-              now: Optional[float] = None) -> Optional[str]:
+              now: Optional[float] = None, trigger_file: Optional[str] = None) -> Optional[str]:
     """Record a run as started; None when this task already has one in progress."""
     now = time.time() if now is None else now
     run_id = _new_id("run")
     with _db() as conn:
         if conn.execute("SELECT 1 FROM runs WHERE task_id=? AND status='running'", (task_id,)).fetchone():
             return None
-        conn.execute("INSERT INTO runs (id, task_id, trigger, scheduled_for, started_at, status) VALUES (?,?,?,?,?,?)",
-                     (run_id, task_id, trigger, scheduled_for, now, "running"))
+        conn.execute("INSERT INTO runs (id, task_id, trigger, scheduled_for, started_at, status, trigger_file)"
+                     " VALUES (?,?,?,?,?,?,?)", (run_id, task_id, trigger, scheduled_for, now, "running", trigger_file))
     _changed()
     return run_id
 
@@ -701,14 +765,15 @@ def finish_run(run_id: str, status: str, *, reason: Optional[str] = None, summar
 
 
 def record_skip(task_id: str, *, scheduled_for: float, reason: str, count: int = 1,
-                now: Optional[float] = None) -> Dict[str, Any]:
+                now: Optional[float] = None, trigger: str = "schedule",
+                trigger_file: Optional[str] = None) -> Dict[str, Any]:
     """One history entry for a run (or a stretch of runs) whose time passed without running."""
     now = time.time() if now is None else now
     run_id = _new_id("run")
     with _db() as conn:
         conn.execute("INSERT INTO runs (id, task_id, trigger, scheduled_for, started_at, finished_at, status, reason,"
-                     " skipped_count) VALUES (?,?,?,?,?,?,?,?,?)",
-                     (run_id, task_id, "schedule", scheduled_for, now, now, "skipped", reason, count))
+                     " skipped_count, trigger_file) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     (run_id, task_id, trigger, scheduled_for, now, now, "skipped", reason, count, trigger_file))
         row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         _prune(conn, task_id, now)
     _changed()
@@ -780,6 +845,52 @@ def _expire_contents(conn: sqlite3.Connection, now: float) -> None:
         skeleton = run_records.skeleton(_load(row["detail"]))
         conn.execute("UPDATE runs SET summary=NULL, output=NULL, detail=?, details_expired_at=? WHERE id=?",
                      (json.dumps(skeleton) if skeleton else None, now, row["id"]))
+
+
+# ── Folder triggers (#193) ───────────────────────────────────────────────────
+
+def folder_tasks() -> List[Dict[str, Any]]:
+    """Approved, unpaused tasks that run when a file arrives."""
+    with _db() as conn:
+        rows = conn.execute("SELECT id, definition FROM tasks WHERE paused=0 AND definition IS NOT NULL").fetchall()
+    out = []
+    for row in rows:
+        definition = _load(row["definition"])
+        if _watches(definition):
+            out.append({"id": row["id"], "definition": definition})
+    return out
+
+
+def watch_state(task_id: str) -> Optional[Dict[str, Any]]:
+    with _db() as conn:
+        row = conn.execute("SELECT state FROM folder_watch WHERE task_id=?", (task_id,)).fetchone()
+    return _load(row["state"]) if row else None
+
+
+def save_watch_state(task_id: str, state: Dict[str, Any], now: Optional[float] = None) -> None:
+    with _db() as conn:
+        conn.execute("INSERT INTO folder_watch (task_id, state, updated_at) VALUES (?,?,?) ON CONFLICT(task_id)"
+                     " DO UPDATE SET state=excluded.state, updated_at=excluded.updated_at",
+                     (task_id, json.dumps(state), time.time() if now is None else now))
+
+
+def file_runs_since(task_id: str, since: float) -> int:
+    with _db() as conn:
+        return conn.execute("SELECT COUNT(*) FROM runs WHERE task_id=? AND trigger='file' AND status!='skipped'"
+                            " AND started_at>=?", (task_id, since)).fetchone()[0]
+
+
+def last_run_window(task_id: str) -> Optional[tuple]:
+    """(started_at, finished_at or None) of the task's latest run that ran."""
+    with _db() as conn:
+        row = conn.execute("SELECT started_at, finished_at FROM runs WHERE task_id=? AND status!='skipped'"
+                           " ORDER BY started_at DESC LIMIT 1", (task_id,)).fetchone()
+    return (row["started_at"], row["finished_at"]) if row else None
+
+
+def is_running(task_id: str) -> bool:
+    with _db() as conn:
+        return conn.execute("SELECT 1 FROM runs WHERE task_id=? AND status='running'", (task_id,)).fetchone() is not None
 
 
 # ── Change signal for the scheduler loop ─────────────────────────────────────

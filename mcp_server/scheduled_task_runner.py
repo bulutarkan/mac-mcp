@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import paths, privacy_policy, schedule_rules
+from . import folder_triggers, paths, privacy_policy, run_budget, schedule_rules
 from . import scheduled_tasks as store
 
 log = logging.getLogger("mac_mcp.scheduled_tasks")
@@ -34,6 +34,9 @@ log = logging.getLogger("mac_mcp.scheduled_tasks")
 OVERDUE_S = 120.0
 MAX_SLEEP_S = 60.0
 AGENT_POLL_S = 5.0
+# With a usage limit the agent's usage is checked this often, so it stops soon after the limit.
+LIMIT_POLL_S = 2.0
+LIMIT_STOP_WAIT_S = 30.0
 KILL_GRACE_S = 5.0
 MAX_COUNTED_SKIPS = 500
 REASON_ASLEEP = "Your Mac was asleep"
@@ -45,7 +48,7 @@ REASON_RESTARTED = "Mac MCP restarted before the run finished"
 
 # ── One run ──────────────────────────────────────────────────────────────────
 
-def _clean_env() -> Dict[str, str]:
+def _clean_env(trigger_file: Optional[str] = None) -> Dict[str, str]:
     """What a script sees: the usual login basics, none of the server's keys or settings."""
     home = Path.home()
     user = os.getenv("USER") or home.name
@@ -54,6 +57,8 @@ def _clean_env() -> Dict[str, str]:
     env = {"HOME": str(home), "USER": user, "LOGNAME": user, "SHELL": "/bin/zsh", "PATH": path,
            "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8", "TMPDIR": os.getenv("TMPDIR", "/tmp"),
            "MAC_MCP_SCHEDULED_TASK": "1"}
+    if trigger_file:
+        env["MAC_MCP_TRIGGER_FILE"] = trigger_file  # the file that started this run (#193)
     return env
 
 
@@ -110,14 +115,14 @@ def _head(path: Path, limit: int) -> Tuple[str, int]:
 
 
 def _run_logged(argv: List[str], cwd: str, limit_s: int, log_path: Path,
-                read: Callable[[Path], Any]) -> Dict[str, Any]:
+                read: Callable[[Path], Any], trigger_file: Optional[str] = None) -> Dict[str, Any]:
     """Run argv with the clean environment, its output in an owner-only log that is read, then removed."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with log_path.open("wb") as out:
             os.chmod(log_path, 0o600)
             try:
-                proc = subprocess.Popen(argv, cwd=cwd, env=_clean_env(), stdin=subprocess.DEVNULL, stdout=out,
+                proc = subprocess.Popen(argv, cwd=cwd, env=_clean_env(trigger_file), stdin=subprocess.DEVNULL, stdout=out,
                                         stderr=subprocess.STDOUT, start_new_session=True)
             except OSError as exc:
                 return {"error": str(exc.strerror or exc)}
@@ -152,7 +157,8 @@ def run_script(definition: Dict[str, Any], run_id: str) -> Dict[str, Any]:
         argv, cwd = script_command(definition)
     except store.TaskError as exc:
         return {"status": "failed", "reason": str(exc)}
-    ran = _run_logged(argv, cwd, _limit_s(definition), _logs_dir() / f"{run_id}.log", _tail)
+    ran = _run_logged(argv, cwd, _limit_s(definition), _logs_dir() / f"{run_id}.log", _tail,
+                      definition.get("trigger_file"))
     if "error" in ran:
         return {"status": "failed", "reason": f"It could not start: {ran['error']}"}
     code, output = ran["code"], ran["read"]
@@ -179,7 +185,7 @@ def run_data_step(definition: Dict[str, Any], run_id: str, at: Optional[float] =
     except store.TaskError as exc:
         return {"ok": False, "reason": f"The data step could not run: {exc}", "label": label, "shown": shown}
     ran = _run_logged(argv, cwd, store.DATA_TIMEOUT_MIN * 60, _logs_dir() / f"{run_id}.data.log",
-                      lambda path: _head(path, store.DATA_LIMIT))
+                      lambda path: _head(path, store.DATA_LIMIT), definition.get("trigger_file"))
     info: Dict[str, Any] = {"label": label, "shown": shown, "duration_s": round(time.time() - started, 1)}
     if "error" in ran:
         return {**info, "ok": False, "reason": f"The data step could not start: {ran['error']}"}
@@ -246,6 +252,11 @@ def _start_agent(definition: Dict[str, Any], prompt: str, settings: Any,
     from .policy_scope import access_mode_allows
 
     limit = _limit_s(definition)
+    usage_limit = definition.get("usage_limit")
+    provider = definition.get("provider") or (run_budget.default_provider() if usage_limit else None)
+    problem = run_budget.unenforceable(usage_limit, provider, store.provider_label(provider))
+    if problem:  # e.g. the Default Agent changed since the owner set the limit
+        return {"status": "failed", "reason": f"{problem} The agent was not started."}
     context = environment_policy_context(actor="scheduled_task")
     token = set_policy_context(context)
     try:
@@ -274,14 +285,28 @@ def _start_agent(definition: Dict[str, Any], prompt: str, settings: Any,
         return {"status": "failed", "reason": "The agent could not start"}
     if on_agent:
         on_agent(agent_id)
-    return wait_for_agent(agent_id, settings, deadline=time.time() + limit + 180)
+    return wait_for_agent(agent_id, settings, deadline=time.time() + limit + 180,
+                          usage_limit=usage_limit, provider=provider)
 
 
-def wait_for_agent(agent_id: str, settings: Any, *, deadline: float) -> Dict[str, Any]:
+def _cancel(settings: Any, agent_id: str) -> None:
+    from . import tools_agents
+
+    try:
+        tools_agents.agent_action(settings, action="cancel", agent_id=agent_id, requested_by="user")
+    except Exception:
+        pass
+
+
+def wait_for_agent(agent_id: str, settings: Any, *, deadline: float,
+                   usage_limit: Optional[Dict[str, Any]] = None, provider: Optional[str] = None) -> Dict[str, Any]:
     from fastapi import HTTPException
 
     from . import tools_agents
 
+    meter = run_budget.Meter(tools_agents._agent_dir(agent_id) / "stdout.log", provider or "") if usage_limit else None
+    stopped: Optional[str] = None
+    stop_by = 0.0
     while True:
         try:
             state = tools_agents.get_agent(settings, agent_id, result_mode="full")
@@ -291,14 +316,18 @@ def wait_for_agent(agent_id: str, settings: Any, *, deadline: float) -> Dict[str
         status = state.get("status")
         if status in tools_agents.TERMINAL_STATUSES:
             break
+        if meter is not None and stopped is None:
+            stopped = run_budget.over(usage_limit, meter.read())
+            if stopped:
+                _cancel(settings, agent_id)
+                stop_by = time.time() + LIMIT_STOP_WAIT_S
+        if stopped and time.time() > stop_by:
+            break  # asked to stop and still reporting running: the run ends here all the same
         if time.time() > deadline:
-            try:
-                tools_agents.agent_action(settings, action="cancel", agent_id=agent_id, requested_by="user")
-            except Exception:
-                pass
+            _cancel(settings, agent_id)
             return {"status": "timed_out", "reason": "The agent ran past the time limit and was stopped",
                     "detail": {"agent_id": agent_id}}
-        time.sleep(AGENT_POLL_S)
+        time.sleep(min(AGENT_POLL_S, LIMIT_POLL_S) if meter is not None else AGENT_POLL_S)
     envelope = state.get("result_envelope") or {}
     report = str((state.get("result_full") or {}).get("text") or state.get("result") or "")
     # The machine-readable result block the agent appends is for Mac MCP, not the owner's report.
@@ -312,6 +341,13 @@ def wait_for_agent(agent_id: str, settings: Any, *, deadline: float) -> Dict[str
     }
     detail.update(_agent_steps(agent_id, report))
     summary = str(envelope.get("summary") or _last_line(report) or "")
+    if meter is not None:
+        used = meter.read()
+        detail["usage_limit"] = {**usage_limit, "used_tokens": used["tokens"], "used_cost_usd": used["cost_usd"],
+                                 "stopped": stopped}
+        if stopped:
+            return {"status": "failed", "reason": run_budget.stop_reason(usage_limit, stopped, used),
+                    "summary": summary, "output": report, "detail": detail}
     if status == "completed" and envelope.get("outcome") != "failure":
         return {"status": "done", "summary": summary or "Finished", "output": report, "detail": detail}
     if status == "timeout":
@@ -447,6 +483,7 @@ class Scheduler:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.wakeups = 0
+        self.folders = folder_triggers.FolderTriggers(self._start_for_file, clock=clock)
 
     # Decisions (pure enough to test with a fake clock and launcher)
 
@@ -470,7 +507,11 @@ class Scheduler:
 
     def start(self, task_id: str, definition: Dict[str, Any], *, trigger: str,
               scheduled_for: Optional[float] = None, now: Optional[float] = None) -> Dict[str, Any]:
-        run_id = store.start_run(task_id, trigger=trigger, scheduled_for=scheduled_for, now=now)
+        trigger_file = definition.get("trigger_file")
+        if trigger_file and privacy_policy.policy(fresh=True)["private_mode"]:
+            trigger_file = None  # Private mode keeps that it ran, not which file started it
+        run_id = store.start_run(task_id, trigger=trigger, scheduled_for=scheduled_for, now=now,
+                                 trigger_file=trigger_file)
         if run_id is None:
             if trigger == "schedule":
                 store.record_skip(task_id, scheduled_for=scheduled_for or (now or self.clock()), reason=REASON_BUSY, now=now)
@@ -478,10 +519,19 @@ class Scheduler:
         self._launch(task_id, run_id, definition)
         return {"task_id": task_id, "action": "started", "run_id": run_id}
 
+    def _start_for_file(self, task_id: str, definition: Dict[str, Any], path: str) -> str:
+        return self.start(task_id, folder_triggers.with_file(definition, path), trigger="file")["action"]
+
     def run_now(self, task_id: str) -> Dict[str, Any]:
         definition = store.definition_of(task_id)
         if definition is None:
             raise store.TaskError("not_approved", "This task is waiting for your approval.", 409)
+        if definition["schedule"]["type"] == "folder":
+            # Run now on a task that waits for files: with the newest file there.
+            path = folder_triggers.newest_file(definition["schedule"])
+            if path is None:
+                raise store.TaskError("no_file", "There is no file in the folder to run it with yet.", 409)
+            definition = folder_triggers.with_file(definition, path)
         result = self.start(task_id, definition, trigger="manual")
         if result["action"] == "busy":
             raise store.TaskError("already_running", "This task is already running.", 409)
@@ -498,13 +548,18 @@ class Scheduler:
             if agent_id:
                 definition = store.definition_of(run["task_id"]) or {}
                 limit = int(definition.get("timeout_min") or store.DEFAULT_TIMEOUT_MIN["ai"]) * 60
-                threading.Thread(target=self._follow_agent, args=(run["id"], agent_id, run["started_at"] + limit + 180),
+                threading.Thread(target=self._follow_agent, args=(run["id"], agent_id, run["started_at"] + limit + 180,
+                                                                   definition),
                                  name=f"scheduled-task-{run['id']}", daemon=True).start()
             else:
                 store.finish_run(run["id"], "failed", reason=REASON_RESTARTED)
 
-    def _follow_agent(self, run_id: str, agent_id: str, deadline: float) -> None:
-        result = wait_for_agent(agent_id, self.settings, deadline=deadline)
+    def _follow_agent(self, run_id: str, agent_id: str, deadline: float,
+                      definition: Optional[Dict[str, Any]] = None) -> None:
+        definition = definition or {}
+        usage_limit = definition.get("usage_limit")
+        provider = definition.get("provider") or (run_budget.default_provider() if usage_limit else None)
+        result = wait_for_agent(agent_id, self.settings, deadline=deadline, usage_limit=usage_limit, provider=provider)
         private = privacy_policy.policy(fresh=True)["private_mode"]
         if private:
             result = {key: result.get(key) for key in ("status", "reason")}
@@ -548,12 +603,15 @@ class Scheduler:
         if self._thread and self._thread.is_alive():
             return
         store.on_change(self.poke)
+        store.on_change(self.folders.poke)
         self._thread = threading.Thread(target=self._loop, name="mac-mcp-scheduled-tasks", daemon=True)
         self._thread.start()
+        self.folders.begin()
 
     def end(self) -> None:
         self._stop.set()
         self._wake.set()
+        self.folders.end()
 
 
 _scheduler: Optional[Scheduler] = None

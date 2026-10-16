@@ -44,7 +44,7 @@ from .policy import (
 )
 from . import privacy_inventory, privacy_policy, schedule_rules
 from . import scheduled_tasks as task_store
-from . import scheduled_task_runner
+from . import run_budget, scheduled_task_runner
 from .runtime_settings import (
     MEMORY_RETENTION_CHOICES, RUN_DETAIL_RETENTION_CHOICES, USAGE_RETENTION_CHOICES, run_detail_privacy, server_setting,
     update_runtime_setting, usage_privacy,
@@ -780,7 +780,9 @@ def create_dashboard_routes(
     def _task_agents() -> list:
         from .tools_agents import _PROVIDER_LABELS
         from .runtime_settings import provider_enabled
-        return [{"id": key, "name": label} for key, label in _PROVIDER_LABELS.items() if provider_enabled(key)]
+        # limits: which usage limits the agent can keep, for the task sheet's Advanced section (#211)
+        return [{"id": key, "name": label, "limits": run_budget.support(key)}
+                for key, label in _PROVIDER_LABELS.items() if provider_enabled(key)]
 
     async def scheduled_tasks_list(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
@@ -793,6 +795,7 @@ def create_dashboard_routes(
                              "up_next": [{"id": task["id"], "name": task["name"], "at": task["next_run_at"]}
                                          for task in upcoming[:3]],
                              "agents": await asyncio.to_thread(_task_agents),
+                             "default_agent": await asyncio.to_thread(run_budget.default_provider),
                              "privacy": privacy_policy.policy(fresh=True)})
 
     async def scheduled_task_save(request: Request) -> Response:

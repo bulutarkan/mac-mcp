@@ -8,6 +8,9 @@ A schedule is a small dict:
     {"type": "monthly", "time": "09:00", "day": 31}               # past month end = last day
     {"type": "hours", "every": 3, "start": "08:00"}               # 08:00, 11:00, ... each day
     {"type": "cron", "expr": "0 9 * * 1"}                         # minute hour day month weekday
+    {"type": "folder", "folder": "~/Downloads", "match": "*.pdf"}  # when a file arrives (#193)
+
+A folder schedule has no run times: folder_triggers starts its runs when a file arrives.
 
 Times are wall-clock times on this Mac: a naive datetime is converted with the system's
 own time zone rules, so a daily 09:00 stays 09:00 across daylight-saving changes.
@@ -15,11 +18,15 @@ own time zone rules, so a daily 09:00 stays 09:00 across daylight-saving changes
 from __future__ import annotations
 
 import calendar
+import fnmatch
+import os
 import re
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-TYPES = ("once", "daily", "weekly", "monthly", "hours", "cron")
+TYPES = ("once", "daily", "weekly", "monthly", "hours", "cron", "folder")
+MATCH_LIMIT = 200
 WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 _TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 _SEARCH_DAYS = 366 * 5
@@ -80,8 +87,11 @@ def _parse_cron(expr: str) -> Dict[str, Any]:
     }
 
 
-def validate(schedule: Any) -> Dict[str, Any]:
-    """The schedule in normal form, or ScheduleError saying what is wrong."""
+def validate(schedule: Any, *, check_folder: bool = True) -> Dict[str, Any]:
+    """The schedule in normal form, or ScheduleError saying what is wrong.
+
+    A saved folder schedule is read back with check_folder=False: a folder removed later must
+    not break the task list (the watcher reports it instead)."""
     if not isinstance(schedule, dict):
         raise ScheduleError("schedule must be an object such as {type: 'daily', time: '09:00'}")
     kind = str(schedule.get("type") or "").strip().lower()
@@ -97,6 +107,8 @@ def validate(schedule: Any) -> Dict[str, Any]:
         expr = " ".join(str(schedule.get("expr") or "").split())
         _parse_cron(expr)
         return {"type": kind, "expr": expr}
+    if kind == "folder":
+        return _folder_schedule(schedule, check_folder)
     hour, minute = _time(schedule.get("start" if kind == "hours" else "time", "00:00" if kind == "hours" else None),
                          "start" if kind == "hours" else "time")
     clock = f"{hour:02d}:{minute:02d}"
@@ -116,6 +128,42 @@ def validate(schedule: Any) -> Dict[str, Any]:
     if not isinstance(every, int) or not 1 <= every <= 24:
         raise ScheduleError("every must be a whole number of hours, 1 to 24")
     return {"type": kind, "every": every, "start": clock}
+
+
+def _folder_schedule(schedule: Dict[str, Any], check_folder: bool) -> Dict[str, Any]:
+    text = str(schedule.get("folder") or "").strip()
+    if not text:
+        raise ScheduleError("choose the folder to watch")
+    folder = Path(text).expanduser()
+    if not folder.is_absolute():
+        raise ScheduleError("the folder must be a full path such as ~/Downloads")
+    if check_folder and not folder.is_dir():
+        raise ScheduleError(f"the folder {text} does not exist")
+    match = ", ".join(match_patterns(schedule.get("match")))
+    if len(match) > MATCH_LIMIT:
+        raise ScheduleError(f"the file names to match must be at most {MATCH_LIMIT} characters")
+    out: Dict[str, Any] = {"type": "folder", "folder": os.path.normpath(str(folder))}
+    if match:
+        out["match"] = match
+    return out
+
+
+def match_patterns(raw: Any) -> List[str]:
+    """'pdf, *.csv, Invoice*' as patterns: a bare word is a file extension."""
+    patterns = []
+    for part in str(raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not any(char in part for char in "*?[") and "." not in part:
+            part = f"*.{part.lstrip('.')}"
+        patterns.append(part)
+    return patterns
+
+
+def matches(schedule: Dict[str, Any], name: str) -> bool:
+    patterns = match_patterns(schedule.get("match"))
+    return not patterns or any(fnmatch.fnmatch(name.lower(), pattern.lower()) for pattern in patterns)
 
 
 def _local(ts: float) -> datetime:
@@ -166,7 +214,9 @@ def _times_on(day: date, schedule: Dict[str, Any]) -> Iterable[datetime]:
 
 def next_run(schedule: Dict[str, Any], after: float) -> Optional[float]:
     """The first run strictly after `after` (epoch seconds), or None when there is none."""
-    schedule = validate(schedule)
+    schedule = validate(schedule, check_folder=False)
+    if schedule["type"] == "folder":
+        return None
     if schedule["type"] == "once":
         at = _ts(datetime.fromisoformat(schedule["at"]))
         return at if at > after else None
@@ -200,8 +250,14 @@ def _clock(text: str) -> str:
 
 def describe(schedule: Dict[str, Any]) -> str:
     """The schedule as a plain sentence fragment: 'Every Monday at 09:00'."""
-    schedule = validate(schedule)
+    schedule = validate(schedule, check_folder=False)
     kind = schedule["type"]
+    if kind == "folder":
+        home = str(Path.home())
+        folder = schedule["folder"]
+        shown = "~" + folder[len(home):] if folder == home or folder.startswith(home + "/") else folder
+        tail = f" matching {schedule['match']}" if schedule.get("match") else ""
+        return f"When a file{tail} arrives in {shown}"
     if kind == "once":
         at = datetime.fromisoformat(schedule["at"])
         return f"Once on {at.strftime('%a %-d %b %Y')} at {at.strftime('%H:%M')}"
