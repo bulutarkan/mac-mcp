@@ -20,6 +20,7 @@ SWIFT_ONLY = (
     "test_menu_steering_idempotency",
     "test_onboarding_bridge",
     "test_onboarding_checklist",
+    "test_provider_usage_section",
     "test_scheduled_task_checks_native",
     "test_settings_search",
     "test_tool_activity_bubble_epoch",
