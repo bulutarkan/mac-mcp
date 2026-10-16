@@ -757,10 +757,15 @@ def _start_server_via_helper(
 
 def autostart(args: argparse.Namespace) -> int:
     desired = getattr(args, "state", None)
+    style = Style.for_stream(json_output=bool(getattr(args, "json", False)))
     if desired in {"on", "off"}:
         try:
             update_runtime_setting("server", "start_at_login", desired == "on")
         except RuntimeError as exc:
+            if style is not None:
+                from .cli_views import render_error
+                render_error(style, "autostart", f"Could not save the setting: {exc}")
+                return 1
             print(f"mac-mcp autostart: could not save the setting: {exc}", file=sys.stderr)
             return 1
         _ensure_supervisor()
@@ -769,6 +774,10 @@ def autostart(args: argparse.Namespace) -> int:
         "job": str(_supervisor_plist_path()),
         "loaded": _supervisor_loaded(),
     }
+    if style is not None:
+        from .cli_views import render_autostart
+        render_autostart(style, report["start_at_login"])
+        return 0
     if getattr(args, "json", False):
         print(json.dumps(report, sort_keys=True))
     elif report["start_at_login"]:
@@ -2625,6 +2634,9 @@ def _server_gone(port: int, *, timeout_s: float) -> bool:
 
 
 def credential(args: argparse.Namespace) -> int:
+    style = Style.for_stream()
+    if style is not None and args.provider == "cloudflare":
+        return _credential_themed(args, style)
     if args.provider != "cloudflare":
         print("Unsupported credential provider.")
         return 2
@@ -2649,6 +2661,42 @@ def credential(args: argparse.Namespace) -> int:
         return 1
     print(f"Cloudflare Tunnel credential: configured but unsafe ({state.reason}).")
     return 2
+
+
+def _credential_themed(args: argparse.Namespace, style) -> int:
+    """credential in a terminal. A token typed here is read hidden; a piped one as before."""
+    from .cli_views import render_credential_status
+
+    if args.action == "save":
+        style.header("credential")
+        if sys.stdin.isatty():
+            import getpass
+            secret = getpass.getpass(f"{INDENT}Cloudflare Tunnel token: ")
+            style.write()
+        else:
+            secret = sys.stdin.read(64 * 1024)
+        try:
+            write_cloudflare_token(secret)
+        except (OSError, PublicEndpointError) as exc:
+            style.summary("error", f"Could not save the credential: {exc}", gap=False)
+            return 2
+        finally:
+            secret = ""
+        style.summary("ok", "Saved the Cloudflare Tunnel credential", note="owner-only file", gap=False)
+        return 0
+    if args.action == "remove":
+        removed = remove_cloudflare_token()
+        style.header("credential")
+        if removed:
+            style.summary("ok", "Removed the Cloudflare Tunnel credential", gap=False)
+        else:
+            style.summary("info", "No Cloudflare Tunnel credential was saved", gap=False)
+        return 0
+    state = inspect_cloudflare_credential()
+    render_credential_status(style, state)
+    if state.configured and state.secure:
+        return 0
+    return 1 if not state.configured else 2
 
 
 def connect_app(args: argparse.Namespace) -> int:
@@ -2753,9 +2801,14 @@ def stdio(args: argparse.Namespace) -> int:
 
 def dashboard(args: argparse.Namespace) -> int:
     _load_env()
+    style = Style.for_stream()
     port = _default_port()
     server_pid, server_source = _resolve_server_identity(port)
     if not server_pid:
+        if style is not None:
+            from .cli_views import render_error
+            render_error(style, "dashboard", "Mac MCP is not running", next_command="mac-mcp start")
+            return 1
         print(
             f"mac-mcp is not running with verified ownership ({server_source}). "
             "Start it first with: mac-mcp start"
@@ -2771,10 +2824,23 @@ def dashboard(args: argparse.Namespace) -> int:
     except OSError:
         token = ""
     if not token:
+        if style is not None:
+            from .cli_views import render_error
+            render_error(style, "dashboard", "The dashboard key is missing", next_command="mac-mcp restart")
+            return 1
         print("Dashboard credential is unavailable. Restart Mac MCP once, then run: mac-mcp dashboard")
         return 1
     authenticated_url = f"{url}#token={quote(token, safe='')}"
     opened = webbrowser.open(authenticated_url)
+    if style is not None:
+        # The key stays in the address handed to the browser; the screen shows it without.
+        style.header("dashboard")
+        style.rows([(None, "Address", url, "")])
+        if opened:
+            style.summary("ok", "Opened the dashboard in your browser")
+        else:
+            style.summary("warn", "The browser did not open", next_command="mac-mcp dashboard")
+        return 0
     print(f"dashboard: {url} (authenticated local launch)")
     if not opened:
         print("The browser did not open automatically; run 'mac-mcp dashboard' again from this Mac.")

@@ -364,3 +364,27 @@ def render_package_update(style: Style, payload: dict) -> None:
     style.header("update")
     style.rows([(None, "Download", str(payload.get("download_url") or ""), "")])
     style.summary("info", str(payload.get("message") or ""))
+
+
+def render_autostart(style: Style, on: bool) -> None:
+    style.header("autostart")
+    if on:
+        style.rows([("ok", "Start at login", "on", "a server you left running starts again when you log in")])
+        style.summary("ok", "Start at login is on")
+    else:
+        style.rows([("info", "Start at login", "off", "start it with mac-mcp start or the menu bar app")])
+        style.summary("ok", "Start at login is off", next_command="mac-mcp autostart on")
+
+
+def render_credential_status(style: Style, state) -> None:
+    """The Cloudflare Tunnel credential: saved, missing, or saved in an unsafe file."""
+    style.header("credential")
+    if state.configured and state.secure:
+        style.rows([("ok", "Cloudflare Tunnel", "saved", "owner-only file")])
+        style.summary("ok", "The Cloudflare Tunnel credential is saved")
+    elif not state.configured:
+        style.rows([("info", "Cloudflare Tunnel", "not saved", "")])
+        style.summary("warn", "No Cloudflare Tunnel credential is saved", next_command="mac-mcp credential cloudflare save")
+    else:
+        style.rows([("error", "Cloudflare Tunnel", "saved but unsafe", str(state.reason))])
+        style.summary("error", "The saved credential is not safe", next_command="mac-mcp credential cloudflare save")
