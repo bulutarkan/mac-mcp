@@ -50,6 +50,31 @@ class Decision(unittest.TestCase):
         self.assertIsInstance(Style.for_stream(FakeTTY(), env=ENV), Style)
 
 
+class Background(unittest.TestCase):
+    """A light terminal gets darker tones: the bright ones read only on dark backgrounds."""
+
+    def test_the_terminals_answer_decides(self) -> None:
+        self.assertTrue(cli_style.background_is_light(b"\x1b]11;rgb:dfff/dba4/c3ff\x07"))   # Terminal.app Novel
+        self.assertTrue(cli_style.background_is_light(b"]11;rgb:ffff/ffff/ffff\x1b\\"))
+        self.assertFalse(cli_style.background_is_light(b"\x1b]11;rgb:0000/0000/0000\x07"))  # Pro
+        self.assertFalse(cli_style.background_is_light(b"\x1b]11;rgb:1e/1e/1e\x07"))
+        self.assertIsNone(cli_style.background_is_light(b""))
+        self.assertIsNone(cli_style.background_is_light(b"garbage"))
+
+    def test_light_palette_and_override(self) -> None:
+        light = Style.for_stream(FakeTTY(), env={**ENV, "MAC_MCP_THEME": "light"}, width=80)
+        self.assertEqual("\x1b[38;2;168;77;11mx\x1b[0m", light.paint("x", "brand"))
+        dark = Style.for_stream(FakeTTY(), env={**ENV, "MAC_MCP_THEME": "dark"}, width=80)
+        self.assertEqual("\x1b[38;2;255;180;94mx\x1b[0m", dark.paint("x", "brand"))
+        light256 = Style.for_stream(FakeTTY(), env={"TERM": "xterm-256color", "MAC_MCP_THEME": "light"}, width=80)
+        self.assertEqual("\x1b[38;5;130mx\x1b[0m", light256.paint("x", "brand"))
+
+    def test_no_query_without_a_real_terminal(self) -> None:
+        # A stream without a file descriptor (tests, pipes) is never asked; the dark tones stay.
+        style = Style.for_stream(FakeTTY(), env=ENV, width=80)
+        self.assertFalse(style.light)
+
+
 class Primitives(unittest.TestCase):
     def style(self, width=80, depth_env=ENV) -> tuple[Style, FakeTTY]:
         stream = FakeTTY()

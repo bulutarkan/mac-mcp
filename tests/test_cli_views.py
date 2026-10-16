@@ -84,10 +84,22 @@ class HomeAndHelp(ThemedTestCase):
     def test_home_lines_command_names_up_in_one_column(self) -> None:
         with patch.object(cli, "_home_running", return_value=False):
             _, text = self.run_main([])
-        lines = [line for line in text.split("\n") if line.startswith("    ") and line.strip()]
+        # Command rows are indented four spaces; the Advanced line's continuation is deeper.
+        lines = [line for line in text.split("\n") if line.startswith("    ") and not line.startswith("     ")]
         columns = {len(line) - len(line.lstrip(" ").split(" ", 1)[1].lstrip(" ")) for line in lines}
         self.assertEqual(1, len(columns), lines)  # connect-config does not push its text out
         self.assertIn("● Stopped", text.split("\n")[0])
+
+    def test_the_advanced_line_wraps_under_itself(self) -> None:
+        out = FakeTTY()
+        cli_views.render_home(Style.for_stream(out, env={**TTY_ENV, "COLUMNS": "60"}), "2.2.0", None)
+        lines = visible(out.getvalue()).split("\n")
+        start = next(i for i, line in enumerate(lines) if line.startswith("  Advanced  "))
+        block = lines[start:next(i for i in range(start, len(lines)) if not lines[i].strip())]
+        self.assertGreater(len(block), 1)
+        self.assertTrue(all(len(line) <= 60 for line in block), block)
+        self.assertTrue(all(line.startswith(" " * 12) for line in block[1:]), block)
+        self.assertIn("uninstall", " ".join(block))
 
     def test_command_help_says_what_the_command_does(self) -> None:
         _, text = self.run_main(["status", "--help"])

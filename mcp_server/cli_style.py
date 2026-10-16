@@ -15,10 +15,14 @@ import textwrap
 from pathlib import Path
 from typing import Callable, Mapping, Optional, Sequence, TextIO, Tuple
 
-# Tones of the app and the tour; they read on light and dark terminal backgrounds.
+# Tones of the app and the tour, for dark backgrounds (5:1 or more on black and #1e1e1e).
 PALETTE = {"brand": (0xFF, 0xB4, 0x5E), "ok": (0x5E, 0xD3, 0xA0), "warn": (0xF5, 0xA5, 0x24),
            "error": (0xFF, 0x6B, 0x6B), "info": (0x8B, 0x7C, 0xF6)}
+# The same tones, deeper, for light backgrounds (5:1 or more on white, 3.7:1 on beige).
+PALETTE_LIGHT = {"brand": (0xA8, 0x4D, 0x0B), "ok": (0x16, 0x79, 0x4A), "warn": (0x9A, 0x62, 0x00),
+                 "error": (0xC2, 0x2D, 0x2D), "info": (0x5B, 0x45, 0xD6)}
 _PALETTE_256 = {"brand": 215, "ok": 79, "warn": 214, "error": 203, "info": 141}
+_PALETTE_256_LIGHT = {"brand": 130, "ok": 29, "warn": 136, "error": 160, "info": 61}
 _PALETTE_16 = {"brand": 33, "ok": 32, "warn": 33, "error": 31, "info": 35}
 SYMBOLS = {"brand": "◆", "dot": "●", "ok": "✓", "warn": "⚠", "error": "✗", "info": "ℹ"}
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -56,6 +60,59 @@ def theme_enabled(stream, env: Optional[Mapping[str, str]] = None, json_output: 
         return False
 
 
+_OSC11 = re.compile(rb"\]11;rgb:([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)")
+_background_cache: dict = {}
+
+
+def background_is_light(reply: bytes) -> Optional[bool]:
+    """The terminal's answer to OSC 11 (its background colour): light, dark, or unknown."""
+    match = _OSC11.search(reply or b"")
+    if not match:
+        return None
+    channels = [int(part, 16) / (16 ** len(part) - 1) for part in match.groups()]
+    luminance = 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+    return luminance > 0.5
+
+
+def _ask_background(stream) -> Optional[bool]:
+    """Ask the terminal behind `stream` for its background colour, waiting at most 0.15 s.
+    Only a real terminal is asked; anything else (a test stream, a pipe) gets None."""
+    try:
+        if not os.isatty(stream.fileno()):
+            return None
+    except (AttributeError, OSError, ValueError):
+        return None
+    if "answer" in _background_cache:
+        return _background_cache["answer"]
+    answer = None
+    try:
+        import select
+        import termios
+        import tty
+
+        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+        try:
+            saved = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                os.write(fd, b"\x1b]11;?\x07")
+                reply = b""
+                while not (reply.endswith(b"\x07") or reply.endswith(b"\x1b\\")):
+                    ready, _, _ = select.select([fd], [], [], 0.15)
+                    if not ready:
+                        break
+                    reply += os.read(fd, 64)
+                answer = background_is_light(reply)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        finally:
+            os.close(fd)
+    except (OSError, ImportError, ValueError):
+        answer = None
+    _background_cache["answer"] = answer
+    return answer
+
+
 def color_depth(env: Mapping[str, str]) -> str:
     if env.get("COLORTERM", "").lower() in {"truecolor", "24bit"}:
         return "truecolor"
@@ -67,10 +124,11 @@ def color_depth(env: Mapping[str, str]) -> str:
 class Style:
     """The theme for one output stream. Built only when the theme is on (see for_stream)."""
 
-    def __init__(self, stream: TextIO, depth: str, width: int) -> None:
+    def __init__(self, stream: TextIO, depth: str, width: int, light: bool = False) -> None:
         self.stream = stream
         self.depth = depth
         self.width = max(30, min(MAX_WIDTH, width))
+        self.light = light
 
     @classmethod
     def for_stream(cls, stream: Optional[TextIO] = None, *, env: Optional[Mapping[str, str]] = None,
@@ -85,7 +143,9 @@ class Style:
             except ValueError:
                 width = 0
             width = width or shutil.get_terminal_size((80, 24)).columns
-        return cls(stream, color_depth(env), width)
+        theme = env.get("MAC_MCP_THEME", "").strip().lower()
+        light = theme == "light" if theme in {"light", "dark"} else bool(_ask_background(stream))
+        return cls(stream, color_depth(env), width, light)
 
     # ── Colour ────────────────────────────────────────────────────────────
     def paint(self, text: str, tone: Optional[str] = None, *, bold: bool = False, dim: bool = False) -> str:
@@ -96,10 +156,10 @@ class Style:
             codes.append("2")
         if tone:
             if self.depth == "truecolor":
-                r, g, b = PALETTE[tone]
+                r, g, b = (PALETTE_LIGHT if self.light else PALETTE)[tone]
                 codes.append(f"38;2;{r};{g};{b}")
             elif self.depth == "256":
-                codes.append(f"38;5;{_PALETTE_256[tone]}")
+                codes.append(f"38;5;{(_PALETTE_256_LIGHT if self.light else _PALETTE_256)[tone]}")
             else:
                 codes.append(str(_PALETTE_16[tone]))
         if not codes or not text:

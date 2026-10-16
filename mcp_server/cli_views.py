@@ -53,8 +53,13 @@ def render_home(style: Style, version: str, running: Optional[bool]) -> None:
         for name in names:
             style.write(f"{INDENT}  {style.paint(name.ljust(width), 'brand')}  {SHORT_HELP[name]}")
         style.write()
-    advanced = f" {style.paint('·', dim=True)} ".join(ADVANCED)
-    style.write(f"{INDENT}{style.paint('Advanced', bold=True)}  {advanced}")
+    # The advanced commands wrap under their own start, never back to the margin.
+    lead = len(INDENT) + len("Advanced  ")
+    lines = textwrap.wrap(" · ".join(ADVANCED), max(20, style.width - lead), break_on_hyphens=False)
+    for index, line in enumerate(lines):
+        line = line.replace(" · ", f" {style.paint('·', dim=True)} ")
+        head = f"{INDENT}{style.paint('Advanced', bold=True)}  " if index == 0 else " " * lead
+        style.write(head + line)
     style.write()
     style.write(f"{INDENT}{style.paint('mac-mcp <command> --help for more.', dim=True)}")
 

@@ -65,6 +65,12 @@ Taken from the app and tour tokens, and chosen to read on light and dark termina
 Colour depth: truecolor when `COLORTERM` is `truecolor` or `24bit`, else 256 colours when
 `TERM` contains `256color`, else the 16 basic ANSI colours.
 
+One palette cannot read on both backgrounds (the bright tones fall to 1.3–2.4:1 on a light
+background). In a terminal the CLI asks the terminal for its background colour (OSC 11, at most
+0.15 s, once per run; Terminal.app answers) and uses deeper tones on a light one: brand
+`#a84d0b`, ok `#16794a`, warn `#9a6200`, error `#c22d2d`, info `#5b45d6` (5:1 or more on
+white). No answer means the dark tones above. `MAC_MCP_THEME=light|dark` chooses by hand.
+
 ### Symbols
 
 `◆` header · `●` status dot (green / amber / red) · `✓` done · `⚠` warning · `✗` error ·
