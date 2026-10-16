@@ -12,6 +12,7 @@
 - Extracted text and `scan` leave out scripts, styles, templates, `noscript` and hidden content. Results say how many matched, how many came back and where they were cut, and a cut result can be continued from where it stopped.
 - `scan` reads and scrolls several times in one call, and `next_cursor` continues after an item, text, size, step or time limit. A cursor is refused after a navigation, a scroll in between or five minutes.
 - A `scan` inside `browser_do` now returns its records and cursor under `scan`; before, `browser_do` dropped them and answered with empty data.
+- New `{type:'read'}` action: `browser_do` with `actions:[{type:'read'}]` returns a whole page's text in one call, after scrolling so content that loads on scroll is there, with `next_offset` for longer pages. Agents are pointed at it for reading pages instead of paging through `extract` or `observe` (one review page took 35 calls and six and a half minutes that way).
 
 ### Settings no longer hides the Live Island
 - Opening Settings closed the Live Island together with the menu popup. Now only the popup closes.

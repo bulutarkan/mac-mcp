@@ -636,5 +636,29 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertTrue(any("Comment number 29" in text for text in texts), texts[-3:])
         self.assertGreaterEqual(len(texts), 30)
 
+    def test_read_returns_the_whole_page_with_lazy_content_and_no_hidden_text(self) -> None:
+        tools = self.tools("read.html")
+        read = tools.act([{"type": "read"}])
+        self.assertTrue(read["ok"], read)
+        result = read["actions"][0]
+        text = result["text"]
+        self.assertIn("Blue Fixture", text)
+        self.assertIn("Opening paragraph with extra spaces.", text)
+        self.assertIn("Lazy review 30 says the dry down is warm.", text, "content loaded by scrolling is read")
+        for marker in ("SCRIPT_TEXT", "HIDDEN_TEXT", "ALSO_HIDDEN", "NOSCRIPT_TEXT", "TEMPLATE_TEXT"):
+            self.assertNotIn(marker, text)
+        self.assertTrue(result["complete"])
+        self.assertIn("Blue Fixture", result["headings"])
+        pieces, offset = [], 0
+        for _ in range(50):
+            part = tools.act([{"type": "read", "max_chars": 1000, "offset": offset, "load_more": False}])["actions"][0]
+            pieces.append(part["text"])
+            if part["complete"]:
+                break
+            offset = part["next_offset"]
+        self.assertGreater(len(pieces), 1)
+        self.assertEqual(text, "".join(pieces), "pieces join back into the whole page")
+
+
 if __name__ == "__main__":
     unittest.main()

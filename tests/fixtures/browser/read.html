@@ -1,0 +1,39 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Read fixture</title>
+<style>.gap{height:2600px}.gone{display:none}</style>
+<script>window.SCRIPT_ONLY_TEXT = "SCRIPT_TEXT_MUST_NOT_BE_READ";</script>
+</head><body>
+<nav>Home · Perfumes · News</nav>
+<main>
+  <h1>Blue Fixture</h1>
+  <p>Opening paragraph with   extra   spaces.</p>
+  <div class="gone">HIDDEN_TEXT_MUST_NOT_BE_READ</div>
+  <div hidden>ALSO_HIDDEN_MUST_NOT_BE_READ</div>
+  <h2>Reviews (30)</h2>
+  <div id="reviews"></div>
+  <div class="gap"></div>
+  <noscript>NOSCRIPT_TEXT_MUST_NOT_BE_READ</noscript>
+  <template><p>TEMPLATE_TEXT_MUST_NOT_BE_READ</p></template>
+  <div id="sentinel">Loading more…</div>
+</main>
+<script>
+// Ten reviews at first; ten more each time the reader reaches the bottom, thirty in all.
+var shown = 0;
+function more() {
+  var box = document.getElementById('reviews');
+  for (var i = 0; i < 10 && shown < 30; i++) {
+    shown++;
+    var div = document.createElement('div');
+    div.textContent = 'Lazy review ' + shown + ' says the dry down is warm.';
+    box.appendChild(div);
+  }
+  if (shown >= 30) document.getElementById('sentinel').textContent = 'No more reviews.';
+  else document.querySelector('.gap').style.height = (2600 + shown * 40) + 'px';
+}
+more();
+window.addEventListener('scroll', function () {
+  var doc = document.scrollingElement;
+  if (doc.scrollTop + innerHeight >= doc.scrollHeight - 50 && shown < 30) setTimeout(more, 120);
+});
+</script>
+</body></html>

@@ -91,7 +91,7 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
     ),
     "browser_observe": (
         "BATCH-FIRST HINT: observe once -> one browser_act -> verify from its changes; re-observe only for dependency/rerender, "
-        "stale/takeover or consequential verification. Reads the screen; long page/thread: browser_act scan."
+        "stale/takeover or consequential verification. Lists controls; to read a page: browser_do read."
     ),
     "browser_find": (
         "Read-only: find a rendered element by query/role/text; within='text in one item' limits it to that item. "
@@ -102,8 +102,8 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "comment: {type:'post',text}. query/role/text_match +intent/within, no find first. Split only for dependencies."
     ),
     "browser_do": (
-        "One-shot workflow: open URL -> wait -> optional actions -> extract -> optional close_after, e.g. "
-        "extract=['price','rating']. Interactive multi-step page work: observe -> browser_act instead."
+        "One-shot workflow: open URL -> actions -> extract -> close_after. Read a whole page: actions=[{type:'read'}] "
+        "(lazy content too; offset=next_offset). Multi-step: observe -> browser_act instead."
     ),
     "browser_upload_artifact": (
         "Select a registered artifact (artifact_id + matching path) into an input[type=file] and verify it. Selects only, "

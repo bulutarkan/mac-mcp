@@ -3334,6 +3334,76 @@ def _scan_action(
     }
 
 
+_READ_DEFAULT_CHARS = 40_000
+_READ_MAX_CHARS = 100_000
+
+
+def _read_scroll_js(options: Dict[str, Any]) -> str:
+    return _fill_js(_browser_js("read_scroll.js"), {"__READ_OPTIONS__": json.dumps(options)})
+
+
+def _read_text_js(options: Dict[str, Any]) -> str:
+    return _fill_js(_browser_js("read_text.js"), {
+        "__BOOTSTRAP__": _browser_state_bootstrap(),
+        "__READ_OPTIONS__": json.dumps(options),
+    })
+
+
+def _read_action(
+    settings: Settings, browser: str, action: Dict[str, Any], window_index: int,
+    tab_index: Optional[int], tab_handle: Optional[str] = None,
+) -> Dict[str, Any]:
+    """The whole page's readable text in one call: first move through the page so content
+    that loads on scroll is there (load_more, a few seconds at most), then read it once.
+    A longer page comes in parts: pass next_offset back as offset."""
+    max_chars = max(1_000, min(int(action.get("max_chars") or _READ_DEFAULT_CHARS), _READ_MAX_CHARS))
+    offset = max(0, int(action.get("offset") or 0))
+    timeout_s = max(0.5, min(float(action.get("timeout_s", 6)), 20.0))
+    js_calls = 0
+    loaded: Optional[Dict[str, Any]] = None
+    # A continuation reads the page as it already is.
+    if action.get("load_more", True) is not False and offset == 0:
+        started = time.perf_counter()
+        first = _run_json_js(settings, browser, _read_scroll_js({"phase": "start"}), window_index, tab_index, tab_handle)
+        js_calls += 1
+        origin, height, steps, settled, stopped = first.get("top", 0), int(first.get("height") or 0), 0, 0, "end_of_page"
+        while True:
+            cancellation_checkpoint()
+            if time.perf_counter() - started >= timeout_s:
+                stopped = "time_budget"
+                break
+            step = _run_json_js(settings, browser, _read_scroll_js({"phase": "step", "factor": 3}),
+                                window_index, tab_index, tab_handle)
+            js_calls += 1
+            steps += 1
+            if not step.get("ok"):
+                stopped = "scroll_failed"
+                break
+            grew = int(step.get("height") or 0) > height
+            height = max(height, int(step.get("height") or 0))
+            if step.get("at_end"):
+                # At the bottom: wait for a loader; done once the page stops growing.
+                settled = 0 if grew else settled + 1
+                if settled >= 2:
+                    break
+                cancellable_sleep(0.3)
+            else:
+                cancellable_sleep(0.05)
+        _run_json_js(settings, browser, _read_scroll_js({"phase": "restore", "top": origin}),
+                     window_index, tab_index, tab_handle)
+        js_calls += 1
+        loaded = {"steps": steps, "height": height, "stopped": stopped,
+                  "duration_ms": int((time.perf_counter() - started) * 1000)}
+    out = _run_json_js(settings, browser, _read_text_js({"offset": offset, "max_chars": max_chars}),
+                       window_index, tab_index, tab_handle)
+    js_calls += 1
+    out.setdefault("type", "read")
+    if loaded is not None:
+        out["loaded"] = loaded
+    out["_js_calls"] = js_calls
+    return out
+
+
 # {type:'fill', values:{label: value}}: a whole form in one action. Each label is resolved
 # like a query; text boxes are typed, selects (native and custom) pick the option, and
 # checkboxes/radios are set from a true/false value. Fields are filled in the given order,
@@ -3971,7 +4041,7 @@ def _decide_browser_target(
     return out
 
 
-_NON_MUTATING_ACT_TYPES = {"wait", "extract"}
+_NON_MUTATING_ACT_TYPES = {"wait", "extract", "read"}
 # Failures that change nothing on the page: the target, option or field is not there, or it
 # was refused before anything was sent. With every earlier step verified, the outcome of the
 # call is known (outcome_unknown=false), so a delegated agent is not locked out by it.
@@ -3988,7 +4058,7 @@ def _has_locator(action: Dict[str, Any]) -> bool:
     return any(action.get(key) for key in _LOCATOR_KEYS)
 _ACT_TYPES = (
     "click", "double_click", "type", "type_text", "paste", "select", "scroll", "focus",
-    "wait", "key", "keyboard", "shortcut", "extract", "scan", "dialog", "hover", "drag", "post", "fill",
+    "wait", "key", "keyboard", "shortcut", "extract", "scan", "read", "dialog", "hover", "drag", "post", "fill",
 )
 # Agents often name the action kind "action" instead of "type"; accept it.
 _ACT_TYPE_ALIASES = ("action", "kind", "op")
@@ -4063,7 +4133,7 @@ def _expand_expectations(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if expect is None:
             expanded.append(action)
             continue
-        if action.get("type") in {"wait", "extract", "scan", "dialog"}:
+        if action.get("type") in {"wait", "extract", "scan", "read", "dialog"}:
             raise mark_not_executed(HTTPException(
                 status.HTTP_400_BAD_REQUEST, f"actions[{index}] ({action.get('type')}) takes no expect; it already reports its result.",
             ))
@@ -4115,7 +4185,7 @@ def _action_outcome(result: Dict[str, Any]) -> str:
         return "confirmed" if result.get("posted") is True else "unconfirmed"
     if typ in {"wait"}:
         return "confirmed" if result.get("matched") else "unconfirmed"
-    if typ in {"fill", "select", "extract", "scan", "scroll", "focus", "dialog"}:
+    if typ in {"fill", "select", "extract", "scan", "read", "scroll", "focus", "dialog"}:
         return "confirmed"
     if verification in _REACTED_VERIFICATIONS or result.get("effect_observed"):
         return "page_reacted"
@@ -4851,7 +4921,7 @@ def _browser_act_locked(
                 if not post_result.get("ok"):
                     break
                 continue
-            if typ not in {"wait", "key", "keyboard", "shortcut", "extract", "scan", "dialog"} or (
+            if typ not in {"wait", "key", "keyboard", "shortcut", "extract", "scan", "read", "dialog"} or (
                 typ == "scan" and not action.get("element_id") and _has_locator(action)
             ):
                 work_action, resolved_target = resolve_target(action)
@@ -4859,7 +4929,7 @@ def _browser_act_locked(
                     results.append({"type": typ, **resolved_target})
                     break
 
-            if typ in {"wait", "key", "keyboard", "shortcut", "select", "extract", "scan", "dialog", "hover", "drag",
+            if typ in {"wait", "key", "keyboard", "shortcut", "select", "extract", "scan", "read", "dialog", "hover", "drag",
                        "click", "double_click", "type", "type_text", "paste"}:
                 if not flush_pending():
                     break
@@ -4951,6 +5021,15 @@ def _browser_act_locked(
                     results.append(scan_result)
                     current_observation_id = None
                     if not scan_result.get("ok"):
+                        break
+                elif typ == "read":
+                    read_result = _read_action(
+                        settings, browser, action, window_index, tab_index, tab_handle,
+                    )
+                    internal_js_calls += int(read_result.pop("_js_calls", 0))
+                    results.append(read_result)
+                    current_observation_id = None
+                    if not read_result.get("ok"):
                         break
                 elif typ == "extract":
                     extract_result = _extract_action(

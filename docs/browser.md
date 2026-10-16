@@ -24,6 +24,16 @@ Mac MCP can inspect and interact with Safari and Chrome tabs in the background w
 
 This is designed for workflows where an AI agent keeps working in one or more background browser tabs while the Mac remains usable normally.
 
+### Reading a whole page
+
+To read a page (an article, a product page with its reviews, docs, a thread), one call returns all of its text:
+
+```json
+{"browser":"Safari","url":"https://example.com/page","actions":[{"type":"read"}]}
+```
+
+`browser_do` (or `browser_act` on an open tab) first scrolls through the page so content that loads on scroll is there (a few seconds at most, then the page is put back where it was), then reads the text the browser shows: no scripts, styles, templates or hidden content. The answer is under `read`: `text`, `total_chars`, `headings`, `complete` and `loaded` (how far it scrolled and why it stopped). A page longer than `max_chars` (default 40,000, at most 100,000) comes in parts: pass `next_offset` back as `offset`; the parts join into the whole text and never split a word. `load_more:false` reads the page as it is. Text inside cross-origin frames and closed shadow roots is not included.
+
 ### Bounded extraction and long-page scans
 
 Read static rendered records with the existing `browser_act`, or the same action inside `browser_do`:

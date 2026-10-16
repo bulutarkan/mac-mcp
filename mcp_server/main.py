@@ -145,8 +145,11 @@ MCP_AGENT_INSTRUCTIONS = (
     "-> click the submit control with role=button -> wait for:text with the posted text. "
     "Posting a comment or reply is one action, {type:'post', text, within?}: it finds the comment box (within one item for "
     "a reply, opening it with that item's Reply button when closed), types, presses that box's own submit button and confirms the text is on the page; posted=null means check "
-    "before posting again. browser_observe reads what is on screen; to read a long page or thread, one browser_act "
-    "{type:'scan'} scrolls and collects it instead of scroll-and-observe rounds. "
+    "before posting again. browser_observe lists what is on screen to act on. To read a page (an article, a product "
+    "page with its reviews, docs, a thread), one browser_do {url, actions:[{type:'read'}]} returns all its text in one "
+    "call, content that loads on scroll included; a longer page continues with offset=next_offset. Do not page through "
+    "it with extract or observe. For a repeating list whose items you need one by one, browser_act {type:'scan'} "
+    "with item_selector collects them. "
     "Prefer the smallest number of tool calls and smallest bounded context that safely completes and verifies the task."
 )
 
@@ -322,8 +325,9 @@ def _fit_browser_do_output(payload: Dict[str, Any], budget_bytes: int = _BROWSER
     """Keep normal browser_do responses bounded; debug mode bypasses this helper.
 
     Scan records are never cut here: the page's cursor has already moved past them, so a
-    cut record would be lost. The scan itself was capped to fit (_BROWSER_DO_SCAN_BYTES)."""
-    scans = {key: payload[key] for key in ("scan", "scans") if key in payload}
+    cut record would be lost. The scan itself was capped to fit (_BROWSER_DO_SCAN_BYTES).
+    A read is the page text asked for; it is bounded by its own max_chars and next_offset."""
+    scans = {key: payload[key] for key in ("scan", "scans", "read") if key in payload}
     if scans:
         rest = {key: value for key, value in payload.items() if key not in scans}
         room = max(1_024, int(budget_bytes) - _browser_json_bytes(scans))
@@ -1901,7 +1905,9 @@ def create_app():
         name="browser_do",
         description=(
             "One-shot browser workflow in one call: open a URL (or reuse tab_handle) -> wait -> optional actions -> extract -> "
-            "optional close_after. For research use extract=['price','cancellation','parking','rating'] for compact semantic reads. "
+            "optional close_after. To read a whole page use actions=[{type:'read'}]: all of its text in one call (content that "
+            "loads on scroll included), under read with total_chars; continue a longer page with offset=next_offset. "
+            "For research use extract=['price','cancellation','parking','rating'] for compact semantic reads. "
             "For interactive, multi-step work on a page use browser_observe -> batched browser_act -> verify instead. "
             "Leave return_state='none' normally; debug=true can expose raw/full state. "
             "For selector reads use actions=[{type:'extract',fields:[{name:'reviews',selector:'.review',all:true}]}]. "
@@ -1990,7 +1996,14 @@ def create_app():
             extraction_meta: Dict[str, Any] = {}
             errors = []
             scans: List[Dict[str, Any]] = []
+            read: Optional[Dict[str, Any]] = None
             for item in result.get("actions") or []:
+                if item.get("type") == "read" and item.get("ok") is not False:
+                    read = {key: item[key] for key in (
+                        "text", "offset", "returned_chars", "total_chars", "next_offset", "complete", "headings",
+                        "loaded", "coverage") if key in item}
+                    final_url = item.get("url") or final_url
+                    final_title = item.get("title") or final_title
                 if item.get("type") == "scan" and item.get("ok") is not False:
                     scans.append({key: item[key] for key in (
                         "items", "count", "stopped", "complete", "has_more", "next_cursor", "total_seen",
@@ -2020,6 +2033,8 @@ def create_app():
                 "mutation_dispatched": bool(result.get("mutation_dispatched") or opened),
             }
             compact.update(extraction_meta)
+            if read is not None:
+                compact["read"] = read
             if len(scans) == 1:
                 compact["scan"] = scans[0]
             elif scans:

@@ -217,7 +217,9 @@ class PostGuidanceTests(unittest.TestCase):
         self.assertIn("POST_NOT_CONFIRMED", BROWSER_ACT_DESCRIPTION)
         self.assertIn("It reads what is on screen", BROWSER_OBSERVE_DESCRIPTION)
         self.assertIn("{type:'post',text}", CORE_TOOL_SUMMARIES["browser_act"])
-        self.assertIn("browser_act scan", CORE_TOOL_SUMMARIES["browser_observe"])
+        # Reading a page is one browser_do read; scan stays the route for item-by-item lists.
+        self.assertIn("browser_do read", CORE_TOOL_SUMMARIES["browser_observe"])
+        self.assertIn("{type:'read'}", MCP_AGENT_INSTRUCTIONS)
 
 
 if __name__ == "__main__":

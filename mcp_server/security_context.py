@@ -38,7 +38,7 @@ _BROWSER_PROGRESS_TOOLS = frozenset({
     "browser_act", "browser_do", "browser_click_selector", "browser_type_selector",
     "browser_coordinate_click",
 })
-_PROGRESS_EXEMPT_ACTIONS = frozenset({"wait", "scroll", "extract", "focus"})
+_PROGRESS_EXEMPT_ACTIONS = frozenset({"wait", "scroll", "extract", "read", "focus"})
 _SAFE_WHILE_WEB_SCOPED_FAMILIES = frozenset({"browser", "interactive", "voice"})
 _PRIVILEGED_CAPABILITIES = frozenset({
     Capability.LOCAL_WRITE, Capability.PROCESS_CONTROL, Capability.UI_ACTION,

@@ -60,7 +60,9 @@ class CoreCatalogDescriptionTests(unittest.TestCase):
             self.assertIn(phrase, act)
         # The custom-dropdown hint moved to the full description and the select option field.
         self.assertIn("Custom dropdowns: select", main.BROWSER_ACT_DESCRIPTION)
-        self.assertIn("browser_act scan", compact["browser_observe"])
+        # Reading a page is one browser_do read, not observe/scan rounds.
+        self.assertIn("browser_do read", compact["browser_observe"])
+        self.assertIn("{type:'read'}", compact["browser_do"])
         observe = compact["browser_observe"]
         for phrase in ("BATCH-FIRST HINT", "one browser_act", "verify from its changes", "dependency/rerender", "stale/takeover",
                        "consequential verification"):

@@ -3397,6 +3397,7 @@
                             "shortcut",
                             "extract",
                             "scan",
+                            "read",
                             "dialog",
                             "hover",
                             "drag",
@@ -3562,9 +3563,16 @@
                           "type": "array"
                         },
                         "max_chars": {
-                          "maximum": 20000,
+                          "maximum": 100000,
                           "minimum": 256,
                           "type": "integer"
+                        },
+                        "offset": {
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "load_more": {
+                          "type": "boolean"
                         },
                         "cursor": {
                           "description": "scan: next_cursor from the previous result; same tab, selector and key_field.",
@@ -3734,7 +3742,7 @@
       "post": {
         "operationId": "browser_do",
         "summary": "browser_do",
-        "description": "One-shot browser workflow in one call: open a URL (or reuse tab_handle) -> wait -> optional actions -> extract -> optional close_after. For research use extract=['price','cancellation','parking','rating'] for compact semantic reads. For interactive, multi-step work on a page use browser_observe -> b",
+        "description": "One-shot browser workflow in one call: open a URL (or reuse tab_handle) -> wait -> optional actions -> extract -> optional close_after. To read a whole page use actions=[{type:'read'}]: all of its text in one call (content that loads on scroll included), under read with total_chars; continue a longe",
         "requestBody": {
           "required": true,
           "content": {
@@ -3780,6 +3788,7 @@
                                 "shortcut",
                                 "extract",
                                 "scan",
+                                "read",
                                 "dialog",
                                 "hover",
                                 "drag",
