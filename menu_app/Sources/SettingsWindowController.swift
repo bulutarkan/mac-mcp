@@ -17,7 +17,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     func show(state: AppState, settings: SettingsStore, section: SettingsSection? = nil) {
         settings.load()
         let transientWindows = NSApplication.shared.windows.filter { candidate in
-            candidate.isVisible && candidate.title.isEmpty
+            // The Live Island is also a visible, untitled panel. Only dismiss
+            // the MenuBarExtra popup when presenting Settings.
+            candidate.isVisible && candidate.title.isEmpty && !(candidate is IslandPanel)
         }
 
         if let window = windowController?.window {
