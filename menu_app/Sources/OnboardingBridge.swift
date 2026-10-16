@@ -19,6 +19,7 @@ enum OnboardingAction: Equatable {
     case copy(String)
     case openSettings(String)
     case finish(String)
+    case setupBrowser(String)
 }
 
 struct OnboardingMessage: Equatable {
@@ -37,6 +38,7 @@ enum OnboardingBridge {
     ]
     static let sections: Set<String> = ["start", "general", "connections", "permissions", "help"]
     static let outcomes: Set<String> = ["completed", "skipped"]
+    static let browsers: Set<String> = ["safari", "chrome"]
     static let copyLimit = 4096
 
     static func parse(_ body: Any) -> OnboardingMessage? {
@@ -63,6 +65,7 @@ enum OnboardingBridge {
         case "disableAgent": action = value("provider", in: agentProviders).map(OnboardingAction.disableAgent)
         case "openSettings": action = value("section", in: sections).map(OnboardingAction.openSettings)
         case "finish": action = value("outcome", in: outcomes).map(OnboardingAction.finish)
+        case "setupBrowser": action = value("browser", in: browsers).map(OnboardingAction.setupBrowser)
         case "copy":
             if let text = args["text"] as? String, !text.isEmpty, text.utf8.count <= copyLimit {
                 action = .copy(text)

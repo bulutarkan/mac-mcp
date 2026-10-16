@@ -168,3 +168,26 @@ test('the Connect card loads apps and agents together and shows them at once', a
   assert.match(script, /Promise\.allSettled\(\[call\('apps'\), call\('agents'\)\]\)/);
   assert.match(script, /if \(appsLoading\) return;/);
 });
+
+test('browser companions are read from the status and never block setup', () => {
+  const { browserRow } = steps;
+  const none = evaluate({ server_running: true });
+  assert.deepEqual(none.browsers, { safari: 'unknown', chrome: 'unknown', any: false });
+  const live = evaluate({ server_running: true, browsers: { safari: 'on', chrome: 'reload' } });
+  assert.deepEqual(live.browsers, { safari: 'on', chrome: 'reload', any: true });
+  assert.equal(evaluate({ server_running: true, browsers: { safari: 'nonsense', chrome: 42 } }).browsers.safari, 'unknown');
+  // Optional: the permissions screen's button does not wait for them.
+  assert.equal(primaryAction('permissions', live).action, 'next');
+
+  assert.deepEqual(browserRow('safari', 'on'), { done: true, state: 'On', button: null,
+    detail: 'On. Mac MCP frames the Safari tab it works in.' });
+  assert.equal(browserRow('safari', 'off').button, 'Enable');
+  assert.equal(browserRow('safari', 'developer').button, 'Developer setup');
+  assert.equal(browserRow('chrome', 'connected').state, 'Connected');
+  assert.equal(browserRow('chrome', 'reload').button, 'Reload');
+  assert.match(browserRow('chrome', 'reload').detail, /reload/i);
+  assert.equal(browserRow('chrome', 'not_connected').button, 'Set up');
+  assert.deepEqual([browserRow('chrome', 'not_installed').state, browserRow('chrome', 'not_installed').button],
+    ['Not installed', null]);
+  assert.deepEqual([browserRow('chrome', 'unknown').state, browserRow('chrome', 'unknown').button], ['Checking…', null]);
+});

@@ -79,7 +79,38 @@ function evaluate(status) {
     remote: Boolean(s.public_endpoint_mode) && s.public_endpoint_mode !== 'none',
     // Granted to Mac MCP, but the running server sees it only after a restart.
     restartNeeded: running && s.permission_restart_needed === true,
+    browsers: browserStates(s.browsers),
   };
+}
+
+// Browser companions (#188): optional, so they never hold up the setup.
+const SAFARI_STATES = ['on', 'off', 'developer'];
+const CHROME_STATES = ['connected', 'reload', 'not_connected', 'not_installed'];
+
+function browserStates(raw) {
+  const b = raw || {};
+  const safari = SAFARI_STATES.includes(b.safari) ? b.safari : 'unknown';
+  const chrome = CHROME_STATES.includes(b.chrome) ? b.chrome : 'unknown';
+  return { safari, chrome, any: safari === 'on' || chrome === 'connected' || chrome === 'reload' };
+}
+
+/** What a browser's row says, and its button (null: nothing to press). */
+function browserRow(name, state) {
+  if (name === 'safari') {
+    switch (state) {
+      case 'on': return { done: true, state: 'On', button: null, detail: 'On. Mac MCP frames the Safari tab it works in.' };
+      case 'off': return { done: false, state: '', button: 'Enable', detail: 'Turn on the Mac MCP extension in Safari once, then allow it on websites.' };
+      case 'developer': return { done: false, state: '', button: 'Developer setup', detail: 'This build needs Safari’s developer setup for its extension.' };
+      default: return { done: false, state: 'Checking…', button: null, detail: 'Checking Safari…' };
+    }
+  }
+  switch (state) {
+    case 'connected': return { done: true, state: 'Connected', button: null, detail: 'Connected. Chrome tabs work in the background.' };
+    case 'reload': return { done: false, state: '', button: 'Reload', detail: 'Connected, but older than Mac MCP: reload it once at chrome://extensions.' };
+    case 'not_connected': return { done: false, state: '', button: 'Set up', detail: 'Background tabs and page actions without bringing Chrome forward.' };
+    case 'not_installed': return { done: false, state: 'Not installed', button: null, detail: 'Google Chrome is not installed. Safari works without it.' };
+    default: return { done: false, state: 'Checking…', button: null, detail: 'Checking Chrome…' };
+  }
 }
 
 /** The primary button for a screen: its label and what it does. */
@@ -204,7 +235,7 @@ function orderedClients(apps) {
 
 const api = {
   SCREENS, CLIENTS, AGENTS, FIRST_REQUEST, indexOf, evaluate, primaryAction, appRow, agentRow, orderedClients,
-  agentsSummary, appGroups, callSentence, stackParts, STACK_LIMIT,
+  agentsSummary, appGroups, callSentence, stackParts, STACK_LIMIT, browserRow,
 };
 if (typeof module === 'object' && module.exports) module.exports = api;
 else root.OnboardingSteps = api;

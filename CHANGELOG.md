@@ -1,5 +1,11 @@
 ## Unreleased
 
+### Browser companions show whether they work (#188)
+- Settings › Connections › Browser shows the Chrome companion live: **Connected** with its version, **Reload in Chrome…** when the loaded companion is older than the server (missing a feature it should report, even on the same version number), or Chrome Setup… when it is not loaded. Safari's state refreshes while the pane is open, not only when the app starts. The Get Started checklist says which ones are on.
+- Chrome Setup… also copies the companion's folder path, so in Load unpacked ⌘⇧G and ⌘V go straight to it, and Mac MCP announces "Chrome companion connected" once it is loaded, with no check by hand.
+- The tour's Permissions step has an optional Browsers line: Safari Enable, Chrome Set up, each turning to On or Connected by itself.
+- The server keeps the companion's version and when it last spoke; `GET /dashboard/api/diagnostics/runtime` reports them as `chrome_companion`. What a Chrome Web Store listing would take is in docs/chrome-web-store.md.
+
 ### Scheduled Tasks can check that a run made what it should (#198)
 - **Check the result** under Advanced: name a file the run should leave. After a run that finished, Mac MCP checks it is there, is not empty and was written by that run, by its size and time only (it never opens the file; a link or a folder fails). The run stays Done and reads **Checked** or **Done, but report.csv is missing**, in the history, the run report and the notification.
 - AI apps can suggest checks with the `scheduled_tasks` tool (`expected_files`, up to five, with a smallest size and whether this run must have written the file); like any suggestion, they apply only after you approve them.

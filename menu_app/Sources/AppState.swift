@@ -85,6 +85,14 @@ private struct ToolActivityStreamPayload: Decodable, Sendable {
     }
 }
 
+/// What the server knows about the Chrome companion (#188).
+struct ChromeCompanionStatus: Equatable {
+    var checked = false
+    var connected = false
+    var version: String?
+    var needsReload = false
+}
+
 struct ActionNotice: Identifiable, Equatable {
     enum Kind { case info, success, error, update }
     let id = UUID()
@@ -224,6 +232,8 @@ final class AppState: ObservableObject {
     @Published private(set) var safariExtensionEnabled = false
     @Published private(set) var safariExtensionRegistered = false
     @Published private(set) var safariExtensionStatus = "Checking…"
+    @Published private(set) var chromeCompanion = ChromeCompanionStatus()
+    private var chromeCompanionWatch: Task<Void, Never>?
 
     let settings = SettingsStore()
     private var pollTask: Task<Void, Never>?
@@ -410,6 +420,9 @@ final class AppState: ObservableObject {
         }
         setIfChanged(\.serverRunning, true)
         payload["server_running"] = true
+        await refreshChromeCompanion()
+        refreshSafariExtensionState(quiet: true)
+        payload["browsers"] = browserCompanionStates
         return payload
     }
 
@@ -601,9 +614,40 @@ final class AppState: ObservableObject {
         "\(Bundle.main.bundleIdentifier ?? "com.bulutarkan.mac-mcp.menu").safari"
     }
 
-    func refreshSafariExtensionState() {
+    /// Safari and Chrome companion states for the tour (#188): safari on|off|developer, chrome
+    /// connected|reload|not_connected|not_installed.
+    var browserCompanionStates: [String: String] {
+        let safari = safariExtensionEnabled ? "on" : (safariExtensionRegistered ? "off" : "developer")
+        let chrome: String
+        if chromeCompanion.connected {
+            chrome = chromeCompanion.needsReload ? "reload" : "connected"
+        } else {
+            chrome = chromeInstalled ? "not_connected" : "not_installed"
+        }
+        return ["safari": safari, "chrome": chrome]
+    }
+
+    var chromeInstalled: Bool {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") != nil
+    }
+
+    /// The server's view of the Chrome companion; the last known state stays if the server does not answer.
+    func refreshChromeCompanion() async {
+        let result = await taskAPI("dashboard/api/diagnostics/runtime")
+        guard result.ok else { return }
+        let raw = result.object["chrome_companion"] as? [String: Any]
+        let next = ChromeCompanionStatus(
+            checked: true,
+            connected: raw?["connected"] as? Bool ?? (result.object["chrome_companion_connected"] as? Bool ?? false),
+            version: raw?["version"] as? String,
+            needsReload: raw?["needs_reload"] as? Bool ?? false
+        )
+        if next != chromeCompanion { chromeCompanion = next }
+    }
+
+    func refreshSafariExtensionState(quiet: Bool = false) {
         let previous = browserSettingsState
-        setIfChanged(\.browserSettingsState, .loading(lastUpdatedAt: previous.lastUpdatedAt))
+        if !quiet { setIfChanged(\.browserSettingsState, .loading(lastUpdatedAt: previous.lastUpdatedAt)) }
         let identifier = safariExtensionBundleIdentifier
         SFSafariExtensionManager.getStateOfSafariExtension(withIdentifier: identifier) { [weak self] state, error in
             DispatchQueue.main.async {
@@ -676,8 +720,14 @@ final class AppState: ObservableObject {
         let extensionSourceURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("mac-mcp/menu_app/ChromeVisualCompanion", isDirectory: true)
         let manifestURL = extensionSourceURL.appendingPathComponent("manifest.json")
-        if FileManager.default.fileExists(atPath: manifestURL.path) {
-            NSWorkspace.shared.activateFileViewerSelecting([manifestURL])
+        let reload = chromeCompanion.connected && chromeCompanion.needsReload
+        if !reload {
+            if FileManager.default.fileExists(atPath: manifestURL.path) {
+                NSWorkspace.shared.activateFileViewerSelecting([manifestURL])
+            }
+            // Load unpacked opens a folder picker: ⌘⇧G and ⌘V go straight to it.
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(extensionSourceURL.path, forType: .string)
         }
         if let chromeURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") {
             let configuration = NSWorkspace.OpenConfiguration()
@@ -687,8 +737,28 @@ final class AppState: ObservableObject {
         }
         actionNotice = ActionNotice(
             kind: .info,
-            message: "Chrome setup: enable Developer mode at chrome://extensions, choose Load unpacked, then select ChromeVisualCompanion. This companion provides focus-safe background tabs plus DOM/page execution and background-safe visual capture."
+            message: reload
+                ? "Chrome: at chrome://extensions, press the reload arrow on Mac MCP Chrome Companion. Mac MCP sees it within a few seconds."
+                : "Chrome: turn on Developer mode at chrome://extensions, choose Load unpacked, press ⌘⇧G and ⌘V (the folder is copied), then Select. Mac MCP sees the companion within a few seconds."
         )
+        watchChromeCompanion()
+    }
+
+    /// After Chrome Setup, notice the companion connecting instead of asking the owner to check.
+    private func watchChromeCompanion() {
+        chromeCompanionWatch?.cancel()
+        chromeCompanionWatch = Task { [weak self] in
+            for _ in 0..<90 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let self, !Task.isCancelled else { return }
+                await self.refreshChromeCompanion()
+                if self.chromeCompanion.connected && !self.chromeCompanion.needsReload {
+                    let version = self.chromeCompanion.version.map { " (\($0))" } ?? ""
+                    self.actionNotice = ActionNotice(kind: .success, message: "Chrome companion connected\(version).")
+                    return
+                }
+            }
+        }
     }
 
     static func pollDelaySeconds(forFailureCount failureCount: Int) -> Double {

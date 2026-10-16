@@ -114,6 +114,11 @@
               <button type="button" data-action="request">Allow</button>
             </div>
           </div>
+          <div class="browser-line" role="group" aria-label="Browser companions, optional">
+            <span class="browser-line-title">Browsers <em>optional</em></span>
+            <span class="browser-chip" data-browser="safari"><strong>Safari</strong> <span data-live="safari-state">Checking…</span><button type="button" data-action="setup-browser" hidden>Enable</button></span>
+            <span class="browser-chip" data-browser="chrome"><strong>Chrome</strong> <span data-live="chrome-state">Checking…</span><button type="button" data-action="setup-browser" hidden>Set up</button></span>
+          </div>
           <p class="note" data-live="permission-hint" hidden>Turn on Mac MCP in the window macOS opened. Nothing opened? Open <button type="button" class="link" data-action="open-settings-pane" data-permission="accessibility">Accessibility</button> or <button type="button" class="link" data-action="open-settings-pane" data-permission="screen_recording">Screen Recording</button> settings. Mac MCP restarts by itself once it is allowed.</p>
         </div>
         <div class="stage plain" aria-hidden="true">

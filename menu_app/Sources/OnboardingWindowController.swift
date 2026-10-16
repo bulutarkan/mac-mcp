@@ -168,6 +168,10 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate, WKNavigation
         case .finish(let outcome):
             state.recordTour(outcome)
             return true
+        case .setupBrowser(let browser):
+            // The same setup as Settings › Connections › Browser; the page polls status to see it finish.
+            if browser == "safari" { state.openSafariExtensionPreferences() } else { state.openChromeExtensionSetup() }
+            return true
         }
     }
 

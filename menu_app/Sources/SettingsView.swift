@@ -264,7 +264,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         onboardingOptionalRow(
                             title: "Browser companions",
-                            detail: "Let agents work in Safari and Chrome tabs in the background instead of taking over your screen.",
+                            detail: browserCompanionsSummary,
                             actionTitle: "Open Browser"
                         ) {
                             connectionsTab = .browser
@@ -352,6 +352,18 @@ struct SettingsView: View {
                 notice = ""
             }
         }
+    }
+
+    /// "Safari is on · Chrome is not connected" once known; the pitch until then.
+    private var browserCompanionsSummary: String {
+        guard state.chromeCompanion.checked else {
+            return "Let agents work in Safari and Chrome tabs in the background instead of taking over your screen."
+        }
+        let safari = state.safariExtensionEnabled ? "Safari is on" : "Safari is off"
+        let chrome = state.chromeCompanion.connected
+            ? (state.chromeCompanion.needsReload ? "Chrome needs a reload" : "Chrome is connected")
+            : (state.chromeInstalled ? "Chrome is not connected" : "Chrome is not installed")
+        return "\(safari) · \(chrome). Agents use them to work in browser tabs without taking over your screen."
     }
 
     private func onboardingOptionalRow(
@@ -1832,22 +1844,34 @@ struct SettingsView: View {
                 }
 
                 GroupBox("Google Chrome") {
+                    let chrome = state.chromeCompanion
+                    let ready = chrome.connected && !chrome.needsReload
                     HStack(spacing: 12) {
                         ZStack {
                             RoundedRectangle(cornerRadius: 9, style: .continuous)
                                 .fill(.quaternary)
                                 .frame(width: 38, height: 38)
-                            Image(systemName: "globe")
-                                .foregroundStyle(Color.secondary)
+                            Image(systemName: ready ? "checkmark.circle.fill" : "globe")
+                                .foregroundStyle(ready ? Color.accentColor : Color.secondary)
                         }
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("Chrome Visual Companion").font(.subheadline.weight(.semibold))
-                            Text("Enables focus-safe background tabs, DOM/page actions, and background-safe visual capture.")
+                            Text(ready ? "Chrome Companion · Connected" + (chrome.version.map { " · \($0)" } ?? "")
+                                       : "Chrome Visual Companion")
+                                .font(.subheadline.weight(.semibold))
+                            Text(chromeDetail(chrome))
                                 .font(.caption).foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer()
-                        Button("Chrome Setup…") { state.openChromeExtensionSetup() }
+                        if ready {
+                            Button { Task { await state.refreshChromeCompanion() } } label: { Image(systemName: "arrow.clockwise") }
+                                .accessibilityLabel("Refresh Chrome companion status")
+                                .help("Refresh companion status")
+                        } else if chrome.connected {
+                            Button("Reload in Chrome…") { state.openChromeExtensionSetup() }
+                        } else if state.chromeInstalled {
+                            Button("Chrome Setup…") { state.openChromeExtensionSetup() }
+                        }
                     }
                     .padding(.top, 5)
                 }
@@ -1862,6 +1886,25 @@ struct SettingsView: View {
             }
             .padding(22)
         }
+        // Live while the pane is open: a companion turned on in Safari or Chrome shows up by itself.
+        .task {
+            state.refreshSafariExtensionState(quiet: true)
+            while !Task.isCancelled {
+                await state.refreshChromeCompanion()
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                state.refreshSafariExtensionState(quiet: true)
+            }
+        }
+    }
+
+    private func chromeDetail(_ chrome: ChromeCompanionStatus) -> String {
+        if chrome.connected && chrome.needsReload {
+            return "Connected, but older than this Mac MCP: reload it once at chrome://extensions."
+        }
+        if chrome.connected { return "Chrome tabs work in the background: page actions and capture without bringing Chrome forward." }
+        if !state.chromeInstalled { return "Google Chrome is not installed. Safari works without it." }
+        if !chrome.checked { return "Checking Chrome…" }
+        return "Not connected. Chrome Setup loads the companion once; after that Chrome tabs work in the background."
     }
 
     private var permissionsPane: some View {

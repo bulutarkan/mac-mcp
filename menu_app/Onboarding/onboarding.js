@@ -4,7 +4,7 @@
 'use strict';
 const {
   SCREENS, CLIENTS, AGENTS, FIRST_REQUEST, evaluate, primaryAction, indexOf, appRow, agentRow,
-  agentsSummary, appGroups, callSentence, stackParts,
+  agentsSummary, appGroups, callSentence, stackParts, browserRow,
 } = window.OnboardingSteps;
 
 // ---------- bridge ----------
@@ -37,7 +37,7 @@ function call(action, args = {}) {
 const params = new URLSearchParams(location.search);
 const demoStatus = {
   fresh: { server_running: false },
-  running: { server_running: true, accessibility: 'not_determined', screen_recording: 'not_determined', permission_holder: 'Mac MCP', public_endpoint_mode: 'none' },
+  running: { server_running: true, accessibility: 'not_determined', screen_recording: 'not_determined', permission_holder: 'Mac MCP', public_endpoint_mode: 'none', browsers: { safari: 'off', chrome: 'not_connected' } },
   connected: { server_running: true, accessibility: 'granted', screen_recording: 'granted', permission_holder: 'Mac MCP', public_endpoint_mode: 'none', first_call: { tool: 'read_file' } },
   done: { server_running: true, accessibility: 'granted', screen_recording: 'granted', permission_holder: 'Mac MCP', public_endpoint_mode: 'none', first_call: { tool: 'system_info' }, first_success: { tool: 'system_info' } },
 }[params.get('demo') || 'running'];
@@ -61,6 +61,10 @@ function demo(action, args) {
       return { ok: true, next: 'Quit Claude and open it again, then ask it something about your Mac.' };
     },
     agents: () => JSON.parse(JSON.stringify(demoAgents)),
+    setupBrowser: () => {
+      if (demoStatus.browsers) demoStatus.browsers[args.browser] = args.browser === 'safari' ? 'on' : 'connected';
+      return true;
+    },
     enableAgent: () => {
       demoAgents.enabled[args.provider] = true;
       return JSON.parse(JSON.stringify(demoAgents));
@@ -169,6 +173,20 @@ function renderLive() {
     button.textContent = granted ? 'Allowed' : 'Allow';
     button.disabled = granted || !e.start;
     $(`.settings-row[data-mirror="${name}"]`).classList.toggle('is-granted', granted);
+  }
+  // Browser companions: optional, set up from here or later in Settings.
+  for (const name of ['safari', 'chrome']) {
+    const view = browserRow(name, e.browsers[name]);
+    const chip = $(`.browser-chip[data-browser="${name}"]`);
+    chip.classList.toggle('is-done', view.done);
+    chip.title = view.detail;
+    $(`[data-live="${name}-state"]`).textContent = view.state;
+    const button = $('button', chip);
+    button.hidden = !view.button;
+    if (view.button) {
+      button.textContent = view.button;
+      button.setAttribute('aria-label', `${view.button}: ${view.detail}`);
+    }
   }
   // Connect
   setStatus($('[data-live="connect-state"]'), e.connect,
@@ -556,8 +574,18 @@ function wire() {
     if (SCREENS[current].kind === 'tour') show(indexOf('start'));
     else call('finish', { outcome: 'skipped' });
   });
-  for (const row of $$('.perm')) {
+  for (const row of $$('.perm[data-perm]')) {
     $('button', row).addEventListener('click', () => requestPermission(row.dataset.perm));
+  }
+  for (const row of $$('.browser-chip[data-browser]')) {
+    $('button', row).addEventListener('click', async () => {
+      try {
+        await call('setupBrowser', { browser: row.dataset.browser });
+      } catch (error) {
+        toast(error.message);
+      }
+      refresh();
+    });
   }
   for (const link of $$('[data-action="open-settings-pane"]')) {
     link.addEventListener('click', () => call('openSystemSettings', { permission: link.dataset.permission }));

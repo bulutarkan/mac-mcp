@@ -9,6 +9,7 @@ import secrets
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -145,6 +146,14 @@ def ensure_chrome_companion_config(runtime_root: Optional[Path] = None) -> Optio
     return path
 
 
+# What the companion in this source reports in its hello (background.js FEATURES). A loaded
+# companion missing any of them predates this server and needs one reload, even when its
+# version number matches (same-version checkpoints add features too).
+EXPECTED_COMPANION_FEATURES = frozenset({
+    "dialogs", "gestures", "alarm_reconnect", "tab_queue", "dialog_memory", "dialog_session_hold", "keys", "frames",
+})
+
+
 class ChromeBackgroundBridge:
     """Thread-safe RPC broker for Chrome-only, non-focus-stealing tab creation."""
 
@@ -155,6 +164,9 @@ class ChromeBackgroundBridge:
         self._connection_id: Optional[str] = None
         self._pending: Dict[str, _Pending] = {}
         self._features: frozenset = frozenset()
+        self._version: Optional[str] = None
+        self._connected_at: Optional[float] = None
+        self._last_seen_at: Optional[float] = None
 
     def configured_token(self) -> str:
         configured = str(os.getenv("MAC_MCP_CHROME_BRIDGE_TOKEN", "") or "").strip()
@@ -164,15 +176,40 @@ class ChromeBackgroundBridge:
         with self._lock:
             return self._loop is not None and self._websocket is not None
 
-    def _attach(self, websocket: WebSocket, loop: asyncio.AbstractEventLoop, features: Any = None) -> str:
+    def _attach(self, websocket: WebSocket, loop: asyncio.AbstractEventLoop, features: Any = None,
+                version: Any = None) -> str:
         connection_id = uuid.uuid4().hex
         names = features if isinstance(features, list) else []
+        now = time.time()
         with self._lock:
             self._loop = loop
             self._websocket = websocket
             self._connection_id = connection_id
             self._features = frozenset(str(name)[:40] for name in names[:20])
+            # The extension's own manifest version; shown to the owner, so plain and short.
+            self._version = re.sub(r"[^0-9A-Za-z.\-]", "", version)[:20] or None if isinstance(version, str) else None
+            self._connected_at = now
+            self._last_seen_at = now
         return connection_id
+
+    def touch(self, connection_id: str) -> None:
+        with self._lock:
+            if self._connection_id == connection_id:
+                self._last_seen_at = time.time()
+
+    def status(self) -> Dict[str, Any]:
+        """What the Settings checklist shows: connected, which companion, and whether it needs a reload."""
+        with self._lock:
+            connected = self._loop is not None and self._websocket is not None
+            missing = sorted(EXPECTED_COMPANION_FEATURES - self._features) if connected else []
+            return {
+                "connected": connected,
+                "version": self._version if connected else None,
+                "connected_at": self._connected_at if connected else None,
+                "last_seen_at": self._last_seen_at if connected else None,
+                "missing_features": missing,
+                "needs_reload": bool(missing),
+            }
 
     def supports(self, feature: str) -> bool:
         with self._lock:
@@ -367,12 +404,13 @@ async def chrome_background_bridge_websocket(websocket: WebSocket) -> None:
         return
 
     loop = asyncio.get_running_loop()
-    connection_id = chrome_background_bridge._attach(websocket, loop, hello.get("features"))
+    connection_id = chrome_background_bridge._attach(websocket, loop, hello.get("features"), hello.get("version"))
     await websocket.send_json({"type": "hello_ack"})
     try:
         while True:
             message = await websocket.receive_json()
             if isinstance(message, dict):
+                chrome_background_bridge.touch(connection_id)
                 if message.get("type") == "ping":
                     await websocket.send_json({"type": "pong"})
                 else:

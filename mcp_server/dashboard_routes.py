@@ -330,6 +330,7 @@ def create_dashboard_routes(
             "ok": True,
             "version": __version__,
             "chrome_companion_connected": bool(chrome_background_bridge.is_connected()),
+            "chrome_companion": chrome_background_bridge.status(),
         })
 
     async def permissions_view(request: Request) -> Response:
