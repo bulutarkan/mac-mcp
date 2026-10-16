@@ -423,5 +423,48 @@ class CatalogScreen(ThemedTestCase):
         self.assertIn("✗ The pack changed since review.", text)
 
 
+class ConformanceScreen(ThemedTestCase):
+    def report(self, checks, ok=True):
+        return {"ok": ok, "checks": checks, "metrics": {"deterministic_pass_rate": 100.0, "focus_safety_regressions": 0},
+                "duration_ms": 1234}
+
+    def run_conformance(self, report, live=False):
+        with patch("mcp_server.conformance.run_conformance", return_value=report) as run:
+            result = self.run_cmd(cli.conformance, NS(live=live, json=False))
+        return (*result, run)
+
+    def test_all_pass(self) -> None:
+        checks = [{"check_id": f"browser.c{i}", "category": "computer_use", "status": "pass", "summary": "ok"} for i in range(3)]
+        checks += [{"check_id": "native.a", "category": "computer_use", "status": "pass", "summary": "ok"},
+                   {"check_id": "computer_plan.x", "category": "computer_use", "status": "pass", "summary": "ok"}]
+        code, text, _, raw, _ = self.run_conformance(self.report(checks))
+        self.assertEqual(0, code)
+        self.assertIn("focus regressions · 1.2s", strip_ansi(raw))
+        self.assertTrue(text.startswith("  ◆ Mac MCP · conformance\n\n"), text)
+        self.assertIn("✓ Ran the Computer Use checks", text)
+        self.assertIn("Browser     ✓ 3 checks passed", text)
+        self.assertIn("Native app  ✓ 1 check passed", text)
+        self.assertIn("Planning    ✓ 1 check passed", text)
+        self.assertIn("✓ All 5 Computer Use checks passed   100.0% · 0 focus regressions · 0.0s", text)
+
+    def test_a_failure_has_its_fix(self) -> None:
+        checks = [{"check_id": "browser.a", "category": "computer_use", "status": "pass", "summary": "A works."},
+                  {"check_id": "observe.b", "category": "computer_use", "status": "fail", "summary": "B broke.", "remediation": "Fix B."}]
+        code, text, *_ = self.run_conformance(self.report(checks, ok=False))
+        self.assertEqual(1, code)
+        self.assertIn("Observation  ✗ B broke.", text)
+        self.assertIn("Fix: Fix B.", text)
+        self.assertIn("✗ 1 failed — fix it, then run: mac-mcp conformance", flat(text))
+
+    def test_live_checks_have_their_own_group(self) -> None:
+        checks = [{"check_id": "browser.a", "category": "computer_use", "status": "pass", "summary": "ok"},
+                  {"check_id": "live.safari", "category": "live", "status": "warn", "summary": "Safari is closed."}]
+        code, text, _, _, run = self.run_conformance(self.report(checks), live=True)
+        self.assertEqual(0, code)
+        run.assert_called_once_with(live=True)
+        self.assertIn("Live     ⚠ Safari is closed.", text)
+        self.assertIn("⚠ 1 thing to look at", text)
+
+
 if __name__ == "__main__":
     unittest.main()

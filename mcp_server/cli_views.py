@@ -203,20 +203,16 @@ def _pass_name(check_id: str) -> str:
     return name if name in _TOOL_NAMES else name[:1].upper() + name[1:]
 
 
-def render_doctor(style: Style, report: dict, verbose: bool, support_path: Optional[str]) -> None:
-    groups: dict = {}
-    for check in report.get("checks", []):
-        group = DOCTOR_GROUPS.get(str(check.get("category") or ""), "Other")
-        groups.setdefault(group, []).append(check)
-    width = max((len(name) for name in groups), default=0) + 2
-    style.header("doctor")
-    for name in [group for group in _GROUP_ORDER if group in groups]:
-        checks = groups[name]
+def _render_checklist(style: Style, groups: list, verbose: bool, named_passes: frozenset = frozenset()) -> None:
+    """Checks by group: passes fold into one line per group (names or a count); the rest are
+    written out, with their fix under warnings and failures."""
+    width = max((len(name) for name, _ in groups), default=0) + 2
+    for name, checks in groups:
         # (symbol tone or None, text, dim): each entry wraps inside its own column.
         entries: list = []
         passed = [check for check in checks if check.get("status") == "pass"]
         if passed and not verbose:
-            if name in _NAMED_PASSES:
+            if name in named_passes:
                 text = " · ".join(_pass_name(str(check["check_id"])) for check in passed)
             else:
                 text = f"{len(passed)} check{'s' if len(passed) != 1 else ''} passed"
@@ -237,6 +233,16 @@ def render_doctor(style: Style, report: dict, verbose: bool, support_path: Optio
                 shown = style.paint(part, dim=True) if dim else part
                 style.write(f"{INDENT}{label}{lead if index == 0 else '  '}{shown}")
                 first = False
+
+
+def render_doctor(style: Style, report: dict, verbose: bool, support_path: Optional[str]) -> None:
+    groups: dict = {}
+    for check in report.get("checks", []):
+        group = DOCTOR_GROUPS.get(str(check.get("category") or ""), "Other")
+        groups.setdefault(group, []).append(check)
+    style.header("doctor")
+    _render_checklist(style, [(name, groups[name]) for name in _GROUP_ORDER if name in groups], verbose,
+                      frozenset(_NAMED_PASSES))
     if support_path:
         style.write()
         style.write(f"{INDENT}Support bundle  {support_path}")
@@ -461,3 +467,36 @@ def render_script_review(style: Style, script: dict, command: str) -> None:
     style.write(f"{INDENT}{style.paint('Script:', dim=True)}")
     style.stream.write(str(script["content"]).rstrip("\n") + "\n")
     style.summary("warn", "Nothing enabled · this script can run anything", next_command=command)
+
+
+CONFORMANCE_GROUPS = {"browser": "Browser", "native": "Native app", "observe": "Observation", "workspace": "Workspace",
+                      "computer_plan": "Planning", "live": "Live"}
+_CONFORMANCE_ORDER = ["Browser", "Native app", "Observation", "Workspace", "Planning", "Live", "Other"]
+
+
+def conformance_group(check: dict) -> str:
+    if str(check.get("category") or "computer_use") != "computer_use":
+        return "Live"
+    return CONFORMANCE_GROUPS.get(str(check.get("check_id") or "").split(".", 1)[0], "Other")
+
+
+def render_conformance(style: Style, report: dict) -> None:
+    """The Computer Use checks by area (after the header and the run step), then one sentence."""
+    checks = report.get("checks", [])
+    groups: dict = {}
+    for check in checks:
+        groups.setdefault(conformance_group(check), []).append(check)
+    style.write()
+    _render_checklist(style, [(name, groups[name]) for name in _CONFORMANCE_ORDER if name in groups], False)
+    fails = sum(1 for check in checks if check.get("status") == "fail")
+    warns = sum(1 for check in checks if check.get("status") == "warn")
+    metrics = report.get("metrics", {})
+    if fails:
+        style.summary("error", f"{fails} failed — fix {'it' if fails == 1 else 'them'}, then run: mac-mcp conformance")
+    elif warns:
+        style.summary("warn", f"{warns} thing{'s' if warns != 1 else ''} to look at")
+    else:
+        took = f"{(report.get('duration_ms') or 0) / 1000:.1f}s"
+        style.summary("ok", f"All {len(checks)} Computer Use checks passed",
+                      note=f"{metrics.get('deterministic_pass_rate', 0)}% · {metrics.get('focus_safety_regressions', 0)} "
+                           f"focus regressions · {took}")

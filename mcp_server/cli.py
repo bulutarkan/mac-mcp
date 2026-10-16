@@ -2878,6 +2878,15 @@ def conformance(args: argparse.Namespace) -> int:
     from .conformance import run_conformance
     from .diagnostics import format_report
 
+    style = Style.for_stream(json_output=bool(args.json))
+    if style is not None:
+        from .cli_steps import Steps
+        from .cli_views import render_conformance
+        style.header("conformance")
+        with Steps(style).step("Ran the Computer Use checks", failed_label="Run the Computer Use checks"):
+            report = run_conformance(live=bool(args.live))
+        render_conformance(style, report)
+        return 0 if report.get("ok") else 1
     report = run_conformance(live=bool(args.live))
     if args.json:
         import json
