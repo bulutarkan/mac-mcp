@@ -333,5 +333,95 @@ class LoginsScreen(ThemedTestCase):
         self.assertIn("✗ The vault is locked.", text)
 
 
+REVIEW = {
+    "pack": {"name": "Git Helper", "id": "git-helper", "version": "1.2.0", "kind": "skill", "publisher": "Mac MCP",
+             "description": "Helps with git."},
+    "signer": "mac-mcp-catalog", "catalog_digest": "0123456789abcdef0123", "installed_version": "1.1.0",
+    "action": "update", "capabilities": ["read_files"], "effective": {"tools": ["run_command"]},
+    "permission_changes": {"added": ["shell"], "removed": []},
+    "files": [{"path": "SKILL.md", "size": 120, "sha256": "aaaaaaaaaaaaaaaabbbb"}],
+    "scripts_held": ["scripts/check.sh"], "script_note": "enable it with enable-script", "note": "Review first.",
+}
+
+
+class CatalogScreen(ThemedTestCase):
+    def catalog(self, **args):
+        return self.run_cmd(cli.catalog_command, NS(**{"json": False, **args}))
+
+    def test_list_with_an_update(self) -> None:
+        from mcp_server import catalog
+        listed = {"signer": "mac-mcp-catalog", "packs": [
+            {"id": "git-helper", "version": "1.2.0", "kind": "skill", "name": "Git Helper", "installed_version": "1.1.0",
+             "update_available": True},
+            {"id": "notes", "version": "0.1.0", "kind": "recipe", "name": "Notes", "installed_version": None,
+             "update_available": False}]}
+        with patch.object(catalog, "list_packs", return_value=listed):
+            code, text, *_ = self.catalog(catalog_command="list")
+        self.assertEqual(0, code)
+        self.assertTrue(text.startswith("  ◆ Mac MCP · catalog\n\n"), text)
+        self.assertIn("● Git Helper  git-helper 1.2.0 · skill · update available, installed 1.1.0", text)
+        self.assertIn("● Notes       notes 0.1.0 · recipe · not installed", text)
+        self.assertIn("Signed by mac-mcp-catalog", text)
+        self.assertIn("⚠ 1 update available — try: mac-mcp catalog review git-helper", flat(text))
+
+    def test_review(self) -> None:
+        from mcp_server import catalog
+        with patch.object(catalog, "review", return_value=REVIEW):
+            code, text, *_ = self.catalog(catalog_command="review", pack_id="git-helper")
+        self.assertEqual(0, code)
+        for part in ("Pack", "Git Helper · git-helper 1.2.0 · skill", "Publisher", "Signed by", "mac-mcp-catalog · catalog 0123456789abcdef",
+                     "Action", "update · installed 1.1.0", "Capabilities", "read_files", "Recipe tools", "run_command",
+                     "Permissions", "+shell", "Files", "SKILL.md · 120 B · sha256 aaaaaaaaaaaaaaaa",
+                     "Held back", "scripts/check.sh · enable it with enable-script", "Helps with git.", "Review first."):
+            self.assertIn(part, text)
+        self.assertIn("✓ Reviewed git-helper 1.2.0", text)
+        with patch.object(catalog, "review", return_value={**REVIEW, "blocked": "signature mismatch"}):
+            code, text, *_ = self.catalog(catalog_command="review", pack_id="git-helper")
+        self.assertIn("✗ Blocked: signature mismatch", text)
+
+    def test_install_preview_and_done(self) -> None:
+        from mcp_server import catalog
+        with patch.object(catalog, "review", return_value=REVIEW), patch.object(catalog, "install") as install:
+            code, text, *_ = self.catalog(catalog_command="install", pack_id="git-helper", yes=False)
+        self.assertEqual(1, code)
+        install.assert_not_called()
+        self.assertIn("Git Helper · git-helper 1.2.0 · skill", text)
+        self.assertIn("⚠ Nothing installed — try: mac-mcp catalog install git-helper --yes", flat(text))
+        with patch.object(catalog, "install", return_value={"pack_id": "notes", "version": "0.1.0", "recipe_id": "rc"}):
+            code, text, *_ = self.catalog(catalog_command="install", pack_id="notes", yes=True)
+        self.assertEqual(0, code)
+        self.assertIn("✓ Installed notes 0.1.0", text)
+        self.assertIn("✓ notes 0.1.0 is installed", text)
+        self.assertIn("The recipe is a draft: activate it after review.", flat(text))
+
+    def test_enable_script_preview_is_raw(self) -> None:
+        from mcp_server import catalog
+        content = "#!/bin/sh\n  echo " + "x" * 120 + "\n\nexit 0"
+        script = {"path": "scripts/check.sh", "sha256": "f" * 64, "content": content}
+        with patch.object(catalog, "enable_script", side_effect=catalog.CatalogError("CONFIRM_REQUIRED", "confirm", script=script)):
+            code, text, _, raw = self.catalog(catalog_command="enable-script", pack_id="git-helper", path="scripts/check.sh", yes=False)
+        self.assertEqual(1, code)
+        self.assertIn("\n" + content + "\n", raw)
+        self.assertIn("f" * 64, text)
+        self.assertIn("⚠ Nothing enabled · this script can run anything — try: mac-mcp catalog enable-script git-helper "
+                      "scripts/check.sh --yes", flat(text))
+        with patch.object(catalog, "enable_script", return_value={"path": "scripts/check.sh", "pack_id": "git-helper"}):
+            code, text, *_ = self.catalog(catalog_command="enable-script", pack_id="git-helper", path="scripts/check.sh", yes=True)
+        self.assertEqual(0, code)
+        self.assertIn("✓ Enabled scripts/check.sh for git-helper", text)
+
+    def test_error(self) -> None:
+        from mcp_server import catalog
+        with patch.object(catalog, "review", side_effect=catalog.CatalogError("UNKNOWN_PACK", "No pack named x.")):
+            code, text, err, _ = self.catalog(catalog_command="review", pack_id="x")
+        self.assertEqual((1, ""), (code, err))
+        self.assertIn("✗ No pack named x.", text)
+        with patch.object(catalog, "install", side_effect=catalog.CatalogError("CHANGED", "The pack changed since review.")):
+            code, text, *_ = self.catalog(catalog_command="install", pack_id="x", yes=True)
+        self.assertEqual(1, code)
+        self.assertIn("✗ Install x", text)
+        self.assertIn("✗ The pack changed since review.", text)
+
+
 if __name__ == "__main__":
     unittest.main()

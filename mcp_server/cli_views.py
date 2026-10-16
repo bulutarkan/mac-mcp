@@ -395,3 +395,69 @@ def dim_lines(style: Style, text: str, indent: str = INDENT) -> None:
     for line in str(text).splitlines():
         for part in textwrap.wrap(line, style.width - len(indent), break_on_hyphens=False) or [""]:
             style.write(f"{indent}{style.paint(part, dim=True)}")
+
+
+def render_catalog_list(style: Style, listed: dict) -> None:
+    rows = []
+    for pack in listed["packs"]:
+        installed = pack.get("installed_version")
+        if installed and pack.get("update_available"):
+            rows.append(("warn", pack["name"], f"{pack['id']} {pack['version']} · {pack['kind']}",
+                         f"update available, installed {installed}"))
+        elif installed:
+            rows.append(("ok", pack["name"], f"{pack['id']} {pack['version']} · {pack['kind']}", f"installed {installed}"))
+        else:
+            rows.append(("info", pack["name"], f"{pack['id']} {pack['version']} · {pack['kind']}", "not installed"))
+    style.header("catalog")
+    style.rows(rows)
+    if rows:
+        style.write()
+    dim_lines(style, f"Signed by {listed.get('signer')}")
+    updates = [pack for pack in listed["packs"] if pack.get("installed_version") and pack.get("update_available")]
+    if updates:
+        count = len(updates)
+        style.summary("warn", f"{count} update{'s' if count != 1 else ''} available",
+                      next_command=f"mac-mcp catalog review {updates[0]['id']}")
+    else:
+        count = len(listed["packs"])
+        style.summary("ok", f"{count} pack{'s' if count != 1 else ''} in the catalog")
+
+
+def render_catalog_review(style: Style, report: dict) -> None:
+    """A pack before it is installed: where it comes from, what it may do, what it brings."""
+    pack = report["pack"]
+    installed = report.get("installed_version")
+    rows = [
+        (None, "Pack", f"{pack['name']} · {pack['id']} {pack['version']} · {pack['kind']}", ""),
+        (None, "Publisher", str(pack.get("publisher")), ""),
+        (None, "Signed by", str(report.get("signer")), f"catalog {str(report.get('catalog_digest'))[:16]}"),
+        (None, "Action", str(report["action"]), f"installed {installed}" if installed else ""),
+        (None, "Capabilities", ", ".join(report["capabilities"]) or "none", ""),
+    ]
+    effective = report.get("effective") or {}
+    if effective.get("tools"):
+        rows.append((None, "Recipe tools", ", ".join(effective["tools"]), ""))
+    changes = report.get("permission_changes")
+    if changes and (changes["added"] or changes["removed"]):
+        rows.append((None, "Permissions", " · ".join([f"+{name}" for name in changes["added"]]
+                                                     + [f"-{name}" for name in changes["removed"]]), ""))
+    for index, item in enumerate(report.get("files") or []):
+        rows.append((None, "Files" if index == 0 else "", item["path"], f"{item['size']} B · sha256 {item['sha256'][:16]}"))
+    if report.get("scripts_held"):
+        rows.append(("warn", "Held back", ", ".join(report["scripts_held"]), str(report.get("script_note") or "")))
+    style.header("catalog")
+    style.rows(rows)
+    style.write()
+    dim_lines(style, str(pack.get("description") or ""))
+    if report.get("note"):
+        dim_lines(style, str(report["note"]))
+
+
+def render_script_review(style: Style, script: dict, command: str) -> None:
+    """A held script before it is enabled. Its text is written raw: what is read here is what runs."""
+    style.header("catalog")
+    style.rows([(None, "Script", script["path"], ""), (None, "SHA-256", script["sha256"], "")])
+    style.write()
+    style.write(f"{INDENT}{style.paint('Script:', dim=True)}")
+    style.stream.write(str(script["content"]).rstrip("\n") + "\n")
+    style.summary("warn", "Nothing enabled · this script can run anything", next_command=command)

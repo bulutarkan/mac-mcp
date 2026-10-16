@@ -3211,6 +3211,9 @@ def catalog_command(args: argparse.Namespace) -> int:
     from . import catalog
 
     command = args.catalog_command
+    style = Style.for_stream(json_output=bool(getattr(args, "json", False)))
+    if style is not None:
+        return _catalog_themed(args, style)
     try:
         if command == "list":
             listed = catalog.list_packs()
@@ -3259,6 +3262,61 @@ def catalog_command(args: argparse.Namespace) -> int:
     except catalog.CatalogError as exc:
         print(json.dumps(exc.to_dict(), ensure_ascii=False, default=str) if getattr(args, "json", False)
               else f"mac-mcp catalog: {exc}", file=sys.stdout if getattr(args, "json", False) else sys.stderr)
+        return 1
+    return 2
+
+
+def _catalog_themed(args: argparse.Namespace, style) -> int:
+    from . import catalog
+    from .cli_steps import Steps
+    from .cli_views import dim_lines, render_catalog_list, render_catalog_review, render_error, render_script_review
+
+    command = args.catalog_command
+    drawn = False
+    try:
+        if command == "list":
+            render_catalog_list(style, catalog.list_packs())
+            return 0
+        if command == "review" or (command == "install" and not args.yes):
+            report = catalog.review(args.pack_id)
+            render_catalog_review(style, report)
+            if report.get("blocked"):
+                style.summary("error", f"Blocked: {report['blocked']}")
+                return 0 if command == "review" else 1
+            if command == "review":
+                style.summary("ok", f"Reviewed {report['pack']['id']} {report['pack']['version']}")
+                return 0
+            style.summary("warn", "Nothing installed", next_command=f"mac-mcp catalog install {args.pack_id} --yes")
+            return 1
+        if command == "install":
+            style.header("catalog")
+            drawn = True
+            with Steps(style).step(f"Installed {args.pack_id}", failed_label=f"Install {args.pack_id}") as state:
+                done = catalog.install(args.pack_id, confirm=True)
+                state.label = f"Installed {done['pack_id']} {done['version']}"
+            style.summary("ok", f"{done['pack_id']} {done['version']} is installed")
+            if done.get("recipe_id"):
+                dim_lines(style, "The recipe is a draft: activate it after review.", indent="    ")
+            return 0
+        if command == "enable-script":
+            if not args.yes:
+                try:
+                    catalog.enable_script(args.pack_id, args.path)
+                except catalog.CatalogError as exc:
+                    if exc.code != "CONFIRM_REQUIRED":
+                        raise
+                    render_script_review(style, exc.extra["script"],
+                                         f"mac-mcp catalog enable-script {args.pack_id} {args.path} --yes")
+                    return 1
+            done = catalog.enable_script(args.pack_id, args.path, confirm=True)
+            style.header("catalog")
+            style.summary("ok", f"Enabled {done['path']} for {done['pack_id']}", gap=False)
+            return 0
+    except catalog.CatalogError as exc:
+        if drawn:
+            style.summary("error", str(exc))
+        else:
+            render_error(style, "catalog", str(exc))
         return 1
     return 2
 
