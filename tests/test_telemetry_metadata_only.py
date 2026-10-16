@@ -70,6 +70,14 @@ class TelemetryMetadataTests(unittest.TestCase):
         for secret in PII:
             self.assertNotIn(secret, stored)
 
+    def test_text_cut_inside_an_emoji_is_still_recorded(self) -> None:
+        # Page text sliced in JavaScript can end in half a surrogate pair; measuring the result
+        # must not throw, or the whole event would be lost.
+        manager = self.manager()
+        row = self.record(manager, "browser_observe", {"tab_handle": "btab_1"}, {"ok": True, "text": "ok 🙂"[:4] + "\ud83d"})
+        self.assertEqual("success", row["status"])
+        self.assertGreater(row["result_size"], 10)
+
     def test_operational_fields_stay_readable(self) -> None:
         manager = self.manager()
         row = self.record(manager, "browser_observe", {"tab_handle": "btab_1", "description": "Read the page"},

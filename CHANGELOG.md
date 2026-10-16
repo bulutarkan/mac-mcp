@@ -1,3 +1,11 @@
+## Unreleased
+
+### Less memory and less work behind each tool call (#184)
+- Usage metering no longer keeps an unbounded number of raw tool results while an agent keeps calling tools: past 16 MB of waiting results (`MAC_MCP_USAGE_BATCH_BYTES`) the batch is measured and written without waiting for a pause. Under a steady stream of 1 MB results the queue's memory stays at about 16 MB instead of growing with every call (78 MB after six seconds in the benchmark, and rising).
+- The usage token count runs about 2.5 times faster (a 5 MB result: 0.93 s → 0.42 s) and counts exactly as before; the metric's definition (`mac_mcp_payload_v1`) is unchanged and pinned by a test.
+- A tool result whose text ends in half an emoji (text cut in JavaScript) is recorded again; measuring its size used to throw, and the call never reached the activity history.
+- The first memory search after a new embedding model arrives answers within a short budget (0.75 s, `MAC_MCP_MEMORY_MIGRATION_BUDGET_S`) and re-embeds the remaining day files in the background; until then older notes are found through their previous vectors and the word match.
+
 ## 2.2.0 r2 - 2026-10-16
 
 **In short:** a signed checkpoint on the 2.2.0 line; the version stays 2.2.0. An agent's clicks in other apps now show as a cursor on the desktop, each session in the menu shows its age and calls, seven more AI apps and agents work with Mac MCP (Antigravity, pi, Cline, Kilo Code, Goose, Kimi Code, Grok Build), the browser reads a whole page in one call, the CLI has a look of its own, and Mac MCP has a new mark. Update with `mac-mcp update` or the new package. The Mac MCP Server helper is unchanged, so granted permissions carry over.

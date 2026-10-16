@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -174,6 +175,37 @@ class MemoryToolTests(unittest.TestCase):
         self.assertTrue(found["search_backend"]["multilingual"])
         self.assertGreaterEqual(found["index_sync"].get("vector_reindexed_files", 0), 1)
 
+        import sqlite3
+        conn = sqlite3.connect(self.root / "memory-index.sqlite3")
+        try:
+            backends = {row[0] for row in conn.execute("SELECT DISTINCT vector_backend FROM memories")}
+        finally:
+            conn.close()
+        self.assertEqual({memory.MULTILINGUAL_VECTOR_BACKEND}, backends)
+
+    def test_first_semantic_search_does_not_wait_for_the_whole_corpus(self):
+        # A new embedding backend re-embeds every older day file. The first search used to do
+        # all of it before answering; now it spends a short budget and the rest runs behind it.
+        for day in range(1, 7):
+            self.add_at(datetime(2026, 9, day, 10, 0, tzinfo=IST), f"Day {day} note about bergamot tea and maps.")
+        os.environ["MAC_MCP_MEMORY_EMBEDDING"] = "auto"
+        calls = []
+
+        def slow_multilingual(root, texts, *, allow_download):
+            calls.append(len(texts))
+            time.sleep(0.3)
+            return [[1.0, 0.0, 0.0] for _ in texts]
+
+        with patch.dict(os.environ, {"MAC_MCP_MEMORY_MIGRATION_BUDGET_S": "0.4"}), \
+                patch("mcp_server.tools_memory._multilingual_vectors", side_effect=slow_multilingual):
+            started = time.monotonic()
+            found = memory.memory_search(query="bergamot tea")
+            elapsed = time.monotonic() - started
+            self.assertTrue(memory.wait_vector_migration(10.0))
+
+        self.assertLess(elapsed, 1.6)  # query vector + at most two files, not all six
+        self.assertGreater(found["index_sync"]["vector_migration_pending"], 0)
+        self.assertEqual(6, len(found["results"]))
         import sqlite3
         conn = sqlite3.connect(self.root / "memory-index.sqlite3")
         try:

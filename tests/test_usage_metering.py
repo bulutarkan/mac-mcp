@@ -317,6 +317,74 @@ class UsageCollectorTests(unittest.TestCase):
             self.assertLess(p95, 1.0)
 
 
+    def test_busy_producer_cannot_pile_up_raw_results(self) -> None:
+        # The worker waits for a quiet moment before tokenizing. An agent that never pauses
+        # used to keep every raw result in memory; a byte budget writes the batch anyway.
+        with tempfile.TemporaryDirectory() as td:
+            collector = UsageCollector(Path(td) / "telemetry.sqlite3", queue_size=4096, batch_bytes=2_000)
+            stop = threading.Event()
+
+            def produce() -> None:
+                while not stop.is_set():
+                    collector.submit(UsageSample(
+                        timestamp=time.time(), tool="fixture", actor_class="primary", status="success",
+                        duration_ms=1, arguments={}, result={"text": "z" * 1_000}, size_hint=1_000,
+                    ))
+                    time.sleep(0.05)
+
+            producer = threading.Thread(target=produce)
+            producer.start()
+            try:
+                deadline = time.monotonic() + 3.0
+                while collector.diagnostics()["processed"] == 0 and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                processed_while_busy = collector.diagnostics()["processed"]
+            finally:
+                stop.set()
+                producer.join()
+            self.assertGreater(processed_while_busy, 0)
+            self.assertTrue(collector.wait_idle(5.0))
+
+    def test_telemetry_hands_the_result_size_to_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            manager = TelemetryManager(db_path=Path(td) / "telemetry.sqlite3", usage_enabled=True)
+            submitted: list = []
+            with patch.object(manager._usage, "submit", side_effect=submitted.append):
+                event_id = manager.start_call("mcp", "read_file", {"path": "/tmp/a"})
+                event = manager.finish_call(event_id, result={"ok": True, "content": "x" * 5_000})
+            self.assertEqual(1, len(submitted))
+            self.assertEqual(event["result_size"], submitted[0].size_hint)
+            self.assertGreater(submitted[0].size_hint, 5_000)
+
+
+class TokenCountDefinitionTests(unittest.TestCase):
+    """The token metric is versioned (TOKENIZER_ID); any speed-up must count exactly the same."""
+
+    @staticmethod
+    def reference(text: str) -> int:
+        import math
+        import re
+        total = 0
+        for match in re.finditer(r"\w+|[^\w\s]", text, re.UNICODE):
+            piece = match.group(0)
+            if re.match(r"^\w+$", piece, re.UNICODE):
+                total += max(1, int(math.ceil(len(piece.encode("utf-8")) / 4.0)))
+            else:
+                total += 1
+        return total
+
+    def test_counts_match_the_reference_on_mixed_unicode(self) -> None:
+        import random
+        from mcp_server.usage_metering import count_payload_tokens
+        rng = random.Random(184)
+        alphabet = ("abcXYZ019_ çğışöüİÇ日本語中文🙂👍🏽 \n\t.,;:!?-—\"'{}[]()<>/\\@#$%^&*+=~`|ÆØÅßẞ"
+                    "​ ́﻿")
+        texts = ["", " ", "a", "ab_cd", "x" * 17, "ﬁ" * 9, "١٢٣٤٥"]
+        texts += ["".join(rng.choice(alphabet) for _ in range(rng.randint(0, 300))) for _ in range(1500)]
+        for text in texts:
+            self.assertEqual(self.reference(text), count_payload_tokens(text), repr(text[:40]))
+
+
 class UsageDashboardRouteTests(unittest.TestCase):
     def test_mobile_usage_endpoint_requires_mobile_session_and_returns_same_metric(self) -> None:
         with tempfile.TemporaryDirectory() as td:

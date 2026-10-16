@@ -508,19 +508,92 @@ def _sync_index(root: Path, conn: sqlite3.Connection) -> Dict[str, int]:
     return {"reindexed_files": reindexed, "removed_files": removed}
 
 
-def _ensure_vector_backend(root: Path, conn: sqlite3.Connection, backend: str) -> int:
+# A new embedding backend re-embeds every older day file. A search spends at most this long
+# on that; the rest is re-embedded behind it, and rows still on the old backend score through
+# their own fallback vectors and the lexical match meanwhile.
+_VECTOR_MIGRATION_BUDGET_S = 0.75
+_VECTOR_MIGRATION_PAUSE_S = 0.05
+_vector_migrations: Dict[Tuple[str, str], threading.Thread] = {}
+_vector_migrations_lock = threading.Lock()
+
+
+def _migration_budget_s() -> float:
+    try:
+        value = float(os.getenv("MAC_MCP_MEMORY_MIGRATION_BUDGET_S", _VECTOR_MIGRATION_BUDGET_S))
+    except ValueError:
+        return _VECTOR_MIGRATION_BUDGET_S
+    return min(max(value, 0.0), 30.0)
+
+
+def _ensure_vector_backend(root: Path, conn: sqlite3.Connection, backend: str) -> Tuple[int, int]:
+    """Re-embed day files on another backend within the search's budget; returns (done, pending)."""
     rows = conn.execute(
         "SELECT DISTINCT file_path FROM memories WHERE vector_backend<>? ORDER BY file_path",
         (backend,),
     ).fetchall()
+    rels = [str(row["file_path"]) for row in rows]
+    deadline = time.monotonic() + _migration_budget_s()
     reindexed = 0
-    for row in rows:
-        path = root / str(row["file_path"])
+    for index, rel in enumerate(rels):
+        if time.monotonic() >= deadline:
+            pending = rels[index:]
+            _migrate_vectors_in_background(root, backend, pending)
+            return reindexed, len(pending)
+        path = root / rel
         if not path.exists():
             continue
         _index_file(conn, root, path)
         reindexed += 1
-    return reindexed
+    return reindexed, 0
+
+
+def _migrate_vectors_in_background(root: Path, backend: str, rels: List[str]) -> None:
+    key = (str(root), backend)
+    with _vector_migrations_lock:
+        running = _vector_migrations.get(key)
+        if running is not None and running.is_alive():
+            return
+        worker = threading.Thread(
+            target=_run_vector_migration, args=(root, backend, list(rels), key),
+            name="mac-mcp-memory-vectors", daemon=True,
+        )
+        _vector_migrations[key] = worker
+        worker.start()
+
+
+def _run_vector_migration(root: Path, backend: str, rels: List[str], key: Tuple[str, str]) -> None:
+    try:
+        with closing(_connect(root)) as conn:
+            for rel in rels:
+                path = root / rel
+                still_old = conn.execute(
+                    "SELECT 1 FROM memories WHERE file_path=? AND vector_backend<>? LIMIT 1", (rel, backend),
+                ).fetchone()
+                if still_old is None or not path.exists():
+                    continue  # a search or an edit got there first
+                _index_file(conn, root, path)
+                time.sleep(_VECTOR_MIGRATION_PAUSE_S)  # let searches in between files
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("memory vector migration stopped")
+    finally:
+        with _vector_migrations_lock:
+            if _vector_migrations.get(key) is threading.current_thread():
+                _vector_migrations.pop(key, None)
+
+
+def wait_vector_migration(timeout_s: float = 10.0) -> bool:
+    """Wait for background re-embedding to finish (tests, shutdown)."""
+    deadline = time.monotonic() + max(0.0, float(timeout_s))
+    while True:
+        with _vector_migrations_lock:
+            workers = [worker for worker in _vector_migrations.values() if worker.is_alive()]
+        if not workers:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        workers[0].join(min(remaining, 0.1))
 
 
 def _row_entry(row: sqlite3.Row) -> MemoryEntry:
@@ -666,9 +739,11 @@ def memory_search(
             query_backend, query_dims, query_vectors = _semantic_vectors(root, [q], allow_download=True)
             query_vector = query_vectors[0] if query_vectors else None
             if query_backend and query_vector:
-                vector_reindexed = _ensure_vector_backend(root, conn, query_backend)
+                vector_reindexed, vector_pending = _ensure_vector_backend(root, conn, query_backend)
                 if vector_reindexed:
                     sync["vector_reindexed_files"] = vector_reindexed
+                if vector_pending:
+                    sync["vector_migration_pending"] = vector_pending
 
         rows = _select_rows(conn, start, end)
         entries = [_row_entry(row) for row in rows]

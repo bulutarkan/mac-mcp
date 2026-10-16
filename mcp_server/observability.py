@@ -757,7 +757,8 @@ class TelemetryManager:
             "duration_ms": max(0, int((ended - float(started_event["started_at"])) * 1000)),
             "arguments": started_event.get("arguments") or {},
             "result": safe_result,
-            "result_size": len(result_text.encode("utf-8")),
+            # surrogatepass: text cut inside an emoji must not cost the whole event.
+            "result_size": len(result_text.encode("utf-8", "surrogatepass")),
             "error": safe_error,
         }
         for field in _TELEMETRY_METADATA_COLUMNS:
@@ -779,6 +780,7 @@ class TelemetryManager:
                         duration_ms=int(event.get("duration_ms") or 0),
                         arguments=usage_arguments if usage_arguments is not None else {},
                         result=None if error is not None else result,
+                        size_hint=int(event.get("result_size") or 0),
                     )
                 )
             except Exception:

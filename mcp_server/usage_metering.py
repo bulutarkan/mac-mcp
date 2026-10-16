@@ -20,11 +20,13 @@ TOKENIZER_ID = "mac_mcp_payload_v1"
 MEASUREMENT_CLASS = "canonical_json_text_v1"
 DEFAULT_USAGE_RETENTION_DAYS = 400
 DEFAULT_USAGE_QUEUE_SIZE = 2048
+# Raw payloads waiting for the quiet window; past this the batch is measured and written anyway.
+DEFAULT_USAGE_BATCH_BYTES = 16 * 1024 * 1024
 _USAGE_IDLE_EXIT_S = 2.0
 _USAGE_QUIET_WINDOW_S = 0.5
 
 _ENCODED_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
-_WORD_OR_PUNCT_RE = re.compile(r"\w+|[^\w\s]", re.UNICODE)
+_WORD_OR_PUNCT_RE = re.compile(r"(\w+)|[^\w\s]", re.UNICODE)
 _IMAGE_TYPES = {"image", "image_url", "input_image"}
 _AUDIO_TYPES = {"audio", "input_audio"}
 _BINARY_KEYS = {
@@ -192,13 +194,12 @@ def count_payload_tokens(text: str) -> int:
     """
     total = 0
     for match in _WORD_OR_PUNCT_RE.finditer(text):
-        piece = match.group(0)
-        if not piece:
-            continue
-        if re.match(r"^\w+$", piece, re.UNICODE):
-            total += max(1, int(math.ceil(len(piece.encode("utf-8")) / 4.0)))
-        else:
+        word = match.group(1)
+        if word is None:
             total += 1
+        else:
+            width = len(word) if word.isascii() else len(word.encode("utf-8", "surrogatepass"))
+            total += (width + 3) // 4
     return total
 
 
@@ -264,6 +265,8 @@ class UsageSample:
     duration_ms: int
     arguments: Any
     result: Any
+    # Approximate payload bytes, when the producer knows them; bounds what the batch holds.
+    size_hint: int = 0
 
 
 class UsageCollector:
@@ -272,6 +275,7 @@ class UsageCollector:
         db_path: Path,
         *,
         queue_size: Optional[int] = None,
+        batch_bytes: Optional[int] = None,
         enabled: Optional[bool] = None,
         local_bucket: Optional[Callable[[float], tuple[str, str]]] = None,
     ) -> None:
@@ -279,6 +283,9 @@ class UsageCollector:
         self.enabled = _env_bool("MAC_MCP_USAGE_ENABLED", True) if enabled is None else bool(enabled)
         self.queue_size = queue_size or _env_int(
             "MAC_MCP_USAGE_QUEUE_SIZE", DEFAULT_USAGE_QUEUE_SIZE, 16, 100_000
+        )
+        self.batch_bytes = batch_bytes or _env_int(
+            "MAC_MCP_USAGE_BATCH_BYTES", DEFAULT_USAGE_BATCH_BYTES, 1_000, 1 << 30
         )
         self._queue: queue.Queue[UsageSample] = queue.Queue(maxsize=self.queue_size)
         self._local_bucket = local_bucket or self._default_local_bucket
@@ -343,13 +350,18 @@ class UsageCollector:
             # Usage is lower priority than returning tool results. Keep draining
             # while the producer is active; tokenize/write only after a bounded
             # quiet window. The queue itself is bounded, so overload drops usage
-            # samples (with diagnostics) instead of slowing the user's tool call.
+            # samples (with diagnostics) instead of slowing the user's tool call. A producer
+            # that never pauses would keep every raw result alive, so past batch_bytes the
+            # batch is written without waiting for the quiet window.
             batch = [first]
-            while len(batch) < self.queue_size:
+            held = max(0, int(first.size_hint or 0))
+            while len(batch) < self.queue_size and held < self.batch_bytes:
                 try:
-                    batch.append(self._queue.get(timeout=_USAGE_QUIET_WINDOW_S))
+                    sample = self._queue.get(timeout=_USAGE_QUIET_WINDOW_S)
                 except queue.Empty:
                     break
+                batch.append(sample)
+                held += max(0, int(sample.size_hint or 0))
 
             while len(batch) < self.queue_size:
                 try:
