@@ -112,3 +112,22 @@ class RenderedPngs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SiteBrandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.page = (ROOT / "site" / "index.html").read_text(encoding="utf-8")
+
+    def test_the_brand_mark_follows_the_page_theme(self) -> None:
+        brand = self.page[self.page.index('<a class="brand"'):][:400]
+        self.assertIn('<source srcset="assets/img/mark-bronze.svg" media="(prefers-color-scheme: light)">', brand)
+        self.assertIn('<img src="assets/img/mark.svg" alt="" width="28" height="28">', brand)
+
+    def test_the_island_uses_the_champagne_mark(self) -> None:
+        self.assertIn('<img class="island-mark" src="assets/img/mark.svg"', self.page)
+
+    def test_icons_for_tabs_and_home_screens(self) -> None:
+        # The tab icon keeps the obsidian tile: a bare champagne mark vanishes on a light tab bar.
+        self.assertIn('<link rel="icon" type="image/png" href="assets/img/app-icon-256.png">', self.page)
+        self.assertIn('<link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">', self.page)
+        self.assertTrue((ROOT / "site" / "assets" / "img" / "mark-bronze.svg").is_file())

@@ -54,7 +54,7 @@ a:focus-visible, button:focus-visible, summary:focus-visible, video:focus-visibl
   padding: 22px 0;
 }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; text-decoration: none; }
-.brand img { border-radius: 7px; }
+.brand picture { display: inline-flex; }
 .top nav { display: flex; gap: 6px; flex-wrap: wrap; }
 .top nav a {
   text-decoration: none;
@@ -116,7 +116,6 @@ section { padding: 56px 0; }
 .island-mark {
   width: 16px;
   height: 16px;
-  border-radius: 4px;
 }
 .island-ring {
   width: 16px;
