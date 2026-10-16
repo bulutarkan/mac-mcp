@@ -4,6 +4,9 @@ import SwiftUI
 struct MenuBarView: View {
     @ObservedObject var state: AppState
     @Environment(\.colorScheme) private var colorScheme
+    // Read once: the header redraws with every pulse while work runs.
+    private static let markDark = BrandArt.image("BrandMark")
+    private static let markLight = BrandArt.image("BrandMarkLight")
     @ObservedObject var settings: SettingsStore
     @StateObject private var audio = AudioDeviceStore()
     @MacMCPState private var groqKey = ""
@@ -214,7 +217,7 @@ struct MenuBarView: View {
         let status = headerStatus
         return HStack(spacing: 10) {
             // The bare monogram: champagne on the dark popover, bronze on the light one.
-            Image(nsImage: BrandArt.image(colorScheme == .dark ? "BrandMark" : "BrandMarkLight"))
+            Image(nsImage: colorScheme == .dark ? Self.markDark : Self.markLight)
                 .resizable().interpolation(.high).frame(width: 30, height: 30)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {

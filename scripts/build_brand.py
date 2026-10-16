@@ -41,6 +41,16 @@ def app_icon(weight: float = 4.6, inset: float = 0.68) -> str:
     return re.sub(r'(<path d="M14 49 V15 L32 33 L50 15 V29"[^>]*stroke-width=")[0-9.]+', rf"\g<1>{weight}", text)
 
 
+def touch_icon() -> str:
+    """Home-screen icon (iOS, PWA): an opaque full-bleed obsidian square. iOS fills transparent
+    pixels with black and rounds the corners itself, so the macOS margin and shadow stay out."""
+    inner = mark("mark.svg", 4.8).replace("<svg ", '<svg x="204" y="204" width="616" height="616" ', 1)
+    return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><defs>'
+            '<linearGradient id="tile" x1="330" y1="0" x2="694" y2="1024" gradientUnits="userSpaceOnUse">'
+            '<stop offset="0" stop-color="#34363d"/><stop offset="1" stop-color="#111216"/></linearGradient></defs>'
+            f'<rect width="1024" height="1024" fill="url(#tile)"/>{inner}</svg>')
+
+
 def social(width: int, height: int) -> str:
     """The social preview card: the mark, the headline and one line of facts on obsidian."""
     inner = mark("mark.svg", 4.2)
@@ -64,10 +74,10 @@ OUTPUTS = [
     ("menu_app/Assets/MenuBarMark.png", lambda: mark("mark-mono.svg", 5.6, "#000000"), (18, 18)),
     ("menu_app/Assets/MenuBarMark@2x.png", lambda: mark("mark-mono.svg", 5.6, "#000000"), (36, 36)),
     ("site/assets/img/app-icon-256.png", app_icon, (256, 256)),
-    ("site/assets/img/apple-touch-icon.png", app_icon, (180, 180)),
+    ("site/assets/img/apple-touch-icon.png", touch_icon, (180, 180)),
     ("video/public/app-icon.png", app_icon, (512, 512)),
-    ("mcp_server/mobile/icon-192.png", app_icon, (192, 192)),
-    ("mcp_server/mobile/icon-512.png", app_icon, (512, 512)),
+    ("mcp_server/mobile/icon-192.png", touch_icon, (192, 192)),
+    ("mcp_server/mobile/icon-512.png", touch_icon, (512, 512)),
     ("assets/brand/social-preview.png", lambda: social(1280, 640), (1280, 640)),
     # Finder lists and small Dock sizes: a heavier line and a larger mark than a shrunk 1024 gives.
     ("menu_app/Assets/AppIconSmall/16.png", lambda: app_icon(7.2, 0.82), (16, 16)),
@@ -76,6 +86,7 @@ OUTPUTS = [
     ("site/assets/img/og-image.jpg", lambda: social(1200, 630), (1200, 630)),
 ]
 COPIES = [("assets/brand/mark.svg", "site/assets/img/mark.svg"), ("assets/brand/mark-bronze.svg", "site/assets/img/mark-bronze.svg"), ("assets/brand/mark.svg", "menu_app/Assets/BrandMark.svg"),
+          ("assets/brand/mark-bronze.svg", "menu_app/Assets/BrandMarkBronze.svg"),
           ("assets/brand/mark.svg", "video/public/mark.svg")]
 
 

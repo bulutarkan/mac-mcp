@@ -7,7 +7,8 @@
 set -euo pipefail
 SCRIPT_DIR="${0:A:h}"
 SRC="${MAC_MCP_HELPER_SRC:-${SCRIPT_DIR}}"
-ICON="${MAC_MCP_HELPER_ICON:-${SCRIPT_DIR}/../Assets/AppIcon.png}"
+# Its own frozen icon: a new icon would rebuild the bundle and drop the owner's grants.
+ICON="${MAC_MCP_HELPER_ICON:-${SCRIPT_DIR}/AppIcon.png}"
 OUT="${1:?usage: build_helper.sh OUTPUT_DIR}"
 APP="${OUT}/Mac MCP Server.app"
 STAMP="${OUT}/.source-sha256"
@@ -30,7 +31,7 @@ ICONSET="${WORK}/AppIcon.iconset"
 /bin/mkdir -p "${ICONSET}"
 for spec in "16 icon_16x16.png" "32 icon_16x16@2x.png" "32 icon_32x32.png" "64 icon_32x32@2x.png" "128 icon_128x128.png" "256 icon_128x128@2x.png" "256 icon_256x256.png" "512 icon_256x256@2x.png" "512 icon_512x512.png" "1024 icon_512x512@2x.png"; do
   size="${spec%% *}"; name="${spec#* }"
-  if [[ -f "${SCRIPT_DIR}/../Assets/AppIconSmall/${size}.png" ]]; then /bin/cp "${SCRIPT_DIR}/../Assets/AppIconSmall/${size}.png" "${ICONSET}/${name}"; else /usr/bin/sips -z "${size}" "${size}" "${ICON}" --out "${ICONSET}/${name}" >/dev/null; fi
+  /usr/bin/sips -z "${size}" "${size}" "${ICON}" --out "${ICONSET}/${name}" >/dev/null
 done
 /usr/bin/iconutil -c icns "${ICONSET}" -o "${STAGE}/Contents/Resources/AppIcon.icns"
 /usr/bin/codesign --force --sign - "${STAGE}" >/dev/null

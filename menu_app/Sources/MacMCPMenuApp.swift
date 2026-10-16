@@ -99,6 +99,10 @@ enum MenuBarMark {
             rep.size = markSize
             image.addRepresentation(rep)
         }
+        // A bundle without the art still shows something to click.
+        if image.representations.isEmpty, let symbol = NSImage(systemSymbolName: "cursorarrow", accessibilityDescription: nil) {
+            return symbol
+        }
         return image
     }()
 
@@ -111,11 +115,11 @@ enum MenuBarMark {
                       fraction: look == .stopped ? 0.4 : 1)
             if case .working(let hollow) = look {
                 // A dot at the top right, clear of the M's right leg (over the leg it read as "Mi").
-                let dot = NSRect(x: 18.6, y: 13, width: 3.2, height: 3.2)
+                let dot = NSRect(x: 18.2, y: 12.6, width: 3.8, height: 3.8)
                 NSColor.black.set()
                 if hollow {
                     let ring = NSBezierPath(ovalIn: dot.insetBy(dx: 0.5, dy: 0.5))
-                    ring.lineWidth = 1
+                    ring.lineWidth = 0.9
                     ring.stroke()
                 } else {
                     NSBezierPath(ovalIn: dot).fill()

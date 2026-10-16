@@ -149,7 +149,7 @@ class PageTests(unittest.TestCase):
                     path = value.split("/blob/main/", 1)[1]
                     self.assertTrue((ROOT / path).exists(), value)
                 elif not value.startswith(("http:", "https:", "mailto:")):
-                    target = value.split("#")[0] or "index.html"
+                    target = value.split("#")[0].split("?")[0] or "index.html"
                     resolved = (SITE / target) if not target.endswith("/") else SITE / target / "index.html"
                     if target == "./":
                         resolved = SITE / "index.html"

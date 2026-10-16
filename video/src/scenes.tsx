@@ -242,7 +242,7 @@ const End: React.FC = () => {
     <AbsoluteFill style={{ background: theme.night, color: theme.paper, fontFamily: theme.sans, alignItems: "center", justifyContent: "center" }}>
       <AbsoluteFill style={{ background: `radial-gradient(900px 600px at 50% 40%, ${theme.violet}40, transparent 70%)` }} />
       <div style={{ textAlign: "center", opacity: enter, transform: `translateY(${(1 - enter) * 24}px)` }}>
-        <AppIcon size={150} />
+        <AppIcon size={184} />
         <div style={{ fontFamily: theme.serif, fontSize: 84, fontWeight: 600, marginTop: 34 }}>Let your AI apps use your Mac.</div>
         <div style={{ fontSize: 34, color: theme.haze, marginTop: 18 }}>Mac MCP · Open source, MIT · bulutarkan.github.io/mac-mcp</div>
       </div>

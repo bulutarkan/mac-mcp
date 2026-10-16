@@ -29,6 +29,9 @@ PNGS = (
     ("menu_app/Assets/AppIconSmall/32.png", 32, 32),
     ("menu_app/Assets/AppIconSmall/64.png", 64, 64),
 )
+# Opaque on purpose: the social card, and home-screen icons (iOS turns transparency into black).
+OPAQUE = {"assets/brand/social-preview.png", "site/assets/img/apple-touch-icon.png",
+          "mcp_server/mobile/icon-192.png", "mcp_server/mobile/icon-512.png"}
 MAGICK = shutil.which("magick")
 RSVG = shutil.which("rsvg-convert")
 
@@ -72,11 +75,24 @@ class BrandSources(unittest.TestCase):
 class SmallAppIcons(unittest.TestCase):
     """Finder lists and small Dock sizes get hand-tuned icons with a heavier line, not a shrunk 1024."""
 
-    def test_both_bundle_builds_use_the_small_icons(self) -> None:
-        for script in ("menu_app/build_app.sh", "menu_app/ServerHelper/build_helper.sh"):
-            with self.subTest(script=script):
-                text = (ROOT / script).read_text(encoding="utf-8")
-                self.assertIn("AppIconSmall/${size}.png", text)
+    def test_the_app_build_uses_the_small_icons(self) -> None:
+        text = (ROOT / "menu_app/build_app.sh").read_text(encoding="utf-8")
+        self.assertIn("AppIconSmall/${size}.png", text)
+
+
+class ServerHelperKeepsItsPermissions(unittest.TestCase):
+    """The helper holds the owner's Accessibility and Screen Recording grants, which macOS ties to its
+    exact ad-hoc binary. A new icon would rebuild it and drop them, so the helper keeps a frozen icon."""
+
+    FROZEN_SHA256 = "20678a6267ae8c654b14978cf143f3ff7f22c4f0e6d1ade75de493b3dd5f6ce8"
+
+    def test_the_helper_builds_from_its_own_frozen_icon(self) -> None:
+        import hashlib
+        text = (ROOT / "menu_app/ServerHelper/build_helper.sh").read_text(encoding="utf-8")
+        self.assertIn('ICON="${MAC_MCP_HELPER_ICON:-${SCRIPT_DIR}/AppIcon.png}"', text)
+        self.assertNotIn("AppIconSmall", text)
+        frozen = (ROOT / "menu_app/ServerHelper/AppIcon.png").read_bytes()
+        self.assertEqual(self.FROZEN_SHA256, hashlib.sha256(frozen).hexdigest())
 
 
 class RenderedPngs(unittest.TestCase):
@@ -85,8 +101,8 @@ class RenderedPngs(unittest.TestCase):
             with self.subTest(png=relative):
                 w, h, colour = png_header(ROOT / relative)
                 self.assertEqual((width, height), (w, h))
-                if relative == "assets/brand/social-preview.png":
-                    continue  # a social card is a full picture: opaque on purpose
+                if relative in OPAQUE:
+                    continue  # full pictures (social card, home-screen icons): opaque on purpose
                 self.assertIn(colour, (4, 6), "the PNG needs an alpha channel")
 
     @unittest.skipUnless(MAGICK, "ImageMagick is not installed")
@@ -110,9 +126,6 @@ class RenderedPngs(unittest.TestCase):
         self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class SiteBrandTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -128,8 +141,8 @@ class SiteBrandTests(unittest.TestCase):
 
     def test_icons_for_tabs_and_home_screens(self) -> None:
         # The tab icon keeps the obsidian tile: a bare champagne mark vanishes on a light tab bar.
-        self.assertIn('<link rel="icon" type="image/png" href="assets/img/app-icon-256.png">', self.page)
-        self.assertIn('<link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png">', self.page)
+        self.assertIn('<link rel="icon" type="image/png" href="assets/img/app-icon-256.png?v=2">', self.page)
+        self.assertIn('<link rel="apple-touch-icon" href="assets/img/apple-touch-icon.png?v=2">', self.page)
         self.assertTrue((ROOT / "site" / "assets" / "img" / "mark-bronze.svg").is_file())
 
 
@@ -192,5 +205,37 @@ class VideoBrandTests(unittest.TestCase):
     def test_scenes_use_the_mark_where_the_app_does(self) -> None:
         self.assertIn("<BrandMark size={52} />", self.scenes)
         self.assertIn("<BrandMark size={56} />", self.scenes)
-        self.assertIn("<AppIcon size={150} />", self.scenes)
+        self.assertIn("<AppIcon size={184} />", self.scenes)
         self.assertNotIn("<AppIcon size={150} style={{ boxShadow", self.scenes)
+
+
+class HomeScreenIcons(unittest.TestCase):
+    """iOS fills transparent pixels with black and adds its own corners, so home-screen icons are full bleed."""
+
+    @unittest.skipUnless(MAGICK, "ImageMagick is not installed")
+    def test_touch_and_pwa_icons_are_opaque_to_the_corner(self) -> None:
+        for relative in ("site/assets/img/apple-touch-icon.png", "mcp_server/mobile/icon-192.png", "mcp_server/mobile/icon-512.png"):
+            with self.subTest(icon=relative):
+                self.assertEqual("True", magick(str(ROOT / relative), "-format", "%[opaque]", "info:"))
+
+    def test_the_manifest_marks_the_icons_maskable(self) -> None:
+        import json
+        manifest = json.loads((ROOT / "mcp_server/mobile/manifest.json").read_text())
+        self.assertTrue(all(icon.get("purpose") == "any maskable" for icon in manifest["icons"]))
+
+
+class SiteCacheBusting(unittest.TestCase):
+    def test_new_images_get_new_urls(self) -> None:
+        page = (ROOT / "site" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('href="assets/img/app-icon-256.png?v=2"', page)
+        self.assertIn('og-image.jpg?v=2"', page)
+
+
+class VideoEndCard(unittest.TestCase):
+    def test_the_end_card_icon_keeps_its_old_visible_size(self) -> None:
+        # The new icon has its own 10 % transparent margin; 184 shows the tile as large as the old 150.
+        self.assertIn("<AppIcon size={184} />", (ROOT / "video/src/scenes.tsx").read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main()

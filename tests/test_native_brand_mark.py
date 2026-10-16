@@ -28,7 +28,7 @@ class MenuBarMarkTests(unittest.TestCase):
         # so the other menu bar icons never move when work starts or stops.
         self.assertIn("private static let size = NSSize(width: 22, height: 18)", self.app)
         self.assertIn("base.draw(in: NSRect(x: 0, y: 0, width: 18, height: 18)", self.app)
-        self.assertIn("let dot = NSRect(x: 18.6, y: 13", self.app)
+        self.assertIn("let dot = NSRect(x: 18.2, y: 12.6", self.app)
 
     def test_both_resolutions_are_loaded(self) -> None:
         self.assertIn('"MenuBarMark"', self.app)
@@ -39,7 +39,7 @@ class HeaderAndIslandTests(unittest.TestCase):
     def test_menu_header_is_the_bare_mark_in_the_right_tone(self) -> None:
         view = (SOURCES / "MenuBarView.swift").read_text(encoding="utf-8")
         header = view[view.index("private var header: some View"):][:900]
-        self.assertIn('BrandArt.image(colorScheme == .dark ? "BrandMark" : "BrandMarkLight")', header)
+        self.assertIn("colorScheme == .dark ? Self.markDark : Self.markLight", header)
         self.assertNotIn("applicationIconImage", header)
         self.assertNotIn("clipShape", header)
 
@@ -53,9 +53,6 @@ class HeaderAndIslandTests(unittest.TestCase):
             self.assertIn(name, build)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TourMarkTests(unittest.TestCase):
     """The tour's own art uses the monogram; its macOS mock-ups show the app icon, as macOS would."""
@@ -66,7 +63,7 @@ class TourMarkTests(unittest.TestCase):
     def test_hero_images_and_the_power_ring_use_the_vector_mark(self) -> None:
         self.assertIn('<img class="hero-icon" src="../Assets/BrandMark.svg" alt="">', self.page)
         self.assertIn('<img class="hero-icon small" src="../Assets/BrandMark.svg" alt="">', self.page)
-        ring = self.page[self.page.index('<div class="ring-wrap">'):][:400]
+        ring = self.page[self.page.index('<div class="ring-wrap">'):][:500]
         self.assertIn('src="../Assets/BrandMark.svg"', ring)
 
     def test_macos_mockups_keep_the_app_icon(self) -> None:
@@ -78,3 +75,31 @@ class TourMarkTests(unittest.TestCase):
         build = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")
         self.assertIn("BrandMark.svg", build)
         self.assertTrue((ROOT / "menu_app" / "Assets" / "BrandMark.svg").is_file())
+
+
+class ReviewFindingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.app = (SOURCES / "MacMCPMenuApp.swift").read_text(encoding="utf-8")
+        self.view = (SOURCES / "MenuBarView.swift").read_text(encoding="utf-8")
+
+    def test_the_header_reads_its_marks_once(self) -> None:
+        self.assertIn('private static let markDark = BrandArt.image("BrandMark")', self.view)
+        self.assertIn('private static let markLight = BrandArt.image("BrandMarkLight")', self.view)
+        self.assertIn("Image(nsImage: colorScheme == .dark ? Self.markDark : Self.markLight)", self.view)
+
+    def test_the_hollow_dot_reads_on_a_1x_display(self) -> None:
+        self.assertIn("let dot = NSRect(x: 18.2, y: 12.6, width: 3.8, height: 3.8)", self.app)
+        self.assertIn("ring.lineWidth = 0.9", self.app)
+
+    def test_the_menu_bar_item_never_vanishes_without_its_art(self) -> None:
+        self.assertIn('if image.representations.isEmpty, let symbol = NSImage(systemSymbolName: "cursorarrow"', self.app)
+
+    def test_the_tour_ring_uses_bronze_on_a_light_page(self) -> None:
+        page = (ROOT / "menu_app" / "Onboarding" / "index.html").read_text(encoding="utf-8")
+        ring = page[page.index('<div class="ring-wrap">'):][:500]
+        self.assertIn('<source srcset="../Assets/BrandMarkBronze.svg" media="(prefers-color-scheme: light)">', ring)
+        self.assertIn("BrandMarkBronze.svg", (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main()
