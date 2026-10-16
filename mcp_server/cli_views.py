@@ -372,13 +372,20 @@ def render_package_update(style: Style, payload: dict) -> None:
     style.summary("info", str(payload.get("message") or ""))
 
 
-def render_autostart(style: Style, on: bool) -> None:
+def render_autostart(style: Style, on: bool, warnings: str = "") -> None:
     style.header("autostart")
     if on:
         style.rows([("ok", "Start at login", "on", "a server you left running starts again when you log in")])
-        style.summary("ok", "Start at login is on")
     else:
         style.rows([("info", "Start at login", "off", "start it with mac-mcp start or the menu bar app")])
+    lines = [line.strip() for line in warnings.splitlines() if line.strip()]
+    if lines:
+        style.write()
+    for line in lines:
+        note_lines(style, line, "warn")
+    if on:
+        style.summary("ok", "Start at login is on")
+    else:
         style.summary("ok", "Start at login is off", next_command="mac-mcp autostart on")
 
 
@@ -460,13 +467,42 @@ def render_catalog_review(style: Style, report: dict) -> None:
         dim_lines(style, str(report["note"]))
 
 
-def render_script_review(style: Style, script: dict, command: str) -> None:
-    """A held script before it is enabled. Its text is written raw: what is read here is what runs."""
+PREVIEW_CHARS = 4000  # catalog.enable_script's preview holds at most this many characters
+
+
+def visible_controls(text: str) -> str:
+    """Control characters as visible text (^[ for ESC, ^M for CR, <U+009B> for C1), so a script
+    cannot move the cursor or recolour the screen that reviews it. Tabs and newlines stay."""
+    shown = []
+    for char in text:
+        code = ord(char)
+        if char in "\t\n":
+            shown.append(char)
+        elif code < 32:
+            shown.append("^" + chr(code + 64))
+        elif code == 127:
+            shown.append("^?")
+        elif 0x80 <= code <= 0x9F:
+            shown.append(f"<U+{code:04X}>")
+        else:
+            shown.append(char)
+    return "".join(shown)
+
+
+def render_script_review(style: Style, script: dict, command: str, full_path: Optional[str] = None) -> None:
+    """A held script before it is enabled. Its text is written as it is, unindented and
+    unwrapped, with only control characters made visible; a cut preview says so."""
+    content = str(script["content"])
     style.header("catalog")
     style.rows([(None, "Script", script["path"], ""), (None, "SHA-256", script["sha256"], "")])
     style.write()
     style.write(f"{INDENT}{style.paint('Script:', dim=True)}")
-    style.stream.write(str(script["content"]).rstrip("\n") + "\n")
+    style.stream.write(visible_controls(content).rstrip("\n") + "\n")
+    style.write(f"{INDENT}{style.paint('End of script', dim=True)}")
+    if len(content) >= PREVIEW_CHARS:
+        style.write()
+        where = f" Read the whole file before you enable it: {full_path}" if full_path else " Read the whole file before you enable it."
+        note_lines(style, f"This shows the first {PREVIEW_CHARS} characters of {script.get('size')} bytes.{where}", "warn")
     style.summary("warn", "Nothing enabled · this script can run anything", next_command=command)
 
 

@@ -758,6 +758,7 @@ def _start_server_via_helper(
 def autostart(args: argparse.Namespace) -> int:
     desired = getattr(args, "state", None)
     style = Style.for_stream(json_output=bool(getattr(args, "json", False)))
+    supervisor_warnings = ""
     if desired in {"on", "off"}:
         try:
             update_runtime_setting("server", "start_at_login", desired == "on")
@@ -768,7 +769,16 @@ def autostart(args: argparse.Namespace) -> int:
                 return 1
             print(f"mac-mcp autostart: could not save the setting: {exc}", file=sys.stderr)
             return 1
-        _ensure_supervisor()
+        if style is not None:
+            import contextlib
+            import io
+            # Its warning belongs on the screen below the header, not above it.
+            captured = io.StringIO()
+            with contextlib.redirect_stdout(captured):
+                _ensure_supervisor()
+            supervisor_warnings = captured.getvalue()
+        else:
+            _ensure_supervisor()
     report = {
         "start_at_login": _start_at_login(),
         "job": str(_supervisor_plist_path()),
@@ -776,7 +786,7 @@ def autostart(args: argparse.Namespace) -> int:
     }
     if style is not None:
         from .cli_views import render_autostart
-        render_autostart(style, report["start_at_login"])
+        render_autostart(style, report["start_at_login"], supervisor_warnings)
         return 0
     if getattr(args, "json", False):
         print(json.dumps(report, sort_keys=True))
@@ -915,6 +925,18 @@ def _uninstall_themed(args: argparse.Namespace, style, items: list, app: Path) -
             print(f"{home_path(row['path'])}: {row.get('error')}")
         state.ok = not failed
     style.write()
+    labels = {item.key: item.label for item in items}
+    moved_labels = [labels.get(row["key"], row["path"]) for row in results if row["result"] == "moved"]
+    kept = [item for item in items if not item.remove and item.exists]
+    if moved_labels:
+        dim_lines(style, "Moved: " + " · ".join(moved_labels))
+    if kept:
+        dim_lines(style, "Kept: " + " · ".join(item.label for item in kept))
+    hints = {"state": "Add --include-state to move your settings, keys and tokens too.",
+             "source": "Add --include-source to move the source checkout too."}
+    for item in kept:
+        if item.key in hints:
+            dim_lines(style, hints[item.key], indent=INDENT + "  ")
     dim_lines(style, UNINSTALL_NOTES[1])
     if failed:
         count = len(failed)
@@ -1114,7 +1136,7 @@ def _repair_one(key: str) -> bool:
             return True
         if key == "supervisor":
             _ensure_supervisor()
-            return True
+            return _supervisor_plist_path().is_file()  # what the check after looks at
         if key == "app":
             installer = PROJECT_ROOT / "menu_app" / "install_app.sh"
             if STATE_DIR.resolve() != DEFAULT_STATE_DIR.resolve():
@@ -2820,6 +2842,10 @@ def _credential_themed(args: argparse.Namespace, style) -> int:
             import getpass
             secret = getpass.getpass(f"{INDENT}Cloudflare Tunnel token: ")
             style.write()
+            if _has_controls(secret):  # e.g. a terminal's late answer typed into the line
+                secret = ""
+                style.summary("error", "The token holds control characters — paste it again", gap=False)
+                return 2
         else:
             secret = sys.stdin.read(64 * 1024)
         try:
@@ -3269,6 +3295,12 @@ def logins(args: argparse.Namespace) -> int:
     return 2
 
 
+def _has_controls(text: str) -> bool:
+    """A secret typed into the terminal holds no control characters; one that does picked up
+    something else on the way (a terminal's reply, an arrow key)."""
+    return any(ord(char) < 32 or ord(char) == 127 for char in text)
+
+
 def _plural(count: int, word: str) -> str:
     return f"{count} {word}{'' if count == 1 else 's'}"
 
@@ -3296,6 +3328,10 @@ def _logins_themed(args: argparse.Namespace, style) -> int:
                 import getpass
                 password = getpass.getpass(f"{INDENT}Password for {args.username} at {args.site}: ")
                 style.write()
+                if _has_controls(password):
+                    password = ""
+                    style.summary("error", "The password holds control characters — type it again", gap=False)
+                    return 1
             else:
                 password = sys.stdin.readline()
                 password = password[:-1] if password.endswith("\n") else password
@@ -3422,6 +3458,16 @@ def catalog_command(args: argparse.Namespace) -> int:
     return 2
 
 
+def _held_script_path(pack_id: str, path: str) -> Optional[str]:
+    """Where a held script waits, so a preview cut at its limit can point at the whole file."""
+    from . import catalog
+    try:
+        version = catalog.installed()[pack_id]["version"]
+        return home_path(catalog._held_dir(pack_id, version) / path)
+    except (KeyError, TypeError, OSError, ValueError):
+        return None
+
+
 def _catalog_themed(args: argparse.Namespace, style) -> int:
     from . import catalog
     from .cli_steps import Steps
@@ -3462,7 +3508,8 @@ def _catalog_themed(args: argparse.Namespace, style) -> int:
                     if exc.code != "CONFIRM_REQUIRED":
                         raise
                     render_script_review(style, exc.extra["script"],
-                                         f"mac-mcp catalog enable-script {args.pack_id} {args.path} --yes")
+                                         f"mac-mcp catalog enable-script {args.pack_id} {args.path} --yes",
+                                         _held_script_path(args.pack_id, args.path))
                     return 1
             done = catalog.enable_script(args.pack_id, args.path, confirm=True)
             style.header("catalog")

@@ -196,6 +196,10 @@ class Style:
         lead = len(INDENT) + (2 if dotted else 0)
         column = lead + label_width + 2
         room = max(10, self.width - column)
+        if label_width > (self.width - lead) // 2:
+            # Labels too long for a column (a recipe name, a site): each row's value goes under it.
+            self._stacked(rows, dotted, lead)
+            return
         for tone, label, value, detail in rows:
             dot = (self.paint(SYMBOLS["dot"], tone) if tone else " ") + " " if dotted else ""
             plain = value + (f" · {detail}" if detail else "")
@@ -205,6 +209,19 @@ class Style:
             self.write(f"{INDENT}{dot}{self.paint(label.ljust(label_width), bold=True)}  {painted}")
             for rest in wrapped[1:]:
                 self.write(" " * column + self.paint(rest, dim=True))
+
+    def _stacked(self, rows: Sequence[Row], dotted: bool, lead: int) -> None:
+        for tone, label, value, detail in rows:
+            dot = (self.paint(SYMBOLS["dot"], tone) if tone else " ") + " " if dotted else ""
+            names = textwrap.wrap(label, self.width - lead, break_on_hyphens=False) or [""]
+            self.write(f"{INDENT}{dot}{self.paint(names[0], bold=True)}")
+            for name in names[1:]:
+                self.write(" " * lead + self.paint(name, bold=True))
+            plain = value + (f" · {detail}" if detail else "")
+            parts = textwrap.wrap(plain, max(10, self.width - lead - 2), break_long_words=True, break_on_hyphens=False) or [""]
+            for index, part in enumerate(parts):
+                shown = self._value(part, value, detail) if index == 0 else self.paint(part, dim=True)
+                self.write(" " * (lead + 2) + shown)
 
     def _value(self, line: str, value: str, detail: str) -> str:
         if detail and line.startswith(value + " · "):
@@ -240,7 +257,8 @@ class Style:
             lead = f"{self.paint(SYMBOLS[tone], tone, bold=True)} " if index == 0 else "  "
             self.write(f"{INDENT}{lead}{painted}{tail if index == len(lines) - 1 else ''}")
         if note and not tail:
-            self.write(f"{INDENT}  {self.paint(note, dim=True)}")
+            for part in textwrap.wrap(note, room, break_on_hyphens=False, break_long_words=False) or [note]:
+                self.write(f"{INDENT}  {self.paint(part, dim=True)}")
 
 
 

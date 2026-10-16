@@ -626,6 +626,14 @@ class UninstallScreen(ThemedTestCase):
         self.assertEqual([], long)
         self.assertIn("Your settings, keys and tokens, memory, logs and run history", flat(text))
 
+    def test_yes_lists_what_moved_and_what_was_kept(self) -> None:
+        code, text, *_ = self.uninstall(yes=True)
+        self.assertEqual(0, code)
+        self.assertIn("Moved: Menu bar app · Server runtime", flat(text))
+        self.assertIn("Kept: Your settings, keys and tokens, memory, logs and run history", flat(text))
+        self.assertIn("Add --include-state to move your settings, keys and tokens too.", flat(text))
+
+
     def test_yes_outside_the_default_install_stops_nothing(self) -> None:
         code, text, *_ = self.uninstall(yes=True)
         self.assertEqual(0, code)
@@ -634,7 +642,7 @@ class UninstallScreen(ThemedTestCase):
         self.assertIn("⚠ This is not the default install, so its server and login jobs were not stopped", flat(text))
         self.assertIn("✓ Moved 2 parts to the Trash", text)
         self.assertIn("✓ Mac MCP is removed", text)
-        self.assertIn("Mac MCP uninstall ", text)
+        self.assertIn("Mac MCP uninstall ", flat(text))
         self.assertFalse(self.app.exists())
 
     def test_yes_in_the_default_install_stops_first(self) -> None:
@@ -677,6 +685,86 @@ class UninstallScreen(ThemedTestCase):
             code, text, *_ = self.uninstall(yes=True)
         self.assertEqual(0, code, text)
         self.assertIn("✓ Mac MCP is removed", text)
+
+
+class Phase3ReviewFindings(ThemedTestCase):
+    def test_a_cut_script_preview_says_so_and_names_the_whole_file(self) -> None:
+        from mcp_server import catalog
+        script = {"pack_id": "git-helper", "path": "scripts/big.sh", "sha256": "f" * 64, "size": 9000, "content": "x" * 4000}
+        with patch.object(catalog, "enable_script", side_effect=catalog.CatalogError("CONFIRM_REQUIRED", "confirm", script=script)), \
+             patch.object(catalog, "installed", return_value={"git-helper": {"version": "1.2.0", "kind": "skill"}}), \
+             patch.object(catalog, "_held_dir", return_value=Path("/held/git-helper/1.2.0")):
+            code, text, *_ = self.run_cmd(cli.catalog_command, NS(catalog_command="enable-script", pack_id="git-helper",
+                                                                  path="scripts/big.sh", yes=False, json=False))
+        self.assertEqual(1, code)
+        self.assertIn("This shows the first 4000 characters of 9000 bytes", flat(text))
+        self.assertIn("/held/git-helper/1.2.0/scripts/big.sh", flat(text))
+
+    def test_control_characters_in_a_script_are_shown_not_run(self) -> None:
+        from mcp_server import catalog
+        script = {"path": "s.sh", "sha256": "f" * 64, "size": 30, "content": "echo safe\n\x1b[2K\rrm -rf ~\x9b31m\n"}
+        with patch.object(catalog, "enable_script", side_effect=catalog.CatalogError("CONFIRM_REQUIRED", "confirm", script=script)):
+            code, text, _, raw = self.run_cmd(cli.catalog_command, NS(catalog_command="enable-script", pack_id="p", path="s.sh",
+                                                                      yes=False, json=False))
+        body = raw.split("Script:", 1)[1].split("Nothing enabled", 1)[0]
+        self.assertNotIn("\x1b[2K", body)
+        self.assertNotIn("\r", body)
+        self.assertNotIn("\x9b", body)
+        self.assertIn("^[[2K^Mrm -rf ~", text)
+        self.assertIn("End of script", text)
+
+    def test_a_failed_start_at_login_fix_is_a_failed_step(self) -> None:
+        from mcp_server import lifecycle
+        broken = [lifecycle.Check("supervisor", "Start-at-login job", False, "/u/job.plist", "reinstall the start-at-login job")]
+        with patch.object(lifecycle, "repair_checks", side_effect=[broken, broken]), \
+             patch.object(cli, "_ensure_supervisor", side_effect=lambda: print("Warning: crash supervisor could not be loaded")), \
+             patch.object(cli, "_supervisor_plist_path", return_value=Path("/nonexistent/job.plist")):
+            code, text, *_ = self.run_cmd(cli.repair, NS(yes=True))
+        self.assertEqual(1, code)
+        self.assertIn("✗ Reinstall the start-at-login job", text)
+        self.assertNotIn("✓ Reinstalled the start-at-login job", text)
+
+    def test_long_step_labels_row_labels_and_notes_fit_40_columns(self) -> None:
+        from mcp_server.cli_steps import Steps
+        from mcp_server.cli_style import Style
+        out = FakeTTY()
+        style = Style.for_stream(out, env={**TTY_ENV, "COLUMNS": "40"})
+        steps = Steps(style)
+        with steps.step("Ran a-very-long-recipe-id up to a step that needs approval", failed_label="Run it"):
+            pass
+        with self.assertRaises(RuntimeError):
+            with steps.step("Reinstalled the start-at-login job", failed_label="Reinstall the start-at-login job and more"):
+                raise RuntimeError("x")
+        style.rows([("ok", "A recipe with a rather long name here", "r1", "city:string"),
+                    ("warn", "https://login.very-long-example.com", "me", "l1")])
+        style.summary("ok", "Mac MCP is removed", note="~/.Trash/Mac MCP uninstall 20261016-120000")
+        lines = visible(out.getvalue()).split("\n")
+        self.assertEqual([], [line for line in lines if len(line) > 40])
+        self.assertIn("A recipe with a rather long name here", flat(visible(out.getvalue())))
+
+    def test_autostart_warning_is_themed_under_the_header(self) -> None:
+        with patch.object(cli, "update_runtime_setting"), patch.object(cli, "_start_at_login", return_value=True), \
+             patch.object(cli, "_supervisor_loaded", return_value=False), \
+             patch.object(cli, "_ensure_supervisor", side_effect=lambda: print("Warning: crash supervisor could not be loaded (5)")):
+            code, text, *_ = self.run_cmd(cli.autostart, NS(state="on", json=False))
+        self.assertEqual(0, code)
+        self.assertTrue(text.startswith("  ◆ Mac MCP · autostart\n\n"), text)
+        self.assertIn("⚠ Warning: crash supervisor could not be loaded (5)", text)
+
+    def test_a_typed_secret_with_control_characters_is_refused(self) -> None:
+        from mcp_server import login_vault
+        reply = "\x1b]11;rgb:1e1e/1e1e/1e1e\x07tok"
+        with patch.object(cli, "write_cloudflare_token") as write, patch("getpass.getpass", return_value=reply):
+            code, text, *_ = self.run_cmd(cli.credential, NS(provider="cloudflare", action="save"), stdin=TTYInput(""))
+        self.assertEqual(2, code)
+        write.assert_not_called()
+        self.assertIn("✗ The token holds control characters — paste it again", flat(text))
+        with patch.object(login_vault, "add_login") as add, patch("getpass.getpass", return_value=reply):
+            code, text, *_ = self.run_cmd(cli.logins, NS(logins_command="add", site="github.com", username="me", label=None,
+                                                         subdomains=False, json=False), stdin=TTYInput(""))
+        self.assertEqual(1, code)
+        add.assert_not_called()
+        self.assertIn("✗ The password holds control characters — type it again", flat(text))
 
 
 if __name__ == "__main__":

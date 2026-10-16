@@ -53,7 +53,11 @@ class Steps:
     # ── Spinner ───────────────────────────────────────────────────────────
     def _draw(self, frame: str) -> None:
         stream = self.style.stream
-        stream.write(f"{_CLEAR}{INDENT}{self.style.paint(frame, 'brand')} {self._running}…")
+        # One line only: a wrapped spinner line could not be redrawn in place.
+        room = max(10, self.style.width - len(INDENT) - 3)
+        running = self._running or ""
+        running = running if len(running) < room else running[: room - 1]
+        stream.write(f"{_CLEAR}{INDENT}{self.style.paint(frame, 'brand')} {running}…")
         stream.flush()
 
     def _spin(self, stop: threading.Event) -> None:
@@ -97,18 +101,30 @@ class Steps:
         stream = self.style.stream
         if ok:
             took = f"{time.monotonic() - self._started:.1f}s"
-            # The time sits in one column, pulled in on a narrow terminal.
+            # The time sits in one column, pulled in on a narrow terminal; a long label wraps.
             column = min(_DURATION_COLUMN, self.style.width - len(took))
-            pad = " " * max(2, column - len(INDENT) - 2 - len(label))
-            stream.write(f"{_CLEAR}{INDENT}{self.style.paint(SYMBOLS['ok'], 'ok')} {label}{pad}{self.style.paint(took, dim=True)}\n")
+            parts = self._label_lines(label, self.style.width - len(INDENT) - 4 - len(took))
+            pad = " " * max(2, column - len(INDENT) - 2 - len(parts[0]))
+            stream.write(f"{_CLEAR}{INDENT}{self.style.paint(SYMBOLS['ok'], 'ok')} {parts[0]}{pad}{self.style.paint(took, dim=True)}\n")
+            for part in parts[1:]:
+                stream.write(f"{INDENT}  {part}\n")
             if warnings:
                 self._wrapped(warnings, "warn")
         else:
-            stream.write(f"{_CLEAR}{INDENT}{self.style.paint(SYMBOLS['error'], 'error')} {label}\n")
+            parts = self._label_lines(label, self.style.width - len(INDENT) - 2)
+            stream.write(f"{_CLEAR}{INDENT}{self.style.paint(SYMBOLS['error'], 'error')} {parts[0]}\n")
+            for part in parts[1:]:
+                stream.write(f"{INDENT}  {part}\n")
             self._wrapped(reason)
         stream.write(_SHOW)
         stream.flush()
         self._label = self._running = None
+
+    @staticmethod
+    def _label_lines(label: str, room: int) -> list:
+        if len(label) <= room:
+            return [label]
+        return textwrap.wrap(label, max(10, room), break_on_hyphens=False) or [label]
 
     @contextlib.contextmanager
     def step(self, label: str, failed_label: Optional[str] = None) -> Iterator[StepState]:
