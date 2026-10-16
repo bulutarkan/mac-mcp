@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
 from mcp_server import observability, tools_ui
 from mcp_server.observability import TelemetryManager, publish_native_pointer, set_live_telemetry
+from tests._menu_sources import feature_files
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCES = ROOT / "menu_app" / "Sources"
@@ -203,12 +207,69 @@ class DesktopCursorOverlayTests(unittest.TestCase):
         store = (SOURCES / "SettingsStore.swift").read_text(encoding="utf-8")
         self.assertIn("@Published var showDesktopCursor = true", store)
         self.assertIn("showDesktopCursor = current.tool_activity?.desktop_cursor ?? true", store)
-        self.assertIn("desktop_cursor: showDesktopCursor ? nil : false", store)
         view = (SOURCES / "SettingsView.swift").read_text(encoding="utf-8")
         self.assertIn('Toggle("Agent cursor on the desktop", isOn: desktopCursorBinding)', view)
         self.assertIn("DesktopCursorOverlayController.shared.hideImmediately()", view)
         build = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")
         self.assertIn("Sources/DesktopCursorOverlay.swift", build)
+
+
+class ActivitySettingsPersistenceTests(unittest.TestCase):
+    """Settings are saved by merging into the file on disk, so a toggle must write its value
+    both ways: an omitted key leaves the earlier choice in place."""
+
+    def test_cursor_and_island_toggles_survive_a_reload_both_ways(self) -> None:
+        harness = r'''
+import Foundation
+
+@main struct ActivitySettingsHarness {
+    @MainActor static func main() throws {
+        let store = SettingsStore()
+        precondition(store.showDesktopCursor && !store.showLiveIsland)
+        store.showDesktopCursor = false
+        store.showLiveIsland = true
+        try store.save()
+        let off = SettingsStore()
+        precondition(!off.showDesktopCursor && off.showLiveIsland)
+        off.showDesktopCursor = true
+        off.showLiveIsland = false
+        try off.save()
+        let back = SettingsStore()
+        precondition(back.showDesktopCursor, "cursor turned back on did not stick")
+        precondition(!back.showLiveIsland, "island turned off did not stick")
+        print("ACTIVITY_SETTINGS_PASS")
+    }
+}
+'''
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "ActivitySettingsHarness.swift"
+            binary = Path(td) / "activity-settings-harness"
+            source.write_text(textwrap.dedent(harness), encoding="utf-8")
+            cmd = [
+                "xcrun", "swiftc", "-parse-as-library",
+                *map(str, feature_files("AppState")),
+                str(SOURCES / "AgentNotificationController.swift"),
+                str(SOURCES / "SettingsStore.swift"),
+                str(SOURCES / "ToolActivityBubbleController.swift"),
+                str(SOURCES / "KeychainStore.swift"),
+                str(source),
+                "-framework", "SwiftUI", "-framework", "AppKit", "-framework", "Security",
+                "-framework", "UserNotifications", "-framework", "Combine",
+                "-o", str(binary),
+            ]
+            compiled = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=120)
+            self.assertEqual(0, compiled.returncode, compiled.stderr)
+            env = {
+                **os.environ,
+                "MAC_MCP_SETTINGS_PATH": str(Path(td) / "settings.json"),
+                "MAC_MCP_VOICE_GROQ_KEYCHAIN_SERVICE": "com.bulutarkan.mac-mcp.settings-test",
+                "MAC_MCP_VOICE_GROQ_KEYCHAIN_ACCOUNT": "test",
+                "MAC_MCP_DECISIONS_KEYCHAIN_SERVICE": "com.bulutarkan.mac-mcp.settings-test",
+                "MAC_MCP_DECISIONS_KEYCHAIN_ACCOUNT": "test",
+            }
+            ran = subprocess.run([str(binary)], capture_output=True, text=True, timeout=20, env=env)
+            self.assertEqual(0, ran.returncode, ran.stderr)
+            self.assertIn("ACTIVITY_SETTINGS_PASS", ran.stdout)
 
 
 if __name__ == "__main__":

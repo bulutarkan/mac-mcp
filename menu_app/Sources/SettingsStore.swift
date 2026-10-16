@@ -339,8 +339,9 @@ final class SettingsStore: ObservableObject {
             tool_activity: .init(
                 show_bubble: showToolActivity && requireToolDescriptions,
                 require_descriptions: requireToolDescriptions,
-                island: showLiveIsland ? true : nil,
-                desktop_cursor: showDesktopCursor ? nil : false
+                // Both ways: the save merges into the file, so an omitted key would keep the old value.
+                island: showLiveIsland,
+                desktop_cursor: showDesktopCursor
             ),
             notifications: .init(agent_completion: agentCompletionNotificationsEnabled),
             decision_acceleration: .init(enabled: decisionAccelerationEnabled, scope: decisionAccelerationScope),
