@@ -177,6 +177,21 @@ _RISKY_WORDS = {
     "satın al", "satin al", "öde", "ode", "onayla", "çıkış", "cikis",
 }
 
+
+def _fold(text: str) -> str:
+    # "ÇIKIŞ".lower() is "çikiş", not "çıkış": fold the dotless ı so both spellings meet.
+    return text.lower().replace("ı", "i")
+
+
+# A risky word counts where a word starts, so Turkish suffixes still match (Sil → Silinsin,
+# Öde → Ödeme) but a word inside another does not ("ode" in model, Mode, Claude Code; #223).
+_RISKY_RE = re.compile(r"(?<!\w)(?:" + "|".join(sorted((re.escape(_fold(word)) for word in _RISKY_WORDS),
+                                                        key=len, reverse=True)) + ")")
+
+
+def risky_text(text: str) -> bool:
+    return bool(_RISKY_RE.search(_fold(text)))
+
 _OBSERVATIONS: Dict[str, Dict[str, Any]] = {}
 _OBSERVATIONS_LOCK = threading.Lock()
 
@@ -4604,8 +4619,8 @@ def _is_risky_click(node: Optional[Dict[str, Any]]) -> bool:
     searchable = " ".join(
         str(node.get(field) or "")
         for field in ("title", "description", "value", "role", "subrole")
-    ).lower()
-    return any(word in searchable for word in _RISKY_WORDS)
+    )
+    return risky_text(searchable)
 
 
 def _mail_draft_text_handoff(
@@ -4906,6 +4921,20 @@ def _resolve_action_native_target(
     )
 
 
+def _risky_refusal(element_id: Any, index: int, done: List[Dict[str, Any]]) -> Dict[str, Any]:
+    out = {
+        "ok": False,
+        "blocked": True,
+        "error": "This element looks like a potentially consequential control. Set allow_risky=true only when the action is intentional.",
+        "element_id": element_id,
+        "failed_action_index": index,
+        "actions": done,
+    }
+    if done:
+        out["message"] = f"actions before index {index} already ran; see actions"
+    return out
+
+
 def act_ui(
     settings: Settings,
     actions: List[Dict[str, Any]],
@@ -4962,6 +4991,18 @@ def act_ui(
         if stored is None:
             delta_refresh_reasons.append("missing_base_observation")
 
+        # A consequential control anywhere in the batch refuses it before anything runs, so a refusal
+        # never hides actions that already happened (#224); the check in the loop stays as a backstop.
+        if not allow_risky:
+            for index, action in enumerate(actions):
+                if not isinstance(action, dict):
+                    continue
+                kind = str(action.get("type", "")).strip().lower().replace("-", "_")
+                element_id = action.get("element_id")
+                if (kind in {"click", "double_click"} and isinstance(element_id, str)
+                        and _is_risky_click(stored_nodes.get(element_id))):
+                    return _risky_refusal(element_id, index, [])
+
         for index, action in enumerate(actions):
             cancellation_checkpoint()
             if time.monotonic() >= deadline:
@@ -5014,12 +5055,7 @@ def act_ui(
                         "retryable": True,
                     }
             if action_type in {"click", "double_click"} and not allow_risky and _is_risky_click(node):
-                return {
-                    "ok": False,
-                    "blocked": True,
-                    "error": "This element looks like a potentially consequential control. Set allow_risky=true only when the action is intentional.",
-                    "element_id": original_element_id,
-                }
+                return _risky_refusal(original_element_id, index, results)
 
             target, target_error = _resolve_action_native_target(
                 stored=stored,

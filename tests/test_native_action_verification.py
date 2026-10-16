@@ -140,6 +140,30 @@ class NativeReadinessLogicTests(unittest.TestCase):
         self.assertFalse(tools_ui._effect_state_requires_structural_refresh(
             state(window_layout="|3:2,0,2"), state(window_layout="|3:2,0,2")))
 
+    def test_risky_words_match_where_a_word_starts_not_inside_another(self) -> None:
+        # #223: "ode" (öde) inside "model", "Mode" and "Claude Code" made harmless controls risky.
+        risky = ["Delete", "Delete All", "Send", "Send Message", "Pay", "Payment", "Buy now", "Sign Out",
+                 "Sil", "Silinsin", "Öde", "Ödeme yap", "Gönder", "Satın Al", "ÇIKIŞ", "Çıkış yap", "Onayla",
+                 "Move to Trash", "Submit"]
+        harmless = ["Advanced, model, usage limit, check, time limit, cron", "Mode", "Claude Code", "Display",
+                    "Encode", "Episode", "Codex", "Description", "Node"]
+        for label in risky:
+            self.assertTrue(tools_ui._is_risky_click({"description": label}), label)
+        for label in harmless:
+            self.assertFalse(tools_ui._is_risky_click({"description": label, "role": "AXButton"}), label)
+        from mcp_server import decision_engine
+        self.assertTrue(decision_engine.is_risky_label("Ödeme"))
+        self.assertFalse(decision_engine.is_risky_label("Claude Code model"))
+
+    def test_typing_text_the_field_already_holds_is_done_not_no_effect(self) -> None:
+        held = state(role="AXTextArea", value="Summarize my week.", character_count=18)
+        self.assertEqual((True, "text_already_present"),
+                         effect_changed(held, dict(held), {"type": "type", "text": "Summarize my week."}))
+        self.assertEqual((False, "text_state_unchanged"),
+                         effect_changed(held, dict(held), {"type": "type", "text": "Something else"}))
+        secure = state(role="AXSecureTextField", value="[redacted]")
+        self.assertFalse(effect_changed(secure, dict(secure), {"type": "type", "text": "[redacted]"})[0])
+
     def test_verification_scope_keeps_non_element_actions_out(self) -> None:
         self.assertTrue(verification_required("click", "w1/1"))
         self.assertTrue(verification_required("paste", "w1/1"))
@@ -167,6 +191,32 @@ class NativeVerificationIntegrationTests(unittest.TestCase):
             allow_risky=True,
             preserve_focus=False,
         )
+
+    def test_a_risky_click_later_in_a_batch_stops_it_before_anything_runs(self) -> None:
+        # #224: the text was typed, then the risky click was refused, and the reply did not say the
+        # typing had happened. Typed again, the field already held the text: "no effect".
+        nodes = [
+            {"element_id": "w1/1", "parent_id": "w1", "role": "AXTextArea", "subrole": "", "title": "",
+             "description": "text entry area", "value": "", "position": {"x": 10, "y": 10, "width": 200, "height": 80},
+             "enabled": True, "focused": False, "actions": [], "child_count": 0},
+            {"element_id": "w1/2", "parent_id": "w1", "role": "AXButton", "subrole": "", "title": "",
+             "description": "Delete All", "value": "", "position": {"x": 10, "y": 100, "width": 80, "height": 24},
+             "enabled": True, "focused": False, "actions": ["AXPress"], "child_count": 0},
+        ]
+        observation_id = tools_ui._save_observation("DemoApp", 1, nodes, {"pid": 4321, "app_handle": "mapp_test"})
+        with patch.object(tools_ui, "_run_osascript") as script, \
+                patch.object(tools_ui, "_resolve_action_native_target") as resolve:
+            result = tools_ui.act_ui(
+                self.settings,
+                [{"type": "type", "element_id": "w1/1", "text": "Summarize my week."},
+                 {"type": "click", "element_id": "w1/2"}],
+                observation_id=observation_id, app="DemoApp", return_state=False, preserve_focus=False,
+            )
+        self.assertEqual((False, True, 1, "w1/2"),
+                         (result["ok"], result["blocked"], result["failed_action_index"], result["element_id"]))
+        self.assertEqual([], result["actions"])
+        script.assert_not_called()
+        resolve.assert_not_called()
 
     def test_readiness_wait_recovers_when_element_becomes_enabled(self) -> None:
         blocked = state(enabled=False)

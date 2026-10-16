@@ -213,6 +213,10 @@ def effect_changed(before: Dict[str, Any], after: Dict[str, Any], action: Dict[s
     if typ in {"type", "type_text", "paste"}:
         if _different(before, after, ("value", "character_count")):
             return True, "text_state_changed"
+        # Typing what the field already holds leaves it as asked (#224); a masked value proves nothing.
+        text = action.get("text")
+        if typ != "paste" and isinstance(text, str) and text and after.get("value") == text and text != "[redacted]":
+            return True, "text_already_present"
         return False, "text_state_unchanged"
 
     # A toggle often renames only its description ("Show Sidebar" -> "Hide Sidebar", #220).

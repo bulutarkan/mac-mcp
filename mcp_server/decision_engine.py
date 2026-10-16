@@ -340,10 +340,9 @@ def _clip(value: Any) -> str:
 
 
 def is_risky_label(*values: Any) -> bool:
-    from .tools_ui import _RISKY_WORDS
+    from .tools_ui import risky_text
 
-    searchable = " ".join(str(value or "") for value in values).lower()
-    return any(word in searchable for word in _RISKY_WORDS)
+    return risky_text(" ".join(str(value or "") for value in values))
 
 
 def _describe(candidate: DecisionCandidate) -> str:

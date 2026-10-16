@@ -12,6 +12,11 @@
 - A stopped run says so ("Stopped at its 500,000-token limit (used 512,330)") and keeps what the agent did before the stop; the report shows the limit next to the usage. A suggested change that raises or removes a limit shows in the review.
 - No limit that can't be kept: the editor names the agents that can keep each kind (tokens: Claude Code, OpenCode, Kilo Code, pi; cost: OpenCode, Kilo Code) and keeps Save off for any other, and a cost limit stops the run when a step comes without its price, instead of letting spending pass the limit unseen.
 
+### mac_act refuses less by mistake, and never halfway (#223, #224)
+- A consequential word counts only where a word starts, so "model", "Mode", "Encode" or "Claude Code" no longer need allow_risky while Delete, Send, Pay, Sil (Silinsin), Öde (Ödeme) and Gönder still do. "ÇIKIŞ" in capitals now matches too.
+- A batch with a consequential click is refused before any of its actions runs. It used to run the actions before that click, then refuse without saying they had happened, so an agent typed the same text again and was told it had no effect.
+- Typing text that a field already holds reports the field as done (text_already_present), not as no effect.
+
 ### Task sheets fit the Settings window (#222)
 - The New Task, Edit, Review and run report sheets are never taller than the Settings window (they scroll instead), so Cancel and Save stay inside it; the Edit sheet hung about 60 points below the window's edge.
 - mac_act reports why a control isn't ready ("ELEMENT_OUTSIDE_WINDOW", retryable) when there is no time left for another look, instead of starting one more probe and failing with "AppleScript timed out".
