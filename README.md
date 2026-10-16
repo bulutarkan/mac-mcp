@@ -26,6 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/bulutarkan/mac-mcp/main/install.sh 
 
 - **Scheduled Tasks (experimental):** AI tasks and scripts that run once, daily, weekly, monthly or every few hours, with a run report (result and steps) for each run. Tasks an AI app suggests wait for your approval in Settings.
 - **Live activity island:** an optional island beside the notch shows the app in use while your AI works, what needs you, recent work and the next scheduled task. Off by default (Settings › Activity & Notifications).
+- **Agent cursor on the desktop:** when an agent clicks or types in another app's window in the background, a cursor shows where, without moving yours. It sits with that window, so whatever you have in front covers it, and it never appears in screenshots. On by default (Settings › Activity & Notifications).
 - **Safer outgoing data:** the secret-egress guard also catches secrets hidden in base64, hex or percent-encoded payloads.
 
 Earlier releases are in the [CHANGELOG](CHANGELOG.md).

@@ -571,6 +571,21 @@ struct SettingsView: View {
 
                         HStack(alignment: .top, spacing: 12) {
                             VStack(alignment: .leading, spacing: 3) {
+                                Text("Agent cursor on the desktop")
+                                    .font(.subheadline.weight(.medium))
+                                Text("Shows where an agent clicks or types in another app's window while it works in the background. It sits with that window, so whatever you have in front covers it, and it never appears in screenshots.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer()
+                            Toggle("Agent cursor on the desktop", isOn: desktopCursorBinding)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                        }
+
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 3) {
                                 Text("Require Tool Descriptions")
                                     .font(.subheadline.weight(.medium))
                                 Text("Adds a short required description field to MCP tool schemas. Turn this off to remove the field entirely.")
@@ -3690,6 +3705,17 @@ struct SettingsView: View {
                 persistSettings(success: style == "island" ? "Notch island on." : style == "bubble" ? "Tool Activity bubble on." : "Live activity off.")
                 state.restartToolActivityStream()
                 if style != "bubble" { ToolActivityBubbleController.shared.hideImmediately() }
+            }
+        )
+    }
+
+    private var desktopCursorBinding: Binding<Bool> {
+        Binding(
+            get: { settings.showDesktopCursor },
+            set: { enabled in
+                settings.showDesktopCursor = enabled
+                if !enabled { DesktopCursorOverlayController.shared.hideImmediately() }
+                persistSettings(success: enabled ? "Agent cursor on." : "Agent cursor off.")
             }
         )
     }

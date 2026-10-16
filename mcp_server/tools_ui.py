@@ -73,6 +73,7 @@ from .context_handoff import (
     resolve_mail_text_handoff, resolve_native_file_handoff, resolve_native_text_handoff,
 )
 from .foreground_guard import current_foreground_authorization
+from .observability import publish_native_pointer
 from .workspace_arbitration import (
     claim_delegated_resource, delegated_agent_identity, native_app_resource_id,
     native_window_resource_id, recent_user_input,
@@ -3896,6 +3897,54 @@ def _node_coordinates(node: Optional[Dict[str, Any]]) -> Optional[Tuple[int, int
         return None
 
 
+_POINTER_VERBS = {
+    "click": "Clicking", "double_click": "Clicking", "scroll": "Scrolling",
+    "type": "Typing", "type_text": "Typing", "paste": "Pasting",
+    "action": "Pressing", "accessibility_action": "Pressing", "menu": "Opening",
+    "key": "Pressing keys", "keyboard": "Pressing keys", "shortcut": "Pressing keys",
+}
+# Generic control kinds only, like the browser companion's safe targets: never a title.
+_POINTER_TARGETS = {
+    "AXButton": "Button", "AXCheckBox": "Checkbox", "AXRadioButton": "Option",
+    "AXPopUpButton": "Menu", "AXMenuButton": "Menu", "AXMenuItem": "Menu item",
+    "AXMenuBarItem": "Menu", "AXTextField": "Text field", "AXTextArea": "Text field",
+    "AXComboBox": "Text field", "AXSearchField": "Text field", "AXLink": "Link",
+    "AXTab": "Tab", "AXSlider": "Slider", "AXRow": "Item", "AXCell": "Item",
+    "AXOutlineRow": "Item", "AXImage": "Item", "AXStaticText": "Item",
+    "AXScrollArea": "Page", "AXWebArea": "Page", "AXTable": "Page", "AXOutline": "Page",
+}
+
+
+def _announce_native_pointer(
+    action_type: str,
+    action: Dict[str, Any],
+    node: Optional[Dict[str, Any]],
+    app_pid: Optional[int],
+) -> None:
+    """Show the desktop agent cursor where an element-targeted action lands.
+
+    Only element-bound actions are announced: they run through Accessibility without
+    moving the real pointer. Coordinate input moves the real pointer itself, so a
+    second, synthetic one would only double it.
+    """
+    verb = _POINTER_VERBS.get(action_type)
+    if verb is None:
+        return
+    if action_type in {"key", "keyboard", "shortcut"}:
+        publish_native_pointer(action=verb, target="", pid=app_pid)
+        return
+    if action.get("element_id") is None:
+        return
+    point = _node_coordinates(node)
+    if point is None:
+        return
+    target = _POINTER_TARGETS.get(str((node or {}).get("role") or ""), "")
+    publish_native_pointer(
+        action=verb, target=target, pid=app_pid, point=point,
+        press=action_type in {"click", "double_click", "action", "accessibility_action", "menu"},
+    )
+
+
 def _click(
     app: str,
     action: Dict[str, Any],
@@ -5335,6 +5384,10 @@ def act_ui(
                             str(target.get("app") or ""), resolved_element_id,
                             app_pid=int(target["pid"]) if target.get("pid") else None, deadline=deadline,
                         )
+                    _announce_native_pointer(
+                        action_type, resolved_action, node,
+                        int(target["pid"]) if target.get("pid") else None,
+                    )
                     ok, message = _perform_action(
                         str(target.get("app") or ""),
                         resolved_action,

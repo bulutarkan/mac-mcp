@@ -20,6 +20,7 @@ FEATURES = {
         "AppModels+ScheduledTasks.swift",
         "AppModels+Live.swift",
         "OnboardingChecklist.swift",
+        "DesktopCursorOverlay.swift",
     ),
 }
 
