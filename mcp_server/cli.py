@@ -2363,7 +2363,10 @@ def restart(args: argparse.Namespace) -> int:
         # Always delegate restart to launchd. A restart tears down the server that
         # may currently be carrying this command; launchd ownership prevents MCP
         # cancellation cleanup or shell process-group cleanup from killing the worker.
-        return _spawn_detached_restart(args)
+        style = Style.for_stream()
+        if style is None:
+            return _spawn_detached_restart(args)
+        return _restart_themed(args, style)
 
     # This marker identifies only the one-shot launchd worker. Clear it before
     # any descendants can inherit it and mistake themselves for the worker.
@@ -2429,6 +2432,66 @@ def restart(args: argparse.Namespace) -> int:
         health=True,
     )
     return 0
+
+
+_RESTART_STAGES = {
+    "stopping": ("Stopped the server", "Stop the server"),
+    "starting": ("Started the server", "Start the server"),
+    "verifying": ("Checked that it answers", "Check that it answers"),
+    "recovering": ("Recovered after a failed start", "Recover after a failed start"),
+}
+
+
+def _restart_themed(args: argparse.Namespace, style) -> int:
+    """In a terminal, restart waits for the launchd worker and shows its stages as steps."""
+    style.header("restart")
+    steps = style.steps()
+    since = time.time()
+    with steps.step("Handed the restart to launchd", failed_label="Hand the restart to launchd") as state:
+        code = _spawn_detached_restart(argparse.Namespace(**{**vars(args), "wait": False}))
+        state.ok = code == 0
+    if code != 0:
+        style.summary("error", "The restart could not start", next_command="mac-mcp doctor")
+        return code
+    return _watch_restart(style, steps, args, since)
+
+
+def _watch_restart(style, steps, args: argparse.Namespace, since: float) -> int:
+    deadline = time.time() + 2 * _startup_health_timeout_s() + RESTART_REQUESTER_WAIT_S + 60
+    current: str | None = None
+    payload: dict = {}
+    while time.time() < deadline:
+        payload = _read_restart_status()
+        state = str(payload.get("state") or "")
+        stage = str(payload.get("stage") or "")
+        if state in RESTART_FINAL_STATES and float(payload.get("updated_at") or 0) >= since:
+            break
+        if stage in _RESTART_STAGES and stage != current:
+            if current is not None:
+                steps.end(True)
+            steps.begin(_RESTART_STAGES[stage][0])
+            current = stage
+        time.sleep(0.25)
+    else:
+        if current is not None:
+            steps.end(False, failed_label=_RESTART_STAGES[current][1])
+        style.summary("error", "The restart did not report back in time", next_command="mac-mcp status")
+        return 3
+    state = str(payload.get("state"))
+    if current is not None:
+        steps.end(state == "succeeded", str(payload.get("error") or ""), _RESTART_STAGES[current][1])
+    if state == "succeeded":
+        retried = " · after one recovery attempt" if payload.get("recovered_after_retry") else ""
+        style.summary("ok", f"Restarted — pid {payload.get('server_pid')}{retried}")
+        return 0
+    if state == "degraded":
+        style.summary("warn", "Restarted locally, but the public address did not start", next_command="mac-mcp doctor")
+        return 1
+    if payload.get("server_left_running"):
+        style.summary("warn", f"Restart not attempted ({payload.get('stage')}): {payload.get('error')}. The server kept running.")
+        return 1
+    style.summary("error", "Restart failed", next_command=str(payload.get("repair_command") or "mac-mcp doctor"))
+    return 1
 
 
 def _server_gone(port: int, *, timeout_s: float) -> bool:

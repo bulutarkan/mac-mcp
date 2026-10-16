@@ -231,5 +231,44 @@ class StartStop(ThemedTestCase):
         self.assertTrue(text.rstrip("\n").endswith("✓ Stopped — AI apps can no longer reach this Mac."), text)
 
 
+class RestartScreen(ThemedTestCase):
+    def test_stages_become_steps_and_the_outcome_the_summary(self) -> None:
+        payloads = iter([
+            {"state": "running", "stage": "stopping", "updated_at": 2e9},
+            {"state": "running", "stage": "starting", "updated_at": 2e9},
+            {"state": "running", "stage": "verifying", "updated_at": 2e9},
+            {"state": "succeeded", "server_pid": 4321, "updated_at": 2e9},
+        ])
+        out = FakeTTY()
+        with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: ""}), \
+             patch.object(cli, "_spawn_detached_restart", side_effect=lambda args: print("handed off") or 0) as spawn, \
+             patch.object(cli, "_read_restart_status", side_effect=lambda: next(payloads)), \
+             patch.object(cli.time, "sleep"), \
+             redirect_stdout(out):
+            code = cli.restart(argparse.Namespace(wait=False, timeout=5.0))
+        text = re.sub(r"\d+\.\d+s", "0.0s", visible(out.getvalue()))
+        self.assertEqual(0, code)
+        self.assertFalse(spawn.call_args[0][0].wait)  # the themed path waits itself
+        for label in ("✓ Handed the restart to launchd", "✓ Stopped the server", "✓ Started the server", "✓ Checked that it answers"):
+            self.assertIn(label, text)
+        self.assertTrue(text.rstrip("\n").endswith("✓ Restarted — pid 4321"), text)
+
+    def test_a_failed_restart_names_the_stage_and_the_repair(self) -> None:
+        payloads = iter([
+            {"state": "running", "stage": "starting", "updated_at": 2e9},
+            {"state": "failed", "stage": "health", "repair_command": "mac-mcp doctor", "updated_at": 2e9},
+        ])
+        out = FakeTTY()
+        with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: ""}), \
+             patch.object(cli, "_spawn_detached_restart", return_value=0), \
+             patch.object(cli, "_read_restart_status", side_effect=lambda: next(payloads)), \
+             patch.object(cli.time, "sleep"), redirect_stdout(out):
+            code = cli.restart(argparse.Namespace(wait=False, timeout=5.0))
+        text = visible(out.getvalue())
+        self.assertEqual(1, code)
+        self.assertIn("✗ Start the server", text)
+        self.assertTrue(text.rstrip("\n").endswith("✗ Restart failed — try: mac-mcp doctor"), text)
+
+
 if __name__ == "__main__":
     unittest.main()
