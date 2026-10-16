@@ -1,5 +1,10 @@
 ## Unreleased
 
+### The CLI has a look of its own
+- In a terminal, `mac-mcp`, `--help`, `status`, `start`, `stop`, `restart` and `doctor` open with the same header, line their facts up in one column and end with one sentence that says what happened, plus the command to run next when something is wrong. `mac-mcp` alone lists the commands in groups (Everyday, Connect, Troubleshoot, Advanced) under a one-line status.
+- `start`, `stop` and `restart` show each step live, with its time; in a terminal `restart` now waits for the outcome. `doctor` groups its checks and folds the ones that passed (`--verbose` lists every check).
+- Without a terminal (scripts, the menu app, the installer), with `--json`, `NO_COLOR` or `MAC_MCP_PLAIN=1`, the output is exactly what it was.
+
 ### Antigravity, pi, Cline, Kilo Code and Goose as AI apps
 - Mac MCP can now be added to these five CLIs too, so an `agy`, `pi`, `cline`, `kilo` or `goose` you start yourself can use your Mac. They appear with Connect in the tour, in Settings › Connections and in `mac-mcp clients` / `mac-mcp connect --client antigravity|pi|cline|kilo|goose`. Antigravity and pi are set up through their own `mcp add`; Cline, Kilo Code and Goose get `mac-mcp stdio` in their config (`cline_mcp_settings.json`, `kilo.json`, Goose's `config.yaml` as a stdio extension) next to the servers already there, with the old file kept as `*.before-mac-mcp`. No address or key goes into any of them.
 

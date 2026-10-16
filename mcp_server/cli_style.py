@@ -13,7 +13,7 @@ import shutil
 import sys
 import textwrap
 from pathlib import Path
-from typing import Mapping, Optional, Sequence, TextIO, Tuple
+from typing import Callable, Mapping, Optional, Sequence, TextIO, Tuple
 
 # Tones of the app and the tour; they read on light and dark terminal backgrounds.
 PALETTE = {"brand": (0xFF, 0xB4, 0x5E), "ok": (0x5E, 0xD3, 0xA0), "warn": (0xF5, 0xA5, 0x24),
@@ -158,18 +158,18 @@ class Style:
             lead = f"{self.paint(SYMBOLS[tone], tone, bold=True)} " if index == 0 else "  "
             self.write(f"{INDENT}{lead}{painted}")
 
-    def steps(self) -> "Steps":
-        from .cli_steps import Steps
-        return Steps(self)
 
 
 class ThemedArgumentParser(argparse.ArgumentParser):
     """argparse with a themed --help in a terminal; plain argparse help otherwise. Lives here,
-    not in cli_views, so building the parser (as `mac-mcp stdio` does) loads no screens."""
+    not in cli_views, so building the parser (as `mac-mcp stdio` does) loads no screens.
+
+    The CLI sets `themed_help(style, parser)`; this module imports nothing above it."""
+
+    themed_help: Optional[Callable[[Style, argparse.ArgumentParser], None]] = None
 
     def print_help(self, file=None) -> None:
         style = Style.for_stream(file if file is not None else sys.stdout)
-        if style is None:
+        if style is None or ThemedArgumentParser.themed_help is None:
             return super().print_help(file)
-        from .cli_views import render_command_help
-        render_command_help(style, self)
+        ThemedArgumentParser.themed_help(style, self)

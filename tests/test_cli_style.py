@@ -109,5 +109,15 @@ class Primitives(unittest.TestCase):
         self.assertEqual("/etc/hosts", cli_style.home_path("/etc/hosts"))
 
 
+class StdioStaysLean(unittest.TestCase):
+    def test_building_the_parser_does_not_load_the_screens(self) -> None:
+        import subprocess, sys
+        code = ("import sys; from mcp_server import cli; cli.build_parser(); "
+                "print('mcp_server.cli_views' in sys.modules, 'mcp_server.cli_steps' in sys.modules)")
+        out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                             cwd=str(Path(__file__).resolve().parents[1]))
+        self.assertEqual("False False", out.stdout.strip(), out.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

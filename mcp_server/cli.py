@@ -1530,7 +1530,8 @@ def start(args: argparse.Namespace) -> int:
         return _start_plain(args)
     _load_env()
     style.header("start")
-    steps = style.steps()
+    from .cli_steps import Steps
+    steps = Steps(style)
     with steps.step("Checked the settings", failed_label="Check the settings") as state:
         try:
             public = _public_endpoint_config(args)
@@ -1614,7 +1615,8 @@ def stop(args: argparse.Namespace) -> int:
         return _stop_plain(args)
     _load_env()
     style.header("stop")
-    steps = style.steps()
+    from .cli_steps import Steps
+    steps = Steps(style)
     _record_intent("stopped", None)
     port = _default_port()
     with steps.step("Stopped the server", failed_label="Stop the server") as state:
@@ -2445,7 +2447,8 @@ _RESTART_STAGES = {
 def _restart_themed(args: argparse.Namespace, style) -> int:
     """In a terminal, restart waits for the launchd worker and shows its stages as steps."""
     style.header("restart")
-    steps = style.steps()
+    from .cli_steps import Steps
+    steps = Steps(style)
     since = time.time()
     with steps.step("Handed the restart to launchd", failed_label="Hand the restart to launchd") as state:
         code = _spawn_detached_restart(argparse.Namespace(**{**vars(args), "wait": False}))
@@ -2970,6 +2973,14 @@ def logs(args: argparse.Namespace) -> int:
     print(f"== {path} (last {args.lines} lines, secrets redacted)")
     print(tail_log(path, args.lines))
     return 0
+
+
+def _themed_command_help(style: Style, parser: argparse.ArgumentParser) -> None:
+    from .cli_views import render_command_help
+    render_command_help(style, parser)
+
+
+ThemedArgumentParser.themed_help = staticmethod(_themed_command_help)
 
 
 def build_parser() -> argparse.ArgumentParser:
