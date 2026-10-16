@@ -25,7 +25,7 @@ class ReminderTests(unittest.TestCase):
 
         def run(script, **kwargs):
             seen["script"] = script
-            return f"OK{_US}x-apple-reminder://1{_US}Call the bank{_US}Inbox{_US}Monday 19 October 2026 09:30:00"
+            return f"OK{_US}x-apple-reminder://1{_US}Call the bank{_US}Inbox{_US}Monday 19 October 2026 09:30:00{_US}#"
         with patch("mcp_server.app_adapters_more._run", side_effect=run):
             result = act(app="reminders", action="create_reminder", title="Call the bank", start="2026-10-19T09:30",
                          list_name="Inbox", notes="About the card")
@@ -42,9 +42,10 @@ class ReminderTests(unittest.TestCase):
 
     def test_a_replay_finds_the_open_reminder_instead_of_a_twin(self) -> None:
         with patch("mcp_server.app_adapters_more._run",
-                   return_value=f"DUPLICATE{_US}id-1{_US}Call the bank{_US}Inbox{_US}"):
+                   return_value=f"DUPLICATE{_US}id-1{_US}Call the bank{_US}Inbox{_US}{_US}#"):
             result = act(app="reminders", action="create_reminder", title="Call the bank")
         self.assertEqual((True, False, True), (result["ok"], result["created"], result["duplicate"]))
+        self.assertEqual("", result["reminder"]["due"])  # no due date: an empty field, not a missing one
         with patch("mcp_server.app_adapters_more._run", return_value="NO_LIST"):
             missing = act(app="reminders", action="create_reminder", title="x", list_name="Nope")
         self.assertEqual("REMINDERS_LIST_NOT_FOUND", missing["reason_code"])
@@ -58,12 +59,13 @@ class NotesAppendTests(unittest.TestCase):
 
         def run(script, **kwargs):
             seen["script"] = script
-            return f"OK{_US}note-1{_US}Groceries{_US}40{_US}61"
+            return f"OK{_US}note-1{_US}Groceries"
         with patch("mcp_server.app_adapters_more._run", side_effect=run):
             result = act(app="notes", action="append_to_note", item_id="note-1", body="milk\n<eggs> & bread")
         self.assertTrue(result["appended"] and result["verified"])
         self.assertIn("&lt;eggs&gt; &amp; bread", seen["script"])  # the text is escaped into the note's HTML
         self.assertIn('does not contain "<eggs> & bread"', seen["script"])  # read back by its last line
+        self.assertNotIn("length of", seen["script"])  # Notes reads "length" as its own term
         with patch("mcp_server.app_adapters_more._run", return_value=f"COUNT{_US}2"):
             many = act(app="notes", action="append_to_note", query="Grocer", body="milk")
         self.assertEqual("NOTES_NOTE_NOT_UNIQUE", many["reason_code"])
@@ -74,7 +76,7 @@ class FreeTimeTests(unittest.TestCase):
         out = []
         for uid, start, minutes, all_day, rule in events:
             out.append(_US.join([uid, uid, "Work", str(int((start - base).total_seconds())), str(minutes * 60),
-                                 "true" if all_day else "false", rule]))
+                                 "true" if all_day else "false", rule, "#"]))
         return _RS.join(out)
 
     def test_free_slots_skip_meetings_weekends_and_all_day_events(self) -> None:
@@ -94,6 +96,19 @@ class FreeTimeTests(unittest.TestCase):
                          [(slot["start"], slot["end"]) for slot in result["free"]])
         self.assertEqual(["holiday"], result["all_day_events_ignored"])
         self.assertNotIn("approximate", result)
+
+    def test_a_row_whose_last_field_is_empty_survives_the_stripped_output(self) -> None:
+        # The unit separator counts as whitespace in Python, so a stripped output lost an empty last field.
+        now = datetime(2026, 10, 16, 8, 0)
+        raw = self.rows(now, ("lunch", datetime(2026, 10, 16, 12, 0), 60, False, "")).strip()
+        with patch("mcp_server.app_adapters_more._run", return_value=raw):
+            result = more.calendar_free_time(date_from=None, date_to="2026-10-16", calendar=None, duration_min=30,
+                                             hours="09:00-13:00", include_weekends=False, limit=5, timeout_s=5, now=now)
+        self.assertEqual(1, result["busy_events"])
+        with patch("mcp_server.app_adapters_more._run",
+                   return_value=_US.join(["p1", "Acme Ltd", "", "", "", "#"]).strip()):
+            contact = act(app="contacts", action="find_contacts", query="Acme")
+        self.assertEqual(([], []), (contact["contacts"][0]["emails"], contact["contacts"][0]["phones"]))
 
     def test_a_rule_it_cannot_expand_makes_the_answer_approximate(self) -> None:
         now = datetime(2026, 10, 16, 8, 0)
@@ -128,7 +143,7 @@ class FreeTimeTests(unittest.TestCase):
 
 class ContactsTests(unittest.TestCase):
     def test_contacts_come_back_with_their_emails_and_phones(self) -> None:
-        raw = _US.join(["p1", "Ayşe Yılmaz", "Acme", "ayse@acme.com, ayse@home.tr", "+90 555 000 00 00"])
+        raw = _US.join(["p1", "Ayşe Yılmaz", "Acme", "ayse@acme.com, ayse@home.tr", "+90 555 000 00 00", "#"])
         with patch("mcp_server.app_adapters_more._run", return_value=raw):
             result = act(app="contacts", action="find_contacts", query="Ayşe")
         self.assertEqual({"id": "p1", "name": "Ayşe Yılmaz", "organization": "Acme",

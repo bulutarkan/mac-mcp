@@ -40,7 +40,7 @@ def reminders_create(title: Optional[str], *, list_name: Optional[str], due: Opt
         due_lines = [_date_setup("dueDate", when),
                      "set allday due date of r to dueDate" if len(due_text) == 10 else "set due date of r to dueDate"]
     target = (f"set chosen to lists whose name is {_apple_string(chosen)}" if chosen else "set chosen to {default list}")
-    readback = ("(id of r as text) & us & (name of r as text) & us & (name of l as text) & us & dueText")
+    readback = '(id of r as text) & us & (name of r as text) & us & (name of l as text) & us & dueText & us & "#"'
     script = "\n".join([
         "set us to ASCII character 31",
         'tell application "Reminders"',
@@ -83,13 +83,13 @@ def reminders_create(title: Optional[str], *, list_name: Optional[str], due: Opt
         raise AppAdapterError("REMINDERS_LIST_NOT_FOUND", "No Reminders list has that name; nothing was created.")
     if status == "DUPLICATE":
         return {"ok": True, "created": False, "duplicate": True, "verified": True,
-                "verification": "existing_reminder_matched", "reminder": dict(zip(_REMINDER_ROW, parts[1:])),
+                "verification": "existing_reminder_matched", "reminder": dict(zip(_REMINDER_ROW, parts[1:5])),
                 "message": "An open reminder with this title is already in that list; nothing was created."}
     if status != "OK":
         raise AppAdapterError("REMINDERS_CREATE_NOT_VERIFIED", "Reminders did not confirm the new reminder.",
                               outcome_unknown=True, automatic_retry=False)
     return {"ok": True, "created": True, "verified": True, "verification": "read_back",
-            "reminder": dict(zip(_REMINDER_ROW, parts[1:]))}
+            "reminder": dict(zip(_REMINDER_ROW, parts[1:5]))}
 
 
 # ── Notes: append_to_note ────────────────────────────────────────────────────
@@ -114,13 +114,12 @@ def notes_append(item_id: Optional[str], query: Optional[str], body: Optional[st
         f"    set matches to every note whose {selector}",
         '    if (count of matches) is not 1 then return "COUNT" & us & ((count of matches) as text)',
         "    set n to item 1 of matches",
-        "    set lengthBefore to length of (plaintext of n)",
         f"    set body of n to (body of n) & {_apple_string(added)}",
         "    set readBack to every note whose id is (id of n)",
         '    if (count of readBack) is not 1 then return "NOT_VERIFIED"',
         "    set n to item 1 of readBack",
         f"    if (plaintext of n) does not contain {_apple_string(tail)} then return \"NOT_VERIFIED\"",
-        '    return "OK" & us & (id of n as text) & us & (name of n as text) & us & (lengthBefore as text) & us & ((length of (plaintext of n)) as text)',
+        '    return "OK" & us & (id of n as text) & us & (name of n as text)',
         "end tell",
     ])
     try:
@@ -253,7 +252,7 @@ tell application "Calendar"
             if ruleText is "missing value" then set ruleText to ""
             set rowText to (uid of e as text) & us & (summary of e as text) & us & (name of c as text) & us & ¬
                 (((start date of e) - fromDate) as text) & us & (((end date of e) - (start date of e)) as text) & us & ¬
-                ((allday event of e) as text) & us & ruleText
+                ((allday event of e) as text) & us & ruleText & us & "#"
             if outText is not "" then set outText to outText & rs
             set outText to outText & rowText
         end repeat
@@ -281,7 +280,8 @@ def calendar_free_time(*, date_from: Optional[str], date_to: Optional[str], cale
     raw = _run(_free_time_script(start, end, chosen), timeout_s=timeout_s, code="CALENDAR_FREE_TIME_FAILED")
     if raw == "NO_CALENDAR":
         raise AppAdapterError("CALENDAR_NOT_FOUND", "No calendar has that name.")
-    rows = _parse_records(raw, ("uid", "summary", "calendar", "offset_s", "length_s", "all_day", "rule"))
+    # Each row ends in "#": the output is stripped, and an empty last field would vanish with it.
+    rows = _parse_records(raw, ("uid", "summary", "calendar", "offset_s", "length_s", "all_day", "rule", "end"))
     base = start.timestamp()
     busy: List[Tuple[datetime, datetime]] = []
     all_day: List[str] = []
@@ -344,7 +344,7 @@ def calendar_free_time(*, date_from: Optional[str], date_to: Optional[str], cale
 
 # ── Contacts: find_contacts ──────────────────────────────────────────────────
 
-_CONTACT_FIELDS = ("id", "name", "organization", "emails", "phones")
+_CONTACT_FIELDS = ("id", "name", "organization", "emails", "phones", "end")
 
 
 def contacts_find(query: Optional[str], *, limit: int, timeout_s: float) -> Dict[str, Any]:
@@ -369,7 +369,7 @@ tell application "Contacts"
         set mailText to (value of emails of p) as text
         set phoneText to (value of phones of p) as text
         set AppleScript's text item delimiters to ""
-        set rowText to (id of p as text) & us & (name of p as text) & us & orgText & us & mailText & us & phoneText
+        set rowText to (id of p as text) & us & (name of p as text) & us & orgText & us & mailText & us & phoneText & us & "#"
         if outText is not "" then set outText to outText & rs
         set outText to outText & rowText
         set rowCount to rowCount + 1
@@ -379,6 +379,7 @@ return outText'''
     raw = _run(script, timeout_s=timeout_s, code="CONTACTS_FIND_FAILED")
     rows = []
     for row in _parse_records(raw, _CONTACT_FIELDS):
+        row.pop("end", None)
         rows.append({**row, "emails": [item for item in row["emails"].split(", ") if item],
                      "phones": [item for item in row["phones"].split(", ") if item]})
     return {"ok": True, "count": len(rows), "contacts": rows, "truncated": len(rows) >= limit}

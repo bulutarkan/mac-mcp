@@ -69,13 +69,13 @@ class AppDataActionTests(unittest.TestCase):
                 except aa.AppAdapterError:
                     pass
             return captured
-        reminder = "OK" + US + "id" + US + "Pay \"rent\"" + US + "Home" + US + ""
+        reminder = "OK" + US + "id" + US + "Pay \"rent\"" + US + "Home" + US + "" + US + "#"
         scripts += more_scripts(lambda: more.reminders_create("Pay \"rent\"", list_name="Home", due="2026-11-01T09:30",
                                                               notes="Line one\nLine two", timeout_s=5), reminder)
         scripts += more_scripts(lambda: more.reminders_create("Call", list_name=None, due="2026-11-01", notes=None,
                                                               timeout_s=5), reminder)
         scripts += more_scripts(lambda: more.notes_append("note-1", None, "milk\n<eggs> & \"bread\"", exact=False,
-                                                          timeout_s=5), "OK" + US + "n" + US + "t" + US + "1" + US + "2")
+                                                          timeout_s=5), "OK" + US + "n" + US + "t")
         scripts += more_scripts(lambda: more.calendar_free_time(date_from=None, date_to=None, calendar="Work",
                                                                 duration_min=30, hours=None, include_weekends=False,
                                                                 limit=5, timeout_s=5), "")
