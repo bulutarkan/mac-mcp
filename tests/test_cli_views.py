@@ -253,6 +253,40 @@ class RestartScreen(ThemedTestCase):
             self.assertIn(label, text)
         self.assertTrue(text.rstrip("\n").endswith("✓ Restarted — pid 4321"), text)
 
+    def test_the_worker_does_not_wait_for_a_watching_terminal(self) -> None:
+        # The themed restart stays alive to show the stages, like --wait: the worker must not
+        # wait for it to exit first (live run: requester_wait failure, no restart).
+        payloads = iter([{"state": "succeeded", "server_pid": 1, "updated_at": 2e9}])
+        with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: ""}), \
+             patch.object(cli, "_spawn_detached_restart", return_value=0) as spawn, \
+             patch.object(cli, "_read_restart_status", side_effect=lambda: next(payloads)), \
+             patch.object(cli.time, "sleep"), redirect_stdout(FakeTTY()):
+            cli.restart(argparse.Namespace(wait=False, timeout=5.0))
+        handed = spawn.call_args[0][0]
+        self.assertFalse(handed.wait)
+        self.assertTrue(handed.requester_waits)
+        import plistlib
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp, \
+             patch.object(cli, "STATE_DIR", cli.Path(temp)), patch.object(cli, "LOG_FILE", cli.Path(temp) / "log"), \
+             patch.object(cli, "_restart_handoff_plist_path", return_value=cli.Path(temp) / "job.plist"), \
+             patch.object(cli, "_restart_handoff_command", return_value=["mac-mcp", "restart"]):
+            for waits, expected in ((True, "0"), (False, str(os.getpid()))):
+                path = cli._write_restart_handoff_plist(argparse.Namespace(wait=False, requester_waits=waits))
+                arguments = plistlib.loads(path.read_bytes())["ProgramArguments"]
+                self.assertIn(f"{cli.RESTART_REQUESTER_ENV}={expected}", arguments)
+
+    def test_a_failure_before_any_stage_says_where_it_stopped(self) -> None:
+        payloads = iter([{"state": "failed", "stage": "requester_wait", "updated_at": 2e9}])
+        out = FakeTTY()
+        with patch.dict(os.environ, {cli.RESTART_HANDOFF_ENV: ""}), \
+             patch.object(cli, "_spawn_detached_restart", return_value=0), \
+             patch.object(cli, "_read_restart_status", side_effect=lambda: next(payloads)), \
+             patch.object(cli.time, "sleep"), redirect_stdout(out):
+            code = cli.restart(argparse.Namespace(wait=False, timeout=5.0))
+        self.assertEqual(1, code)
+        self.assertIn("✗ Restart failed (requester wait) — try: mac-mcp doctor", visible(out.getvalue()))
+
     def test_a_failed_restart_names_the_stage_and_the_repair(self) -> None:
         payloads = iter([
             {"state": "running", "stage": "starting", "updated_at": 2e9},

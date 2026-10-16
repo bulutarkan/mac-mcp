@@ -2098,9 +2098,9 @@ def _write_restart_handoff_plist(args: argparse.Namespace) -> Path:
         f"{RESTART_HANDOFF_ENV}=1",
         f"MAC_MCP_STATE_DIR={STATE_DIR}",
         f"PYTHONPATH={PROJECT_ROOT}",
-        # A waiting requester (restart --wait) stays alive until the outcome,
-        # so the worker must not wait for it to exit first.
-        f"{RESTART_REQUESTER_ENV}={0 if getattr(args, 'wait', False) else os.getpid()}",
+        # A waiting requester (restart --wait, or the themed restart watching its stages)
+        # stays alive until the outcome, so the worker must not wait for it to exit first.
+        f"{RESTART_REQUESTER_ENV}={0 if getattr(args, 'wait', False) or getattr(args, 'requester_waits', False) else os.getpid()}",
         *_restart_handoff_command(args),
     ]
     payload = {
@@ -2451,7 +2451,8 @@ def _restart_themed(args: argparse.Namespace, style) -> int:
     steps = Steps(style)
     since = time.time()
     with steps.step("Handed the restart to launchd", failed_label="Hand the restart to launchd") as state:
-        code = _spawn_detached_restart(argparse.Namespace(**{**vars(args), "wait": False}))
+        # This process watches the stages itself (wait=False) and stays alive meanwhile.
+        code = _spawn_detached_restart(argparse.Namespace(**{**vars(args), "wait": False, "requester_waits": True}))
         state.ok = code == 0
     if code != 0:
         style.summary("error", "The restart could not start", next_command="mac-mcp doctor")
@@ -2493,7 +2494,9 @@ def _watch_restart(style, steps, args: argparse.Namespace, since: float) -> int:
     if payload.get("server_left_running"):
         style.summary("warn", f"Restart not attempted ({payload.get('stage')}): {payload.get('error')}. The server kept running.")
         return 1
-    style.summary("error", "Restart failed", next_command=str(payload.get("repair_command") or "mac-mcp doctor"))
+    # Without a stage step on screen, the summary says where it stopped.
+    where = "" if current is not None else f" ({str(payload.get('stage') or 'unknown').replace('_', ' ')})"
+    style.summary("error", f"Restart failed{where}", next_command=str(payload.get("repair_command") or "mac-mcp doctor"))
     return 1
 
 
