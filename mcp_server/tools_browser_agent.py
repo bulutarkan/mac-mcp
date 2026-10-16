@@ -3358,7 +3358,7 @@ def _read_action(
     A longer page comes in parts: pass next_offset back as offset."""
     max_chars = max(1_000, min(int(action.get("max_chars") or _READ_DEFAULT_CHARS), _READ_MAX_CHARS))
     offset = max(0, int(action.get("offset") or 0))
-    timeout_s = max(0.5, min(float(action.get("timeout_s", 6)), 20.0))
+    timeout_s = max(0.5, min(float(action.get("timeout_s", 12)), 30.0))
     js_calls = 0
     loaded: Optional[Dict[str, Any]] = None
     # A continuation reads the page as it already is.
@@ -3367,33 +3367,48 @@ def _read_action(
         first = _run_json_js(settings, browser, _read_scroll_js({"phase": "start"}), window_index, tab_index, tab_handle)
         js_calls += 1
         origin, height, steps, settled, stopped = first.get("top", 0), int(first.get("height") or 0), 0, 0, "end_of_page"
+        waited, still_loading = 0, int(first.get("busy_total", first.get("busy")) or 0)
+        quiet = 0  # steps in a row where the page neither grew nor showed a loading placeholder
         while True:
             cancellation_checkpoint()
             if time.perf_counter() - started >= timeout_s:
                 stopped = "time_budget"
                 break
-            step = _run_json_js(settings, browser, _read_scroll_js({"phase": "step", "factor": 3}),
+            # One screen per step while anything may still load, so a section that loads when it comes
+            # into view is never jumped over; across a page where nothing loads, up to four screens.
+            factor = 0.95 if still_loading else min(4.0, 0.95 * 2 ** (quiet // 2))
+            step = _run_json_js(settings, browser, _read_scroll_js({"phase": "step", "factor": factor}),
                                 window_index, tab_index, tab_handle)
             js_calls += 1
             steps += 1
             if not step.get("ok"):
                 stopped = "scroll_failed"
                 break
+            # A skeleton on screen is content still arriving: stay until it is replaced (4 s at most).
+            waiting_since = time.perf_counter()
+            while (step.get("busy") and time.perf_counter() - waiting_since < 4.0
+                   and time.perf_counter() - started < timeout_s):
+                cancellable_sleep(0.25)
+                step = _run_json_js(settings, browser, _read_scroll_js({"phase": "check"}),
+                                    window_index, tab_index, tab_handle)
+                js_calls += 1
+                waited += 1
+            still_loading = int(step.get("busy_total", step.get("busy")) or 0)
             grew = int(step.get("height") or 0) > height
             height = max(height, int(step.get("height") or 0))
+            quiet = 0 if grew or still_loading else quiet + 1
             if step.get("at_end"):
                 # At the bottom: wait for a loader; done once the page stops growing.
                 settled = 0 if grew else settled + 1
                 if settled >= 2:
                     break
-                cancellable_sleep(0.3)
-            else:
-                cancellable_sleep(0.05)
+                cancellable_sleep(0.4)
         _run_json_js(settings, browser, _read_scroll_js({"phase": "restore", "top": origin}),
                      window_index, tab_index, tab_handle)
         js_calls += 1
-        loaded = {"steps": steps, "height": height, "stopped": stopped,
-                  "duration_ms": int((time.perf_counter() - started) * 1000)}
+        # still_loading > 0: placeholders were left on the page, so part of it may not be in the text.
+        loaded = {"steps": steps, "height": height, "stopped": stopped, "waits": waited,
+                  "still_loading": still_loading, "duration_ms": int((time.perf_counter() - started) * 1000)}
     out = _run_json_js(settings, browser, _read_text_js({"offset": offset, "max_chars": max_chars}),
                        window_index, tab_index, tab_handle)
     js_calls += 1

@@ -92,6 +92,74 @@ class ReadActionTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual("time_budget", result["loaded"]["stopped"])
 
+    def step_factors(self, busy_total):
+        run, _ = fake_page([60000])
+        factors = []
+
+        def spy(settings, browser, js, *args, **kwargs):
+            reply = run(settings, browser, js, *args, **kwargs)
+            if "mcp-read-scroll" in js:
+                options = json.loads(js.split("var opts=", 1)[1].split(";", 1)[0])
+                if options["phase"] == "step":
+                    factors.append(options["factor"])
+                reply = {**reply, "busy": 0, "busy_total": busy_total}
+            return reply
+
+        with patch.object(agent, "_run_json_js", side_effect=spy), patch.object(agent, "cancellable_sleep"):
+            agent._read_action(None, "Safari", {"type": "read", "timeout_s": 30}, 1, 1, "tab-1")
+        return factors
+
+    def test_no_screen_is_skipped_while_something_on_the_page_is_still_loading(self):
+        # A section that loads when it comes into view (a review list behind a skeleton) is never jumped over.
+        factors = self.step_factors(busy_total=1)
+        self.assertTrue(factors)
+        self.assertTrue(all(factor <= 1.0 for factor in factors), factors)
+
+    def test_a_quiet_page_is_crossed_in_bigger_steps(self):
+        factors = self.step_factors(busy_total=0)
+        self.assertLessEqual(factors[0], 1.0, "it starts one screen at a time")
+        self.assertGreater(max(factors), 2.0, "it speeds up once nothing loads")
+        self.assertLessEqual(max(factors), 4.0)
+
+    def scripted(self, steps, action=None):
+        """Scroll replies from a script: each item is (height, at_end, busy); 'check' replies repeat the last one
+        until its busy count runs out."""
+        calls = {"steps": 0, "checks": 0, "busy": 0}
+
+        def run(_settings, _browser, js, *_args, **_kwargs):
+            if "mcp-read-text" in js:
+                return {"ok": True, "type": "read", "text": "page", "offset": 0, "total_chars": 4, "returned_chars": 4,
+                        "next_offset": None, "complete": True, "headings": []}
+            options = json.loads(js.split("var opts=", 1)[1].split(";", 1)[0])
+            height, at_end, busy = steps[min(calls["steps"], len(steps) - 1)]
+            if options["phase"] == "step":
+                calls["steps"] += 1
+                height, at_end, busy = steps[min(calls["steps"], len(steps) - 1)]
+                calls["busy"] = busy
+            elif options["phase"] == "check":
+                calls["checks"] += 1
+                calls["busy"] = calls["busy"] if calls["busy"] >= 99 else max(0, calls["busy"] - 1)  # 99: never loads
+            return {"ok": True, "top": 0, "height": height, "view": 800, "at_end": at_end, "busy": calls["busy"]}
+
+        with patch.object(agent, "_run_json_js", side_effect=run), patch.object(agent, "cancellable_sleep"):
+            result = agent._read_action(None, "Safari", action or {"type": "read"}, 1, 1, "tab-1")
+        return result, calls
+
+    def test_a_loading_placeholder_on_screen_is_waited_for(self):
+        # Step 2 shows a skeleton that goes away after three checks; then the page grows and ends.
+        result, calls = self.scripted([(3000, False, 0), (3000, False, 0), (3000, False, 3), (9000, False, 0),
+                                       (9000, True, 0), (9000, True, 0), (9000, True, 0)])
+        self.assertTrue(result["ok"])
+        self.assertEqual(3, calls["checks"])
+        self.assertEqual("end_of_page", result["loaded"]["stopped"])
+        self.assertEqual(0, result["loaded"]["still_loading"])
+
+    def test_a_placeholder_that_never_finishes_is_reported(self):
+        result, calls = self.scripted([(3000, False, 0), (3000, True, 99), (3000, True, 99)],
+                                      action={"type": "read", "timeout_s": 2})
+        self.assertTrue(result["ok"])
+        self.assertGreater(result["loaded"]["still_loading"], 0, "the reader is told some content was still loading")
+
     def test_max_chars_is_bounded(self):
         _, state = self.read({"type": "read", "max_chars": 10_000_000, "load_more": False})
         self.assertEqual(agent._READ_MAX_CHARS, state["reads"][0]["max_chars"])

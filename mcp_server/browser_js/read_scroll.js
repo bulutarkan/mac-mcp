@@ -18,6 +18,15 @@ if(doc.scrollHeight<=view+2){
 }
 if(opts.phase==='restore'){box.scrollTop=opts.top||0;}
 else if(opts.phase==='step'){box.scrollTop=box.scrollTop+Math.round(view*opts.factor);}
+// Loading placeholders (skeletons, aria-busy): on screen they mean "wait here", anywhere "not all loaded yet".
+var onScreen=0,anywhere=0,marks=[];
+try{marks=document.querySelectorAll('[aria-busy="true"],.animate-pulse,[class*="skeleton"],[class*="Skeleton"],[class*="shimmer"],[class*="placeholder-glow"]');}catch(e){}
+for(var m=0;m<marks.length&&m<400;m++){
+  var r=marks[m].getBoundingClientRect();if(r.width<8||r.height<8)continue;
+  var cs=null;try{cs=getComputedStyle(marks[m]);}catch(e){}
+  if(cs&&(cs.display==='none'||cs.visibility==='hidden'))continue;
+  anywhere++;if(r.bottom>0&&r.top<innerHeight)onScreen++;
+}
 var top=box.scrollTop,height=box.scrollHeight;
-return __mcpB64({ok:true,top:top,height:height,view:view,at_end:top+view>=height-2});
+return __mcpB64({ok:true,top:top,height:height,view:view,at_end:top+view>=height-2,busy:onScreen,busy_total:anywhere});
 })()
