@@ -359,8 +359,8 @@ class CatalogScreen(ThemedTestCase):
             code, text, *_ = self.catalog(catalog_command="list")
         self.assertEqual(0, code)
         self.assertTrue(text.startswith("  ◆ Mac MCP · catalog\n\n"), text)
-        self.assertIn("● Git Helper  git-helper 1.2.0 · skill · update available, installed 1.1.0", text)
-        self.assertIn("● Notes       notes 0.1.0 · recipe · not installed", text)
+        self.assertIn("● git-helper  1.2.0 · skill · update available, installed 1.1.0 · Git Helper", text)
+        self.assertIn("● notes       0.1.0 · recipe · not installed · Notes", text)
         self.assertIn("Signed by mac-mcp-catalog", text)
         self.assertIn("⚠ 1 update available — try: mac-mcp catalog review git-helper", flat(text))
 
@@ -446,6 +446,8 @@ class ConformanceScreen(ThemedTestCase):
         self.assertIn("Native app  ✓ 1 check passed", text)
         self.assertIn("Planning    ✓ 1 check passed", text)
         self.assertIn("✓ All 5 Computer Use checks passed   100.0% · 0 focus regressions · 0.0s", text)
+        _, _, _, raw, _ = self.run_conformance({**self.report(checks), "duration_ms": 7})
+        self.assertIn("focus regressions · 7 ms", strip_ansi(raw))
 
     def test_a_failure_has_its_fix(self) -> None:
         checks = [{"check_id": "browser.a", "category": "computer_use", "status": "pass", "summary": "A works."},
@@ -616,6 +618,13 @@ class UninstallScreen(ThemedTestCase):
         self.stop_for_uninstall.assert_not_called()
         code, text, *_ = self.uninstall(include_state=True)
         self.assertIn("try: mac-mcp uninstall --yes --include-state", flat(text))
+
+    def test_long_part_names_fit_40_columns(self) -> None:
+        with patch.dict(os.environ, {"COLUMNS": "40"}):
+            code, text, *_ = self.uninstall(include_state=True)
+        long = [line for line in text.split("\n") if len(line) > 40 and "mac-mcp uninstall" not in line]
+        self.assertEqual([], long)
+        self.assertIn("Your settings, keys and tokens, memory, logs and run history", flat(text))
 
     def test_yes_outside_the_default_install_stops_nothing(self) -> None:
         code, text, *_ = self.uninstall(yes=True)

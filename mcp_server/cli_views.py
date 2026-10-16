@@ -405,15 +405,16 @@ def dim_lines(style: Style, text: str, indent: str = INDENT) -> None:
 
 def render_catalog_list(style: Style, listed: dict) -> None:
     rows = []
+    # The id is the label: it is short, and it is what review and install take.
     for pack in listed["packs"]:
         installed = pack.get("installed_version")
         if installed and pack.get("update_available"):
-            rows.append(("warn", pack["name"], f"{pack['id']} {pack['version']} · {pack['kind']}",
-                         f"update available, installed {installed}"))
+            tone, state = "warn", f"update available, installed {installed}"
         elif installed:
-            rows.append(("ok", pack["name"], f"{pack['id']} {pack['version']} · {pack['kind']}", f"installed {installed}"))
+            tone, state = "ok", f"installed {installed}"
         else:
-            rows.append(("info", pack["name"], f"{pack['id']} {pack['version']} · {pack['kind']}", "not installed"))
+            tone, state = "info", "not installed"
+        rows.append((tone, pack["id"], f"{pack['version']} · {pack['kind']}", f"{state} · {pack['name']}"))
     style.header("catalog")
     style.rows(rows)
     if rows:
@@ -496,7 +497,8 @@ def render_conformance(style: Style, report: dict) -> None:
     elif warns:
         style.summary("warn", f"{warns} thing{'s' if warns != 1 else ''} to look at")
     else:
-        took = f"{(report.get('duration_ms') or 0) / 1000:.1f}s"
+        ms = int(report.get("duration_ms") or 0)
+        took = f"{ms} ms" if ms < 1000 else f"{ms / 1000:.1f}s"
         style.summary("ok", f"All {len(checks)} Computer Use checks passed",
                       note=f"{metrics.get('deterministic_pass_rate', 0)}% · {metrics.get('focus_safety_regressions', 0)} "
                            f"focus regressions · {took}")
@@ -526,7 +528,8 @@ def render_uninstall_plan(style: Style, items: list) -> None:
         if not group:
             style.write(f"{INDENT}  {style.paint('nothing', dim=True)}")
         for item in group:
-            style.write(f"{INDENT}  {item.label}")
+            for line in textwrap.wrap(item.label, style.width - len(INDENT) - 2) or [""]:
+                style.write(f"{INDENT}  {line}")
             detail = home_path(item.path) + (f" · {item.note}" if item.note and item.remove else "")
             dim_lines(style, detail, indent=INDENT + "    ")
         for item in group if title == "Kept" else []:
