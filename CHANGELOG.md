@@ -1,4 +1,6 @@
-## Unreleased
+## 2.2.0 r2 - 2026-10-16
+
+**In short:** a signed checkpoint on the 2.2.0 line; the version stays 2.2.0. An agent's clicks in other apps now show as a cursor on the desktop, each session in the menu shows its age and calls, seven more AI apps and agents work with Mac MCP (Antigravity, pi, Cline, Kilo Code, Goose, Kimi Code, Grok Build), the browser reads a whole page in one call, the CLI has a look of its own, and Mac MCP has a new mark. Update with `mac-mcp update` or the new package. The Mac MCP Server helper is unchanged, so granted permissions carry over.
 
 ### An agent cursor on the desktop
 - When an agent clicks, types, scrolls or presses a control in another app's window through Accessibility, a cursor glides there and shows the step (for example "Agent 2 · Clicking Button"), like the browser companion's cursor. The real pointer does not move.
