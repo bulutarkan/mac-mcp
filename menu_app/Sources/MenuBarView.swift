@@ -1464,16 +1464,7 @@ struct MenuBarView: View {
     }
 
     private func sessionLifecycleLabel(_ state: SteeringLifecycleState) -> String {
-        switch state {
-        case .ready: return "Ready"
-        case .queued: return "Steering queued"
-        case .delivered: return "Steering delivered"
-        case .acknowledged: return "Steering acknowledged"
-        case .failed: return "Delivery not completed"
-        case .disconnected: return "Ended"
-        case .expired: return "Ended after idle"
-        case .unknown: return "Status unavailable"
-        }
+        state.label
     }
 
     private func sessionLifecycleSymbol(_ state: SteeringLifecycleState) -> String? {
@@ -1501,12 +1492,8 @@ struct MenuBarView: View {
             let reason = String(error.dropFirst("security:".count)).replacingOccurrences(of: "_", with: " ")
             return base + " · Security blocked: " + reason
         }
-        switch session.effectiveLifecycleState {
-        case .queued, .delivered, .acknowledged, .failed:
-            return base + " · " + sessionLifecycleLabel(session.effectiveLifecycleState)
-        default:
-            return base
-        }
+        let lifecycle = session.effectiveLifecycleState
+        return lifecycle.isSteeringNotice ? base + " · " + lifecycle.label : base
     }
 
     private func compactDuration(_ milliseconds: Int) -> String {

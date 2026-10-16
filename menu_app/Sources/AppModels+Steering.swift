@@ -32,6 +32,27 @@ enum SteeringLifecycleState: String, Decodable, Equatable {
         let value = try decoder.singleValueContainer().decode(String.self)
         self = SteeringLifecycleState(rawValue: value) ?? .unknown
     }
+
+    var label: String {
+        switch self {
+        case .ready: return "Ready"
+        case .queued: return "Steering queued"
+        case .delivered: return "Steering delivered"
+        case .acknowledged: return "Steering acknowledged"
+        case .failed: return "Delivery not completed"
+        case .disconnected: return "Ended"
+        case .expired: return "Ended after idle"
+        case .unknown: return "Status unavailable"
+        }
+    }
+
+    /// Whether a prompt is in flight or failed, which the compact session row spells out.
+    var isSteeringNotice: Bool {
+        switch self {
+        case .queued, .delivered, .acknowledged, .failed: return true
+        default: return false
+        }
+    }
 }
 
 struct SteeringSession: Decodable, Identifiable, Equatable {

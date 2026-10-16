@@ -16,7 +16,9 @@ struct SteeringSessionPresentation {
     var sessionDuration: String { Self.duration(now - session.createdAt) }
     var summary: String {
         let count = session.toolCallCount == 1 ? "1 call" : "\(callCount) calls"
-        return "\(Self.duration(now - session.createdAt, compact: true)) · \(count)"
+        let base = "\(Self.duration(now - session.createdAt, compact: true)) · \(count)"
+        let lifecycle = session.effectiveLifecycleState
+        return lifecycle.isSteeringNotice ? "\(base) · \(lifecycle.label)" : base
     }
     var activityDuration: String? {
         guard session.isWorking else { return nil }

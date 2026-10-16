@@ -84,6 +84,15 @@ import Foundation
         precondition(presentation.callCount == "24")
         precondition(presentation.summary == "12m · 24 calls")
         precondition(SteeringSessionPresentation(session: old, now: 1733, isStale: false).callCount == "—")
+        // A queued or undelivered prompt stays readable on the row, not only as an icon tooltip.
+        let queued = try decode(#", "tool_call_count":24, "lifecycle_state":"queued""#)
+        precondition(SteeringSessionPresentation(session: queued, now: 1733, isStale: false).summary
+                     == "12m · 24 calls · Steering queued")
+        let failed = try decode(#", "tool_call_count":1, "lifecycle_state":"failed""#)
+        precondition(SteeringSessionPresentation(session: failed, now: 1733, isStale: false).summary
+                     == "12m · 1 call · Delivery not completed")
+        let ended = try decode(#", "tool_call_count":24, "lifecycle_state":"disconnected""#)
+        precondition(SteeringSessionPresentation(session: ended, now: 1733, isStale: false).summary == "12m · 24 calls")
         let changed = try decode(#", "tool_call_count":25, "activity_started_at":1700"#)
         precondition(!fresh.isPresentationEquivalent(to: changed))
         let stale = SteeringSessionPresentation(session: fresh, now: 2000, isStale: true)
