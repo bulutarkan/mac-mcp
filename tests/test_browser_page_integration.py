@@ -189,6 +189,171 @@ class BrowserPageIntegrationTests(unittest.TestCase):
         self.assertTrue(matches, f"nothing actionable matches {query!r}")
         return matches[0]
 
+    def test_selector_extraction_pages_without_losing_records_or_text(self) -> None:
+        page = self.open("extraction.html")
+        fields = [{"name": "reviews", "selector": "#reviews > div", "all": True, "max_items": 2}]
+        first = page.payload(agent._extract_action_js(fields, 4000))
+        self.assertEqual(["Review One", "Review Two"], first["data"]["reviews"])
+        self.assertEqual(4, first["matched_counts"]["reviews"])
+        self.assertEqual(3, first["fields"]["reviews"]["eligible_count"])
+        self.assertEqual(2, first["fields"]["reviews"]["returned_count"])
+        self.assertTrue(first["truncated"])
+        fields[0].update(first["fields"]["reviews"]["continuation"])
+        second = page.payload(agent._extract_action_js(fields, 4000))
+        self.assertEqual(["Review Three"], second["data"]["reviews"])
+        self.assertTrue(second["complete"])
+        long = [{"name": "long", "selector": "#long_text", "all": True}]
+        chunks = []
+        for _ in range(12):
+            result = page.payload(agent._extract_action_js(long, 1000))
+            chunks.extend(result["data"]["long"])
+            if result["complete"]:
+                break
+            long[0].update(result["fields"]["long"]["continuation"])
+        self.assertEqual("BEGIN " + "x" * 9000 + " END", "".join(chunks))
+
+    def test_invalid_selector_is_an_error_and_zero_matches_is_not(self) -> None:
+        page = self.open("extraction.html")
+        invalid = page.payload(agent._extract_action_js([{"name": "x", "selector": "div["}], 1000))
+        self.assertFalse(invalid["ok"])
+        self.assertEqual("invalid_selector", invalid["error"])
+        empty = page.payload(agent._extract_action_js([{"name": "x", "selector": ".absent", "all": True}], 1000))
+        self.assertTrue(empty["ok"])
+        self.assertEqual([], empty["data"]["x"])
+        self.assertTrue(empty["complete"])
+
+    def test_scan_continuation_drains_static_rows_before_scrolling(self) -> None:
+        tools = self.tools("extraction.html")
+        action = {"type": "scan", "item_selector": "#large article", "max_items": 150, "max_steps": 50, "settle_ms": 100}
+        rows = []
+        for _ in range(5):
+            result = tools.act([action])["actions"][0]
+            self.assertTrue(result["ok"], result)
+            rows.extend(item["text"] for item in result["items"])
+            if result["complete"]:
+                break
+            self.assertIsNotNone(result["next_cursor"])
+            action["cursor"] = result["next_cursor"]
+        self.assertEqual(["Record " + str(i) for i in range(450)], rows)
+        self.assertTrue(result["complete"])
+
+    def test_scan_continuation_keeps_every_virtualized_row(self) -> None:
+        tools = self.tools("extraction.html")
+        action = {"type": "scan", "item_selector": "#virtual article", "max_items": 17, "max_steps": 50, "settle_ms": 100}
+        rows = []
+        for _ in range(8):
+            result = tools.act([action])["actions"][0]
+            self.assertTrue(result["ok"], result)
+            rows.extend(item["text"] for item in result["items"])
+            if result["complete"]:
+                break
+            action["cursor"] = result["next_cursor"]
+        self.assertEqual(["Virtual " + str(i) for i in range(80)], rows)
+        self.assertTrue(result["complete"])
+
+    def test_scan_long_record_returns_all_text_in_resumable_chunks(self) -> None:
+        tools = self.tools("extraction.html")
+        action = {"type": "scan", "item_selector": "#long_text", "max_chars": 1000, "settle_ms": 100}
+        chunks = []
+        for _ in range(12):
+            result = tools.act([action])["actions"][0]
+            chunks.extend(item["text"] for item in result["items"])
+            if result["complete"]:
+                break
+            action["cursor"] = result["next_cursor"]
+        self.assertEqual("BEGIN " + "x" * 9000 + " END", "".join(chunks))
+        self.assertTrue(result["complete"])
+
+    def test_scan_rejects_cursor_after_navigation_or_query_change(self) -> None:
+        tools = self.tools("extraction.html")
+        action = {"type": "scan", "item_selector": "#large article", "max_items": 2}
+        first = tools.act([action])["actions"][0]
+        cursor = first["next_cursor"]
+        changed = tools.act([{**action, "cursor": cursor, "item_selector": "#reviews div"}])["actions"][0]
+        self.assertFalse(changed["ok"])
+        self.assertEqual("invalid_scan_cursor", changed["error"])
+        # A cursor unknown to this document must not restart from the current scroll position.
+        other = self.open("extraction.html")
+        invalid = other.payload(agent._scan_step_js("", "#large article", "text", {"cursor": cursor}))
+        self.assertFalse(invalid["ok"])
+        self.assertEqual("invalid_scan_cursor", invalid["error"])
+
+    def test_scan_ignores_script_and_hidden_content_and_has_no_false_completion(self) -> None:
+        tools = self.tools("extraction.html")
+        result = tools.act([{"type": "scan", "item_selector": "#empty > *", "max_steps": 2, "settle_ms": 100}])["actions"][0]
+        self.assertEqual([], result["items"])
+        self.assertEqual("no_usable_candidates", result["stopped"])
+        self.assertFalse(result["complete"])
+
+    def test_extract_and_scan_never_split_surrogate_pairs(self) -> None:
+        tools = self.tools("extraction.html")
+        original = "a" * 255 + "😀z"
+        tools.page.js("document.getElementById('long_text').textContent=" + json.dumps(original))
+        fields = [{"name": "x", "selector": "#long_text", "all": True}]
+        extracted = tools.page.payload(agent._extract_action_js(fields, 256))
+        first = extracted["data"]["x"][0]
+        first.encode("utf-8")
+        fields[0].update(extracted["fields"]["x"]["continuation"])
+        second = tools.page.payload(agent._extract_action_js(fields, 256))
+        self.assertEqual(original, first + second["data"]["x"][0])
+        action = {"type": "scan", "item_selector": "#long_text", "max_chars": 256, "settle_ms": 100}
+        scan = tools.act([action])["actions"][0]
+        prefix = "".join(row["text"] for row in scan["items"])
+        prefix.encode("utf-8")
+        action["cursor"] = scan["next_cursor"]
+        suffix = tools.act([action])["actions"][0]
+        self.assertEqual(original, prefix + "".join(row["text"] for row in suffix["items"]))
+
+    def test_scan_keeps_distinct_rows_with_identical_text(self) -> None:
+        tools = self.tools("extraction.html")
+        tools.page.js("document.getElementById('large').innerHTML='<article>Same</article><article>Same</article><article>Different</article>'")
+        scan = tools.act([{"type": "scan", "item_selector": "#large article", "settle_ms": 100}])["actions"][0]
+        self.assertEqual(["Same", "Same", "Different"], [item["text"] for item in scan["items"]])
+
+    def test_scan_cursor_rejects_intervening_scroll_without_claiming_completion(self) -> None:
+        tools = self.tools("extraction.html")
+        action = {"type": "scan", "item_selector": "#virtual article", "max_items": 2}
+        first = tools.act([action])["actions"][0]
+        tools.page.js("var v=document.getElementById('virtual');v.scrollTop=3040;v.dispatchEvent(new Event('scroll'))")
+        resumed = tools.act([{**action, "cursor": first["next_cursor"]}])["actions"][0]
+        self.assertFalse(resumed["ok"])
+        self.assertEqual("invalid_scan_cursor", resumed["error"])
+        self.assertFalse(resumed["complete"])
+
+    def test_extract_excludes_hidden_composed_ancestors_and_semantic_parent_text(self) -> None:
+        page = self.open("extraction.html")
+        page.js("""var host=document.createElement('div');host.style.opacity='0';host.attachShadow({mode:'open'}).innerHTML='<span class="sensitive">TRANSPARENT SHADOW</span>';document.body.appendChild(host);
+            var address=document.createElement('div');address.innerHTML='<span>Address</span><span style="opacity:0">SECRET HIDDEN VALUE</span>';document.body.appendChild(address);""")
+        result = page.payload(agent._extract_action_js([{"name": "x", "selector": ".sensitive", "all": True}, {"name": "address", "semantic": "address", "all": True}], 4000))
+        self.assertEqual([], result["data"]["x"])
+        self.assertNotIn("SECRET HIDDEN VALUE", str(result["data"]["address"]))
+
+    def test_scan_resume_accepts_the_original_child_element_target(self) -> None:
+        tools = self.tools("extraction.html")
+        child = tools.page.js(agent._browser_state_bootstrap() + "\n__mcpId(document.querySelector('#large article'),__mcpState())")
+        action = {"type": "scan", "element_id": child, "item_selector": "#large article", "max_items": 2}
+        first = tools.act([action])["actions"][0]
+        resumed = tools.act([{**action, "cursor": first["next_cursor"]}])["actions"][0]
+        self.assertTrue(resumed["ok"], resumed)
+        self.assertEqual(["Record 2", "Record 3"], [row["text"] for row in resumed["items"]])
+
+    def test_scan_only_rerenders_do_not_retain_detached_item_nodes(self) -> None:
+        tools = self.tools("extraction.html")
+        for _ in range(6):
+            tools.page.js("document.getElementById('large').innerHTML=Array.from({length:100},(_,i)=>'<article>Record '+i+'</article>').join('')")
+            result = tools.act([{"type": "scan", "item_selector": "#large article", "max_items": 2}])["actions"][0]
+            self.assertTrue(result["ok"], result)
+        detached = tools.page.js(agent._browser_state_bootstrap() + "\nObject.values(__mcpState().elements).filter(el=>!el.isConnected).length")
+        self.assertEqual(0, detached)
+
+    def test_display_contents_records_remain_extractable_and_scannable(self) -> None:
+        tools = self.tools("extraction.html")
+        tools.page.js("var el=document.createElement('article');el.id='contents';el.style.display='contents';el.textContent='VISIBLE CONTENTS TEXT';document.body.appendChild(el)")
+        extracted = tools.page.payload(agent._extract_action_js([{"name": "x", "selector": "#contents", "all": True}], 1000))
+        self.assertEqual(["VISIBLE CONTENTS TEXT"], extracted["data"]["x"])
+        scan = tools.act([{"type": "scan", "item_selector": "#contents", "max_steps": 1}])["actions"][0]
+        self.assertEqual(["VISIBLE CONTENTS TEXT"], [row["text"] for row in scan["items"]])
+
     def test_cached_helper_binding_runs_every_script(self) -> None:
         # The fast path sends only a binding to the helpers installed by the first call.
         # A helper missing from it (e.g. an apostrophe in a JS comment) breaks here, in a real engine.

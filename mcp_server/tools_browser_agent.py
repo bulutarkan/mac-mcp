@@ -2866,6 +2866,37 @@ return __mcpB64({{ok:true,matched:!!({expr}),url:location.href,title:document.ti
 }})()'''
 
 
+def _extract_fields_problem(fields: Any) -> Optional[str]:
+    """Validate the shared MCP/REST extraction contract before opening a page."""
+    if not isinstance(fields, list) or not 1 <= len(fields) <= 20:
+        return "fields must contain 1-20 field objects"
+    names = set()
+    for spec in fields:
+        if not isinstance(spec, dict):
+            return "each field must be an object with name and selector (or semantic)"
+        name = spec.get("name")
+        if not isinstance(name, str) or not name.strip() or len(name) > 80 or name in names:
+            return "field names must be unique non-empty strings of at most 80 characters"
+        names.add(name)
+        targets = [spec.get("selector"), spec.get("semantic")]
+        if sum(isinstance(v, str) and bool(v.strip()) for v in targets) != 1:
+            return "each field needs exactly one non-empty selector or semantic target"
+        if any(v is not None and (not isinstance(v, str) or len(v) > 1000) for v in targets):
+            return "selector/semantic must be strings of at most 1000 characters"
+        for key, maximum in (("offset", 1_000_000), ("text_offset", 10_000_000), ("max_items", 100)):
+            if key in spec and (type(spec[key]) is not int or not (1 if key == "max_items" else 0) <= spec[key] <= maximum):
+                return f"{key} is outside its integer bounds"
+        if "all" in spec and not isinstance(spec["all"], bool):
+            return "all must be true or false"
+        if "attr" in spec and (not isinstance(spec["attr"], str) or not spec["attr"].strip() or len(spec["attr"]) > 100):
+            return "attr must be a non-empty string of at most 100 characters"
+        if "regex" in spec and (not isinstance(spec["regex"], str) or len(spec["regex"]) > 1000):
+            return "regex must be a string of at most 1000 characters"
+        if "flags" in spec and (not isinstance(spec["flags"], str) or len(spec["flags"]) > 10):
+            return "flags must be a string of at most 10 characters"
+    return None
+
+
 def _extract_action_js(fields: List[Dict[str, Any]], max_chars: int) -> str:
     specs = json.dumps(fields, ensure_ascii=False)
     aliases = json.dumps(_SEMANTIC_EXTRACT_ALIASES, ensure_ascii=False)
@@ -2885,11 +2916,10 @@ def _extract_action(
     tab_index: Optional[int],
     tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
-    fields = action.get("fields") or []
-    if not isinstance(fields, list) or not fields:
-        return {"ok": False, "type": "extract", "error": "fields must be a non-empty list", "_js_calls": 0}
-    if len(fields) > 20:
-        return {"ok": False, "type": "extract", "error": "fields may contain at most 20 items", "_js_calls": 0}
+    fields = action.get("fields")
+    problem = _extract_fields_problem(fields)
+    if problem:
+        return {"ok": False, "type": "extract", "error": "invalid_extract_fields", "detail": problem, "_js_calls": 0}
     out = _run_json_js(
         settings, browser, _extract_action_js(fields, int(action.get("max_chars", 4000))),
         window_index, tab_index, tab_handle,
@@ -3201,7 +3231,7 @@ _SCAN_MAX_STEPS = 50
 _SCAN_PAYLOAD_BYTES = 48_000
 
 
-def _scan_step_js(container_id: str, item_selector: str, key_field: str) -> str:
+def _scan_step_js(container_id: str, item_selector: str, key_field: str, options: Optional[Dict[str, Any]] = None) -> str:
     """Read the items rendered in a scroll container, then scroll it by most of one screen."""
     cid, sel, field = json.dumps(container_id), json.dumps(item_selector), json.dumps(key_field)
     return _fill_js(_browser_js("scan_step.js"), {
@@ -3209,85 +3239,94 @@ def _scan_step_js(container_id: str, item_selector: str, key_field: str) -> str:
         "__CONTAINER_ID__": cid,
         "__ITEM_SELECTOR__": sel,
         "__KEY_FIELD__": field,
+        "__SCAN_OPTIONS__": json.dumps(options or {}, ensure_ascii=False),
     })
 
 
 def _scan_action(
-    settings: Settings,
-    browser: str,
-    action: Dict[str, Any],
-    window_index: int,
-    tab_index: Optional[int],
-    tab_handle: Optional[str] = None,
+    settings: Settings, browser: str, action: Dict[str, Any], window_index: int,
+    tab_index: Optional[int], tab_handle: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Collect a long or virtualized list by scrolling its container in bounded steps.
+    """Drain rendered rows before scrolling; resume bounded calls in the same document.
 
-    Each step reads the items currently rendered and scrolls by most of one
-    screen (and fires a scroll event so lazy loaders fetch more); items are
-    de-duplicated by text (or key_field='href'). After two steps with nothing
-    new it stops at end_of_list (at the bottom) or no_new_items (loading
-    stalled midway); max_items, max_steps, timeout_s and the payload budget
-    also stop it, and the result says which.
+    The page holds a short-lived dedup/partial-text cursor. No pending rendered
+    row is scrolled away when an item or output limit is reached.
     """
     max_items = max(1, min(int(action.get("max_items", 100)), _SCAN_MAX_ITEMS))
     max_steps = max(1, min(int(action.get("max_steps", 15)), _SCAN_MAX_STEPS))
+    max_chars = max(256, min(int(action.get("max_chars", 20_000)), 20_000))
     timeout_s = max(1.0, min(float(action.get("timeout_s", 20)), 60.0))
     settle_s = max(0.1, min(float(action.get("settle_ms", 400)) / 1000.0, 3.0))
     key_field = "href" if str(action.get("key_field") or "").lower() == "href" else "text"
-    selector = str(action.get("item_selector") or "")[:300]
+    selector = str(action.get("item_selector") or "")
+    if len(selector) > 1000:
+        return {"ok": False, "type": "scan", "error": "invalid_item_selector", "complete": False, "_js_calls": 0}
+    cursor = action.get("cursor")
+    if cursor is not None and (not isinstance(cursor, str) or not re.fullmatch(r"scan_[a-f0-9]{32}", cursor)):
+        return {"ok": False, "type": "scan", "error": "invalid_scan_cursor", "complete": False, "_js_calls": 0}
+    new_cursor = "scan_" + uuid.uuid4().hex
     started = time.perf_counter()
     seen: Dict[str, Dict[str, Any]] = {}
-    stalls = steps = used = 0
+    stalls = steps = used = chars = 0
     container: Dict[str, Any] = {}
     alternatives: List[Dict[str, Any]] = []
     stopped = ""
+    total_seen = 0
     while not stopped:
         cancellation_checkpoint()
-        # Later steps keep scrolling the container the first step chose.
         container_id = str(action.get("element_id") or container.get("element_id") or "")
         step = _run_json_js(
-            settings, browser, _scan_step_js(container_id, selector, key_field),
-            window_index, tab_index, tab_handle,
+            settings, browser, _scan_step_js(container_id, selector, key_field, {
+                "cursor": cursor, "new_cursor": new_cursor,
+                "max_items": max_items - len(seen), "max_chars": max_chars - chars,
+                "max_bytes": _SCAN_PAYLOAD_BYTES - used,
+            }), window_index, tab_index, tab_handle,
         )
         steps += 1
         if steps == 1 and step.get("other_containers"):
             alternatives = step["other_containers"]
         if not step.get("ok"):
-            return {"type": "scan", **step, "items": [seen[k] for k in seen], "steps": steps, "_js_calls": steps}
+            return {"type": "scan", **step, "items": list(seen.values()), "complete": False,
+                    "steps": steps, "next_cursor": cursor, "_js_calls": steps}
+        cursor = step.get("next_cursor") or cursor
+        total_seen = int(step.get("total_seen", total_seen))
+        previous_top = container.get("scroll_top")
         container = step.get("container") or container
+        moved = previous_top is not None and container.get("scroll_top") != previous_top
         new = 0
         for item in step.get("items") or []:
             key = str(item.get("key") or "")
             if not key or key in seen:
                 continue
-            record = {"text": item.get("text") or ""}
-            if item.get("href"):
-                record["href"] = item["href"]
-            used += len(json.dumps(record, ensure_ascii=False))
+            record = {k: item[k] for k in ("text", "href", "record_id", "text_offset", "text_complete") if k in item}
+            record.setdefault("text", "")
+            used += len(json.dumps(record, ensure_ascii=False).encode("utf-8"))
+            chars += len(record["text"])
             seen[key] = record
             new += 1
-            if len(seen) >= max_items:
-                stopped = "max_items"
-                break
-            if used >= _SCAN_PAYLOAD_BYTES:
-                stopped = "payload_budget"
-                break
-        stalls = 0 if new else stalls + 1
-        if stopped:
-            break
-        if stalls >= 2:
-            # Two steps with nothing new: the end, or loading that stalled midway.
-            stopped = "end_of_list" if step.get("at_end") else "no_new_items"
+        stalls = 0 if new or moved else stalls + 1
+        if step.get("stopped"):
+            stopped = step["stopped"]
+        elif len(seen) >= max_items:
+            stopped = "max_items"
+        elif used >= _SCAN_PAYLOAD_BYTES or chars >= max_chars:
+            stopped = "payload_budget"
+        elif stalls >= 2:
+            stopped = ("no_usable_candidates" if not total_seen and not seen else
+                       "end_of_list" if step.get("at_end") else "no_new_items")
         elif steps >= max_steps:
             stopped = "max_steps"
         elif time.perf_counter() - started >= timeout_s:
             stopped = "timeout"
         else:
             cancellable_sleep(settle_s)
+    complete = stopped == "end_of_list"
     return {
-        "ok": True, "type": "scan", "items": list(seen.values()), "count": len(seen), "stopped": stopped,
-        "complete": stopped == "end_of_list", "steps": steps, "key_field": key_field, "container": container,
-        "other_containers": alternatives,
+        "ok": True, "type": "scan", "items": list(seen.values()), "count": len(seen),
+        "stopped": stopped, "complete": complete, "has_more": not complete,
+        "next_cursor": None if complete else cursor, "total_seen": total_seen,
+        "steps": steps, "key_field": key_field, "container": container,
+        "other_containers": alternatives, "coverage": "observed_rendered_rows",
         "duration_ms": int((time.perf_counter() - started) * 1000), "_js_calls": steps,
     }
 
@@ -4119,6 +4158,10 @@ def normalize_act_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             problem = _fill_values_problem(action.get("values"))
             if problem:
                 raise mark_not_executed(HTTPException(status.HTTP_400_BAD_REQUEST, f"actions[{index}] (fill) {problem}"))
+        if typ == "extract":
+            problem = _extract_fields_problem(action.get("fields"))
+            if problem:
+                raise mark_not_executed(HTTPException(status.HTTP_400_BAD_REQUEST, f"actions[{index}] (extract) {problem}"))
         item = dict(action)
         item["type"] = typ
         normalized.append(item)
