@@ -500,3 +500,38 @@ def render_conformance(style: Style, report: dict) -> None:
         style.summary("ok", f"All {len(checks)} Computer Use checks passed",
                       note=f"{metrics.get('deterministic_pass_rate', 0)}% · {metrics.get('focus_safety_regressions', 0)} "
                            f"focus regressions · {took}")
+
+
+def note_lines(style: Style, text: str, tone: str) -> None:
+    """A sentence with its symbol, wrapped under its own first word."""
+    lines = textwrap.wrap(str(text), style.width - len(INDENT) - 2, break_on_hyphens=False) or [""]
+    for index, line in enumerate(lines):
+        lead = f"{style.paint(SYMBOLS[tone], tone)} " if index == 0 else "  "
+        style.write(f"{INDENT}{lead}{line}")
+
+
+UNINSTALL_NOTES = ("Nothing is deleted: removed parts go to one folder in the Trash, so you can put them back.",
+                   "Not changed: AI app configurations that point at Mac MCP, the PATH line in ~/.zprofile, "
+                   "saved logins in your Keychain, and the Chrome companion (remove it at chrome://extensions).")
+
+
+def render_uninstall_plan(style: Style, items: list) -> None:
+    """What uninstall would move to the Trash and what it keeps; each part's path under its name."""
+    moving = [item for item in items if item.remove and item.exists]
+    kept = [item for item in items if not item.remove and item.exists]
+    flags = {"state": ("--include-state", "your settings, keys and tokens"), "source": ("--include-source", "the source checkout")}
+    style.header("uninstall")
+    for title, group in (("Would move to the Trash", moving), ("Kept", kept)):
+        style.write(f"{INDENT}{style.paint(title, bold=True)}")
+        if not group:
+            style.write(f"{INDENT}  {style.paint('nothing', dim=True)}")
+        for item in group:
+            style.write(f"{INDENT}  {item.label}")
+            detail = home_path(item.path) + (f" · {item.note}" if item.note and item.remove else "")
+            dim_lines(style, detail, indent=INDENT + "    ")
+        for item in group if title == "Kept" else []:
+            if item.key in flags:
+                flag, what = flags[item.key]
+                dim_lines(style, f"Add {flag} to move {what} too.", indent=INDENT + "  ")
+        style.write()
+    dim_lines(style, UNINSTALL_NOTES[0])

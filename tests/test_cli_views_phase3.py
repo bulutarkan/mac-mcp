@@ -561,5 +561,102 @@ class VenvRepairQuiet(unittest.TestCase):
         self.assertNotIn("capture_output", run.call_args.kwargs)
 
 
+class UninstallScreen(ThemedTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.runtime, self.state, self.app = self.root / "runtime", self.root / "state", self.root / "Mac MCP.app"
+        for path in (self.runtime, self.state, self.app):
+            path.mkdir()
+        for target, value in (("PROJECT_ROOT", self.runtime), ("STATE_DIR", self.state)):
+            patcher = patch.object(cli, target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name, value in (("_uninstall_app_path", self.app), ("default_cli_path", self.root / "cli"),
+                            ("_launch_agents_dir", self.root / "agents"), ("_uninstall_source_path", self.root / "src"),
+                            ("_trash_root", self.root / "Trash")):
+            patcher = patch.object(cli, name, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name in ("_forget_package_receipt", "_stop_for_uninstall", "_launchctl_run"):
+            patcher = patch.object(cli, name)
+            setattr(self, name.strip("_"), patcher.start())
+            self.addCleanup(patcher.stop)
+
+    def uninstall(self, yes=False, include_state=False):
+        return self.run_cmd(cli.uninstall, NS(yes=yes, include_state=include_state, include_source=False))
+
+    def test_preview(self) -> None:
+        code, text, *_ = self.uninstall()
+        self.assertEqual(0, code)
+        self.assertTrue(text.startswith("  ◆ Mac MCP · uninstall\n\n"), text)
+        self.assertIn("  Would move to the Trash\n", text)
+        self.assertIn("    Menu bar app\n", text)
+        self.assertIn(f"{self.app} · includes the Safari Visual Companion extension", flat(text))
+        self.assertIn("  Kept\n", text)
+        self.assertIn("Add --include-state to move your settings, keys and tokens too.", flat(text))
+        self.assertIn("Not changed: AI app configurations", flat(text))
+        self.assertIn("⚠ Nothing was changed — try: mac-mcp uninstall --yes", flat(text))
+        self.assertTrue(self.app.exists())
+        self.stop_for_uninstall.assert_not_called()
+        code, text, *_ = self.uninstall(include_state=True)
+        self.assertIn("try: mac-mcp uninstall --yes --include-state", flat(text))
+
+    def test_yes_outside_the_default_install_stops_nothing(self) -> None:
+        code, text, *_ = self.uninstall(yes=True)
+        self.assertEqual(0, code)
+        self.stop_for_uninstall.assert_not_called()
+        self.launchctl_run.assert_not_called()
+        self.assertIn("⚠ This is not the default install, so its server and login jobs were not stopped", flat(text))
+        self.assertIn("✓ Moved 2 parts to the Trash", text)
+        self.assertIn("✓ Mac MCP is removed", text)
+        self.assertIn("Mac MCP uninstall ", text)
+        self.assertFalse(self.app.exists())
+
+    def test_yes_in_the_default_install_stops_first(self) -> None:
+        with patch.object(cli, "DEFAULT_STATE_DIR", self.state):
+            code, text, *_ = self.uninstall(yes=True)
+        self.assertEqual(0, code)
+        self.stop_for_uninstall.assert_called_once_with(self.app)
+        self.assertEqual(2, self.launchctl_run.call_count)
+        self.assertIn("✓ Stopped Mac MCP", text)
+        self.assertLess(text.index("Stopped Mac MCP"), text.index("Moved 2 parts"))
+
+    def test_a_part_that_could_not_move(self) -> None:
+        from mcp_server import lifecycle
+        failed = [{"key": "app", "path": str(self.app), "result": "failed", "error": "PermissionError"},
+                  {"key": "runtime", "path": str(self.runtime), "result": "moved", "to": "/T/runtime"}]
+        with patch.object(lifecycle, "apply_uninstall", return_value=failed):
+            code, text, *_ = self.uninstall(yes=True)
+        self.assertEqual(1, code)
+        self.assertIn("✗ Move Mac MCP to the Trash", text)
+        self.assertIn(f"{self.app}: PermissionError", flat(text))
+        self.assertIn("✗ 1 part could not move — remove it by hand", flat(text))
+
+    def test_nothing_is_imported_after_the_runtime_moves(self) -> None:
+        import builtins
+        from mcp_server import lifecycle
+        real_import, real_apply = builtins.__import__, lifecycle.apply_uninstall
+        guard = {}
+
+        def guarded(name, globals=None, locals=None, fromlist=(), level=0):
+            if guard.get("moved") and (level > 0 or name.startswith("mcp_server")):
+                raise ImportError(f"imported {name} after the runtime moved")
+            return real_import(name, globals, locals, fromlist, level)
+
+        def apply(*args, **kwargs):
+            result = real_apply(*args, **kwargs)
+            guard["moved"] = True
+            return result
+
+        with patch.object(lifecycle, "apply_uninstall", side_effect=apply), patch.object(builtins, "__import__", guarded):
+            code, text, *_ = self.uninstall(yes=True)
+        self.assertEqual(0, code, text)
+        self.assertIn("✓ Mac MCP is removed", text)
+
+
 if __name__ == "__main__":
     unittest.main()

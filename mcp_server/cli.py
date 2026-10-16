@@ -839,6 +839,9 @@ def uninstall(args: argparse.Namespace) -> int:
         include_state=bool(getattr(args, "include_state", False)),
         include_source=bool(getattr(args, "include_source", False)),
     )
+    style = Style.for_stream()
+    if style is not None:
+        return _uninstall_themed(args, style, items, app)
     if not getattr(args, "yes", False):
         print(lifecycle.format_plan(items))
         extra = "".join(
@@ -864,6 +867,61 @@ def uninstall(args: argparse.Namespace) -> int:
     for row in failed:
         print(f"Could not move {row['path']} ({row.get('error')}); remove it by hand if you want it gone.")
     return 1 if failed else 0
+
+
+def _uninstall_command(args: argparse.Namespace) -> str:
+    extra = "".join(
+        f" --{name.replace('_', '-')}" for name in ("include_state", "include_source") if getattr(args, name, False)
+    )
+    return f"mac-mcp uninstall --yes{extra}"
+
+
+def _uninstall_themed(args: argparse.Namespace, style, items: list, app: Path) -> int:
+    """uninstall in a terminal. Everything the screen needs is imported first: the move takes
+    away the runtime this command runs from."""
+    from . import lifecycle
+    from .cli_steps import Steps
+    from .cli_views import UNINSTALL_NOTES, dim_lines, note_lines, render_uninstall_plan
+
+    if not getattr(args, "yes", False):
+        render_uninstall_plan(style, items)
+        dim_lines(style, UNINSTALL_NOTES[1])
+        style.summary("warn", "Nothing was changed", next_command=_uninstall_command(args))
+        return 0
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    trash_root = _trash_root()
+    folder = trash_root / f"Mac MCP uninstall {stamp}"
+    style.header("uninstall")
+    steps = Steps(style)
+    if STATE_DIR.resolve() == DEFAULT_STATE_DIR.resolve():
+        with steps.step("Stopped Mac MCP", failed_label="Stop Mac MCP"):
+            _stop_for_uninstall(app)
+            for label in (SUPERVISOR_LABEL, CLOUDFLARE_LAUNCHD_LABEL):
+                _launchctl_run("bootout", _launchctl_target(label), capture=True)
+    else:
+        # launchd labels are shared with the default install; unloading them from here
+        # would stop the owner's real server and tunnel.
+        note_lines(style, "This is not the default install, so its server and login jobs were not stopped; "
+                          "stop them yourself.", "warn")
+        style.write()
+    failed: list = []
+    with steps.step("Moved Mac MCP to the Trash", failed_label="Move Mac MCP to the Trash") as state:
+        results = lifecycle.apply_uninstall(items, trash_root=trash_root, stamp=stamp)
+        _forget_package_receipt()
+        failed = [row for row in results if row["result"] == "failed"]
+        moved = sum(1 for row in results if row["result"] == "moved")
+        state.label = f"Moved {_plural(moved, 'part')} to the Trash"
+        for row in failed:
+            print(f"{home_path(row['path'])}: {row.get('error')}")
+        state.ok = not failed
+    style.write()
+    dim_lines(style, UNINSTALL_NOTES[1])
+    if failed:
+        count = len(failed)
+        style.summary("error", f"{_plural(count, 'part')} could not move — remove {'it' if count == 1 else 'them'} by hand")
+        return 1
+    style.summary("ok", "Mac MCP is removed", note=home_path(folder))
+    return 0
 
 
 def privacy_delete(args: argparse.Namespace) -> int:
