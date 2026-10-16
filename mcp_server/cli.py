@@ -2648,6 +2648,11 @@ def doctor(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps({**report, "exit_code": code}, ensure_ascii=False, indent=2, sort_keys=True))
     else:
+        style = Style.for_stream()
+        if style is not None:
+            from .cli_views import render_doctor
+            render_doctor(style, report, bool(getattr(args, "verbose", False)), str(support_path) if support_path else None)
+            return code
         print(format_report(report))
         if support_path is not None:
             print(f"Support bundle: {support_path}")
@@ -3075,6 +3080,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor = sub.add_parser("doctor", help="Diagnose local Mac MCP runtime, permissions, dependencies, and companions.")
     p_doctor.add_argument("--json", action="store_true", help="Print the diagnostic report as JSON.")
     p_doctor.add_argument("--support-bundle", nargs="?", const="", default=None, metavar="PATH", help="Write an owner-only redacted support bundle. Optional PATH overrides the default location.")
+    p_doctor.add_argument("--verbose", action="store_true", help="In a terminal, list every check.")
     p_doctor.add_argument("--local-only", action="store_true", help="Exit 0 when the local runtime is healthy even if the selected public endpoint is unreachable.")
     p_doctor.set_defaults(func=doctor)
 

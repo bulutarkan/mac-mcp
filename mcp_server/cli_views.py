@@ -163,3 +163,75 @@ def render_status(style: Style, report: dict) -> None:
         style.summary("error", remediation or f"Port {server['port']} is taken")
     else:
         style.summary("warn", remediation or "The public address is not available")
+
+
+DOCTOR_GROUPS = {
+    "runtime": "Runtime", "cli": "Runtime", "state": "Runtime", "system": "Runtime",
+    "server": "Server", "process": "Server", "network": "Server", "auth": "Server", "config": "Server", "security": "Server",
+    "permissions": "Permissions", "dependencies": "Dependencies", "companion": "Dependencies",
+    "agents": "Agents", "update": "Updates",
+}
+_GROUP_ORDER = ["Runtime", "Server", "Permissions", "Dependencies", "Agents", "Updates", "Other"]
+# Groups whose passes read better as names than as a count.
+_NAMED_PASSES = {"Permissions", "Dependencies"}
+_TONES = {"pass": "ok", "warn": "warn", "fail": "error", "info": "info"}
+
+
+_TOOL_NAMES = {"osascript", "cliclick", "cloudflared", "ngrok"}
+
+
+def _pass_name(check_id: str) -> str:
+    """Tools keep their own lower-case name; the rest read as words (Accessibility)."""
+    name = check_id.split(".", 1)[-1].replace("_", " ")
+    return name if name in _TOOL_NAMES else name[:1].upper() + name[1:]
+
+
+def render_doctor(style: Style, report: dict, verbose: bool, support_path: Optional[str]) -> None:
+    groups: dict = {}
+    for check in report.get("checks", []):
+        group = DOCTOR_GROUPS.get(str(check.get("category") or ""), "Other")
+        groups.setdefault(group, []).append(check)
+    width = max((len(name) for name in groups), default=0) + 2
+    style.header("doctor")
+    for name in [group for group in _GROUP_ORDER if group in groups]:
+        checks = groups[name]
+        # (symbol tone or None, text, dim): each entry wraps inside its own column.
+        entries: list = []
+        passed = [check for check in checks if check.get("status") == "pass"]
+        if passed and not verbose:
+            if name in _NAMED_PASSES:
+                text = " · ".join(_pass_name(str(check["check_id"])) for check in passed)
+            else:
+                text = f"{len(passed)} check{'s' if len(passed) != 1 else ''} passed"
+            entries.append(("ok", text, False))
+        for check in checks:
+            status = str(check.get("status") or "info")
+            if status == "pass" and not verbose:
+                continue
+            entries.append((_TONES.get(status, "info"), str(check.get("summary")), False))
+            if check.get("remediation") and status in {"warn", "fail"}:
+                entries.append((None, "Fix: " + str(check["remediation"]), True))
+        first = True
+        room = style.width - len(INDENT) - width - 2
+        for tone, text, dim in entries:
+            lead = f"{style.paint(SYMBOLS[tone], tone)} " if tone else "  "
+            for index, part in enumerate(textwrap.wrap(text, max(20, room), break_on_hyphens=False) or [""]):
+                label = style.paint(name.ljust(width), bold=True) if first else " " * width
+                shown = style.paint(part, dim=True) if dim else part
+                style.write(f"{INDENT}{label}{lead if index == 0 else '  '}{shown}")
+                first = False
+    if support_path:
+        style.write()
+        style.write(f"{INDENT}Support bundle  {support_path}")
+    fails = sum(1 for check in report.get("checks", []) if check.get("status") == "fail")
+    warns = sum(1 for check in report.get("checks", []) if check.get("status") == "warn")
+    hint = "   " + style.paint("(--verbose: every check)", dim=True) if not verbose else ""
+    if fails:
+        parts = [f"{fails} problem{'s' if fails != 1 else ''}"] + ([f"{warns} warning{'s' if warns != 1 else ''}"] if warns else [])
+        style.summary("error", " and ".join(parts) + " — fix them, then run: mac-mcp doctor")
+    elif report.get("health") == "degraded":
+        style.summary("warn", "The local runtime is fine; the public address is not available", next_command="mac-mcp status")
+    elif warns:
+        style.summary("warn", f"{warns} thing{'s' if warns != 1 else ''} to look at")
+    else:
+        style.summary("ok", "Everything Mac MCP needs is in place." + hint)

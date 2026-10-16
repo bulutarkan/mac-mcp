@@ -270,5 +270,75 @@ class RestartScreen(ThemedTestCase):
         self.assertTrue(text.rstrip("\n").endswith("✗ Restart failed — try: mac-mcp doctor"), text)
 
 
+class DoctorScreen(ThemedTestCase):
+    def report(self, *checks, health="healthy", ok=True):
+        return {"ok": ok, "health": health, "counts": {}, "checks": [
+            {"check_id": check_id, "category": check_id.split(".")[0], "status": status, "summary": summary,
+             **({"remediation": fix} if fix else {})}
+            for check_id, status, summary, fix in checks]}
+
+    def render(self, report, verbose=False) -> str:
+        out = FakeTTY()
+        cli_views.render_doctor(Style.for_stream(out, env=TTY_ENV), report, verbose, None)
+        return visible(out.getvalue())
+
+    def test_passes_fold_per_group_and_notes_are_written_out(self) -> None:
+        text = self.render(self.report(
+            ("runtime.python", "pass", "Python 3.14.7 on arm64", None),
+            ("runtime.venv", "pass", "Runtime Python is present.", None),
+            ("permissions.accessibility", "pass", "Accessibility is allowed.", None),
+            ("permissions.microphone", "info", "Microphone is asked the first time you use voice.", None),
+            ("dependencies.cloudflared", "pass", "cloudflared is available.", None),
+        ))
+        self.assertTrue(text.startswith("  ◆ Mac MCP · doctor\n\n"))
+        self.assertIn("Runtime       ✓ 2 checks passed", text)
+        self.assertIn("Permissions   ✓ Accessibility", text)
+        self.assertIn("ℹ Microphone is asked the first time you use voice.", text)
+        self.assertIn("Dependencies  ✓ cloudflared", text)
+        self.assertTrue(text.rstrip("\n").endswith("✓ Everything Mac MCP needs is in place.   (--verbose: every check)"), text)
+
+    def test_warnings_and_failures_show_their_fix(self) -> None:
+        text = self.render(self.report(
+            ("server.health", "fail", "The server does not answer /health.", "Run mac-mcp restart."),
+            ("agents.worktrees", "warn", "2 agent worktrees hold unreviewed changes.", "Review them in Settings › Agents."),
+            ok=False))
+        self.assertIn("✗ The server does not answer /health.", text)
+        self.assertIn("Fix: Run mac-mcp restart.", text)
+        self.assertIn("⚠ 2 agent worktrees hold unreviewed changes.", text)
+        self.assertTrue(text.rstrip("\n").endswith("✗ 1 problem and 1 warning — fix them, then run: mac-mcp doctor"), text)
+
+    def test_long_notes_and_fixes_wrap_inside_the_terminal(self) -> None:
+        long_fix = "Port 8765 is used by Python (pid 50849). Mac MCP never stops programs it did not start: quit that program."
+        out = FakeTTY()
+        style = Style.for_stream(out, env={**TTY_ENV, "COLUMNS": "60"})
+        cli_views.render_doctor(style, self.report(
+            ("server.port", "fail", "Configured Mac MCP port 8765 is used by Python and cannot be used now.", long_fix), ok=False),
+            False, None)
+        lines = visible(out.getvalue()).rstrip("\n").split("\n")
+        self.assertTrue(all(len(line) <= 60 for line in lines), [line for line in lines if len(line) > 60])
+        fix_lines = [line for line in lines if "Fix:" in line or "never stops" in line or "quit that" in line]
+        self.assertGreater(len(fix_lines), 1)
+        column = lines[[i for i, line in enumerate(lines) if "Fix:" in line][0]].index("Fix:")
+        self.assertTrue(all(line[:column].strip() == "" for line in fix_lines), fix_lines)
+
+    def test_an_unknown_category_lands_in_other(self) -> None:
+        text = self.render(self.report(("brandnew.check", "warn", "Something new to look at.", None), ok=True))
+        self.assertIn("Other", text)
+        self.assertIn("⚠ Something new to look at.", text)
+
+    def test_verbose_lists_every_check(self) -> None:
+        text = self.render(self.report(("runtime.python", "pass", "Python 3.14.7 on arm64", None)), verbose=True)
+        self.assertIn("✓ Python 3.14.7 on arm64", text)
+
+    def test_doctor_command_json_and_plain_are_untouched(self) -> None:
+        from mcp_server import diagnostics
+        report = self.report(("runtime.python", "pass", "Python 3.14.7 on arm64", None))
+        out = FakeTTY()
+        with patch.object(diagnostics, "run_doctor", return_value=report), redirect_stdout(out):
+            code = cli.doctor(argparse.Namespace(json=True, support_bundle=None, local_only=False, verbose=False))
+        self.assertEqual(0, code)
+        self.assertTrue(out.getvalue().lstrip().startswith("{"))
+
+
 if __name__ == "__main__":
     unittest.main()
