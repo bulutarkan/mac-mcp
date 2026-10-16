@@ -537,11 +537,17 @@ class ClientsScreen(ThemedTestCase):
         self.assertEqual(0, code)
         self.assertTrue(text.startswith("  ◆ Mac MCP · clients\n\n"), text)
         self.assertIn("● Codex           added", text)
-        self.assertIn("● Claude Desktop added the old way · key in its settings — mac-mcp connect --client claude-desktop",
-                      " ".join(text.split()))
+        self.assertIn("● Claude Desktop  added the old way · key in its settings", text)
         self.assertIn("● Kimi Code       on this Mac · not added", text)
         self.assertIn("Not on this Mac: Goose · pi", text)
-        self.assertIn("✓ Mac MCP is added to 2 of 3 apps on this Mac — try: mac-mcp connect --client kimi", " ".join(text.split()))
+        # An old setup is updated first; the command sits in the summary, where it never breaks.
+        self.assertIn("⚠ Claude Desktop holds Mac MCP's key in its own settings — try: mac-mcp connect --client claude-desktop",
+                      " ".join(text.split()))
+
+    def test_without_an_old_setup_the_summary_suggests_the_next_app(self) -> None:
+        apps = [app for app in PHASE2_APPS if app["id"] != "claude-desktop"]
+        _, text = self.run_clients(apps)
+        self.assertIn("✓ Mac MCP is added to 1 of 2 apps on this Mac — try: mac-mcp connect --client kimi", " ".join(text.split()))
 
     def test_no_app_on_this_mac(self) -> None:
         code, text = self.run_clients([a for a in PHASE2_APPS if not a["installed"]])
@@ -842,6 +848,138 @@ class PrivacyDeleteScreen(ThemedTestCase):
         self.assertIn("✗ Move the stores to the Trash", text)
         self.assertIn("/s/memory: Operation not permitted", text)
         self.assertIn("try: mac-mcp privacy delete --store memory --store lessons --yes", " ".join(text.split()))
+
+
+class Phase2ReviewFindings(ThemedTestCase):
+    """Fixes from the phase 2 whole-branch review."""
+
+    def lines_with(self, text, needle):
+        return [line for line in text.split("\n") if needle in line]
+
+    def test_a_long_suggested_command_never_breaks_mid_word(self) -> None:
+        for width in (40, 80):
+            out = FakeTTY()
+            style = Style.for_stream(out, env={**TTY_ENV, "COLUMNS": str(width)})
+            command = "mac-mcp privacy delete --store tool_activity --store run_evidence --store file_history --yes"
+            style.summary("warn", "Nothing was changed", next_command=command)
+            text = visible(out.getvalue())
+            self.assertEqual(1, len(self.lines_with(text, command)), text)  # whole, on one line
+
+    def test_clients_old_way_row_keeps_no_command_and_the_summary_names_it(self) -> None:
+        from mcp_server import client_setup
+        out = FakeTTY()
+        with patch.object(client_setup, "apps_status", return_value=PHASE2_APPS), redirect_stdout(out):
+            cli.clients(argparse.Namespace(json=False))
+        text = visible(out.getvalue())
+        self.assertEqual(1, len(self.lines_with(text, "mac-mcp connect --client claude-desktop")), text)
+        self.assertIn("try:", self.lines_with(text, "mac-mcp connect --client claude-desktop")[0] + "try:")
+
+    def test_ctrl_c_while_the_updater_runs_says_it_keeps_running(self) -> None:
+        import tempfile
+        ready = _update_info(update_available=True, behind_by=1, target_commit="bbbbbbbb2222")
+        out = FakeTTY()
+
+        class Proc:
+            def wait(self):
+                raise KeyboardInterrupt
+
+        with tempfile.TemporaryDirectory() as temp:
+            log_path = cli.Path(temp) / "upd_1.log"
+            with patch.object(cli, "install_kind", return_value="git"), patch.object(cli, "validate_update_state"), \
+                 patch.object(cli, "resolve_update_paths", return_value=(cli.Path("/r"), cli.Path("/rt"))), \
+                 patch.object(cli, "check_update", return_value=ready), \
+                 patch.object(cli, "secure_bootstrap_update_blocker", return_value=None), \
+                 patch.object(cli, "launch_detached_update", return_value=({"updater_pid": 77, "log_path": str(log_path)}, Proc())), \
+                 redirect_stdout(out):
+                code = cli.update(argparse.Namespace(check=False, json=False, repo=None, runtime=None, branch="main",
+                                                     remote="origin", skip_restart=False, skip_deps=False))
+        text = " ".join(visible(out.getvalue()).split())
+        self.assertEqual(130, code)
+        self.assertIn("The update keeps running in the background (pid 77)", text)
+        self.assertIn("try: mac-mcp logs update", text)
+        self.assertNotIn("Traceback", text)
+
+    def privacy(self, *, running, result, start_ok=True, stores=("memory", "backups")):
+        from mcp_server import privacy_inventory
+        plan = [{"key": "memory", "name": "Memories", "exists": True, "bytes": 1, "paths": ["/s/memory"]},
+                {"key": "backups", "name": "Backups", "exists": True, "bytes": 1, "paths": ["/s/backups"]}]
+        out = FakeTTY()
+        with patch.object(privacy_inventory, "delete_plan", return_value=plan), \
+             patch.object(privacy_inventory, "trash_stores", return_value=result), \
+             patch.object(cli, "_resolve_server_identity", return_value=(4321, "pid_record") if running else (None, "not_running")), \
+             patch.object(cli, "STATE_DIR", cli.DEFAULT_STATE_DIR), patch.object(cli, "_stop_plain", return_value=0), \
+             patch.object(cli, "_start_again_as_before", return_value=start_ok), redirect_stdout(out):
+            code = cli.privacy_delete(argparse.Namespace(all=False, store=list(stores), yes=True, json=False))
+        return code, re.sub(r"\d+\.\d+s", "0.0s", visible(out.getvalue()))
+
+    def test_privacy_counts_stores_and_names_them_with_the_trash_folder(self) -> None:
+        moved = [{"store": "memory", "path": "/s/memory", "to": "/T/m"}] + [
+            {"store": "backups", "path": f"/s/backups/b{n}", "to": f"/T/b{n}"} for n in range(6)]
+        code, text = self.privacy(running=False, result={"folder": "/Users/x/.Trash/Mac MCP data 20261016", "moved": moved, "failed": []})
+        flat = " ".join(text.split())
+        self.assertEqual(0, code)
+        self.assertIn("✓ Moved 2 stores to the Trash", text)
+        self.assertIn("✓ Moved to the Trash: Memories, Backups", flat)
+        self.assertIn("Mac MCP data 20261016", flat)
+        self.assertNotIn("/s/backups/b3", flat)
+
+    def test_privacy_restart_failure_is_a_warning_with_the_next_command(self) -> None:
+        moved = [{"store": "memory", "path": "/s/memory", "to": "/T/m"}]
+        code, text = self.privacy(running=True, result={"folder": "/T", "moved": moved, "failed": []}, start_ok=False)
+        flat = " ".join(text.split())
+        self.assertEqual(0, code)  # as the plain path: the move worked
+        self.assertIn("✗ Start Mac MCP again", text)
+        self.assertIn("⚠ Moved to the Trash, but Mac MCP did not start again — try: mac-mcp start", flat)
+
+    def test_privacy_not_running_summary_says_what_moved(self) -> None:
+        moved = [{"store": "memory", "path": "/s/memory", "to": "/T/m"}]
+        code, text = self.privacy(running=False, result={"folder": "/T", "moved": moved, "failed": []}, stores=("memory",))
+        self.assertIn("✓ Moved to the Trash: Memories", " ".join(text.split()))
+
+    def test_an_empty_log_says_so(self) -> None:
+        import tempfile
+        out = FakeTTY()
+        with tempfile.TemporaryDirectory() as temp:
+            log = cli.Path(temp) / "s.log"
+            log.write_text("")
+            with patch.object(cli, "managed_logs", return_value={"server": log}), redirect_stdout(out):
+                code = cli.logs(argparse.Namespace(component="server", lines=5, list=False))
+        text = visible(out.getvalue())
+        self.assertEqual(0, code)
+        self.assertNotIn("\n\n\n", text)
+        self.assertIn("✓ The server log is empty.", text)
+
+    def test_logs_and_connect_config_lines_fit_40_columns(self) -> None:
+        import tempfile
+        out = FakeTTY()
+        with patch.dict(os.environ, {"COLUMNS": "40"}), tempfile.TemporaryDirectory() as temp:
+            log = cli.Path(temp) / "s.log"
+            log.write_text("a\n")
+            with patch.object(cli, "managed_logs", return_value={"server": log}), patch.object(cli, "update_logs_dir", return_value=cli.Path(temp)), \
+                 patch.object(cli, "log_limits", return_value={"max_bytes": 10 * 1024 * 1024, "backups": 3, "update_logs_kept": 20}), \
+                 redirect_stdout(out):
+                cli.logs(argparse.Namespace(component="server", lines=5, list=True))
+        long = [line for line in visible(out.getvalue()).split("\n") if len(line) > 40 and "Kept" in line]
+        self.assertEqual([], long)
+        from mcp_server.connection_config import render_connection_config
+        rendered = render_connection_config(client="claude-code", endpoint_url="http://127.0.0.1:8765/mcp", auth_required=True,
+                                            server_name="mac-mcp", auth_env="MAC_MCP_API_KEY")
+        out = FakeTTY()
+        cli_views.render_connect_config(Style.for_stream(out, env={**TTY_ENV, "COLUMNS": "60"}), rendered, "local",
+                                        "http://127.0.0.1:8765/mcp", None, True)
+        copy = [line for line in visible(out.getvalue()).split("\n") if "Copy into" in line or line.startswith("    ") and "config" in line]
+        self.assertTrue(all(len(line) <= 60 for line in copy), copy)
+
+    def test_a_failed_updates_log_keeps_its_indentation(self) -> None:
+        from mcp_server.cli_steps import Steps
+        out = FakeTTY()
+        steps = Steps(Style.for_stream(out, env=TTY_ENV))
+        with steps.step("Installed", failed_label="Install") as state:
+            print("Traceback (most recent call last):\n  File \"x.py\", line 1\nValueError: bad")
+            state.ok = False
+        text = visible(out.getvalue())
+        self.assertIn("      Traceback (most recent call last):", text)
+        self.assertIn("        File \"x.py\", line 1", text)
 
 
 if __name__ == "__main__":

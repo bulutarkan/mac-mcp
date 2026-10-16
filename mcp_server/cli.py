@@ -926,19 +926,27 @@ def _privacy_delete_themed(args: argparse.Namespace, style, keys: list, unknown:
     result = {"moved": [], "failed": []}
     with steps.step("Moved the stores to the Trash", failed_label="Move the stores to the Trash") as state:
         result = privacy_inventory.trash_stores(keys, trash_root=_trash_root(), stamp=time.strftime("%Y%m%d-%H%M%S"))
-        moved = len(result["moved"])
+        # One row per moved path; stores are what was asked for (backups move file by file).
+        moved_keys = list(dict.fromkeys(str(row.get("store") or row["path"]) for row in result["moved"]))
+        moved = len(moved_keys)
         state.label = f"Moved {moved} store{'s' if moved != 1 else ''} to the Trash"
         for row in result["failed"]:
             print(f"{home_path(row['path'])}: {row['error']}")
         state.ok = not result["failed"]
+    started = True
     if was_running:
         with steps.step("Started Mac MCP again", failed_label="Start Mac MCP again") as start_state:
-            start_state.ok = _start_again_as_before()
+            started = start_state.ok = _start_again_as_before()
     if result["failed"]:
         style.summary("error", f"{len(result['failed'])} could not move", next_command=command)
         return 1
-    moved_paths = ", ".join(home_path(row["path"]) for row in result["moved"]) or "nothing"
-    style.summary("ok", f"Moved to the Trash: {moved_paths}")
+    names = {store["key"]: store["name"] for store in plan}
+    moved_names = ", ".join(names.get(key, key) for key in moved_keys) or "nothing"
+    folder = home_path(result["folder"]) if result.get("folder") else ""
+    if not started:
+        style.summary("warn", "Moved to the Trash, but Mac MCP did not start again", next_command="mac-mcp start")
+        return 0
+    style.summary("ok", f"Moved to the Trash: {moved_names}", note=folder)
     return 0
 
 
@@ -2917,8 +2925,13 @@ def _update_themed(args: argparse.Namespace, style) -> int:
                 skip_restart=getattr(args, "skip_restart", False), skip_deps=getattr(args, "skip_deps", False),
             )
             log_path = Path(str(payload["log_path"]))
-            return_code = proc.wait()
-            if return_code != 0:
+            try:
+                return_code = proc.wait()
+            except KeyboardInterrupt:
+                # The updater has its own session: it goes on, and restarts Mac MCP when done.
+                state.label = f"The update keeps running in the background (pid {payload.get('updater_pid')})"
+                return_code = None
+            if return_code not in (0, None):
                 state.ok = False
                 try:
                     lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -2929,6 +2942,9 @@ def _update_themed(args: argparse.Namespace, style) -> int:
         if not state.ok:
             style.summary("error", "The update did not finish", next_command="mac-mcp logs update")
             return 1
+        if return_code is None:
+            style.summary("warn", "Stopped watching; Mac MCP finishes the update on its own", next_command="mac-mcp logs update")
+            return 130
         style.summary("ok", f"Updated to {info.release_id or info.target_commit[:8]}", note=f"log {home_path(log_path)}")
         return 0
     except UpdateInProgress as exc:
@@ -3199,9 +3215,10 @@ def _logs_themed(args: argparse.Namespace, style, paths: dict, path: Path, limit
         style.header("logs")
         style.rows(rows)
         style.write()
-        style.write(f"{INDENT}" + style.paint(
-            f"Kept: {limits['max_bytes'] // (1024 * 1024)} MB × {limits['backups'] + 1} files per log, "
-            f"audit 5 MB × 4, newest {limits['update_logs_kept']} update logs", dim=True))
+        kept = (f"Kept: {limits['max_bytes'] // (1024 * 1024)} MB × {limits['backups'] + 1} files per log, "
+                f"audit 5 MB × 4, newest {limits['update_logs_kept']} update logs")
+        for line in textwrap.wrap(kept, style.width - len(INDENT)):
+            style.write(INDENT + style.paint(line, dim=True))
         style.summary("ok", f"{len(rows)} logs · {total / 1024 / 1024:.1f} MB in all")
         return 0
     if not path.exists():
@@ -3210,7 +3227,12 @@ def _logs_themed(args: argparse.Namespace, style, paths: dict, path: Path, limit
         return 1
     text = tail_log(path, args.lines)
     style.header("logs")
-    style.write(INDENT + style.paint(f"{args.component} · {home_path(path)} · last {args.lines} lines · secrets redacted", dim=True))
+    about = f"{args.component} · {home_path(path)} · last {args.lines} lines · secrets redacted"
+    for line in textwrap.wrap(about, style.width - len(INDENT), break_long_words=False):
+        style.write(INDENT + style.paint(line, dim=True))
+    if not text.strip():
+        style.summary("ok", f"The {args.component} log is empty.")
+        return 0
     style.write()
     # Raw: no colour, indent or wrapping, so lines can be copied or searched as they are.
     style.stream.write(text.rstrip("\n") + "\n")

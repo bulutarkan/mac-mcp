@@ -76,12 +76,15 @@ class Steps:
 
     def _wrapped(self, text: str, tone: Optional[str] = None) -> None:
         room = max(20, self.style.width - len(_REASON_INDENT) - (2 if tone else 0))
-        for line in text.strip().splitlines():
+        for line in text.strip("\n").splitlines():
             if not line.strip():
                 continue
-            for index, part in enumerate(textwrap.wrap(line.strip(), room, break_on_hyphens=False)):
+            # A line keeps its own indentation (a traceback in a log), also where it wraps.
+            own = line[: len(line) - len(line.lstrip())]
+            parts = textwrap.wrap(line.strip(), max(10, room - len(own)), break_on_hyphens=False) or [""]
+            for index, part in enumerate(parts):
                 lead = (f"{self.style.paint(SYMBOLS[tone], tone)} " if index == 0 else "  ") if tone else ""
-                self.style.stream.write(f"{_REASON_INDENT}{lead}{self.style.paint(part, dim=True)}\n")
+                self.style.stream.write(f"{_REASON_INDENT}{lead}{own}{self.style.paint(part, dim=True)}\n")
 
     def end(self, ok: bool, reason: str = "", failed_label: Optional[str] = None,
             done_label: Optional[str] = None, warnings: str = "") -> None:

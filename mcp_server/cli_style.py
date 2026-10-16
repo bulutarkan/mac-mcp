@@ -224,7 +224,8 @@ class Style:
         glue = "\u2063"
         plain = text + (f" — try:{glue}{next_command.replace(' ', glue)}" if next_command else "")
         room = self.width - len(INDENT) - 2
-        lines = [line.replace(glue, " ") for line in textwrap.wrap(plain, room, break_on_hyphens=False)] or [""]
+        lines = [line.replace(glue, " ") for line in
+                 textwrap.wrap(plain, room, break_on_hyphens=False, break_long_words=False)] or [""]
         # The note joins the last line when it fits, else takes a line of its own.
         tail = ""
         if note and len(lines[-1]) + 3 + len(note) <= room:

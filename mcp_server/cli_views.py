@@ -261,8 +261,7 @@ def render_clients(style: Style, apps: list) -> None:
     rows = []
     for app in present:
         if app.get("added") and app.get("keyless") is False:
-            rows.append(("warn", app["name"], "added the old way",
-                         f"key in its settings — mac-mcp connect --client {app['id']}"))
+            rows.append(("warn", app["name"], "added the old way", "key in its settings"))
         elif app.get("added"):
             rows.append(("ok", app["name"], "added", ""))
         else:
@@ -279,7 +278,13 @@ def render_clients(style: Style, apps: list) -> None:
         style.summary("info", "No AI app Mac MCP knows is on this Mac.")
         return
     added = sum(1 for app in present if app.get("added"))
+    old = next((app for app in present if app.get("added") and app.get("keyless") is False), None)
     waiting = next((app for app in present if not app.get("added")), None)
+    if old:
+        # The command sits in the summary, where it never breaks: an old setup is updated first.
+        style.summary("warn", f"{old['name']} holds Mac MCP's key in its own settings",
+                      next_command=f"mac-mcp connect --client {old['id']}")
+        return
     style.summary("ok", f"Mac MCP is added to {added} of {len(present)} apps on this Mac",
                   next_command=f"mac-mcp connect --client {waiting['id']}" if waiting else None)
 
@@ -303,7 +308,8 @@ def render_connect_config(style: Style, rendered, endpoint_kind: str, endpoint_u
     style.header("connect-config")
     style.rows(rows)
     style.write()
-    style.write(f"{INDENT}{style.paint(f'Copy into {rendered.target}:', dim=True)}")
+    for line in textwrap.wrap(f"Copy into {rendered.target}:", style.width - len(INDENT)):
+        style.write(f"{INDENT}{style.paint(line, dim=True)}")
     style.write()
     # Raw, so a copy from the terminal pastes into the app's config unchanged.
     style.stream.write(rendered.snippet.rstrip("\n") + "\n")
