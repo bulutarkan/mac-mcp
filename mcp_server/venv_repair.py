@@ -174,6 +174,7 @@ def repair(runtime: Path, *, python: str | None = None, force: bool = False, qui
         print(f"The runtime venv is healthy (Python {state.get('version')}); nothing to repair.")
         return 0
     interpreter, info = choose_interpreter(python)
+    quietly = {"quiet": True} if quiet else {}  # the plain path calls _verify exactly as before
     stamp = time.strftime("%Y%m%d-%H%M%S")
     venv = runtime / ".venv"
     staged = runtime / f".venv.repair-{stamp}"
@@ -181,12 +182,12 @@ def repair(runtime: Path, *, python: str | None = None, force: bool = False, qui
     print(f"Runtime venv: {state['status']}. Rebuilding with {interpreter} "
           f"(Python {'.'.join(map(str, info['version']))}).", flush=True)
     try:
-        _run([str(interpreter), "-m", "venv", str(staged)], timeout=300, quiet=quiet)
+        _run([str(interpreter), "-m", "venv", str(staged)], timeout=300, **quietly)
         _run([str(staged / "bin" / "python"), "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
-              "--upgrade", "pip", "setuptools", "wheel"], quiet=quiet)
+              "--upgrade", "pip", "setuptools", "wheel"], **quietly)
         _run([str(staged / "bin" / "python"), "-m", "pip", "install", "--quiet", "--disable-pip-version-check",
-              "-e", str(runtime)], quiet=quiet)
-        _verify(staged, runtime, quiet)
+              "-e", str(runtime)], **quietly)
+        _verify(staged, runtime, **quietly)
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
         shutil.rmtree(staged, ignore_errors=True)
         print(f"Repair stopped before touching the active venv: {exc}", file=sys.stderr)
@@ -199,8 +200,8 @@ def repair(runtime: Path, *, python: str | None = None, force: bool = False, qui
             moved = True
         os.replace(staged, venv)
         _retarget_scripts(venv, staged)
-        _verify(venv, runtime, quiet)
-        _run([str(venv / "bin" / "mac-mcp"), "--version"], timeout=60, quiet=quiet)
+        _verify(venv, runtime, **quietly)
+        _run([str(venv / "bin" / "mac-mcp"), "--version"], timeout=60, **quietly)
     except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
         failed = runtime / f".venv.failed-{stamp}"
         if venv.exists():

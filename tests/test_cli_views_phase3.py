@@ -552,6 +552,18 @@ class VenvRepairQuiet(unittest.TestCase):
         self.assertTrue(run.call_args.kwargs.get("capture_output"))
         self.assertIn("ERROR: no matching distribution", str(caught.exception))
 
+    def test_a_quiet_repair_runs_its_commands_quietly(self) -> None:
+        import sys
+        import tempfile
+        from mcp_server import venv_repair
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch.object(venv_repair, "inspect_venv", return_value={"status": "broken"}), \
+             patch.object(venv_repair, "choose_interpreter", return_value=(Path(sys.executable), {"version": [3, 14, 7]})), \
+             patch.object(venv_repair, "_run", side_effect=RuntimeError("pip failed")) as run, \
+             redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(1, venv_repair.repair(Path(tmp), quiet=True))
+        self.assertTrue(run.call_args.kwargs.get("quiet"))
+
     def test_loud_commands_are_unchanged(self) -> None:
         import subprocess
         from mcp_server import venv_repair
