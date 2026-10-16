@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import re
 import os
 import unittest
 from contextlib import redirect_stdout
@@ -169,6 +170,65 @@ class StatusScreen(ThemedTestCase):
         self.assertEqual(2, code)
         self.assertIn("tunnel not running", visible(out.getvalue()))
         self.assertNotIn("overall: degraded", out.getvalue())
+
+
+class StartStop(ThemedTestCase):
+    def start(self, server_code=0, server_print="mac-mcp started (pid 4321)."):
+        out = FakeTTY()
+
+        def fake_server(args):
+            print(server_print)
+            return server_code
+
+        public = type("Public", (), {"mode": "cloudflare", "endpoint_url": "https://mac.example.com/mcp"})()
+        with patch.object(cli, "_public_endpoint_config", return_value=public), \
+             patch.object(cli, "validate_bootstrap_security"), patch.object(cli, "load_settings"), \
+             patch.object(cli, "_record_intent"), patch.object(cli, "_start_server", side_effect=fake_server), \
+             patch.object(cli, "_stop_unselected_public_processes"), \
+             patch.object(cli, "_start_cloudflare", side_effect=lambda args, public: print("cloudflared started") or 0), \
+             patch.object(cli, "_resolve_server_identity", return_value=(4321, "pid_record")), \
+             redirect_stdout(out):
+            code = cli.start(argparse.Namespace(host="127.0.0.1", port=8765))
+        return code, re.sub(r"\d+\.\d+s", "0.0s", visible(out.getvalue()))
+
+    def test_start_shows_steps_and_a_summary(self) -> None:
+        code, text = self.start()
+        self.assertEqual(0, code)
+        self.assertTrue(text.startswith("  ◆ Mac MCP · start\n\n"))
+        self.assertIn("✓ Started the server", text)
+        self.assertIn("✓ Connected the Cloudflare tunnel", text)
+        self.assertNotIn("cloudflared started", text)  # a step's own prints show only when it fails
+        self.assertTrue(text.rstrip("\n").endswith("✓ Started — pid 4321 · mac.example.com"), text)
+
+    def test_a_failed_server_step_shows_its_reason(self) -> None:
+        code, text = self.start(server_code=1, server_print="configured port 8765 is used by Python (pid 99).")
+        self.assertEqual(1, code)
+        self.assertIn("✗ Start the server", text)
+        self.assertIn("      configured port 8765 is used by Python (pid 99).", text)
+        self.assertTrue(text.rstrip("\n").endswith("✗ Mac MCP did not start — try: mac-mcp doctor"), text)
+
+    def test_uninstall_stops_quietly_without_a_header(self) -> None:
+        # uninstall prints its own report; a themed stop would put a second header in it.
+        out = FakeTTY()
+        with patch.object(cli, "_stop_plain", return_value=0) as plain, patch.object(cli, "stop") as themed, \
+             patch("mcp_server.update_helper._stop_menu_app"), redirect_stdout(out):
+            cli._stop_for_uninstall(cli.Path("/nonexistent/Mac MCP.app"))
+        plain.assert_called_once()
+        themed.assert_not_called()
+
+    def test_stop(self) -> None:
+        out = FakeTTY()
+        with patch.object(cli, "_record_intent"), \
+             patch.object(cli, "_resolve_server_identity", return_value=(4321, "pid_record")), \
+             patch.object(cli, "_stop_pid", return_value=True), patch.object(cli, "_stop_cloudflare", return_value=True), \
+             patch.object(cli, "_server_job_plist_path", return_value=cli.Path("/nonexistent/job.plist")), \
+             redirect_stdout(out):
+            code = cli.stop(argparse.Namespace(timeout=5.0, force=False, keep_intent=False))
+        text = visible(out.getvalue())
+        self.assertEqual(0, code)
+        self.assertIn("✓ Stopped the server", text)
+        self.assertIn("✓ Stopped the public tunnel", text)
+        self.assertTrue(text.rstrip("\n").endswith("✓ Stopped — AI apps can no longer reach this Mac."), text)
 
 
 if __name__ == "__main__":

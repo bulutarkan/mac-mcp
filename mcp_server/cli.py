@@ -14,6 +14,7 @@ import sys
 import time
 import webbrowser
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Optional
 from urllib.error import URLError
 from types import SimpleNamespace
@@ -791,7 +792,8 @@ def _trash_root() -> Path:
 
 def _stop_for_uninstall(app: Path) -> None:
     try:
-        stop(argparse.Namespace(timeout=10, force=True, keep_intent=False))
+        # The plain stop: uninstall prints its own report, without a second header in it.
+        _stop_plain(argparse.Namespace(timeout=10, force=True, keep_intent=False))
     except Exception as exc:  # keep going: the parts are moved to the Trash either way
         print(f"Warning: Mac MCP did not stop cleanly ({type(exc).__name__}).")
     from .update_helper import _stop_menu_app
@@ -1488,7 +1490,7 @@ def _public_route_ready(url: str, *, timeout_s: float) -> bool:
         time.sleep(1.0)
 
 
-def start(args: argparse.Namespace) -> int:
+def _start_plain(args: argparse.Namespace) -> int:
     _load_env()
     try:
         public = _public_endpoint_config(args)
@@ -1518,7 +1520,50 @@ def start(args: argparse.Namespace) -> int:
     return 0
 
 
-def stop(args: argparse.Namespace) -> int:
+_TUNNEL_STEP = {"cloudflare": ("Connected the Cloudflare tunnel", "Connect the Cloudflare tunnel"),
+                "ngrok": ("Started ngrok", "Start ngrok")}
+
+
+def start(args: argparse.Namespace) -> int:
+    style = Style.for_stream()
+    if style is None:
+        return _start_plain(args)
+    _load_env()
+    style.header("start")
+    steps = style.steps()
+    with steps.step("Checked the settings", failed_label="Check the settings") as state:
+        try:
+            public = _public_endpoint_config(args)
+            validate_bootstrap_security(load_settings(), host=args.host, public_endpoint_mode=public.mode)
+        except (PublicEndpointError, RuntimeError) as exc:
+            print(str(exc))
+            state.ok = False
+    if not state.ok:
+        style.summary("error", "Mac MCP's settings need a fix first", next_command="mac-mcp doctor")
+        return 2
+    _record_intent("running", args)
+    with steps.step("Started the server", failed_label="Start the server") as state:
+        code = _start_server(args)
+        state.ok = code == 0
+    if code != 0:
+        style.summary("error", "Mac MCP did not start", next_command="mac-mcp doctor")
+        return code
+    _stop_unselected_public_processes(public.mode)
+    if public.mode in _TUNNEL_STEP:
+        done, failed = _TUNNEL_STEP[public.mode]
+        with steps.step(done, failed_label=failed) as state:
+            code = _start_cloudflare(args, public) if public.mode == "cloudflare" else _start_ngrok(args)
+            state.ok = code == 0
+        if code != 0:
+            style.summary("warn", "Mac MCP is running, but its public address is not", next_command="mac-mcp doctor")
+            return code
+    pid = _resolve_server_identity(int(getattr(args, "port", _default_port())))[0]
+    where = urlparse(public.endpoint_url).netloc if getattr(public, "endpoint_url", None) else "this Mac only"
+    style.summary("ok", f"Started — pid {pid} · {where}")
+    return 0
+
+
+def _stop_plain(args: argparse.Namespace) -> int:
     _load_env()
     if not getattr(args, "keep_intent", False):
         # Before stopping anything, so the supervisor never undoes this stop.
@@ -1560,6 +1605,38 @@ def stop(args: argparse.Namespace) -> int:
         _unload_server_job()
     return 0 if server_ok and ngrok_ok and cloudflare_ok else 1
 
+
+
+def stop(args: argparse.Namespace) -> int:
+    style = Style.for_stream()
+    if style is None or getattr(args, "keep_intent", False):
+        # keep_intent: the supervisor's and restart's own stop, never a person at a terminal.
+        return _stop_plain(args)
+    _load_env()
+    style.header("stop")
+    steps = style.steps()
+    _record_intent("stopped", None)
+    port = _default_port()
+    with steps.step("Stopped the server", failed_label="Stop the server") as state:
+        server_pid, server_source = _resolve_server_identity(port)
+        if server_pid:
+            state.ok = _stop_pid(PID_FILE, "mac-mcp", args.timeout, args.force)
+        elif server_source in {"pid_unverifiable", "foreign_listener", "ambiguous_listener", "adoption_failed"}:
+            print(f"Refusing to stop mac-mcp: server ownership is not verifiable ({server_source}).")
+            state.ok = False
+        else:
+            PID_FILE.unlink(missing_ok=True)
+    server_ok = state.ok
+    with steps.step("Stopped the public tunnel", failed_label="Stop the public tunnel") as state:
+        state.ok = _stop_pid(NGROK_PID_FILE, "ngrok", args.timeout, args.force) and _stop_cloudflare(args.timeout, args.force)
+    tunnel_ok = state.ok
+    if server_ok and STATE_DIR.resolve() == DEFAULT_STATE_DIR.resolve() and _server_job_plist_path().exists():
+        _unload_server_job()
+    if server_ok and tunnel_ok:
+        style.summary("ok", "Stopped — AI apps can no longer reach this Mac.")
+        return 0
+    style.summary("error", "Something did not stop", next_command="mac-mcp stop --force")
+    return 1
 
 def _connect_config_endpoint(client: str, selection: str) -> tuple[str, str]:
     local_endpoint = f"http://127.0.0.1:{_default_port()}/mcp"
