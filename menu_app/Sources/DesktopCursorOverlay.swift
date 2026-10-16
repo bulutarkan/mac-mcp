@@ -352,9 +352,12 @@ final class DesktopCursorOverlayController {
     }
 }
 
-private final class DesktopCursorPanel: NSPanel {
+final class DesktopCursorPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+    // Decorative: as an accessibility window it would shift the window numbers mac_act resolved for
+    // Mac MCP's own windows (#221)
+    override func isAccessibilityElement() -> Bool { false }
 }
 
 /// The arrow (the browser companion's shape, its tip on the target), a champagne aura

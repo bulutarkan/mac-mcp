@@ -215,14 +215,16 @@ def effect_changed(before: Dict[str, Any], after: Dict[str, Any], action: Dict[s
             return True, "text_state_changed"
         return False, "text_state_unchanged"
 
+    # A toggle often renames only its description ("Show Sidebar" -> "Hide Sidebar", #220).
     target_keys = (
-        "value", "character_count", "selected", "enabled", "title", "child_count",
+        "value", "character_count", "selected", "enabled", "title", "description", "child_count",
     )
     if _different(before, after, target_keys):
         return True, "target_state_changed"
 
+    # window_layout catches a pane that opens a few levels inside the window (#220).
     window_keys = (
-        "window_title", "window_count", "window_child_count",
+        "window_title", "window_count", "window_child_count", "window_layout",
         "sheet_count", "popover_count", "menu_count",
     )
     if _different(before, after, window_keys):

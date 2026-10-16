@@ -180,6 +180,45 @@ class DesktopCursorOverlayTests(unittest.TestCase):
             self.assertEqual(0, run.returncode, run.stderr)
             self.assertEqual("ok", run.stdout.strip())
 
+    def test_overlay_is_not_a_window_to_accessibility(self) -> None:
+        # The overlay belongs to Mac MCP's own process. Listed as a window it shifts the window
+        # numbers mac_act resolved a moment before, so acting on Mac MCP's own Settings hit the
+        # overlay ("Can't get UI element 1 of window 2", #221); VoiceOver would list it too.
+        harness = r'''
+import AppKit
+
+@main struct PanelHarness {
+    static func main() {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        let real = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 200, height: 100), styleMask: [.titled],
+                            backing: .buffered, defer: false)
+        real.orderFront(nil)
+        let overlay = DesktopCursorPanel(contentRect: NSRect(x: 0, y: 0, width: 300, height: 300),
+                                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        overlay.orderFront(nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            let windows = app.accessibilityWindows() as? [NSWindow] ?? []
+            precondition(windows.contains { $0 === real }, "the real window is listed")
+            precondition(!windows.contains { $0 === overlay }, "the overlay must not be an accessibility window")
+            print("PANEL_PASS")
+            exit(0)
+        }
+        app.run()
+    }
+}
+'''
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "Harness.swift"
+            binary = Path(td) / "harness"
+            source.write_text(harness, encoding="utf-8")
+            built = subprocess.run(["xcrun", "swiftc", "-parse-as-library", str(SOURCES / "DesktopCursorOverlay.swift"),
+                                    str(source), "-o", str(binary)], capture_output=True, text=True, timeout=180)
+            self.assertEqual(0, built.returncode, built.stderr)
+            ran = subprocess.run([str(binary)], capture_output=True, text=True, timeout=20)
+            self.assertEqual(0, ran.returncode, ran.stderr)
+            self.assertIn("PANEL_PASS", ran.stdout)
+
     def test_overlay_is_stacked_with_the_target_and_stays_out_of_captures(self) -> None:
         source = (SOURCES / "DesktopCursorOverlay.swift").read_text(encoding="utf-8")
         self.assertIn("panel.order(.above, relativeTo: Int(targetWindow))", source)

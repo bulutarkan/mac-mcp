@@ -3029,10 +3029,30 @@ def _parse_native_action_state(raw: str) -> Dict[str, Any]:
         state["identifier"] = _ax_text(fields[36])
         labels = [_native_normalize_label(item) for item in fields[37].split(_RECORD_SEPARATOR)]
         state["subtree_labels"] = [item for item in labels if item]
+    if len(fields) > 38 and fields[38]:
+        state["window_layout"] = fields[38]
     state["modal_sheet_blocks_target"] = bool(
         (state.get("sheet_count") or 0) > 0 and state.get("in_sheet") is not True
     )
     return state
+
+
+# Child counts two levels below the window's own elements: "|<children of item>:<their child counts>"
+# per item. A pane that opens inside a split view shows here even when the control that opened it
+# keeps its name (#220). One Apple Event fetches the three levels; counting happens locally.
+_WINDOW_LAYOUT_SCRIPT = """
+        try
+            set layoutRoles to role of UI elements of UI elements of UI elements of w
+            repeat with layoutItem in layoutRoles
+                set windowLayoutText to windowLayoutText & "|" & ((count of layoutItem) as text) & ":"
+                repeat with layoutChild in layoutItem
+                    set windowLayoutText to windowLayoutText & ((count of layoutChild) as text) & ","
+                end repeat
+            end repeat
+        on error
+            set windowLayoutText to ""
+        end try
+"""
 
 
 def _native_action_state_script(
@@ -3180,6 +3200,7 @@ set inSheetText to "false"
 set inPopoverText to "false"
 set popoverCoversText to "false"
 set processVisibleText to ""
+set windowLayoutText to ""
 
 tell application "System Events"
     {selection}
@@ -3213,7 +3234,7 @@ tell application "System Events"
         try
             set windowChildCountText to count of UI elements of w as text
         end try
-        try
+{_WINDOW_LAYOUT_SCRIPT}        try
             set sheetCountText to count of sheets of w as text
         end try
         try
@@ -3358,7 +3379,8 @@ return "__STATE__" & fs & connectedText & fs & ¬
     my cleanStateText(popoverCountText, fs) & fs & my cleanStateText(menuCountText, fs) & fs & ¬
     my cleanStateText(inSheetText, fs) & fs & my cleanStateText(inPopoverText, fs) & fs & ¬
     my cleanStateText(popoverCoversText, fs) & fs & my cleanStateText(processVisibleText, fs) & fs & ¬
-    my cleanStateText(identifierText, fs) & fs & my cleanStateText(subtreeText, fs)
+    my cleanStateText(identifierText, fs) & fs & my cleanStateText(subtreeText, fs) & fs & ¬
+    my cleanStateText(windowLayoutText, fs)
 '''
 
 
@@ -3604,6 +3626,8 @@ def _parse_native_effect_state(raw: str) -> Dict[str, Any]:
             },
             "actions": [item.strip() for item in fields[21].split(",") if item.strip()],
         })
+    if len(fields) > 22 and fields[22]:
+        state["window_layout"] = fields[22]
     return state
 
 
@@ -3660,6 +3684,7 @@ set yText to ""
 set widthText to ""
 set heightText to ""
 set actionText to ""
+set windowLayoutText to ""
 
 tell application "System Events"
     {selection}
@@ -3674,7 +3699,7 @@ tell application "System Events"
         try
             set windowChildCountText to count of UI elements of w as text
         end try
-        try
+{_WINDOW_LAYOUT_SCRIPT}        try
             set sheetCountText to count of sheets of w as text
         end try
         try
@@ -3752,7 +3777,7 @@ return "__EFFECT__" & fs & connectedText & fs & my cleanEffectText(valueText, fs
     my cleanEffectText(descriptionText, fs) & fs & my cleanEffectText(focusedText, fs) & fs & ¬
     my cleanEffectText(xText, fs) & fs & my cleanEffectText(yText, fs) & fs & ¬
     my cleanEffectText(widthText, fs) & fs & my cleanEffectText(heightText, fs) & fs & ¬
-    my cleanEffectText(actionText, fs)
+    my cleanEffectText(actionText, fs) & fs & my cleanEffectText(windowLayoutText, fs)
 '''
 
 

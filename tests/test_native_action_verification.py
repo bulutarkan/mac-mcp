@@ -87,6 +87,31 @@ class NativeReadinessLogicTests(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual("state_unchanged", why)
 
+    def test_toggle_effects_that_only_rename_the_control_or_rearrange_the_window_count(self) -> None:
+        # #220: Calculator's sidebar button turns "Show Sidebar" into "Hide Sidebar" and keeps its title;
+        # Finder's Preview button keeps its name and adds a pane a few levels inside the window.
+        changed, why = effect_changed(state(title="", description="Show Sidebar"),
+                                      state(title="", description="Hide Sidebar"), {"type": "click"})
+        self.assertEqual((True, "target_state_changed"), (changed, why))
+        changed, why = effect_changed(state(window_layout="|3:2,0,6|1:0"), state(window_layout="|3:3,0,6|1:0"),
+                                      {"type": "click"})
+        self.assertEqual((True, "window_state_changed"), (changed, why))
+        # A side whose layout could not be read is not evidence either way.
+        self.assertFalse(effect_changed(state(window_layout="|3:2,0,6"), state(), {"type": "click"})[0])
+
+    def test_both_probes_read_the_same_window_layout(self) -> None:
+        for script in (
+            tools_ui._native_action_state_script("Finder", "w1/2/2", app_pid=627),
+            tools_ui._native_effect_state_script("Finder", "w1/2/2", app_pid=627),
+        ):
+            self.assertIn(tools_ui._WINDOW_LAYOUT_SCRIPT.strip(), script)
+        sep = tools_ui._FIELD_SEPARATOR
+        effect = tools_ui._parse_native_effect_state(sep.join(["__EFFECT__", "true"] + [""] * 20 + ["|3:2,0"]))
+        self.assertEqual("|3:2,0", effect["window_layout"])
+        self.assertNotIn("window_layout", tools_ui._parse_native_effect_state(sep.join(["__EFFECT__", "true"] + [""] * 21)))
+        ready = tools_ui._parse_native_action_state(sep.join(["__STATE__", "true"] + [""] * 36 + ["|3:2,0"]))
+        self.assertEqual("|3:2,0", ready["window_layout"])
+
     def test_verification_scope_keeps_non_element_actions_out(self) -> None:
         self.assertTrue(verification_required("click", "w1/1"))
         self.assertTrue(verification_required("paste", "w1/1"))
