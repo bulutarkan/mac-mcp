@@ -11,6 +11,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import textwrap
 import time
 import webbrowser
 from pathlib import Path
@@ -862,6 +863,9 @@ def privacy_delete(args: argparse.Namespace) -> int:
 
     keys = list(privacy_inventory.DELETABLE) if args.all else list(args.store or [])
     unknown = [key for key in keys if key not in privacy_inventory.DELETABLE]
+    style = Style.for_stream(json_output=bool(getattr(args, "json", False)))
+    if style is not None:
+        return _privacy_delete_themed(args, style, keys, unknown)
     if not keys or unknown:
         print(f"Choose --all or --store from: {', '.join(privacy_inventory.DELETABLE)}", file=sys.stderr)
         return 2
@@ -889,6 +893,53 @@ def privacy_delete(args: argparse.Namespace) -> int:
         for row in result["failed"]:
             print(f"Could not move {row['path']} ({row['error']})")
     return 0 if result["ok"] else 1
+
+
+def _privacy_delete_themed(args: argparse.Namespace, style, keys: list, unknown: list) -> int:
+    """privacy delete in a terminal: a preview that changes nothing, or the move as steps."""
+    from . import privacy_inventory
+    from .cli_steps import Steps
+    from .cli_views import render_error
+
+    if not keys or unknown:
+        render_error(style, "privacy delete", f"Choose --all or --store from: {', '.join(privacy_inventory.DELETABLE)}")
+        return 2
+    plan = privacy_inventory.delete_plan(keys)
+    command = f"mac-mcp privacy delete {'--all' if args.all else ' '.join('--store ' + k for k in keys)} --yes"
+    if not args.yes:
+        style.header("privacy delete")
+        style.rows([(None, store["name"], f"{store['bytes'] / 1_048_576:.1f} MB" if store.get("exists") else "empty",
+                     ", ".join(home_path(path) for path in store["paths"])) for store in plan])
+        style.write()
+        for line in textwrap.wrap("Mac MCP stops while these move to the Trash, then starts again.", style.width - len(INDENT)):
+            style.write(INDENT + style.paint(line, dim=True))
+        style.summary("warn", "Nothing was changed", next_command=command)
+        return 0
+    style.header("privacy delete")
+    steps = Steps(style)
+    default_install = STATE_DIR.resolve() == DEFAULT_STATE_DIR.resolve()
+    was_running = default_install and _resolve_server_identity(_default_port(), adopt_listener=False)[0] is not None
+    if was_running:
+        # Open databases and running agents must not keep writing into what moves.
+        with steps.step("Stopped Mac MCP", failed_label="Stop Mac MCP") as state:
+            state.ok = _stop_plain(argparse.Namespace(timeout=STOP_TIMEOUT_S, force=True, keep_intent=True)) == 0
+    result = {"moved": [], "failed": []}
+    with steps.step("Moved the stores to the Trash", failed_label="Move the stores to the Trash") as state:
+        result = privacy_inventory.trash_stores(keys, trash_root=_trash_root(), stamp=time.strftime("%Y%m%d-%H%M%S"))
+        moved = len(result["moved"])
+        state.label = f"Moved {moved} store{'s' if moved != 1 else ''} to the Trash"
+        for row in result["failed"]:
+            print(f"{home_path(row['path'])}: {row['error']}")
+        state.ok = not result["failed"]
+    if was_running:
+        with steps.step("Started Mac MCP again", failed_label="Start Mac MCP again") as start_state:
+            start_state.ok = _start_again_as_before()
+    if result["failed"]:
+        style.summary("error", f"{len(result['failed'])} could not move", next_command=command)
+        return 1
+    moved_paths = ", ".join(home_path(row["path"]) for row in result["moved"]) or "nothing"
+    style.summary("ok", f"Moved to the Trash: {moved_paths}")
+    return 0
 
 
 def _start_again_as_before() -> bool:

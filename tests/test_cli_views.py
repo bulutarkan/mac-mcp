@@ -783,5 +783,66 @@ class LogsScreen(ThemedTestCase):
         self.assertIn("✓ 3 logs", text)
 
 
+class PrivacyDeleteScreen(ThemedTestCase):
+    PLAN = [{"key": "memory", "name": "Memory", "exists": True, "bytes": 2_097_152, "paths": ["/s/memory"]},
+            {"key": "lessons", "name": "Lessons", "exists": False, "bytes": 0, "paths": ["/s/lessons"]}]
+
+    def run_delete(self, *, yes, running=False, result=None, stores=("memory", "lessons")):
+        from mcp_server import privacy_inventory
+        out, err = FakeTTY(), io.StringIO()
+        result = result or {"moved": [{"path": "/s/memory", "to": "/T/memory"}], "failed": []}
+        with patch.object(privacy_inventory, "delete_plan", return_value=self.PLAN), \
+             patch.object(privacy_inventory, "trash_stores", return_value=result) as trash, \
+             patch.object(cli, "_resolve_server_identity", return_value=(4321, "pid_record") if running else (None, "not_running")), \
+             patch.object(cli, "STATE_DIR", cli.DEFAULT_STATE_DIR), \
+             patch.object(cli, "_stop_plain", return_value=0) as stop, \
+             patch.object(cli, "_start_again_as_before", return_value=True) as start, \
+             redirect_stdout(out), redirect_stderr(err):
+            code = cli.privacy_delete(argparse.Namespace(all=False, store=list(stores) if stores else None, yes=yes, json=False))
+        return code, re.sub(r"\d+\.\d+s", "0.0s", visible(out.getvalue())), err.getvalue(), trash, stop, start
+
+    def test_preview_changes_nothing_and_names_the_command(self) -> None:
+        code, text, _, trash, stop, start = self.run_delete(yes=False)
+        self.assertEqual(0, code)
+        self.assertTrue(text.startswith("  ◆ Mac MCP · privacy delete\n\n"), text)
+        self.assertIn("Memory   2.0 MB · /s/memory", text)
+        self.assertIn("Lessons  empty · /s/lessons", text)
+        flat = " ".join(text.split())
+        self.assertIn("⚠ Nothing was changed — try: mac-mcp privacy delete --store memory --store lessons --yes", flat)
+        trash.assert_not_called()
+        stop.assert_not_called()
+
+    def test_no_store_chosen(self) -> None:
+        code, text, err, *_ = self.run_delete(yes=False, stores=None)
+        self.assertEqual((2, ""), (code, err))
+        self.assertIn("✗ Choose --all or --store from:", text)
+
+    def test_yes_while_running_stops_moves_and_starts(self) -> None:
+        code, text, _, trash, stop, start = self.run_delete(yes=True, running=True)
+        self.assertEqual(0, code)
+        self.assertIn("✓ Stopped Mac MCP", text)
+        self.assertIn("✓ Moved 1 store to the Trash", text)
+        self.assertIn("✓ Started Mac MCP again", text)
+        self.assertIn("✓ Moved to the Trash: /s/memory", " ".join(text.split()))
+        stop.assert_called_once()
+        self.assertTrue(stop.call_args[0][0].keep_intent)
+        start.assert_called_once()
+
+    def test_yes_while_not_running_leaves_the_server_alone(self) -> None:
+        code, text, _, trash, stop, start = self.run_delete(yes=True, running=False)
+        self.assertEqual(0, code)
+        self.assertNotIn("Stopped Mac MCP", text)
+        stop.assert_not_called()
+        start.assert_not_called()
+
+    def test_a_failed_move(self) -> None:
+        result = {"moved": [], "failed": [{"path": "/s/memory", "error": "Operation not permitted"}]}
+        code, text, *_ = self.run_delete(yes=True, result=result)
+        self.assertEqual(1, code)
+        self.assertIn("✗ Move the stores to the Trash", text)
+        self.assertIn("/s/memory: Operation not permitted", text)
+        self.assertIn("try: mac-mcp privacy delete --store memory --store lessons --yes", " ".join(text.split()))
+
+
 if __name__ == "__main__":
     unittest.main()
