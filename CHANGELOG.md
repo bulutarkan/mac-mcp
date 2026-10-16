@@ -1,5 +1,12 @@
 ## Unreleased
 
+### More done in your Mac's own apps (#194, #195, #196)
+- **Reminders:** AI apps can now add a reminder (title, list, due date or time, notes), not only list and complete them; a repeated request finds the reminder it made instead of adding a twin.
+- **Notes:** add text to the end of an existing note (`append_to_note`), read back after the change.
+- **Calendar:** `find_free_time` finds free stretches of a given length within working hours (09:00-18:00 by default, weekdays unless asked) over the next days. Holidays and other all-day events don't count as busy; simple repeating events (daily, weekly on chosen days, monthly, yearly) are counted on every day they fall, and a rule it can't expand is named and the answer marked approximate instead of offering time that may be taken.
+- **Contacts:** `find_contacts` by name or company, with emails and phone numbers.
+- **Shortcuts:** list your shortcuts and run one by id or exact name, with text in and its text out. A shortcut can do anything its actions do, so it runs only when running commands is allowed, the same as a command; a failed run says its outcome is unknown and is not retried.
+
 ### Scheduled Tasks can run when a file arrives (#193)
 - **When › New file**: a task runs once for each new file in a folder you choose, optionally only files like `pdf, Invoice*`. Files already there don't start it, a file counts once it has finished copying, and downloads still in progress are ignored.
 - The agent is told which file it was (or put `{file}` in the prompt); a script gets `{file}` in its arguments or command, quoted, and `$MAC_MCP_TRIGGER_FILE`. Run now uses the newest file. The run report and the history name the file.

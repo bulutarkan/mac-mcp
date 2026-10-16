@@ -23,8 +23,11 @@ from .tools_ui import (
     _run_osascript,
 )
 
-_RS = chr(30)
-_US = chr(31)
+from .app_adapter_core import (  # noqa: F401  (re-exported: tests and app_adapters_more use these names)
+    _RS, _US, AppAdapterError, _clean_field, _date_setup, _event_datetime, _parse_date_bound, _parse_records,
+    _plain_text, _run, _single_line,
+)
+from . import app_adapters_more as more
 _ADAPTER_VERSION = 1
 _MAX_LIMIT = 25
 _DEFAULT_LIMIT = 10
@@ -43,18 +46,23 @@ _APP_ALIASES = {
     "imessage": "Messages",
     "imessages": "Messages",
     "xcode": "Xcode",
+    "contacts": "Contacts",
+    "address book": "Contacts",
+    "shortcuts": "Shortcuts",
 }
 
 _ACTIONS = {
     "Finder": ("selection", "select_file"),
-    "Notes": ("find_notes", "open_note", "create_note"),
+    "Notes": ("find_notes", "open_note", "create_note", "append_to_note"),
     "Mail": ("find_messages", "open_message", "create_draft", "send_mail"),
-    "Calendar": ("find_events", "open_event", "create_event", "update_event"),
-    "Reminders": ("list_reminders", "complete_reminder"),
+    "Calendar": ("find_events", "find_free_time", "open_event", "create_event", "update_event"),
+    "Reminders": ("list_reminders", "create_reminder", "complete_reminder"),
     "Preview": ("list_documents", "open_document"),
     "System Settings": ("list_panes", "open_pane"),
     "Messages": ("find_chats", "send_message"),
     "Xcode": ("list_workspaces",),
+    "Contacts": ("find_contacts",),
+    "Shortcuts": ("list_shortcuts", "run_shortcut"),
 }
 
 _READ_ACTIONS = {
@@ -68,11 +76,19 @@ _READ_ACTIONS = {
     "list_reminders",
     "find_chats",
     "list_workspaces",
+    "find_free_time",
+    "find_contacts",
+    "list_shortcuts",
 }
 
 # Change app data through the app's own scripting model; they never drive the UI,
 # so a person using the app's window does not block them.
-_DATA_WRITE_ACTIONS = {"create_event", "update_event", "complete_reminder", "create_note", "create_draft"}
+_DATA_WRITE_ACTIONS = {"create_event", "update_event", "complete_reminder", "create_note", "create_draft",
+                       "create_reminder", "append_to_note"}
+# A shortcut can do anything its actions do, so running one is gated like run_command: the shell
+# switch and the permission profile decide, as for any other command (no new approval prompt).
+_RUN_ACTIONS = {"run_shortcut"}
+_RUN_TIMEOUT_S = 120.0
 # Reach other people through the app's scripting model; the person confirms each
 # one in a native panel unless they turned that off (send_approval).
 _SEND_ACTIONS = {"send_mail", "send_message"}
@@ -146,13 +162,6 @@ def support_matrix() -> Dict[str, Any]:
     return rows
 
 
-class AppAdapterError(RuntimeError):
-    def __init__(self, code: str, message: str, **extra: Any) -> None:
-        super().__init__(message)
-        self.code = code
-        self.extra = extra
-
-
 def normalize_app_name(app: str) -> Optional[str]:
     return _APP_ALIASES.get(str(app or "").strip().lower())
 
@@ -218,33 +227,6 @@ def _fallback(app: str, action: str, reason: str) -> Dict[str, Any]:
             "automatic": False,
         },
     }
-
-
-def _run(script: str, *, timeout_s: float = 10.0, code: str = "APP_ADAPTER_SCRIPT_FAILED") -> str:
-    ok, stdout, stderr = _run_osascript(script, timeout_s=max(0.5, min(float(timeout_s), 30.0)))
-    if not ok:
-        detail = (stderr or stdout or "AppleScript failed").strip()
-        # A compile error (-2741) means no statement ran at all.
-        compile_error = "syntax error" in detail and "(-2741)" in detail
-        raise AppAdapterError(code, detail[:800], **({"not_executed": True} if compile_error else {}))
-    return (stdout or "").rstrip("\r\n")
-
-
-def _parse_records(raw: str, fields: tuple[str, ...]) -> list[Dict[str, str]]:
-    rows: list[Dict[str, str]] = []
-    if not raw:
-        return rows
-    for record in raw.split(_RS):
-        if not record:
-            continue
-        values = record.split(_US)
-        if len(values) != len(fields):
-            raise AppAdapterError(
-                "APP_ADAPTER_RESPONSE_INVALID",
-                f"Expected {len(fields)} fields from semantic adapter, got {len(values)}.",
-            )
-        rows.append(dict(zip(fields, values)))
-    return rows
 
 
 def _focus_begin(preserve_focus: bool, deadline: float) -> Optional[Dict[str, Any]]:
@@ -726,37 +708,6 @@ end tell'''
     return result
 
 
-def _parse_date_bound(value: Optional[str], *, end: bool) -> datetime:
-    if not value:
-        now = datetime.now()
-        return now + timedelta(days=365 if end else -30)
-    text = str(value).strip()
-    try:
-        if len(text) == 10:
-            dt = datetime.strptime(text, "%Y-%m-%d")
-            if end:
-                dt = dt.replace(hour=23, minute=59, second=59)
-            return dt
-        return datetime.fromisoformat(text)
-    except ValueError as exc:
-        raise AppAdapterError(
-            "APP_ADAPTER_ARGUMENT_INVALID",
-            "Calendar date bounds must use YYYY-MM-DD or ISO-8601 local datetime.",
-        ) from exc
-
-
-def _date_setup(name: str, dt: datetime) -> str:
-    # Day 1 first: setting the month while today is the 31st would roll over.
-    return f'''set {name} to current date
-set day of {name} to 1
-set year of {name} to {dt.year}
-set month of {name} to {dt.month}
-set day of {name} to {dt.day}
-set hours of {name} to {dt.hour}
-set minutes of {name} to {dt.minute}
-set seconds of {name} to {dt.second}'''
-
-
 def _calendar_find(
     query: str, *, date_from: Optional[str], date_to: Optional[str],
     exact: bool, limit: int, timeout_s: float,
@@ -842,28 +793,6 @@ end tell'''
     }
     result["focus"] = _focus_finish(focus, "Calendar", deadline)
     return result
-
-
-def _event_datetime(value: Optional[str], field: str) -> datetime:
-    text = str(value or "").strip()
-    if not text:
-        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", f"{field} is required (ISO-8601 local datetime).")
-    try:
-        if len(text) == 10:
-            return datetime.strptime(text, "%Y-%m-%d")
-        return datetime.fromisoformat(text).replace(tzinfo=None)
-    except ValueError as exc:
-        raise AppAdapterError(
-            "APP_ADAPTER_ARGUMENT_INVALID",
-            f"{field} must be YYYY-MM-DD or an ISO-8601 local datetime such as 2026-10-09T14:30.",
-        ) from exc
-
-
-def _clean_field(value: Optional[str], field: str, limit: int) -> str:
-    text = str(value or "").strip()
-    if len(text) > limit:
-        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", f"{field} must be at most {limit} characters.")
-    return text
 
 
 def _event_readback(event: str, calendar: str) -> str:
@@ -1195,19 +1124,6 @@ def _reminders_complete(item_id: Optional[str], *, timeout_s: float) -> Dict[str
                               outcome_unknown=True, automatic_retry=False)
     return {"ok": True, "completed": True, "changed": True, "verified": True, "verification": "read_back",
             "reminder": {"id": parts[1], "name": parts[2]}}
-
-
-def _single_line(value: Optional[str], field: str, limit: int) -> str:
-    text = _clean_field(value, field, limit)
-    if any(ord(ch) < 32 for ch in text):
-        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", f"{field} must be a single line of text.")
-    return text
-
-
-def _plain_text(value: Optional[str], field: str, limit: int) -> str:
-    text = _clean_field(value, field, limit).replace("\r\n", "\n").replace("\r", "\n")
-    # Our own field separators (and other control characters) never belong in note or mail text.
-    return "".join(ch for ch in text if ch in "\n\t" or ord(ch) >= 32)
 
 
 def _note_html(title: str, body: str) -> str:
@@ -1946,6 +1862,9 @@ def mac_app(
     account: Optional[str] = None,
     to: Optional[str] = None,
     cc: Optional[str] = None,
+    duration_min: Optional[int] = None,
+    hours: Optional[str] = None,
+    include_weekends: bool = False,
 ) -> Dict[str, Any]:
     canonical = normalize_app_name(app)
     normalized_action = _normalized_action(action)
@@ -1988,7 +1907,13 @@ def mac_app(
             f"{canonical} adapter does not support action '{normalized_action}'.",
         )
 
-    if normalized_action not in _READ_ACTIONS | _DATA_WRITE_ACTIONS | _SEND_ACTIONS:
+    if normalized_action in _RUN_ACTIONS and not settings.allow_shell:
+        return {
+            **_base(canonical, normalized_action), "ok": False, "reason_code": "SHELL_DISABLED",
+            "error": "Running shortcuts is off because running commands is off (MCP_ALLOW_SHELL=false).",
+        }
+
+    if normalized_action not in _READ_ACTIONS | _DATA_WRITE_ACTIONS | _SEND_ACTIONS | _RUN_ACTIONS:
         human_guard = native_app_human_takeover(canonical)
         if human_guard is not None:
             reason_code = str(
@@ -2061,7 +1986,7 @@ def mac_app(
 
     try:
         bounded = _bounded_limit(limit)
-        timeout = max(1.0, min(float(timeout_s), 30.0))
+        timeout = max(1.0, min(float(timeout_s), _RUN_TIMEOUT_S if normalized_action in _RUN_ACTIONS else 30.0))
         if canonical == "Finder":
             payload = (
                 _selection(settings, limit=bounded, timeout_s=timeout)
@@ -2073,6 +1998,8 @@ def mac_app(
                 payload = _notes_find(str(query or ""), exact=exact, limit=bounded, timeout_s=timeout)
             elif normalized_action == "create_note":
                 payload = _notes_create(title, body, folder=folder, account=account, timeout_s=timeout)
+            elif normalized_action == "append_to_note":
+                payload = more.notes_append(item_id, query, body, exact=exact, timeout_s=timeout)
             else:
                 payload = _notes_open(item_id, query, exact=exact, preserve_focus=preserve_focus, timeout_s=timeout)
         elif canonical == "Mail":
@@ -2090,6 +2017,11 @@ def mac_app(
                     str(query or ""), date_from=date_from, date_to=date_to,
                     exact=exact, limit=bounded, timeout_s=timeout,
                 )
+            elif normalized_action == "find_free_time":
+                payload = more.calendar_free_time(
+                    date_from=date_from, date_to=date_to, calendar=calendar, duration_min=duration_min,
+                    hours=hours, include_weekends=include_weekends, limit=bounded, timeout_s=timeout,
+                )
             elif normalized_action == "create_event":
                 payload = _calendar_create(
                     title, start, end, calendar=calendar, location=location, notes=notes, timeout_s=timeout,
@@ -2101,11 +2033,21 @@ def mac_app(
             else:
                 payload = _calendar_open(str(item_id or ""), preserve_focus=preserve_focus, timeout_s=timeout)
         elif canonical == "Reminders":
+            if normalized_action == "list_reminders":
+                payload = _reminders_list(query, list_name=list_name, include_completed=include_completed,
+                                          limit=bounded, timeout_s=timeout)
+            elif normalized_action == "create_reminder":
+                payload = more.reminders_create(title, list_name=list_name, due=start, notes=notes or body,
+                                                timeout_s=timeout)
+            else:
+                payload = _reminders_complete(item_id, timeout_s=timeout)
+        elif canonical == "Contacts":
+            payload = more.contacts_find(query, limit=bounded, timeout_s=timeout)
+        elif canonical == "Shortcuts":
             payload = (
-                _reminders_list(query, list_name=list_name, include_completed=include_completed,
-                                limit=bounded, timeout_s=timeout)
-                if normalized_action == "list_reminders"
-                else _reminders_complete(item_id, timeout_s=timeout)
+                more.shortcuts_list(query, limit=bounded, timeout_s=timeout)
+                if normalized_action == "list_shortcuts"
+                else more.shortcuts_run(item_id, title, body, timeout_s=timeout)
             )
         elif canonical == "Preview":
             payload = (

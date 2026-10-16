@@ -326,8 +326,15 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     read_actions = {
         "capabilities", "selection", "find_notes", "find_messages",
         "find_events", "list_documents", "list_panes", "list_reminders",
-        "find_chats", "list_workspaces",
+        "find_chats", "list_workspaces", "find_free_time", "find_contacts", "list_shortcuts",
     }
+    # A shortcut runs whatever its actions do, like a command.
+    if action == "run_shortcut":
+        return RiskOverride(
+            capabilities=_caps(Capability.READ, Capability.RAW_EXECUTION, Capability.EXTERNAL_SIDE_EFFECT),
+            destructive=False,
+            sensitive=True,
+        )
     # Sending reaches other people. The person confirms each send in a native
     # panel (unless turned off in Settings > Apps), so it is not escalated to the
     # server-wide approval as well: one question per send, not two.
@@ -340,7 +347,8 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     # Calendar, Reminders, Notes and Mail-draft data changes go through the app's
     # scripting model, not its UI: a local data write rather than a UI action.
     # Mail drafts are saved, never sent.
-    if action in {"create_event", "update_event", "complete_reminder", "create_note", "create_draft"}:
+    if action in {"create_event", "update_event", "complete_reminder", "create_note", "create_draft",
+                  "create_reminder", "append_to_note"}:
         return RiskOverride(
             capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE),
             destructive=False,

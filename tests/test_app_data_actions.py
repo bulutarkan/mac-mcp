@@ -28,8 +28,9 @@ def _capture_scripts(call, *, reply: str = "OK" + US + "uid-1" + US + "T" + US +
 
 class AppDataActionTests(unittest.TestCase):
     def test_registry_and_risk_treat_data_changes_as_local_writes(self) -> None:
-        self.assertEqual(("find_events", "open_event", "create_event", "update_event"), aa.supported_actions("calendar"))
-        self.assertEqual(("list_reminders", "complete_reminder"), aa.supported_actions("reminders"))
+        self.assertEqual(("find_events", "find_free_time", "open_event", "create_event", "update_event"),
+                         aa.supported_actions("calendar"))
+        self.assertEqual(("list_reminders", "create_reminder", "complete_reminder"), aa.supported_actions("reminders"))
         self.assertTrue(aa.is_read_action("list_reminders"))
         _, write = resolve_risk("mac_app", {"app": "Calendar", "action": "create_event"})
         self.assertIn(Capability.LOCAL_WRITE, write.capabilities)
@@ -57,6 +58,28 @@ class AppDataActionTests(unittest.TestCase):
         scripts += _capture_scripts(lambda: aa._reminders_complete("x-apple-reminder://1", timeout_s=5),
                                     reply="OK" + US + "id" + US + "name" + US + "true")
         scripts.append(aa._date_setup("probe", aa.datetime(2026, 2, 28, 9, 0)))
+        # Group 4 adapters (app_adapters_more): every script they build must compile too.
+        from mcp_server import app_adapters_more as more
+
+        def more_scripts(call, reply):
+            captured: list[str] = []
+            with patch.object(more, "_run", side_effect=lambda script, **_: captured.append(script) or reply):
+                try:
+                    call()
+                except aa.AppAdapterError:
+                    pass
+            return captured
+        reminder = "OK" + US + "id" + US + "Pay \"rent\"" + US + "Home" + US + ""
+        scripts += more_scripts(lambda: more.reminders_create("Pay \"rent\"", list_name="Home", due="2026-11-01T09:30",
+                                                              notes="Line one\nLine two", timeout_s=5), reminder)
+        scripts += more_scripts(lambda: more.reminders_create("Call", list_name=None, due="2026-11-01", notes=None,
+                                                              timeout_s=5), reminder)
+        scripts += more_scripts(lambda: more.notes_append("note-1", None, "milk\n<eggs> & \"bread\"", exact=False,
+                                                          timeout_s=5), "OK" + US + "n" + US + "t" + US + "1" + US + "2")
+        scripts += more_scripts(lambda: more.calendar_free_time(date_from=None, date_to=None, calendar="Work",
+                                                                duration_min=30, hours=None, include_weekends=False,
+                                                                limit=5, timeout_s=5), "")
+        scripts += more_scripts(lambda: more.contacts_find("Ayşe \"A\"", limit=5, timeout_s=5), "")
         with tempfile.TemporaryDirectory() as td:
             for index, script in enumerate(scripts):
                 source = Path(td) / f"s{index}.applescript"
