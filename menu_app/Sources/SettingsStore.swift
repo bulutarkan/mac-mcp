@@ -59,6 +59,8 @@ struct MenuSettings: Codable {
         var require_descriptions: Bool
         /// The notch island style of live activity (#174); absent means off.
         var island: Bool?
+        /// The desktop agent cursor over background native actions; absent means on.
+        var desktop_cursor: Bool?
     }
     struct Notifications: Codable {
         var agent_completion: Bool
@@ -168,6 +170,7 @@ final class SettingsStore: ObservableObject {
     @Published var steeringSessionMinutes = 10
     @Published var showToolActivity = false
     @Published var showLiveIsland = false
+    @Published var showDesktopCursor = true
     @Published var requireToolDescriptions = false
     @Published var agentCompletionNotificationsEnabled = false
     @Published var mailConfirmSend = true
@@ -277,6 +280,7 @@ final class SettingsStore: ObservableObject {
         showToolActivity = current.tool_activity?.show_bubble ?? false
         requireToolDescriptions = current.tool_activity?.require_descriptions ?? false
         showLiveIsland = current.tool_activity?.island ?? false
+        showDesktopCursor = current.tool_activity?.desktop_cursor ?? true
         if !requireToolDescriptions {
             showToolActivity = false
         }
@@ -335,7 +339,8 @@ final class SettingsStore: ObservableObject {
             tool_activity: .init(
                 show_bubble: showToolActivity && requireToolDescriptions,
                 require_descriptions: requireToolDescriptions,
-                island: showLiveIsland ? true : nil
+                island: showLiveIsland ? true : nil,
+                desktop_cursor: showDesktopCursor ? nil : false
             ),
             notifications: .init(agent_completion: agentCompletionNotificationsEnabled),
             decision_acceleration: .init(enabled: decisionAccelerationEnabled, scope: decisionAccelerationScope),

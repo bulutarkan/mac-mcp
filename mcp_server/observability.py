@@ -1135,6 +1135,50 @@ def current_security_session() -> Optional[tuple[str, str]]:
     return _SECURITY_SESSION.get()
 
 
+# The running server's telemetry, so a native action can tell the menu app where
+# it lands (the desktop agent cursor). Set by ObservedFastMCP.
+_LIVE_TELEMETRY: Optional[TelemetryManager] = None
+
+
+def set_live_telemetry(telemetry: Optional[TelemetryManager]) -> None:
+    global _LIVE_TELEMETRY
+    _LIVE_TELEMETRY = telemetry
+
+
+def publish_native_pointer(
+    *,
+    action: str,
+    target: str,
+    pid: Optional[int],
+    point: Optional[tuple[float, float]] = None,
+    press: bool = False,
+) -> None:
+    """Live-only `native_pointer` event for the desktop agent cursor overlay.
+
+    Published to stream subscribers and never stored. It carries a verb, a generic
+    control kind and desktop points (AX space, top-left origin): no element titles,
+    values or typed text.
+    """
+    telemetry = _LIVE_TELEMETRY
+    if telemetry is None:
+        return
+    session = _SECURITY_SESSION.get()
+    event: Dict[str, Any] = {
+        "kind": "native_pointer",
+        "event_id": _STEERING_PARENT_EVENT.get(),
+        "session_id": session[1] if session else None,
+        "action": action,
+        "target": target,
+        "pid": int(pid) if pid else None,
+        "press": bool(press),
+        "timestamp": time.time(),
+    }
+    if point is not None:
+        event["x"] = round(float(point[0]), 1)
+        event["y"] = round(float(point[1]), 1)
+    telemetry._publish(event)
+
+
 _CLIP_MARKER = " [cut; tool_discover has the full text]"
 
 
@@ -1173,6 +1217,7 @@ class ObservedFastMCP(FastMCP):
         **kwargs: Any,
     ) -> None:
         self.telemetry = telemetry
+        set_live_telemetry(telemetry)
         self.steering = steering or SteeringManager()
         self.security_context = security_context or SecurityContextManager()
         self._security_approval_provider = security_approval_provider

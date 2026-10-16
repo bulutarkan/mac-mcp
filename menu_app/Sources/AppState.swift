@@ -37,6 +37,8 @@ private struct ToolActivityStreamPayload: Decodable, Sendable {
     let teamID: String?
     let arguments: ToolActivityStreamArguments?
     let active: [ToolActivityStreamPayload]?
+    /// `native_pointer` only: where a background native action lands (desktop agent cursor).
+    let pointer: DesktopPointer?
     /// Decoded from this payload's decoder rather than reconstructed from an
     /// untyped dictionary.  `connected` payloads deliberately have no event.
     let toolEvent: ToolEvent?
@@ -48,6 +50,7 @@ private struct ToolActivityStreamPayload: Decodable, Sendable {
         case sessionID = "session_id"
         case agentID = "agent_id"
         case teamID = "team_id"
+        case x, y, pid, action, target, press
     }
 
     init(from decoder: Decoder) throws {
@@ -63,6 +66,21 @@ private struct ToolActivityStreamPayload: Decodable, Sendable {
         teamID = try values.decodeIfPresent(String.self, forKey: .teamID)
         arguments = try values.decodeIfPresent(ToolActivityStreamArguments.self, forKey: .arguments)
         active = try values.decodeIfPresent([ToolActivityStreamPayload].self, forKey: .active)
+        if kind == "native_pointer" {
+            let x = try values.decodeIfPresent(Double.self, forKey: .x)
+            let y = try values.decodeIfPresent(Double.self, forKey: .y)
+            pointer = DesktopPointer(
+                eventID: eventID,
+                sessionID: sessionID,
+                pid: try values.decodeIfPresent(Int32.self, forKey: .pid),
+                point: x.flatMap { x in y.map { CGPoint(x: x, y: $0) } },
+                action: try values.decodeIfPresent(String.self, forKey: .action) ?? "",
+                target: try values.decodeIfPresent(String.self, forKey: .target) ?? "",
+                press: try values.decodeIfPresent(Bool.self, forKey: .press) ?? false
+            )
+        } else {
+            pointer = nil
+        }
         toolEvent = try? ToolEvent(from: decoder)
     }
 }
@@ -903,6 +921,13 @@ final class AppState: ObservableObject {
     private func handleToolActivityPayload(_ payload: ToolActivityStreamPayload) {
         let kind = payload.kind
 
+        if kind == "native_pointer" {
+            if let pointer = payload.pointer, settings.showDesktopCursor {
+                DesktopCursorOverlayController.shared.show(pointer, agent: desktopCursorAgentLabel(pointer.sessionID))
+            }
+            return
+        }
+
         if kind == "connected" {
             ToolActivityBubbleController.shared.hideImmediately()
             guard let active = payload.active else { return }
@@ -930,9 +955,18 @@ final class AppState: ObservableObject {
             presentToolActivityEvent(payload)
         } else if kind == "call_finished" {
             ToolActivityBubbleController.shared.finish(eventID: eventID)
+            DesktopCursorOverlayController.shared.finish(eventID: eventID)
             let status = payload.status ?? "ok"
             onLiveToolCallFinished?(eventID, !["error", "failed", "denied", "blocked", "timeout"].contains(status))
         }
+    }
+
+    /// "Agent 2", as the Sessions list numbers the session, once there is more than one.
+    private func desktopCursorAgentLabel(_ sessionID: String?) -> String? {
+        guard let sessionID, steeringSessions.count > 1,
+              let session = steeringSessions.first(where: { $0.sessionID == sessionID })
+        else { return nil }
+        return "Agent \(session.flowNumber)"
     }
 
     private func presentToolActivityEvent(_ payload: ToolActivityStreamPayload) {

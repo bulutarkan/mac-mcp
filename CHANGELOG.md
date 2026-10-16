@@ -1,5 +1,11 @@
 ## Unreleased
 
+### An agent cursor on the desktop
+- When an agent clicks, types, scrolls or presses a control in another app's window through Accessibility, a cursor glides there and shows the step (for example "Agent 2 · Clicking Button"), like the browser companion's cursor. The real pointer does not move.
+- The cursor sits in the window stack directly above the window being driven, not above everything: a window you have in front covers it and its click ripple, just as it covers the background window.
+- It ignores the mouse, never takes focus and stays out of screen captures, so agents never see it in their own screenshots. It carries a verb and a control kind only, never titles or typed text.
+- Coordinate input, which moves the real pointer, shows no second cursor. Turn it off in Settings › Activity & Notifications › Agent cursor on the desktop.
+
 ### A new Mac MCP mark
 - One thin line draws an M; the browser companion's pointer, turned upright, carries on its right leg. Champagne on dark backgrounds, bronze on light ones.
 - The app icon is the mark on an obsidian tile, with hand-tuned 16, 32 and 64 px sizes for Finder and small Dock views. The menu bar shows the mark itself: dimmed while the server is stopped, with a dot while work runs.
