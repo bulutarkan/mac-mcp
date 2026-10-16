@@ -8,7 +8,7 @@
 
 - **It works inside your apps.** Your AI app opens Notes, looks through a folder in Finder or drafts a reply in Mail through macOS Accessibility, using the same buttons and menus you do. Files and the terminal are there too.
 - **It browses where you can see it.** Visible, non-focus-stealing browser automation in Safari and Chrome: it works in a tab while you keep using your Mac, and frames the tab so you can see what it touches.
-- **It hands off work and reports back.** Delegate a task to a Codex, Claude Code or OpenCode agent and read a report of what it did; Scheduled Tasks (experimental) run AI tasks and scripts on a schedule.
+- **It hands off work and reports back.** Delegate a task to Codex, Claude Code, OpenCode or one of seven other agent CLIs and read a report of what it did; Scheduled Tasks (experimental) run AI tasks and scripts on a schedule.
 
 [Watch the 40-second demo](site/assets/media/mac-mcp-demo.mp4) · Website: [bulutarkan.github.io/mac-mcp](https://bulutarkan.github.io/mac-mcp/) · [Install](docs/install.md#install) · MIT
 
@@ -26,8 +26,16 @@ curl -fsSL https://raw.githubusercontent.com/bulutarkan/mac-mcp/main/install.sh 
 
 - **Scheduled Tasks (experimental):** AI tasks and scripts that run once, daily, weekly, monthly or every few hours, with a run report (result and steps) for each run. Tasks an AI app suggests wait for your approval in Settings.
 - **Live activity island:** an optional island beside the notch shows the app in use while your AI works, what needs you, recent work and the next scheduled task. Off by default (Settings › Activity & Notifications).
-- **Agent cursor on the desktop:** when an agent clicks or types in another app's window in the background, a cursor shows where, without moving yours. It sits with that window, so whatever you have in front covers it, and it never appears in screenshots. On by default (Settings › Activity & Notifications).
 - **Safer outgoing data:** the secret-egress guard also catches secrets hidden in base64, hex or percent-encoded payloads.
+
+**New in 2.2.0 r2** (the version stays 2.2.0; `mac-mcp update` or the new package brings it):
+
+- **Agent cursor on the desktop:** when an agent clicks or types in another app's window in the background, a cursor shows where, without moving yours. It sits with that window, so whatever you have in front covers it, and it never appears in screenshots. On by default (Settings › Activity & Notifications).
+- **Session details:** each session in the menu shows how long it has been open and how many tool calls it made; click it for a small panel with its status and current tool.
+- **Seven more AI apps and agents:** Antigravity, pi, Cline, Kilo Code, Goose, Kimi Code and Grok Build can be connected as AI apps and turned on as delegated agents.
+- **Whole pages in one call:** the browser `read` action returns a page's full text, including content that loads as you scroll.
+- **A CLI with a look of its own:** `mac-mcp`, `status`, `doctor` and the other commands line up their facts and end with one sentence and the next command to run; scripts and the menu app get the plain output as before.
+- **A new Mac MCP mark** on the app icon, the menu bar, the island, the site and the mobile page.
 
 Earlier releases are in the [CHANGELOG](CHANGELOG.md).
 
@@ -38,7 +46,7 @@ Earlier releases are in the [CHANGELOG](CHANGELOG.md).
 - **[Browser work](docs/browser.md):** Safari and Chrome tabs without taking over your Mac, saved logins, privacy controls and the Visual Companion.
 - **[Safety, permissions and undo](docs/safety.md):** what the security words mean, permission profiles, Server Approval and file undo.
 - **[The menu bar app](docs/menu-app.md):** installing it and what the menu shows.
-- **[Agents and Scheduled Tasks](docs/agents-and-tasks.md):** delegating to Codex, Claude Code and OpenCode, and running tasks on a schedule.
+- **[Agents and Scheduled Tasks](docs/agents-and-tasks.md):** delegating to Codex, Claude Code, OpenCode and seven other agents, and running tasks on a schedule.
 - **[Developer reference](docs/reference.md):** the MCP and REST surfaces, server commands, voice, the dashboard and tool coverage.
 - Configuration, security details and terminology: [CONFIGURATION](docs/CONFIGURATION.md), [Local API security](docs/LOCAL_API_SECURITY.md), [Security assurance](docs/security-assurance.md), [TERMINOLOGY](docs/TERMINOLOGY.md).
 

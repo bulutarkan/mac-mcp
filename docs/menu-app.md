@@ -57,7 +57,7 @@ The menu bar derives three deterministic sections from the versioned lifecycle s
 
 ### Session details
 
-Each live session row shows its age and total tool-call count. Clicking the row selects that session for the Prompt field and opens an anchored inspector with the start time, session age, tool-call count, running-call count, current/last tool, call age and last activity. Escape, the close button, or clicking outside dismisses the inspector. It stays attached when a session moves from Working to Idle and closes when that session disappears.
+Each live session row shows its age and total tool-call count, followed by the prompt's state while one is queued, delivered, acknowledged or not delivered. Clicking the row selects that session for the Prompt field and opens an anchored inspector with the start time, session age, tool-call count, running-call count, current/last tool, call age and last activity. Escape, the close button, or clicking outside dismisses the inspector. It stays attached when a session moves from Working to Idle and closes when that session disappears.
 
 Session age starts when Mac MCP first observes the logical session; it is not accumulated execution time. The tool-call count includes top-level MCP requests that fail, are denied, or are preempted before execution, counts each event once, and treats a parallel-command invocation as one tool call. Nested dispatch does not add duplicate calls. Metrics live only as long as the in-memory session and reset after expiration or daemon restart. The API adds `tool_call_count` and nullable `activity_started_at`; older servers remain compatible and an unavailable count displays `—`. During a connection failure the inspector labels activity as last known and freezes call age at the snapshot value. It uses the existing dashboard refresh flow without additional network polling.
 
@@ -68,6 +68,12 @@ The steering API exposes `schema_version: 1` and separates **activity** from **i
 The instruction lifecycle is intentionally small: `ready → queued → delivered → acknowledged`. If the underlying tool fails before queued steering can be delivered, the session enters `failed` while keeping the instruction pending for the next tool call. Transport-backed sessions emit `disconnected` when their MCP transport disappears, and idle sessions emit `expired` when their retention TTL elapses. Illegal lifecycle transitions are rejected internally instead of silently producing ambiguous state.
 
 `acknowledged` is inferred when the same logical agent makes its next top-level tool request after receiving steering; it means the agent continued after the delivery boundary, not that the model sent a separate acknowledgement packet. Daemon/API reachability is a different connection concern and is handled separately by the menu app's connection UX.
+
+### Agent cursor on the desktop
+
+When an agent clicks, types, scrolls or presses a control in another app's window through `mac_act` with an element from `mac_observe`, the menu app draws a cursor at that element with the step's label (for example "Clicking Button", or "Agent 2 · Clicking Button" while several sessions are open). The real pointer does not move. The server sends the menu app a live-only `native_pointer` event with a verb, a generic control kind and the element's centre; titles and typed text are never in it, and it is not stored.
+
+The cursor's window is ordered directly above the window being driven, so a window you have in front covers it. It ignores the mouse, never takes focus and is excluded from screen captures, so agents never see it in their own screenshots. It disappears when that window closes, is minimised or is on another Space. Coordinate input moves the real pointer and shows no second cursor. Turn it off in Settings › Activity & Notifications › Agent cursor on the desktop (on by default).
 
 ### Menu bar connection resilience
 
