@@ -1,0 +1,37 @@
+usage: mac-mcp [-h] [--version]
+               {start,stop,restart,status,connect-config,connect,clients,privacy,stdio,dashboard,credential,doctor,conformance,recipe,logins,catalog,logs,uninstall,repair,autostart,update} ...
+
+Manage the Mac MCP local server.
+
+positional arguments:
+  {start,stop,restart,status,connect-config,connect,clients,privacy,stdio,dashboard,credential,doctor,conformance,recipe,logins,catalog,logs,uninstall,repair,autostart,update}
+    start               Start the local server and its configured public endpoint mode.
+    stop                Stop the local server and any managed public tunnel.
+    restart             Restart the local server and apply the configured public endpoint mode.
+    status              Show server and public endpoint status. Exits 0 healthy, 1 server down or
+                        not answering, 2 selected public endpoint unavailable or misconfigured.
+    connect-config      Generate a secret-safe MCP connection snippet for a supported client.
+    connect             Add Mac MCP to an AI app on this Mac in one step (ChatGPT: copy its
+                        connector address).
+    clients             List the AI apps on this Mac and whether Mac MCP is added.
+    privacy             Mac MCP's stored data (Settings > Privacy).
+    stdio               Speak MCP over stdin/stdout, forwarding to the running server (what one-
+                        click app setup runs).
+    dashboard           Open the local Mac MCP operations dashboard.
+    credential          Manage local provider credentials without exposing secret values in
+                        process arguments.
+    doctor              Diagnose local Mac MCP runtime, permissions, dependencies, and companions.
+    conformance         Run deterministic Computer Use contract/regression checks.
+    recipe              List or run saved, activated recipes (for Shortcuts, Raycast and scripts).
+    logins              Saved logins that agents can use with browser_sign_in without seeing them.
+    catalog             Review and install signed skill and recipe packs.
+    logs                Show recent, redacted lines from a Mac MCP log, or --list sizes and
+                        bounds.
+    uninstall           Preview or remove Mac MCP; removed parts go to the Trash.
+    repair              Check and fix the parts Mac MCP manages (preview unless --yes).
+    autostart           Start Mac MCP when you log in: on, off, or show the setting.
+    update              Update Mac MCP to the latest verified stable release checkpoint.
+
+options:
+  -h, --help            show this help message and exit
+  --version             show program's version number and exit
