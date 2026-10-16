@@ -55,6 +55,12 @@ The native controller remains `@MainActor` and keeps the same polling cadence, b
 
 The menu bar derives three deterministic sections from the versioned lifecycle snapshot: **Needs Attention** (`failed`, unresolved/unknown, or recent disconnected/expired session events), **Active** (working, queued, delivered, pending, or awaiting acknowledgement), and **Recent** (retained idle `ready`/`acknowledged` sessions). Historical terminal rows are informational rather than steerable. The menu-bar status icon carries only an aggregate attention/active signal. Mac MCP does not show session Retry/Cancel controls because no such backend actions exist; connection **Retry** remains a separate dashboard-reachability action.
 
+### Session details
+
+Each live session row shows its age and total tool-call count. Clicking the row selects that session for the Prompt field and opens an anchored inspector with the start time, session age, tool-call count, running-call count, current/last tool, call age and last activity. Escape, the close button, or clicking outside dismisses the inspector. It stays attached when a session moves from Working to Idle and closes when that session disappears.
+
+Session age starts when Mac MCP first observes the logical session; it is not accumulated execution time. The tool-call count includes top-level MCP requests that fail, are denied, or are preempted before execution, counts each event once, and treats a parallel-command invocation as one tool call. Nested dispatch does not add duplicate calls. Metrics live only as long as the in-memory session and reset after expiration or daemon restart. The API adds `tool_call_count` and nullable `activity_started_at`; older servers remain compatible and an unavailable count displays `—`. During a connection failure the inspector labels activity as last known and freezes call age at the snapshot value. It uses the existing dashboard refresh flow without additional network polling.
+
 ### Versioned session lifecycle
 
 The steering API exposes `schema_version: 1` and separates **activity** from **instruction lifecycle**. Legacy `state=working|idle` and `queued` fields remain for compatibility; new clients should prefer `activity_state`, `lifecycle_state`, `pending_instruction_count`, `last_transition_at`, and `last_error`.

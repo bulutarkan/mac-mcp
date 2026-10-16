@@ -13,6 +13,7 @@ struct MenuBarView: View {
     @MacMCPState private var settingsMessage = ""
     @MacMCPState private var showVoice = false
     @MacMCPState private var showAdvanced = false
+    @MacMCPState private var sessionDetailID: String?
     @MacMCPState private var showSessions = false
     @MacMCPState private var showSecurity = false
     @MacMCPState private var sessionMinutesText = ""
@@ -69,6 +70,12 @@ struct MenuBarView: View {
             fitWindow(animated: false)
         })
         .onChange(of: menuHeight) { _ in fitWindow(animated: false) }
+        .onChange(of: showSessions) { expanded in
+            if !expanded { sessionDetailID = nil }
+        }
+        .onChange(of: state.steeringSessions.map(\.sessionID)) { ids in
+            if let sessionDetailID, !ids.contains(sessionDetailID) { self.sessionDetailID = nil }
+        }
         .onPreferenceChange(MenuContentHeight.self) { measured in
             // No animation of its own: the window follows the content as a section opens or
             // closes, frame by frame with its top edge fixed, so nothing moves twice.
@@ -521,13 +528,18 @@ struct MenuBarView: View {
                     }
                     // Inline list: the popover's single scroll view handles long lists.
                     VStack(spacing: 6) {
-                        if !sessionGroups.active.isEmpty {
-                            sessionSectionHeader("Active", count: sessionGroups.active.count, symbol: "bolt.fill", color: .accentColor)
-                            ForEach(sessionGroups.active) { session in sessionRow(session) }
-                        }
-                        if !sessionGroups.recent.isEmpty {
-                            sessionSectionHeader("Recent", count: sessionGroups.recent.count, symbol: "clock", color: .secondary)
-                            ForEach(sessionGroups.recent) { session in sessionRow(session) }
+                        // Keep the row identity when Working becomes Idle so an open
+                        // inspector follows the session across the two section headers.
+                        ForEach(sessionGroups.active + sessionGroups.recent) { session in
+                            VStack(spacing: 6) {
+                                if session.id == sessionGroups.active.first?.id {
+                                    sessionSectionHeader("Active", count: sessionGroups.active.count, symbol: "bolt.fill", color: .accentColor)
+                                }
+                                if session.id == sessionGroups.recent.first?.id {
+                                    sessionSectionHeader("Recent", count: sessionGroups.recent.count, symbol: "clock", color: .secondary)
+                                }
+                                sessionRow(session)
+                            }
                         }
                         if !sessionGroups.ended.isEmpty {
                             sessionSectionHeader("Ended", count: sessionGroups.ended.count, symbol: "clock.arrow.circlepath", color: .secondary)
@@ -1384,7 +1396,10 @@ struct MenuBarView: View {
     }
 
     private func sessionRow(_ session: SteeringSession) -> some View {
-        Button { state.selectedSteeringSessionID = session.sessionID } label: {
+        Button {
+            state.selectedSteeringSessionID = session.sessionID
+            sessionDetailID = session.sessionID
+        } label: {
             HStack(spacing: 8) {
                 Image(systemName: state.selectedSteeringSessionID == session.sessionID ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(state.selectedSteeringSessionID == session.sessionID ? Color.accentColor : Color.secondary)
@@ -1394,7 +1409,13 @@ struct MenuBarView: View {
                     .background(.quaternary, in: Capsule())
                 VStack(alignment: .leading, spacing: 1) {
                     Text(session.label).font(.caption.weight(.semibold)).lineLimit(1)
-                    Text(sessionDetailLine(session)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        Text(session.lastError?.hasPrefix("security:") == true
+                             ? sessionDetailLine(session)
+                             : SteeringSessionPresentation(session: session, now: context.date.timeIntervalSince1970,
+                                                           isStale: !state.hasReliableSessionSignal).summary)
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
                 Spacer()
                 if let lifecycleSymbol = sessionLifecycleSymbol(session.effectiveLifecycleState) {
@@ -1410,6 +1431,16 @@ struct MenuBarView: View {
                     .accessibilityLabel(session.isWorking ? "Working" : "Idle")
             }.padding(.vertical, 3).contentShape(Rectangle())
         }.buttonStyle(.plain)
+        .accessibilityHint("Selects this session for prompts and opens its details")
+        .popover(isPresented: Binding(
+            get: { sessionDetailID == session.sessionID },
+            set: { shown in
+                if shown { sessionDetailID = session.sessionID }
+                else if sessionDetailID == session.sessionID { sessionDetailID = nil }
+            }
+        ), arrowEdge: .trailing) {
+            SessionDetailView(session: session, isStale: !state.hasReliableSessionSignal)
+        }
     }
 
     private func terminalSessionRow(_ event: SteeringRecent) -> some View {

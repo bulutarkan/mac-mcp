@@ -473,6 +473,7 @@ class SteeringManager:
                 "idempotency_tombstones": {},
                 "idempotency_tombstone_order": [],
                 "active": {},
+                "call_start_times": {},
                 "lifecycle_state": "ready",
                 "last_transition_at": now,
                 "last_error": None,
@@ -532,10 +533,15 @@ class SteeringManager:
         *,
         tool: str,
         arguments: Optional[Dict[str, Any]] = None,
+        event_id: Optional[str] = None,
     ) -> list[Dict[str, Any]]:
-        """Register/touch identity and consume queued idle steering before execution."""
+        """Count the request and consume queued idle steering before execution."""
         with self._lock:
             state = self._ensure_identity_locked(identity, tool=tool, arguments=arguments)
+            # A request may be preempted or denied before it starts executing.
+            # None means counted but not executing; begin_call fills the timestamp.
+            if event_id is not None:
+                state["call_start_times"].setdefault(event_id, None)
             self._acknowledge_locked(state, tool=tool)
             pending = list(state["pending"])
             if not pending:
@@ -561,6 +567,11 @@ class SteeringManager:
         label, detail = describe_target(tool, arguments or {})
         with self._lock:
             state = self._ensure_identity_locked(identity, tool=tool, arguments=arguments)
+            # Count an MCP call once, including failed calls; commands inside a
+            # parallel tool invocation are not separate tool calls.
+            if state["call_start_times"].get(event_id) is not None:
+                return self._public_state_locked(state, now=now)
+            state["call_start_times"][event_id] = now
             state["active"][event_id] = {
                 "event_id": event_id,
                 "tool": str(tool),
@@ -830,6 +841,8 @@ class SteeringManager:
             "last_activity_at": state["last_activity_at"],
             "activity_ms": activity_ms,
             "active_calls": len(active_calls),
+            "tool_call_count": len(state["call_start_times"]),
+            "activity_started_at": current_call["started_at"] if active_calls else None,
         }
 
     def sessions(self) -> list[Dict[str, Any]]:

@@ -1588,7 +1588,7 @@ class ObservedFastMCP(FastMCP):
 
         try:
             if top_level and steering_identity is not None:
-                pending = self.steering.prepare_call(steering_identity, tool=name, arguments=arguments)
+                pending = self.steering.prepare_call(steering_identity, tool=name, arguments=arguments, event_id=event_id)
                 if pending:
                     self.telemetry.finish_call(
                         event_id,
