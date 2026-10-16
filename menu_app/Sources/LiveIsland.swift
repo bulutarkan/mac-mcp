@@ -973,8 +973,7 @@ private struct IslandMark: View {
     let paused: Bool
     let privateMode: Bool
 
-    static let icon: NSImage = Bundle.main.url(forResource: "AppIcon", withExtension: "png", subdirectory: "Assets")
-        .flatMap(NSImage.init(contentsOf:)) ?? NSApp.applicationIconImage
+    static let icon: NSImage = BrandArt.image("BrandMark")  // the island is always dark: champagne
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {

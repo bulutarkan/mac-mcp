@@ -154,7 +154,7 @@ class MenuPopoverStructureTests(unittest.TestCase):
 
     def test_menu_bar_icon_is_reserved_for_activity(self) -> None:
         app = (SOURCES / "MacMCPMenuApp.swift").read_text(encoding="utf-8")
-        self.assertIn('return state.pulse ? "cpu.fill" : "cpu"', app)
+        self.assertIn("return .working(hollow: state.pulse)", app)
         self.assertIn("state.activeAgents > 0", app)
         self.assertNotIn("sessionNeedsAttentionCount", app)
         self.assertNotIn("exclamationmark.triangle.fill", app)

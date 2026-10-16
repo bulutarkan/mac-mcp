@@ -70,6 +70,10 @@ xcrun swiftc -O -parse-as-library -target "${ARCH}-apple-macos13.0" \
 /usr/bin/rsync -a --exclude tests "${SCRIPT_DIR}/Onboarding" "${RESOURCES}/"
 /bin/mkdir -p "${RESOURCES}/Assets"
 /bin/cp "${SCRIPT_DIR}/Assets/AppIcon.png" "${RESOURCES}/Assets/AppIcon.png"
+# The monogram: menu header and Live Island (champagne, bronze), menu bar template (@1x, @2x).
+for art in BrandMark.png BrandMarkLight.png MenuBarMark.png MenuBarMark@2x.png; do
+  /bin/cp "${SCRIPT_DIR}/Assets/${art}" "${RESOURCES}/Assets/${art}"
+done
 
 # Safari Web Extension: built with the same command-line Swift toolchain so installing
 # Mac MCP from GitHub does not require generating or shipping an Xcode project.

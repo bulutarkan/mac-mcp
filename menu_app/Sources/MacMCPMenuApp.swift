@@ -34,7 +34,7 @@ struct MacMCPMenuApp: App {
         MenuBarExtra {
             MenuBarView(state: state, settings: state.settings)
         } label: {
-            Image(systemName: menuBarSymbol)
+            Image(nsImage: MenuBarMark.image(menuBarLook))
                 .accessibilityLabel(menuBarAccessibilityLabel)
         }
         .menuBarExtraStyle(.window)
@@ -48,12 +48,13 @@ struct MacMCPMenuApp: App {
         }
     }
 
-    private var menuBarSymbol: String {
-        if !state.serverRunning { return "server.rack" }
+    private var menuBarLook: MenuBarMark.Look {
+        if !state.serverRunning { return .stopped }
         if state.activeAgents > 0 || (state.hasReliableSessionSignal && state.sessionActiveCount > 0) {
-            return state.pulse ? "cpu.fill" : "cpu"
+            // The dot stays filled without the pulse (Reduce Motion), so work still reads at a glance.
+            return .working(hollow: state.pulse)
         }
-        return "server.rack"
+        return .idle
     }
 
     private var menuBarAccessibilityLabel: String {
@@ -65,5 +66,65 @@ struct MacMCPMenuApp: App {
         }
         if state.connectionState == .degraded { return "Mac MCP, degraded" }
         return "Mac MCP"
+    }
+}
+
+/// The Mac MCP artwork bundled in Resources/Assets (rendered by scripts/build_brand.py).
+enum BrandArt {
+    static func image(_ name: String) -> NSImage {
+        Bundle.main.url(forResource: name, withExtension: "png", subdirectory: "Assets")
+            .flatMap(NSImage.init(contentsOf:)) ?? NSApp.applicationIconImage
+    }
+}
+
+/// The monogram in the menu bar. It is a template image, so macOS colours it for light, dark
+/// and highlighted bars; the state shows in alpha and a dot, never in colour.
+@MainActor
+enum MenuBarMark {
+    enum Look: Hashable {
+        case stopped, idle
+        case working(hollow: Bool)
+    }
+
+    /// Every look is the same width, so the other menu bar icons never move when work starts or stops.
+    private static let size = NSSize(width: 22, height: 18)
+
+    /// The 18 pt mark with its @1x and @2x pixels, so it stays sharp on every display.
+    private static let base: NSImage = {
+        let markSize = NSSize(width: 18, height: 18)
+        let image = NSImage(size: markSize)
+        for name in ["MenuBarMark", "MenuBarMark@2x"] {
+            guard let url = Bundle.main.url(forResource: name, withExtension: "png", subdirectory: "Assets"),
+                  let rep = NSImageRep(contentsOf: url) else { continue }
+            rep.size = markSize
+            image.addRepresentation(rep)
+        }
+        return image
+    }()
+
+    private static var cache: [Look: NSImage] = [:]
+
+    static func image(_ look: Look) -> NSImage {
+        if let cached = cache[look] { return cached }
+        let image = NSImage(size: size, flipped: false) { rect in
+            base.draw(in: NSRect(x: 0, y: 0, width: 18, height: 18), from: .zero, operation: .sourceOver,
+                      fraction: look == .stopped ? 0.4 : 1)
+            if case .working(let hollow) = look {
+                // A dot at the top right, clear of the M's right leg (over the leg it read as "Mi").
+                let dot = NSRect(x: 18.6, y: 13, width: 3.2, height: 3.2)
+                NSColor.black.set()
+                if hollow {
+                    let ring = NSBezierPath(ovalIn: dot.insetBy(dx: 0.5, dy: 0.5))
+                    ring.lineWidth = 1
+                    ring.stroke()
+                } else {
+                    NSBezierPath(ovalIn: dot).fill()
+                }
+            }
+            return true
+        }
+        image.isTemplate = true
+        cache[look] = image
+        return image
     }
 }

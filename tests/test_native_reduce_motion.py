@@ -22,9 +22,9 @@ class NativeReduceMotionTests(unittest.TestCase):
 
     def test_active_state_stays_visible_without_motion(self) -> None:
         app = (SOURCES / "MacMCPMenuApp.swift").read_text(encoding="utf-8")
-        # Without the pulse the active symbol is the static "cpu", distinct from idle.
-        self.assertIn('return state.pulse ? "cpu.fill" : "cpu"', app)
-        self.assertIn('return "server.rack"', app)
+        # Without the pulse the working mark keeps a filled dot, distinct from idle (no dot).
+        self.assertIn("return .working(hollow: state.pulse)", app)
+        self.assertIn("return .idle", app)
         self.assertIn('"Mac MCP, active work"', app)
 
     def test_robot_draws_a_still_pose_under_reduce_motion(self) -> None:

@@ -3,6 +3,7 @@ import SwiftUI
 
 struct MenuBarView: View {
     @ObservedObject var state: AppState
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var settings: SettingsStore
     @StateObject private var audio = AudioDeviceStore()
     @MacMCPState private var groqKey = ""
@@ -212,9 +213,9 @@ struct MenuBarView: View {
     private var header: some View {
         let status = headerStatus
         return HStack(spacing: 10) {
-            Image(nsImage: NSApplication.shared.applicationIconImage)
-                .resizable().frame(width: 32, height: 32)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // The bare monogram: champagne on the dark popover, bronze on the light one.
+            Image(nsImage: BrandArt.image(colorScheme == .dark ? "BrandMark" : "BrandMarkLight"))
+                .resizable().interpolation(.high).frame(width: 30, height: 30)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Mac MCP").font(.headline)
