@@ -91,7 +91,7 @@ if [[ ! -f "${ICON_SOURCE}" ]]; then
 fi
 ICONSET="${BUILD_ROOT}/AppIcon.iconset"; rm -rf "${ICONSET}"; mkdir -p "${ICONSET}"
 for spec in "16 icon_16x16.png" "32 icon_16x16@2x.png" "32 icon_32x32.png" "64 icon_32x32@2x.png" "128 icon_128x128.png" "256 icon_128x128@2x.png" "256 icon_256x256.png" "512 icon_256x256@2x.png" "512 icon_512x512.png" "1024 icon_512x512@2x.png"; do
-  size="${spec%% *}"; name="${spec#* }"; /usr/bin/sips -z "${size}" "${size}" "${ICON_SOURCE}" --out "${ICONSET}/${name}" >/dev/null
+  size="${spec%% *}"; name="${spec#* }"; if [[ -f "${SCRIPT_DIR}/Assets/AppIconSmall/${size}.png" ]]; then /bin/cp "${SCRIPT_DIR}/Assets/AppIconSmall/${size}.png" "${ICONSET}/${name}"; else /usr/bin/sips -z "${size}" "${size}" "${ICON_SOURCE}" --out "${ICONSET}/${name}" >/dev/null; fi
 done
 /usr/bin/iconutil -c icns "${ICONSET}" -o "${RESOURCES}/AppIcon.icns"; rm -rf "${ICONSET}"
 [[ -f "${RESOURCES}/AppIcon.icns" ]] || { printf 'App icon was not built into the bundle.\n' >&2; exit 1; }

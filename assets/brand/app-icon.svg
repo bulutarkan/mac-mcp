@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <title>Mac MCP</title>
+  <defs>
+    <linearGradient id="tile" x1="330" y1="100" x2="694" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#34363d"/>
+      <stop offset="1" stop-color="#111216"/>
+    </linearGradient>
+    <linearGradient id="champagne" x1="12" y1="7" x2="60" y2="55" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f1e7d2"/>
+      <stop offset="1" stop-color="#b9a98a"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+  </defs>
+  <!-- Apple's macOS icon grid: an 824-unit rounded tile on the 1024 canvas, a soft shadow under it -->
+  <rect x="100" y="112" width="824" height="824" rx="185" fill="#000000" opacity="0.32" filter="url(#shadow)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="3"/>
+  <svg x="232" y="232" width="560" height="560" viewBox="0 0 64 64">
+    <path d="M14 49 V15 L32 33 L50 15 V29" fill="none" stroke="url(#champagne)" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path transform="translate(50 33.2) rotate(22) scale(0.8) translate(-3.4 -3.2)" d="M3.4 3.2 23 11.2 14.6 14.4 11.3 23.2Z" fill="url(#champagne)" stroke="url(#champagne)" stroke-width="1.6" stroke-linejoin="round"/>
+  </svg>
+</svg>
