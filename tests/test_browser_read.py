@@ -189,3 +189,25 @@ class BrowserDoReadTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadScrollScanGuidanceTests(unittest.TestCase):
+    """An agent can tell from the descriptions alone when to read, scroll or scan."""
+
+    def test_browser_act_says_how_to_read_and_how_to_scroll(self):
+        text = main.BROWSER_ACT_DESCRIPTION
+        self.assertIn("{type:'read'}", text)
+        self.assertIn("put back where it was", text)
+        self.assertIn("{type:'scroll', dy:", text)
+        self.assertIn("stays where it was scrolled", text)
+
+    def test_instructions_name_all_three_routes(self):
+        text = main.MCP_AGENT_INSTRUCTIONS
+        for phrase in ("{type:'read'}", "{type:'scroll'", "{type:'scan'}"):
+            self.assertIn(phrase, text)
+
+    def test_the_action_schema_explains_read_and_scroll_options(self):
+        props = schemas.ACTION_ITEM_SCHEMA["properties"]
+        for name in ("dy", "offset", "load_more", "max_chars"):
+            with self.subTest(option=name):
+                self.assertIn("description", props[name])

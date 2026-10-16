@@ -148,8 +148,9 @@ MCP_AGENT_INSTRUCTIONS = (
     "before posting again. browser_observe lists what is on screen to act on. To read a page (an article, a product "
     "page with its reviews, docs, a thread), one browser_do {url, actions:[{type:'read'}]} returns all its text in one "
     "call, content that loads on scroll included; a longer page continues with offset=next_offset. Do not page through "
-    "it with extract or observe. For a repeating list whose items you need one by one, browser_act {type:'scan'} "
-    "with item_selector collects them. "
+    "it with extract or observe; read puts the page back where it was. To move the page and work there, browser_act "
+    "{type:'scroll', dy:<px>} (or a target to bring into view) leaves it scrolled. For a repeating list whose items "
+    "you need one by one, browser_act {type:'scan'} with item_selector collects them. "
     "Prefer the smallest number of tool calls and smallest bounded context that safely completes and verifies the task."
 )
 
@@ -208,6 +209,10 @@ BROWSER_ACT_DESCRIPTION = (
     "is awaited), and a field that is not found is listed in failed_fields while the others are still filled. "
     "A click that opens a popup or target=_blank tab: follow it with wait for='new_tab' (optional url_contains); it returns "
     "the new tab_handle without activating it, or ambiguous_new_tabs / NO_NEW_TAB. "
+    "Reading a page: {type:'read'} returns all the text the page shows in one action (content that loads on scroll "
+    "included; offset=next_offset continues a longer page, load_more:false reads it as it is). It scrolls to load and "
+    "then the page is put back where it was. Moving the page yourself: {type:'scroll', dy:<px>} (negative is up, dx "
+    "sideways; with element_id/query it brings that element into view instead); the page stays where it was scrolled. "
     "Long or virtualized lists (feeds, results, virtual tables): one {type:'scan'} action scrolls the list's container "
     "(element_id/query, or the largest scrollable area) in bounded steps and returns de-duplicated items "
     "(key_field text|href, item_selector optional) with stopped=end_of_list|no_new_items|max_items|max_steps|timeout|payload_budget. "

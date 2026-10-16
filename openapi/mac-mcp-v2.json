@@ -3475,6 +3475,7 @@
                           "type": "number"
                         },
                         "dy": {
+                          "description": "scroll: px down, negative up",
                           "type": "number"
                         },
                         "y": {
@@ -3563,15 +3564,18 @@
                           "type": "array"
                         },
                         "max_chars": {
+                          "description": "read: default 40000",
                           "maximum": 100000,
                           "minimum": 256,
                           "type": "integer"
                         },
                         "offset": {
+                          "description": "read: next_offset",
                           "minimum": 0,
                           "type": "integer"
                         },
                         "load_more": {
+                          "description": "read: false = no scroll",
                           "type": "boolean"
                         },
                         "cursor": {

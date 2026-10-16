@@ -107,6 +107,10 @@ def _validate_optional_actions(value: Optional[List[Dict[str, Any]]]) -> Optiona
     return None if value is None else [validate_action(index, action) for index, action in enumerate(value)]
 
 
+def _num(description: str) -> Dict[str, Any]:
+    return {"type": "number", "description": description}
+
+
 def _str(description: str) -> Dict[str, Any]:
     return {"type": "string", "description": description}
 
@@ -134,7 +138,7 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
         "input_mode": {"type": "string", "enum": ["auto", "dom", "trusted"]},
         "x": {"type": "number", "description": "Canvas: viewport px, with y."},
         "dx": {"type": "number"},
-        "dy": {"type": "number"},
+        "dy": _num("scroll: px down, negative up"),
         "y": {"type": "number"},
         "for": _str("wait: selector (default), text, element_removed, url_change, network_idle, dom_stable, new_tab. Omit it (and any target) to pause for wait_s."),
         "url_contains": _str("wait for=new_tab: URL filter."),
@@ -154,9 +158,9 @@ ACTION_ITEM_SCHEMA: Dict[str, Any] = {
                 "text_offset": {"type": "integer", "minimum": 0},
             }, "required": ["name"], "oneOf": [{"required": ["selector"]}, {"required": ["semantic"]}],
         }},
-        "max_chars": {"type": "integer", "minimum": 256, "maximum": 100000},
-        "offset": {"type": "integer", "minimum": 0},
-        "load_more": {"type": "boolean"},
+        "max_chars": {"type": "integer", "minimum": 256, "maximum": 100000, "description": "read: default 40000"},
+        "offset": {"type": "integer", "minimum": 0, "description": "read: next_offset"},
+        "load_more": {"type": "boolean", "description": "read: false = no scroll"},
         "cursor": _str("scan: next_cursor from the previous result; same tab, selector and key_field."),
         "item_selector": {"type": "string"},
         "key_field": {"type": "string", "enum": ["text", "href"]},
