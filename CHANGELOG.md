@@ -11,6 +11,7 @@
 - `browser_act` and `browser_do` take one extraction field shape (`name`, `selector`, `attr`, `all`, `max_items`). A missing field, a broken CSS selector or a broken regex is an error; a selector never falls back to the whole page.
 - Extracted text and `scan` leave out scripts, styles, templates, `noscript` and hidden content. Results say how many matched, how many came back and where they were cut, and a cut result can be continued from where it stopped.
 - `scan` reads and scrolls several times in one call, and `next_cursor` continues after an item, text, size, step or time limit. A cursor is refused after a navigation, a scroll in between or five minutes.
+- A `scan` inside `browser_do` now returns its records and cursor under `scan`; before, `browser_do` dropped them and answered with empty data.
 
 ### Settings no longer hides the Live Island
 - Opening Settings closed the Live Island together with the menu popup. Now only the popup closes.

@@ -3255,6 +3255,9 @@ def _scan_action(
     max_items = max(1, min(int(action.get("max_items", 100)), _SCAN_MAX_ITEMS))
     max_steps = max(1, min(int(action.get("max_steps", 15)), _SCAN_MAX_STEPS))
     max_chars = max(256, min(int(action.get("max_chars", 20_000)), 20_000))
+    # A caller that returns less than a whole scan (browser_do) caps what is read, so the
+    # cursor never moves past records that would be cut from its answer.
+    max_bytes = max(256, min(int(action.get("max_bytes", _SCAN_PAYLOAD_BYTES)), _SCAN_PAYLOAD_BYTES))
     timeout_s = max(1.0, min(float(action.get("timeout_s", 20)), 60.0))
     settle_s = max(0.1, min(float(action.get("settle_ms", 400)) / 1000.0, 3.0))
     key_field = "href" if str(action.get("key_field") or "").lower() == "href" else "text"
@@ -3279,7 +3282,7 @@ def _scan_action(
             settings, browser, _scan_step_js(container_id, selector, key_field, {
                 "cursor": cursor, "new_cursor": new_cursor,
                 "max_items": max_items - len(seen), "max_chars": max_chars - chars,
-                "max_bytes": _SCAN_PAYLOAD_BYTES - used,
+                "max_bytes": max_bytes - used,
             }), window_index, tab_index, tab_handle,
         )
         steps += 1
@@ -3309,7 +3312,7 @@ def _scan_action(
             stopped = step["stopped"]
         elif len(seen) >= max_items:
             stopped = "max_items"
-        elif used >= _SCAN_PAYLOAD_BYTES or chars >= max_chars:
+        elif used >= max_bytes or chars >= max_chars:
             stopped = "payload_budget"
         elif stalls >= 2:
             stopped = ("no_usable_candidates" if not total_seen and not seen else

@@ -314,8 +314,20 @@ def _fit_extraction_page(payload: Dict[str, Any], budget: int) -> Dict[str, Any]
     return out
 
 
+# browser_do gives each scan this share of its answer; the scan reads no more than that.
+_BROWSER_DO_SCAN_BYTES = _BROWSER_DO_OUTPUT_BUDGET_BYTES // 2
+
+
 def _fit_browser_do_output(payload: Dict[str, Any], budget_bytes: int = _BROWSER_DO_OUTPUT_BUDGET_BYTES) -> Dict[str, Any]:
-    """Keep normal browser_do responses bounded; debug mode bypasses this helper."""
+    """Keep normal browser_do responses bounded; debug mode bypasses this helper.
+
+    Scan records are never cut here: the page's cursor has already moved past them, so a
+    cut record would be lost. The scan itself was capped to fit (_BROWSER_DO_SCAN_BYTES)."""
+    scans = {key: payload[key] for key in ("scan", "scans") if key in payload}
+    if scans:
+        rest = {key: value for key, value in payload.items() if key not in scans}
+        room = max(1_024, int(budget_bytes) - _browser_json_bytes(scans))
+        return {**_fit_browser_do_output(rest, room), **scans}
     budget = max(1_024, min(int(budget_bytes), 64_000))
     if _browser_json_bytes(payload) <= budget:
         return payload
@@ -1910,6 +1922,14 @@ def create_app():
             # Reject a malformed action before the tab is opened or navigated.
             requested_actions = normalize_act_actions(list(actions)) if actions else []
             work_actions = list(requested_actions)
+            scan_count = sum(1 for action in work_actions if action.get("type") == "scan")
+            if scan_count:
+                share = max(1_024, _BROWSER_DO_SCAN_BYTES // scan_count)
+                work_actions = [
+                    {**action, "max_bytes": min(int(action.get("max_bytes") or share), share)}
+                    if action.get("type") == "scan" else action
+                    for action in work_actions
+                ]
             semantic_fields = semantic_extract_fields(extract) if extract is not None else None
             automatic_actions = (1 if semantic_fields else 0) + (1 if url and wait_after_open else 0)
             if len(work_actions) + automatic_actions > 20:
@@ -1969,7 +1989,12 @@ def create_app():
             final_title = None
             extraction_meta: Dict[str, Any] = {}
             errors = []
+            scans: List[Dict[str, Any]] = []
             for item in result.get("actions") or []:
+                if item.get("type") == "scan" and item.get("ok") is not False:
+                    scans.append({key: item[key] for key in (
+                        "items", "count", "stopped", "complete", "has_more", "next_cursor", "total_seen",
+                        "steps", "key_field", "coverage", "duration_ms") if key in item})
                 if item.get("type") == "extract" and isinstance(item.get("data"), dict):
                     data.update(item["data"])
                     for key in ("matched_counts", "fields"):
@@ -1995,6 +2020,10 @@ def create_app():
                 "mutation_dispatched": bool(result.get("mutation_dispatched") or opened),
             }
             compact.update(extraction_meta)
+            if len(scans) == 1:
+                compact["scan"] = scans[0]
+            elif scans:
+                compact["scans"] = scans
             if progress:
                 compact["progress"] = progress
             if errors:

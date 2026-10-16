@@ -63,3 +63,60 @@ class ExtractionContractTests(unittest.TestCase):
         result = main._fit_browser_do_output(payload, budget_bytes=2048)
         returned = result["data"]["x"][0]
         self.assertEqual(len(returned) * 2, result["fields"]["x"]["continuation"]["text_offset"])
+
+
+class BrowserDoScanTests(unittest.TestCase):
+    """browser_do returns what a scan read; it never reads more than it can return."""
+
+    SCAN = {"ok": True, "type": "scan", "items": [{"text": "Review one", "record_id": "r1", "text_offset": 0, "text_complete": True},
+                                                  {"text": "Review two", "record_id": "r2", "text_offset": 0, "text_complete": True}],
+            "count": 2, "stopped": "payload_budget", "complete": False, "has_more": True,
+            "next_cursor": "scan_" + "a" * 32, "total_seen": 30, "steps": 3, "key_field": "text",
+            "container": {"tag": "document"}, "other_containers": [], "coverage": "observed_rendered_rows", "duration_ms": 40}
+
+    def setUp(self):
+        profile = patch.dict(os.environ, {"MAC_MCP_PERMISSION_PROFILE": "trusted"})
+        profile.start()
+        self.addCleanup(profile.stop)
+        self.mcp = _build_mcp()
+
+    def call(self, scan_result, actions=None):
+        actions = actions or [{"type": "scan", "item_selector": "div.review", "max_items": 100}]
+        with patch.object(main, "browser_act", return_value={"ok": True, "actions": [scan_result], "action_count": 1}) as act:
+            result = asyncio.run(self.mcp.call_tool("browser_do", {"browser": "Safari", "tab_handle": "test", "actions": actions,
+                                                                   "description": "Scan the reviews"}))
+        blocks = result[0] if isinstance(result, tuple) else result
+        return json.loads(blocks[0].text), act
+
+    def test_browser_do_returns_the_scan_and_its_cursor(self):
+        payload, _ = self.call(self.SCAN)
+        self.assertEqual(["Review one", "Review two"], [item["text"] for item in payload["scan"]["items"]])
+        self.assertEqual("scan_" + "a" * 32, payload["scan"]["next_cursor"])
+        self.assertFalse(payload["scan"]["complete"])
+        self.assertEqual("payload_budget", payload["scan"]["stopped"])
+        self.assertEqual(2, payload["scan"]["count"])
+
+    def test_browser_do_caps_the_scan_to_what_it_can_return(self):
+        _, act = self.call(self.SCAN)
+        scan = [action for action in act.call_args.kwargs["actions"] if action["type"] == "scan"][0]
+        self.assertLessEqual(scan["max_bytes"], main._BROWSER_DO_OUTPUT_BUDGET_BYTES // 2 + 1024)
+        self.assertGreaterEqual(scan["max_bytes"], 1024)
+
+    def test_the_output_budget_never_cuts_scan_records(self):
+        items = [{"text": "x" * 900, "record_id": f"r{i}", "text_offset": 0, "text_complete": True} for i in range(5)]
+        payload = {"ok": True, "data": {"other": ["y" * 9000]}, "scan": {**self.SCAN, "items": items, "count": 5}}
+        fitted = main._fit_browser_do_output(payload)
+        self.assertEqual(items, fitted["scan"]["items"])
+        self.assertEqual(self.SCAN["next_cursor"], fitted["scan"]["next_cursor"])
+
+
+class ScanByteCapTests(unittest.TestCase):
+    def test_a_scan_stops_at_the_byte_cap_it_was_given(self):
+        rows = [{"key": f"k{i}", "text": "z" * 400, "record_id": f"r{i}", "text_offset": 0, "text_complete": True} for i in range(20)]
+        step = {"ok": True, "items": rows, "total_seen": 20, "container": {"tag": "document", "scroll_top": 0},
+                "next_cursor": "scan_" + "b" * 32}
+        with patch.object(agent, "_run_json_js", return_value=step) as run, patch.object(agent, "cancellable_sleep"):
+            result = agent._scan_action(None, "Safari", {"item_selector": ".r", "max_bytes": 2000}, 1, 1)
+        self.assertIn('"max_bytes": 2000', run.call_args.args[2])
+        self.assertEqual("payload_budget", result["stopped"])
+        self.assertEqual("scan_" + "b" * 32, result["next_cursor"])
