@@ -88,6 +88,32 @@ enum SafetyDisplay {
         }
     }
 
+    /// What a permission profile lets AI apps do, in plain words (#246).
+    static func profileSummary(_ value: String) -> String? {
+        switch value.lowercased() {
+        case "trusted":
+            return "AI apps can do everything Mac MCP offers: read and change files, run commands, use your apps and the browser, hand work to agents and update Mac MCP."
+        case "standard":
+            return "AI apps can read and change files, use your apps and the browser and hand work to agents, but cannot run commands directly or update Mac MCP. Agents they start can only read."
+        case "read_only":
+            return "AI apps can look and read (files, apps, the browser and the web) but cannot change anything."
+        default: return nil
+        }
+    }
+
+    /// When Mac MCP itself asks the owner before an action, in plain words (#246).
+    static func approvalSummary(_ value: String) -> String? {
+        switch value.lowercased() {
+        case "off":
+            return "Doesn't ask for routine work. It still asks where trust matters most, for example before a password or key would go to an unknown website."
+        case "critical":
+            return "Asks before running commands, updating Mac MCP or stopping programs."
+        case "high_risk":
+            return "Asks before all of the above, and before deleting or changing things in your apps, the browser or online."
+        default: return nil
+        }
+    }
+
     /// The active permission profile. Amber when the server has not reported its
     /// semantics, or reports an unknown, invalid or substituted profile.
     static func make(_ semantics: SecuritySemanticsEnvelope?, serverRunning: Bool) -> StatusDisplay {

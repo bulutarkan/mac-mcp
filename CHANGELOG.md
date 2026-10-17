@@ -1,5 +1,8 @@
 ## Unreleased
 
+### Permissions & Safety in plain words (#246)
+- Settings › Permissions & Safety now starts with two plain answers you can change in place: **What AI apps can do** (Trusted, Standard or Read Only, each said in one sentence) and **When Mac MCP asks you first** (Off, Critical or High Risk, likewise). Saved logins follow; the policy terms (allowed capabilities, destructive families, the agent access ceiling, headless behavior, timeouts) are under **Details**. Warnings about an invalid setting stay at the top.
+
 ### Settings shows what agents can do in each app (#262)
 - Settings › Apps now lists every app Mac MCP knows, straight from the server's own list: whether it is **Built in** (Mac MCP works with the app directly, even while you use it), **Partly built in**, or used **by looking at the window**, and, when you open a row, what agents can read, open, change, send (asking you first) or run there. A new app action shows up by itself; the old hand-written summary is gone.
 

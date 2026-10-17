@@ -151,6 +151,7 @@ struct SettingsView: View {
     @MacMCPState private var notice = ""
     /// This Mac's shortcuts, for the ones agents may run with commands off (#195).
     @MacMCPState private var macShortcutNames: [String]?
+    @MacMCPState private var permissionDetailsShown = false
     /// What agents can do in each app, from the server's adapter support matrix (#262).
     @MacMCPState private var appSupport: [[String: Any]]?
     @MacMCPState private var confirmClearUsage = false
@@ -1696,7 +1697,7 @@ struct SettingsView: View {
     private var permissionsPane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                paneHeader("Permissions & Safety", subtitle: "Review capability boundaries, approval behavior, and the active security profile.")
+                paneHeader("Permissions & Safety", subtitle: "What your AI apps may do on this Mac, and when Mac MCP asks you first.")
 
                 settingsDataStateRow(state.permissionsSettingsState) {
                     Task { await state.refresh() }
@@ -1705,139 +1706,8 @@ struct SettingsView: View {
                     inlineError(issue)
                 }
 
-                SavedLoginsCard(state: state)
-
                 if let semantics = state.securitySemantics {
                     if let profile = semantics.profiles.first(where: { $0.name == semantics.activeProfile }) {
-                        GroupBox("Active Profile") {
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack {
-                                    Text("Profile").foregroundStyle(.secondary)
-                                    Spacer()
-                                    Text(profileDisplayName(profile.name)).fontWeight(.semibold)
-                                }
-                                Divider()
-                                Label("Allowed Capabilities", systemImage: "lock.shield")
-                                    .font(.caption.weight(.semibold))
-                                Text(profile.allowedCapabilities.map(capabilityDisplayName).joined(separator: " · "))
-                                    .font(.caption).foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                HStack {
-                                    Text("Destructive families").font(.caption).foregroundStyle(.secondary)
-                                    Spacer()
-                                    Text(destructiveFamiliesLabel(profile.destructiveFamilies)).font(.caption.weight(.medium))
-                                }
-                                HStack {
-                                    Text("Agent access ceiling").font(.caption).foregroundStyle(.secondary)
-                                    Spacer()
-                                    Text(capabilityDisplayName(profile.accessModeCeiling)).font(.caption.weight(.medium))
-                                }
-                            }
-                            .padding(.top, 5)
-                        }
-
-                        GroupBox("Approval Behavior") {
-                            VStack(alignment: .leading, spacing: 9) {
-                                HStack {
-                                    Text("Source").font(.caption).foregroundStyle(.secondary)
-                                    Spacer()
-                                    Text(approvalSourceDisplayName(profile.approvalBehavior.source))
-                                        .font(.caption.weight(.semibold))
-                                }
-                                Text(profile.approvalBehavior.summary)
-                                    .font(.caption).foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                Text("Capability allowed means the server permits it. Approval is separate; a confirmation prompt is not guaranteed.")
-                                    .font(.caption.weight(.medium)).foregroundStyle(.orange)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            .padding(.top, 5)
-                        }
-
-                        if let serverApproval = semantics.serverApproval {
-                            GroupBox("Server Approval") {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    HStack {
-                                        Text("Risk profile").font(.caption).foregroundStyle(.secondary)
-                                        Spacer()
-                                        Text(profileDisplayName(serverApproval.activeProfile))
-                                            .font(.caption.weight(.semibold))
-                                    }
-                                    HStack {
-                                        Text("Approval source").font(.caption).foregroundStyle(.secondary)
-                                        Spacer()
-                                        Text(approvalSourceDisplayName(serverApproval.source))
-                                            .font(.caption.weight(.medium))
-                                    }
-                                    HStack {
-                                        Text("Headless behavior").font(.caption).foregroundStyle(.secondary)
-                                        Spacer()
-                                        Text(serverApproval.headlessBehavior.capitalized)
-                                            .font(.caption.weight(.medium))
-                                    }
-                                    HStack {
-                                        Text("Timeout").font(.caption).foregroundStyle(.secondary)
-                                        Spacer()
-                                        Text("\(serverApproval.approvalTimeoutS)s · \(serverApproval.timeoutBehavior.capitalized)")
-                                            .font(.caption.weight(.medium))
-                                    }
-                                    HStack {
-                                        Text("Remote sessions").font(.caption).foregroundStyle(.secondary)
-                                        Spacer()
-                                        Text("Approve on this Mac")
-                                            .font(.caption.weight(.medium))
-                                    }
-                                    Text(serverApproval.summary ?? "Risk-based server approval status unavailable.")
-                                        .font(.caption).foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-
-                                    if !serverApproval.configValid {
-                                        Label(
-                                            "Invalid Server Approval configuration. High-risk calls fail closed until repaired.",
-                                            systemImage: "exclamationmark.shield"
-                                        )
-                                        .font(.caption.weight(.medium))
-                                        .foregroundStyle(.orange)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    }
-
-                                    Divider()
-
-                                    ForEach(serverApproval.availableProfiles) { item in
-                                        Button { state.setServerApprovalProfile(item.name) } label: {
-                                            HStack(alignment: .top, spacing: 8) {
-                                                Image(systemName: item.name == serverApproval.activeProfile ? "checkmark.circle.fill" : "circle")
-                                                    .foregroundStyle(item.name == serverApproval.activeProfile ? Color.accentColor : Color.secondary)
-                                                VStack(alignment: .leading, spacing: 2) {
-                                                    Text(profileDisplayName(item.name))
-                                                        .font(.caption.weight(.semibold))
-                                                    Text(item.summary)
-                                                        .font(.caption2)
-                                                        .foregroundStyle(.secondary)
-                                                        .fixedSize(horizontal: false, vertical: true)
-                                                }
-                                                Spacer(minLength: 8)
-                                            }
-                                            .padding(.vertical, 3)
-                                            .contentShape(Rectangle())
-                                        }
-                                        .buttonStyle(.plain)
-                                        .disabled(state.serverApprovalProfileChanging)
-                                    }
-
-                                    Text(serverApproval.doublePromptGuidance)
-                                        .font(.caption2.weight(.medium))
-                                        .foregroundStyle(.orange)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    Text("Remote callers cannot approve locally on their behalf. Allow Once is exact-action and single-use.")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                                .padding(.top, 5)
-                            }
-                        }
-
                         if semantics.profileWasNormalized == true,
                            let configured = semantics.normalizedFromProfile ?? semantics.configuredProfile {
                             Label(
@@ -1849,32 +1719,162 @@ struct SettingsView: View {
                             .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                         }
+                        if let serverApproval = semantics.serverApproval, !serverApproval.configValid {
+                            Label(
+                                "Invalid Server Approval configuration. High-risk calls fail closed until repaired.",
+                                systemImage: "exclamationmark.shield"
+                            )
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
 
-                        GroupBox("Profiles") {
-                            VStack(spacing: 4) {
+                        // #246: the plain answer first; the policy terms live under Details.
+                        GroupBox("What AI apps can do") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(SafetyDisplay.profileSummary(profile.name) ?? profile.approvalBehavior.summary)
+                                    .font(.caption)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Divider()
                                 ForEach(semantics.profiles) { item in
-                                    Button { state.setPermissionProfile(item.name) } label: {
-                                        HStack(spacing: 8) {
-                                            Image(systemName: item.active ? "checkmark.circle.fill" : "circle")
-                                                .foregroundStyle(item.active ? Color.accentColor : Color.secondary)
-                                            Text(profileDisplayName(item.name)).font(.caption.weight(.semibold))
-                                            Spacer()
-                                            Text("\(item.allowedCapabilities.count) caps · Approval \(approvalSourceDisplayName(item.approvalBehavior.source))")
-                                                .font(.caption2).foregroundStyle(.secondary)
-                                        }
-                                        .padding(.vertical, 4)
-                                        .contentShape(Rectangle())
+                                    choiceRow(title: profileDisplayName(item.name),
+                                              detail: SafetyDisplay.profileSummary(item.name) ?? item.approvalBehavior.summary,
+                                              selected: item.active) {
+                                        state.setPermissionProfile(item.name)
                                     }
-                                    .buttonStyle(.plain)
                                 }
                             }
                             .padding(.top, 5)
                         }
+
+                        if let serverApproval = semantics.serverApproval {
+                            GroupBox("When Mac MCP asks you first") {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    ForEach(serverApproval.availableProfiles) { item in
+                                        choiceRow(title: profileDisplayName(item.name),
+                                                  detail: SafetyDisplay.approvalSummary(item.name) ?? item.summary,
+                                                  selected: item.name == serverApproval.activeProfile) {
+                                            state.setServerApprovalProfile(item.name)
+                                        }
+                                        .disabled(state.serverApprovalProfileChanging)
+                                    }
+                                    Text("You answer on this Mac; someone connected from elsewhere can't answer for you. Your AI app may also ask you on its own, which is separate.")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .padding(.top, 5)
+                            }
+                        }
+
+                        SavedLoginsCard(state: state)
+
+                        DisclosureGroup("Details", isExpanded: $permissionDetailsShown) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                GroupBox("Active Profile") {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        HStack {
+                                            Text("Profile").foregroundStyle(.secondary)
+                                            Spacer()
+                                            Text(profileDisplayName(profile.name)).fontWeight(.semibold)
+                                        }
+                                        Divider()
+                                        Label("Allowed Capabilities", systemImage: "lock.shield")
+                                            .font(.caption.weight(.semibold))
+                                        Text(profile.allowedCapabilities.map(capabilityDisplayName).joined(separator: " · "))
+                                            .font(.caption).foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                        HStack {
+                                            Text("Destructive families").font(.caption).foregroundStyle(.secondary)
+                                            Spacer()
+                                            Text(destructiveFamiliesLabel(profile.destructiveFamilies)).font(.caption.weight(.medium))
+                                        }
+                                        HStack {
+                                            Text("Agent access ceiling").font(.caption).foregroundStyle(.secondary)
+                                            Spacer()
+                                            Text(capabilityDisplayName(profile.accessModeCeiling)).font(.caption.weight(.medium))
+                                        }
+                                    }
+                                    .padding(.top, 5)
+                                }
+
+                                GroupBox("Approval Behavior") {
+                                    VStack(alignment: .leading, spacing: 9) {
+                                        HStack {
+                                            Text("Source").font(.caption).foregroundStyle(.secondary)
+                                            Spacer()
+                                            Text(approvalSourceDisplayName(profile.approvalBehavior.source))
+                                                .font(.caption.weight(.semibold))
+                                        }
+                                        Text(profile.approvalBehavior.summary)
+                                            .font(.caption).foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                        Text("Capability allowed means the server permits it. Approval is separate; a confirmation prompt is not guaranteed.")
+                                            .font(.caption.weight(.medium)).foregroundStyle(.orange)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    .padding(.top, 5)
+                                }
+
+                                if let serverApproval = semantics.serverApproval {
+                                    GroupBox("Server Approval") {
+                                        VStack(alignment: .leading, spacing: 10) {
+                                            HStack {
+                                                Text("Risk profile").font(.caption).foregroundStyle(.secondary)
+                                                Spacer()
+                                                Text(profileDisplayName(serverApproval.activeProfile))
+                                                    .font(.caption.weight(.semibold))
+                                            }
+                                            HStack {
+                                                Text("Approval source").font(.caption).foregroundStyle(.secondary)
+                                                Spacer()
+                                                Text(approvalSourceDisplayName(serverApproval.source))
+                                                    .font(.caption.weight(.medium))
+                                            }
+                                            HStack {
+                                                Text("Headless behavior").font(.caption).foregroundStyle(.secondary)
+                                                Spacer()
+                                                Text(serverApproval.headlessBehavior.capitalized)
+                                                    .font(.caption.weight(.medium))
+                                            }
+                                            HStack {
+                                                Text("Timeout").font(.caption).foregroundStyle(.secondary)
+                                                Spacer()
+                                                Text("\(serverApproval.approvalTimeoutS)s · \(serverApproval.timeoutBehavior.capitalized)")
+                                                    .font(.caption.weight(.medium))
+                                            }
+                                            HStack {
+                                                Text("Remote sessions").font(.caption).foregroundStyle(.secondary)
+                                                Spacer()
+                                                Text("Approve on this Mac")
+                                                    .font(.caption.weight(.medium))
+                                            }
+                                            Text(serverApproval.summary ?? "Risk-based server approval status unavailable.")
+                                                .font(.caption).foregroundStyle(.secondary)
+                                                .fixedSize(horizontal: false, vertical: true)
+
+                                            Text(serverApproval.doublePromptGuidance)
+                                                .font(.caption2.weight(.medium))
+                                                .foregroundStyle(.orange)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                            Text("Remote callers cannot approve locally on their behalf. Allow Once is exact-action and single-use.")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
+                                        .padding(.top, 5)
+                                    }
+                                }
+                            }
+                            .padding(.top, 8)
+                        }
+                        .font(.caption.weight(.semibold))
                     } else {
                         Text("Unknown permission profile: \(semantics.activeProfile). Calls fail closed until a known profile is configured.")
                             .font(.caption).foregroundStyle(.orange)
                     }
                 } else {
+                    SavedLoginsCard(state: state)
                     Text(state.serverRunning ? "Permission semantics unavailable." : "Start the server to inspect permission semantics.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -1883,6 +1883,27 @@ struct SettingsView: View {
             }
             .padding(22)
         }
+    }
+
+    private func choiceRow(title: String, detail: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.caption.weight(.semibold))
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+            }
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var connectionsPane: some View {

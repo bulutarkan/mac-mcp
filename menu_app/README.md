@@ -28,7 +28,7 @@ The menu bar controller shows active browser work in Conversations and Latest To
 
 ## Permissions and approval
 
-The menu bar app intentionally presents **Allowed Capabilities** separately from **Approval Behavior**. The permission profile is enforced by the Mac MCP server; approval describes whether a human confirmation layer exists and where it comes from. Current built-in profiles report approval source `none`: allowed calls do not automatically trigger a second Mac MCP prompt. Client-side approval, if any, is controlled by the MCP client and is not a server guarantee.
+The menu bar app intentionally presents **Allowed Capabilities** separately from **Approval Behavior** (in Settings, under **Details**, below a plain summary of each profile and Server Approval level). The permission profile is enforced by the Mac MCP server; approval describes whether a human confirmation layer exists and where it comes from. Current built-in profiles report approval source `none`: allowed calls do not automatically trigger a second Mac MCP prompt. Client-side approval, if any, is controlled by the MCP client and is not a server guarantee.
 
 The app reads this information from the authenticated machine-local `/dashboard/api/security/semantics` endpoint. `ask_confirmation` remains an explicit interaction tool rather than a universal approval gate.
 
