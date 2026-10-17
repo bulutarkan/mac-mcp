@@ -1732,10 +1732,7 @@ struct SettingsView: View {
                         // #246: the plain answer first; the policy terms live under Details.
                         GroupBox("What AI apps can do") {
                             VStack(alignment: .leading, spacing: 8) {
-                                Text(SafetyDisplay.profileSummary(profile.name) ?? profile.approvalBehavior.summary)
-                                    .font(.caption)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                Divider()
+                                // The checked row is the answer; its sentence says what it allows.
                                 ForEach(semantics.profiles) { item in
                                     choiceRow(title: profileDisplayName(item.name),
                                               detail: SafetyDisplay.profileSummary(item.name) ?? item.approvalBehavior.summary,
