@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import math
@@ -15,7 +16,7 @@ import threading
 import unicodedata
 import uuid
 import warnings
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import date as date_cls, datetime, timedelta, timezone
 from pathlib import Path
@@ -117,6 +118,38 @@ def _memory_root() -> Path:
     root.mkdir(parents=True, exist_ok=True)
     _private(root, 0o700)
     return root
+
+
+_MUTATION_LOCK = threading.RLock()
+_mutation_depth = threading.local()
+
+
+@contextmanager
+def _mutation_lock(root: Path) -> Iterable[None]:
+    """One writer at a time for the day files and their index, across threads and processes.
+
+    Each change reads a whole day file and writes it back; without this, two saves at the same moment
+    could each start from the same old file and the later write would drop the other's memory.
+    """
+    with _MUTATION_LOCK:
+        depth = getattr(_mutation_depth, "n", 0)
+        if depth:
+            _mutation_depth.n = depth + 1
+            try:
+                yield
+            finally:
+                _mutation_depth.n = depth
+            return
+        fd = os.open(str(root / ".write.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            _mutation_depth.n = 1
+            try:
+                yield
+            finally:
+                _mutation_depth.n = 0
+        finally:
+            os.close(fd)
 
 
 def _index_path(root: Optional[Path] = None) -> Path:
@@ -681,10 +714,11 @@ _SECRET_MESSAGE = (
 )
 
 
-def _refuse_secrets(value: str) -> None:
+def _refuse_secrets(*values: Optional[str]) -> None:
     from . import data_guard
-    if data_guard.contains_direct_secret(value) or data_guard.redact_sensitive_text(value) != value:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, _SECRET_MESSAGE)
+    for value in values:
+        if value and (data_guard.contains_direct_secret(value) or data_guard.redact_sensitive_text(value) != value):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, _SECRET_MESSAGE)
 
 
 def memory_add(
@@ -700,34 +734,35 @@ def memory_add(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "content contains a reserved memory marker.")
     if len(value) > 100_000:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "content is too large (max 100,000 characters).")
-    _refuse_secrets(value)
     clean_tags = _clean_tags(tags)
     clean_importance = _clean_importance(importance)
     clean_source = re.sub(r"\s+", " ", str(source or "")).strip() or None
     if clean_source and len(clean_source) > 120:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "source must be at most 120 characters.")
+    _refuse_secrets(value, clean_source, *clean_tags)
 
     root = _memory_root()
     _apply_retention(root)
-    # Agents save on their own initiative; the same memory twice is kept once.
-    with closing(_connect(root)) as conn:
-        _sync_index(root, conn)
-        row = conn.execute("SELECT * FROM memories WHERE content = ? LIMIT 1", (value,)).fetchone()
-    if row is not None:
-        return {"ok": True, "action": "already_saved", **_row_entry(row).public(), "timezone": "Europe/Istanbul"}
-    now = _now()
-    day = now.date().isoformat()
-    path = _day_path(root, day)
-    entries = _parse_day_file(root, path) if path.exists() else []
-    entry = MemoryEntry(
-        memory_id=_new_memory_id(), date=day, created_at=now.isoformat(timespec="seconds"),
-        updated_at=None, content=value, tags=clean_tags, importance=clean_importance,
-        source=clean_source, file_path=_relative_path(root, path),
-    )
-    entries.append(entry)
-    _atomic_write(path, _render_day(day, entries))
-    with closing(_connect(root)) as conn:
-        _index_file(conn, root, path)
+    with _mutation_lock(root):
+        # Agents save on their own initiative; the same memory twice is kept once.
+        with closing(_connect(root)) as conn:
+            _sync_index(root, conn)
+            row = conn.execute("SELECT * FROM memories WHERE content = ? LIMIT 1", (value,)).fetchone()
+        if row is not None:
+            return {"ok": True, "action": "already_saved", **_row_entry(row).public(), "timezone": "Europe/Istanbul"}
+        now = _now()
+        day = now.date().isoformat()
+        path = _day_path(root, day)
+        entries = _parse_day_file(root, path) if path.exists() else []
+        entry = MemoryEntry(
+            memory_id=_new_memory_id(), date=day, created_at=now.isoformat(timespec="seconds"),
+            updated_at=None, content=value, tags=clean_tags, importance=clean_importance,
+            source=clean_source, file_path=_relative_path(root, path),
+        )
+        entries.append(entry)
+        _atomic_write(path, _render_day(day, entries))
+        with closing(_connect(root)) as conn:
+            _index_file(conn, root, path)
     return {"ok": True, "action": "added", **entry.public(), "timezone": "Europe/Istanbul"}
 
 
@@ -899,31 +934,35 @@ def memory_update(
     # Date filters are selection helpers only; exact IDs are globally unique.
     if date or date_from or date_to:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Do not combine memory_id with date/date_from/date_to.")
-    root = _memory_root()
-    path, entries, idx = _locate_entry(root, str(memory_id).strip())
-    entry = entries[idx]
+    new_content = None
     if content is not None:
-        value = str(content).strip()
-        if not value:
+        new_content = str(content).strip()
+        if not new_content:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "content cannot be empty.")
-        if ENTRY_END in value:
+        if ENTRY_END in new_content:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "content contains a reserved memory marker.")
-        _refuse_secrets(value)
-        entry.content = value
-    if tags is not None:
-        entry.tags = _clean_tags(tags)
-    if importance is not None:
-        entry.importance = _clean_importance(importance)
-    if source is not None:
-        clean_source = re.sub(r"\s+", " ", str(source)).strip()
-        entry.source = clean_source or None
-    if content is None and tags is None and importance is None and source is None:
-        return {"ok": True, "action": "unchanged", **entry.public()}
-    entry.updated_at = _now().isoformat(timespec="seconds")
-    entries[idx] = entry
-    _atomic_write(path, _render_day(entry.date, entries))
-    with closing(_connect(root)) as conn:
-        _index_file(conn, root, path)
+    new_tags = _clean_tags(tags) if tags is not None else None
+    new_source = (re.sub(r"\s+", " ", str(source)).strip() or None) if source is not None else None
+    _refuse_secrets(new_content, new_source, *(new_tags or []))
+    root = _memory_root()
+    with _mutation_lock(root):
+        path, entries, idx = _locate_entry(root, str(memory_id).strip())
+        entry = entries[idx]
+        if new_content is not None:
+            entry.content = new_content
+        if new_tags is not None:
+            entry.tags = new_tags
+        if importance is not None:
+            entry.importance = _clean_importance(importance)
+        if source is not None:
+            entry.source = new_source
+        if content is None and tags is None and importance is None and source is None:
+            return {"ok": True, "action": "unchanged", **entry.public()}
+        entry.updated_at = _now().isoformat(timespec="seconds")
+        entries[idx] = entry
+        _atomic_write(path, _render_day(entry.date, entries))
+        with closing(_connect(root)) as conn:
+            _index_file(conn, root, path)
     return {"ok": True, "action": "updated", **entry.public()}
 
 
@@ -940,19 +979,20 @@ def memory_delete(
     if date or date_from or date_to:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Do not combine memory_id with date/date_from/date_to.")
     root = _memory_root()
-    path, entries, idx = _locate_entry(root, str(memory_id).strip())
-    entry = entries[idx]
-    if not confirm:
-        return {
-            "ok": False, "action": "delete", "confirmation_required": True,
-            "message": "Call memory_delete again with confirm=true to permanently delete this memory.",
-            "memory": entry.public(),
-        }
-    del entries[idx]
-    _write_day(root, path, entry.date, entries)
-    with closing(_connect(root)) as conn:
-        _index_file(conn, root, path)
-        _compact_index(conn)
+    with _mutation_lock(root):
+        path, entries, idx = _locate_entry(root, str(memory_id).strip())
+        entry = entries[idx]
+        if not confirm:
+            return {
+                "ok": False, "action": "delete", "confirmation_required": True,
+                "message": "Call memory_delete again with confirm=true to permanently delete this memory.",
+                "memory": entry.public(),
+            }
+        del entries[idx]
+        _write_day(root, path, entry.date, entries)
+        with closing(_connect(root)) as conn:
+            _index_file(conn, root, path)
+            _compact_index(conn)
     return {"ok": True, "action": "deleted", "memory_id": entry.memory_id, "date": entry.date, "time": entry.time, "file_path": entry.file_path}
 
 
@@ -978,19 +1018,20 @@ def _apply_retention(root: Path, *, force: bool = False) -> int:
     _last_retention_check[key] = now
     cutoff = (_now().date() - timedelta(days=days)).isoformat()
     removed = 0
-    for path in _day_files(root):
-        if path.stem >= cutoff:
-            continue
-        entries = _parse_day_file(root, path)
-        kept = [e for e in entries if policy["keep_important"] and e.importance in _KEPT_IMPORTANCE]
-        if len(kept) == len(entries):
-            continue
-        removed += len(entries) - len(kept)
-        _write_day(root, path, path.stem, kept)
-    if removed:
-        with closing(_connect(root)) as conn:
-            _sync_index(root, conn)
-            _compact_index(conn)
+    with _mutation_lock(root):
+        for path in _day_files(root):
+            if path.stem >= cutoff:
+                continue
+            entries = _parse_day_file(root, path)
+            kept = [e for e in entries if policy["keep_important"] and e.importance in _KEPT_IMPORTANCE]
+            if len(kept) == len(entries):
+                continue
+            removed += len(entries) - len(kept)
+            _write_day(root, path, path.stem, kept)
+        if removed:
+            with closing(_connect(root)) as conn:
+                _sync_index(root, conn)
+                _compact_index(conn)
     return removed
 
 
@@ -1052,10 +1093,11 @@ def memory_clear(*, confirm: bool = False, date_from: Optional[str] = None, date
     if not confirm:
         return {"ok": False, "confirmation_required": True, "action": "clear", **preview,
                 "message": "Nothing was deleted. Confirm to permanently delete these memories."}
-    for path in files:
-        _write_day(root, path, path.stem, [])
-    with closing(_connect(root)) as conn:
-        _sync_index(root, conn)
-        _compact_index(conn)
+    with _mutation_lock(root):
+        for path in files:
+            _write_day(root, path, path.stem, [])
+        with closing(_connect(root)) as conn:
+            _sync_index(root, conn)
+            _compact_index(conn)
     return {"ok": True, "action": "cleared", "deleted": len(entries),
             "note": "Deleted from the Markdown files and the search index. This is not a forensic disk wipe."}

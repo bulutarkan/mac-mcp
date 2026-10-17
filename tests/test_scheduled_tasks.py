@@ -4,6 +4,7 @@ import tests._state_isolation  # noqa: F401  (must precede mcp_server imports)
 import asyncio
 import json
 import os
+import threading
 import shutil
 import stat
 import tempfile
@@ -499,6 +500,39 @@ class SchedulerTests(StoreCase):
         self.assertEqual(("failed", runner.REASON_RESTARTED), (store.get_run(orphan)["status"], store.get_run(orphan)["reason"]))
         self.assertEqual(("done", "Back"), (store.get_run(agent_run)["status"], store.get_run(agent_run)["summary"]))
         self.assertEqual("agent_xyz", waited.call_args.args[0])
+
+    def test_a_script_still_running_after_a_restart_is_found_and_stopped(self) -> None:
+        task = store.create_task(self.sh())
+        run_id = store.start_run(task["id"], trigger="manual")
+        log_path = runner._logs_dir() / f"{run_id}.log"
+        marker = self.dir / "still-running"
+        # The script a Mac MCP that stopped had started: it runs in its own session and keeps going.
+        thread = threading.Thread(target=runner._run_logged, daemon=True, args=(
+            ["/bin/sh", "-c", f"while true; do touch {marker}; sleep 0.2; done"], str(self.folder), 60, log_path,
+            runner._tail))
+        thread.start()
+        record = runner._process_record(log_path)
+        deadline = time.time() + 10
+        while not record.exists() and time.time() < deadline:
+            time.sleep(0.05)
+        pid = json.loads(record.read_text())["pid"]
+        self.assertTrue(runner.managed_process.pid_alive(pid))
+        loop, _ = self.make(time.time())
+        loop.recover()
+        self.assertEqual(("failed", runner.REASON_SCRIPT_STOPPED),
+                         (store.get_run(run_id)["status"], store.get_run(run_id)["reason"]))
+        self.assertFalse(runner.managed_process.pid_alive(pid))
+        self.assertFalse(record.exists())
+        thread.join(10)
+
+    def test_a_reused_pid_is_never_stopped(self) -> None:
+        task = store.create_task(self.sh())
+        run_id = store.start_run(task["id"], trigger="manual")
+        runner._logs_dir().mkdir(parents=True, exist_ok=True)
+        # A record whose pid now belongs to another process (here: this test) with another start time.
+        (runner._logs_dir() / f"{run_id}.proc").write_text(json.dumps({"pid": os.getpid(), "start_time": "Mon Jan  1 00:00:00 2001"}))
+        self.assertIsNone(runner.stop_left_scripts(run_id))
+        self.assertTrue(runner.managed_process.pid_alive(os.getpid()))
 
     def test_the_loop_thread_runs_a_due_task_end_to_end(self) -> None:
         store.create_task(self.sh("echo loop-ran\n", schedule={"type": "once", "at": "2026-01-01T00:00"}))

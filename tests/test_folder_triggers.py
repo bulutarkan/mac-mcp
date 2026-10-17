@@ -144,6 +144,39 @@ class WatcherTests(StoreCase):
             self.check(10)
         self.assertEqual(2, len(self.launched))  # a-summary.pdf never ran it
 
+    def test_a_download_that_arrives_during_a_run_is_kept_and_runs_next(self) -> None:
+        self.check()
+        self.drop("a.pdf")
+        self.check(1)
+        self.check(folder_triggers.SETTLE_S + 0.5)
+        self.assertEqual(1, len(self.launched))
+        self.drop("downloaded.pdf")  # arrives from outside while a's run goes on
+        (self.inbox / "a-out.pdf").write_text("written by the run")
+        marked = {str(self.inbox / "downloaded.pdf")}
+        with patch.object(folder_triggers, "arrived_from_outside", side_effect=lambda path: path in marked):
+            for _ in range(3):
+                self.check(folder_triggers.SETTLE_S + 0.5)
+            self.assertEqual(1, len(self.launched))  # held, not dropped, while the run goes on
+            self.assertEqual({"downloaded.pdf", "a-out.pdf"}, set(store.watch_state(self.task["id"])["held"]))
+            self.finish_all()
+            self.check(1)
+            self.check(folder_triggers.SETTLE_S + 0.5)
+            self.assertEqual(2, len(self.launched))
+            self.assertTrue(self.launched[1][1]["prompt"].endswith("downloaded.pdf."))
+            self.finish_all()
+            for _ in range(3):
+                self.check(folder_triggers.QUIET_AFTER_RUN_S + 1)
+        self.assertEqual(2, len(self.launched))  # a-out.pdf, the run's own output, never started it
+
+    def test_the_download_mark_is_read_from_the_file(self) -> None:
+        path = self.inbox / "x.pdf"
+        path.write_text("x")
+        self.assertFalse(folder_triggers.arrived_from_outside(str(path)))
+        import subprocess
+        subprocess.run(["/usr/bin/xattr", "-w", "com.apple.quarantine", "0083;6720f000;Safari;", str(path)], check=True)
+        self.assertTrue(folder_triggers.arrived_from_outside(str(path)))
+        self.assertFalse(folder_triggers.arrived_from_outside(str(self.inbox / "missing.pdf")))
+
     def test_a_restart_neither_repeats_a_file_nor_misses_one(self) -> None:
         self.check()
         self.drop("a.pdf")

@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import folder_triggers, paths, privacy_policy, run_budget, run_records, schedule_rules
+from . import folder_triggers, managed_process, paths, privacy_policy, run_budget, run_records, schedule_rules
 from . import scheduled_tasks as store
 from .data_guard import redact_sensitive_text
 
@@ -47,6 +47,8 @@ REASON_STOPPED = "Mac MCP wasn't running"
 REASON_BUSY = "The previous run was still going"
 REASON_PAUSED = "Observation is paused in Settings › Privacy, so AI tasks don't run"
 REASON_RESTARTED = "Mac MCP restarted before the run finished"
+REASON_SCRIPT_STOPPED = REASON_RESTARTED + "; its script was still running and was stopped"
+REASON_SCRIPT_LEFT = REASON_RESTARTED + "; its script could not be stopped and may still be running"
 # Keys a run adds to its task's definition: the file that started it, the data a resume reuses.
 RUNTIME_KEYS = ("trigger_file", "reuse_data")
 
@@ -131,6 +133,7 @@ def _run_logged(argv: List[str], cwd: str, limit_s: int, log_path: Path,
                                         stderr=subprocess.STDOUT, start_new_session=True)
             except OSError as exc:
                 return {"error": str(exc.strerror or exc)}
+            _record_process(log_path, proc.pid)
             timed_out = False
             try:
                 code = proc.wait(timeout=limit_s)
@@ -150,6 +153,55 @@ def _run_logged(argv: List[str], cwd: str, limit_s: int, log_path: Path,
         return {"code": code, "timed_out": timed_out, "read": read(log_path)}
     finally:
         log_path.unlink(missing_ok=True)
+        _process_record(log_path).unlink(missing_ok=True)
+
+
+# A script runs in its own session, so it outlives a Mac MCP that stops while it works. Its pid and start
+# time are kept next to its log until it ends, so a restart can find exactly that process and stop it.
+def _process_record(log_path: Path) -> Path:
+    return log_path.with_name(log_path.name.replace(".log", "") + ".proc")
+
+
+def _record_process(log_path: Path, pid: int) -> None:
+    snapshot = managed_process.process_snapshot(pid)
+    if snapshot is None:
+        return  # already gone
+    record = _process_record(log_path)
+    tmp = record.with_name(record.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps({"pid": pid, "start_time": snapshot.start_time}), encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, record)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+
+
+def stop_left_scripts(run_id: str) -> Optional[bool]:
+    """Stop a run's scripts still going after a restart: None when none was, True stopped, False not stopped."""
+    outcome: Optional[bool] = None
+    for record in sorted(_logs_dir().glob(f"{run_id}*.proc")):
+        try:
+            saved = json.loads(record.read_text(encoding="utf-8"))
+            pid, started = int(saved["pid"]), str(saved["start_time"])
+        except (OSError, ValueError, KeyError, TypeError):
+            record.unlink(missing_ok=True)
+            continue
+        snapshot = managed_process.process_snapshot(pid)
+        if snapshot is not None and snapshot.start_time == started:  # the same process, not a reused pid
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(pid, sig)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                deadline = time.monotonic() + KILL_GRACE_S
+                while time.monotonic() < deadline and managed_process.pid_alive(pid):
+                    time.sleep(0.1)
+                if not managed_process.pid_alive(pid):
+                    break
+            alive = managed_process.pid_alive(pid)
+            outcome = (outcome is not False) and not alive
+        record.unlink(missing_ok=True)
+    return outcome
 
 
 def _logs_dir() -> Path:
@@ -721,7 +773,9 @@ class Scheduler:
                                                                    definition),
                                  name=f"scheduled-task-{run['id']}", daemon=True).start()
             else:
-                store.finish_run(run["id"], "failed", reason=REASON_RESTARTED)
+                stopped = stop_left_scripts(run["id"])
+                reason = {None: REASON_RESTARTED, True: REASON_SCRIPT_STOPPED, False: REASON_SCRIPT_LEFT}[stopped]
+                store.finish_run(run["id"], "failed", reason=reason)
 
     def _follow_agent(self, run_id: str, agent_id: str, deadline: float,
                       definition: Optional[Dict[str, Any]] = None) -> None:

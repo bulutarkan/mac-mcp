@@ -448,6 +448,16 @@ def _with_privacy_source(result: Any, source: Dict[str, Any]) -> Any:
     return result
 
 
+_AUDIT_ERROR_CODE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9_]{2,47})\s*:")
+
+
+def _audit_outcome(status_code: int, detail: Any) -> str:
+    """The audit log keeps the status and, when the message starts with one, its error code; never the
+    message itself, which can hold paths, arguments or other caller text."""
+    match = _AUDIT_ERROR_CODE.match(str(detail or ""))
+    return f"error:{status_code}:{match.group(1)}" if match else f"error:{status_code}"
+
+
 def _log(audit_logger, tool: str, fn):
     start = time.perf_counter()
     outcome = "ok"
@@ -464,10 +474,10 @@ def _log(audit_logger, tool: str, fn):
             result = _with_privacy_source(result, source)
         return result
     except HTTPException as exc:
-        outcome = f"error:{exc.status_code}:{exc.detail}"
+        outcome = _audit_outcome(exc.status_code, exc.detail)
         raise
     except Exception as exc:
-        outcome = f"error:500:{exc}"
+        outcome = f"error:500:{type(exc).__name__}"
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Server error: {exc}") from exc
     finally:
         ms = int((time.perf_counter() - start) * 1000)

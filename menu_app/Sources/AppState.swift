@@ -355,9 +355,10 @@ final class AppState: ObservableObject {
                 _ = try await dashboardJSON("dashboard/api/privacy/settings", body: body)
                 showNotice(ActionNotice(kind: .info, message: paused == true ? "Observation paused"
                     : paused == false ? "Observation resumed"
-                    : privateMode == true ? "Private mode on: nothing is kept" : "Private mode off"))
+                    : privateMode == true ? "Private mode on: activity history is off" : "Private mode off"))
             } catch {
-                showNotice(ActionNotice(kind: .error, message: "Couldn’t change privacy. Is Mac MCP running?"))
+                showNotice(ActionNotice(kind: .error, message: serverRunning ? "Couldn’t change privacy. Try again."
+                    : "Couldn’t change privacy: Mac MCP isn’t running."))
             }
             await refresh()
         }

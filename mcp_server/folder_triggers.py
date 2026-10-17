@@ -8,7 +8,11 @@ nothing happens) and looks again once a minute in case an event was missed. For 
 - it runs the task once per file: a file is remembered by name, size and time, and the list is
   kept in the task database, so a restart neither repeats a file nor misses one that arrived
   while Mac MCP was off;
-- files the task's own run writes into the folder do not start it again;
+- files the task's own run writes into the folder do not start it again. A file that appears while a
+  run is going is held until the run ends, then: one macOS marks as downloaded (com.apple.quarantine:
+  browsers, Mail, AirDrop, Messages) arrived from outside and starts the task; one written on this
+  Mac without that mark is taken as the run's own output. Nothing that arrives during a run is dropped
+  unseen;
 - at most MAX_RUNS_PER_HOUR runs an hour; files beyond that are recorded as skipped.
 
 The files already in the folder when the task is set up do not start it.
@@ -16,6 +20,8 @@ The files already in the folder when the task is set up do not start it.
 from __future__ import annotations
 
 import copy
+import ctypes
+import ctypes.util
 import logging
 import os
 import select
@@ -86,6 +92,21 @@ def with_file(definition: Dict[str, Any], path: str) -> Dict[str, Any]:
     return out
 
 
+_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+_libc.getxattr.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32,
+                           ctypes.c_int]
+_libc.getxattr.restype = ctypes.c_ssize_t
+_XATTR_NOFOLLOW = 0x0001
+
+
+def arrived_from_outside(path: str) -> bool:
+    """True when macOS marked the file as downloaded (com.apple.quarantine)."""
+    try:
+        return _libc.getxattr(os.fsencode(path), b"com.apple.quarantine", None, 0, 0, _XATTR_NOFOLLOW) >= 0
+    except (OSError, ValueError):
+        return False
+
+
 class FolderTriggers:
     """Decides which files start which task; `start(task_id, definition, path)` returns started/busy."""
 
@@ -125,6 +146,7 @@ class FolderTriggers:
             state = {"folder": schedule["folder"], "match": schedule.get("match"), "seen": dict(files)}
             store.save_watch_state(task_id, state, now)
         state.setdefault("pending", {})
+        state.setdefault("held", {})
         self._states[task_id] = state
         return state
 
@@ -140,18 +162,28 @@ class FolderTriggers:
         for name in [name for name in seen if name not in files]:
             del seen[name]
             changed = True
+        held: Dict[str, List[float]] = state["held"]
         for name in [name for name in pending if name not in files]:
             del pending[name]
+        for name in [name for name in held if name not in files]:
+            del held[name]
+            changed = True
         window = store.last_run_window(task_id)
         running = store.is_running(task_id)
         ready: List[str] = []
         for name, (size, mtime) in sorted(files.items(), key=lambda item: item[1][1]):
             if seen.get(name) == [size, mtime]:
                 continue
-            if name not in pending and self._own_output(running, window, mtime, now):
-                seen[name] = [size, mtime]  # the task's own run wrote it: no loop
+            if name in held or (name not in pending and self._own_output(running, window, mtime, now)):
+                if running:
+                    held[name] = [size, mtime]  # decided once the run is over
+                    changed = True
+                    continue
+                held.pop(name, None)
                 changed = True
-                continue
+                if not arrived_from_outside(os.path.join(schedule["folder"], name)):
+                    seen[name] = [size, mtime]  # written on this Mac around the run: its own output, no loop
+                    continue
             entry = pending.get(name)
             if entry is None or entry[:2] != [size, mtime]:
                 pending[name] = [size, mtime, now]  # new, or still being written
@@ -177,7 +209,8 @@ class FolderTriggers:
                 seen[name] = pending.pop(name)[:2]
             changed = True
         if changed:
-            store.save_watch_state(task_id, {key: state[key] for key in ("folder", "match", "seen")}, now)
+            store.save_watch_state(task_id, {key: state[key] for key in ("folder", "match", "seen", "held")}, now)
+        # Held files need no fast polling: a run ending changes the store, which wakes the watcher.
         return bool(pending)
 
     @staticmethod

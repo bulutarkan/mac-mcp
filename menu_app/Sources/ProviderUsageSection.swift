@@ -132,7 +132,7 @@ struct ProviderUsageSection: View {
                         .foregroundStyle(.tertiary)
                         .help(
                             (summary?.metricScope ?? "Provider-native delegated-agent usage only.")
-                                + " Never added to MCP Payload Tokens."
+                                + " Never added to Tool data processed."
                         )
                         .accessibilityLabel("About Provider Tokens")
                 }

@@ -39,6 +39,52 @@ class MemoryLearningTests(unittest.TestCase):
         with self.assertRaises(Exception):
             tm.memory_update(saved["memory_id"], content="deploy key sk-ant-api03-" + "y" * 40)
 
+    def test_secrets_in_tags_or_source_are_refused_too(self) -> None:
+        token = "ghp_" + "b" * 36
+        for kwargs in ({"tags": ["deploy", token]}, {"source": f"pasted {token}"}):
+            with self.subTest(field=next(iter(kwargs))), self.assertRaises(Exception) as raised:
+                tm.memory_add("Deploys go through GitHub Actions", **kwargs)
+            self.assertIn("MEMORY_CONTAINS_SECRET", str(raised.exception.detail))
+        saved = tm.memory_add("Deploys go through GitHub Actions", tags=["deploy"])
+        for kwargs in ({"tags": [token]}, {"source": "Bearer abcdefghijklmnopqrstuvwxyz123456"}):
+            with self.subTest(update=next(iter(kwargs))), self.assertRaises(Exception):
+                tm.memory_update(saved["memory_id"], **kwargs)
+        self.assertEqual(["deploy"], tm.memory_get(saved["memory_id"])["tags"])
+
+    def test_saves_at_the_same_moment_all_survive(self) -> None:
+        import threading
+        barrier = threading.Barrier(8)
+        original = tm._parse_day_file
+
+        def slow_parse(root, path):
+            entries = original(root, path)
+            try:
+                barrier.wait(timeout=0.5)  # without the lock every writer would read the same old file
+            except threading.BrokenBarrierError:
+                pass
+            return entries
+
+        errors = []
+
+        def save(i):
+            try:
+                tm.memory_add(f"Fact number {i} about the project", tags=["concurrency"])
+            except Exception as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+
+        tm.memory_add("First memory of the day")
+        with patch.object(tm, "_parse_day_file", side_effect=slow_parse):
+            threads = [threading.Thread(target=save, args=(i,)) for i in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(30)
+        self.assertEqual([], errors)
+        listed = tm.memory_search(tags=["concurrency"], limit=100)
+        self.assertEqual(8, listed["total_matches"])
+        exported = [entry["content"] for entry in tm.memory_export_all()["memories"]]
+        self.assertEqual(9, len(exported))
+
     def test_an_identical_memory_is_kept_once(self) -> None:
         first = tm.memory_add("Tarkan wants every reply in Turkish", tags=["preference"])
         again = tm.memory_add("Tarkan wants every reply in Turkish", tags=["preference"])

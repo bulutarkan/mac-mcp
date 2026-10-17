@@ -138,7 +138,7 @@ struct MenuBarView: View {
         }
         if state.privacyFlags?.privateMode == true, state.connectionState == .connected {
             return StatusDisplay(label: "Private", symbol: "eye.slash.fill",
-                                 explanation: "Private mode: Mac MCP keeps nothing about this work.", tone: .neutral)
+                                 explanation: "Private mode: no activity history, usage, memories, lessons or run timelines are kept. The security log still records tool names and outcomes.", tone: .neutral)
         }
         return connectionDisplay
     }

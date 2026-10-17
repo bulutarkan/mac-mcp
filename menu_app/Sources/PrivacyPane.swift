@@ -447,7 +447,9 @@ struct PrivacyPane: View {
             let knowledge = await state.taskAPI("dashboard/api/knowledge")
             if knowledge.ok { applyKnowledge(knowledge.object) }
         } catch {
-            message = "Start Mac MCP to see and change privacy settings."
+            // The server can answer with an error; only a stopped server means "start it".
+            message = state.serverRunning ? "Couldn’t load Privacy settings. Try again."
+                : "Start Mac MCP to see and change privacy settings."
         }
     }
 
@@ -462,7 +464,8 @@ struct PrivacyPane: View {
                     }
                 }
             } catch {
-                message = "Couldn’t save. Is Mac MCP running?"
+                message = state.serverRunning ? "Couldn’t save this change. Try again."
+                    : "Couldn’t save: Mac MCP isn’t running. Start it and try again."
             }
         }
     }

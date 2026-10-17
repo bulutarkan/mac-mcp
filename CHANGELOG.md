@@ -1,5 +1,12 @@
 ## Unreleased
 
+### Fixes from the repository review (#237, #238, #239, #240, #245)
+- **Memories saved at the same moment are all kept.** Every change to the memory files now waits its turn, across threads and processes; before, two saves at once could each rewrite the day's file and one memory was lost.
+- **Secrets stay out of memory tags and sources too**, not only the text, on save and on update. The audit log now keeps a failed call's status and error code, not its message, which could hold a file path or other caller text.
+- **A file that arrives while a folder task is running is no longer dropped.** It waits until the run ends; a download (Safari, Mail, AirDrop, Messages: files macOS marks as downloaded) then starts the task, and a file written on this Mac during the run is taken as the run's own output, as before.
+- **A scheduled script still running when Mac MCP restarts is found and stopped.** Its process and start time are kept while it runs; after a restart the run says its script was stopped (or that it could not be stopped), and a different process that reused the number is never touched.
+- **What the app says matches what it does:** Private mode says the security log still records tool names and outcomes (it no longer says nothing is kept); Privacy says "try again" when Mac MCP answered with an error and "start it" only when it is stopped; Usage calls its total **Tool data processed**, an estimate, not your AI app's model tokens or bill.
+
 ### Memory that learns on its own
 - Your AI apps now remember what matters without being told to: a preference you state or show, a correction, a decision, or a lasting fact about your work, people, projects or setup. They check what they already know first and update an old memory instead of adding a near-copy, and mention briefly at the end what they remembered. After solving something non-obvious they record a lesson so the next run starts from it.
 - Mac MCP itself refuses to store passwords, API keys, tokens and private keys in memory (on save and on update), keeps an identical memory once, and private mode still saves nothing. `memory_add` and `memory_update` are now in the default tool list, and the connection instructions say what to remember and what never to.

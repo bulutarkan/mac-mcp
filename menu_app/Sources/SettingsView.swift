@@ -1226,13 +1226,13 @@ struct SettingsView: View {
                 HStack(alignment: .top, spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 5) {
-                            Text("Payload Tokens")
+                            Text("Tool data processed")
                                 .font(.subheadline.weight(.semibold))
                             Image(systemName: "info.circle")
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
                                 .help(usageMeasurementHelp(usage))
-                                .accessibilityLabel("About Payload Tokens")
+                                .accessibilityLabel("About tool data processed")
                         }
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Text(compactNumber(totals.inputTokens + totals.outputTokens))
@@ -1242,6 +1242,10 @@ struct SettingsView: View {
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         }
+                        Text("An estimate of the text that went through Mac MCP tools. Not your AI app’s model tokens or bill.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 12)
                     Picker("Calls from", selection: $usageActor) {
@@ -1420,7 +1424,7 @@ struct SettingsView: View {
                 }
             }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("MCP Payload Tokens activity heatmap")
+            .accessibilityLabel("Tool data processed, activity heatmap")
         }
     }
 
