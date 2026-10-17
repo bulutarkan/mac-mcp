@@ -27,6 +27,7 @@
 - **Mail:** mark a message read or unread, flag it, move it to another mailbox or archive it; attach files to a draft; write a contact's name instead of an address when it leads to exactly one address (otherwise you get the choices, and nothing is done).
 - **Contacts:** find someone by email address or phone number.
 - **Shortcuts:** Settings › Apps lists your shortcuts; the ones you turn on can run even while running commands is off. The task editor's command field has a **Run a shortcut** menu.
+- The menu app can be signed with this Mac's own development identity (`~/.mac-mcp/codesign-identity`, a SHA-1 from `security find-identity`); Shortcuts and Siri only talk to apps signed with a team, so ad-hoc builds show the action but cannot list or run recipes. Developer ID signing keeps the hardened runtime and timestamp; a development identity signs plainly.
 - **Run Mac MCP Recipe** in Shortcuts and Siri: pick one of your saved recipes; Mac MCP shows the same confirmation as a recipe link before it runs. Built when Xcode is installed (App Intents metadata); with Command Line Tools only, the app builds without this action.
 - **Reminders:** AI apps can now add a reminder (title, list, due date or time, notes), not only list and complete them; a repeated request finds the reminder it made instead of adding a twin.
 - **Notes:** add text to the end of an existing note (`append_to_note`), read back after the change.

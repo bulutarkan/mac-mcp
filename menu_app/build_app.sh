@@ -17,8 +17,20 @@ EXTENSION_RESOURCES="${EXTENSION_CONTENTS}/Resources"
 ICON_SOURCE="${MAC_MCP_ICON_SOURCE:-${SCRIPT_DIR}/Assets/AppIcon.png}"
 ARCH="$(uname -m)"
 SIGN_IDENTITY="${MAC_MCP_CODESIGN_IDENTITY:--}"
+# This Mac's own signing identity (a SHA-1 or name in ~/.mac-mcp/codesign-identity), when nothing else
+# is set: Shortcuts and Siri talk only to apps signed with a team, so ad-hoc builds lose the App Intents
+# action (#195). Ignored when the identity is not in the keychain.
+IDENTITY_FILE="${MAC_MCP_CODESIGN_IDENTITY_FILE:-${HOME}/.mac-mcp/codesign-identity}"
+if [[ -z "${MAC_MCP_CODESIGN_IDENTITY:-}" && -r "${IDENTITY_FILE}" ]]; then
+  LOCAL_IDENTITY="$(/usr/bin/head -n 1 "${IDENTITY_FILE}" | /usr/bin/tr -d '[:space:]')"
+  if [[ -n "${LOCAL_IDENTITY}" ]] && /usr/bin/security find-identity -v -p codesigning | /usr/bin/grep -qF "${LOCAL_IDENTITY}"; then
+    SIGN_IDENTITY="${LOCAL_IDENTITY}"
+  fi
+fi
 CODESIGN_EXTRA=()
-if [[ "${SIGN_IDENTITY}" != "-" ]]; then
+# Hardened runtime and a timestamp are what notarization needs (Developer ID); a development
+# identity signs plainly, like Xcode's local builds.
+if [[ "${SIGN_IDENTITY}" != "-" ]] && /usr/bin/security find-identity -v -p codesigning | /usr/bin/grep -F "${SIGN_IDENTITY}" | /usr/bin/grep -q "Developer ID"; then
   CODESIGN_EXTRA+=(--options runtime --timestamp)
 fi
 rm -rf "${APP}"
