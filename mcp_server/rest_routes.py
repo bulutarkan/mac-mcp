@@ -452,6 +452,7 @@ class SearchRequest(BaseModel):
     include_extensions: Optional[List[str]] = None
     case_sensitive: Optional[bool] = False
     max_results: Optional[int] = 50
+    offset: Optional[int] = 0
 
 class HttpRequest(BaseModel):
     url: str
@@ -845,9 +846,10 @@ def api_search(req: SearchRequest, request: Request, settings: Settings = Depend
     _authorize_rest_tool(request, t, req.model_dump())
     if t == "search_files":
         return search_files(settings, pattern=req.pattern, path=req.path or str(Path.home()),
-                            include_extensions=req.include_extensions, case_sensitive=req.case_sensitive)
+                            include_extensions=req.include_extensions, case_sensitive=req.case_sensitive,
+                            offset=req.offset or 0)
     elif t == "spotlight_search":
-        return spotlight_search(settings, query=req.query, max_results=req.max_results or 50)
+        return spotlight_search(settings, query=req.query, max_results=req.max_results or 50, offset=req.offset or 0)
     else:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown search tool: {t}")
 

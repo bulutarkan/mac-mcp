@@ -1700,7 +1700,11 @@ def create_app():
         title="Scheduled Tasks",
         description=(
             "The owner's Scheduled Tasks: AI tasks (a prompt a delegated agent runs), scripts and saved recipes that run "
-            "at a set time, on a recurrence or when a file arrives. action=list|get|create|update|delete|run_now. "
+            "at a set time, on a recurrence or when a file arrives. action=list|get|get_run|create|update|delete|run_now. "
+            "list returns limit tasks (default 50, at most 200) from cursor, with total, counts by state and "
+            "next_cursor while has_more; brief=true gives one line of facts a task instead of its whole definition. "
+            "get gives a task and its last 10 runs in short; get_run with run_id gives one run's full summary, "
+            "output and details. "
             "create/update take name, summary (what the task is for), kind ('ai', 'script' or 'recipe'), schedule; for "
             "recipe: recipe_id (a saved recipe, see the recipe tool) and values {parameter: value} (a value may hold {file} "
             "or a date word); it replays the recipe's steps with no model call and fails clearly while the recipe is a draft "
@@ -1753,6 +1757,10 @@ def create_app():
         missed: Optional[str] = None,
         recipe_id: Optional[str] = None,
         values: Optional[Dict[str, Any]] = None,
+        run_id: Optional[str] = None,
+        limit: int = 50,
+        cursor: Optional[str] = None,
+        brief: bool = False,
     ) -> Dict[str, Any]:
         verb = str(action or "list").strip().lower()
         fields = {"name": name, "description": summary, "kind": kind, "schedule": schedule, "prompt": prompt,
@@ -1768,7 +1776,11 @@ def create_app():
         try:
             if verb == "list":
                 tasks = await asyncio.to_thread(scheduled_tasks.list_tasks)
-                return {"ok": True, "tasks": tasks}
+                return scheduled_tasks.page_of(tasks, limit=limit, cursor=cursor, brief=brief)
+            if verb == "get_run":
+                if not run_id:
+                    raise scheduled_tasks.TaskError("run_id_required", "action=get_run needs run_id (see action=get).")
+                return {"ok": True, "run": await asyncio.to_thread(scheduled_tasks.get_run, run_id)}
             if verb == "create":
                 task = await asyncio.to_thread(scheduled_tasks.create_task, given, by=_calling_app())
                 return {"ok": True, "task": task, "status": "needs_approval",
@@ -1790,26 +1802,30 @@ def create_app():
             if verb == "run_now":
                 started = await asyncio.to_thread(scheduled_task_runner.scheduler(settings).run_now, task_id)
                 return {"ok": True, **started, "message": "Started. Use action=get to see the result when it finishes."}
-            raise scheduled_tasks.TaskError("action_invalid", "action must be list, get, create, update, delete or run_now.")
+            raise scheduled_tasks.TaskError("action_invalid",
+                                            "action must be list, get, get_run, create, update, delete or run_now.")
         except scheduled_tasks.TaskError as exc:
             return exc.to_dict()
 
     # ── Search tools ────────────────────────────────────────────────────────
     @mcp.tool(name="search_files",
-              description="Search file contents with grep. include_extensions filters by type e.g. ['py','js'].")
+              description="Search file contents with grep; include_extensions filters by type e.g. ['py','js']. "
+                          "About 50,000 characters of matching lines a call; total_matches counts all; if has_more, "
+                          "call again with offset=next_offset.")
     def _search_files(pattern: str, path: str = str(Path.home()),
                       include_extensions: Optional[List[str]] = None,
-                      case_sensitive: bool = False) -> Dict[str, Any]:
+                      case_sensitive: bool = False, offset: int = 0) -> Dict[str, Any]:
         return _log(audit_logger, "search_files",
                     lambda: search_files(settings, pattern=pattern, path=path,
                                          include_extensions=include_extensions,
-                                         case_sensitive=case_sensitive))
+                                         case_sensitive=case_sensitive, offset=offset))
 
     @mcp.tool(name="spotlight_search",
-              description="Search files by name using macOS Spotlight (mdfind) — very fast.")
-    def _spotlight_search(query: str, max_results: int = 50) -> Dict[str, Any]:
+              description="Search files by name using macOS Spotlight (mdfind) — very fast. max_results is at most "
+                          "500; total counts every match, and when has_more is true call again with offset=next_offset.")
+    def _spotlight_search(query: str, max_results: int = 50, offset: int = 0) -> Dict[str, Any]:
         return _log(audit_logger, "spotlight_search",
-                    lambda: spotlight_search(settings, query=query, max_results=max_results))
+                    lambda: spotlight_search(settings, query=query, max_results=max_results, offset=offset))
 
     # ── HTTP tool ───────────────────────────────────────────────────────────
     @mcp.tool(name="http_request",

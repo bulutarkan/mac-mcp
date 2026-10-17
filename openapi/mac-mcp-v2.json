@@ -2765,7 +2765,7 @@
       "post": {
         "operationId": "search_files",
         "summary": "search_files",
-        "description": "Search file contents with grep. include_extensions filters by type e.g. ['py','js'].",
+        "description": "Search file contents with grep; include_extensions filters by type e.g. ['py','js']. About 50,000 characters of matching lines a call; total_matches counts all; if has_more, call again with offset=next_offset.",
         "requestBody": {
           "required": true,
           "content": {
@@ -2801,6 +2801,11 @@
                     "title": "Case Sensitive",
                     "type": "boolean"
                   },
+                  "offset": {
+                    "default": 0,
+                    "title": "Offset",
+                    "type": "integer"
+                  },
                   "description": {
                     "type": "string",
                     "minLength": 3,
@@ -2830,7 +2835,7 @@
       "post": {
         "operationId": "spotlight_search",
         "summary": "spotlight_search",
-        "description": "Search files by name using macOS Spotlight (mdfind) — very fast.",
+        "description": "Search files by name using macOS Spotlight (mdfind) — very fast. max_results is at most 500; total counts every match, and when has_more is true call again with offset=next_offset.",
         "requestBody": {
           "required": true,
           "content": {
@@ -2844,6 +2849,11 @@
                   "max_results": {
                     "default": 50,
                     "title": "Max Results",
+                    "type": "integer"
+                  },
+                  "offset": {
+                    "default": 0,
+                    "title": "Offset",
                     "type": "integer"
                   },
                   "description": {

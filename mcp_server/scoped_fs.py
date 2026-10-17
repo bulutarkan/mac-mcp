@@ -786,7 +786,12 @@ def scoped_search_text(
     include_extensions: Optional[list[str]] = None,
     case_sensitive: bool = False,
     max_chars: int = 50_000,
+    offset: int = 0,
 ) -> tuple[str, int, bool]:
+    """Matching lines from the offset-th on, at most max_chars of whole lines.
+
+    Returns (text, total matches in the tree, more lines follow the returned ones).
+    """
     flags = 0 if case_sensitive else re.IGNORECASE
     try:
         regex = re.compile(pattern, flags)
@@ -803,9 +808,7 @@ def scoped_search_text(
 
         def walk(dir_fd: int, base: Path) -> None:
             nonlocal chars, matches, truncated
-            if truncated: return
             for name in sorted(os.listdir(dir_fd)):
-                if truncated: return
                 st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
                 kind = _entry_kind(st)
                 current = base / name
@@ -829,11 +832,15 @@ def scoped_search_text(
                     text = bytes(data).decode("utf-8", errors="replace")
                     for lineno, line in enumerate(text.splitlines(), 1):
                         if regex.search(line):
+                            matches += 1  # every match is counted, also past the page
+                            if matches <= offset or truncated:
+                                continue
                             rendered = f"{current}:{lineno}:{line}\n"
-                            matches += 1
                             if chars + len(rendered) > max_chars:
-                                truncated = True
-                                return
+                                if lines:
+                                    truncated = True
+                                    continue
+                                rendered = rendered[:max_chars - 1] + "\n"  # one very long line still makes progress
                             lines.append(rendered); chars += len(rendered)
                 # Symlinks and special entries are intentionally not traversed.
         walk(fd, absolute)

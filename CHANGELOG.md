@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Cut results say so and can be continued (#252)
+- `search_files` returns about 50,000 characters of whole matching lines a call, with `total_matches` (every match, not only the ones shown) and, when more follow, `has_more` and `next_offset` to pass as `offset`. Before, it cut mid-line and the count was only of what fit.
+- `spotlight_search` returns at most 500 paths a call, says how many it found in all (`total`) and continues with `offset`.
+- `scheduled_tasks` lists in pages of 50 (up to 200) with the total, a count per state and `next_cursor`; `brief: true` leaves prompts and scripts out; the new `action: "get_run"` with a `run_id` gives one run's full summary, output and details (`get` shows the last runs in short).
+
 ### Faster, self-repairing document search (#242, #253)
 - Searching folders with many documents is faster: Mac MCP reads the text of only the best matches instead of every candidate (a search over 100,000 passages went from about 0.5 s to under 0.2 s), and indexing no longer counts the whole index once per file.
 - Very large folders are walked less often while nothing happens (idle scans stay near 1% of a core), and a search no longer waits for a long walk: it answers from the index and the refresh runs in the background.

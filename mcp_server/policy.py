@@ -530,7 +530,7 @@ def _context_handoff_risk(arguments: Mapping[str, Any]) -> RiskOverride:
 
 def _scheduled_tasks_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     action = str(arguments.get("action") or "list").strip().lower()
-    if action in {"list", "get"}:
+    if action in {"list", "get", "get_run"}:
         return RiskOverride(capabilities=_caps(Capability.READ), destructive=False, sensitive=True,
                             requested_access_mode=AccessMode.READ_ONLY)
     if action == "run_now":

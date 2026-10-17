@@ -72,7 +72,7 @@ A check can also look outside this Mac (#228), for a run that says it is done wh
 
 **The agent never sees a secret the data step printed** (#179): known secret shapes in the data step's output (tokens, keys, `NAME=value` secrets, private keys) are replaced with `[REDACTED]` before the agent and its provider see it, the agent is told so, and the data step's line in the report says "secrets masked".
 
-AI apps can list tasks and suggest new ones or changes through the `scheduled_tasks` tool. A suggestion shows as **Needs your approval** and never runs (an approved task keeps running unchanged) until you approve it in Settings; agents cannot approve. A finished run can post a macOS notification that says how it ended, never the prompt or the result.
+AI apps can list tasks and suggest new ones or changes through the `scheduled_tasks` tool. Its list comes in pages (`limit`, default 50, at most 200; `next_cursor` while `has_more`) with the total and a count per state, and `brief: true` gives one line of facts a task; `action: "get_run"` with a `run_id` returns one run's full summary, output and details. A suggestion shows as **Needs your approval** and never runs (an approved task keeps running unchanged) until you approve it in Settings; agents cannot approve. A finished run can post a macOS notification that says how it ended, never the prompt or the result.
 
 ## Agent team budgets and adaptive retry
 

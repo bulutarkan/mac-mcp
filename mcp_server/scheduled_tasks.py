@@ -642,6 +642,44 @@ def list_tasks() -> List[Dict[str, Any]]:
     return out
 
 
+LIST_PAGE = 50
+LIST_PAGE_MAX = 200
+
+
+def page_of(tasks: List[Dict[str, Any]], *, limit: int = LIST_PAGE, cursor: Optional[str] = None,
+            brief: bool = False) -> Dict[str, Any]:
+    """One page of list_tasks() for an AI app, with totals and the cursor of the next page (#252)."""
+    try:
+        start = max(0, int(cursor or 0))
+    except (TypeError, ValueError):
+        raise TaskError("cursor_invalid", "cursor must be the next_cursor of an earlier list.") from None
+    size = max(1, min(int(limit or LIST_PAGE), LIST_PAGE_MAX))
+    page = tasks[start:start + size]
+    counts: Dict[str, int] = {}
+    for task in tasks:
+        counts[task["state"]] = counts.get(task["state"], 0) + 1
+    answer: Dict[str, Any] = {"ok": True, "tasks": [brief_task(task) for task in page] if brief else page,
+                              "total": len(tasks), "counts": counts, "has_more": start + len(page) < len(tasks)}
+    if answer["has_more"]:
+        answer["next_cursor"] = str(start + len(page))
+    return answer
+
+
+def brief_task(task: Dict[str, Any]) -> Dict[str, Any]:
+    """The facts that tell tasks apart, without prompts, scripts or checks."""
+    out = {key: task.get(key) for key in ("id", "name", "description", "kind", "state", "schedule_text",
+                                          "next_run_at", "approved", "paused")}
+    if "proposal" in task:
+        out["has_proposal"] = True
+    if task.get("recipe"):
+        out["recipe"] = {key: task["recipe"].get(key) for key in ("recipe_id", "name", "status")}
+    last = task.get("last_run")
+    if last:
+        out["last_run"] = {"id": last.get("id"), "status": last.get("status"), "finished_at": last.get("finished_at"),
+                           "summary": (last.get("summary") or "")[:160]}
+    return out
+
+
 def get_task(task_id: str) -> Dict[str, Any]:
     with _db() as conn:
         row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
