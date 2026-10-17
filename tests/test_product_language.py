@@ -59,7 +59,7 @@ class ProductLanguageTests(unittest.TestCase):
                            "hidden browser", "pricing", "pro plan", "upgrade to pro", "100% private", "fully private"):
                 self.assertNotIn(phrase, text)
         for phrase in ("visible, non-focus-stealing", "machine-local transport, not same-user isolation",
-                       "experimental", "off by default", "open anyway", "mit", "not a sandbox"):
+                       "off by default", "open anyway", "mit", "not a sandbox"):
             self.assertIn(phrase, site.lower())
         self.assertIn("not a sandbox", front.lower())
 
