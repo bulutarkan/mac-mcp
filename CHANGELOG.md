@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Install with npm (#210)
+- `npx @bulutarkan/mac-mcp install` installs Mac MCP with the repository's own installer (signed-release verification included). The npm package runs nothing when it is installed, leaves an existing install alone, and passes `update`, `status` and the other commands to the installed `mac-mcp` CLI by its full path; its command is `mac-mcp-setup`, so it never shadows `mac-mcp`.
+- `scripts/build_npm_package.sh` packs it with a fresh copy of `install.sh` and refuses a version that differs from the product's or any npm script.
+
 ### Settings › Automation: Scheduled Tasks and Recipes in one place
 - The sidebar's **Scheduled Tasks** is now **Automation**, with two tabs: Scheduled Tasks (as before) and **Recipes**, so Settings doesn't grow another item.
 - **Recipes** lists every saved recipe, drafts included: its steps in words, the values it asks for, how many times it ran and how the last run went. Turn a draft on after checking it (a step with a secret in it is still refused), pause, resume, delete, run it with its values, or copy its Shortcuts link.

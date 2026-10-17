@@ -37,6 +37,16 @@ The package is **not signed with an Apple Developer ID and not notarized yet**, 
 
 To update a package install, install the newer package the same way; your settings, API key and tokens are kept. The package does not replace an existing `install.sh`/source installation; keep updating that one with `mac-mcp update`. Intel Macs use the installer below.
 
+### npm (macOS 13+, Apple Silicon or Intel)
+
+If you have Node.js 18 or later:
+
+```bash
+npx @bulutarkan/mac-mcp install
+```
+
+The [`@bulutarkan/mac-mcp`](https://www.npmjs.com/package/@bulutarkan/mac-mcp) package carries this repository's `install.sh` and runs it, so it installs exactly what the installer below does, with the same signed-release verification. Installing the npm package changes nothing by itself: it has no install scripts, and only the `install` command starts the installer. If Mac MCP is already installed it says so and changes nothing. Its other commands (`update`, `status`, `start`, `stop`, `restart`, `doctor`, `logs`, `connect`, `clients`, `repair`, `uninstall`) run the installed `mac-mcp` CLI from `~/.local/bin` (or `MAC_MCP_BIN_DIR`) by its full path. Its own command is `mac-mcp-setup`, so a global npm install never shadows `mac-mcp`.
+
 ### Installer
 
 The interactive installer now installs only a cryptographically verified stable release. It clones `main`, finds the newest signed stable-release commit, verifies the pinned bootstrap verifier, Ed25519 manifest signature, complete tracked-file SHA-256/mode/size inventory, aggregate payload digest, and release lineage **before** creating persistent source/runtime paths.

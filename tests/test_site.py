@@ -198,8 +198,10 @@ class VideoTests(unittest.TestCase):
             self.assertIn(f'text="{caption}"', scenes)
 
     def test_the_installer_never_needs_node(self) -> None:
+        # packaging/npm is the optional npm route (#210); the installer and the .pkg still never need Node.
+        npm_route = ROOT / "packaging" / "npm"
         for path in [ROOT / "install.sh", ROOT / "scripts" / "build_pkg.sh", *sorted((ROOT / "packaging").rglob("*"))]:
-            if path.is_file():
+            if path.is_file() and npm_route not in path.parents:
                 text = path.read_text(errors="ignore")
                 self.assertNotIn("video/", text, path)
                 self.assertNotRegex(text, r"\bnpm\b", path)

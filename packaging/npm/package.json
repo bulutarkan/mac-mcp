@@ -1,0 +1,16 @@
+{
+  "name": "@bulutarkan/mac-mcp",
+  "version": "2.2.0",
+  "description": "Install Mac MCP, the local server and menu bar app that lets Claude, ChatGPT, Codex and other MCP apps use your Mac.",
+  "keywords": ["mcp", "model-context-protocol", "macos", "claude", "chatgpt", "codex", "automation", "menu-bar"],
+  "homepage": "https://bulutarkan.github.io/mac-mcp/",
+  "repository": {"type": "git", "url": "git+https://github.com/bulutarkan/mac-mcp.git", "directory": "packaging/npm"},
+  "bugs": {"url": "https://github.com/bulutarkan/mac-mcp/issues"},
+  "license": "MIT",
+  "author": "Tarkan Bulut",
+  "bin": {"mac-mcp-setup": "bin/mac-mcp-setup.js"},
+  "files": ["bin/mac-mcp-setup.js", "install.sh", "README.md", "LICENSE"],
+  "os": ["darwin"],
+  "cpu": ["arm64", "x64"],
+  "engines": {"node": ">=18"}
+}

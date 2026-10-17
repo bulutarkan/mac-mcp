@@ -19,6 +19,8 @@
 curl -fsSL https://raw.githubusercontent.com/bulutarkan/mac-mcp/main/install.sh | bash
 ```
 
+or with Node.js: `npx @bulutarkan/mac-mcp install` (the same installer, [details](docs/install.md#npm-macos-13-apple-silicon-or-intel)).
+
 **You stay in charge.** Permission profiles decide what may run and optional Server Approval asks before risky actions; you can pause observation, turn on private mode, or keep apps and sites out of reach. Mac MCP is not a sandbox: it acts with your macOS user's permissions, localhost is machine-local transport, not same-user isolation, and what your AI app reads is sent to that app's provider. See [Product and security terminology](docs/safety.md#product-and-security-terminology).
 
 ## What's new in 2.2.0
