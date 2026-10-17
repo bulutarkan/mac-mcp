@@ -5,6 +5,11 @@ out ~/mac-mcp the way install.sh does, but offline: the source tree of the relea
 bundled Python, and a virtualenv filled from hash-locked wheels shipped in the package.
 An existing package install is upgraded in place with its private files kept; anything
 else at ~/mac-mcp is never touched. Any failure restores the previous state.
+
+An install that is cut off (the Mac shut down, the process was killed) leaves a journal,
+~/.mac-mcp/pkg/transaction.json, written before anything moves; the next install reads it
+first and puts back the previous runtime (or removes a half-made fresh one), so a retry
+needs no files moved by hand (#241).
 """
 from __future__ import annotations
 
@@ -80,6 +85,10 @@ class Layout:
     @property
     def backups_root(self) -> Path:
         return self.state / "backups"
+
+    @property
+    def journal(self) -> Path:
+        return self.state / "pkg" / "transaction.json"
 
     @property
     def previous_app(self) -> Path:
@@ -325,11 +334,83 @@ def _start(layout: Layout, run, env: Dict[str, str], port: int, health, log: "_L
         raise InstallError(f"Mac MCP did not become healthy on port {port}.")
 
 
-def _move_runtime_to_backup(layout: Layout, clock) -> Path:
-    target = layout.backups_root / f"pkg-{int(clock())}" / "runtime"
-    target.parent.mkdir(parents=True, exist_ok=False)
+def _deployed_file(layout: Layout) -> Path:
+    return layout.state / "update/deployed-commit"
+
+
+def _write_journal(layout: Layout, data: dict) -> None:
+    layout.journal.parent.mkdir(parents=True, exist_ok=True)
+    temp = layout.journal.with_name(layout.journal.name + ".tmp")
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(data, handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp, layout.journal)
+
+
+def _move_runtime_to_backup(layout: Layout, clock, release: dict) -> Path:
+    """Move the runtime aside, after saving what describes it and journaling the move."""
+    folder = layout.backups_root / f"pkg-{int(clock())}"
+    folder.mkdir(parents=True, exist_ok=False)
+    saved = folder / "state"
+    saved.mkdir()
+    for source in (layout.files_list, _deployed_file(layout)):
+        if source.is_file():
+            shutil.copy2(source, saved / source.name)
+    target = folder / "runtime"
+    _write_journal(layout, {"mode": "upgrade", "backup": str(target), "saved": str(saved),
+                            "release_id": release["release_id"], "started_at": time.time()})
     os.rename(layout.runtime, target)
     return target
+
+
+def recover_interrupted(layout: Layout, log: "_Log", *, run=None, env: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """Undo what an install that was cut off left half done; None when there was nothing (#241).
+
+    The journal is written before the runtime moves, so it always says where the previous
+    runtime is. The app is not touched: this install's payload has just put the new one in
+    place, and preinstall kept the previous one in previous-app for a failure.
+    """
+    try:
+        data = json.loads(layout.journal.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise InstallError(f"The record of an interrupted install is unreadable ({layout.journal}): {exc}") from exc
+    mode = data.get("mode") if isinstance(data, dict) else None
+    if mode == "upgrade":
+        backup = Path(str(data.get("backup") or ""))
+        saved = Path(str(data.get("saved") or ""))
+        if not backup.is_dir() and not layout.runtime.exists():
+            raise InstallError(f"An interrupted upgrade left neither the runtime nor its backup ({backup}).")
+        if run is not None and layout.cli.exists():
+            # A server the cut-off install may have started runs from the runtime about to go.
+            run([layout.cli, "stop"], env=env or {}, check=False)
+        if backup.is_dir():
+            if layout.runtime.exists():
+                shutil.rmtree(layout.runtime)  # the half-made new runtime
+            os.rename(backup, layout.runtime)
+        for target in (layout.files_list, _deployed_file(layout)):
+            source = saved / target.name
+            if source.is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+        layout.kind_file.write_text("pkg\n", encoding="utf-8")
+        shutil.rmtree(backup.parent, ignore_errors=True)
+        log.write("an interrupted upgrade was found: the previous runtime is back in place")
+    elif mode == "fresh":
+        # Nothing of Mac MCP was here before it began (preinstall checked), so all it made goes.
+        if run is not None and layout.cli.exists():
+            run([layout.cli, "stop"], env=env or {}, check=False)
+        shutil.rmtree(layout.runtime, ignore_errors=True)
+        layout.cli.unlink(missing_ok=True)
+        layout.kind_file.unlink(missing_ok=True)
+        log.write("an interrupted fresh install was found: what it had made is removed")
+    else:
+        raise InstallError(f"The record of an interrupted install is not understood ({layout.journal}).")
+    layout.journal.unlink(missing_ok=True)
+    return str(mode)
 
 
 def _carried_files(backup: Path, previous: List[str], current: List[str]) -> List[str]:
@@ -380,6 +461,7 @@ def _prune_package_backups(layout: Layout, keep: Path) -> None:
 def install(layout: Layout, *, run=_run, health=_health_ok, start: bool = True, clock=time.time) -> dict:
     log = _Log(layout.log_file)
     release = read_release(layout.staging)
+    recover_interrupted(layout, log, run=run if start else None, env=child_env(layout))
     upgrade = is_upgrade(layout)
     if not upgrade and (layout.runtime.exists() or layout.cli.exists()):
         raise InstallError(
@@ -391,7 +473,7 @@ def install(layout: Layout, *, run=_run, health=_health_ok, start: bool = True, 
         raise InstallError("The package source archive does not match its release checksum.")
     members = _source_members(layout.staging)
     previous = _previous_members(layout)
-    deployed_file = layout.state / "update/deployed-commit"
+    deployed_file = _deployed_file(layout)
     # Restored on a failed upgrade, so the old runtime keeps describing itself.
     saved = {f: f.read_bytes() for f in (layout.files_list, deployed_file) if f.exists()}
     env = child_env(layout)
@@ -403,7 +485,9 @@ def install(layout: Layout, *, run=_run, health=_health_ok, start: bool = True, 
         if upgrade:
             if start and layout.cli.exists():
                 run([layout.cli, "stop"], env=env, check=False)
-            backup = _move_runtime_to_backup(layout, clock)
+            backup = _move_runtime_to_backup(layout, clock, release)
+        else:
+            _write_journal(layout, {"mode": "fresh", "release_id": release["release_id"], "started_at": time.time()})
         runtime_created = True
         _lay_out_runtime(layout, release)
         if backup is not None:
@@ -441,7 +525,9 @@ def install(layout: Layout, *, run=_run, health=_health_ok, start: bool = True, 
             layout.cli.unlink(missing_ok=True)
             layout.kind_file.unlink(missing_ok=True)
             shutil.rmtree(layout.app, ignore_errors=True)
+        layout.journal.unlink(missing_ok=True)  # rolled back: nothing is left half done
         raise
+    layout.journal.unlink(missing_ok=True)
     if backup is not None:
         _prune_package_backups(layout, backup)
     shutil.rmtree(layout.previous_app.parent, ignore_errors=True)

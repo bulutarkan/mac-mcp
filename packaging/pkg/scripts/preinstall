@@ -10,7 +10,9 @@ fi
 
 APP="$HOME_DIR/Applications/Mac MCP.app"
 kind="$(/bin/cat "$HOME_DIR/.mac-mcp/install-kind" 2>/dev/null || true)"
-if [[ "$kind" != "pkg" ]]; then
+# A package install that was cut off left this record; postinstall puts things back first (#241).
+JOURNAL="$HOME_DIR/.mac-mcp/pkg/transaction.json"
+if [[ "$kind" != "pkg" && ! -f "$JOURNAL" ]]; then
   for path in "$HOME_DIR/mac-mcp" "$HOME_DIR/.local/bin/mac-mcp" "$APP"; do
     if [[ -e "$path" || -L "$path" ]]; then
       echo "Mac MCP is already installed on this account with install.sh or from source ($path)." >&2
@@ -26,8 +28,10 @@ major="$(/usr/bin/sw_vers -productVersion | /usr/bin/cut -d. -f1)"
 # A package upgrade replaces the app bundle: stop the running menu app first, and keep a
 # copy so a failed upgrade can put the previous app back next to the previous runtime.
 /usr/bin/pkill -f "^$APP/Contents/MacOS/MacMCPMenu" 2>/dev/null || true
-if [[ "$kind" == "pkg" && -d "$APP" ]]; then
-  PREVIOUS="$HOME_DIR/.mac-mcp/pkg/previous-app"
+PREVIOUS="$HOME_DIR/.mac-mcp/pkg/previous-app"
+if [[ -f "$JOURNAL" && -d "$PREVIOUS/Mac MCP.app" ]]; then
+  : # the copy belongs to the cut-off upgrade: the app there now may already be its new one
+elif [[ "$kind" == "pkg" && -d "$APP" ]]; then
   /bin/rm -rf "$PREVIOUS"
   /bin/mkdir -p "$PREVIOUS"
   /usr/bin/ditto "$APP" "$PREVIOUS/Mac MCP.app" || { echo "Mac MCP: could not back up the current app." >&2; exit 1; }

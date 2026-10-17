@@ -804,6 +804,55 @@ class UpdateHelperTests(unittest.TestCase):
         self.assertTrue(state["recovered_after_crash"])
         self.assertEqual("passed", state["recovery"]["health"]["status"])
 
+    def test_crash_while_the_menu_app_is_rebuilt_rebuilds_it_from_the_restored_runtime(self):
+        # #241: app and runtime must end on the same version after crash recovery.
+        _, repo, runtime, old, target = self.make_fixture()
+        with patch("mcp_server.update_helper._refresh_installed_menu_app",
+                   side_effect=SystemExit("died while installing the new app")):
+            with self.assertRaises(SystemExit):
+                apply_update(repo, runtime, skip_restart=True, skip_deps=True)
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertTrue(state["menu_app_refresh_started"])
+
+        with patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health"), \
+                patch("mcp_server.update_helper._health_ok", return_value=True), \
+                patch("mcp_server.update_helper._refresh_installed_menu_app", return_value=True) as rebuild:
+            update_helper_module.recover_incomplete_update(repo, runtime)
+
+        rebuild.assert_called_once_with(runtime)
+        self.assertEqual("VALUE = 'old'\n", (runtime / "mcp_server/main.py").read_text(encoding="utf-8"))
+        state = json.loads((self.update_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(("recovered", "restored"), (state["status"], state["recovery"]["menu_app"]["status"]))
+
+    def test_a_crash_before_the_app_changed_leaves_the_app_alone(self):
+        _, repo, runtime, old, target = self.make_fixture()
+
+        def crash(stage: str) -> None:
+            if stage == "runtime_synced":
+                raise SystemExit("died before the app")
+
+        with patch("mcp_server.update_helper._test_update_checkpoint_hook", side_effect=crash):
+            with self.assertRaises(SystemExit):
+                apply_update(repo, runtime, skip_restart=True, skip_deps=True)
+        with patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health"), \
+                patch("mcp_server.update_helper._health_ok", return_value=True), \
+                patch("mcp_server.update_helper._refresh_installed_menu_app") as rebuild:
+            recovered = update_helper_module.recover_incomplete_update(repo, runtime)
+        rebuild.assert_not_called()
+        self.assertEqual("skipped", recovered["recovery"]["menu_app"]["status"])
+
+    def test_a_failed_app_rebuild_does_not_undo_the_runtime_recovery(self):
+        _, repo, runtime, old, target = self.make_fixture()
+        with patch("mcp_server.update_helper._refresh_installed_menu_app", side_effect=SystemExit("died")):
+            with self.assertRaises(SystemExit):
+                apply_update(repo, runtime, skip_restart=True, skip_deps=True)
+        with patch("mcp_server.update_helper._restart_service", return_value="http://127.0.0.1:8000/health"), \
+                patch("mcp_server.update_helper._health_ok", return_value=True), \
+                patch("mcp_server.update_helper._refresh_installed_menu_app", side_effect=RuntimeError("no swiftc")):
+            recovered = update_helper_module.recover_incomplete_update(repo, runtime)
+        self.assertEqual(("recovered", "failed"), (recovered["status"], recovered["recovery"]["menu_app"]["status"]))
+        self.assertEqual("VALUE = 'old'\n", (runtime / "mcp_server/main.py").read_text(encoding="utf-8"))
+
     def test_sigkill_after_runtime_sync_is_recovered_from_durable_journal(self):
         _, repo, runtime, old, target = self.make_fixture()
         project_root = Path(update_helper_module.__file__).resolve().parents[1]

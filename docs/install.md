@@ -35,7 +35,7 @@ Download `Mac-MCP-…-arm64.pkg` from the [latest GitHub Release](https://github
 
 The package is **not signed with an Apple Developer ID and not notarized yet**, so macOS blocks the first open: go to System Settings → Privacy & Security and choose **Open Anyway**. Compare the download with the `.sha256` file on the release page if you want to check it. The code inside is the signed stable checkpoint named in the file name.
 
-To update a package install, install the newer package the same way; your settings, API key and tokens are kept. The package does not replace an existing `install.sh`/source installation; keep updating that one with `mac-mcp update`. Intel Macs use the installer below.
+To update a package install, install the newer package the same way; your settings, API key and tokens are kept. If an install is cut off (the Mac shut down, the installer was force quit), open the package again: it first puts the previous version back from its own record, then installs. The package does not replace an existing `install.sh`/source installation; keep updating that one with `mac-mcp update`. Intel Macs use the installer below.
 
 ### npm (macOS 13+, Apple Silicon or Intel)
 
@@ -145,7 +145,7 @@ Both paths run the same updater with the same signature, lineage and dirty-repos
 
 The updater scans the first-parent history of `origin/main` and installs the newest cryptographically verified stable release checkpoint, not arbitrary repository HEAD. Development or otherwise unverified commits ahead of that checkpoint are not offered as normal updates. It also blocks on dirty repositories, preserves runtime overlays and private files, creates a runtime backup, restarts the managed service, performs a health check, and rolls back managed runtime files if verification fails.
 
-In 2.0, `menu_app/` is part of the managed runtime. If `Mac MCP.app` is already installed, a successful update rebuilds and refreshes it automatically.
+In 2.0, `menu_app/` is part of the managed runtime. If `Mac MCP.app` is already installed, a successful update rebuilds and refreshes it automatically. An update that stops half way is recovered by the next `mac-mcp update`: the previous runtime comes back and, if the app was already being replaced, the app is rebuilt from it, so both stay on the same version.
 
 ## macOS permissions
 

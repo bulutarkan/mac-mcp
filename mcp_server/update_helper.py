@@ -1757,6 +1757,18 @@ def recover_incomplete_update(
             if runtime_result.get("status") == "restored":
                 _write_state_commit(runtime, str(payload.get("from_commit") or payload.get("pre_update_head") or ""))
 
+    # The app was being rebuilt from the new runtime when the update stopped: rebuild it from the
+    # restored one, as a normal rollback does, so app and runtime are the same version (#241).
+    menu_app_result: dict[str, str] = {"status": "skipped", "reason": "The menu app was not changed by the update."}
+    if runtime_result.get("status") == "restored" and payload.get("menu_app_refresh_started"):
+        try:
+            refreshed = _refresh_installed_menu_app(runtime)
+            menu_app_result = ({"status": "restored", "reason": "The menu app was rebuilt from the restored runtime."}
+                               if refreshed else {"status": "skipped", "reason": "No menu app to rebuild here."})
+        except Exception as menu_exc:  # like a normal rollback: the runtime matters most
+            menu_app_result = {"status": "failed", "reason": f"Menu app rebuild failed: {menu_exc}"}
+            print(f"[mac-mcp update] WARNING: menu app recovery rebuild failed: {menu_exc}", flush=True)
+
     if runtime_result.get("status") == "failed":
         failed = {
             **payload,
@@ -1791,6 +1803,7 @@ def recover_incomplete_update(
         "dependency": dep_result,
         "repo": repo_result,
         "runtime": runtime_result,
+        "menu_app": menu_app_result,
         "health": health_result,
     }
     if health_result.get("status") == "failed":
@@ -1998,6 +2011,8 @@ def apply_update(
         checkpoint("runtime_synced", runtime_sync_started=True, synced_files=synced)
         print(f"[mac-mcp update] Synced {synced} managed runtime file(s).", flush=True)
 
+        # Journaled first: a crash from here on rebuilds the app from the restored runtime too (#241).
+        checkpoint("runtime_synced", menu_app_refresh_started=True)
         if _refresh_installed_menu_app(runtime_path):
             print("[mac-mcp update] Refreshed installed Mac MCP menu bar app.", flush=True)
         _ensure_server_helper(runtime_path)

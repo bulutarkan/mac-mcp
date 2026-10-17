@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Cut-off installs and updates put themselves right (#241)
+- A package install that is cut off half way (the Mac shut down, the installer was force quit) leaves a record before it moves anything. Opening the package again puts the previous version back from it and then installs, instead of refusing because Mac MCP looked half installed. The copy of the previous app a cut-off upgrade kept is not overwritten by the retry.
+- An update that stops while the menu bar app is being replaced is recovered by the next `mac-mcp update` with the app rebuilt from the restored runtime, so the app and the server end on the same version. Signature and release checks are unchanged.
+
 ### Log rotation problems are no longer silent (#244)
 - If a log can't be rotated (for example its permissions changed), the server log says which one and why, the other logs are still rotated, and `mac-mcp doctor` shows a warning naming it and since when, because that log can keep growing. If the rotation thread can't start, the next start tries again.
 
