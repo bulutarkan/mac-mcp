@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -291,6 +292,80 @@ class EventTests(unittest.TestCase):
         self.assertEqual("harness sentinel line", grok["steps"][-1]["text"])
         self.assertEqual("Mac MCP · mac_snapshot", grok["steps"][2]["detail"])
         self.assertEqual(26255 + 45760, grok["usage"]["input_tokens"])
+
+
+def _kimi_wire(home: Path, session: str, agent: str, records: list) -> Path:
+    """A Kimi Code 2.2.0 session journal: one durable event per line, `time` in milliseconds."""
+    wire = home / "sessions" / "wd_workspace" / session / "agents" / agent / "wire.jsonl"
+    wire.parent.mkdir(parents=True, exist_ok=True)
+    wire.write_text(_lines([{"type": "metadata", "protocol_version": "1.5", "created_at": 1}, *records]))
+    return wire
+
+
+def _kimi_usage(time_ms: int, model: str = "kimi-k2.6", **usage: int) -> dict:
+    counts = {"inputOther": 120, "output": 30, "inputCacheRead": 900, "inputCacheCreation": 50, **usage}
+    return {"type": "usage.record", "agentId": "main", "model": model, "usage": counts,
+            "usageScope": "turn", "time": time_ms}
+
+
+class KimiUsageTests(OwnerHomes):
+    """Kimi's stream-json has no usage; its session journal records every model call."""
+
+    def test_records_come_from_the_runs_session_and_start_time_only(self) -> None:
+        home = self.tmp / "kimi-home"
+        _kimi_wire(home, "session_abc", "main", [
+            _kimi_usage(1_000_000),  # an earlier run in the same home (a resume)
+            {"type": "context.append_message", "message": {"role": "assistant"}, "time": 2_000_500},
+            _kimi_usage(2_000_600),
+        ])
+        _kimi_wire(home, "session_abc", "sub_1", [_kimi_usage(2_000_700, model="kimi-k2.6-mini", output=5)])
+        _kimi_wire(home, "session_other", "main", [_kimi_usage(2_000_800)])
+
+        records = harness.kimi_usage_records(home, "session_abc", since=2_000.0)
+        self.assertEqual(["session_abc:main:4", "session_abc:sub_1:2"], [r["event_id"] for r in records])
+        self.assertEqual(120 + 30 + 900 + 50, records[0]["total"])
+        self.assertEqual({"input": 120, "output": 30, "cache_read": 900, "cache_write": 50},
+                         {k: records[0][k] for k in ("input", "output", "cache_read", "cache_write")})
+        self.assertEqual("kimi-k2.6-mini", records[1]["model"])
+        self.assertAlmostEqual(2_000.6, records[0]["timestamp"])
+        # Without a session id every session in the home counts, still from the start time on.
+        self.assertEqual(3, len(harness.kimi_usage_records(home, None, since=2_000.0)))
+        self.assertEqual([], harness.kimi_usage_records(home, "../session_abc", since=0))
+        self.assertEqual([], harness.kimi_usage_records(self.tmp / "missing", "session_abc", since=0))
+
+    def test_a_finished_run_is_counted_once_in_provider_tokens_and_the_agent_total(self) -> None:
+        agent_id = "agt_kimi_usage"
+        (agents.AGENTS_DIR / agent_id).mkdir(parents=True)
+        started = time.time() - 60
+        meta = {"agent_id": agent_id, "provider": "kimi", "status": "running", "started_at": started,
+                "model": "or", "model_selection_verified": False}
+        (agents.AGENTS_DIR / agent_id / "meta.json").write_text(json.dumps(meta))
+        home = harness.private_home(agents._harness_state(agent_id, meta), "kimi")
+        start_ms = int(started * 1000)
+        _kimi_wire(home, "session_abc", "main", [_kimi_usage(start_ms + 600), _kimi_usage(start_ms + 900, output=70)])
+
+        with patch.dict(os.environ, {"MAC_MCP_STATE_DIR": str(self.tmp / "state")}):
+            usage = agents._ingest_kimi_usage(agent_id, meta, "session_abc")
+            again = agents._ingest_kimi_usage(agent_id, meta, "session_abc")
+            row = provider_usage.ProviderUsageStore(
+                self.tmp / "state" / "state" / "provider_usage.sqlite3"
+            ).summary(days=1)["providers"]["kimi"]
+        per_call = 120 + 900 + 50
+        self.assertEqual({"input": 240, "output": 100, "cache": {"read": 1800, "write": 100},
+                          "total": 2 * per_call + 100}, usage)
+        self.assertEqual(usage, again)
+        self.assertEqual(2, row["turns"])
+        self.assertEqual(2 * per_call + 100, row["total_tokens"])
+        self.assertIsNone(row["reasoning_tokens"])  # Kimi does not split reasoning out; unknown, not zero
+        self.assertEqual([("kimi-k2.6", 2 * per_call + 100)], [(m["model"], m["total_tokens"]) for m in row["models"]])
+        self.assertEqual((2 * per_call + 100, True), agents._agent_token_usage(agents._read_meta(agent_id)))
+        self.assertIn("kimi", provider_usage.REPORTING_PROVIDERS)
+
+    def test_a_run_without_records_reports_nothing(self) -> None:
+        agent_id = "agt_kimi_quiet"
+        (agents.AGENTS_DIR / agent_id).mkdir(parents=True)
+        meta = {"agent_id": agent_id, "provider": "kimi", "started_at": 2_000.0}
+        self.assertIsNone(agents._ingest_kimi_usage(agent_id, meta, "session_abc"))
 
 
 class ResumeSafetyTests(unittest.TestCase):

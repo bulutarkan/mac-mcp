@@ -7244,8 +7244,55 @@ def _accumulate_agent_usage(agent_id: str, event_key: str, total_tokens: int) ->
         pass
 
 
+def _ingest_kimi_usage(agent_id: str, meta: Dict[str, Any], session_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Count a finished Kimi Code run's tokens from its session journal; its stdout carries none.
+
+    Returns the run's usage in the shape the other providers report, or None when it recorded none.
+    """
+    home = harness_providers.private_home(_harness_state(agent_id, meta), "kimi")
+    records = harness_providers.kimi_usage_records(home, session_id, float(meta.get("started_at") or 0))
+    if not records:
+        return None
+    store = get_provider_usage_store()
+    requested_model, effective_model, model, model_verified = _provider_usage_models(meta)
+    summary: Dict[str, Any] = {"input": 0, "output": 0, "cache": {"read": 0, "write": 0}}
+    for record in records:
+        event_key = f"kimi:{record['event_id']}"
+        reported_model = record["model"]
+        try:
+            store.ingest(ProviderUsageRecord(
+                event_key=event_key,
+                provider="kimi",
+                session_id=record["session_id"],
+                event_id=record["event_id"],
+                timestamp=record["timestamp"],
+                agent_id=agent_id,
+                # The journal names the model that answered, so it is verified even when the request was not.
+                model=reported_model or model,
+                model_verified=bool(reported_model) or model_verified,
+                source=PROVIDER_USAGE_SOURCE_REPORT,
+                requested_model=requested_model,
+                effective_model=reported_model or effective_model,
+                input_tokens=record["input"],
+                output_tokens=record["output"],
+                reasoning_tokens=None,
+                cache_read_tokens=record["cache_read"],
+                cache_write_tokens=record["cache_write"],
+                total_tokens=record["total"],
+            ))
+        except Exception:
+            pass
+        _accumulate_agent_usage(agent_id, event_key, record["total"])
+        summary["input"] += record["input"]
+        summary["output"] += record["output"]
+        summary["cache"]["read"] += record["cache_read"]
+        summary["cache"]["write"] += record["cache_write"]
+    summary["total"] = sum(record["total"] for record in records)
+    return summary
+
+
 # Providers whose CLI reports token usage that Mac MCP can count.
-_USAGE_REPORTING_PROVIDERS = {"codex", "opencode", "claude", "grok", "pi", "kilo", "cline", "goose", "antigravity"}
+_USAGE_REPORTING_PROVIDERS = {"codex", "opencode", "claude", "kimi", "grok", "pi", "kilo", "cline", "goose", "antigravity"}
 
 
 def _agent_token_usage(meta: Dict[str, Any]) -> tuple[int, bool]:
@@ -7614,6 +7661,12 @@ def _worker(agent_id: str) -> int:
         result, session_id, usage = _extract_claude(stdout_path)
     elif meta["provider"] in harness_providers.PROVIDERS:
         result, session_id, usage = harness_providers.extract(meta["provider"], stdout_path)
+        if meta["provider"] == "kimi":
+            try:
+                usage = _ingest_kimi_usage(agent_id, meta, session_id) or usage
+            except Exception:
+                # Provider token accounting is observational; it must never fail an agent.
+                pass
         if meta["provider"] == "goose" and not session_id:
             # Goose resume by the deterministic per-agent session name.
             session_id = str(meta.get("resume_session_id") or meta.get("agent_id") or "") or None

@@ -447,6 +447,62 @@ def grok_usage(usage: Any) -> Optional[Dict[str, Any]]:
     }
 
 
+_KIMI_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*$")
+
+
+def kimi_usage_records(home: Path, session_id: Optional[str], since: float) -> List[Dict[str, Any]]:
+    """Kimi Code's tokens for one run, one entry per model call, from its session journal.
+
+    Its stream-json prints no usage; every call is a durable `usage.record` line in
+    `sessions/<workspace>/<session>/agents/<agent>/wire.jsonl` under the private home. A resumed
+    agent shares the home with the runs before it, so only records from `since` on count.
+    The line position makes each record's id stable, so reading again never counts twice.
+    """
+    session = str(session_id or "").strip()
+    if session and (not _KIMI_SESSION_ID_RE.match(session) or ".." in session):
+        return []
+    pattern = f"*/{session or '*'}/agents/*/wire.jsonl"
+    since_ms = float(since or 0) * 1000.0
+    records: List[Dict[str, Any]] = []
+    for wire in sorted((home / "sessions").glob(pattern)):
+        session_name = wire.parents[2].name
+        agent_name = wire.parent.name
+        try:
+            lines = wire.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for number, line in enumerate(lines, start=1):
+            if '"usage.record"' not in line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            usage = record.get("usage") if isinstance(record, dict) else None
+            if record.get("type") != "usage.record" or not isinstance(usage, dict):
+                continue
+            stamp = record.get("time")
+            if not isinstance(stamp, (int, float)) or stamp < since_ms:
+                continue
+            counts = {
+                name: max(0, int(usage.get(key) or 0))
+                for name, key in (
+                    ("input", "inputOther"), ("output", "output"),
+                    ("cache_read", "inputCacheRead"), ("cache_write", "inputCacheCreation"),
+                )
+            }
+            records.append({
+                "event_id": f"{session_name}:{agent_name}:{number}",
+                "session_id": session_name,
+                "model": str(record.get("model") or "").strip() or None,
+                "timestamp": float(stamp) / 1000.0,
+                **counts,
+                # Kimi's input leaves cached tokens out, so the four parts add up to the call.
+                "total": sum(counts.values()),
+            })
+    return records
+
+
 def _events(path: Path) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     try:

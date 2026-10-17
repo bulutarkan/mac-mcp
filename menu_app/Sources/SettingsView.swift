@@ -127,23 +127,6 @@ private enum UsageActorFilter: String, CaseIterable, Identifiable {
 }
 
 
-private enum ProviderUsagePeriod: String, CaseIterable, Identifiable {
-    case month = "30D"
-    case quarter = "90D"
-    case year = "1Y"
-
-    var id: String { rawValue }
-
-    var days: Int {
-        switch self {
-        case .month: return 30
-        case .quarter: return 90
-        case .year: return 365
-        }
-    }
-}
-
-
 private enum SettingsFeedbackScope: String, Equatable {
     case agents
     case decisions
@@ -1014,45 +997,14 @@ struct SettingsView: View {
         state.usagePrivacy?.enabled ?? state.usageSummary?.meteringEnabled ?? true
     }
 
-    private var usageDataControls: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 9) {
-                HStack(spacing: 16) {
-                    Toggle(
-                        "Record usage",
-                        isOn: Binding(
-                            get: { usageMeteringEnabled },
-                            set: { value in Task { await state.updateUsagePrivacy(enabled: value) } }
-                        )
-                    )
-                    Picker(
-                        "Keep for",
-                        selection: Binding(
-                            get: { usageRetentionDays },
-                            set: { value in Task { await state.updateUsagePrivacy(retentionDays: value) } }
-                        )
-                    ) {
-                        Text("30 days").tag(30)
-                        Text("90 days").tag(90)
-                        Text("365 days").tag(365)
-                    }
-                    .frame(width: 190)
-                    Spacer(minLength: 8)
-                    Button("Clear Usage Data…", role: .destructive) { confirmClearUsage = true }
-                }
-                Text("Only daily per-tool counts, sizes and latency buckets are kept, never prompts, arguments or results. Older days are removed automatically.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let notice = state.usageDataNotice {
-                    Text(notice)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        } label: {
-            Label("Data & Retention", systemImage: "hand.raised")
+    /// Recording, retention and memory, folded under one line: settings people change rarely.
+    private var usageStorageCard: some View {
+        UsageCollapsibleCard(title: "Data & Storage", symbol: "externaldrive", summary: usageStorageSummary) {
+            usageDataSettings
+            Divider()
+            memorySettings
         }
+        .task { await state.refreshMemory() }
         .confirmationDialog("Delete all stored usage data?", isPresented: $confirmClearUsage) {
             Button("Delete Usage Data", role: .destructive) {
                 Task { await state.clearUsage() }
@@ -1060,62 +1012,6 @@ struct SettingsView: View {
         } message: {
             Text("This removes tool and provider usage history from this Mac. It cannot be undone.")
         }
-    }
-
-    private var memoryControls: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 9) {
-                if let memory = state.memoryOverview {
-                    Text(memory.count == 0
-                         ? "No memories are stored."
-                         : "\(memory.count) memories (\(memory.importantCount) high or critical), \(memory.oldest ?? "?") to \(memory.newest ?? "?"), \(ByteCountFormatter.string(fromByteCount: Int64(memory.bytesOnDisk), countStyle: .file)) on disk.")
-                        .font(.caption)
-                }
-                HStack(spacing: 16) {
-                    Picker(
-                        "Keep for",
-                        selection: Binding(
-                            get: { state.memoryOverview?.retentionDays ?? 0 },
-                            set: { value in Task { await state.updateMemoryRetention(days: value) } }
-                        )
-                    ) {
-                        Text("Until deleted").tag(0)
-                        Text("90 days").tag(90)
-                        Text("180 days").tag(180)
-                        Text("1 year").tag(365)
-                        Text("2 years").tag(730)
-                    }
-                    .frame(width: 210)
-                    Toggle(
-                        "Keep high and critical",
-                        isOn: Binding(
-                            get: { state.memoryOverview?.keepImportant ?? true },
-                            set: { value in Task { await state.updateMemoryRetention(keepImportant: value) } }
-                        )
-                    )
-                    .disabled((state.memoryOverview?.retentionDays ?? 0) == 0)
-                    Spacer(minLength: 8)
-                }
-                HStack(spacing: 8) {
-                    Button("Export Memories…") { exportMemories() }
-                    Button("Delete All Memories…", role: .destructive) {
-                        Task { memoryClearPreview = await state.clearMemory(confirm: false) }
-                    }
-                    .disabled((state.memoryOverview?.count ?? 0) == 0)
-                    Spacer()
-                }
-                Text("Agents save memories as Markdown day files plus a local search index; both are owner-only. Deleting removes the text from both, which is not a forensic disk wipe.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let notice = state.memoryNotice {
-                    Text(notice).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-        } label: {
-            Label("Memory", systemImage: "brain")
-        }
-        .task { await state.refreshMemory() }
         .confirmationDialog(
             "Delete \(memoryClearPreview?.count ?? 0) memories?",
             isPresented: Binding(get: { memoryClearPreview != nil }, set: { if !$0 { memoryClearPreview = nil } })
@@ -1125,6 +1021,104 @@ struct SettingsView: View {
             }
         } message: {
             Text("Every memory from \(memoryClearPreview?.oldest ?? "?") to \(memoryClearPreview?.newest ?? "?") will be removed from this Mac. Export them first if you may need them. This cannot be undone.")
+        }
+    }
+
+    private var usageStorageSummary: String {
+        var parts = [usageMeteringEnabled ? "Recording usage for \(usageRetentionDays) days" : "Usage recording is off"]
+        if let memory = state.memoryOverview {
+            parts.append(memory.count == 1 ? "1 memory" : "\(memory.count) memories")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var usageDataSettings: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("Usage").font(.subheadline.weight(.semibold))
+            HStack(spacing: 16) {
+                Toggle(
+                    "Record usage",
+                    isOn: Binding(
+                        get: { usageMeteringEnabled },
+                        set: { value in Task { await state.updateUsagePrivacy(enabled: value) } }
+                    )
+                )
+                Picker(
+                    "Keep for",
+                    selection: Binding(
+                        get: { usageRetentionDays },
+                        set: { value in Task { await state.updateUsagePrivacy(retentionDays: value) } }
+                    )
+                ) {
+                    Text("30 days").tag(30)
+                    Text("90 days").tag(90)
+                    Text("365 days").tag(365)
+                }
+                .frame(width: 190)
+                Spacer(minLength: 8)
+                Button("Clear Usage Data…", role: .destructive) { confirmClearUsage = true }
+            }
+            Text("Only daily per-tool counts, sizes and latency buckets are kept, never prompts, arguments or results. Older days are removed automatically.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let notice = state.usageDataNotice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var memorySettings: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("Memory").font(.subheadline.weight(.semibold))
+            if let memory = state.memoryOverview {
+                Text(memory.count == 0
+                     ? "No memories are stored."
+                     : "\(memory.count) memories (\(memory.importantCount) high or critical), \(memory.oldest ?? "?") to \(memory.newest ?? "?"), \(ByteCountFormatter.string(fromByteCount: Int64(memory.bytesOnDisk), countStyle: .file)) on disk.")
+                    .font(.caption)
+            }
+            HStack(spacing: 16) {
+                Picker(
+                    "Keep for",
+                    selection: Binding(
+                        get: { state.memoryOverview?.retentionDays ?? 0 },
+                        set: { value in Task { await state.updateMemoryRetention(days: value) } }
+                    )
+                ) {
+                    Text("Until deleted").tag(0)
+                    Text("90 days").tag(90)
+                    Text("180 days").tag(180)
+                    Text("1 year").tag(365)
+                    Text("2 years").tag(730)
+                }
+                .frame(width: 210)
+                Toggle(
+                    "Keep high and critical",
+                    isOn: Binding(
+                        get: { state.memoryOverview?.keepImportant ?? true },
+                        set: { value in Task { await state.updateMemoryRetention(keepImportant: value) } }
+                    )
+                )
+                .disabled((state.memoryOverview?.retentionDays ?? 0) == 0)
+                Spacer(minLength: 8)
+            }
+            HStack(spacing: 8) {
+                Button("Export Memories…") { exportMemories() }
+                Button("Delete All Memories…", role: .destructive) {
+                    Task { memoryClearPreview = await state.clearMemory(confirm: false) }
+                }
+                .disabled((state.memoryOverview?.count ?? 0) == 0)
+                Spacer()
+            }
+            Text("Agents save memories as Markdown day files plus a local search index; both are owner-only. Deleting removes the text from both, which is not a forensic disk wipe.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let notice = state.memoryNotice {
+                Text(notice).font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -1143,7 +1137,7 @@ struct SettingsView: View {
                 HStack(alignment: .top) {
                     paneHeader(
                         "Usage",
-                        subtitle: "Up to \(usageRetentionDays) days of tool payload activity attributable to Mac MCP. This is not provider billing or model context usage."
+                        subtitle: "What Mac MCP's tools and your delegated agents used, kept only on this Mac."
                     )
                     Spacer(minLength: 12)
                     if state.usageLoading {
@@ -1162,26 +1156,6 @@ struct SettingsView: View {
                     }
                 }
 
-                HStack(spacing: 10) {
-                    Picker("View", selection: $usageAggregation) {
-                        ForEach(UsageAggregation.allCases) { item in
-                            Text(item.rawValue).tag(item)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 310)
-
-                    Picker("Source", selection: $usageActor) {
-                        ForEach(UsageActorFilter.allCases) { item in
-                            Text(item.rawValue).tag(item)
-                        }
-                    }
-                    .frame(width: 150)
-                    .onChange(of: usageActor) { value in
-                        Task { await state.refreshUsage(actorClass: value.apiValue) }
-                    }
-                }
-
                 if let issue = state.usageIssue {
                     Label(issue, systemImage: "exclamationmark.triangle")
                         .font(.caption)
@@ -1189,238 +1163,16 @@ struct SettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                usageDataControls
-                memoryControls
-
                 if let usage = state.usageSummary {
-                    GroupBox {
-                        VStack(alignment: .leading, spacing: 11) {
-                            HStack(spacing: 9) {
-                                usageMetricCard(
-                                    title: "Input",
-                                    value: compactNumber(usage.totals.inputTokens),
-                                    detail: "payload tokens",
-                                    symbol: "arrow.down.left"
-                                )
-                                usageMetricCard(
-                                    title: "Output",
-                                    value: compactNumber(usage.totals.outputTokens),
-                                    detail: "payload tokens",
-                                    symbol: "arrow.up.right"
-                                )
-                                usageMetricCard(
-                                    title: "Tool Calls",
-                                    value: compactNumber(usage.totals.calls),
-                                    detail: "\(usage.totals.errorCount) errors",
-                                    symbol: "hammer"
-                                )
-                                usageMetricCard(
-                                    title: "Latency",
-                                    value: latencyPairText(
-                                        p50: usage.totals.p50LatencyMs,
-                                        p50Relation: usage.totals.p50LatencyRelation,
-                                        p95: usage.totals.p95LatencyMs,
-                                        p95Relation: usage.totals.p95LatencyRelation
-                                    ),
-                                    detail: "p50 / p95",
-                                    symbol: "timer"
-                                )
-                            }
-
-                            Divider()
-
-                            HStack(spacing: 8) {
-                                Label(
-                                    "\(byteText(usage.totals.inputBytes + usage.totals.outputBytes)) payload",
-                                    systemImage: "doc.text"
-                                )
-                                if usage.totals.imageCount > 0 {
-                                    Label("\(usage.totals.imageCount) images", systemImage: "photo")
-                                }
-                                if usage.totals.binaryBytes > 0 {
-                                    Label("\(byteText(usage.totals.binaryBytes)) binary", systemImage: "shippingbox")
-                                }
-                                Spacer()
-                                if let since = usage.availableSince {
-                                    Text("Available since \(since)")
-                                } else {
-                                    Text("Collection starts with the first measured call")
-                                }
-                            }
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        }
-                        .padding(2)
-                    } label: {
-                        Label("MCP Payload Tokens", systemImage: "waveform.path.ecg")
-                    }
-
-                    GroupBox {
-                        VStack(alignment: .leading, spacing: 10) {
-                            usageHeatmap(usage)
-
-                            HStack(spacing: 8) {
-                                Text("Less")
-                                ForEach(0..<5, id: \.self) { level in
-                                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                        .fill(usageHeatColor(level: level))
-                                        .frame(width: 11, height: 11)
-                                        .accessibilityHidden(true)
-                                }
-                                Text("More")
-                                Spacer()
-                                Text(usageAggregation.rawValue)
-                            }
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 2)
-                    } label: {
-                        Label("Activity", systemImage: "square.grid.3x3.fill")
-                    }
-
+                    usageOverviewCard(usage)
+                    usageActivityCard(usage)
                     if !usage.topTools.isEmpty {
                         GroupBox {
-                            VStack(spacing: 0) {
-                                let maxTokens = max(1, usage.topTools.map(\.totalTokens).max() ?? 1)
-                                ForEach(Array(usage.topTools.enumerated()), id: \.element.id) { index, tool in
-                                    VStack(spacing: 7) {
-                                        HStack {
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(tool.tool)
-                                                    .font(.system(.caption, design: .monospaced).weight(.medium))
-                                                    .lineLimit(1)
-                                                Text("\(compactNumber(tool.calls)) calls · \(compactNumber(tool.totalTokens)) tokens")
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.secondary)
-                                            }
-                                            Spacer()
-                                            if tool.errorCount > 0 {
-                                                Label("\(tool.errorCount)", systemImage: "exclamationmark.circle")
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.orange)
-                                            }
-                                        }
-                                        ProgressView(value: Double(tool.totalTokens), total: Double(maxTokens))
-                                            .controlSize(.mini)
-                                    }
-                                    .padding(.vertical, 8)
-                                    if index < usage.topTools.count - 1 { Divider() }
-                                }
-                            }
+                            UsageTopToolsList(tools: usage.topTools, format: compactNumber)
+                                .padding(.vertical, 2)
                         } label: {
                             Label("Top Tools", systemImage: "list.number")
                         }
-                    }
-
-                    GroupBox {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(alignment: .center) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Provider Tokens")
-                                        .font(.subheadline.weight(.semibold))
-                                    Text("Native delegated-agent usage. Never added to MCP Payload Tokens.")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Picker("Period", selection: $providerUsagePeriod) {
-                                    ForEach(ProviderUsagePeriod.allCases) { period in
-                                        Text(period.rawValue).tag(period)
-                                    }
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.segmented)
-                                .frame(width: 150)
-                                .onChange(of: providerUsagePeriod) { period in
-                                    Task {
-                                        await state.refreshProviderUsage(days: period.days)
-                                    }
-                                }
-                            }
-
-                            if state.providerUsageLoading && state.providerUsageSummary == nil {
-                                HStack {
-                                    ProgressView().controlSize(.small)
-                                    Text("Loading provider usage…")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    Spacer()
-                                }
-                            } else {
-                                // Three cards a row; the agents beyond the first three once they are on or have reported usage.
-                                LazyVGrid(
-                                    columns: Array(repeating: GridItem(.flexible(), spacing: 10, alignment: .top), count: 3),
-                                    alignment: .leading,
-                                    spacing: 10
-                                ) {
-                                    ForEach(usageCards, id: \.id) { card in
-                                        providerUsageCard(
-                                            title: card.title,
-                                            symbol: card.symbol,
-                                            usage: state.providerUsageSummary?.providers[card.id]
-                                        )
-                                    }
-                                }
-                            }
-
-                            if let issue = state.providerUsageIssue {
-                                Label(issue, systemImage: "exclamationmark.triangle")
-                                    .font(.caption2)
-                                    .foregroundStyle(.orange)
-                            } else if let summary = state.providerUsageSummary {
-                                HStack(alignment: .top) {
-                                    Text(summary.metricScope)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    Spacer(minLength: 12)
-                                    if let since = summary.availableSince {
-                                        Text("Since \(since)")
-                                    }
-                                }
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                            }
-                        }
-                        .padding(.vertical, 2)
-                    } label: {
-                        Label("Delegated Agents", systemImage: "cpu")
-                    }
-
-                    GroupBox {
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text(usage.metricScope)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                            HStack(spacing: 14) {
-                                Label("Input = tool arguments", systemImage: "arrow.down.left")
-                                Label("Output = tool result", systemImage: "arrow.up.right")
-                                Spacer()
-                            }
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-
-                            HStack {
-                                Text("Metric")
-                                Spacer()
-                                Text(usage.tokenizerId)
-                                    .font(.system(.caption2, design: .monospaced))
-                            }
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-
-                            if let diagnostics = usage.diagnostics,
-                               (diagnostics.queueDropped ?? 0) > 0 || (diagnostics.workerErrors ?? 0) > 0 {
-                                Label(
-                                    "Metering diagnostics: \(diagnostics.queueDropped ?? 0) dropped · \(diagnostics.workerErrors ?? 0) worker errors",
-                                    systemImage: "exclamationmark.triangle"
-                                )
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                            }
-                        }
-                    } label: {
-                        Label("Measurement", systemImage: "ruler")
                     }
                 } else if state.usageLoading {
                     GroupBox {
@@ -1438,9 +1190,24 @@ struct SettingsView: View {
                         Text("Usage becomes available after the first measured MCP tool call.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.vertical, 8)
                     }
                 }
+
+                ProviderUsageSection(
+                    summary: state.providerUsageSummary,
+                    loading: state.providerUsageLoading,
+                    issue: state.providerUsageIssue,
+                    period: $providerUsagePeriod
+                )
+                .onChange(of: providerUsagePeriod) { period in
+                    Task {
+                        await state.refreshProviderUsage(days: period.days)
+                    }
+                }
+
+                usageStorageCard
 
                 Spacer(minLength: 0)
             }
@@ -1448,146 +1215,160 @@ struct SettingsView: View {
         }
     }
 
-    private struct UsageCard {
-        let id: String
-        let title: String
-        let symbol: String
-    }
-
-    private var usageCards: [UsageCard] {
-        let always = [
-            UsageCard(id: "codex", title: "Codex", symbol: "terminal"),
-            UsageCard(id: "opencode", title: "OpenCode", symbol: "chevron.left.forwardslash.chevron.right"),
-            UsageCard(id: "claude", title: "Claude Code", symbol: "sparkles"),
-        ]
-        let more = [
-            UsageCard(id: "grok", title: "Grok Build", symbol: "hammer"),
-            UsageCard(id: "antigravity", title: "Antigravity", symbol: "arrow.up.circle"),
-            UsageCard(id: "pi", title: "pi", symbol: "function"),
-            UsageCard(id: "kilo", title: "Kilo Code", symbol: "k.circle"),
-            UsageCard(id: "cline", title: "Cline", symbol: "c.circle"),
-            UsageCard(id: "goose", title: "Goose", symbol: "bird"),
-        ].filter { settings.providerEnabled($0.id) || state.providerUsageSummary?.providers[$0.id] != nil }
-        return always + more
-    }
-
-    private func providerUsageCard(
-        title: String,
-        symbol: String,
-        usage: ProviderUsageProvider?
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Label(title, systemImage: symbol)
-                    .font(.subheadline.weight(.semibold))
-                Spacer()
-                if let usage, usage.available != false {
-                    Text(providerSourceLabel(usage.source))
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(.quaternary, in: Capsule())
-                }
-            }
-
-            if let usage, usage.available != false, usage.turns > 0 {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(providerTokenText(usage.totalTokens))
-                        .font(.title3.weight(.semibold))
-                        .monospacedDigit()
-                        .help(providerExactTokenText(usage.totalTokens))
-                    Text("total tokens")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-
-                HStack(spacing: 8) {
-                    providerUsageMetric("Input", usage.inputTokens)
-                    providerUsageMetric("Cache R", usage.cacheReadTokens)
-                    providerUsageMetric("Cache W", usage.cacheWriteTokens)
-                    providerUsageMetric("Output", usage.outputTokens)
-                    providerUsageMetric("Reason", usage.reasoningTokens)
-                }
-
-                HStack {
-                    Text("\(usage.turns) turns · \(usage.agents) agents")
-                    Spacer()
-                    if usage.models.isEmpty {
-                        Text("Model unattributed")
-                    }
-                }
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-
-                if !usage.models.isEmpty {
-                    DisclosureGroup("By model") {
-                        VStack(spacing: 5) {
-                            ForEach(usage.models) { model in
-                                HStack {
-                                    Text(model.model)
-                                        .font(.system(.caption2, design: .monospaced))
-                                        .lineLimit(1)
-                                    Spacer()
-                                    Text(providerTokenText(model.totalTokens))
-                                        .font(.caption2.monospacedDigit())
-                                        .help(providerExactTokenText(model.totalTokens))
-                                }
-                            }
+    /// Mac MCP's own tool traffic at a glance; how it is measured lives in the info tooltip.
+    private func usageOverviewCard(_ usage: UsageSummaryEnvelope) -> some View {
+        let totals = usage.totals
+        let succeeded = totals.calls > 0 ? Double(totals.successCount) / Double(totals.calls) : nil
+        return GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 5) {
+                            Text("Payload Tokens")
+                                .font(.subheadline.weight(.semibold))
+                            Image(systemName: "info.circle")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                                .help(usageMeasurementHelp(usage))
+                                .accessibilityLabel("About Payload Tokens")
                         }
-                        .padding(.top, 5)
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(compactNumber(totals.inputTokens + totals.outputTokens))
+                                .font(.system(size: 26, weight: .semibold, design: .rounded))
+                                .monospacedDigit()
+                            Text("tokens through Mac MCP tools")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    .font(.caption2)
+                    Spacer(minLength: 12)
+                    Picker("Calls from", selection: $usageActor) {
+                        ForEach(UsageActorFilter.allCases) { item in
+                            Text(item.rawValue).tag(item)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .fixedSize()
+                    .help("Count every caller, only your primary assistant, or only delegated subagents")
+                    .onChange(of: usageActor) { value in
+                        Task { await state.refreshUsage(actorClass: value.apiValue) }
+                    }
                 }
-            } else {
-                Text("No provider-reported usage in this period.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(minHeight: 62, alignment: .leading)
+
+                UsageSplitBar(
+                    first: ("Arguments", totals.inputTokens),
+                    second: ("Results", totals.outputTokens),
+                    format: compactNumber
+                )
+
+                Divider()
+
+                HStack(alignment: .top, spacing: 12) {
+                    UsageStat(title: "tool calls", value: compactNumber(totals.calls))
+                    UsageStat(
+                        title: "succeeded",
+                        value: succeeded.map(usagePercentText) ?? "—",
+                        help: "\(totals.errorCount) failed calls",
+                        tint: (succeeded ?? 1) < 0.9 ? .orange : nil
+                    )
+                    UsageStat(
+                        title: "typical response",
+                        value: latencyText(totals.p50LatencyMs, relation: totals.p50LatencyRelation),
+                        help: "Median / slowest 5%: " + latencyPairText(
+                            p50: totals.p50LatencyMs,
+                            p50Relation: totals.p50LatencyRelation,
+                            p95: totals.p95LatencyMs,
+                            p95Relation: totals.p95LatencyRelation
+                        )
+                    )
+                    UsageStat(
+                        title: "payload",
+                        value: byteText(totals.inputBytes + totals.outputBytes),
+                        help: "\(totals.imageCount) images · \(byteText(totals.binaryBytes)) binary"
+                    )
+                }
+
+                if let diagnostics = usage.diagnostics,
+                   (diagnostics.queueDropped ?? 0) > 0 || (diagnostics.workerErrors ?? 0) > 0 {
+                    Label(
+                        "Some calls were not measured: \(diagnostics.queueDropped ?? 0) dropped · \(diagnostics.workerErrors ?? 0) worker errors",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                }
             }
+            .padding(.vertical, 2)
+        } label: {
+            Label("Mac MCP Tools", systemImage: "waveform.path.ecg")
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(11)
-        .background(
-            .quaternary.opacity(0.38),
-            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-        )
     }
 
-    private func providerUsageMetric(_ title: String, _ value: Int?) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
+    private func usageActivityCard(_ usage: UsageSummaryEnvelope) -> some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 12) {
+                    Text(usageActivityLine(usage))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    Picker("View", selection: $usageAggregation) {
+                        ForEach(UsageAggregation.allCases) { item in
+                            Text(item.rawValue).tag(item)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    .frame(width: 230)
+                }
+
+                usageHeatmap(usage)
+
+                HStack(spacing: 5) {
+                    Spacer()
+                    Text("Less")
+                    ForEach(0..<5, id: \.self) { level in
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(usageHeatColor(level: level))
+                            .frame(width: 9, height: 9)
+                            .accessibilityHidden(true)
+                    }
+                    Text("More")
+                }
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
-            Text(providerTokenText(value))
-                .font(.caption.weight(.medium).monospacedDigit())
-                .help(providerExactTokenText(value))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func providerSourceLabel(_ source: String?) -> String {
-        switch source {
-        case "report": return "Exact · Provider"
-        case "native_tokenizer": return "Native tokenizer"
-        case "estimate": return "Estimate"
-        case "mixed": return "Mixed sources"
-        default: return "Provider"
+            }
+            .padding(.vertical, 2)
+        } label: {
+            Label("Activity", systemImage: "square.grid.3x3.fill")
         }
     }
 
-    private func providerTokenText(_ value: Int?) -> String {
-        guard let value else { return "—" }
-        return compactNumber(value)
+    private func usageActivityLine(_ usage: UsageSummaryEnvelope) -> String {
+        let days = usageHeatmapDays(usage).filter { $0.calls > 0 || $0.totalTokens > 0 }
+        guard !days.isEmpty else { return "No activity in the last 12 months" }
+        var text = days.count == 1 ? "1 active day" : "\(days.count) active days"
+        if let busiest = days.max(by: { $0.totalTokens < $1.totalTokens }),
+           let since = ProviderUsageFormat.since(busiest.date) {
+            text += " · busiest \(since)"
+        }
+        return text
     }
 
-    private func providerExactTokenText(_ value: Int?) -> String {
-        guard let value else { return "Unavailable for part of this period" }
-        return NumberFormatter.localizedString(
-            from: NSNumber(value: value),
-            number: .decimal
-        ) + " tokens"
+    private func usageMeasurementHelp(_ usage: UsageSummaryEnvelope) -> String {
+        var text = usage.metricScope + " Input = tool arguments; output = tool result. Metric: \(usage.tokenizerId)."
+        if let since = ProviderUsageFormat.since(usage.availableSince) {
+            text += " Measured since \(since)."
+        }
+        return text
+    }
+
+    private func usagePercentText(_ ratio: Double) -> String {
+        let percent = ratio * 100
+        if percent >= 99.95 { return "100%" }
+        return String(format: "%.1f%%", percent)
     }
 
     @ViewBuilder
@@ -1749,23 +1530,6 @@ struct SettingsView: View {
     private func usageHeatColor(level: Int) -> Color {
         guard level > 0 else { return Color.secondary.opacity(0.10) }
         return Color.accentColor.opacity(0.20 + Double(level) * 0.17)
-    }
-
-    private func usageMetricCard(title: String, value: String, detail: String, symbol: String) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Label(title, systemImage: symbol)
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.title3.weight(.semibold))
-                .monospacedDigit()
-            Text(detail)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private func compactNumber(_ value: Int) -> String {
