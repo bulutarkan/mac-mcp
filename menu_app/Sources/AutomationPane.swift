@@ -133,6 +133,7 @@ struct RecipesPane: View {
     @MacMCPState private var problem = ""
     @MacMCPState private var openID: String?
     @MacMCPState private var hovered: String?
+    @MacMCPState private var showInfo = false
 
     var body: some View {
         ZStack {
@@ -150,9 +151,16 @@ struct RecipesPane: View {
     private var list: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Saved steps you run again with one click: here, from the Shortcuts app and Siri (“Run Mac MCP Recipe”), or with a link.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("Saved steps you run again with one click: here, from the Shortcuts app and Siri (“Run Mac MCP Recipe”), or with a link.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button { showInfo.toggle() } label: { Image(systemName: "info.circle") }
+                        .buttonStyle(.borderless)
+                        .help("What is a recipe?")
+                        .accessibilityLabel("What is a recipe?")
+                        .popover(isPresented: $showInfo, arrowEdge: .bottom) { RecipeExplainer() }
+                }
                 if !loaded {
                     if problem.isEmpty {
                         ProgressView().controlSize(.small).frame(maxWidth: .infinity)
@@ -251,6 +259,44 @@ struct RecipesPane: View {
             problem = ""
         } else if !loaded {
             problem = result.object["message"] as? String ?? "Recipes could not be loaded. Is Mac MCP running?"
+        }
+    }
+}
+
+/// The (i) next to Recipes: what a recipe is, in a few lines.
+private struct RecipeExplainer: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                RecipeIcon(size: 26)
+                Text("What is a recipe?").font(.headline)
+            }
+            point("sparkles", "Made once by your AI app",
+                  "Ask it to do a job and save it as a recipe. Mac MCP keeps the exact steps it took, if the job worked.")
+            point("play.fill", "Run again without the AI",
+                  "Mac MCP repeats those steps itself: fast, the same every time, no model cost.")
+            point("slider.horizontal.3", "Values that change",
+                  "A fixed word (a month, a client, a search) can become a value you fill in at each run.")
+            point("square.stack.3d.up", "From anywhere",
+                  "Here, the Shortcuts app and Siri (“Run Mac MCP Recipe”), or a macmcp:// link. Shortcuts, Siri and links ask you first.")
+            point("checkmark.shield", "You stay in charge",
+                  "A new recipe is a draft until it's turned on, one with a password or key in it can't be, and every step follows your permissions.")
+            Divider()
+            Text("Scheduled Tasks run by themselves at a time you set, usually with an AI agent thinking each time. Recipes run when you ask and repeat the same steps.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(width: 380)
+    }
+
+    private func point(_ symbol: String, _ title: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbol).foregroundStyle(Color.accentColor).frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.callout.weight(.semibold))
+                Text(text).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
@@ -430,14 +476,14 @@ private struct RecipeDetailView: View {
         case "mac_app":
             let action = (text("action") ?? "use").replacingOccurrences(of: "_", with: " ")
             title = "\((text("app") ?? "App").capitalized): \(action)"
-        case "open_app": title = "Open \(text("app") ?? text("name") ?? "an app")"
+        case "open_app": title = "Open \(text("app_name") ?? text("app") ?? "an app")"
         case "mac_observe": title = "Look at \(text("app") ?? "an app")"
         case "mac_act": title = "Click or type in \(text("app") ?? "an app")"
         case "browser_do", "browser_act": title = text("url").map { "In the browser: \($0)" } ?? "Act in the browser"
         case "browser_list_tabs": title = "List browser tabs"
         default: title = tool.isEmpty ? (step["kind"] as? String ?? "Step").capitalized : tool
         }
-        let skip: Set<String> = ["description", "action", "app"]
+        let skip: Set<String> = ["description", "action", "app", "app_name", "background", "new_tab"]
         let detail = args.keys.sorted().filter { !skip.contains($0) }.compactMap { key -> String? in
             guard let value = args[key] else { return nil }
             let shown: String
