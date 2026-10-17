@@ -16,7 +16,10 @@ _RS, _US = chr(30), chr(31)
 
 
 def act(**kwargs):
-    return mac_app(load_settings(), **kwargs)
+    # Running commands on, whatever the environment says: these tests are about the adapters,
+    # and the shell switch has a test of its own below.
+    import dataclasses
+    return mac_app(dataclasses.replace(load_settings(), allow_shell=True), **kwargs)
 
 
 class ReminderTests(unittest.TestCase):
