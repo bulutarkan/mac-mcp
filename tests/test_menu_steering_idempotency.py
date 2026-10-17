@@ -18,9 +18,9 @@ class MenuSteeringIdempotencyTests(unittest.TestCase):
         self.assertIn("pendingSteeringText == text", source)
         self.assertIn("for attempt in 0..<2", source)
         self.assertIn("recoverSteeringMessageID", source)
-        self.assertIn("Network result is uncertain. Send again to retry safely without duplicating the instruction.", source)
-        self.assertIn("That agent session ended before the prompt could be queued.", source)
-        self.assertIn("The agent session ended after the steering instruction was accepted.", source)
+        self.assertIn("No clear answer from Mac MCP. Send again to retry safely; it won't arrive twice.", source)
+        self.assertIn("That conversation ended before your message could be sent.", source)
+        self.assertIn("The conversation ended after your message was accepted.", source)
         self.assertIn('case "idempotency_conflict":', source)
 
     def test_swift_decodes_correlation_and_replay_fields(self) -> None:
