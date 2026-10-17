@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import codecs
+import fnmatch
 import os
 import shutil
 import stat as stat_module
 import tempfile
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from fastapi import HTTPException, status
@@ -768,6 +769,34 @@ FIND_DEFAULT_LIMIT = 200
 FIND_MAX_LIMIT = 1_000
 
 
+def _walk_in_order(root: Path, pattern: str, after: Optional[tuple]) -> Iterator[tuple[Path, tuple]]:
+    """What root.rglob(pattern) finds, in relative-path order, one at a time (#255).
+
+    A directory comes right before what is inside it and names sort as strings, which is
+    the order of the path parts, so a page stops reading as soon as it is full, and
+    subtrees wholly before the cursor are never listed.
+    """
+    rule = "**/" + pattern
+    simple = "/" not in pattern and "**" not in pattern
+
+    def visit(folder: Path, base: tuple) -> Iterator[tuple[Path, tuple]]:
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            return
+        for name in names:
+            parts = base + (name,)
+            if after is not None and parts < after[:len(parts)]:
+                continue  # this entry and all it holds come before the cursor
+            child = folder / name
+            if fnmatch.fnmatchcase(name, pattern) if simple else PurePath(*parts).full_match(rule):
+                yield child, parts
+            if child.is_dir() and not child.is_symlink():  # like rglob: symlinked folders are not entered
+                yield from visit(child, parts)
+
+    yield from visit(root, ())
+
+
 def find_files(settings: Settings, pattern: str, path: str = str(Path.home()),
                file_type: str = "any", limit: int = FIND_DEFAULT_LIMIT, cursor: Optional[str] = None) -> Dict[str, Any]:
     """Find files/directories by name pattern (glob). file_type: file | dir | any.
@@ -788,8 +817,8 @@ def find_files(settings: Settings, pattern: str, path: str = str(Path.home()),
             raise HTTPException(status.HTTP_404_NOT_FOUND, f"Path not found: {path}")
         results = []
         try:
-            for match in sorted(root.rglob(pattern), key=lambda item: item.relative_to(root).parts):
-                if after_key is not None and match.relative_to(root).parts <= after_key:
+            for match, parts in _walk_in_order(root, pattern, after_key):
+                if after_key is not None and parts <= after_key:
                     continue
                 if file_type == "file" and not match.is_file():
                     continue

@@ -789,6 +789,9 @@ def create_dashboard_routes(
         if denied:
             return denied
         tasks = await asyncio.to_thread(task_store.list_tasks)
+        if request.query_params.get("view") == "island":
+            # Live Island polls this every few seconds: only what it shows (#255).
+            return JSONResponse({"ok": True, "tasks": [task_store.island_task(task) for task in tasks]})
         upcoming = sorted((task for task in tasks if task["state"] == "active" and task.get("next_run_at")),
                           key=lambda task: task["next_run_at"])
         return JSONResponse({"ok": True, "tasks": tasks,

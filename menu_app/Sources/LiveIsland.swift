@@ -538,7 +538,7 @@ final class LiveIslandController {
         // Self-heal: the island is always on screen while its style is on.
         if !locked, !(window?.isVisible ?? false) || (window?.alphaValue ?? 0) < 0.99 { showWindow() }
         async let attentionFetch = state.taskAPI("dashboard/api/attention")
-        async let tasksFetch = state.taskAPI("dashboard/api/scheduled-tasks")
+        async let tasksFetch = state.taskAPI("dashboard/api/scheduled-tasks?view=island")
         async let historyFetch = pollHistoryIfNeeded(state)
         let attentionResult = await attentionFetch
         let tasksResult = await tasksFetch

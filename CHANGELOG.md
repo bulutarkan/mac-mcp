@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Less needless work on frequent paths (#255)
+- `find_files` reads a folder tree only as far as a page needs, in the same order and with the same matches as before: the first 200 of 50,000 files now take about 7 ms and under 1 MB instead of about 1.6 s and 36 MB, and the next page skips the folders it already passed.
+- Scheduled tasks that watch the same folder share one read of it per pass, instead of one read per task.
+- Live Island asks for a short view of your scheduled tasks (name, state, next run, last run, a suggestion waiting) instead of every task's full prompt and settings each time it refreshes.
+
 ### A dashboard left open costs less (#254)
 - The security record's check no longer re-hashes every event each minute. It walks the whole record on the first check and at least every 10 minutes; checks in between read only new events (about 13 ms instead of about 3 s with 500,000 events). Any edit or delete of an earlier event is still caught on the very next check: SQLite triggers count them, and a changed count, a missing trigger or a pruned record sends the check back to a full walk.
 - The dashboard summary is recomputed at most every 5 seconds on a busy server, its cache keeps 8 time windows, and its slowest-call figure is read as one row instead of every duration. A burst of finished calls refreshes the summary once.

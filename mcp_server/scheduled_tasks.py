@@ -680,6 +680,17 @@ def brief_task(task: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+ISLAND_FIELDS = ("id", "name", "kind", "state", "approved", "paused", "next_run_at", "schedule_text", "last_run")
+
+
+def island_task(task: Dict[str, Any]) -> Dict[str, Any]:
+    """What Live Island shows of a task: no prompt, script, checks or proposed definition (#255)."""
+    out = {key: task[key] for key in ISLAND_FIELDS if key in task}
+    if "proposal" in task:
+        out["proposal"] = {key: task["proposal"].get(key) for key in ("name", "proposed_by", "is_new")}
+    return out
+
+
 def get_task(task_id: str) -> Dict[str, Any]:
     with _db() as conn:
         row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()

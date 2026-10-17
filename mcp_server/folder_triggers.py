@@ -44,16 +44,31 @@ IN_PROGRESS_SUFFIXES = (".crdownload", ".part", ".partial", ".download", ".tmp",
 REASON_CAPPED = f"More than {MAX_RUNS_PER_HOUR} files arrived within an hour, so this one was not run"
 
 
-def listing(schedule: Dict[str, Any]) -> Optional[Dict[str, List[float]]]:
-    """{name: [size, mtime]} of the folder's files that can start the task; None if the folder is gone."""
+def listing(schedule: Dict[str, Any], scanned: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, List[float]]]:
+    """{name: [size, mtime]} of the folder's files that can start the task; None if the folder is gone.
+
+    scanned, when given, keeps each folder's listing for one pass, so tasks that watch the
+    same folder share one read of it (#255).
+    """
+    folder = schedule["folder"]
+    if scanned is None:
+        files = _scan(folder)
+    else:
+        if folder not in scanned:
+            scanned[folder] = _scan(folder)
+        files = scanned[folder]
+    if files is None:
+        return None
+    return {name: list(value) for name, value in files.items() if schedule_rules.matches(schedule, name)}
+
+
+def _scan(folder: str) -> Optional[Dict[str, List[float]]]:
     files: Dict[str, List[float]] = {}
     try:
-        with os.scandir(schedule["folder"]) as entries:
+        with os.scandir(folder) as entries:
             for entry in entries:
                 name = entry.name
                 if name.startswith(".") or name.lower().endswith(IN_PROGRESS_SUFFIXES):
-                    continue
-                if not schedule_rules.matches(schedule, name):
                     continue
                 try:
                     if not entry.is_file(follow_symlinks=False):
@@ -135,9 +150,10 @@ class FolderTriggers:
             if task_id not in live:
                 del self._states[task_id]
         settling = False
+        scanned: Dict[str, Any] = {}  # one read of each folder, however many tasks watch it
         for task in tasks:
             try:
-                settling = self._check_task(task["id"], task["definition"], now) or settling
+                settling = self._check_task(task["id"], task["definition"], now, scanned) or settling
             except Exception:
                 log.exception("folder trigger for %s failed", task["id"])
         return settling
@@ -153,9 +169,10 @@ class FolderTriggers:
         self._states[task_id] = state
         return state
 
-    def _check_task(self, task_id: str, definition: Dict[str, Any], now: float) -> bool:
+    def _check_task(self, task_id: str, definition: Dict[str, Any], now: float,
+                    scanned: Optional[Dict[str, Any]] = None) -> bool:
         schedule = definition["schedule"]
-        files = listing(schedule)
+        files = listing(schedule, scanned)
         if files is None:
             return False  # the folder is gone or unreadable; the task waits until it is back
         state = self._state(task_id, schedule, files, now)
