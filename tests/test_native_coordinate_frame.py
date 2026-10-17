@@ -95,6 +95,13 @@ class CaptureLabelTests(unittest.TestCase):
         self.assertEqual("not_on_screen", details["visual_state"])
         self.assertIn("last rendering", details["visual_note"])
 
+    def test_window_on_an_unshown_desktop_is_described_as_drawn_there(self) -> None:
+        details, _ = self._describe({"scope": "window", "on_screen": False, "on_shown_desktop": False,
+                                     "frame": {"x": 0, "y": 33, "width": 1470, "height": 865}})
+        self.assertEqual("unshown_desktop", details["visual_state"])
+        self.assertIn("usually current", details["visual_note"])
+        self.assertIn("browser tools", details["visual_note"])
+
     def test_screen_capture_uses_the_main_display_and_stores_the_frame(self) -> None:
         details, stored = self._describe({"scope": "screen"})
         self.assertEqual("current", details["visual_state"])

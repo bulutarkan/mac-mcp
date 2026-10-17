@@ -384,8 +384,10 @@ func registerForAccessibility(_ owners: Set<Int32>) {
 /// so none is seen on the person's desktop. The person's own windows of the app stay put.
 /// If the new window becomes the app's main window, the person's previous one gets that
 /// back. Returns the moved window ids.
-/// How long after the trigger the first new window was caught (reported with the result).
+/// How long after the trigger the first new window was caught, and how many moves had to
+/// be asked again (reported with the result).
 var caughtAfterMs: Int?
+var moveRetries = 0
 
 func catchNewWindows(of executable: String, onto target: UInt64, within seconds: Double, trigger: () -> Bool) -> [UInt32] {
     let owners = pids(running: executable)
@@ -404,6 +406,7 @@ func catchNewWindows(of executable: String, onto target: UInt64, within seconds:
     let started = Date()
     guard trigger() else { return [] }
     var moved: [UInt32] = []
+    var requestedAt: [UInt32: Date] = [:]
     var operations: [AnyObject] = []
     var lastNew = Date()
     // Listing every process takes milliseconds, enough for a window to be drawn before it
@@ -417,8 +420,19 @@ func catchNewWindows(of executable: String, onto target: UInt64, within seconds:
         if !fresh.isEmpty {
             operations.append(requestMove(Array(fresh), to: target))
             moved.append(contentsOf: fresh)
+            for id in fresh { requestedAt[id] = Date() }
             lastNew = Date()
             if caughtAfterMs == nil { caughtAfterMs = Int(lastNew.timeIntervalSince(started) * 1000) }
+        }
+        // A move asked for before the window was first shown can be dropped: a window that
+        // turns up on any other desktop is moved again at once instead of staying there.
+        for id in moved where Date().timeIntervalSince(requestedAt[id] ?? .distantPast) > 0.05 {
+            let spaces = spacesFor(id)
+            if !spaces.isEmpty && spaces != [target] {
+                operations.append(requestMove([id], to: target))
+                requestedAt[id] = Date()
+                moveRetries += 1
+            }
         }
         if !moved.isEmpty, let previousMain, previousMainID != 0, let pid = owners.first {
             let appElement = AXUIElementCreateApplication(pid)
@@ -490,7 +504,7 @@ func finishOpen(target: UInt64, appArgument: String, bundle: Bundle, executable:
     let rows = appWindows().filter { moved.contains($0.id) }
     let result: [String: Any] = [
         "space_id": target, "app": bundle.bundleIdentifier ?? appArgument, "method": method,
-        "caught_after_ms": caughtAfterMs ?? NSNull(),
+        "caught_after_ms": caughtAfterMs ?? NSNull(), "move_retries": moveRetries,
         "windows": rows.map { ["window_id": $0.id, "app": $0.app, "title": $0.title, "spaces": $0.spaces] as [String: Any] },
         "focus_changed": frontBefore != frontmost()?.processIdentifier,
     ]

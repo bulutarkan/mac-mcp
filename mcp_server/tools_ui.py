@@ -2104,7 +2104,13 @@ def _describe_capture_geometry(
         details["visual_state"] = "current"
     else:
         frame = details.get("frame")
-        if details.get("on_screen") is False:
+        if details.get("on_screen") is False and details.get("on_shown_desktop") is False:
+            # On a desktop no display shows (an agent's own): apps keep drawing there.
+            details["visual_state"] = "unshown_desktop"
+            details["visual_note"] = ("The window is on a desktop no display shows. Apps keep drawing windows there, "
+                                      "so this is usually current, but a browser may stop drawing a web page there: "
+                                      "read pages with the browser tools.")
+        elif details.get("on_screen") is False:
             # Minimized, on another Space or off every display: the image is the last
             # rendering, not what the screen shows now.
             details["visual_state"] = "not_on_screen"
@@ -2225,6 +2231,8 @@ def _collect_observation(
                         selected_window,
                         _operation_timeout(local_deadline, 10),
                     )
+                    if selected_window.get("on_shown_desktop") is False:
+                        screenshot_details["on_shown_desktop"] = False
             else:
                 image_data, screenshot_error = _capture_screen(
                     _operation_timeout(local_deadline, 10)
