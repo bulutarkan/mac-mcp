@@ -1,6 +1,6 @@
 # Agents and Scheduled Tasks
 
-Delegating work to Codex, Claude Code and OpenCode agents (and Kimi Code, Grok Build, Antigravity, pi, Cline, Kilo Code and Goose): resume, worktrees, admission, notifications, budgets, memory, skills, role learning and Scheduled Tasks.
+Delegating work to Codex, Claude Code and OpenCode agents (and Kimi Code, Grok Build, Antigravity, pi, Cline, Kilo Code and Goose): resume, worktrees, admission, notifications, an agent's own desktop, budgets, memory, skills, role learning and Scheduled Tasks.
 
 [← Back to the README](../README.md)
 
@@ -37,6 +37,17 @@ The queue is FIFO-aware without turning an unrelated blocked resource into a glo
 The macOS menu app can optionally notify you when delegated work finishes while Mac MCP is in the background. The feature is **off by default** and macOS notification permission is requested only when you explicitly enable **Agent Notifications** in General Settings.
 
 Standalone agents generate one terminal notification for completion or needs-attention states. Multi-agent teams are coalesced into one team-level terminal notification instead of one notification per child. Notification content is intentionally minimal: only a sanitized agent/team label is shown, never raw prompts, results, URLs, file paths, or secrets. Clicking an alert opens the local authenticated Operations dashboard focused on the relevant agent or team. Delivery timing, Do Not Disturb, Focus modes, and presentation remain under macOS control.
+
+## An agent's own desktop
+
+Agents work alongside you on your desktops by default. When you ask one to work apart, it can take a desktop of its own in Mission Control and use your real apps and accounts there while you keep working on yours. It reads which displays and desktops you have, what is open on each and which are empty, picks an empty desktop no display is showing (or adds one), and opens apps straight onto it: nothing appears on the desktops you are looking at, and your focus stays where it is. It can read and use those windows (press buttons, write text) without bringing them forward. Keyboard shortcuts, dragging and clicks at screen positions are not available there, because macOS would send them to the app you are using. The agent closes nothing of yours and never moves your windows.
+
+**Safari, and the setting that decides it.** In System Settings › Desktop & Dock › Mission Control, "When switching to an application, switch to a Space with open windows for the application" is on by default. While it is on:
+
+- Chrome opens on the agent's desktop at any time, and is the browser agents use there.
+- Safari opens there too, except while you are using Safari: its new window would take your display to the agent's desktop, so the agent waits and tries again later.
+
+Turn the setting off and Safari, like any other app, opens on the agent's desktop even while you use it. The trade-off: when you switch to an app with Command-Tab or the Dock, macOS no longer moves you to the desktop where that app's windows are.
 
 ## Scheduled Tasks
 

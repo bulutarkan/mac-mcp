@@ -226,6 +226,64 @@ class ChromeTests(unittest.TestCase):
             self.assertEqual("SPACE_NOT_FOUND", desktops.open_on_desktop(99, "Google Chrome", [])["reason_code"])
 
 
+class SwitchSettingNoteTests(unittest.TestCase):
+    def test_listing_explains_the_desktop_switching_setting(self) -> None:
+        for switching, expected in ((True, desktops.SWITCH_SETTING_ON_NOTE), (False, desktops.SWITCH_SETTING_OFF_NOTE)):
+            with patch.object(desktops, "_run", return_value={**_listing(), "switches_to_app_desktop": switching}):
+                self.assertEqual(expected, desktops.list_desktops()["note"])
+        self.assertIn("Google Chrome", desktops.SWITCH_SETTING_ON_NOTE)
+        self.assertIn("Command-Tab", desktops.SWITCH_SETTING_OFF_NOTE)
+
+
+class ChromeCatchTests(unittest.TestCase):
+    """The owner's own Chrome windows are elsewhere: never assign Chrome, catch its new window."""
+
+    def _owner_chrome_listing(self):
+        listing = _listing()
+        listing["displays"][0]["spaces"][0]["windows"] = [{"window_id": 5, "app": "Google Chrome"}]
+        return listing
+
+    def _process(self, first_line, final=None):
+        proc = MagicMock()
+        proc.stdout.readline.return_value = first_line
+        proc.communicate.return_value = (json.dumps(final or {}), None)
+        return proc
+
+    def test_new_window_is_caught_without_assigning_chrome(self) -> None:
+        bridge = MagicMock()
+        bridge.is_connected.return_value = True
+        bridge.request_open_window.return_value = {"ok": True, "chrome_window_id": 9, "chrome_tab_id": 10}
+        final = {"ok": True, "method": "caught_and_moved", "windows": [{"window_id": 88, "spaces": [43]}]}
+        proc = self._process('{"ready":true}\n', final)
+        runs = []
+        with patch.object(desktops, "_run", side_effect=lambda args, timeout_s=15.0: runs.append(args) or self._owner_chrome_listing()), \
+             patch.object(desktops, "_helper", return_value="/bin/spaces-helper"), \
+             patch("mcp_server.desktops.subprocess.Popen", return_value=proc) as popen, \
+             patch("mcp_server.desktops.select.select", return_value=([proc.stdout], [], [])), \
+             patch("mcp_server.chrome_background_bridge.chrome_background_bridge", bridge):
+            result = desktops.open_on_desktop(43, "Google Chrome", ["https://example.com"])
+        self.assertTrue(result["ok"], result)
+        self.assertEqual("caught_and_moved", result["method"])
+        self.assertEqual((9, 10), (result["chrome_window_id"], result["chrome_tab_id"]))
+        self.assertEqual(["/bin/spaces-helper", "catch", "43", desktops.CHROME_BUNDLE_ID, "8"], popen.call_args.args[0])
+        self.assertNotIn("assign", [args[0] for args in runs])
+        bridge.request_open_window.assert_called_once_with("https://example.com")
+
+    def test_helper_refusal_stops_before_chrome_opens_anything(self) -> None:
+        bridge = MagicMock()
+        bridge.is_connected.return_value = True
+        refusal = {"ok": False, "reason_code": "APP_IN_FRONT_WOULD_SWITCH_DESKTOP", "switches_to_app_desktop": True}
+        proc = self._process(json.dumps(refusal) + "\n")
+        with patch.object(desktops, "_run", return_value=self._owner_chrome_listing()), \
+             patch.object(desktops, "_helper", return_value="/bin/spaces-helper"), \
+             patch("mcp_server.desktops.subprocess.Popen", return_value=proc), \
+             patch("mcp_server.desktops.select.select", return_value=([proc.stdout], [], [])), \
+             patch("mcp_server.chrome_background_bridge.chrome_background_bridge", bridge):
+            result = desktops.open_on_desktop(43, "chrome", [])
+        self.assertEqual("APP_IN_FRONT_WOULD_SWITCH_DESKTOP", result["reason_code"])
+        bridge.request_open_window.assert_not_called()
+
+
 class BridgeTests(unittest.TestCase):
     def test_open_window_is_an_expected_companion_feature(self) -> None:
         self.assertIn("open_window", EXPECTED_COMPANION_FEATURES)

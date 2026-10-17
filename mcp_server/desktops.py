@@ -7,13 +7,16 @@ Control, or the agent adds one), and opens apps straight onto it, so nothing app
 desktop the owner is looking at and focus stays where it is.
 
 The work happens in spaces_helper.swift, compiled on first use and cached by source hash.
-Chrome is the exception for opening: it brings itself to the front for every window
-opened from outside, so its window comes from the Mac MCP Chrome Companion
-(chrome.windows.create with focused=false) while its process is assigned to the desktop.
+An app with no windows on the owner's desktops is assigned to the agent's desktop while its
+window is made; one that has some (the owner's Safari) is not, since assigning would move
+those too: its new window is caught before it is drawn and moved. Chrome brings itself to
+the front for every window opened from outside, so its window comes from the Mac MCP
+Chrome Companion (chrome.windows.create with focused=false), by either route.
 """
 from __future__ import annotations
 
 import json
+import select
 import subprocess
 import threading
 import time
@@ -64,10 +67,30 @@ def _run(args: List[str], timeout_s: float = 15.0) -> Dict[str, Any]:
     return payload if isinstance(payload, dict) else {"ok": False, "reason_code": "SPACES_HELPER_FAILED"}
 
 
+# What the macOS setting means for an agent's desktop, in the words Desktop & Dock uses.
+SWITCH_SETTING = ('Desktop & Dock > Mission Control > "When switching to an application, switch to a Space '
+                  'with open windows for the application"')
+SWITCH_SETTING_ON_NOTE = (
+    f"{SWITCH_SETTING} is on (the macOS default). A new window of the app the owner is using right now would take "
+    "their display to the agent's desktop, so opening that app there is refused; Google Chrome works either way "
+    "and is the browser to use. Turning the setting off lets Safari and other apps open there too; in exchange, "
+    "switching to an app with Command-Tab or the Dock no longer moves the owner to the desktop with its windows."
+)
+SWITCH_SETTING_OFF_NOTE = (
+    f"{SWITCH_SETTING} is off, so any app, Safari included, can open on the agent's desktop while the owner uses "
+    "it. With it off, switching to an app with Command-Tab or the Dock does not move the owner to the desktop "
+    "with its windows."
+)
+
+
 def list_desktops() -> Dict[str, Any]:
     """Displays with their desktops (Mission Control order, "Desktop N" labels), which one
-    each display shows, the apps and windows on each desktop, and which are empty."""
-    return _run(["spaces"])
+    each display shows, the apps and windows on each desktop, which are empty, and what the
+    owner's desktop-switching setting means for opening apps on an agent's desktop."""
+    result = _run(["spaces"])
+    if result.get("ok") and "switches_to_app_desktop" in result:
+        result["note"] = SWITCH_SETTING_ON_NOTE if result["switches_to_app_desktop"] else SWITCH_SETTING_OFF_NOTE
+    return result
 
 
 def create_desktop(display: str) -> Dict[str, Any]:
@@ -175,6 +198,9 @@ def _open_chrome_window(space_id: int, url: Optional[str]) -> Dict[str, Any]:
                 "error": "Chrome started in the background but the Mac MCP Chrome Companion did not connect.",
             }
     existing = _chrome_window_ids(before)
+    # Assigning Chrome would take the owner's own Chrome windows along: catch the new one instead.
+    if any(spaces != [space_id] for spaces in existing.values()):
+        return _catch_chrome_window(space_id, url, bridge)
     front_before = (before.get("frontmost") or {}).get("pid")
     assigned = _run(["assign", str(space_id), CHROME_BUNDLE_ID])
     if not assigned.get("ok"):
@@ -210,3 +236,40 @@ def _open_chrome_window(space_id: int, url: Optional[str]) -> Dict[str, Any]:
     if any(spaces != [space_id] for spaces in new_windows.values()):
         return {"ok": False, "error": "the Chrome window opened outside the desktop", "reason_code": "SPACE_OPEN_NOT_APPLIED", **result}
     return {"ok": True, **result}
+
+
+def _catch_chrome_window(space_id: int, url: Optional[str], bridge: Any) -> Dict[str, Any]:
+    """The companion opens the window; the helper, already watching, moves it before it is drawn."""
+    from fastapi import HTTPException
+
+    try:
+        proc = subprocess.Popen(
+            [_helper(), "catch", str(int(space_id)), CHROME_BUNDLE_ID, "8"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        )
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+        return {"ok": False, "error": str(exc), "reason_code": "SPACES_HELPER_UNAVAILABLE"}
+    try:
+        ready, _, _ = select.select([proc.stdout], [], [], 10)
+        first = json.loads(proc.stdout.readline() or "{}") if ready else {}
+        if not first.get("ready"):
+            # A refusal (e.g. Chrome is in front with desktop switching on) arrives instead.
+            proc.wait(timeout=5)
+            return first or {"ok": False, "error": "the desktops helper did not start", "reason_code": "SPACES_HELPER_FAILED"}
+        try:
+            opened = bridge.request_open_window(url)
+        except HTTPException as exc:
+            proc.kill()
+            detail = exc.detail if isinstance(exc.detail, dict) else {"error": str(exc.detail)}
+            return {**detail, "ok": False, "reason_code": "CHROME_OPEN_WINDOW_FAILED"}
+        out, _ = proc.communicate(timeout=15)
+        try:
+            result = json.loads(out or "{}")
+        except json.JSONDecodeError:
+            result = {"ok": False, "error": "unreadable helper answer", "reason_code": "SPACES_HELPER_FAILED"}
+        result.update({"app": CHROME_BUNDLE_ID, "chrome_window_id": opened.get("chrome_window_id"),
+                       "chrome_tab_id": opened.get("chrome_tab_id")})
+        return result
+    except (subprocess.TimeoutExpired, OSError, ValueError) as exc:
+        proc.kill()
+        return {"ok": False, "error": f"catching the Chrome window failed: {exc}", "reason_code": "SPACES_HELPER_FAILED"}

@@ -50,7 +50,7 @@ Earlier releases are in the [CHANGELOG](CHANGELOG.md).
 - **[Browser work](docs/browser.md):** Safari and Chrome tabs without taking over your Mac, saved logins, privacy controls and the Visual Companion.
 - **[Safety, permissions and undo](docs/safety.md):** what the security words mean, permission profiles, Server Approval and file undo.
 - **[The menu bar app](docs/menu-app.md):** installing it and what the menu shows.
-- **[Agents and Scheduled Tasks](docs/agents-and-tasks.md):** delegating to Codex, Claude Code, OpenCode and seven other agents, and running tasks on a schedule; recipes are in the [developer reference](docs/reference.md).
+- **[Agents and Scheduled Tasks](docs/agents-and-tasks.md):** delegating to Codex, Claude Code, OpenCode and seven other agents, giving an agent a desktop of its own, and running tasks on a schedule; recipes are in the [developer reference](docs/reference.md).
 - **[Developer reference](docs/reference.md):** the MCP and REST surfaces, server commands, voice, the dashboard and tool coverage.
 - Configuration, security details and terminology: [CONFIGURATION](docs/CONFIGURATION.md), [Local API security](docs/LOCAL_API_SECURITY.md), [Security assurance](docs/security-assurance.md), [TERMINOLOGY](docs/TERMINOLOGY.md).
 

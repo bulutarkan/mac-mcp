@@ -10,6 +10,7 @@
 //        spaces_helper move SPACE_ID WID [WID...]
 //        spaces_helper open SPACE_ID APP [FILE_OR_URL...]   (APP: bundle id, name or .app path)
 //        spaces_helper assign SPACE_ID APP   (SPACE_ID 0 lifts the assignment)
+//        spaces_helper catch SPACE_ID APP [SECONDS]   (prints {"ready":true}, then moves the app's next new window)
 //        spaces_helper create DISPLAY_ID
 //        spaces_helper remove SPACE_ID
 // Every command prints one JSON object; exit 0 = answered, 2 = bad arguments,
@@ -231,11 +232,9 @@ func describe() -> [[String: Any]] {
 
 // MARK: Moving
 
-func move(_ ids: [UInt32], to target: UInt64) -> Never {
-    guard let space = readDisplays().flatMap({ $0.spaces }).first(where: { $0.id == target }) else {
-        fail("no desktop has id \(target)", "SPACE_NOT_FOUND")
-    }
-    guard space.kind == "desktop" else { fail("space \(target) is a full-screen app, not a desktop", "SPACE_NOT_A_DESKTOP") }
+/// Start moving windows to a desktop; the returned operation must stay alive, with the run
+/// loop running, until they arrive.
+func requestMove(_ ids: [UInt32], to target: UInt64) -> AnyObject {
     guard let performPointer = localSymbol(
             image: skyLightPath,
             symbol: "__ZL54SLSPerformAsynchronousBridgedWindowManagementOperationP47SLSAsynchronousBridgedWindowManagementOperation"),
@@ -249,6 +248,12 @@ func move(_ ids: [UInt32], to target: UInt64) -> Never {
         unavailable("Moving windows between desktops")
     }
     _ = unsafeBitCast(performPointer, to: PerformOperationFn.self)(operation)
+    return operation
+}
+
+func move(_ ids: [UInt32], to target: UInt64) -> Never {
+    desktop(target)
+    let operation = requestMove(ids, to: target)
     // The operation is asynchronous: it needs this run loop, and the operation object,
     // alive until it finishes.
     let deadline = Date().addingTimeInterval(3)
@@ -322,17 +327,191 @@ func frontmost() -> NSRunningApplication? {
     return NSWorkspace.shared.frontmostApplication
 }
 
-/// Refuse when the app shows windows on any other desktop. Assigning a process to a desktop
-/// moves every window it has there, so the person's own windows of that app would leave
-/// their desktop (the Dock's "Assign To" does the same).
-func refuseIfShownElsewhere(_ executable: String, _ appArgument: String, target: UInt64) {
+/// The app's windows shown on other desktops. Assigning a process to a desktop moves every
+/// window it has there (the Dock's "Assign To" does the same), so an app with any of these
+/// must not be assigned: its new window is caught and moved instead.
+func shownElsewhere(_ executable: String, target: UInt64) -> [WindowInfo] {
     let running = pids(running: executable)
-    let elsewhere = appWindows().filter { running.contains($0.pid) && $0.spaces != [target] }
-    guard elsewhere.isEmpty else {
-        fail("\(appArgument) has windows on other desktops; opening it on desktop \(target) would move them there too",
-             "APP_HAS_WINDOWS_ON_OTHER_DESKTOPS",
-             ["windows": elsewhere.map { ["window_id": $0.id, "app": $0.app, "title": $0.title, "spaces": $0.spaces] }])
+    return appWindows().filter { running.contains($0.pid) && $0.spaces != [target] }
+}
+
+/// Desktop & Dock › Mission Control › "When switching to an application, switch to a Space
+/// with open windows for the application" (on unless the person turned it off). While on,
+/// a new window of the app in front takes the display to wherever that window is.
+func switchesToAppDesktop() -> Bool {
+    CFPreferencesAppSynchronize("com.apple.dock" as CFString)
+    return (CFPreferencesCopyAppValue("workspaces-auto-swoosh" as CFString, "com.apple.dock" as CFString) as? Bool) ?? true
+}
+
+/// Refuse to catch a window of the app the person is using while that setting is on.
+func refuseIfFrontAndSwitching(_ executable: String, _ appArgument: String) {
+    guard switchesToAppDesktop(), let front = frontmost(), pids(running: executable).contains(front.processIdentifier) else { return }
+    fail("\(appArgument) is the app in front, and with \"When switching to an application, switch to a Space with open "
+         + "windows for the application\" on, its new window would take the display to the agent's desktop. Retry when "
+         + "another app is in front, or use Google Chrome.", "APP_IN_FRONT_WOULD_SWITCH_DESKTOP",
+         ["switches_to_app_desktop": true])
+}
+
+/// Normal-level windows of these processes by id, shown or not yet. No size filter: an app
+/// may create a window small and size it ~60 ms later, by when it can already be on screen.
+func windowIDs(of owners: Set<Int32>) -> Set<UInt32> {
+    let rows = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    var out = Set<UInt32>()
+    for row in rows {
+        guard let pid = (row[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, owners.contains(pid),
+              (row[kCGWindowLayer as String] as? Int) == 0,
+              let id = (row[kCGWindowNumber as String] as? NSNumber)?.uint32Value else { continue }
+        out.insert(id)
     }
+    return out
+}
+
+func registerForAccessibility(_ owners: Set<Int32>) {
+    // A window that opened straight onto another desktop has no Accessibility element until
+    // a client asks for it; asking now lets mac_observe find it there later.
+    for pid in owners {
+        let appElement = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(appElement, 1.0)
+        for name in ["AXMainWindow", "AXFocusedWindow"] {
+            var value: CFTypeRef?
+            AXUIElementCopyAttributeValue(appElement, name as CFString, &value)
+        }
+    }
+}
+
+/// Make the app open windows (`trigger`), and move each new one to `target` the moment it
+/// exists: windows exist ~0.25 s before they are first drawn, and the move takes ~0.06 s,
+/// so none is seen on the person's desktop. The person's own windows of the app stay put.
+/// If the new window becomes the app's main window, the person's previous one gets that
+/// back. Returns the moved window ids.
+/// How long after the trigger the first new window was caught (reported with the result).
+var caughtAfterMs: Int?
+
+func catchNewWindows(of executable: String, onto target: UInt64, within seconds: Double, trigger: () -> Bool) -> [UInt32] {
+    let owners = pids(running: executable)
+    let before = windowIDs(of: owners)
+    var previousMain: AXUIElement?
+    var previousMainID: UInt32 = 0
+    if let pid = owners.first {
+        let appElement = AXUIElementCreateApplication(pid)
+        var value: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElement, "AXMainWindow" as CFString, &value) == .success, let value,
+           CFGetTypeID(value) == AXUIElementGetTypeID() {
+            previousMain = (value as! AXUIElement)
+            previousMainID = windowIDOf(previousMain!)
+        }
+    }
+    let started = Date()
+    guard trigger() else { return [] }
+    var moved: [UInt32] = []
+    var operations: [AnyObject] = []
+    var lastNew = Date()
+    // Listing every process takes milliseconds, enough for a window to be drawn before it
+    // moves: the app's processes are re-read only every 50 ms.
+    var watched = owners
+    var watchedAt = Date()
+    let deadline = Date().addingTimeInterval(seconds)
+    while Date() < deadline {
+        if Date().timeIntervalSince(watchedAt) > 0.05 { watched = pids(running: executable); watchedAt = Date() }
+        let fresh = windowIDs(of: watched).subtracting(before).subtracting(moved)
+        if !fresh.isEmpty {
+            operations.append(requestMove(Array(fresh), to: target))
+            moved.append(contentsOf: fresh)
+            lastNew = Date()
+            if caughtAfterMs == nil { caughtAfterMs = Int(lastNew.timeIntervalSince(started) * 1000) }
+        }
+        if !moved.isEmpty, let previousMain, previousMainID != 0, let pid = owners.first {
+            let appElement = AXUIElementCreateApplication(pid)
+            var value: CFTypeRef?
+            if AXUIElementCopyAttributeValue(appElement, "AXMainWindow" as CFString, &value) == .success, let value,
+               CFGetTypeID(value) == AXUIElementGetTypeID(), moved.contains(windowIDOf(value as! AXUIElement)) {
+                AXUIElementSetAttributeValue(previousMain, "AXMain" as CFString, kCFBooleanTrue)
+            }
+        }
+        // Done once every caught window has arrived and no other has appeared for a moment.
+        if !moved.isEmpty, Date().timeIntervalSince(lastNew) > 0.3, moved.allSatisfy({ spacesFor($0) == [target] }) { break }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.001))
+    }
+    withExtendedLifetime(operations) {}
+    return moved
+}
+
+typealias GetWindowFn = @convention(c) (AXUIElement, UnsafeMutablePointer<UInt32>) -> AXError
+let getWindowFn = exported("_AXUIElementGetWindow", as: GetWindowFn.self, from: appServices)
+func windowIDOf(_ element: AXUIElement) -> UInt32 {
+    var id: UInt32 = 0
+    guard let getWindowFn, getWindowFn(element, &id) == .success else { return 0 }
+    return id
+}
+
+func appleScriptString(_ text: String) -> String {
+    "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+}
+
+/// Open by catching the new window, for an app that already shows windows elsewhere.
+func openByCatching(on target: UInt64, appArgument: String, appURL: URL, bundle: Bundle, executable: String, items: [URL]) -> Never {
+    refuseIfFrontAndSwitching(executable, appArgument)
+    let frontBefore = frontmost()?.processIdentifier
+    let trigger: () -> Bool
+    if bundle.bundleIdentifier == "com.apple.Safari" {
+        // Safari opens an address as a tab in its front window; only its scripting makes a window.
+        guard items.count <= 1 else { fail("Safari opens one address per window", "INVALID_ARGUMENT") }
+        let properties = items.first.map { " with properties {URL:\(appleScriptString($0.absoluteString))}" } ?? ""
+        trigger = {
+            let script = Process()
+            script.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            script.arguments = ["-e", "tell application \"Safari\" to make new document\(properties)"]
+            script.standardOutput = FileHandle.nullDevice
+            script.standardError = FileHandle.nullDevice
+            return (try? script.run()) != nil
+        }
+    } else {
+        trigger = {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = false
+            configuration.addsToRecentItems = false
+            if items.isEmpty {
+                NSWorkspace.shared.openApplication(at: appURL, configuration: configuration)
+            } else {
+                NSWorkspace.shared.open(items, withApplicationAt: appURL, configuration: configuration)
+            }
+            return true
+        }
+    }
+    let moved = catchNewWindows(of: executable, onto: target, within: 8, trigger: trigger)
+    finishOpen(target: target, appArgument: appArgument, bundle: bundle, executable: executable, moved: moved,
+               frontBefore: frontBefore, method: "caught_and_moved")
+}
+
+func finishOpen(target: UInt64, appArgument: String, bundle: Bundle, executable: String, moved: [UInt32],
+                frontBefore: Int32?, method: String) -> Never {
+    let owners = pids(running: executable)
+    registerForAccessibility(owners)
+    let rows = appWindows().filter { moved.contains($0.id) }
+    let result: [String: Any] = [
+        "space_id": target, "app": bundle.bundleIdentifier ?? appArgument, "method": method,
+        "caught_after_ms": caughtAfterMs ?? NSNull(),
+        "windows": rows.map { ["window_id": $0.id, "app": $0.app, "title": $0.title, "spaces": $0.spaces] as [String: Any] },
+        "focus_changed": frontBefore != frontmost()?.processIdentifier,
+    ]
+    guard !moved.isEmpty else { fail("no new window appeared", "NO_NEW_WINDOW", result) }
+    if moved.allSatisfy({ spacesFor($0) == [target] }) { emit(result.merging(["ok": true]) { a, _ in a }) }
+    fail("a new window opened outside the desktop", "SPACE_OPEN_NOT_APPLIED", result)
+}
+
+/// For a caller that makes the app open a window by other means (Chrome's own extension
+/// API): print {"ready": true} once watching, then catch and move the new window.
+func catchCommand(on target: UInt64, appArgument: String, seconds: Double) -> Never {
+    desktop(target)
+    let (_, bundle, executable) = resolveApp(appArgument)
+    refuseIfFrontAndSwitching(executable, appArgument)
+    let frontBefore = frontmost()?.processIdentifier
+    let moved = catchNewWindows(of: executable, onto: target, within: seconds) {
+        FileHandle.standardOutput.write(Data("{\"ready\":true}\n".utf8))
+        return true
+    }
+    finishOpen(target: target, appArgument: appArgument, bundle: bundle, executable: executable, moved: moved,
+               frontBefore: frontBefore, method: "caught_and_moved")
 }
 
 func open(on target: UInt64, app appArgument: String, files: [String]) -> Never {
@@ -340,9 +519,11 @@ func open(on target: UInt64, app appArgument: String, files: [String]) -> Never 
     let assign = assignFunction()
     let workspace = NSWorkspace.shared
     let (appURL, bundle, executable) = resolveApp(appArgument)
-    refuseIfShownElsewhere(executable, appArgument, target: target)
     // Web addresses open as addresses; anything else is a file path.
     let fileURLs = files.map { $0.contains("://") ? (URL(string: $0) ?? URL(fileURLWithPath: $0)) : URL(fileURLWithPath: $0) }
+    if !shownElsewhere(executable, target: target).isEmpty {
+        openByCatching(on: target, appArgument: appArgument, appURL: appURL, bundle: bundle, executable: executable, items: fileURLs)
+    }
     let frontBefore = frontmost()?.processIdentifier
     let before = Set(appWindows().map { $0.id })
     var assigned = Set<Int32>()
@@ -381,22 +562,13 @@ func open(on target: UInt64, app appArgument: String, files: [String]) -> Never 
         usleep(1_000)
     }
     for pid in assigned { _ = assign(connection, pid, 0) }
-    // A window that opened straight onto another desktop has no Accessibility element until
-    // a client asks for it; asking now lets mac_observe find it there later.
-    for pid in Set(opened.map { $0.pid }) {
-        let appElement = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(appElement, 1.0)
-        for name in ["AXMainWindow", "AXFocusedWindow"] {
-            var value: CFTypeRef?
-            AXUIElementCopyAttributeValue(appElement, name as CFString, &value)
-        }
-    }
+    registerForAccessibility(Set(opened.map { $0.pid }))
     assigned.removeAll()
     let frontAfter = frontmost()?.processIdentifier
     let windows = opened.map { ["window_id": $0.id, "app": $0.app, "title": $0.title, "spaces": $0.spaces] as [String: Any] }
     let result: [String: Any] = [
         "space_id": target, "app": bundle.bundleIdentifier ?? appArgument, "windows": windows,
-        "focus_changed": frontBefore != frontAfter,
+        "focus_changed": frontBefore != frontAfter, "method": "assigned",
     ]
     guard !opened.isEmpty else { fail("no new window appeared", "NO_NEW_WINDOW", result) }
     let placed = opened.allSatisfy { $0.spaces == [target] }
@@ -411,7 +583,12 @@ func assignApp(_ appArgument: String, to target: UInt64) -> Never {
     let executable = resolveApp(appArgument).executable
     if target != 0 {
         desktop(target)
-        refuseIfShownElsewhere(executable, appArgument, target: target)
+        let elsewhere = shownElsewhere(executable, target: target)
+        guard elsewhere.isEmpty else {
+            fail("\(appArgument) has windows on other desktops; assigning it to desktop \(target) would move them there too",
+                 "APP_HAS_WINDOWS_ON_OTHER_DESKTOPS",
+                 ["windows": elsewhere.map { ["window_id": $0.id, "app": $0.app, "title": $0.title, "spaces": $0.spaces] }])
+        }
     }
     let assign = assignFunction()
     let found = pids(running: executable)
@@ -571,7 +748,12 @@ case "spaces":
     let frontInfo: [String: Any] = [
         "app": front?.localizedName ?? "", "pid": Int(front?.processIdentifier ?? 0), "bundle_id": front?.bundleIdentifier ?? "",
     ]
-    emit(["ok": true, "displays": describe(), "frontmost": frontInfo])
+    emit(["ok": true, "displays": describe(), "frontmost": frontInfo, "switches_to_app_desktop": switchesToAppDesktop()])
+case "catch":
+    guard arguments.count >= 3, let target = UInt64(arguments[1]) else {
+        emit(["ok": false, "error": "usage: catch SPACE_ID APP [SECONDS]"], code: 2)
+    }
+    catchCommand(on: target, appArgument: arguments[2], seconds: arguments.count > 3 ? (Double(arguments[3]) ?? 8) : 8)
 case "assign":
     guard arguments.count == 3, let target = UInt64(arguments[1]) else {
         emit(["ok": false, "error": "usage: assign SPACE_ID APP (SPACE_ID 0 lifts the assignment)"], code: 2)
@@ -597,5 +779,5 @@ case "remove":
     guard arguments.count == 2, let target = UInt64(arguments[1]) else { emit(["ok": false, "error": "usage: remove SPACE_ID"], code: 2) }
     remove(target)
 default:
-    emit(["ok": false, "error": "usage: spaces | window-spaces WID... | move SPACE_ID WID... | open SPACE_ID APP [FILE_OR_URL...] | assign SPACE_ID APP | create DISPLAY_ID | remove SPACE_ID"], code: 2)
+    emit(["ok": false, "error": "usage: spaces | window-spaces WID... | move SPACE_ID WID... | open SPACE_ID APP [FILE_OR_URL...] | assign SPACE_ID APP | catch SPACE_ID APP | create DISPLAY_ID | remove SPACE_ID"], code: 2)
 }
