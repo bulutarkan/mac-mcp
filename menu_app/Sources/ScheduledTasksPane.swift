@@ -79,6 +79,7 @@ struct ScheduledTasksPane: View {
     @MacMCPState private var hovered: String?
     /// The pane's height: sheets fit inside the Settings window, so their buttons stay in it (#222).
     @MacMCPState private var paneHeight: CGFloat = 640
+    @MacMCPState private var showInfo = false
 
     var body: some View {
         ZStack {
@@ -129,8 +130,15 @@ struct ScheduledTasksPane: View {
                         if !embedded {
                             Text("Scheduled Tasks").font(.title2.weight(.semibold))
                         }
-                        Text("AI tasks and scripts that run on their own: on a schedule, or when a file arrives.")
-                            .font(.caption).foregroundStyle(.secondary)
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("AI tasks and scripts that run on their own: on a schedule, or when a file arrives.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button { showInfo.toggle() } label: { Image(systemName: "info.circle") }
+                                .buttonStyle(.borderless)
+                                .help("What are Scheduled Tasks?")
+                                .accessibilityLabel("What are Scheduled Tasks?")
+                                .popover(isPresented: $showInfo, arrowEdge: .bottom) { AutomationExplainer.scheduledTasks }
+                        }
                     }
                     Spacer()
                     Button {

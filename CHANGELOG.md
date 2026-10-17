@@ -4,6 +4,7 @@
 - The sidebar's **Scheduled Tasks** is now **Automation**, with two tabs: Scheduled Tasks (as before) and **Recipes**, so Settings doesn't grow another item.
 - **Recipes** lists every saved recipe, drafts included: its steps in words, the values it asks for, how many times it ran and how the last run went. Turn a draft on after checking it (a step with a secret in it is still refused), pause, resume, delete, run it with its values, or copy its Shortcuts link.
 - With no recipes yet, the tab explains what a recipe is and gives example requests to ask your AI app.
+- An (i) on each tab explains it in a few lines: what Scheduled Tasks and Recipes are, how they differ, and what keeps you in charge.
 - `macmcp://settings/recipes` opens the Recipes tab; `macmcp://settings/scheduled-tasks` keeps opening Scheduled Tasks.
 
 ### Scheduled Tasks: approved scripts stay as approved, and data reaches the agent masked (#179)

@@ -159,7 +159,7 @@ struct RecipesPane: View {
                         .buttonStyle(.borderless)
                         .help("What is a recipe?")
                         .accessibilityLabel("What is a recipe?")
-                        .popover(isPresented: $showInfo, arrowEdge: .bottom) { RecipeExplainer() }
+                        .popover(isPresented: $showInfo, arrowEdge: .bottom) { AutomationExplainer.recipes }
                 }
                 if !loaded {
                     if problem.isEmpty {
@@ -263,42 +263,73 @@ struct RecipesPane: View {
     }
 }
 
-/// The (i) next to Recipes: what a recipe is, in a few lines.
-private struct RecipeExplainer: View {
+/// The (i) on each Automation tab: what the feature is, in a few short points.
+struct AutomationExplainer: View {
+    struct Point: Identifiable {
+        let symbol: String
+        let title: String
+        let text: String
+        var id: String { title }
+    }
+
+    let icon: AnyView
+    let title: String
+    let points: [Point]
+    let footer: String
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                RecipeIcon(size: 26)
-                Text("What is a recipe?").font(.headline)
+                icon
+                Text(title).font(.headline)
             }
-            point("sparkles", "Made once by your AI app",
-                  "Ask it to do a job and save it as a recipe. Mac MCP keeps the exact steps it took, if the job worked.")
-            point("play.fill", "Run again without the AI",
-                  "Mac MCP repeats those steps itself: fast, the same every time, no model cost.")
-            point("slider.horizontal.3", "Values that change",
-                  "A fixed word (a month, a client, a search) can become a value you fill in at each run.")
-            point("square.stack.3d.up", "From anywhere",
-                  "Here, the Shortcuts app and Siri (“Run Mac MCP Recipe”), or a macmcp:// link. Shortcuts, Siri and links ask you first.")
-            point("checkmark.shield", "You stay in charge",
-                  "A new recipe is a draft until it's turned on, one with a password or key in it can't be, and every step follows your permissions.")
+            ForEach(points) { point in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: point.symbol).foregroundStyle(Color.accentColor).frame(width: 18)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(point.title).font(.callout.weight(.semibold))
+                        Text(point.text).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
             Divider()
-            Text("Scheduled Tasks run by themselves at a time you set, usually with an AI agent thinking each time. Recipes run when you ask and repeat the same steps.")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(footer).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
-        .frame(width: 380)
+        .frame(width: 390)
     }
 
-    private func point(_ symbol: String, _ title: String, _ text: String) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: symbol).foregroundStyle(Color.accentColor).frame(width: 18)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout.weight(.semibold))
-                Text(text).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
+    static let recipes = AutomationExplainer(
+        icon: AnyView(RecipeIcon(size: 26)), title: "What is a recipe?",
+        points: [
+            Point(symbol: "sparkles", title: "Made once by your AI app",
+                  text: "Ask it to do a job and save it as a recipe. Mac MCP keeps the exact steps it took, if the job worked."),
+            Point(symbol: "play.fill", title: "Run again without the AI",
+                  text: "Mac MCP repeats those steps itself: fast, the same every time, no model cost."),
+            Point(symbol: "slider.horizontal.3", title: "Values that change",
+                  text: "A fixed word (a month, a client, a search) can become a value you fill in at each run."),
+            Point(symbol: "square.stack.3d.up", title: "From anywhere",
+                  text: "Here, the Shortcuts app and Siri (“Run Mac MCP Recipe”), or a macmcp:// link. Shortcuts, Siri and links ask you first."),
+            Point(symbol: "checkmark.shield", title: "You stay in charge",
+                  text: "A new recipe is a draft until it's turned on, one with a password or key in it can't be, and every step follows your permissions."),
+        ],
+        footer: "Scheduled Tasks run by themselves at a time you set, usually with an AI agent thinking each time. Recipes run when you ask and repeat the same steps.")
+
+    static let scheduledTasks = AutomationExplainer(
+        icon: AnyView(TaskIcon(ai: true, size: 26)), title: "What are Scheduled Tasks?",
+        points: [
+            Point(symbol: "clock", title: "Work that runs by itself",
+                  text: "Once, daily, weekly, monthly, every few hours or a cron schedule, or each time a file lands in a folder."),
+            Point(symbol: "sparkles", title: "An AI task or a script",
+                  text: "An AI task gives an agent a prompt, optionally with data a script prints first; a script task runs your file or command."),
+            Point(symbol: "doc.text.magnifyingglass", title: "A report for every run",
+                  text: "The result, the steps the agent took and its usage, plus an optional notification. A check can confirm a file, a page or a sheet really changed."),
+            Point(symbol: "stethoscope", title: "When something goes wrong",
+                  text: "Diagnose asks a read-only agent why, Resume goes on from the agent step, Check Again looks again. A run that never started is flagged."),
+            Point(symbol: "checkmark.shield", title: "You stay in charge",
+                  text: "Tasks an AI app suggests wait for your approval, an approved script that changes waits again, and time and usage limits stop runaway runs."),
+        ],
+        footer: "A run missed while your Mac slept is recorded as skipped, not run late. Recipes, the other tab, run when you ask and repeat saved steps.")
 }
 
 // MARK: - One recipe
