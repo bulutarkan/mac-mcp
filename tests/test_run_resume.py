@@ -83,9 +83,9 @@ class ResumeTests(AgentCase):
         plan = runner.resume_plan(store.get_run(long_run), store.definition_of(self.task["id"]))
         self.assertEqual((False, True), (plan["ok"], "part of the data" in plan["reason"]))
 
-        # Secrets masked in the kept copy make it differ from what the agent had.
+        # Secrets are masked before the agent sees the data (#179), so the kept copy is still what it had.
         secret_run = self.failed_run("print('key sk-ant-api03-' + 'z' * 40)\n")
-        self.assertFalse(runner.resume_plan(store.get_run(secret_run), store.definition_of(self.task["id"]))["ok"])
+        self.assertTrue(runner.resume_plan(store.get_run(secret_run), store.definition_of(self.task["id"]))["ok"])
 
     def test_only_ai_runs_with_a_finished_data_step_and_kept_contents(self) -> None:
         run_id = self.failed_run("import sys\nsys.exit(2)\n")  # the data step itself failed

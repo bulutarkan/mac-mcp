@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import folder_triggers, paths, privacy_policy, run_budget, run_records, schedule_rules
 from . import scheduled_tasks as store
+from .data_guard import redact_sensitive_text
 
 log = logging.getLogger("mac_mcp.scheduled_tasks")
 
@@ -203,6 +204,10 @@ def run_data_step(definition: Dict[str, Any], run_id: str, at: Optional[float] =
         return {**info, "ok": False, "reason": f"The data step {how}, so the agent was not started"}
     if not text.strip():
         return {**info, "ok": False, "reason": "The data step printed nothing, so the agent was not started"}
+    # Known secret shapes are masked before the agent (and its provider) sees the data (#179).
+    masked = redact_sensitive_text(text)
+    if masked != text:
+        info.update({"output": masked, "masked": True})
     if len(text) >= store.DATA_LIMIT and size > len(text.encode("utf-8")):
         return {**info, "ok": False, "reason": f"The data step printed more than {store.DATA_LIMIT:,} characters, "
                                                "too much to hand to the agent. Have the script print a summary, or "
@@ -213,9 +218,11 @@ def run_data_step(definition: Dict[str, Any], run_id: str, at: Optional[float] =
 def data_prompt(prompt: str, data: Dict[str, Any], at: float) -> str:
     """The owner's prompt with the data step's output after it."""
     when = time.strftime("%Y-%m-%d %H:%M", time.localtime(at))
+    masked = (" Values that looked like secrets (tokens, keys, passwords) were replaced with [REDACTED]."
+              if data.get("masked") else "")
     return (f"{prompt}\n\n---\nData for this run, printed just now ({when}) by `{data['shown']}`. "
             "Take numbers and facts from it; do not invent values it does not contain. If it looks incomplete "
-            "or wrong, say so in your report.\n\n<data>\n" + data["output"].strip() + "\n</data>\n")
+            f"or wrong, say so in your report.{masked}\n\n<data>\n" + data["output"].strip() + "\n</data>\n")
 
 
 def _data_step_view(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -229,6 +236,9 @@ def _data_step_view(data: Dict[str, Any]) -> Dict[str, Any]:
         # resume (#226) reuses the kept copy only when it is still exactly that.
         view["data_fp"] = run_records.fingerprint(data.get("output") or "")
         view.update({"data_at": data.get("at"), "label": data["label"]})
+    if data.get("masked"):
+        view["masked"] = True
+        view["title"] += " (secrets masked)"
     if data.get("reused_from"):
         view["title"] = f"Used the data {data['label']} printed for the earlier run"
         view["reused_from"] = data["reused_from"]
@@ -504,8 +514,15 @@ def _verification(run_id: str, definition: Dict[str, Any], status: str, private:
 def execute(task_id: str, run_id: str, definition: Dict[str, Any], settings: Any) -> Dict[str, Any]:
     """Run one task and record the result, honoring Settings › Privacy."""
     privacy = privacy_policy.policy(fresh=True)
+    changed = store.script_drift(task_id)
     try:
-        if definition["kind"] == "ai":
+        if changed:
+            # An approved script whose contents changed since does not run until the owner looks (#179).
+            names = ", ".join(Path(path).name for path in changed)
+            result = {"status": "failed", "reason": f"{names} changed since you approved this task, so it didn't run. "
+                                                    "Review the change in Settings › Scheduled Tasks."}
+            store.ask_review_of_changed_script(task_id)
+        elif definition["kind"] == "ai":
             if privacy["paused"]:
                 result = {"status": "skipped", "reason": REASON_PAUSED}
             else:
@@ -556,8 +573,7 @@ def resume_plan(run: Dict[str, Any], definition: Optional[Dict[str, Any]]) -> Di
     if detail.get("definition_fp") != definition_fp(used):
         return no("The task changed since this run, so its data may not fit any more. Run it from the start.")
     if run_records.fingerprint(data.get("output") or "") != data["data_fp"]:
-        return no("Only part of the data was kept (it was long, or secrets in it were masked), "
-                  "so run the task again from the start.")
+        return no("Only part of the data was kept (it was long), so run the task again from the start.")
     later = store.resumed_by(run["id"])
     if later:
         return no("This run was already resumed; resume the newer run instead.")
@@ -681,7 +697,7 @@ class Scheduler:
         data = run["detail"]["data"]
         reuse = {"ok": True, "output": data["output"], "shown": data.get("detail") or "the data step",
                  "label": data.get("label") or "the data step",
-                 "at": plan["data_at"], "reused_from": run_id}
+                 "at": plan["data_at"], "reused_from": run_id, "masked": bool(data.get("masked"))}
         definition = {**definition, "reuse_data": reuse}
         if run.get("trigger_file"):
             definition = folder_triggers.with_file(definition, run["trigger_file"])

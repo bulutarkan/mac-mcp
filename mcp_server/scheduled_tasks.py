@@ -23,6 +23,8 @@ RUNS_PER_TASK runs, none older than RUN_RETENTION_DAYS.
 """
 from __future__ import annotations
 
+import difflib
+import hashlib
 import json
 import os
 import re
@@ -172,6 +174,13 @@ def _db() -> Iterator[sqlite3.Connection]:
                 columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
                 # Databases from before output checks (#198) and expiring contents (#199). Two
                 # processes may open an old database at once; the second finds the column there.
+                task_columns = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+                if "script_pins" not in task_columns:  # #179: script contents an approval covers
+                    try:
+                        conn.execute("ALTER TABLE tasks ADD COLUMN script_pins TEXT")
+                    except sqlite3.OperationalError as exc:
+                        if "duplicate column" not in str(exc).lower():
+                            raise
                 for column, kind in (("verification", "TEXT"), ("details_expired_at", "REAL"), ("trigger_file", "TEXT"),
                                      ("resumed_from", "TEXT")):
                     if column not in columns:
@@ -521,7 +530,10 @@ def _public(row: sqlite3.Row, last: Optional[sqlite3.Row] = None, running: bool 
     if proposal is not None:
         task["proposal"] = {**proposal, "schedule_text": schedule_rules.describe(proposal["schedule"]),
                             "proposed_by": row["proposed_by"], "proposed_at": row["proposed_at"],
-                            "is_new": definition is None}
+                            "is_new": definition is None,
+                            "script_files": _review_files(proposal, _load(row["script_pins"]) or {})}
+        if row["proposed_by"] == SCRIPT_CHANGED:
+            task["proposal"]["script_changed"] = True
     if last is not None:
         task["last_run"] = _run_public(last, brief=True)
     return task
@@ -639,10 +651,14 @@ def update_task(task_id: str, raw: Any, *, by: str = "owner", now: Optional[floa
         definition = validate_definition(merged)
         _check_folder_room(conn, definition, task_id)
         if by == "owner":
+            # Approved script contents stay bound while the task runs the same files; a file the owner
+            # picks is the owner's own and is not (#179).
+            kept = {path: pin for path, pin in (_load(row["script_pins"]) or {}).items() if path in _script_paths(definition)}
             conn.execute(
                 "UPDATE tasks SET definition=?, proposal=NULL, proposed_by=NULL, proposed_at=NULL, updated_at=?,"
-                " next_run_at=? WHERE id=?",
-                (json.dumps(definition), now, _next_run(definition, bool(row["paused"]), now), task_id),
+                " next_run_at=?, script_pins=? WHERE id=?",
+                (json.dumps(definition), now, _next_run(definition, bool(row["paused"]), now),
+                 json.dumps(kept) if kept else None, task_id),
             )
         else:
             conn.execute("UPDATE tasks SET proposal=?, proposed_by=?, proposed_at=?, updated_at=? WHERE id=?",
@@ -651,8 +667,11 @@ def update_task(task_id: str, raw: Any, *, by: str = "owner", now: Optional[floa
     return get_task(task_id)
 
 
-def approve(task_id: str, *, now: Optional[float] = None) -> Dict[str, Any]:
-    """The owner accepts a proposal: it becomes the task that runs."""
+def approve(task_id: str, *, now: Optional[float] = None, seen: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The owner accepts a proposal: it becomes the task that runs, with the script contents it has now.
+
+    `seen` holds the sha256 of each script file as the review showed it; a file that changed since
+    is refused, so what is approved is what was looked at (#179)."""
     now = time.time() if now is None else now
     with _db() as conn:
         row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
@@ -665,13 +684,109 @@ def approve(task_id: str, *, now: Optional[float] = None) -> Dict[str, Any]:
             definition = validate_definition(proposal)  # files and folders are checked again now
         except TaskError as exc:
             raise TaskError(exc.code, f"It cannot be approved as it is: {exc}", 409) from exc
+        pins = _pins(definition)
+        for path, shown in (seen or {}).items():
+            if path in pins and pins[path]["sha256"] != shown:
+                raise TaskError("script_changed_during_review",
+                                f"{Path(path).name} changed while you were reviewing it. Review it again.", 409)
         conn.execute(
             "UPDATE tasks SET definition=?, proposal=NULL, proposed_by=NULL, proposed_at=NULL, updated_at=?,"
-            " next_run_at=? WHERE id=?",
-            (json.dumps(definition), now, _next_run(definition, bool(row["paused"]), now), task_id),
+            " next_run_at=?, script_pins=? WHERE id=?",
+            (json.dumps(definition), now, _next_run(definition, bool(row["paused"]), now), json.dumps(pins), task_id),
         )
     _changed()
     return get_task(task_id)
+
+
+# ── Approved script contents (#179) ──────────────────────────────────────────
+
+SCRIPT_CHANGED = "script_changed"  # proposed_by of a review Mac MCP asks for when an approved script changed
+PIN_TEXT_LIMIT = 100_000
+DIFF_LINE_LIMIT = 200
+PREVIEW_CHAR_LIMIT = 20_000
+
+
+def _script_paths(definition: Optional[Dict[str, Any]]) -> List[str]:
+    """The script files a task runs itself: its own script, and its data step's."""
+    if not definition:
+        return []
+    paths_ = []
+    if definition.get("kind") == "script" and definition.get("script"):
+        paths_.append(str(definition["script"]))
+    step = definition.get("data_step") or {}
+    if step.get("script"):
+        paths_.append(str(step["script"]))
+    return paths_
+
+
+def _read_script(path: str) -> Optional[bytes]:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def _decoded(data: Optional[bytes], limit: int) -> Optional[str]:
+    if data is None or len(data) > limit:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _pins(definition: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    out = {}
+    for path in _script_paths(definition):
+        data = _read_script(path)
+        if data is not None:
+            out[path] = {"sha256": hashlib.sha256(data).hexdigest(), "text": _decoded(data, PIN_TEXT_LIMIT)}
+    return out
+
+
+def _review_files(definition: Dict[str, Any], pins: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Each script file as the owner should see it before approving: its contents, or what changed."""
+    out = []
+    for path in _script_paths(definition):
+        data = _read_script(path)
+        item: Dict[str, Any] = {"path": path, "data_step": path != definition.get("script"),
+                                "sha256": hashlib.sha256(data).hexdigest() if data is not None else None}
+        pin = pins.get(path)
+        if data is None:
+            item["missing"] = True
+        elif pin and pin["sha256"] != item["sha256"]:
+            item["changed"] = True
+            old, new = pin.get("text"), _decoded(data, PIN_TEXT_LIMIT)
+            if old is not None and new is not None:
+                diff = list(difflib.unified_diff(old.splitlines(), new.splitlines(), "approved", "now", lineterm="", n=2))
+                item["diff"] = "\n".join(diff[2:2 + DIFF_LINE_LIMIT])
+        elif not pin:
+            item["text"] = (_decoded(data, PIN_TEXT_LIMIT) or "")[:PREVIEW_CHAR_LIMIT] or None
+        out.append(item)
+    return out
+
+
+def script_drift(task_id: str) -> List[str]:
+    """Approved script files whose contents are no longer what was approved."""
+    with _db() as conn:
+        row = conn.execute("SELECT script_pins FROM tasks WHERE id=?", (task_id,)).fetchone()
+    pins = _load(row["script_pins"]) if row else None
+    changed = []
+    for path, pin in (pins or {}).items():
+        data = _read_script(path)
+        if data is None or hashlib.sha256(data).hexdigest() != pin["sha256"]:
+            changed.append(path)
+    return changed
+
+
+def ask_review_of_changed_script(task_id: str, now: Optional[float] = None) -> None:
+    """A changed approved script waits for the owner's review like a suggested change (unless one waits already)."""
+    now = time.time() if now is None else now
+    with _db() as conn:
+        conn.execute("UPDATE tasks SET proposal=definition, proposed_by=?, proposed_at=?, updated_at=?"
+                     " WHERE id=? AND proposal IS NULL AND definition IS NOT NULL", (SCRIPT_CHANGED, now, now, task_id))
+    _changed()
 
 
 def decline(task_id: str) -> Dict[str, Any]:

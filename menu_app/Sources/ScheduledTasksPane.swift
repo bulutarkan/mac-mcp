@@ -247,7 +247,7 @@ struct ScheduledTasksPane: View {
                     Text(waiting && !task.approved ? (task.proposal?["name"] as? String ?? task.name) : task.name)
                         .font(.body.weight(.semibold)).lineLimit(1)
                     if waiting {
-                        Text(task.approved ? "Change suggested" : "Needs your approval")
+                        Text(scriptChanged(task) ? "Script changed" : task.approved ? "Change suggested" : "Needs your approval")
                             .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 7).padding(.vertical, 2)
                             .background(Capsule().fill(Color.orange.opacity(0.16)))
@@ -273,6 +273,8 @@ struct ScheduledTasksPane: View {
             if task.approved { openTaskID = task.id } else { reviewing = task }
         }
     }
+
+    private func scriptChanged(_ task: ScheduledTask) -> Bool { (task.proposal?["script_changed"] as? Bool) == true }
 
     private func subtitle(_ task: ScheduledTask) -> Text {
         if let proposal = task.proposal, !task.approved {
@@ -370,7 +372,9 @@ private struct TaskDetailView: View {
 
                 if task.proposal != nil {
                     HStack {
-                        Label("\(task.proposal?["proposed_by"] as? String ?? "An AI app") suggested a change. The task runs as before until you approve it.",
+                        Label((task.proposal?["script_changed"] as? Bool) == true
+                              ? "Its script changed since you approved it, so it doesn't run until you review the change."
+                              : "\(task.proposal?["proposed_by"] as? String ?? "An AI app") suggested a change. The task runs as before until you approve it.",
                               systemImage: "exclamationmark.bubble")
                             .font(.caption)
                         Spacer()
@@ -879,6 +883,8 @@ private struct TaskEditorSheet: View {
     @MacMCPState private var scriptInfo: [String: Any]?
     @MacMCPState private var dates: [[String: String]] = []
     @MacMCPState private var dataPreview: [String: Any]?
+    /// This Mac's shortcuts, for "Run a shortcut" (#195); loaded once the sheet opens.
+    @MacMCPState private var shortcutNames: [String] = []
     @MacMCPState private var argsPreview: [String: Any]?
     @MacMCPState private var error = ""
     @MacMCPState private var saving = false
@@ -932,6 +938,7 @@ private struct TaskEditorSheet: View {
         }
         .frame(width: 560, height: height)
         .task(id: model.previewKey) { await preview() }
+        .task { shortcutNames = await MacShortcuts.names() }
     }
 
     private var checkHint: String {
@@ -1237,6 +1244,25 @@ private struct TaskEditorSheet: View {
         .accessibilityLabel("Insert a date")
     }
 
+    /// Fills the command with one of this Mac's shortcuts (#195): the task then runs that shortcut.
+    private var shortcutMenu: some View {
+        Menu {
+            Section("Run a shortcut") {
+                ForEach(shortcutNames, id: \.self) { name in
+                    Button(name) { model.command = "shortcuts run " + MacShortcuts.shellQuoted(name) }
+                }
+            }
+        } label: {
+            Image(systemName: "square.2.layers.3d")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(shortcutNames.isEmpty)
+        .help("Run one of your shortcuts")
+        .accessibilityLabel("Run a shortcut")
+    }
+
     /// "Next run: report.py --since 2026-10-06", shown once the text names a date.
     @ViewBuilder
     private func nextRunLine(_ preview: [String: Any]?, source: String, prefix: String) -> some View {
@@ -1469,6 +1495,7 @@ private struct TaskEditorSheet: View {
                             TextField("e.g. shortcuts run \"Daily Backup\"", text: $model.command)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(.callout, design: .monospaced))
+                            shortcutMenu
                             dateMenu($model.command)
                         }
                         if !model.command.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -1758,6 +1785,9 @@ private struct TaskReviewSheet: View {
 
     private var proposal: [String: Any] { task.proposal ?? [:] }
     private var isNew: Bool { (proposal["is_new"] as? Bool) ?? !task.approved }
+    /// #179: the script files as the review shows them (contents, or what changed since approval).
+    private var scriptFiles: [[String: Any]] { proposal["script_files"] as? [[String: Any]] ?? [] }
+    private var scriptChanged: Bool { (proposal["script_changed"] as? Bool) == true }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1767,9 +1797,13 @@ private struct TaskReviewSheet: View {
                     Image(systemName: "checkmark.shield").font(.title3).foregroundStyle(.orange)
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(isNew ? "Review suggested task" : "Review suggested change").font(.title3.weight(.semibold))
-                    Text("\(proposal["proposed_by"] as? String ?? "An AI app") suggested this \(suggestedAgo). Nothing runs until you approve it.")
+                    Text(scriptChanged ? "Review changed script" : isNew ? "Review suggested task" : "Review suggested change")
+                        .font(.title3.weight(.semibold))
+                    Text(scriptChanged
+                         ? "The script changed after you approved this task, so it stopped running \(suggestedAgo). It runs again once you approve the new version."
+                         : "\(proposal["proposed_by"] as? String ?? "An AI app") suggested this \(suggestedAgo). Nothing runs until you approve it.")
                         .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -1791,6 +1825,9 @@ private struct TaskReviewSheet: View {
                     }
                 }
                 .taskCard()
+                ForEach(Array(scriptFiles.enumerated()), id: \.offset) { _, file in
+                    scriptFileBox(file)
+                }
             }
 
             Label("It runs with your account's access, like an app you start yourself. Approve only what you'd run yourself.",
@@ -1801,7 +1838,7 @@ private struct TaskReviewSheet: View {
             }
             HStack {
                 Spacer()
-                Button(isNew ? "Decline" : "Keep current", role: .destructive) { act("decline") }
+                Button(scriptChanged ? "Not now" : isNew ? "Decline" : "Keep current", role: .destructive) { act("decline") }
                     .disabled(busy)
                 Button("Approve") { act("approve") }
                     .buttonStyle(.borderedProminent)
@@ -1885,6 +1922,44 @@ private struct TaskReviewSheet: View {
         return out
     }
 
+    /// One script file the task runs: what is in it for a new suggestion, what changed since approval otherwise.
+    private func scriptFileBox(_ file: [String: Any]) -> some View {
+        let name = URL(fileURLWithPath: file["path"] as? String ?? "").lastPathComponent
+        let role = (file["data_step"] as? Bool) == true ? "Data step" : "Script"
+        let changed = (file["changed"] as? Bool) == true
+        let body: String? = file["diff"] as? String ?? file["text"] as? String
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: changed ? "exclamationmark.triangle.fill" : "doc.text")
+                    .foregroundStyle(changed ? Color.orange : Color.secondary)
+                Text("\(role) · \(name)").font(.callout.weight(.semibold))
+                Spacer()
+                if changed { Text("Changed since approval").font(.caption).foregroundStyle(.orange) }
+            }
+            if (file["missing"] as? Bool) == true {
+                Text("The file isn’t there.").font(.caption).foregroundStyle(.secondary)
+            } else if let body {
+                ScrollView {
+                    Text(body)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 180)
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+            } else {
+                Text(changed ? "It changed, but it is too large or not text, so the change can’t be shown. Open the file to check it."
+                             : "Too large or not text to show here. Open the file to check it.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text("Approving lets it run as it is now. If it changes later, it stops and asks you again.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(.top, 10)
+    }
+
     private func reviewRow(_ row: Row) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(row.title).font(.callout).foregroundStyle(.secondary).frame(width: 110, alignment: .leading)
@@ -1907,7 +1982,16 @@ private struct TaskReviewSheet: View {
     private func act(_ action: String) {
         busy = true
         Task {
-            let result = await state.taskAPI("dashboard/api/scheduled-tasks/action", body: ["id": task.id, "action": action])
+            var body: [String: Any] = ["id": task.id, "action": action]
+            if action == "approve" {
+                // What this review showed: the server refuses a file that changed since (#179).
+                var seen: [String: String] = [:]
+                for file in scriptFiles {
+                    if let path = file["path"] as? String, let sha = file["sha256"] as? String { seen[path] = sha }
+                }
+                body["seen"] = seen
+            }
+            let result = await state.taskAPI("dashboard/api/scheduled-tasks/action", body: body)
             busy = false
             if result.ok { done() } else { error = result.object["message"] as? String ?? "Couldn’t do that." }
         }

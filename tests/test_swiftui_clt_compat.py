@@ -25,7 +25,7 @@ class SwiftUICommandLineToolsCompatibilityTests(unittest.TestCase):
         settings = (SOURCES / "SettingsView.swift").read_text(encoding="utf-8")
         # 9 before #200/#201 added three sizing properties; the session inspector adds one more.
         self.assertEqual(13, menu.count("@MacMCPState "))
-        self.assertEqual(19, settings.count("@MacMCPState "))
+        self.assertEqual(20, settings.count("@MacMCPState "))  # +1: the Apps pane's shortcut list (#195)
 
     def test_build_script_compiles_compatibility_source(self) -> None:
         script = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")

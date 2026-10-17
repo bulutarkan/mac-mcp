@@ -1,4 +1,4 @@
-"""More first-party app actions (Group 4): reminders, appending to notes, free time, contacts, shortcuts.
+"""More first-party app actions (Group 4, #194-#196): reminders, notes, free time and day plans, contacts, shortcuts, mail.
 
 They follow app_adapters' rules: data goes through each app's own scripting model (or the
 `shortcuts` command), never its window; every write reads back what it changed; a replayed
@@ -261,29 +261,15 @@ end tell
 return outText'''
 
 
-def calendar_free_time(*, date_from: Optional[str], date_to: Optional[str], calendar: Optional[str],
-                       duration_min: Optional[int], hours: Optional[str], include_weekends: bool, limit: int,
-                       timeout_s: float, now: Optional[datetime] = None) -> Dict[str, Any]:
-    now = (now or datetime.now()).replace(second=0, microsecond=0)
-    start = max(_parse_date_bound(date_from, end=False), now) if date_from else now
-    end = _parse_date_bound(date_to, end=True) if date_to else datetime.combine(start.date() + timedelta(days=6),
-                                                                                  datetime.max.time()).replace(microsecond=0)
-    if end <= start:
-        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "date_to must be after date_from (and after now).")
-    if (end - start).days > _MAX_FREE_DAYS:
-        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", f"Look at most {_MAX_FREE_DAYS} days ahead at once.")
-    minutes = int(duration_min or 30)
-    if not 5 <= minutes <= 12 * 60:
-        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "duration_min must be 5 to 720 minutes.")
-    day_start, day_end = _hours(hours)
-    chosen = _single_line(calendar, "calendar", 200)
+def _busy(start: datetime, end: datetime, chosen: str, timeout_s: float) -> Dict[str, Any]:
+    """Timed events in the window (repeats expanded), all-day event names, and repeats left unexpanded."""
     raw = _run(_free_time_script(start, end, chosen), timeout_s=timeout_s, code="CALENDAR_FREE_TIME_FAILED")
     if raw == "NO_CALENDAR":
         raise AppAdapterError("CALENDAR_NOT_FOUND", "No calendar has that name.")
     # Each row ends in "#": the output is stripped, and an empty last field would vanish with it.
     rows = _parse_records(raw, ("uid", "summary", "calendar", "offset_s", "length_s", "all_day", "rule", "end"))
     base = start.timestamp()
-    busy: List[Tuple[datetime, datetime]] = []
+    events: List[Dict[str, Any]] = []
     all_day: List[str] = []
     unexpanded: List[str] = []
     seen = set()
@@ -302,14 +288,19 @@ def calendar_free_time(*, date_from: Optional[str], date_to: Optional[str], cale
             if occurrences is None:
                 unexpanded.append(row["summary"])
                 occurrences = [(first, first + length)] if first < end and first + length > start else []
-            busy.extend(occurrences)
         else:
-            busy.append((first, first + length))
-    busy.sort()
+            occurrences = [(first, first + length)]
+        events.extend({"start": a, "end": b, "title": row["summary"], "calendar": row["calendar"], "uid": row["uid"]}
+                      for a, b in occurrences)
+    events.sort(key=lambda item: item["start"])
+    return {"events": events, "all_day": all_day, "unexpanded": unexpanded}
+
+
+def _free_slots(busy: List[Tuple[datetime, datetime]], start: datetime, end: datetime, *, day_start: int,
+                day_end: int, need: timedelta, include_weekends: bool, limit: int) -> List[Dict[str, Any]]:
     slots: List[Dict[str, Any]] = []
-    need = timedelta(minutes=minutes)
     day = start.date()
-    while day <= end.date() and len(slots) < limit:
+    while day <= end.date() and len(slots) <= limit:
         if include_weekends or day.weekday() < 5:
             open_at = max(datetime.combine(day, datetime.min.time()) + timedelta(minutes=day_start), start)
             close_at = min(datetime.combine(day, datetime.min.time()) + timedelta(minutes=day_end), end)
@@ -326,11 +317,46 @@ def calendar_free_time(*, date_from: Optional[str], date_to: Optional[str], cale
                 slots.append({"start": cursor.isoformat(timespec="minutes"), "end": close_at.isoformat(timespec="minutes"),
                               "minutes": int((close_at - cursor).total_seconds() // 60)})
         day += timedelta(days=1)
+    return slots
+
+
+def _buffer(value: Optional[int]) -> timedelta:
+    minutes = int(value or 0)
+    if not 0 <= minutes <= 120:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "buffer_min must be 0 to 120 minutes.")
+    return timedelta(minutes=minutes)
+
+
+def calendar_free_time(*, date_from: Optional[str], date_to: Optional[str], calendar: Optional[str],
+                       duration_min: Optional[int], hours: Optional[str], include_weekends: bool, limit: int,
+                       timeout_s: float, now: Optional[datetime] = None,
+                       buffer_min: Optional[int] = None) -> Dict[str, Any]:
+    now = (now or datetime.now()).replace(second=0, microsecond=0)
+    start = max(_parse_date_bound(date_from, end=False), now) if date_from else now
+    end = _parse_date_bound(date_to, end=True) if date_to else datetime.combine(start.date() + timedelta(days=6),
+                                                                                  datetime.max.time()).replace(microsecond=0)
+    if end <= start:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "date_to must be after date_from (and after now).")
+    if (end - start).days > _MAX_FREE_DAYS:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", f"Look at most {_MAX_FREE_DAYS} days ahead at once.")
+    minutes = int(duration_min or 30)
+    if not 5 <= minutes <= 12 * 60:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "duration_min must be 5 to 720 minutes.")
+    day_start, day_end = _hours(hours)
+    pad = _buffer(buffer_min)
+    chosen = _single_line(calendar, "calendar", 200)
+    found = _busy(start, end, chosen, timeout_s)
+    all_day, unexpanded = found["all_day"], found["unexpanded"]
+    # A buffer keeps room around each event (travel, a break): the event counts as that much longer each side.
+    busy = sorted((item["start"] - pad, item["end"] + pad) for item in found["events"])
+    slots = _free_slots(busy, start, end, day_start=day_start, day_end=day_end, need=timedelta(minutes=minutes),
+                        include_weekends=include_weekends, limit=limit)
     out: Dict[str, Any] = {
         "ok": True, "count": len(slots[:limit]), "free": slots[:limit], "truncated": len(slots) > limit,
         "date_from": start.isoformat(timespec="minutes"), "date_to": end.isoformat(timespec="minutes"),
         "hours": f"{day_start // 60:02d}:{day_start % 60:02d}-{day_end // 60:02d}:{day_end % 60:02d}",
         "duration_min": minutes, "weekends": include_weekends, "busy_events": len(busy),
+        **({"buffer_min": int(pad.total_seconds() // 60)} if pad else {}),
         "all_day_events_ignored": sorted(set(all_day))[:20],
     }
     if unexpanded:
@@ -342,15 +368,292 @@ def calendar_free_time(*, date_from: Optional[str], date_to: Optional[str], cale
     return out
 
 
+# ── Calendar: plan_day (a read-only look at one day) ────────────────────────
+
+def _due_script(day_start: datetime, day_end: datetime) -> str:
+    return f'''set rs to ASCII character 30
+set us to ASCII character 31
+{_date_setup("dayStart", day_start)}
+{_date_setup("dayEnd", day_end)}
+set outText to ""
+tell application "Reminders"
+    repeat with l in lists
+        -- Read in bulk and compared here: a whose-clause on due date fails on reminders that have none.
+        set ids to id of (every reminder of l whose completed is false)
+        set names to name of (every reminder of l whose completed is false)
+        set dues to due date of (every reminder of l whose completed is false)
+        repeat with i from 1 to count of ids
+            set d to item i of dues
+            if d is not missing value then
+                if d ≤ dayEnd then
+                    set rowText to (item i of ids as text) & us & (item i of names as text) & us & (name of l as text) & us & ¬
+                        ((d - dayStart) as text) & us & "#"
+                    if outText is not "" then set outText to outText & rs
+                    set outText to outText & rowText
+                end if
+            end if
+        end repeat
+    end repeat
+end tell
+return outText'''
+
+
+def plan_day(*, date_from: Optional[str], calendar: Optional[str], duration_min: Optional[int], hours: Optional[str],
+             buffer_min: Optional[int], limit: int, timeout_s: float, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """One day at a glance: its events, the free time between them, and reminders due by its end (overdue too).
+
+    Read-only: it suggests nothing it would then do; the agent proposes and the person decides."""
+    now = (now or datetime.now()).replace(second=0, microsecond=0)
+    day = _parse_date_bound(date_from, end=False).date() if date_from else now.date()
+    start = datetime.combine(day, datetime.min.time())
+    end = datetime.combine(day, datetime.max.time()).replace(microsecond=0)
+    day_start, day_end = _hours(hours)
+    pad = _buffer(buffer_min)
+    minutes = int(duration_min or 30)
+    if not 5 <= minutes <= 12 * 60:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "duration_min must be 5 to 720 minutes.")
+    found = _busy(start, end, _single_line(calendar, "calendar", 200), timeout_s)
+    busy = sorted((item["start"] - pad, item["end"] + pad) for item in found["events"])
+    free = _free_slots(busy, max(start, now), end, day_start=day_start, day_end=day_end,
+                       need=timedelta(minutes=minutes), include_weekends=True, limit=limit)
+    raw = _run(_due_script(start, end), timeout_s=timeout_s, code="REMINDERS_LIST_FAILED")
+    due = []
+    for row in _parse_records(raw, ("id", "name", "list", "offset_s", "end")):
+        when = start + timedelta(seconds=float(row["offset_s"].replace(",", ".")))
+        due.append({"id": row["id"], "name": row["name"], "list": row["list"],
+                    "due": when.isoformat(timespec="minutes"), "overdue": when < start})
+    due.sort(key=lambda item: item["due"])
+    out: Dict[str, Any] = {
+        "ok": True, "date": day.isoformat(),
+        "events": [{"title": item["title"], "calendar": item["calendar"], "uid": item["uid"],
+                    "start": item["start"].isoformat(timespec="minutes"), "end": item["end"].isoformat(timespec="minutes")}
+                   for item in found["events"]][:50],
+        "all_day": sorted(set(found["all_day"]))[:20],
+        "free": free[:limit], "reminders_due": due[:50],
+        "hours": f"{day_start // 60:02d}:{day_start % 60:02d}-{day_end // 60:02d}:{day_end % 60:02d}",
+        "duration_min": minutes, **({"buffer_min": int(pad.total_seconds() // 60)} if pad else {}),
+    }
+    if found["unexpanded"]:
+        out["approximate"] = True
+        out["unexpanded_repeating_events"] = sorted(set(found["unexpanded"]))[:20]
+    return out
+
+
+# ── Reminders: update_reminder, delete_reminder ─────────────────────────────
+
+def _reminder_error(parts: List[str], what: str) -> None:
+    status = parts[0] if parts else ""
+    if status == "COUNT":
+        count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        raise AppAdapterError("REMINDER_NOT_UNIQUE" if count else "REMINDER_NOT_FOUND",
+                              f"Reminder was not uniquely identified; nothing was {what}. Use item_id from list_reminders.",
+                              match_count=count)
+
+
+def reminders_update(item_id: Optional[str], *, title: Optional[str], due: Optional[str], notes: Optional[str],
+                     timeout_s: float) -> Dict[str, Any]:
+    """Rename a reminder, move its due date (defer it) or replace its notes; read back after the change."""
+    rid = str(item_id or "").strip()
+    if not rid:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Reminders update_reminder requires item_id from list_reminders.")
+    name = _single_line(title, "title", 300)
+    text = None if notes is None else _plain_text(notes, "notes", 5000)
+    due_text = str(due or "").strip()
+    if not (name or due_text or text is not None):
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Pass title, start (the new due date) and/or notes to change.")
+    changes: List[str] = []
+    if name:
+        changes.append(f"set name of r to {_apple_string(name)}")
+    if due_text:
+        when = _event_datetime(due_text, "start")
+        changes += _date_setup("dueDate", when).split("\n")
+        changes.append("set allday due date of r to dueDate" if len(due_text) == 10 else "set due date of r to dueDate")
+    if text is not None:
+        changes.append(f"set body of r to {_apple_string(text)}")
+    script = "\n".join([
+        "set us to ASCII character 31",
+        'tell application "Reminders"',
+        f"    set matches to every reminder whose id is {_apple_string(rid)}",
+        '    if (count of matches) is not 1 then return "COUNT" & us & ((count of matches) as text)',
+        "    set r to item 1 of matches",
+        *[f"    {line}" for line in changes],
+        f"    set readBack to every reminder whose id is {_apple_string(rid)}",
+        '    if (count of readBack) is not 1 then return "NOT_VERIFIED"',
+        "    set r to item 1 of readBack",
+        '    set dueText to ""',
+        "    try",
+        "        if due date of r is not missing value then set dueText to (due date of r) as text",
+        "    end try",
+        '    return "OK" & us & (id of r as text) & us & (name of r as text) & us & (name of container of r as text) & us & dueText & us & "#"',
+        "end tell",
+    ])
+    try:
+        raw = _run(script, timeout_s=timeout_s, code="REMINDERS_UPDATE_FAILED")
+    except AppAdapterError as exc:
+        if exc.extra.get("not_executed"):
+            raise
+        raise AppAdapterError(exc.code, f"{exc} Check with list_reminders before trying again.",
+                              outcome_unknown=True, automatic_retry=False) from exc
+    parts = raw.split(_US)
+    _reminder_error(parts, "changed")
+    if parts[0] != "OK" or (name and parts[2] != name):
+        raise AppAdapterError("REMINDER_UPDATE_NOT_VERIFIED", "Reminders did not confirm the change.",
+                              outcome_unknown=True, automatic_retry=False)
+    return {"ok": True, "updated": True, "changed": True, "verified": True, "verification": "read_back",
+            "reminder": dict(zip(_REMINDER_ROW, parts[1:5]))}
+
+
+def reminders_delete(item_id: Optional[str], *, timeout_s: float) -> Dict[str, Any]:
+    rid = str(item_id or "").strip()
+    if not rid:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Reminders delete_reminder requires item_id from list_reminders.")
+    script = "\n".join([
+        "set us to ASCII character 31",
+        'tell application "Reminders"',
+        f"    set matches to every reminder whose id is {_apple_string(rid)}",
+        '    if (count of matches) is 0 then return "GONE"',
+        '    if (count of matches) is not 1 then return "COUNT" & us & ((count of matches) as text)',
+        "    set r to item 1 of matches",
+        "    set gone to (name of r as text)",
+        "    delete r",
+        f"    if (count of (every reminder whose id is {_apple_string(rid)})) is not 0 then return \"NOT_VERIFIED\"",
+        '    return "OK" & us & gone',
+        "end tell",
+    ])
+    try:
+        raw = _run(script, timeout_s=timeout_s, code="REMINDERS_DELETE_FAILED")
+    except AppAdapterError as exc:
+        if exc.extra.get("not_executed"):
+            raise
+        raise AppAdapterError(exc.code, f"{exc} Check with list_reminders before trying again.",
+                              outcome_unknown=True, automatic_retry=False) from exc
+    parts = raw.split(_US)
+    if parts[0] == "GONE":
+        # A replayed delete finds nothing left to delete.
+        return {"ok": True, "deleted": False, "changed": False, "verified": True, "verification": "already_absent",
+                "message": "No reminder has that id (it may already be deleted); nothing was changed."}
+    _reminder_error(parts, "deleted")
+    if parts[0] != "OK":
+        raise AppAdapterError("REMINDER_DELETE_NOT_VERIFIED", "Reminders did not confirm the reminder is gone.",
+                              outcome_unknown=True, automatic_retry=False)
+    return {"ok": True, "deleted": True, "changed": True, "verified": True, "verification": "read_back",
+            "reminder": {"id": rid, "name": parts[1]}}
+
+
+# ── Notes: update_note ───────────────────────────────────────────────────────
+
+def _note_body(title: str, body: str) -> str:
+    # Notes names a note after its first line, so the title leads the body.
+    lines = [f"<div><h1>{html.escape(title)}</h1></div>"]
+    lines += [f"<div>{html.escape(line) if line.strip() else '<br>'}</div>" for line in body.split("\n")] if body else []
+    return "".join(lines)
+
+
+def notes_update(item_id: Optional[str], *, title: Optional[str], body: Optional[str], timeout_s: float) -> Dict[str, Any]:
+    """Replace a note's text (and/or title). Only by item_id: replacing text is never done on a name guess."""
+    note_id = str(item_id or "").strip()
+    if not note_id:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Notes update_note requires item_id from find_notes.")
+    name = _single_line(title, "title", 300)
+    text = None if body is None else _plain_text(body, "body", 20000).strip("\n")
+    if not name and text is None:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Pass title and/or body to change.")
+    selector = f"every note whose id is {_apple_string(note_id)}"
+    if text is None:
+        change = [f"    set name of n to {_apple_string(name)}"]
+        check = f"(name of n as text) is {_apple_string(name)}"
+    else:
+        if not name:  # keep the current title as the first line
+            current = _run("\n".join(['tell application "Notes"', f"    set matches to {selector}",
+                                       '    if (count of matches) is not 1 then return ""',
+                                       "    return name of (item 1 of matches) as text", "end tell"]),
+                           timeout_s=timeout_s, code="NOTES_UPDATE_FAILED")
+            name = current or "Untitled"
+        tail = next((line.strip() for line in reversed(text.split("\n")) if line.strip()), name)
+        change = [f"    set body of n to {_apple_string(_note_body(name, text))}"]
+        check = f"(plaintext of n) contains {_apple_string(tail)}"
+    script = "\n".join([
+        "set us to ASCII character 31",
+        'tell application "Notes"',
+        f"    set matches to {selector}",
+        '    if (count of matches) is not 1 then return "COUNT" & us & ((count of matches) as text)',
+        "    set n to item 1 of matches",
+        *change,
+        f"    set readBack to {selector}",
+        '    if (count of readBack) is not 1 then return "NOT_VERIFIED"',
+        "    set n to item 1 of readBack",
+        f'    if not ({check}) then return "NOT_VERIFIED"',
+        '    return "OK" & us & (id of n as text) & us & (name of n as text)',
+        "end tell",
+    ])
+    try:
+        raw = _run(script, timeout_s=timeout_s, code="NOTES_UPDATE_FAILED")
+    except AppAdapterError as exc:
+        if exc.extra.get("not_executed"):
+            raise
+        raise AppAdapterError(exc.code, f"{exc} The note may or may not have changed; open it before trying again.",
+                              outcome_unknown=True, automatic_retry=False) from exc
+    parts = raw.split(_US)
+    if parts[0] == "COUNT":
+        raise AppAdapterError("NOTES_NOTE_NOT_FOUND", "No note has that id; nothing was changed. Use item_id from find_notes.")
+    if parts[0] != "OK":
+        raise AppAdapterError("NOTES_UPDATE_NOT_VERIFIED", "Notes did not confirm the change.",
+                              outcome_unknown=True, automatic_retry=False)
+    return {"ok": True, "updated": True, "changed": True, "verified": True, "verification": "read_back",
+            "note": {"id": parts[1], "title": parts[2]}}
+
+
 # ── Contacts: find_contacts ──────────────────────────────────────────────────
 
 _CONTACT_FIELDS = ("id", "name", "organization", "emails", "phones", "end")
+
+
+def _digits(text: str) -> str:
+    return "".join(ch for ch in text if ch.isdigit())
+
+
+def _contacts_by_address(q: str, *, limit: int, timeout_s: float) -> Dict[str, Any]:
+    """People with an email or phone number containing q (#196), read in bulk: one request per field, not per person."""
+    script = '''set rs to ASCII character 30
+set us to ASCII character 31
+set AppleScript's text item delimiters to ", "
+tell application "Contacts"
+    set idValues to id of every person
+    set nameValues to name of every person
+    set mailValues to value of every email of every person
+    set phoneValues to value of every phone of every person
+end tell
+set outText to ""
+repeat with i from 1 to count of idValues
+    set rowText to (item i of idValues as text) & us & (item i of nameValues as text) & us & "" & us & ((item i of mailValues) as text) & us & ((item i of phoneValues) as text) & us & "#"
+    if outText is not "" then set outText to outText & rs
+    set outText to outText & rowText
+end repeat
+set AppleScript's text item delimiters to ""
+return outText'''
+    raw = _run(script, timeout_s=max(timeout_s, 15.0), code="CONTACTS_FIND_FAILED")
+    needle, digits = q.casefold(), _digits(q)
+    rows = []
+    for row in _parse_records(raw, _CONTACT_FIELDS):
+        row.pop("end", None)
+        emails = [item for item in row["emails"].split(", ") if item]
+        phones = [item for item in row["phones"].split(", ") if item]
+        hit = any(needle in item.casefold() for item in emails) if "@" in q else \
+            any(digits and digits[-9:] in _digits(item) for item in phones)
+        if hit:
+            rows.append({**row, "emails": emails, "phones": phones})
+        if len(rows) >= limit:
+            break
+    return {"ok": True, "count": len(rows), "contacts": rows, "truncated": len(rows) >= limit,
+            "matched_on": "email" if "@" in q else "phone"}
 
 
 def contacts_find(query: Optional[str], *, limit: int, timeout_s: float) -> Dict[str, Any]:
     q = _single_line(query, "query", 200)
     if not q:
         raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Contacts find_contacts requires query.")
+    if "@" in q or (len(_digits(q)) >= 7 and not re.search(r"[^\d\s()+\-.]", q)):
+        return _contacts_by_address(q, limit=limit, timeout_s=timeout_s)
     script = f'''set rs to ASCII character 30
 set us to ASCII character 31
 set maxRows to {limit}
@@ -417,7 +720,18 @@ def shortcuts_list(query: Optional[str], *, limit: int, timeout_s: float) -> Dic
     return {"ok": True, "count": min(len(rows), limit), "shortcuts": rows[:limit], "truncated": len(rows) > limit}
 
 
-def shortcuts_run(item_id: Optional[str], title: Optional[str], body: Optional[str], *, timeout_s: float) -> Dict[str, Any]:
+def owner_allowed_shortcuts() -> List[str]:
+    """apps.shortcuts.allowed: shortcuts the owner lets agents run even while running commands is off (#195)."""
+    from .runtime_settings import load_runtime_settings
+
+    apps = load_runtime_settings().get("apps")
+    entry = apps.get("shortcuts") if isinstance(apps, dict) else None
+    names = entry.get("allowed") if isinstance(entry, dict) else None
+    return [str(name) for name in names if isinstance(name, str) and name.strip()] if isinstance(names, list) else []
+
+
+def shortcuts_run(item_id: Optional[str], title: Optional[str], body: Optional[str], *, timeout_s: float,
+                  allowed_only: bool = False) -> Dict[str, Any]:
     wanted = str(item_id or "").strip().upper()
     name = _single_line(title, "title", 200)
     if not wanted and not name:
@@ -431,6 +745,9 @@ def shortcuts_run(item_id: Optional[str], title: Optional[str], body: Optional[s
                               else "More than one shortcut has that name; pass item_id. Nothing ran.",
                               match_count=len(matches))
     shortcut = matches[0]
+    if allowed_only and shortcut["name"] not in owner_allowed_shortcuts():
+        raise AppAdapterError("SHELL_DISABLED", f"Running commands is off, and {shortcut['name']!r} isn't one of the "
+                              "shortcuts you allowed in Settings › Apps; nothing ran.", shortcut=shortcut)
     text = _plain_text(body, "body", 20000)
     with tempfile.TemporaryDirectory(prefix="mac-mcp-shortcut-") as folder:
         out_path = os.path.join(folder, "output.txt")
@@ -454,5 +771,6 @@ def shortcuts_run(item_id: Optional[str], title: Optional[str], body: Optional[s
             "output_truncated": len(output) > SHORTCUT_OUTPUT_LIMIT}
 
 
-__all__ = ["calendar_free_time", "contacts_find", "expand_recurrence", "notes_append", "reminders_create",
+__all__ = ["calendar_free_time", "contacts_find", "expand_recurrence", "notes_append", "notes_update",
+           "owner_allowed_shortcuts", "plan_day", "reminders_create", "reminders_delete", "reminders_update",
            "shortcuts_list", "shortcuts_run"]

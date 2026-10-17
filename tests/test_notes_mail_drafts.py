@@ -81,7 +81,6 @@ class NotesAndMailDraftTests(unittest.TestCase):
                 lambda: aa._notes_create("", "x", folder=None, account=None, timeout_s=5),
                 lambda: aa._notes_create("two\nlines", "x", folder=None, account=None, timeout_s=5),
                 lambda: aa._mail_create_draft("", "x", to="a@b.co", cc=None, account=None, timeout_s=5),
-                lambda: aa._mail_create_draft("S", "x", to="not an address", cc=None, account=None, timeout_s=5),
                 lambda: aa._mail_create_draft("S", "x", to='a@b.co", "x', cc=None, account=None, timeout_s=5),
                 lambda: aa._mail_create_draft("S", "x", to=",".join(f"u{i}@b.co" for i in range(21)),
                                               cc=None, account=None, timeout_s=5),
@@ -89,6 +88,11 @@ class NotesAndMailDraftTests(unittest.TestCase):
                 with self.subTest(), self.assertRaises(aa.AppAdapterError) as ctx:
                     call()
                 self.assertEqual("APP_ADAPTER_ARGUMENT_INVALID", ctx.exception.code)
+            # Text that is not an address is a contact name now (#196); with no such contact nothing runs.
+            with patch.object(aa.more, "contacts_find", return_value={"ok": True, "contacts": []}), \
+                    self.assertRaises(aa.AppAdapterError) as ctx:
+                aa._mail_create_draft("S", "x", to="not an address", cc=None, account=None, timeout_s=5)
+            self.assertEqual("MAIL_RECIPIENT_NOT_FOUND", ctx.exception.code)
             run.assert_not_called()
 
     def test_control_characters_are_removed_from_text(self) -> None:

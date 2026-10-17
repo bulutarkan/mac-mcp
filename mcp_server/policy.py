@@ -326,7 +326,7 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     read_actions = {
         "capabilities", "selection", "find_notes", "find_messages",
         "find_events", "list_documents", "list_panes", "list_reminders",
-        "find_chats", "list_workspaces", "find_free_time", "find_contacts", "list_shortcuts",
+        "find_chats", "list_workspaces", "find_free_time", "find_contacts", "list_shortcuts", "plan_day",
     }
     # A shortcut runs whatever its actions do, like a command.
     if action == "run_shortcut":
@@ -348,10 +348,17 @@ def _mac_app_risk(arguments: Mapping[str, Any]) -> RiskOverride:
     # scripting model, not its UI: a local data write rather than a UI action.
     # Mail drafts are saved, never sent.
     if action in {"create_event", "update_event", "complete_reminder", "create_note", "create_draft",
-                  "create_reminder", "append_to_note"}:
+                  "create_reminder", "append_to_note", "update_reminder", "update_message"}:
         return RiskOverride(
             capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE),
             destructive=False,
+            sensitive=True,
+        )
+    # Deleting a reminder or replacing a note's text loses what was there (#194).
+    if action in {"delete_reminder", "update_note"}:
+        return RiskOverride(
+            capabilities=_caps(Capability.READ, Capability.LOCAL_WRITE),
+            destructive=True,
             sensitive=True,
         )
     if action in read_actions:
@@ -1091,9 +1098,10 @@ def _scope_paths(tool: str, arguments: Mapping[str, Any]) -> tuple[str, ...]:
         value = arguments.get(key)
         if isinstance(value, str) and value.strip():
             paths.append(value)
-    raw_paths = arguments.get("paths")
-    if isinstance(raw_paths, (list, tuple)):
-        paths.extend(str(value) for value in raw_paths if isinstance(value, str) and value.strip())
+    for key in ("paths", "attachments"):  # attachments: files mac_app attaches to a Mail draft
+        raw_paths = arguments.get(key)
+        if isinstance(raw_paths, (list, tuple)):
+            paths.extend(str(value) for value in raw_paths if isinstance(value, str) and value.strip())
     raw_files = arguments.get("files")
     if isinstance(raw_files, (list, tuple)):
         for item in raw_files:

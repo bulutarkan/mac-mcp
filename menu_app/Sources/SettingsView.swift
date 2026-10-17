@@ -149,6 +149,8 @@ struct SettingsView: View {
     @ObservedObject private var navigation = SettingsNavigation.shared
     @MacMCPState private var selection: SettingsSection
     @MacMCPState private var notice = ""
+    /// This Mac's shortcuts, for the ones agents may run with commands off (#195).
+    @MacMCPState private var macShortcutNames: [String]?
     @MacMCPState private var confirmClearUsage = false
     @MacMCPState private var memoryClearPreview: MemoryClearResult?
     @MacMCPState private var groqKey = ""
@@ -3434,6 +3436,35 @@ struct SettingsView: View {
                         .padding(.top, 5)
                 }
 
+                GroupBox("Shortcuts agents may run") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("A shortcut can do anything its actions do, so agents run shortcuts only when running commands is allowed. The ones you turn on here can run even when it's off; with it on, any shortcut can run.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let names = macShortcutNames {
+                            if names.isEmpty {
+                                Text("No shortcuts found on this Mac.").font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                ScrollView {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        ForEach(names, id: \.self) { name in
+                                            Toggle(name, isOn: allowedShortcutBinding(name))
+                                                .toggleStyle(.checkbox)
+                                        }
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .frame(maxHeight: 180)
+                            }
+                        } else {
+                            ProgressView().controlSize(.small)
+                        }
+                    }
+                    .padding(.top, 5)
+                }
+                .task { macShortcutNames = await MacShortcuts.names() }
+
                 GroupBox("Other apps") {
                     Text("Finder, Notes, Calendar, Reminders, Preview, System Settings, Messages search and Xcode only read or change data on this Mac and have no settings yet. Mail drafts are saved, never sent.")
                         .font(.caption)
@@ -3473,6 +3504,19 @@ struct SettingsView: View {
             return NSWorkspace.shared.icon(forFile: url.path)
         }
         return NSImage(systemSymbolName: "app", accessibilityDescription: nil) ?? NSImage()
+    }
+
+    private func allowedShortcutBinding(_ name: String) -> Binding<Bool> {
+        Binding(
+            get: { settings.allowedShortcuts.contains(name) },
+            set: { allowed in
+                var names = settings.allowedShortcuts.filter { $0 != name }
+                if allowed { names.append(name) }
+                settings.allowedShortcuts = names
+                persistSettings(success: allowed ? "Agents can run “\(name)”, also with commands off."
+                                                 : "“\(name)” runs only when commands are allowed.")
+            }
+        )
     }
 
     private func confirmSendBinding(_ keyPath: ReferenceWritableKeyPath<SettingsStore, Bool>, app: String) -> Binding<Bool> {

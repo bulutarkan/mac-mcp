@@ -79,6 +79,11 @@ struct MenuSettings: Codable {
     struct Apps: Codable {
         var mail: AppSend?
         var messages: AppSend?
+        var shortcuts: AppShortcuts?
+    }
+    /// Shortcuts agents may run even while running commands is off (#195).
+    struct AppShortcuts: Codable {
+        var allowed: [String]
     }
     struct DecisionAcceleration: Codable {
         var enabled: Bool
@@ -175,6 +180,7 @@ final class SettingsStore: ObservableObject {
     @Published var agentCompletionNotificationsEnabled = false
     @Published var mailConfirmSend = true
     @Published var messagesConfirmSend = true
+    @Published var allowedShortcuts: [String] = []
     @Published var opencodeEnabled = false
     @Published var codexEnabled = false
     @Published var claudeEnabled = false
@@ -287,6 +293,7 @@ final class SettingsStore: ObservableObject {
         agentCompletionNotificationsEnabled = current.notifications?.agent_completion ?? false
         mailConfirmSend = current.apps?.mail?.confirm_send ?? true
         messagesConfirmSend = current.apps?.messages?.confirm_send ?? true
+        allowedShortcuts = current.apps?.shortcuts?.allowed ?? []
         onboardingDismissed = current.onboarding?.dismissed ?? false
         onboardingTour = current.onboarding?.tour
         decisionAccelerationEnabled = current.decision_acceleration?.enabled ?? false
@@ -361,7 +368,8 @@ final class SettingsStore: ObservableObject {
                 maxActive: min(16, max(1, maxActiveAgents)),
                 retentionDays: min(3650, max(0, agentRetentionDays))
             ),
-            apps: .init(mail: .init(confirm_send: mailConfirmSend), messages: .init(confirm_send: messagesConfirmSend)),
+            apps: .init(mail: .init(confirm_send: mailConfirmSend), messages: .init(confirm_send: messagesConfirmSend),
+                        shortcuts: .init(allowed: allowedShortcuts)),
             onboarding: .init(dismissed: onboardingDismissed, tour: onboardingTour)
         )
         let payloadData = try JSONEncoder.pretty.encode(payload)

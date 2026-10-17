@@ -230,3 +230,31 @@ extension AppState {
         }
     }
 }
+
+
+/// This Mac's shortcuts by name, from the `shortcuts` command (#195): for the task editor's
+/// "Run a shortcut" and the shortcuts the owner allows in Settings › Apps.
+enum MacShortcuts {
+    static func names() async -> [String] {
+        await Task.detached(priority: .utility) { () -> [String] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+            process.arguments = ["list"]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            do { try process.run() } catch { return [] }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return [] }
+            let lines = String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
+            return Array(Set(lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }))
+                .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        }.value
+    }
+
+    /// Single-quoted for the shell: the task's command runs through zsh.
+    static func shellQuoted(_ text: String) -> String {
+        "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}

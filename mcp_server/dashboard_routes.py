@@ -827,7 +827,8 @@ def create_dashboard_routes(
             "pause": lambda: task_store.set_paused(task_id, True),
             "resume": lambda: task_store.set_paused(task_id, False),
             "delete": lambda: task_store.delete_task(task_id),
-            "approve": lambda: task_store.approve(task_id),
+            # The script files' sha256 as the review showed them: a file changed since is refused (#179).
+            "approve": lambda: task_store.approve(task_id, seen=body.get("seen") if isinstance(body.get("seen"), dict) else None),
             "decline": lambda: task_store.decline(task_id),
             "run_now": lambda: scheduled_task_runner.scheduler(settings).run_now(task_id),
         }

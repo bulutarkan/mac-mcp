@@ -7,7 +7,7 @@ import subprocess
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .security import Settings
 from .foreground_guard import current_foreground_authorization
@@ -53,10 +53,10 @@ _APP_ALIASES = {
 
 _ACTIONS = {
     "Finder": ("selection", "select_file"),
-    "Notes": ("find_notes", "open_note", "create_note", "append_to_note"),
-    "Mail": ("find_messages", "open_message", "create_draft", "send_mail"),
-    "Calendar": ("find_events", "find_free_time", "open_event", "create_event", "update_event"),
-    "Reminders": ("list_reminders", "create_reminder", "complete_reminder"),
+    "Notes": ("find_notes", "open_note", "create_note", "append_to_note", "update_note"),
+    "Mail": ("find_messages", "open_message", "create_draft", "send_mail", "update_message"),
+    "Calendar": ("find_events", "find_free_time", "plan_day", "open_event", "create_event", "update_event"),
+    "Reminders": ("list_reminders", "create_reminder", "update_reminder", "complete_reminder", "delete_reminder"),
     "Preview": ("list_documents", "open_document"),
     "System Settings": ("list_panes", "open_pane"),
     "Messages": ("find_chats", "send_message"),
@@ -77,6 +77,7 @@ _READ_ACTIONS = {
     "find_chats",
     "list_workspaces",
     "find_free_time",
+    "plan_day",
     "find_contacts",
     "list_shortcuts",
 }
@@ -84,7 +85,8 @@ _READ_ACTIONS = {
 # Change app data through the app's own scripting model; they never drive the UI,
 # so a person using the app's window does not block them.
 _DATA_WRITE_ACTIONS = {"create_event", "update_event", "complete_reminder", "create_note", "create_draft",
-                       "create_reminder", "append_to_note"}
+                       "create_reminder", "append_to_note", "update_reminder", "delete_reminder", "update_note",
+                       "update_message"}
 # A shortcut can do anything its actions do, so running one is gated like run_command: the shell
 # switch and the permission profile decide, as for any other command (no new approval prompt).
 _RUN_ACTIONS = {"run_shortcut"}
@@ -667,6 +669,94 @@ return outText'''
         "messages": rows,
         "truncated": len(rows) >= limit,
     }
+
+
+def _mail_update(
+    item_id: Optional[str], *, mailbox: Optional[str], read: Optional[bool], flagged: Optional[bool],
+    move_to: Optional[str], timeout_s: float,
+) -> Dict[str, Any]:
+    """Mark a message read or unread, flag or unflag it, or move it to another mailbox of its account (#196)."""
+    message_id = str(item_id or "").strip()
+    if not message_id:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Mail update_message requires item_id from find_messages.")
+    target = _single_line(move_to, "move_to", 200)
+    if read is None and flagged is None and not target:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Pass read, flagged and/or move_to to change.")
+    mailbox_key, mailbox_expr = _mailbox_expr(mailbox)
+    sel = f"(every message of sourceBox whose message id is {_apple_string(message_id)})"
+    lines = [
+        "set us to ASCII character 31",
+        'tell application "Mail"',
+        f"    set sourceBox to {mailbox_expr}",
+        f"    set matches to {sel}",
+        '    if (count of matches) is not 1 then return "COUNT" & us & ((count of matches) as text)',
+        "    set m to item 1 of matches",
+    ]
+    if read is not None:
+        lines.append(f"    set read status of m to {'true' if read else 'false'}")
+    if flagged is not None:
+        lines.append(f"    set flagged status of m to {'true' if flagged else 'false'}")
+    lines += ["    set readState to read status of m as text", "    set flagState to flagged status of m as text"]
+    if target:
+        names = ("Archive", "Arşiv", "All Mail", "Tüm Postalar") if target.casefold() in {"archive", "arşiv"} else (target,)
+        lines += [
+            "    set acct to account of mailbox of m",
+            "    set destination to missing value",
+            *[line for name in names for line in (
+                "    if destination is missing value then", "        try",
+                f"            set destination to mailbox {_apple_string(name)} of acct",
+                "        end try", "    end if")],
+            # Nested folders ("[Gmail]/All Mail") are not always reachable by name; look through them.
+            "    if destination is missing value then",
+            "        repeat with b in mailboxes of acct",
+            f"            if {{{', '.join(_apple_string(name) for name in names)}}} contains (name of b as text) then set destination to contents of b",
+            "        end repeat",
+            "    end if",
+            '    if destination is missing value then',
+            '        set boxNames to ""',
+            "        repeat with b in mailboxes of acct",
+            '            if boxNames is not "" then set boxNames to boxNames & us',
+            "            set boxNames to boxNames & (name of b as text)",
+            "        end repeat",
+            '        return "NO_MAILBOX" & us & boxNames',
+            "    end if",
+            "    move m to destination",
+            "    set moved to 0",
+            "    repeat 20 times",
+            f"        set moved to count of (every message of destination whose message id is {_apple_string(message_id)})",
+            "        if moved > 0 then exit repeat",
+            "        delay 0.25",
+            "    end repeat",
+            '    if moved is 0 then return "NOT_VERIFIED"',
+            '    return "OK" & us & readState & us & flagState & us & (name of destination as text)',
+        ]
+    else:
+        lines.append('    return "OK" & us & readState & us & flagState & us & ""')
+    lines.append("end tell")
+    try:
+        raw = _run("\n".join(lines), timeout_s=max(timeout_s, 10.0), code="MAIL_UPDATE_FAILED")
+    except AppAdapterError as exc:
+        if exc.extra.get("not_executed"):
+            raise
+        raise AppAdapterError(exc.code, f"{exc} Check with find_messages before trying again.",
+                              outcome_unknown=True, automatic_retry=False) from exc
+    parts = raw.split(_US)
+    if parts[0] == "COUNT":
+        count = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        raise AppAdapterError("MAIL_MESSAGE_NOT_UNIQUE" if count else "MAIL_MESSAGE_NOT_FOUND",
+                              f"The message was not found once in {mailbox_key}; nothing was changed.", match_count=count)
+    if parts[0] == "NO_MAILBOX":
+        raise AppAdapterError("MAIL_MAILBOX_NOT_FOUND", "That account has no such mailbox; nothing was moved.",
+                              mailboxes=parts[1:][:50])
+    if parts[0] != "OK" or (read is not None and parts[1] != str(read).lower()) \
+            or (flagged is not None and parts[2] != str(flagged).lower()):
+        raise AppAdapterError("MAIL_UPDATE_NOT_VERIFIED", "Mail did not confirm the change.",
+                              outcome_unknown=True, automatic_retry=False)
+    out: Dict[str, Any] = {"ok": True, "updated": True, "verified": True, "verification": "read_back",
+                           "message_id": message_id, "read": parts[1] == "true", "flagged": parts[2] == "true"}
+    if target:
+        out["moved_to"] = parts[3]
+    return out
 
 
 def _mail_open(
@@ -1258,6 +1348,61 @@ def _addresses(value: Optional[str], field: str) -> list[str]:
     return items
 
 
+# A person's name as written in Contacts: letters first, then letters, spaces, dots, apostrophes, hyphens.
+_CONTACT_NAME_RE = re.compile(r"^[^\W\d_][^\W_]*(?:[ .'’\-]+[^\W_]+)*\.?$")
+
+
+def _recipients(value: Optional[str], field: str, timeout_s: float) -> tuple[list[str], Dict[str, str]]:
+    """Addresses, with names looked up in Contacts (#196): a name must lead to exactly one address."""
+    items = [item.strip() for item in re.split(r"[,;\n]", str(value or "")) if item.strip()]
+    if len(items) > _MAX_RECIPIENTS:  # before any Contacts lookup
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", f"{field} accepts at most {_MAX_RECIPIENTS} addresses.")
+    resolved: Dict[str, str] = {}
+    out: list[str] = []
+    for item in items:
+        if "@" in item:
+            out.append(item)
+            continue
+        if not _CONTACT_NAME_RE.match(item):
+            raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID",
+                                  f"{field} must be email addresses or contact names separated by commas.")
+        found = more.contacts_find(item, limit=10, timeout_s=timeout_s)["contacts"]
+        exact = [person for person in found if person["name"].casefold() == item.casefold()]
+        people = exact or found
+        addresses = sorted({address for person in people for address in person["emails"]})
+        if len(people) == 1 and len(addresses) == 1:
+            resolved[item] = addresses[0]
+            out.append(addresses[0])
+            continue
+        if not people:
+            raise AppAdapterError("MAIL_RECIPIENT_NOT_FOUND", f"No contact matches {item!r}; pass an email address.")
+        if not addresses:
+            raise AppAdapterError("MAIL_RECIPIENT_NO_ADDRESS", f"{people[0]['name']} has no email address in Contacts.")
+        raise AppAdapterError("MAIL_RECIPIENT_AMBIGUOUS",
+                              f"{item!r} matches more than one address; pass the one you mean. Nothing was done.",
+                              candidates=[{"name": person["name"], "emails": person["emails"]} for person in people][:10])
+    return _addresses(", ".join(out), field), resolved
+
+
+_MAX_ATTACHMENTS = 10
+_ATTACHMENT_LIMIT = 25 * 1024 * 1024
+
+
+def _attachment_paths(values: Optional[List[str]]) -> list[str]:
+    paths = [str(Path(str(value)).expanduser()) for value in (values or []) if str(value or "").strip()]
+    if len(paths) > _MAX_ATTACHMENTS:
+        raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", f"Attach at most {_MAX_ATTACHMENTS} files.")
+    total = 0
+    for path in paths:
+        target = Path(path)
+        if not target.is_file():
+            raise AppAdapterError("MAIL_ATTACHMENT_NOT_FOUND", f"{target.name} is not a file that exists; nothing was created.")
+        total += target.stat().st_size
+    if total > _ATTACHMENT_LIMIT:
+        raise AppAdapterError("MAIL_ATTACHMENT_TOO_LARGE", "Attachments must add up to at most 25 MB; nothing was created.")
+    return paths
+
+
 _DRAFT_FIELDS = ("message_id", "subject", "account", "sender")
 _MAIL_ERRORS = {
     "NO_ACCOUNT": ("MAIL_ACCOUNT_NOT_FOUND", "No enabled Mail account matches; nothing was created."),
@@ -1301,14 +1446,16 @@ def _mail_account_pick(account: Optional[str]) -> tuple[list[str], str]:
 
 def _mail_create_draft(
     subject: Optional[str], body: Optional[str], *, to: Optional[str], cc: Optional[str],
-    account: Optional[str], timeout_s: float,
+    account: Optional[str], timeout_s: float, attachments: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     title = _single_line(subject, "title", 300)
     if not title:
         raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Mail create_draft requires title (the subject).")
     text = _plain_text(body, "body", 20000)
-    to_list = _addresses(to, "to")
-    cc_list = _addresses(cc, "cc")
+    files = _attachment_paths(attachments)
+    to_list, resolved = _recipients(to, "to", timeout_s)
+    cc_list, resolved_cc = _recipients(cc, "cc", timeout_s)
+    resolved.update(resolved_cc)
     pick, address = _mail_account_pick(account)
     readback = (
         "(message id of d as text) & us & (subject of d as text) & us & (name of targetAccount as text) & us & senderText"
@@ -1333,7 +1480,11 @@ def _mail_create_draft(
           for item in to_list],
         *[f"        make new cc recipient at end of cc recipients with properties {{address:{_apple_string(item)}}}"
           for item in cc_list],
+        *[f"        make new attachment with properties {{file name:(POSIX file {_apple_string(path)})}} "
+          "at after the last paragraph of content" for path in files],
         "    end tell",
+        # Mail adds attachments in the background; give it a moment before saving.
+        *(["    delay 1"] if files else []),
         # Saved to Drafts only; this adapter never sends.
         "    save m",
         "    set found to {}",
@@ -1347,7 +1498,11 @@ def _mail_create_draft(
         # Mail keeps the hidden compose object until it quits whatever we do; closing
         # with saving yes can never discard the draft that was just saved.
         "    close m saving yes",
-        f"    return \"OK\" & us & {readback}",
+        '    set attached to 0',
+        "    try",
+        "        set attached to count of mail attachments of d",
+        "    end try",
+        f"    return \"OK\" & us & {readback} & us & (attached as text)",
         "end tell",
     ]
     try:
@@ -1378,8 +1533,18 @@ def _mail_create_draft(
         raise AppAdapterError("MAIL_DRAFT_NOT_VERIFIED",
                               "Mail did not show the draft in Drafts yet; it may still appear there.",
                               outcome_unknown=True, automatic_retry=False)
-    return {"ok": True, "created": True, "sent": False, "verified": True, "verification": "drafts_mailbox",
-            "draft": dict(zip(_DRAFT_FIELDS, parts[1:])), "to": to_list, "cc": cc_list}
+    out = {"ok": True, "created": True, "sent": False, "verified": True, "verification": "drafts_mailbox",
+           "draft": dict(zip(_DRAFT_FIELDS, parts[1:5])), "to": to_list, "cc": cc_list}
+    if resolved:
+        out["resolved_from_contacts"] = resolved
+    if files:
+        attached = int(parts[5]) if len(parts) > 5 and parts[5].isdigit() else 0
+        out["attachments"] = [Path(path).name for path in files]
+        out["attachments_verified"] = attached >= len(files)
+        if attached < len(files):
+            out["message"] = (f"The draft was saved, but Mail shows {attached} of {len(files)} attachments so far; "
+                              "open the draft to check before sending.")
+    return out
 
 
 def _send_dry_run() -> bool:
@@ -1414,8 +1579,9 @@ def _mail_send(
     if not title:
         raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Mail send_mail requires title (the subject).")
     text = _plain_text(body, "body", 20000)
-    to_list = _addresses(to, "to")
-    cc_list = _addresses(cc, "cc")
+    # Names are looked up in Contacts; the confirmation shows the addresses they became.
+    to_list, _ = _recipients(to, "to", timeout_s)
+    cc_list, _ = _recipients(cc, "cc", timeout_s)
     if not to_list:
         raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID", "Mail send_mail requires at least one to address.")
     pick, address = _mail_account_pick(account)
@@ -1865,6 +2031,11 @@ def mac_app(
     duration_min: Optional[int] = None,
     hours: Optional[str] = None,
     include_weekends: bool = False,
+    buffer_min: Optional[int] = None,
+    read: Optional[bool] = None,
+    flagged: Optional[bool] = None,
+    move_to: Optional[str] = None,
+    attachments: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     canonical = normalize_app_name(app)
     normalized_action = _normalized_action(action)
@@ -1907,10 +2078,12 @@ def mac_app(
             f"{canonical} adapter does not support action '{normalized_action}'.",
         )
 
-    if normalized_action in _RUN_ACTIONS and not settings.allow_shell:
+    # With running commands off, only shortcuts the owner listed in Settings › Apps can run (#195).
+    if normalized_action in _RUN_ACTIONS and not settings.allow_shell and not more.owner_allowed_shortcuts():
         return {
             **_base(canonical, normalized_action), "ok": False, "reason_code": "SHELL_DISABLED",
-            "error": "Running shortcuts is off because running commands is off (MCP_ALLOW_SHELL=false).",
+            "error": "Running shortcuts is off because running commands is off (MCP_ALLOW_SHELL=false) and no "
+                     "shortcut is allowed in Settings › Apps.",
         }
 
     if normalized_action not in _READ_ACTIONS | _DATA_WRITE_ACTIONS | _SEND_ACTIONS | _RUN_ACTIONS:
@@ -1987,6 +2160,9 @@ def mac_app(
     try:
         bounded = _bounded_limit(limit)
         timeout = max(1.0, min(float(timeout_s), _RUN_TIMEOUT_S if normalized_action in _RUN_ACTIONS else 30.0))
+        if normalized_action in {"find_free_time", "plan_day"}:
+            # Calendar can take 20+ seconds to list a week across many calendars; these only read, so they wait.
+            timeout = 30.0
         if canonical == "Finder":
             payload = (
                 _selection(settings, limit=bounded, timeout_s=timeout)
@@ -2000,13 +2176,19 @@ def mac_app(
                 payload = _notes_create(title, body, folder=folder, account=account, timeout_s=timeout)
             elif normalized_action == "append_to_note":
                 payload = more.notes_append(item_id, query, body, exact=exact, timeout_s=timeout)
+            elif normalized_action == "update_note":
+                payload = more.notes_update(item_id, title=title, body=body, timeout_s=timeout)
             else:
                 payload = _notes_open(item_id, query, exact=exact, preserve_focus=preserve_focus, timeout_s=timeout)
         elif canonical == "Mail":
             if normalized_action == "find_messages":
                 payload = _mail_find(query, sender, mailbox=mailbox, exact=exact, limit=bounded, timeout_s=timeout)
             elif normalized_action == "create_draft":
-                payload = _mail_create_draft(title, body, to=to, cc=cc, account=account, timeout_s=timeout)
+                payload = _mail_create_draft(title, body, to=to, cc=cc, account=account, timeout_s=timeout,
+                                             attachments=attachments)
+            elif normalized_action == "update_message":
+                payload = _mail_update(item_id, mailbox=mailbox, read=read, flagged=flagged, move_to=move_to,
+                                       timeout_s=timeout)
             elif normalized_action == "send_mail":
                 payload = _mail_send(settings, title, body, to=to, cc=cc, account=account, timeout_s=timeout)
             else:
@@ -2021,7 +2203,11 @@ def mac_app(
                 payload = more.calendar_free_time(
                     date_from=date_from, date_to=date_to, calendar=calendar, duration_min=duration_min,
                     hours=hours, include_weekends=include_weekends, limit=bounded, timeout_s=timeout,
+                    buffer_min=buffer_min,
                 )
+            elif normalized_action == "plan_day":
+                payload = more.plan_day(date_from=date_from, calendar=calendar, duration_min=duration_min,
+                                        hours=hours, buffer_min=buffer_min, limit=bounded, timeout_s=timeout)
             elif normalized_action == "create_event":
                 payload = _calendar_create(
                     title, start, end, calendar=calendar, location=location, notes=notes, timeout_s=timeout,
@@ -2039,6 +2225,11 @@ def mac_app(
             elif normalized_action == "create_reminder":
                 payload = more.reminders_create(title, list_name=list_name, due=start, notes=notes or body,
                                                 timeout_s=timeout)
+            elif normalized_action == "update_reminder":
+                payload = more.reminders_update(item_id, title=title, due=start,
+                                                notes=notes if notes is not None else body, timeout_s=timeout)
+            elif normalized_action == "delete_reminder":
+                payload = more.reminders_delete(item_id, timeout_s=timeout)
             else:
                 payload = _reminders_complete(item_id, timeout_s=timeout)
         elif canonical == "Contacts":
@@ -2047,7 +2238,7 @@ def mac_app(
             payload = (
                 more.shortcuts_list(query, limit=bounded, timeout_s=timeout)
                 if normalized_action == "list_shortcuts"
-                else more.shortcuts_run(item_id, title, body, timeout_s=timeout)
+                else more.shortcuts_run(item_id, title, body, timeout_s=timeout, allowed_only=not settings.allow_shell)
             )
         elif canonical == "Preview":
             payload = (

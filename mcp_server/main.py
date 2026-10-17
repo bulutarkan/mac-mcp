@@ -1382,10 +1382,12 @@ def create_app():
             "These read actions never launch the app; a closed app returns APP_NOT_RUNNING. "
             "Finder: selection|select_file. "
             "Notes: find_notes|open_note|create_note (title, optional body/folder/account)|append_to_note (item_id or "
-            "query matching one note, body added at its end). "
+            "query matching one note, body added at its end)|update_note (item_id only; replaces the title and/or body). "
             "Mail: find_messages|open_message|create_draft (title as subject, optional body, to/cc as comma-separated "
-            "addresses, account name or address; required when several accounts are enabled). create_draft only saves "
-            "to Drafts and never sends; send_mail (same fields, to required) sends. "
+            "addresses or contact names that lead to one address, account name or address; required when several "
+            "accounts are enabled; optional attachments as file paths). create_draft only saves to Drafts and never "
+            "sends; send_mail (same fields except attachments, to required) sends; update_message (item_id, mailbox "
+            "where it is now; read and/or flagged true/false, move_to a mailbox name or 'archive'). "
             "send_mail and send_message reach other people: by default the person confirms each one in a native panel "
             "showing recipients and text (Settings > Apps can turn this off). SEND_CANCELLED means they declined; do not "
             "retry unless asked. Sends are never retried automatically. "
@@ -1393,13 +1395,17 @@ def create_app():
             "start as YYYY-MM-DD makes an all-day event)|update_event (item_id uid plus fields to change)|"
             "find_free_time (date_from/date_to, default the next 7 days; duration_min default 30; hours default "
             "'09:00-18:00'; include_weekends; optional calendar; all-day events do not count as busy; repeating events "
-            "it cannot expand make the result approximate=true). "
+            "it cannot expand make the result approximate=true; buffer_min keeps minutes free around events)|"
+            "plan_day (date_from = the day, default today: events, free time and reminders due, read-only). "
             "Reminders: list_reminders (query, list_name, include_completed)|create_reminder (title, optional "
-            "list_name, start as the due date or datetime, notes)|complete_reminder (item_id). "
-            "Contacts: find_contacts (query matches name or organization; returns emails and phones). "
+            "list_name, start as the due date or datetime, notes)|update_reminder (item_id; title, start = new due "
+            "date to defer it, notes)|complete_reminder (item_id)|delete_reminder (item_id). "
+            "Contacts: find_contacts (query matches name or organization, or an email address or phone number; "
+            "returns emails and phones). "
             "Shortcuts: list_shortcuts (optional query)|run_shortcut (item_id from list_shortcuts or title = exact name, "
             "optional body as its text input; returns its text output). A shortcut can do anything its actions do, so "
-            "run one only when asked; it needs running commands to be allowed, and a failed run says outcome_unknown. "
+            "run one only when asked; it needs running commands to be allowed (or the shortcut on the owner's list in "
+            "Settings > Apps), and a failed run says outcome_unknown. "
             "Data actions return the item's stable id and a read-back verification; a replayed create returns the "
             "existing item instead of a duplicate, and an uncertain result says outcome_unknown and must not be retried blindly. "
             "Preview: list_documents|open_document. System Settings: list_panes|open_pane. "
@@ -1439,6 +1445,11 @@ def create_app():
         duration_min: Optional[int] = None,
         hours: Optional[str] = None,
         include_weekends: bool = False,
+        buffer_min: Optional[int] = None,
+        read: Optional[bool] = None,
+        flagged: Optional[bool] = None,
+        move_to: Optional[str] = None,
+        attachments: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         return _log(
             audit_logger,
@@ -1474,6 +1485,11 @@ def create_app():
                 duration_min=duration_min,
                 hours=hours,
                 include_weekends=include_weekends,
+                buffer_min=buffer_min,
+                read=read,
+                flagged=flagged,
+                move_to=move_to,
+                attachments=attachments,
             ),
         )
 

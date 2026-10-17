@@ -28,9 +28,10 @@ def _capture_scripts(call, *, reply: str = "OK" + US + "uid-1" + US + "T" + US +
 
 class AppDataActionTests(unittest.TestCase):
     def test_registry_and_risk_treat_data_changes_as_local_writes(self) -> None:
-        self.assertEqual(("find_events", "find_free_time", "open_event", "create_event", "update_event"),
+        self.assertEqual(("find_events", "find_free_time", "plan_day", "open_event", "create_event", "update_event"),
                          aa.supported_actions("calendar"))
-        self.assertEqual(("list_reminders", "create_reminder", "complete_reminder"), aa.supported_actions("reminders"))
+        self.assertEqual(("list_reminders", "create_reminder", "update_reminder", "complete_reminder", "delete_reminder"),
+                         aa.supported_actions("reminders"))
         self.assertTrue(aa.is_read_action("list_reminders"))
         _, write = resolve_risk("mac_app", {"app": "Calendar", "action": "create_event"})
         self.assertIn(Capability.LOCAL_WRITE, write.capabilities)
@@ -80,6 +81,30 @@ class AppDataActionTests(unittest.TestCase):
                                                                 duration_min=30, hours=None, include_weekends=False,
                                                                 limit=5, timeout_s=5), "")
         scripts += more_scripts(lambda: more.contacts_find("Ayşe \"A\"", limit=5, timeout_s=5), "")
+        # #194-#196 remainders.
+        scripts += more_scripts(lambda: more.contacts_find("ayse@x.com", limit=5, timeout_s=5), "")
+        scripts += more_scripts(lambda: more.reminders_update("id-1", title="New \"name\"", due="2026-11-02T09:00",
+                                                              notes="a\nb", timeout_s=5), reminder)
+        scripts += more_scripts(lambda: more.reminders_update("id-1", title=None, due="2026-11-02", notes=None,
+                                                              timeout_s=5), reminder)
+        scripts += more_scripts(lambda: more.reminders_delete("id-1", timeout_s=5), "OK" + US + "x")
+        scripts += more_scripts(lambda: more.notes_update("note-1", title="T \"q\"", body="a\n<b>", timeout_s=5),
+                                "OK" + US + "n" + US + "t")
+        scripts += more_scripts(lambda: more.notes_update("note-1", title="Only title", body=None, timeout_s=5),
+                                "OK" + US + "n" + US + "t")
+        scripts += more_scripts(lambda: more.plan_day(date_from="2026-11-02", calendar=None, duration_min=30, hours=None,
+                                                      buffer_min=10, limit=5, timeout_s=5), "")
+        for kwargs in (dict(read=True, flagged=None, move_to=None), dict(read=None, flagged=False, move_to="archive"),
+                       dict(read=False, flagged=True, move_to="Receipts \"2026\"")):
+            state = "OK" + US + str(bool(kwargs["read"])).lower() + US + str(bool(kwargs["flagged"])).lower() + US + "A"
+            scripts += _capture_scripts(lambda kwargs=kwargs: aa._mail_update("<m@x>", mailbox="inbox", timeout_s=5,
+                                                                              **kwargs), reply=state)
+        with tempfile.TemporaryDirectory() as attach_dir:
+            attachment = Path(attach_dir) / "a \"b\".pdf"
+            attachment.write_bytes(b"x")
+            scripts += _capture_scripts(lambda: aa._mail_create_draft(
+                "Subject", "Body", to="a@x.com", cc=None, account="Work", timeout_s=5, attachments=[str(attachment)]),
+                reply="OK" + US + "<d@x>" + US + "Subject" + US + "Work" + US + "Me" + US + "1")
         with tempfile.TemporaryDirectory() as td:
             for index, script in enumerate(scripts):
                 source = Path(td) / f"s{index}.applescript"

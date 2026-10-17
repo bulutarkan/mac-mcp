@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Scheduled Tasks: approved scripts stay as approved, and data reaches the agent masked (#179)
+- Approving a task an AI app suggested now shows its script's contents and binds them: if the script (or its data step script) changes later, the task stops and asks for a review with the change shown; a change during the review is refused. Your own tasks and files you pick are not bound.
+- Secrets a data step prints (tokens, keys, passwords) are masked before the agent sees the data; the agent is told, and the report says so.
+
 ### Scheduled Tasks: know when a run went wrong, and why (#225, #226, #227, #228)
 - **Runs that never started:** the app asks Mac MCP once a minute, outside the scheduler, and says "<task> didn't start" once when a run is more than 5 minutes late; the card shows "Didn't start at 09:00". After the Mac wakes or Mac MCP comes back, the scheduler gets those minutes to catch up first. If Mac MCP stops answering while it should be running, a run that came due gets "<task> may not have run".
 - **A run stopped at its time limit keeps its steps and usage** (they were lost before), and every run that didn't finish says what is partial and that outside effects are unknown.
@@ -17,6 +21,12 @@
 - `mac-mcp mcp list|add|import|remove|enable|disable|test|call` does the same from the terminal.
 
 ### More done in your Mac's own apps (#194, #195, #196)
+- **Reminders:** rename a reminder, move its due date (defer it) or change its notes, and delete one; each change is read back.
+- **Notes:** replace a note's text or title (`update_note`, by its id only, so a name guess never overwrites the wrong note).
+- **Calendar:** `find_free_time` can keep minutes free around each event (`buffer_min`); `plan_day` shows one day at a glance: events, free time between them and reminders due (overdue ones marked). It only reads.
+- **Mail:** mark a message read or unread, flag it, move it to another mailbox or archive it; attach files to a draft; write a contact's name instead of an address when it leads to exactly one address (otherwise you get the choices, and nothing is done).
+- **Contacts:** find someone by email address or phone number.
+- **Shortcuts:** Settings › Apps lists your shortcuts; the ones you turn on can run even while running commands is off. The task editor's command field has a **Run a shortcut** menu.
 - **Reminders:** AI apps can now add a reminder (title, list, due date or time, notes), not only list and complete them; a repeated request finds the reminder it made instead of adding a twin.
 - **Notes:** add text to the end of an existing note (`append_to_note`), read back after the change.
 - **Calendar:** `find_free_time` finds free stretches of a given length within working hours (09:00-18:00 by default, weekdays unless asked) over the next days. Holidays and other all-day events don't count as busy; simple repeating events (daily, weekly on chosen days, monthly, yearly) are counted on every day they fall, and a rule it can't expand is named and the answer marked approximate instead of offering time that may be taken.
