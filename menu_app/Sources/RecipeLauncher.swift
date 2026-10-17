@@ -83,24 +83,34 @@ final class RecipeLauncher {
         Task { await run(request) }
     }
 
-    private func run(_ request: LaunchRequest) async {
+    /// The active recipes, for the Shortcuts action's recipe picker.
+    func recipes() async throws -> [RecipeSummary] {
+        guard let base = baseURL() else { throw URLError(.cannotConnectToHost) }
+        let list: RecipeListEnvelope = try await send(base.appendingPathComponent("dashboard/api/recipes"), body: nil)
+        return list.recipes
+    }
+
+    /// The Shortcuts and Siri action "Run Mac MCP Recipe": the same confirmation as a link, and what happened.
+    func runFromShortcut(_ recipeID: String) async -> String {
+        await run(LaunchRequest(recipeID: recipeID, values: [:]), source: "A shortcut")
+    }
+
+    @discardableResult
+    private func run(_ request: LaunchRequest, source: String = "A link") async -> String {
         guard let base = baseURL() else {
-            report(title: "Mac MCP is not configured", body: "Open Mac MCP and start the server, then try again.")
-            return
+            return report(title: "Mac MCP is not configured", body: "Open Mac MCP and start the server, then try again.")
         }
         let summary: RecipeSummary
         do {
             let list: RecipeListEnvelope = try await send(base.appendingPathComponent("dashboard/api/recipes"), body: nil)
             guard let found = list.recipes.first(where: { $0.recipeID == request.recipeID }) else {
-                report(title: "Recipe not found", body: "No active recipe has the id \(request.recipeID).")
-                return
+                return report(title: "Recipe not found", body: "No active recipe has the id \(request.recipeID).")
             }
             summary = found
         } catch {
-            report(title: "Mac MCP is not running", body: "Start Mac MCP, then run the recipe again.")
-            return
+            return report(title: "Mac MCP is not running", body: "Start Mac MCP, then run the recipe again.")
         }
-        guard confirm(summary, values: request.values) else { return }
+        guard confirm(summary, values: request.values, source: source) else { return "Not run: you chose Cancel." }
         do {
             let result: RunEnvelope = try await send(
                 base.appendingPathComponent("dashboard/api/recipes/run"),
@@ -108,18 +118,18 @@ final class RecipeLauncher {
             )
             let name = result.name ?? summary.name ?? request.recipeID
             if result.ok {
-                report(title: "Recipe completed", body: "\(name) finished (\(result.stepsExecuted ?? 0) steps).")
+                return report(title: "Recipe completed", body: "\(name) finished (\(result.stepsExecuted ?? 0) steps).")
             } else if result.status == "approval_required" {
-                report(title: "Recipe needs approval", body: "\(name) is waiting for approval in Mac MCP.")
+                return report(title: "Recipe needs approval", body: "\(name) is waiting for approval in Mac MCP.")
             } else {
-                report(title: "Recipe did not complete", body: "\(name): \(result.message ?? result.status ?? "failed")")
+                return report(title: "Recipe did not complete", body: "\(name): \(result.message ?? result.status ?? "failed")")
             }
         } catch {
-            report(title: "Recipe did not run", body: "Mac MCP could not run the recipe: \(error.localizedDescription)")
+            return report(title: "Recipe did not run", body: "Mac MCP could not run the recipe: \(error.localizedDescription)")
         }
     }
 
-    private func confirm(_ recipe: RecipeSummary, values: [String: String]) -> Bool {
+    private func confirm(_ recipe: RecipeSummary, values: [String: String], source: String = "A link") -> Bool {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Run “\(recipe.name ?? recipe.recipeID)”?"
@@ -129,13 +139,14 @@ final class RecipeLauncher {
             lines.append("")
             lines.append("This recipe changes things on your Mac or in apps.")
         }
-        alert.informativeText = "A link asked Mac MCP to run this saved recipe.\n\n" + lines.joined(separator: "\n")
+        alert.informativeText = "\(source) asked Mac MCP to run this saved recipe.\n\n" + lines.joined(separator: "\n")
         alert.addButton(withTitle: "Run")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
     }
 
-    private func report(title: String, body: String) {
+    @discardableResult
+    private func report(title: String, body: String) -> String {
         Task {
             if await AgentNotificationController.shared.scheduleMessage(title: title, body: body) { return }
             let alert = NSAlert()
@@ -143,6 +154,7 @@ final class RecipeLauncher {
             alert.informativeText = body
             alert.runModal()
         }
+        return "\(title): \(body)"
     }
 
     private func send<T: Decodable>(_ url: URL, body: [String: Any]?) async throws -> T {

@@ -29,49 +29,73 @@ if [[ -n "${MAC_MCP_APP_DISPLAY_NAME:-}" ]]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleName ${MAC_MCP_APP_DISPLAY_NAME}" "${CONTENTS}/Info.plist" >/dev/null
   /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName ${MAC_MCP_APP_DISPLAY_NAME}" "${CONTENTS}/Info.plist" >/dev/null
 fi
-xcrun swiftc -O -parse-as-library -target "${ARCH}-apple-macos13.0" \
-  -framework SwiftUI -framework AppKit -framework Foundation -framework Security -framework CoreAudio -framework SafariServices -framework CoreImage -framework UserNotifications -framework WebKit -framework ServiceManagement \
-  "${SCRIPT_DIR}/Sources/SwiftUICompat.swift" \
-  "${SCRIPT_DIR}/Sources/MacMCPMenuApp.swift" \
-  "${SCRIPT_DIR}/Sources/LoginItem.swift" \
-  "${SCRIPT_DIR}/Sources/PrivacyPane.swift" \
-  "${SCRIPT_DIR}/Sources/McpServersPane.swift" \
-  "${SCRIPT_DIR}/Sources/ScheduledTasksPane.swift" \
-  "${SCRIPT_DIR}/Sources/ScheduledTaskWatchdog.swift" \
-  "${SCRIPT_DIR}/Sources/RunReportView.swift" \
-  "${SCRIPT_DIR}/Sources/LiveIsland.swift" \
-  "${SCRIPT_DIR}/Sources/IslandHitArea.swift" \
-  "${SCRIPT_DIR}/Sources/ConnectAppsBox.swift" \
-  "${SCRIPT_DIR}/Sources/AgentNotificationController.swift" \
-  "${SCRIPT_DIR}/Sources/AppState.swift" \
-  "${SCRIPT_DIR}/Sources/AppModels+Dashboard.swift" \
-  "${SCRIPT_DIR}/Sources/AppModels+Agents.swift" \
-  "${SCRIPT_DIR}/Sources/AppModels+Steering.swift" \
-  "${SCRIPT_DIR}/Sources/AppModels+Updates.swift" \
-  "${SCRIPT_DIR}/Sources/AppModels+ScheduledTasks.swift" \
-  "${SCRIPT_DIR}/Sources/AppModels+Live.swift" \
-  "${SCRIPT_DIR}/Sources/StatusDisplay.swift" \
-  "${SCRIPT_DIR}/Sources/OnboardingChecklist.swift" \
-  "${SCRIPT_DIR}/Sources/OnboardingBridge.swift" \
-  "${SCRIPT_DIR}/Sources/OnboardingWindowController.swift" \
-  "${SCRIPT_DIR}/Sources/SettingsStore.swift" \
-  "${SCRIPT_DIR}/Sources/SettingsView.swift" \
-  "${SCRIPT_DIR}/Sources/ProviderUsageSection.swift" \
-  "${SCRIPT_DIR}/Sources/UsageOverview.swift" \
-  "${SCRIPT_DIR}/Sources/SavedLoginsView.swift" \
-  "${SCRIPT_DIR}/Sources/SettingsSearch.swift" \
-  "${SCRIPT_DIR}/Sources/RecipeLauncher.swift" \
-  "${SCRIPT_DIR}/Sources/DoctorReport.swift" \
-  "${SCRIPT_DIR}/Sources/HelpDiagnostics.swift" \
-  "${SCRIPT_DIR}/Sources/SettingsWindowController.swift" \
-  "${SCRIPT_DIR}/Sources/ToolActivityBubbleController.swift" \
-  "${SCRIPT_DIR}/Sources/DesktopCursorOverlay.swift" \
-  "${SCRIPT_DIR}/Sources/KeychainStore.swift" \
-  "${SCRIPT_DIR}/Sources/AudioDeviceStore.swift" \
-  "${SCRIPT_DIR}/Sources/SessionDetailPresentation.swift" \
-  "${SCRIPT_DIR}/Sources/SessionDetailView.swift" \
-  "${SCRIPT_DIR}/Sources/MenuBarView.swift" \
+APP_SOURCES=(
+  "${SCRIPT_DIR}/Sources/SwiftUICompat.swift"
+  "${SCRIPT_DIR}/Sources/MacMCPMenuApp.swift"
+  "${SCRIPT_DIR}/Sources/LoginItem.swift"
+  "${SCRIPT_DIR}/Sources/PrivacyPane.swift"
+  "${SCRIPT_DIR}/Sources/McpServersPane.swift"
+  "${SCRIPT_DIR}/Sources/ScheduledTasksPane.swift"
+  "${SCRIPT_DIR}/Sources/ScheduledTaskWatchdog.swift"
+  "${SCRIPT_DIR}/Sources/RunReportView.swift"
+  "${SCRIPT_DIR}/Sources/LiveIsland.swift"
+  "${SCRIPT_DIR}/Sources/IslandHitArea.swift"
+  "${SCRIPT_DIR}/Sources/ConnectAppsBox.swift"
+  "${SCRIPT_DIR}/Sources/AgentNotificationController.swift"
+  "${SCRIPT_DIR}/Sources/AppState.swift"
+  "${SCRIPT_DIR}/Sources/AppModels+Dashboard.swift"
+  "${SCRIPT_DIR}/Sources/AppModels+Agents.swift"
+  "${SCRIPT_DIR}/Sources/AppModels+Steering.swift"
+  "${SCRIPT_DIR}/Sources/AppModels+Updates.swift"
+  "${SCRIPT_DIR}/Sources/AppModels+ScheduledTasks.swift"
+  "${SCRIPT_DIR}/Sources/AppModels+Live.swift"
+  "${SCRIPT_DIR}/Sources/StatusDisplay.swift"
+  "${SCRIPT_DIR}/Sources/OnboardingChecklist.swift"
+  "${SCRIPT_DIR}/Sources/OnboardingBridge.swift"
+  "${SCRIPT_DIR}/Sources/OnboardingWindowController.swift"
+  "${SCRIPT_DIR}/Sources/SettingsStore.swift"
+  "${SCRIPT_DIR}/Sources/SettingsView.swift"
+  "${SCRIPT_DIR}/Sources/ProviderUsageSection.swift"
+  "${SCRIPT_DIR}/Sources/UsageOverview.swift"
+  "${SCRIPT_DIR}/Sources/SavedLoginsView.swift"
+  "${SCRIPT_DIR}/Sources/SettingsSearch.swift"
+  "${SCRIPT_DIR}/Sources/RecipeLauncher.swift"
+  "${SCRIPT_DIR}/Sources/RecipeIntents.swift"
+  "${SCRIPT_DIR}/Sources/DoctorReport.swift"
+  "${SCRIPT_DIR}/Sources/HelpDiagnostics.swift"
+  "${SCRIPT_DIR}/Sources/SettingsWindowController.swift"
+  "${SCRIPT_DIR}/Sources/ToolActivityBubbleController.swift"
+  "${SCRIPT_DIR}/Sources/DesktopCursorOverlay.swift"
+  "${SCRIPT_DIR}/Sources/KeychainStore.swift"
+  "${SCRIPT_DIR}/Sources/AudioDeviceStore.swift"
+  "${SCRIPT_DIR}/Sources/SessionDetailPresentation.swift"
+  "${SCRIPT_DIR}/Sources/SessionDetailView.swift"
+  "${SCRIPT_DIR}/Sources/MenuBarView.swift"
+)
+# Shortcuts and Siri find the app's actions (#195) through App Intents metadata, built from the
+# compiler's constant values; the whole module is compiled at once so there is one such file.
+INTENTS_WORK="$(mktemp -d)"
+trap 'rm -rf "${INTENTS_WORK}"' EXIT
+print -r -- '["AppIntent","EntityQuery","AppEntity","TransientEntity","AppEnum","AppShortcutProviding","AppShortcutsProvider","AnyResolverProviding","AppIntentsPackage","DynamicOptionsProvider"]' > "${INTENTS_WORK}/protocols.json"
+xcrun swiftc -O -wmo -parse-as-library -module-name MacMCPMenu -target "${ARCH}-apple-macos13.0" \
+  -framework SwiftUI -framework AppKit -framework Foundation -framework Security -framework CoreAudio -framework SafariServices -framework CoreImage -framework UserNotifications -framework WebKit -framework ServiceManagement -framework AppIntents \
+  -emit-const-values-path "${INTENTS_WORK}/MacMCPMenu.swiftconstvalues" \
+  -Xfrontend -const-gather-protocols-file -Xfrontend "${INTENTS_WORK}/protocols.json" \
+  "${APP_SOURCES[@]}" \
   -o "${MACOS}/MacMCPMenu"
+# Xcode's metadata processor; without Xcode (Command Line Tools only) the app builds the same, just
+# without the Shortcuts action.
+if INTENTS_PROCESSOR="$(xcrun --find appintentsmetadataprocessor 2>/dev/null)"; then
+  print -rl -- "${APP_SOURCES[@]}" > "${INTENTS_WORK}/sources.txt"
+  print -r -- "${INTENTS_WORK}/MacMCPMenu.swiftconstvalues" > "${INTENTS_WORK}/constvalues.txt"
+  "${INTENTS_PROCESSOR}" --output "${RESOURCES}" --toolchain-dir "$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain" \
+    --module-name MacMCPMenu --sdk-root "$(xcrun --sdk macosx --show-sdk-path)" \
+    --xcode-version "$(xcodebuild -version 2>/dev/null | awk '/Build version/ {print $3}')" \
+    --platform-family macOS --deployment-target 13.0 --target-triple "${ARCH}-apple-macos13.0" \
+    --source-file-list "${INTENTS_WORK}/sources.txt" --swift-const-vals-list "${INTENTS_WORK}/constvalues.txt" \
+    --force --no-app-shortcuts-localization >/dev/null 2>&1 \
+    || printf 'App Intents metadata was not built; the Shortcuts action will be missing.\n' >&2
+fi
 
 # The first-run tour (a local web page; tests stay out of the bundle) and the icon it shows.
 /usr/bin/rsync -a --exclude tests "${SCRIPT_DIR}/Onboarding" "${RESOURCES}/"
