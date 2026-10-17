@@ -88,6 +88,9 @@ def with_file(definition: Dict[str, Any], path: str) -> Dict[str, Any]:
         for key in ("args", "command"):
             if holder.get(key):
                 holder[key] = str(holder[key]).replace(store.FILE_TOKEN, quoted)
+    if isinstance(out.get("values"), dict):  # a recipe's values take the path as it is (#257)
+        out["values"] = {key: value.replace(store.FILE_TOKEN, path) if isinstance(value, str) else value
+                         for key, value in out["values"].items()}
     out["trigger_file"] = path
     return out
 

@@ -34,6 +34,16 @@ struct TaskIcon: View {
     }
 }
 
+/// The icon for a task of any kind (#257): an agent, a script or a saved recipe.
+struct TaskKindIcon: View {
+    let kind: String
+    var size: CGFloat = 34
+
+    var body: some View {
+        if kind == "recipe" { RecipeIcon(size: size) } else { TaskIcon(ai: kind == "ai", size: size) }
+    }
+}
+
 private struct CardBackground: ViewModifier {
     var highlight: Color?
     var hovering = false
@@ -253,7 +263,7 @@ struct ScheduledTasksPane: View {
         let waiting = task.proposal != nil
         let hovering = hovered == task.id
         HStack(spacing: 12) {
-            TaskIcon(ai: (task.proposal?["kind"] as? String ?? task.kind) == "ai")
+            TaskKindIcon(kind: task.proposal?["kind"] as? String ?? task.kind)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(waiting && !task.approved ? (task.proposal?["name"] as? String ?? task.name) : task.name)
@@ -364,10 +374,10 @@ private struct TaskDetailView: View {
                 .foregroundStyle(Color.accentColor)
 
                 HStack(alignment: .top, spacing: 14) {
-                    TaskIcon(ai: task.isAI, size: 48)
+                    TaskKindIcon(kind: task.kind, size: 48)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(task.name).font(.title2.weight(.semibold))
-                        Text(([task.scheduleText, task.isAI ? "AI task" : "Script"] + (task.isAI ? [agentName] : [])).joined(separator: " · "))
+                        Text(([task.scheduleText, task.isRecipe ? "Recipe" : task.isAI ? "AI task" : "Script"] + (task.isAI ? [agentName] : [])).joined(separator: " · "))
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -464,6 +474,17 @@ private struct TaskDetailView: View {
         return agents.first(where: { ($0["id"] as? String) == provider })?["name"] as? String ?? provider.capitalized
     }
 
+    /// "Monthly note" or what is wrong with it: a recipe that is paused, a draft or gone does not run.
+    private var recipeLine: String {
+        let name = task.recipe["name"] as? String ?? "A saved recipe"
+        switch task.recipe["status"] as? String {
+        case "active": return name
+        case "paused": return "\(name) — paused, so runs fail until you resume it in Recipes"
+        case "draft": return "\(name) — a draft, so runs fail until you turn it on in Recipes"
+        default: return "The recipe was deleted, so runs fail"
+        }
+    }
+
     private var facts: some View {
         VStack(spacing: 0) {
             if task.watchesFolder {
@@ -472,7 +493,14 @@ private struct TaskDetailView: View {
                 factRow("calendar", "Next run", task.paused ? "Paused" : task.nextRunAt.map { TaskTime.upcoming($0).capitalizedFirst } ?? "No more runs")
             }
             Divider()
-            if task.isAI {
+            if task.isRecipe {
+                factRow("play.square.stack", "Replays", recipeLine, lines: 2)
+                if !task.recipeValues.isEmpty {
+                    Divider()
+                    factRow("slider.horizontal.3", "With", task.recipeValues.keys.sorted()
+                        .map { "\($0): \(task.recipeValues[$0].map { "\($0)" } ?? "")" }.joined(separator: " · "), mono: true, lines: 3)
+                }
+            } else if task.isAI {
                 if let step = task.raw["data_step"] as? [String: Any] {
                     factRow("tablecells", "Data first", Self.program(step), mono: true, lines: 2)
                     Divider()
@@ -484,8 +512,10 @@ private struct TaskDetailView: View {
                 factRow("doc.text", "Runs", (task.raw["script"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? "", mono: true)
             }
             Divider()
-            factRow("folder", "Works in", task.cwd.map(Self.tilde) ?? (task.isAI ? "Home folder" : "The script's folder"))
-            Divider()
+            if !task.isRecipe {
+                factRow("folder", "Works in", task.cwd.map(Self.tilde) ?? (task.isAI ? "Home folder" : "The script's folder"))
+                Divider()
+            }
             if let checks = Self.checks(task.raw["verify"]) {
                 factRow("checkmark.seal", "Checks", checks, mono: true, lines: 5)
                 Divider()
@@ -597,7 +627,7 @@ private struct TaskDetailView: View {
         switch run.status {
         case "skipped": return (run.reason ?? "Skipped") + ". Run it now if you still need it."
         case "done": return run.summary
-        case "running": return task.isAI ? "The agent is working on it." : "The script is running."
+        case "running": return task.isRecipe ? "The recipe is running." : task.isAI ? "The agent is working on it." : "The script is running."
         default: return [run.reason, run.summary].compactMap { $0 }.joined(separator: " — ")
         }
     }
@@ -650,6 +680,10 @@ final class TaskEditorModel: ObservableObject, Identifiable {
     let id = UUID()
     var taskID: String?
     @Published var isAI = true
+    /// A saved recipe replayed with values (#257); isAI is false then.
+    @Published var isRecipe = false
+    @Published var recipeID = ""
+    @Published var recipeValues: [String: String] = [:]
     @Published var name = ""
     @Published var description = ""
     @Published var prompt = ""
@@ -697,6 +731,9 @@ final class TaskEditorModel: ObservableObject, Identifiable {
         taskID = task.id
         let raw = task.raw
         isAI = task.isAI
+        isRecipe = task.isRecipe
+        recipeID = task.recipe["recipe_id"] as? String ?? task.raw["recipe_id"] as? String ?? ""
+        recipeValues = task.recipeValues.mapValues { "\($0)" }
         name = task.name
         description = task.description
         prompt = raw["prompt"] as? String ?? ""
@@ -823,7 +860,7 @@ final class TaskEditorModel: ObservableObject, Identifiable {
 
     var definition: [String: Any] {
         var out: [String: Any] = [
-            "name": name, "description": description, "kind": isAI ? "ai" : "script",
+            "name": name, "description": description, "kind": isRecipe ? "recipe" : isAI ? "ai" : "script",
             "schedule": schedule, "notify": notify, "cwd": cwd,
             "missed": catchUp && when != .file ? "run_once" : "skip",
         ]
@@ -854,7 +891,10 @@ final class TaskEditorModel: ObservableObject, Identifiable {
             checks.insert(first, at: 0)
         }
         out["verify"] = checks  // empty removes the checks on an edit
-        if isAI {
+        if isRecipe {
+            out["recipe_id"] = recipeID
+            out["values"] = recipeValues.filter { !$0.value.trimmingCharacters(in: .whitespaces).isEmpty }
+        } else if isAI {
             out["prompt"] = prompt
             out["provider"] = provider
             out["model"] = model
@@ -905,6 +945,8 @@ private struct TaskEditorSheet: View {
     @MacMCPState private var dataPreview: [String: Any]?
     /// This Mac's shortcuts, for "Run a shortcut" (#195); loaded once the sheet opens.
     @MacMCPState private var shortcutNames: [String] = []
+    /// Saved recipes for a recipe task (#257); loaded once the sheet opens.
+    @MacMCPState private var recipeList: [Recipe] = []
     @MacMCPState private var argsPreview: [String: Any]?
     @MacMCPState private var error = ""
     @MacMCPState private var saving = false
@@ -923,14 +965,14 @@ private struct TaskEditorSheet: View {
                 VStack(alignment: .leading, spacing: 14) {
                     kindPicker
                     field("Name") {
-                        TextField(model.isAI ? "e.g. Weekly ad report" : "e.g. Export leads to Excel", text: $model.name)
+                        TextField(model.isRecipe ? "e.g. Monthly report note" : model.isAI ? "e.g. Weekly ad report" : "e.g. Export leads to Excel", text: $model.name)
                             .textFieldStyle(.roundedBorder)
                     }
                     field("Description", optional: true) {
                         TextField("What it's for, so you remember later", text: $model.description)
                             .textFieldStyle(.roundedBorder)
                     }
-                    if model.isAI { aiFields } else { scriptFields }
+                    if model.isRecipe { recipeFields } else if model.isAI { aiFields } else { scriptFields }
                     whenSection
                     Toggle("Notify me when it finishes", isOn: $model.notify)
                     advanced
@@ -959,6 +1001,10 @@ private struct TaskEditorSheet: View {
         .frame(width: 560, height: height)
         .task(id: model.previewKey) { await preview() }
         .task { shortcutNames = await MacShortcuts.names() }
+        .task {
+            let result = await state.taskAPI("dashboard/api/recipes/manage")
+            recipeList = (result.object["recipes"] as? [[String: Any]] ?? []).map(Recipe.init)
+        }
     }
 
     private var checkHint: String {
@@ -977,6 +1023,13 @@ private struct TaskEditorSheet: View {
         if model.when == .file && model.cron.isEmpty && model.watchFolder.isEmpty { return false }
         if model.isAI && (!model.usageLimitReady || (model.usageKind != "none" && limitNote.problem)) { return false }
         if !model.checkReady { return false }
+        if model.isRecipe {
+            guard let recipe = chosenRecipe else { return false }
+            return recipe.parameters.allSatisfy { parameter in
+                (parameter.spec["required"] as? Bool) == false || parameter.spec["default"] != nil
+                    || !(model.recipeValues[parameter.name] ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+            }
+        }
         if model.isAI {
             return !model.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && (!model.dataOn || model.dataStepReady) && (dataPreview?["ok"] as? Bool) != false
@@ -987,18 +1040,75 @@ private struct TaskEditorSheet: View {
 
     private var kindPicker: some View {
         HStack(spacing: 10) {
-            kindCard(ai: true, title: "AI task", detail: "Tell an agent what to do")
-            kindCard(ai: false, title: "Script", detail: "Run a file or command")
+            kindCard(kind: "ai", title: "AI task", detail: "Tell an agent what to do")
+            kindCard(kind: "script", title: "Script", detail: "Run a file or command")
+            kindCard(kind: "recipe", title: "Recipe", detail: "Replay saved steps")
         }
     }
 
-    private func kindCard(ai: Bool, title: String, detail: String) -> some View {
-        let on = model.isAI == ai
+    private var currentKind: String { model.isRecipe ? "recipe" : model.isAI ? "ai" : "script" }
+
+    private var chosenRecipe: Recipe? { recipeList.first { $0.id == model.recipeID } }
+
+    /// Pick a saved recipe and give its values; nothing here asks a model (#257).
+    private var recipeFields: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            field("Recipe") {
+                let usable = recipeList.filter { $0.status == "active" || $0.id == model.recipeID }
+                if usable.isEmpty {
+                    Text("No recipe is turned on yet. Ask your AI app to save one, then turn it on in Settings › Automation › Recipes.")
+                        .font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Picker("", selection: $model.recipeID) {
+                        Text("Choose a recipe").tag("")
+                        ForEach(usable) { recipe in
+                            Text(recipe.status == "active" ? recipe.name : "\(recipe.name) (\(recipe.statusLabel.lowercased()))").tag(recipe.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 320, alignment: .leading)
+                }
+            }
+            if let recipe = chosenRecipe {
+                if !recipe.summary.isEmpty {
+                    Text(recipe.summary).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ForEach(recipe.parameters, id: \.name) { parameter in
+                    let required = (parameter.spec["required"] as? Bool) != false && parameter.spec["default"] == nil
+                    field(parameter.name, optional: !required) {
+                        TextField(recipeValueHint(parameter.spec), text: Binding(
+                            get: { model.recipeValues[parameter.name] ?? "" },
+                            set: { model.recipeValues[parameter.name] = $0 }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                    }
+                }
+                Text(model.when == .file
+                     ? "Put {file} in a value to hand the recipe the file that arrived. Date words such as {today} become the run's dates."
+                     : "Date words such as {today} or {last_month_start} become the run's dates. It replays the saved steps; no AI model is asked.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func recipeValueHint(_ spec: [String: Any]) -> String {
+        var parts = [spec["type"] as? String ?? "text"]
+        if let fallback = spec["default"] { parts.append("default \(fallback)") }
+        if let choices = spec["enum"] as? [Any] { parts.append("one of " + choices.map { "\($0)" }.joined(separator: ", ")) }
+        return parts.joined(separator: " · ")
+    }
+
+    private func kindCard(kind: String, title: String, detail: String) -> some View {
+        let on = currentKind == kind
         return Button {
-            model.isAI = ai
+            model.isRecipe = kind == "recipe"
+            model.isAI = kind == "ai"
         } label: {
             HStack(spacing: 10) {
-                TaskIcon(ai: ai, size: 30)
+                TaskKindIcon(kind: kind, size: 30)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).font(.callout.weight(.semibold))
                     Text(detail).font(.caption).foregroundStyle(.secondary)
@@ -1386,7 +1496,8 @@ private struct TaskEditorSheet: View {
                 if scheduleProblem.isEmpty && model.when == .file && model.cron.trimmingCharacters(in: .whitespaces).isEmpty {
                     (Text("Runs ") + Text(sentence.isEmpty ? "when a file arrives" : sentence.lowercasedFirst).fontWeight(.semibold)
                      + Text(", once for each file, after it has finished copying. Files already there don’t start it. ")
-                     + Text(model.isAI ? "The agent is told which file it was; put {file} in the prompt to say where."
+                     + Text(model.isRecipe ? "Put {file} in one of the recipe's values to hand it the file."
+                            : model.isAI ? "The agent is told which file it was; put {file} in the prompt to say where."
                                        : "The script gets it as {file} in its arguments and as $MAC_MCP_TRIGGER_FILE."))
                         .fixedSize(horizontal: false, vertical: true)
                 } else if scheduleProblem.isEmpty {
@@ -1501,7 +1612,7 @@ private struct TaskEditorSheet: View {
                         TextField("The agent's default model", text: $model.model).textFieldStyle(.roundedBorder)
                     }
                     usageLimitField
-                } else {
+                } else if !model.isRecipe {
                     field("Run with", optional: true) {
                         HStack {
                             TextField("Picked from the file type, e.g. a project's .venv Python", text: $model.interpreter)
@@ -1580,7 +1691,7 @@ private struct TaskEditorSheet: View {
             HStack {
                 Text("Advanced").font(.callout.weight(.medium))
                 Spacer()
-                Text(model.isAI ? "model, usage limit, check, time limit, cron" : "program, arguments, command, check, cron")
+                Text(model.isRecipe ? "check, time limit, cron" : model.isAI ? "model, usage limit, check, time limit, cron" : "program, arguments, command, check, cron")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -1840,7 +1951,7 @@ private struct TaskReviewSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 10) {
-                        TaskIcon(ai: (proposal["kind"] as? String) == "ai", size: 32)
+                        TaskKindIcon(kind: proposal["kind"] as? String ?? "ai", size: 32)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(proposal["name"] as? String ?? "").font(.headline)
                             if let text = proposal["description"] as? String, !text.isEmpty {
@@ -1911,7 +2022,18 @@ private struct TaskReviewSheet: View {
         var out: [Row] = []
         let schedule = value("schedule_text")
         out.append(Row(title: "When", value: schedule, before: before("schedule_text", schedule)))
-        if (proposal["kind"] as? String) == "ai" {
+        if (proposal["kind"] as? String) == "recipe" {
+            // An AI app suggested replaying a recipe (#257): which one and with what, before it can run.
+            let name = (task.recipe["recipe_id"] as? String) == value("recipe_id") ? (task.recipe["name"] as? String) : nil
+            out.append(Row(title: "Replays", value: name.map { "\($0) (\(value("recipe_id")))" } ?? value("recipe_id"),
+                           before: before("recipe_id", value("recipe_id")), mono: name == nil))
+            let values = (proposal["values"] as? [String: Any] ?? [:]).sorted { $0.key < $1.key }
+                .map { "\($0.key): \($0.value)" }.joined(separator: " · ")
+            let oldValues = (current["values"] as? [String: Any] ?? [:]).sorted { $0.key < $1.key }
+                .map { "\($0.key): \($0.value)" }.joined(separator: " · ")
+            out.append(Row(title: "With", value: values.isEmpty ? "No values" : values,
+                           before: isNew || values == oldValues ? nil : (oldValues.isEmpty ? "No values" : oldValues), mono: true))
+        } else if (proposal["kind"] as? String) == "ai" {
             let step = (proposal["data_step"] as? [String: Any]).map(TaskDetailView.program) ?? ""
             let oldStep = (current["data_step"] as? [String: Any]).map(TaskDetailView.program) ?? ""
             if !step.isEmpty || !oldStep.isEmpty {
@@ -1941,7 +2063,9 @@ private struct TaskReviewSheet: View {
             }
         }
         let folder = value("cwd")
-        out.append(Row(title: "Works in", value: folder.isEmpty ? ((proposal["kind"] as? String) == "ai" ? "Home folder" : "The script's folder") : TaskDetailView.tilde(folder), before: nil))
+        if (proposal["kind"] as? String) != "recipe" {
+            out.append(Row(title: "Works in", value: folder.isEmpty ? ((proposal["kind"] as? String) == "ai" ? "Home folder" : "The script's folder") : TaskDetailView.tilde(folder), before: nil))
+        }
         let checks = TaskDetailView.checks(proposal["verify"]) ?? ""
         let oldChecks = TaskDetailView.checks(current["verify"]) ?? ""
         if !checks.isEmpty || !oldChecks.isEmpty {

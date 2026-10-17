@@ -362,6 +362,31 @@ def list_recipes(*, include_drafts: bool = True) -> Dict[str, Any]:
     return {"ok": True, "count": len(items), "recipes": items}
 
 
+_PLACEHOLDER = re.compile(r"\{[a-z_]+(?::\d+)?\}")
+
+
+def check_values(recipe_id: str, values: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Values a scheduled task will run a recipe with (#257), checked now against its parameters.
+
+    A value holding a placeholder the run fills in ({file}, {today}) is kept as written and checked
+    when the run fills it. The recipe's status is checked when it runs, not here."""
+    manifest = _load(recipe_id)
+    params = manifest.get("parameters") or {}
+    supplied = dict(values or {})
+    unknown = sorted(set(supplied) - set(params))
+    if unknown:
+        raise RecipeError("RECIPE_PARAMETER_INVALID", f"Unknown parameters: {', '.join(unknown)}.")
+    out: Dict[str, Any] = {}
+    for name, spec in params.items():
+        value = supplied.get(name)
+        if value is None or value == "":
+            if spec.get("required", True) and "default" not in spec:
+                raise RecipeError("RECIPE_PARAMETER_MISSING", f"Parameter '{name}' is required.")
+            continue
+        out[name] = value if isinstance(value, str) and _PLACEHOLDER.search(value) else _coerce(name, spec, value)
+    return out
+
+
 def inspect_recipe(recipe_id: str) -> Dict[str, Any]:
     return {"ok": True, "recipe": _public(_load(recipe_id), full=True)}
 

@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Recipes on a schedule (#257)
+- A Scheduled Task can now be a **Recipe**: pick a saved recipe and its values, and it replays those steps at the time you set or each time a file arrives, with no AI model asked (no model cost, the same steps every time). Values can hold `{file}` or a date word such as `{today}`.
+- The recipe runs through the same path as running it yourself (your permissions, checks and its run timeline). If the recipe is paused, still a draft or deleted, the run fails and says why, and the task card shows it. A recipe task an AI app suggests waits for your approval, showing which recipe and values.
+- AI apps can create them with `scheduled_tasks` (`kind: "recipe"`, `recipe_id`, `values`); `missed: "run_once"` can now actually be passed to that tool too (it was described but not accepted).
+
 ### Smaller fixes (#243, #249, #251)
 - **Tests give the same result in any terminal.** Every run starts from the same settings CI uses (a fake API key, sign-in required, shell allowed) and drops runtime settings from the shell; the test state paths always point at a throwaway folder. `MAC_MCP_TEST_AMBIENT_ENV=1` keeps the caller's environment on purpose.
 - **Settings say what they change.** Choosing the Bubble says it turns on Require Tool Descriptions and that AI apps should reconnect. Settings › Agents explains that it chooses which installed AI tools Mac MCP may hand work to, and says "Found on this Mac" instead of developer terms.

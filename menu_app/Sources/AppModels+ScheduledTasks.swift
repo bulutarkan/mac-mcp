@@ -16,6 +16,11 @@ struct ScheduledTask: Identifiable, Equatable {
     var description: String { raw["description"] as? String ?? "" }
     var kind: String { raw["kind"] as? String ?? "ai" }
     var isAI: Bool { kind == "ai" }
+    /// Replays a saved recipe (#257) instead of asking an agent or running a script.
+    var isRecipe: Bool { kind == "recipe" }
+    /// The recipe it replays: name, status (active, paused, draft or missing) and parameters.
+    var recipe: [String: Any] { raw["recipe"] as? [String: Any] ?? [:] }
+    var recipeValues: [String: Any] { raw["values"] as? [String: Any] ?? [:] }
     var state: String { raw["state"] as? String ?? "active" }
     var scheduleText: String { raw["schedule_text"] as? String ?? "" }
     var schedule: [String: Any] { raw["schedule"] as? [String: Any] ?? [:] }

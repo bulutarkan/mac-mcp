@@ -309,19 +309,19 @@ struct AutomationExplainer: View {
             Point(symbol: "slider.horizontal.3", title: "Values that change",
                   text: "A fixed word (a month, a client, a search) can become a value you fill in at each run."),
             Point(symbol: "square.stack.3d.up", title: "From anywhere",
-                  text: "Here, the Shortcuts app and Siri (“Run Mac MCP Recipe”), or a macmcp:// link. Shortcuts, Siri and links ask you first."),
+                  text: "Here, the Shortcuts app and Siri (“Run Mac MCP Recipe”), a macmcp:// link, or on a schedule as a Scheduled Task. Shortcuts, Siri and links ask you first."),
             Point(symbol: "checkmark.shield", title: "You stay in charge",
                   text: "A new recipe is a draft until it's turned on, one with a password or key in it can't be, and every step follows your permissions."),
         ],
-        footer: "Scheduled Tasks run by themselves at a time you set, usually with an AI agent thinking each time. Recipes run when you ask and repeat the same steps.")
+        footer: "Recipes repeat the same steps when you ask. To run one by itself at a set time or when a file arrives, make a Scheduled Task and choose Recipe.")
 
     static let scheduledTasks = AutomationExplainer(
         icon: AnyView(TaskIcon(ai: true, size: 26)), title: "What are Scheduled Tasks?",
         points: [
             Point(symbol: "clock", title: "Work that runs by itself",
                   text: "Once, daily, weekly, monthly, every few hours or a cron schedule, or each time a file lands in a folder."),
-            Point(symbol: "sparkles", title: "An AI task or a script",
-                  text: "An AI task gives an agent a prompt, optionally with data a script prints first; a script task runs your file or command."),
+            Point(symbol: "sparkles", title: "An AI task, a script or a recipe",
+                  text: "An AI task gives an agent a prompt, optionally with data a script prints first; a script task runs your file or command; a recipe task replays saved steps with no AI model."),
             Point(symbol: "doc.text.magnifyingglass", title: "A report for every run",
                   text: "The result, the steps the agent took and its usage, plus an optional notification. A check can confirm a file, a page or a sheet really changed."),
             Point(symbol: "stethoscope", title: "When something goes wrong",
@@ -329,7 +329,7 @@ struct AutomationExplainer: View {
             Point(symbol: "checkmark.shield", title: "You stay in charge",
                   text: "Tasks an AI app suggests wait for your approval, an approved script that changes waits again, and time and usage limits stop runaway runs."),
         ],
-        footer: "A run missed while your Mac slept is recorded as skipped, not run late. Recipes, the other tab, run when you ask and repeat saved steps.")
+        footer: "A run missed while your Mac slept is skipped, or runs once when it's back if you choose that. Recipes, the other tab, are the saved steps a recipe task replays.")
 }
 
 // MARK: - One recipe

@@ -10,7 +10,8 @@ command line). Its definition is one JSON object:
      # ai:     "prompt", "provider", "model", "cwd",
      #         "data_step": {"script" or "command", "interpreter", "args"} (optional),
      #         "usage_limit": {"max_tokens", "max_cost_usd"} (optional, run_budget)
-     # script: "script" (a file) or "command", "interpreter", "args", "cwd"}
+     # script: "script" (a file) or "command", "interpreter", "args", "cwd"
+     # recipe: "recipe_id", "values" (#257: a saved recipe, replayed with these values; no model call)}
 
 An AI task's data step runs a script first and hands what it printed to the agent, so the
 numbers come from the owner's script (with the owner's credentials) and the agent only reads
@@ -43,13 +44,13 @@ from typing import Any, Dict, Iterator, List, Optional
 from . import paths, run_budget, run_records, schedule_rules
 from .runtime_settings import run_detail_privacy
 
-KINDS = ("ai", "script")
+KINDS = ("ai", "script", "recipe")
 MISSED_POLICIES = ("skip", "run_once")
 RUN_STATUSES = ("running", "done", "failed", "skipped", "timed_out")
 RUNS_PER_TASK = 50
 RUN_RETENTION_DAYS = 90
 MAX_TASKS = 200
-DEFAULT_TIMEOUT_MIN = {"ai": 30, "script": 10}
+DEFAULT_TIMEOUT_MIN = {"ai": 30, "script": 10, "recipe": 10}
 MAX_TIMEOUT_MIN = 6 * 60
 OUTPUT_LIMIT = 20_000
 SUMMARY_LIMIT = 4_000
@@ -448,7 +449,7 @@ def validate_definition(raw: Any) -> Dict[str, Any]:
         raise TaskError("definition_invalid", "A task needs a name, a kind and a schedule.")
     kind = str(raw.get("kind") or "").strip().lower()
     if kind not in KINDS:
-        raise TaskError("kind_invalid", "kind must be ai (a prompt for an agent) or script.")
+        raise TaskError("kind_invalid", "kind must be ai (a prompt for an agent), script or recipe (a saved recipe).")
     try:
         schedule = schedule_rules.validate(raw.get("schedule"))
     except schedule_rules.ScheduleError as exc:
@@ -474,6 +475,12 @@ def validate_definition(raw: Any) -> Dict[str, Any]:
         definition["missed"] = "run_once"  # skip stays implicit, so existing definitions do not change
     if raw.get("verify"):
         definition["verify"] = _output_checks(raw["verify"], definition["cwd"])
+    if kind == "recipe":
+        for key in ("prompt", "script", "command", "data_step", "usage_limit"):
+            if raw.get(key):
+                raise TaskError("recipe_fields", f"A recipe task replays a saved recipe, so it has no {key}.")
+        definition.update(_recipe_target(raw.get("recipe_id"), raw.get("values")))
+        return _check_file_token(definition)
     if kind == "ai":
         definition["prompt"] = _text(raw.get("prompt"), "prompt", 8000, required=True)
         definition["provider"] = _text(raw.get("provider"), "provider", 40) or None
@@ -499,12 +506,31 @@ def validate_definition(raw: Any) -> Dict[str, Any]:
     return _check_file_token(definition)
 
 
+def _recipe_target(recipe_id: Any, values: Any) -> Dict[str, Any]:
+    from . import recipes
+    target = str(recipe_id or "").strip()
+    if not re.fullmatch(r"rcp_[0-9a-f]{12}", target):
+        raise TaskError("recipe_invalid", "Choose a saved recipe (recipe_id rcp_…).")
+    if values is not None and not isinstance(values, dict):
+        raise TaskError("recipe_values_invalid", "values must be an object of the recipe's parameters.")
+    plain = dict(values or {})
+    if len(plain) > 20 or not all(isinstance(key, str) and (value is None or isinstance(value, (str, int, float, bool)))
+                                  for key, value in plain.items()):
+        raise TaskError("recipe_values_invalid", "values must be up to 20 plain values (text, numbers, true/false).")
+    try:
+        checked = recipes.check_values(target, plain)
+    except recipes.RecipeError as exc:
+        raise TaskError("recipe_invalid", str(exc)) from exc
+    return {"recipe_id": target, "values": checked}
+
+
 def _check_file_token(definition: Dict[str, Any]) -> Dict[str, Any]:
     """{file} names the file that started a run, so only a task that runs when a file arrives has one."""
     if definition["schedule"]["type"] == "folder":
         return definition
     data = definition.get("data_step") or {}
-    texts = [definition.get(key) for key in ("prompt", "args", "command")] + [data.get("args"), data.get("command")]
+    texts = ([definition.get(key) for key in ("prompt", "args", "command")] + [data.get("args"), data.get("command")]
+             + list((definition.get("values") or {}).values()))
     if any(FILE_TOKEN in str(text or "") for text in texts):
         raise TaskError("file_token_needs_folder",
                         "{file} is the file that started the run, so it only works when the task runs as a file arrives.")
@@ -537,6 +563,8 @@ def _public(row: sqlite3.Row, last: Optional[sqlite3.Row] = None, running: bool 
         "next_run_at": row["next_run_at"],
         "approved": definition is not None,
     }
+    if shown.get("kind") == "recipe":
+        task["recipe"] = _recipe_status(shown.get("recipe_id"))
     if proposal is not None:
         task["proposal"] = {**proposal, "schedule_text": schedule_rules.describe(proposal["schedule"]),
                             "proposed_by": row["proposed_by"], "proposed_at": row["proposed_at"],
@@ -547,6 +575,17 @@ def _public(row: sqlite3.Row, last: Optional[sqlite3.Row] = None, running: bool 
     if last is not None:
         task["last_run"] = _run_public(last, brief=True)
     return task
+
+
+def _recipe_status(recipe_id: Any) -> Dict[str, Any]:
+    """The recipe a task replays, by name and status, so the owner sees it is gone or paused (#257)."""
+    from . import recipes
+    try:
+        recipe = recipes.inspect_recipe(str(recipe_id or ""))["recipe"]
+    except recipes.RecipeError:
+        return {"recipe_id": recipe_id, "name": None, "status": "missing"}
+    return {"recipe_id": recipe_id, "name": recipe.get("name"), "status": recipe.get("status"),
+            "parameters": recipe.get("parameters") or {}}
 
 
 def _watches(definition: Optional[Dict[str, Any]]) -> bool:

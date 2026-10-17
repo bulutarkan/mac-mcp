@@ -48,6 +48,7 @@ REASON_ASLEEP = "Your Mac was asleep"
 REASON_STOPPED = "Mac MCP wasn't running"
 REASON_BUSY = "The previous run was still going"
 REASON_PAUSED = "Observation is paused in Settings › Privacy, so AI tasks don't run"
+REASON_PAUSED_RECIPE = "Observation is paused in Settings › Privacy, so recipe tasks don't run"
 REASON_RESTARTED = "Mac MCP restarted before the run finished"
 REASON_CAUGHT_UP = "; one catch-up run covers them"
 REASON_SCRIPT_STOPPED = REASON_RESTARTED + "; its script was still running and was stopped"
@@ -205,6 +206,47 @@ def stop_left_scripts(run_id: str) -> Optional[bool]:
             outcome = (outcome is not False) and not alive
         record.unlink(missing_ok=True)
     return outcome
+
+
+# Recipe tasks (#257): the server hands in a function that runs a saved recipe through its normal
+# tool path (profile, scope, verification, run timeline). Until it does, recipe runs say so.
+RecipeRunner = Callable[[str, Dict[str, Any], float], Dict[str, Any]]
+_recipe_runner: Optional[RecipeRunner] = None
+
+
+def set_recipe_runner(runner: Optional[RecipeRunner]) -> None:
+    global _recipe_runner
+    _recipe_runner = runner
+
+
+def run_recipe(definition: Dict[str, Any], run_id: str) -> Dict[str, Any]:
+    """Replay a saved recipe with the task's values and say how it went. No model is called."""
+    del run_id
+    if _recipe_runner is None:
+        return {"status": "failed", "reason": "Mac MCP couldn't run recipes yet; it may still be starting. Run it again."}
+    # Date words ({today}, {last_week_start}…) become this run's dates, as in a script's arguments.
+    values = {key: store.expand_dates(value) if isinstance(value, str) else value
+              for key, value in (definition.get("values") or {}).items()}
+    try:
+        result = _recipe_runner(definition["recipe_id"], values, _limit_s(definition))
+    except TimeoutError:
+        minutes = int(definition.get("timeout_min") or store.DEFAULT_TIMEOUT_MIN["recipe"])
+        return {"status": "timed_out", "reason": f"Stopped at its {minutes}-minute time limit"}
+    recipe = result.get("recipe") if isinstance(result.get("recipe"), dict) else {}
+    name = recipe.get("name") or "The recipe"
+    steps = (result.get("plan_stats") or {}).get("steps_executed")
+    detail = {"recipe": {key: value for key, value in {
+        "recipe_id": definition["recipe_id"], "name": recipe.get("name"), "values": values,
+        "steps_executed": steps, "failed_step": result.get("step_id"), "reason_code": result.get("reason_code"),
+        "timeline_run_id": result.get("run_id"),
+    }.items() if value is not None}}
+    if result.get("ok"):
+        summary = f"{name} ran" + (f": {steps} step{'' if steps == 1 else 's'}" if steps is not None else "")
+        return {"status": "done", "summary": summary, "detail": detail}
+    reason = result.get("message") or result.get("error") or result.get("reason_code") or "The recipe didn't finish"
+    if result.get("step_id"):
+        reason = f"{reason} (step {result['step_id']})"
+    return {"status": "failed", "reason": str(reason)[:500], "detail": detail}
 
 
 def _logs_dir() -> Path:
@@ -582,6 +624,10 @@ def execute(task_id: str, run_id: str, definition: Dict[str, Any], settings: Any
                 result = {"status": "skipped", "reason": REASON_PAUSED}
             else:
                 result = run_ai(definition, run_id, settings, on_agent=lambda agent_id: store.note_agent(run_id, agent_id))
+        elif definition["kind"] == "recipe":
+            # A recipe works in apps and the browser, which paused observation stops.
+            result = ({"status": "skipped", "reason": REASON_PAUSED_RECIPE} if privacy["paused"]
+                      else run_recipe(definition, run_id))
         else:
             result = run_script(definition, run_id)
     except Exception as exc:

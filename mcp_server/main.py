@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextlib
 from pathlib import Path
 import hashlib
 import json
@@ -1697,9 +1699,12 @@ def create_app():
         name="scheduled_tasks",
         title="Scheduled Tasks",
         description=(
-            "The owner's Scheduled Tasks: AI tasks (a prompt a delegated agent runs) and scripts that run at a set "
-            "time or on a recurrence. action=list|get|create|update|delete|run_now. create/update take name, "
-            "summary (what the task is for), kind ('ai' or 'script'), schedule, and for ai: prompt, agent (codex|claude|opencode|kimi|grok|antigravity|pi|cline|kilo|goose), "
+            "The owner's Scheduled Tasks: AI tasks (a prompt a delegated agent runs), scripts and saved recipes that run "
+            "at a set time, on a recurrence or when a file arrives. action=list|get|create|update|delete|run_now. "
+            "create/update take name, summary (what the task is for), kind ('ai', 'script' or 'recipe'), schedule; for "
+            "recipe: recipe_id (a saved recipe, see the recipe tool) and values {parameter: value} (a value may hold {file} "
+            "or a date word); it replays the recipe's steps with no model call and fails clearly while the recipe is a draft "
+            "or paused. For ai: prompt, agent (codex|claude|opencode|kimi|grok|antigravity|pi|cline|kilo|goose), "
             "model, folder, and optional data_step {script or command, arguments} that runs first and hands its output to "
             "the agent; for script: script (a file path) or command, arguments, interpreter, folder. Arguments and "
             "commands may use {today}, {yesterday}, {last_week_start}, {last_week_end}, {last_month_start}, "
@@ -1745,6 +1750,9 @@ def create_app():
         data_step: Optional[Dict[str, Any]] = None,
         expected_files: Optional[List[Dict[str, Any]]] = None,
         usage_limit: Optional[Dict[str, Any]] = None,
+        missed: Optional[str] = None,
+        recipe_id: Optional[str] = None,
+        values: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         verb = str(action or "list").strip().lower()
         fields = {"name": name, "description": summary, "kind": kind, "schedule": schedule, "prompt": prompt,
@@ -1754,7 +1762,8 @@ def create_app():
                       "script": data_step.get("script"), "command": data_step.get("command"),
                       "args": data_step.get("arguments", data_step.get("args")),
                       "interpreter": data_step.get("interpreter")},
-                  "verify": expected_files, "usage_limit": usage_limit}
+                  "verify": expected_files, "usage_limit": usage_limit, "missed": missed,
+                  "recipe_id": recipe_id, "values": values}
         given = {key: value for key, value in fields.items() if value is not None}
         try:
             if verb == "list":
@@ -2845,17 +2854,18 @@ def create_app():
 
     app.router.routes.append(Route("/health", health, methods=["GET"]))
     app.router.routes.extend(create_chrome_background_bridge_routes())
-    async def run_recipe_for_launcher(recipe_id: str, values: Dict[str, Any]) -> Dict[str, Any]:
-        """Run one saved recipe for Shortcuts, Raycast or the CLI.
+    async def run_recipe_for_launcher(recipe_id: str, values: Dict[str, Any], *, actor: str = "local_launcher",
+                                      description: str = "Run a saved recipe from a launcher") -> Dict[str, Any]:
+        """Run one saved recipe for Shortcuts, Raycast, the CLI or a scheduled task (#257).
 
         It goes through the normal MCP tool path as the local launcher, so profile,
         scopes and approval rules apply exactly as they would for an agent.
         """
-        token = set_policy_context(environment_policy_context(actor="local_launcher"))
+        token = set_policy_context(environment_policy_context(actor=actor))
         try:
             arguments: Dict[str, Any] = {"action": "run", "recipe_id": recipe_id, "values": values}
             if mcp.intent_descriptions_enabled():
-                arguments["description"] = "Run a saved recipe from a launcher"
+                arguments["description"] = description
             raw = await mcp.call_tool("recipe", arguments)
         except ToolError as exc:
             text = str(exc)
@@ -2871,6 +2881,31 @@ def create_app():
         telemetry, settings, dashboard_token, mcp.steering, mcp.security_context,
         recipe_runner=run_recipe_for_launcher,
     ))
+
+    # Scheduled recipe tasks (#257) run on the scheduler's thread; their recipe runs on this server's loop.
+    serve_lifespan = app.router.lifespan_context
+
+    @contextlib.asynccontextmanager
+    async def lifespan_with_recipe_runner(asgi_app):
+        loop = asyncio.get_running_loop()
+
+        def run_scheduled_recipe(recipe_id: str, values: Dict[str, Any], limit_s: float) -> Dict[str, Any]:
+            future = asyncio.run_coroutine_threadsafe(run_recipe_for_launcher(
+                recipe_id, values, actor="scheduled_task", description="Run a saved recipe on its schedule"), loop)
+            try:
+                return future.result(timeout=limit_s)
+            except concurrent.futures.TimeoutError as exc:
+                future.cancel()
+                raise TimeoutError from exc
+
+        scheduled_task_runner.set_recipe_runner(run_scheduled_recipe)
+        try:
+            async with serve_lifespan(asgi_app) as state:
+                yield state
+        finally:
+            scheduled_task_runner.set_recipe_runner(None)
+
+    app.router.lifespan_context = lifespan_with_recipe_runner
     from .dashboard_routes import _dashboard_guard
     app.router.routes.extend(external_mcp_routes.create_routes(lambda request: _dashboard_guard(request, dashboard_token)))
     app.router.routes.extend(create_mobile_routes(telemetry, settings, dashboard_token, mcp.steering))

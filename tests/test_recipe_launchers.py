@@ -86,7 +86,8 @@ class LauncherApiTests(unittest.TestCase):
     def test_launcher_runs_go_through_the_recipe_tool_as_the_local_launcher(self) -> None:
         source = (ROOT / "mcp_server" / "main.py").read_text(encoding="utf-8")
         runner = source[source.index("async def run_recipe_for_launcher"):source.index("recipe_runner=run_recipe_for_launcher")]
-        self.assertIn('environment_policy_context(actor="local_launcher")', runner)
+        self.assertIn('actor: str = "local_launcher"', runner)
+        self.assertIn("environment_policy_context(actor=actor)", runner)
         self.assertIn('await mcp.call_tool("recipe", arguments)', runner)
         self.assertIn('"approval_required"', runner)
         self.assertIn("reset_policy_context(token)", runner)
