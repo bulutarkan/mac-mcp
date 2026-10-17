@@ -677,6 +677,31 @@ def _check_disk() -> CheckResult:
     )
 
 
+def _check_log_rotation() -> CheckResult:
+    """Whether the server's last log rotation worked (#244); it rotates every 10 minutes while running."""
+    from .log_retention import rotation_status
+
+    started = time.perf_counter()
+    status = rotation_status()
+    if status is None:
+        return result("logs.rotation", "system", PASS, "LOG_ROTATION_NOT_RUN_YET",
+                      "Log rotation has no result yet; it runs while the server is running.", started=started)
+    problems = [item for item in status.get("problems") or [] if isinstance(item, dict)]
+    checked = datetime.fromtimestamp(float(status.get("checked_at") or 0)).strftime("%Y-%m-%d %H:%M")
+    if not problems:
+        return result("logs.rotation", "system", PASS, "LOG_ROTATION_OK",
+                      f"Logs were last checked for size at {checked}.", started=started)
+    names = ", ".join(sorted({str(item.get("log")) for item in problems}))
+    since = datetime.fromtimestamp(float(status.get("failing_since") or status.get("checked_at") or 0))
+    return result(
+        "logs.rotation", "system", WARN, "LOG_ROTATION_FAILING",
+        f"Log rotation failed for: {names} (since {since.strftime('%Y-%m-%d %H:%M')}); those logs can keep growing.",
+        started=started,
+        remediation="Check the permissions of ~/.mac-mcp and its log files, then run `mac-mcp logs --list`.",
+        details={"problems": problems[:10], "checked_at": status.get("checked_at")},
+    )
+
+
 def _binary_result(check_id: str, name: str, *, required: bool, purpose: str) -> CheckResult:
     started = time.perf_counter()
     found = shutil.which(name)
@@ -1495,6 +1520,7 @@ def doctor_checks() -> list[CheckResult]:
         _check_permission_profile_scope,
         _check_permission_coherence,
         _check_disk,
+        _check_log_rotation,
         lambda: _binary_result("dependency.osascript", "osascript", required=True, purpose="macOS automation"),
         lambda: _binary_result("dependency.cliclick", "cliclick", required=False, purpose="coordinate/input fallback"),
         _check_ngrok_dependency,

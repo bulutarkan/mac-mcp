@@ -6,15 +6,21 @@ the writer keeps its O_APPEND descriptor and simply continues at offset 0.
 """
 from __future__ import annotations
 
+import json
+import logging
 import os
 import shutil
 import threading
+import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .data_guard import redact_sensitive_text
 from . import paths
 
+log = logging.getLogger("mac_mcp.log_retention")
+
+STATUS_NAME = "log-rotation.json"
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024
 DEFAULT_BACKUPS = 3
 DEFAULT_UPDATE_LOGS_KEPT = 20
@@ -108,16 +114,62 @@ def prune_update_logs(logs_dir: Path, keep: Optional[int] = None) -> int:
 
 
 def rotate_managed_logs(base_dir: Optional[Path] = None) -> List[str]:
+    """Rotate every oversized log; one that fails doesn't stop the others and is reported (#244)."""
     rotated = []
+    problems: List[Dict[str, str]] = []
     for name, path in managed_logs(base_dir).items():
         if name == "audit":
             continue  # the audit logger rotates itself
-        if rotate_copy_truncate(path):
-            rotated.append(name)
-    update_logs = update_logs_dir()
-    if update_logs.is_dir():
-        prune_update_logs(update_logs)
+        try:
+            if rotate_copy_truncate(path):
+                rotated.append(name)
+        except OSError as exc:
+            problems.append({"log": name, "error": _describe(exc)})
+    try:
+        update_logs = update_logs_dir()
+        if update_logs.is_dir():
+            prune_update_logs(update_logs)
+    except OSError as exc:
+        problems.append({"log": "update", "error": _describe(exc)})
+    for problem in problems:
+        log.warning("log rotation: the %s log could not be rotated: %s", problem["log"], problem["error"])
+    record_rotation(rotated, problems)
     return rotated
+
+
+def _describe(exc: BaseException) -> str:
+    """The kind of failure, never a path or other text that came with it."""
+    reason = getattr(exc, "strerror", None)
+    return f"{type(exc).__name__}: {reason}" if reason else type(exc).__name__
+
+
+def status_path() -> Path:
+    return state_dir() / STATUS_NAME
+
+
+def record_rotation(rotated: List[str], problems: List[Dict[str, str]]) -> None:
+    """Keep the last rotation's outcome where `mac-mcp doctor` (another process) can read it."""
+    path = status_path()
+    try:
+        previous = rotation_status() or {}
+        now = time.time()
+        status: Dict[str, Any] = {"checked_at": now, "rotated": rotated, "problems": problems,
+                                  "failing_since": (previous.get("failing_since") or now) if problems else None}
+        temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(status, handle)
+        os.replace(temp, path)
+    except OSError as exc:
+        log.warning("log rotation: its status could not be saved: %s", _describe(exc))
+
+
+def rotation_status() -> Optional[Dict[str, Any]]:
+    try:
+        data = json.loads(status_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def update_logs_dir() -> Path:
@@ -143,12 +195,18 @@ def start_log_rotation(interval_s: float = 600.0, base_dir: Optional[Path] = Non
         while True:
             try:
                 rotate_managed_logs(base_dir)
-            except Exception:
-                pass
+            except Exception as exc:  # the rotation thread never dies, but says what went wrong (#244)
+                log.warning("log rotation failed: %s", _describe(exc))
+                record_rotation([], [{"log": "all", "error": _describe(exc)}])
             if stop.wait(interval_s):
                 return
 
-    threading.Thread(target=loop, name="mac-mcp-log-rotation", daemon=True).start()
+    try:
+        threading.Thread(target=loop, name="mac-mcp-log-rotation", daemon=True).start()
+    except Exception as exc:
+        with _rotation_lock:
+            _rotation_started = False  # the next start tries again
+        log.warning("log rotation could not start: %s", _describe(exc))
 
 
 def tail_log(path: Path, lines: int = 80) -> str:

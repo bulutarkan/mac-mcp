@@ -127,3 +127,74 @@ class AuditLogTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RotationFailureTests(unittest.TestCase):
+    """#244: a failing rotation is logged and shown by doctor; a failed start can be tried again."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="mac-mcp-logs-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        env = patch.dict(os.environ, {"MAC_MCP_STATE_DIR": str(self.root), "MAC_MCP_UPDATE_DIR": str(self.root / "update")})
+        env.start()
+        self.addCleanup(env.stop)
+        for name in ("mac-mcp.log", "cloudflared.log"):
+            (self.root / name).write_text("x" * 400_000, encoding="utf-8")
+        limits = patch.dict(os.environ, {"MAC_MCP_LOG_MAX_BYTES": str(256 * 1024)})
+        limits.start()
+        self.addCleanup(limits.stop)
+
+    def doctor_row(self):
+        from mcp_server.diagnostics import _check_log_rotation
+        return _check_log_rotation().to_dict()
+
+    def test_one_failing_log_is_reported_and_the_others_still_rotate(self) -> None:
+        real = lr.rotate_copy_truncate
+
+        def failing(path, **kwargs):
+            if path.name == "mac-mcp.log":
+                raise PermissionError(13, "Permission denied", str(path))
+            return real(path, **kwargs)
+
+        with patch.object(lr, "rotate_copy_truncate", failing), self.assertLogs("mac_mcp.log_retention", "WARNING") as logs:
+            self.assertEqual(["cloudflared"], lr.rotate_managed_logs())
+        self.assertIn("server", logs.output[0])
+        self.assertNotIn(str(self.root), "\n".join(logs.output))  # the kind of failure, not the path
+        status = lr.rotation_status()
+        self.assertEqual([{"log": "server", "error": "PermissionError: Permission denied"}], status["problems"])
+        row = self.doctor_row()
+        self.assertEqual(("warn", "LOG_ROTATION_FAILING"), (row["status"], row["reason_code"]))
+        self.assertIn("server", row["summary"])
+        first_failure = status["failing_since"]
+        with patch.object(lr, "rotate_copy_truncate", failing), self.assertLogs("mac_mcp.log_retention", "WARNING"):
+            lr.rotate_managed_logs()
+        self.assertEqual(first_failure, lr.rotation_status()["failing_since"])
+        lr.rotate_managed_logs()
+        self.assertEqual((None, []), (lr.rotation_status()["failing_since"], lr.rotation_status()["problems"]))
+        self.assertEqual(("pass", "LOG_ROTATION_OK"), (self.doctor_row()["status"], self.doctor_row()["reason_code"]))
+
+    def test_doctor_before_any_rotation_is_fine(self) -> None:
+        self.assertEqual("LOG_ROTATION_NOT_RUN_YET", self.doctor_row()["reason_code"])
+
+    def test_a_failed_start_is_tried_again(self) -> None:
+        with patch.object(lr, "_rotation_started", False):
+            with patch.object(lr.threading.Thread, "start", side_effect=RuntimeError("can't start new thread")), \
+                    self.assertLogs("mac_mcp.log_retention", "WARNING"):
+                lr.start_log_rotation(interval_s=3600)
+            self.assertFalse(lr._rotation_started)
+            with patch.object(lr.threading.Thread, "start") as started:
+                lr.start_log_rotation(interval_s=3600)
+            started.assert_called_once()
+            self.assertTrue(lr._rotation_started)
+
+    def test_an_unexpected_error_in_the_thread_is_recorded(self) -> None:
+        with patch.object(lr, "_rotation_started", False), \
+                patch.object(lr, "rotate_managed_logs", side_effect=ValueError("bad")), \
+                self.assertLogs("mac_mcp.log_retention", "WARNING"):
+            lr.start_log_rotation(interval_s=3600)
+            for _ in range(100):
+                if lr.rotation_status():
+                    break
+                time.sleep(0.02)
+        self.assertEqual([{"log": "all", "error": "ValueError"}], lr.rotation_status()["problems"])

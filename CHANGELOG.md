@@ -1,5 +1,8 @@
 ## Unreleased
 
+### Log rotation problems are no longer silent (#244)
+- If a log can't be rotated (for example its permissions changed), the server log says which one and why, the other logs are still rotated, and `mac-mcp doctor` shows a warning naming it and since when, because that log can keep growing. If the rotation thread can't start, the next start tries again.
+
 ### Less needless work on frequent paths (#255)
 - `find_files` reads a folder tree only as far as a page needs, in the same order and with the same matches as before: the first 200 of 50,000 files now take about 7 ms and under 1 MB instead of about 1.6 s and 36 MB, and the next page skips the folders it already passed.
 - Scheduled tasks that watch the same folder share one read of it per pass, instead of one read per task.
