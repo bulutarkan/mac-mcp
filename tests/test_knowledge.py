@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -214,12 +215,91 @@ class DocumentExtractionTests(KnowledgeTestCase):
         source.unlink()
         pages, error = knowledge.extract(pdf)
         self.assertIsNone(error)
-        self.assertEqual([1, 2], [page for page, _text in pages])
+        self.assertEqual([(1, False), (2, False)], [(page, ocr) for page, _text, ocr in pages])
         self.use_folder()
         hits = knowledge.knowledge_search("when does the lease end", limit=5)["results"]
         pdf_hit = next(item for item in hits if item["name"] == "lease.pdf")
         self.assertEqual(2, pdf_hit["page"])
         self.assertIn("lease.docx", {item["name"] for item in hits})
+
+
+# A page of text drawn into an image: what a scanner or a phone photo of a page gives.
+_DRAW_PAGE = """
+ObjC.import('AppKit');
+function run(argv) {
+  var w = 1240, h = 1754;
+  var img = $.NSImage.alloc.initWithSize($.NSMakeSize(w, h));
+  img.lockFocus;
+  $.NSColor.whiteColor.setFill; $.NSRectFill($.NSMakeRect(0, 0, w, h));
+  var attrs = $({'NSFont': $.NSFont.systemFontOfSize(36), 'NSColor': $.NSColor.blackColor});
+  var lines = argv[1].split('|');
+  for (var i = 0; i < lines.length; i++) {
+    $(lines[i]).drawAtPointWithAttributes($.NSMakePoint(80, h - 160 - i * 70), attrs);
+  }
+  img.unlockFocus;
+  var rep = $.NSBitmapImageRep.imageRepWithData(img.TIFFRepresentation);
+  rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $()).writeToFileAtomically(argv[0], true);
+  return 'ok';
+}
+"""
+
+
+@unittest.skipUnless(Path("/usr/bin/osascript").exists() and Path("/usr/bin/sips").exists(), "macOS tools")
+class ScannedDocumentTests(KnowledgeTestCase):
+    """#258: scanned PDFs and photos of pages are read with on-device text recognition (Vision)."""
+
+    def draw(self, name: str, lines: str) -> Path:
+        path = self.temp / name
+        subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", _DRAW_PAGE, str(path), lines],
+                       check=True, capture_output=True, timeout=60)
+        return path
+
+    def test_a_scanned_pdf_and_a_photo_are_searchable_and_marked_as_ocr(self) -> None:
+        page = self.draw("page.png", "Kira sözleşmesi|Aylık kira bedeli 12.500 TL olarak belirlenmiştir.")
+        subprocess.run(["/usr/bin/sips", "-s", "format", "pdf", str(page), "--out", str(self.docs / "scan.pdf")],
+                       check=True, capture_output=True, timeout=60)
+        self.draw("receipt.png", "Invoice 4471|Total due: 980 EUR by 30 November")
+        shutil.copy(self.temp / "receipt.png", self.docs / "receipt.png")
+        pages, error = knowledge.extract(self.docs / "scan.pdf")
+        self.assertIsNone(error)
+        self.assertEqual(1, len(pages))
+        self.assertEqual(1, pages[0][0])
+        self.assertTrue(pages[0][2])
+        self.assertIn("12.500", pages[0][1])
+        self.assertIn("sözleşmesi", pages[0][1])
+        self.use_folder()
+        knowledge.scan()
+        hits = knowledge.knowledge_search("aylık kira bedeli", limit=5)["results"]
+        scan_hit = next(item for item in hits if item["name"] == "scan.pdf")
+        self.assertEqual((1, True), (scan_hit["page"], scan_hit["ocr"]))
+        hits = knowledge.knowledge_search("invoice total due", limit=5)["results"]
+        photo = next(item for item in hits if item["name"] == "receipt.png")
+        self.assertEqual((None, True), (photo["page"], photo["ocr"]))
+
+    def test_a_pdf_with_a_text_layer_is_not_ocred(self) -> None:
+        source = self.write("note.txt", "This page already has real text that a PDF reader can select and copy.\n")
+        pdf = self.docs / "note.pdf"
+        with pdf.open("wb") as handle:
+            subprocess.run(["/usr/sbin/cupsfilter", "-m", "application/pdf", str(source)], stdout=handle,
+                           stderr=subprocess.DEVNULL, check=True, timeout=60)
+        pages, error = knowledge.extract(pdf)
+        self.assertIsNone(error)
+        self.assertEqual([False], [ocr for _page, _text, ocr in pages])
+
+    def test_files_found_empty_before_ocr_are_read_once_more(self) -> None:
+        self.draw("page.png", "Teslim tarihi 15 Mart 2027")
+        shutil.copy(self.temp / "page.png", self.docs / "page.png")
+        self.use_folder()
+        with patch.object(knowledge, "extract", return_value=([], None)):
+            knowledge.scan()
+        with closing(knowledge._connect()) as conn:
+            self.assertEqual("no_text", conn.execute("SELECT status FROM files").fetchone()[0])
+            conn.execute("DELETE FROM meta WHERE key = 'extractor'")
+            conn.commit()
+        self.assertEqual(1, knowledge.scan()["indexed"])
+        self.assertEqual(0, knowledge.scan()["indexed"])
+        hits = knowledge.knowledge_search("teslim tarihi", limit=5)["results"]
+        self.assertEqual(["page.png"], [item["name"] for item in hits])
 
 
 class ChunkTests(unittest.TestCase):

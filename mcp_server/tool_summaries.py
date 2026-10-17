@@ -126,7 +126,7 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "memory_id, date filters list candidates and change nothing. Secrets are refused."
     ),
     "knowledge_search": (
-        "Search the owner's chosen folders (PDFs, Word, notes) locally in any language. Results give file, page, snippet and SHA-256: answer from them and cite file and page. path narrows to one folder."
+        "Search the owner's chosen folders (PDFs, scans, Word, notes) locally in any language. Results give file, page, snippet and SHA-256: answer from them and cite file and page. path narrows to one folder."
     ),
     "ask_user": (
         "Ask the local user a question in a native macOS dialog and return their typed answer; skip or timeout returns "

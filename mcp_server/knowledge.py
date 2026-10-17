@@ -4,7 +4,9 @@
   folder itself, the disk root, system folders, ~/Library and Mac MCP's own state are refused.
 - Text is extracted on this Mac: plain text and code as is, PDFs page by page with PDFKit (through
   osascript, no extra dependency), Word/RTF/OpenDocument/HTML with textutil. Nothing leaves the Mac.
-  Scanned PDFs without a text layer are listed as having no text (no OCR yet).
+  Pages without a text layer (scanned PDFs) and images (PNG, JPEG, HEIC, TIFF) are read with the
+  Vision framework's on-device text recognition (#258), up to MAX_OCR_PAGES a file; results from
+  them say so (ocr: true).
 - The index is ~/.mac-mcp/knowledge/index.sqlite3 (owner-only, secure_delete). A scan compares each
   file's size and modification time, and its SHA-256 when those changed: new and changed files are
   indexed, deleted files and files of removed folders are dropped. A background thread scans every
@@ -68,23 +70,67 @@ TEXT_SUFFIXES = frozenset({
 })
 TEXTUTIL_SUFFIXES = frozenset({".docx", ".doc", ".rtf", ".odt", ".html", ".htm", ".webarchive"})
 PDF_SUFFIXES = frozenset({".pdf"})
-SUPPORTED_SUFFIXES = TEXT_SUFFIXES | TEXTUTIL_SUFFIXES | PDF_SUFFIXES
+IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".heic", ".heif", ".tif", ".tiff"})
+SUPPORTED_SUFFIXES = TEXT_SUFFIXES | TEXTUTIL_SUFFIXES | PDF_SUFFIXES | IMAGE_SUFFIXES
+MAX_OCR_PAGES = 100
+MAX_IMAGE_BYTES = 30 * 1024 * 1024
+OCR_MIN_CHARS = 20
+# Bumped when extraction learns something new, so files read before ("no text") are read again once.
+EXTRACTOR_VERSION = "2-ocr"
 SKIP_DIRS = frozenset({
     "node_modules", "__pycache__", "venv", "DerivedData", "build", "dist", "Library", "Pods",
 })
 
+# argv: path, mode (pdf|image), max pages, max OCR pages, min characters for a page to count as text.
+# A PDF page with too little text is rendered at 2x and read with Vision's on-device text recognition.
 _PDF_SCRIPT = """
 ObjC.import('PDFKit');
+ObjC.import('AppKit');
+var visionReady = false;
+try { ObjC.import('Vision'); visionReady = true; } catch (e) {}
+function ocr(cg) {
+  if (!visionReady || !cg) return null;
+  var request = $.VNRecognizeTextRequest.alloc.init;
+  request.recognitionLevel = 0;
+  request.usesLanguageCorrection = true;
+  try { request.automaticallyDetectsLanguage = true; } catch (e) {}
+  request.recognitionLanguages = $(['tr-TR', 'en-US']);
+  var handler = $.VNImageRequestHandler.alloc.initWithCGImageOptions(cg, $({}));
+  if (!handler.performRequestsError($([request]), $())) return null;
+  var results = request.results, lines = [];
+  for (var i = 0; i < results.count; i++) {
+    var best = results.objectAtIndex(i).topCandidates(1);
+    if (best.count) lines.push(best.objectAtIndex(0).string.js);
+  }
+  return lines.join('\\n');
+}
+function cgOf(image, w, h) {
+  return image.CGImageForProposedRectContextHints($.NSMakeRect(0, 0, w, h), $(), $());
+}
 function run(argv) {
-  var doc = $.PDFDocument.alloc.initWithURL($.NSURL.fileURLWithPath(argv[0]));
+  var path = argv[0], mode = argv[1], maxPages = Number(argv[2]), maxOcr = Number(argv[3]), minChars = Number(argv[4]);
+  if (mode === 'image') {
+    var picture = $.NSImage.alloc.initWithContentsOfFile(path);
+    if (!picture || picture.isNil()) return JSON.stringify({error: 'unreadable'});
+    var text = ocr(cgOf(picture, picture.size.width, picture.size.height));
+    if (text === null) return JSON.stringify({error: visionReady ? 'unreadable' : 'no text recognition on this Mac'});
+    return JSON.stringify({pages: [{text: text, ocr: true}], page_count: 1});
+  }
+  var doc = $.PDFDocument.alloc.initWithURL($.NSURL.fileURLWithPath(path));
   if (!doc || doc.isNil()) return JSON.stringify({error: 'unreadable'});
   if (doc.isLocked) return JSON.stringify({error: 'locked'});
-  var pages = [], n = Math.min(doc.pageCount, Number(argv[1]));
+  var pages = [], n = Math.min(doc.pageCount, maxPages), read = 0;
   for (var i = 0; i < n; i++) {
-    var text = doc.pageAtIndex(i).string;
-    pages.push(text && !text.isNil() ? text.js : '');
+    var page = doc.pageAtIndex(i), raw = page.string;
+    var text = raw && !raw.isNil() ? raw.js : '';
+    if (text.replace(/\\s/g, '').length >= minChars || read >= maxOcr) { pages.push({text: text, ocr: false}); continue; }
+    var box = page.boundsForBox(0), w = box.size.width * 2, h = box.size.height * 2;
+    var seen = ocr(cgOf(page.thumbnailOfSizeForBox($.NSMakeSize(w, h), 0), w, h));
+    read += 1;
+    pages.push(seen && seen.replace(/\\s/g, '').length > text.replace(/\\s/g, '').length ? {text: seen, ocr: true}
+                                                                                    : {text: text, ocr: false});
   }
-  return JSON.stringify({pages: pages, page_count: Number(doc.pageCount)});
+  return JSON.stringify({pages: pages, page_count: Number(doc.pageCount), ocr_pages: read});
 }
 """
 
@@ -226,6 +272,9 @@ def _connect() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """
     )
+    if "ocr" not in {row["name"] for row in conn.execute("PRAGMA table_info(chunks)")}:
+        conn.execute("ALTER TABLE chunks ADD COLUMN ocr INTEGER NOT NULL DEFAULT 0")  # #258
+        conn.commit()
     try:
         conn.execute("INSERT INTO chunks_fts(chunks_fts, rank) VALUES('secure-delete', 1)")
         conn.commit()
@@ -294,6 +343,8 @@ def _kind(path: Path) -> str:
     suffix = path.suffix.lower()
     if suffix in PDF_SUFFIXES:
         return "pdf"
+    if suffix in IMAGE_SUFFIXES:
+        return "image"
     if suffix in TEXTUTIL_SUFFIXES:
         return "document"
     return "text"
@@ -307,17 +358,21 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def extract(path: Path) -> Tuple[List[Tuple[Optional[int], str]], Optional[str]]:
-    """[(page or None, text)], error. Pages are 1-based for PDFs."""
+Page = Tuple[Optional[int], str, bool]
+
+
+def extract(path: Path) -> Tuple[List[Page], Optional[str]]:
+    """[(page or None, text, read by OCR)], error. Pages are 1-based for PDFs."""
     kind = _kind(path)
     size = path.stat().st_size
-    if size > (MAX_TEXT_FILE_BYTES if kind == "text" else MAX_DOCUMENT_BYTES):
+    limit = {"text": MAX_TEXT_FILE_BYTES, "image": MAX_IMAGE_BYTES}.get(kind, MAX_DOCUMENT_BYTES)
+    if size > limit:
         return [], "too large"
     if kind == "text":
         data = path.read_bytes()
         if b"\x00" in data[:8192]:
             return [], "binary"
-        return [(None, data.decode("utf-8", errors="replace")[:MAX_CHARS_PER_FILE])], None
+        return [(None, data.decode("utf-8", errors="replace")[:MAX_CHARS_PER_FILE], False)], None
     if kind == "document":
         try:
             out = subprocess.run(["/usr/bin/textutil", "-convert", "txt", "-stdout", "--", str(path)],
@@ -326,23 +381,25 @@ def extract(path: Path) -> Tuple[List[Tuple[Optional[int], str]], Optional[str]]
             return [], "unreadable"
         if out.returncode != 0:
             return [], "unreadable"
-        return [(None, out.stdout[:MAX_CHARS_PER_FILE])], None
+        return [(None, out.stdout[:MAX_CHARS_PER_FILE], False)], None
     try:
-        out = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", _PDF_SCRIPT, str(path), str(MAX_PDF_PAGES)],
-                             capture_output=True, text=True, timeout=120)
+        out = subprocess.run(["/usr/bin/osascript", "-l", "JavaScript", "-e", _PDF_SCRIPT, str(path),
+                              "image" if kind == "image" else "pdf", str(MAX_PDF_PAGES), str(MAX_OCR_PAGES),
+                              str(OCR_MIN_CHARS)],
+                             capture_output=True, text=True, timeout=600)
         payload = json.loads(out.stdout or "{}")
     except (OSError, subprocess.SubprocessError, ValueError):
         return [], "unreadable"
     if payload.get("error"):
         return [], str(payload["error"])
-    pages: List[Tuple[Optional[int], str]] = []
+    pages: List[Page] = []
     total = 0
-    for number, text in enumerate(payload.get("pages") or [], start=1):
-        text = str(text or "")
+    for number, item in enumerate(payload.get("pages") or [], start=1):
+        text = str((item or {}).get("text") or "")
         total += len(text)
         if total > MAX_CHARS_PER_FILE:
             break
-        pages.append((number, text))
+        pages.append((None if kind == "image" else number, text, bool((item or {}).get("ocr"))))
     return pages, None
 
 
@@ -389,24 +446,24 @@ def _private_mode() -> bool:
 
 def _index_one(conn: sqlite3.Connection, folder: str, path: Path, stat: os.stat_result, digest: str) -> int:
     pages, error = extract(path)
-    pieces: List[Tuple[Optional[int], int, str]] = []
-    for page, text in pages:
+    pieces: List[Tuple[Optional[int], int, str, bool]] = []
+    for page, text, read_by_ocr in pages:
         for ordinal, piece in enumerate(chunk(text)):
-            pieces.append((page, ordinal, piece))
+            pieces.append((page, ordinal, piece, read_by_ocr))
     total = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
     if total + len(pieces) > MAX_CHUNKS:
         error, pieces = "index is full", []
-    rows: List[Tuple[Optional[int], int, str, str, bytes]] = []
+    rows: List[Tuple[Optional[int], int, str, bool, str, bytes]] = []
     for start in range(0, len(pieces), EMBED_BATCH):
         batch = pieces[start:start + EMBED_BATCH]
-        backend, vectors = _vectors([piece for _page, _ordinal, piece in batch])
-        rows.extend((page, ordinal, piece, backend, _pack(vector))
-                    for (page, ordinal, piece), vector in zip(batch, vectors))
+        backend, vectors = _vectors([piece for _page, _ordinal, piece, _ocr in batch])
+        rows.extend((page, ordinal, piece, read_by_ocr, backend, _pack(vector))
+                    for (page, ordinal, piece, read_by_ocr), vector in zip(batch, vectors))
     _delete_file_rows(conn, str(path))
-    for page, ordinal, piece, backend, blob in rows:
+    for page, ordinal, piece, read_by_ocr, backend, blob in rows:
         cursor = conn.execute(
-            "INSERT INTO chunks(path, page, ordinal, text, vector_backend, vector) VALUES(?, ?, ?, ?, ?, ?)",
-            (str(path), page, ordinal, piece, backend, blob))
+            "INSERT INTO chunks(path, page, ordinal, text, ocr, vector_backend, vector) VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (str(path), page, ordinal, piece, int(read_by_ocr), backend, blob))
         conn.execute("INSERT INTO chunks_fts(rowid, text) VALUES(?, ?)", (cursor.lastrowid, piece))
     state = "error" if error else ("indexed" if rows else "no_text")
     conn.execute(
@@ -433,7 +490,13 @@ def scan(*, budget_s: float = BACKGROUND_BUDGET_S, folders: Optional[Sequence[st
         with closing(_connect()) as conn:
             summary["removed"] += _drop_outside(conn, folders)
             known = {row["path"]: row for row in conn.execute(
-                "SELECT path, folder, size, mtime_ns, sha256 FROM files")}
+                "SELECT path, folder, size, mtime_ns, sha256, status FROM files")}
+            # Files read before extraction could OCR (#258) and found without text are read once more.
+            reread = _meta(conn, "extractor") != EXTRACTOR_VERSION
+
+            def stale(row: sqlite3.Row) -> bool:
+                return reread and row["status"] == "no_text"
+
             seen: set[str] = set()
             for folder in folders:
                 for path in _walk(folder):
@@ -444,7 +507,7 @@ def scan(*, budget_s: float = BACKGROUND_BUDGET_S, folders: Optional[Sequence[st
                     except OSError:
                         continue
                     row = known.get(key)
-                    if row and row["size"] == stat.st_size and row["mtime_ns"] == stat.st_mtime_ns:
+                    if row and row["size"] == stat.st_size and row["mtime_ns"] == stat.st_mtime_ns and not stale(row):
                         summary["unchanged"] += 1
                         continue
                     if time.monotonic() > deadline:
@@ -454,7 +517,7 @@ def scan(*, budget_s: float = BACKGROUND_BUDGET_S, folders: Optional[Sequence[st
                         digest = _sha256(path)
                     except OSError:
                         continue
-                    if row and row["sha256"] == digest:
+                    if row and row["sha256"] == digest and not stale(row):
                         conn.execute("UPDATE files SET size = ?, mtime_ns = ? WHERE path = ?",
                                      (stat.st_size, stat.st_mtime_ns, key))
                         conn.commit()
@@ -464,6 +527,7 @@ def scan(*, budget_s: float = BACKGROUND_BUDGET_S, folders: Optional[Sequence[st
                         _index_one(conn, folder, path, stat, digest)
                         summary["indexed"] += 1
                     except Exception as exc:  # one bad file never stops the scan
+                        conn.rollback()  # and never leaves it half replaced: its earlier rows stay (#242)
                         log.warning("knowledge: could not index a file: %s", type(exc).__name__)
             # Deleted, renamed, now hidden or past the per-folder limit: no longer searchable.
             for key in set(known) - seen:
@@ -471,6 +535,7 @@ def scan(*, budget_s: float = BACKGROUND_BUDGET_S, folders: Optional[Sequence[st
                 summary["removed"] += 1
             conn.commit()
             if summary["pending"] == 0:
+                _set_meta(conn, "extractor", EXTRACTOR_VERSION)
                 _set_meta(conn, "last_scan_at", _now_iso())
                 _set_meta(conn, "last_scan_monotonic", str(time.monotonic()))
             _set_meta(conn, "pending", str(summary["pending"]))
@@ -597,7 +662,7 @@ def knowledge_search(query: str, path: Optional[str] = None, limit: int = 8) -> 
         for start in range(0, len(ids), 500):
             part = list(ids)[start:start + 500]
             marks = ",".join("?" * len(part))
-            for row in conn.execute(f"SELECT chunk_id, path, page, text FROM chunks WHERE chunk_id IN ({marks})", part):
+            for row in conn.execute(f"SELECT chunk_id, path, page, text, ocr FROM chunks WHERE chunk_id IN ({marks})", part):
                 if row["path"] in allowed:
                     rows[int(row["chunk_id"])] = row
         scored = sorted(((0.6 * semantic.get(cid, 0.0) + 0.4 * lexical.get(cid, 0.0), cid) for cid in rows),
@@ -616,6 +681,7 @@ def knowledge_search(query: str, path: Optional[str] = None, limit: int = 8) -> 
                 "path": row["path"],
                 "name": Path(row["path"]).name,
                 "page": row["page"],
+                "ocr": bool(row["ocr"]),
                 "snippet": _snippet(row["text"], q),
                 "score": round(score, 4),
                 "semantic_score": round(semantic.get(cid, 0.0), 4),
@@ -633,7 +699,8 @@ def knowledge_search(query: str, path: Optional[str] = None, limit: int = 8) -> 
         "ok": True, "query": q, "count": len(results), "results": results,
         "folders": folders if roots is None else [f for f in folders if any(path_is_within(f, r) or path_is_within(r, f) for r in roots)],
         "index": {"last_scan_at": last, "pending_files": pending, "searched_files": len(allowed)},
-        "how_to_cite": "Answer from these snippets and name each source as its file name with the page when there is one.",
+        "how_to_cite": "Answer from these snippets and name each source as its file name with the page when there is one. "
+                       "A result with ocr true was read from a scan or photo and may hold recognition errors.",
     }
     if refresh.get("paused"):
         answer["index"]["paused"] = refresh["paused"]

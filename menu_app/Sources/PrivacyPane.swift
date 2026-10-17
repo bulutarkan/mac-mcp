@@ -180,7 +180,7 @@ struct PrivacyPane: View {
                     Button("Add Folder…") { chooseKnowledgeFolder() }
                         .disabled(!loaded || knowledgeBusy)
                 }
-                Text("Your AI apps can ask about what is in these folders — contracts, invoices, notes, PDFs and Word files — and answer with the file and page. This only adds smart search: Mac MCP still works with files anywhere else, as before. It reads these folders on this Mac and keeps a private index; nothing is uploaded.")
+                Text("Your AI apps can ask about what is in these folders — contracts, invoices, notes, PDFs and Word files, scans and photos of pages too — and answer with the file and page. This only adds smart search: Mac MCP still works with files anywhere else, as before. It reads these folders on this Mac and keeps a private index; nothing is uploaded.")
                     .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if knowledgeFolders.isEmpty {
                     Text("No folders yet.").font(.caption).foregroundStyle(.secondary)

@@ -1,5 +1,9 @@
 ## Unreleased
 
+### Scanned documents are searchable (#258)
+- Folders Mac MCP can search now read scanned PDFs and photos or screenshots of pages (PNG, JPEG, HEIC, TIFF) with the Mac's own text recognition, on this Mac, in Turkish, English and other languages. Pages that already have text are read as before; a result read from an image says so (`ocr: true`) so the AI app can mention that it may hold recognition errors.
+- Scans that were found "without text" before are read once more on the next refresh, by themselves.
+
 ### Recipes on a schedule (#257)
 - A Scheduled Task can now be a **Recipe**: pick a saved recipe and its values, and it replays those steps at the time you set or each time a file arrives, with no AI model asked (no model cost, the same steps every time). Values can hold `{file}` or a date word such as `{today}`.
 - The recipe runs through the same path as running it yourself (your permissions, checks and its run timeline). If the recipe is paused, still a draft or deleted, the run fails and says why, and the task card shows it. A recipe task an AI app suggests waits for your approval, showing which recipe and values.
