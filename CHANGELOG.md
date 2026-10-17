@@ -1,5 +1,8 @@
 ## Unreleased
 
+### Settings shows what agents can do in each app (#262)
+- Settings › Apps now lists every app Mac MCP knows, straight from the server's own list: whether it is **Built in** (Mac MCP works with the app directly, even while you use it), **Partly built in**, or used **by looking at the window**, and, when you open a row, what agents can read, open, change, send (asking you first) or run there. A new app action shows up by itself; the old hand-written summary is gone.
+
 ### The menu tells conversations from agents (#248)
 - The menu's **Sessions** section is now **Conversations**, and its rows say **Chat 1**, **Chat 2** instead of "Agent 1", so they are not mixed up with the agents you hand work to under **Agents**.
 - Sending a message says what happens next in plain words: "Sent. This conversation will see your message before its next step." instead of "the agent's next tool will be preempted"; the other messages, the details popover and VoiceOver labels follow.

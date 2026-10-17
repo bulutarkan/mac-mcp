@@ -164,6 +164,48 @@ def support_matrix() -> Dict[str, Any]:
     return rows
 
 
+_ACTION_WORDS = {"selection": "See what is selected", "list_workspaces": "List open projects",
+                 "plan_day": "Plan a day", "find_free_time": "Find free time"}
+_HOW_WORDS = {"first_party": "Built in", "generic_ax": "By looking at the window and clicking",
+              "run_command": "With a command", "run_command or start_background_job": "With a command"}
+_SUPPORT_WORDS = {"first_party": "Built in", "partial_first_party": "Partly built in",
+                  "generic_ax": "By looking at the window"}
+
+
+def _action_words(action: str) -> str:
+    return _ACTION_WORDS.get(action) or action.replace("_", " ").capitalize()
+
+
+def owner_overview() -> List[Dict[str, Any]]:
+    """support_matrix() in plain words for Settings › Apps (#262): what agents can do in each app.
+
+    Actions are grouped by what they do, so the limits show: reads change nothing, sends ask the
+    person first (unless turned off in Settings › Apps), shortcuts run like commands.
+    """
+    rows = []
+    for name, entry in support_matrix().items():
+        actions = entry.get("actions") or []
+        groups = {"reads": [a for a in actions if a in _READ_ACTIONS],
+                  "changes": [a for a in actions if a in _DATA_WRITE_ACTIONS],
+                  "sends": [a for a in actions if a in _SEND_ACTIONS],
+                  "runs": [a for a in actions if a in _RUN_ACTIONS]}
+        grouped = {a for items in groups.values() for a in items}
+        groups["opens"] = [a for a in actions if a not in grouped]
+        other_ways = []
+        for task, text in (entry.get("tasks") or {}).items():
+            how, _, detail = str(text).partition(":")
+            if how.strip() == "first_party":
+                continue  # already in the action lists above
+            other_ways.append({"task": _action_words(task), "how": _HOW_WORDS.get(how.strip(), how.strip()),
+                               "detail": detail.strip()})
+        rows.append({"name": name, "support": entry["support"], "support_words": _SUPPORT_WORDS[entry["support"]],
+                     "actions": list(actions),
+                     **{key: [_action_words(a) for a in items] for key, items in groups.items()},
+                     "other_ways": other_ways, "native_api": entry.get("native_api")})
+    order = {"first_party": 0, "partial_first_party": 1, "generic_ax": 2}
+    return sorted(rows, key=lambda row: (order[row["support"]], row["name"]))
+
+
 def normalize_app_name(app: str) -> Optional[str]:
     return _APP_ALIASES.get(str(app or "").strip().lower())
 

@@ -151,6 +151,8 @@ struct SettingsView: View {
     @MacMCPState private var notice = ""
     /// This Mac's shortcuts, for the ones agents may run with commands off (#195).
     @MacMCPState private var macShortcutNames: [String]?
+    /// What agents can do in each app, from the server's adapter support matrix (#262).
+    @MacMCPState private var appSupport: [[String: Any]]?
     @MacMCPState private var confirmClearUsage = false
     @MacMCPState private var memoryClearPreview: MemoryClearResult?
     @MacMCPState private var groqKey = ""
@@ -3441,7 +3443,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 paneHeader(
                     "Apps",
-                    subtitle: "What agents may do in your Mac apps through Mac MCP. Settings for more apps will appear here."
+                    subtitle: "What agents can do in your Mac apps through Mac MCP, and when they ask you first."
                 )
 
                 GroupBox("Sending") {
@@ -3501,18 +3503,76 @@ struct SettingsView: View {
                 }
                 .task { macShortcutNames = await MacShortcuts.names() }
 
-                GroupBox("Other apps") {
-                    Text("Finder, Notes, Calendar, Reminders, Preview, System Settings, Messages search and Xcode only read or change data on this Mac and have no settings yet. Mail drafts are saved, never sent.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.top, 5)
+                GroupBox("What agents can do in each app") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Built in means Mac MCP works with the app directly, even while you use it. Other apps are used by looking at their window and clicking, which is slower and depends on what the window shows.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let apps = appSupport {
+                            if apps.isEmpty {
+                                Text("Start Mac MCP to see this list.").font(.caption).foregroundStyle(.secondary)
+                            }
+                            ForEach(Array(apps.enumerated()), id: \.offset) { _, app in appSupportRow(app) }
+                        } else {
+                            ProgressView().controlSize(.small)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 5)
+                }
+                .task {
+                    let result = await state.taskAPI("dashboard/api/apps/support")
+                    appSupport = result.ok ? (result.object["apps"] as? [[String: Any]] ?? []) : []
                 }
 
                 Spacer(minLength: 0)
             }
             .padding(22)
+        }
+    }
+
+    private static let appBundleIDs = [
+        "Finder": "com.apple.finder", "Notes": "com.apple.Notes", "Mail": "com.apple.mail", "Calendar": "com.apple.iCal",
+        "Reminders": "com.apple.reminders", "Contacts": "com.apple.AddressBook", "Shortcuts": "com.apple.shortcuts",
+        "Preview": "com.apple.Preview", "System Settings": "com.apple.systempreferences", "Messages": "com.apple.MobileSMS",
+        "Xcode": "com.apple.dt.Xcode", "Slack": "com.tinyspeck.slackmacgap", "Visual Studio Code": "com.microsoft.VSCode",
+    ]
+
+    private func appSupportRow(_ app: [String: Any]) -> some View {
+        let name = app["name"] as? String ?? ""
+        let words = { (key: String) in (app[key] as? [String] ?? []).joined(separator: ", ") }
+        let lines: [(String, String)] = [
+            ("Reads", words("reads")), ("Opens", words("opens")), ("Changes", words("changes")),
+            ("Sends, asking you first unless turned off above", words("sends")),
+            ("Runs, like a command", words("runs")),
+        ].filter { !$0.1.isEmpty }
+        let others = (app["other_ways"] as? [[String: Any]] ?? []).map {
+            "\($0["task"] as? String ?? ""): \(($0["how"] as? String ?? "").lowercased())"
+        }
+        return DisclosureGroup {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(lines, id: \.0) { line in
+                    Text("\(line.0): \(line.1)").font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ForEach(others, id: \.self) { line in
+                    Text(line).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 26)
+        } label: {
+            HStack(spacing: 8) {
+                Image(nsImage: appIcon(Self.appBundleIDs[name] ?? ""))
+                    .resizable()
+                    .frame(width: 18, height: 18)
+                    .accessibilityHidden(true)
+                Text(name).font(.caption.weight(.semibold))
+                Spacer()
+                Text(app["support_words"] as? String ?? "").font(.caption2).foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
         }
     }
 

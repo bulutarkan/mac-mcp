@@ -489,6 +489,14 @@ def create_dashboard_routes(
         )
         return JSONResponse({"ok": True, "events": payload})
 
+    async def apps_support(request: Request) -> Response:
+        """What agents can do in each Mac app, from the adapters' own support matrix (#262)."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from . import app_adapters
+        return JSONResponse({"ok": True, "apps": app_adapters.owner_overview()})
+
     async def attention(request: Request) -> Response:
         """What needs the owner: requests waiting for an answer and recently blocked calls.
 
@@ -1685,6 +1693,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/security/events", security_events, methods=["GET"]),
         Route("/dashboard/api/security/escalate", security_escalate, methods=["POST"]),
         Route("/dashboard/api/attention", attention, methods=["GET"]),
+        Route("/dashboard/api/apps/support", apps_support, methods=["GET"]),
         Route("/dashboard/api/events", events, methods=["GET"]),
         Route("/dashboard/api/usage", usage, methods=["GET"]),
         Route("/dashboard/api/usage/settings", usage_settings, methods=["POST"]),
