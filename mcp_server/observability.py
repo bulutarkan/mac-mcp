@@ -5,6 +5,7 @@ import atexit
 import contextvars
 import json
 import logging
+import math
 import os
 import queue
 import re
@@ -12,7 +13,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -79,6 +80,13 @@ DEFAULT_TELEMETRY_DIR = Path.home() / ".mac-mcp" / "dashboard"
 DEFAULT_RETENTION_DAYS = 7
 DEFAULT_MAX_EVENTS = 20_000
 RECENT_MEMORY_EVENTS = 250
+# The whole security chain is re-walked at least this often; checks in between cover new events (#254).
+CHAIN_FULL_VERIFY_S = 600.0
+# A summary is reused while nothing was written for SUMMARY_FRESH_S, and in any case for
+# SUMMARY_MIN_REFRESH_S, so a busy server recomputes it at most that often (#254).
+SUMMARY_FRESH_S = 10.0
+SUMMARY_MIN_REFRESH_S = 5.0
+SUMMARY_CACHE_MAX = 8
 _TOOL_INTENT_MAX_CHARS = 80
 _TOOL_INTENT_PATH_RE = re.compile(
     r"(?:https?://|file://|(?:^|\s)(?:/Users/|/private/|/Volumes/|~/))",
@@ -403,7 +411,9 @@ class TelemetryManager:
         self._subscribers: List[Tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = []
         self._lock = threading.RLock()
         self._writes = 0
-        self._summary_cache: Dict[float, tuple[float, int, Dict[str, Any]]] = {}
+        self._summary_cache: "OrderedDict[float, tuple[float, int, Dict[str, Any]]]" = OrderedDict()
+        self._chain_lock = threading.Lock()
+        self._chain_verified: Optional[Dict[str, Any]] = None
         self._init_db()
         # Explicit db_path is primarily used by tests/isolated callers. Keep their
         # lifecycle deterministic unless usage collection is explicitly requested.
@@ -895,10 +905,39 @@ class TelemetryManager:
         self._publish({"kind": "security_event", **event})
         return event
 
-    def verify_security_chain(self) -> Dict[str, Any]:
-        """Check the retained security events against their hash chain and the latest checkpoint."""
-        with closing(self._connect()) as conn:
-            return audit_chain.verify(conn, self.db_path)
+    def verify_security_chain(self, *, full: bool = False) -> Dict[str, Any]:
+        """Check the retained security events against their hash chain and the latest checkpoint.
+
+        The whole chain is walked on the first check, when asked (full) and at least every
+        CHAIN_FULL_VERIFY_S; in between only events newer than the last walk are checked, after
+        confirming the link it ended on is unchanged (#254). Any doubt falls back to a full walk.
+        """
+        with self._chain_lock:
+            now = time.monotonic()
+            last = self._chain_verified
+            due = full or last is None or now - last["full_at"] >= CHAIN_FULL_VERIFY_S
+            with closing(self._connect()) as conn:
+                result = None
+                if not due:
+                    result = audit_chain.verify_since(conn, self.db_path, anchor_seq=last["anchor_seq"],
+                                                      seq=last["seq"], digest=last["hash"], mark=last["mark"])
+                    if result is not None:
+                        result.update(mode="incremental", checked=last["checked"] + result["checked"])
+                if result is None:
+                    audit_chain.ensure_schema(conn)  # puts back change triggers someone removed
+                    conn.commit()
+                    mark = audit_chain.change_mark(conn)  # read before the walk: later changes are seen next time
+                    result = audit_chain.verify(conn, self.db_path)
+                    result["mode"] = "full"
+                    last = {"full_at": now, "checked": 0, "mark": mark}
+            if result["ok"]:
+                self._chain_verified = {**last, "anchor_seq": result["anchor_seq"], "seq": result["latest_seq"],
+                                        "hash": result["latest_hash"], "checked": result["checked"]}
+            else:
+                self._chain_verified = None  # the next check walks everything again
+            result["full_checked_seconds_ago"] = int(now - last["full_at"])
+        result.pop("latest_hash", None)
+        return result
 
     def query_security_events(self, *, hours: float = 24, limit: int = 100, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
         bounded_hours = max(0.05, min(float(hours), 24 * 365))
@@ -1045,10 +1084,14 @@ class TelemetryManager:
         bounded_hours = max(0.05, min(float(hours), 24 * 365))
         now = time.time()
         cache_key = round(bounded_hours, 4)
-        cached = self._summary_cache.get(cache_key)
+        with self._lock:
+            cached = self._summary_cache.get(cache_key)
+            if cached is not None:
+                self._summary_cache.move_to_end(cache_key)
         if cached is not None:
             cached_at, cached_writes, cached_payload = cached
-            if cached_writes == self._writes and now - cached_at < 10.0:
+            age = now - cached_at
+            if age < SUMMARY_MIN_REFRESH_S or (cached_writes == self._writes and age < SUMMARY_FRESH_S):
                 payload = dict(cached_payload)
                 payload["active_calls"] = len(self.active_calls())
                 payload["uptime_seconds"] = max(0, int(now - self.started_at))
@@ -1065,11 +1108,13 @@ class TelemetryManager:
                 """,
                 (cutoff,),
             ).fetchone()
-            durations = [
-                int(row[0]) for row in conn.execute(
-                    "SELECT duration_ms FROM tool_events WHERE timestamp >= ? ORDER BY duration_ms", (cutoff,)
-                ).fetchall()
-            ]
+            # Nearest-rank p95: ceil(0.95 * N) - 1, read as one row instead of every duration.
+            # This keeps small samples honest instead of rounding the slowest call away.
+            count = int(totals["total"] or 0)
+            p95_row = conn.execute(
+                "SELECT duration_ms FROM tool_events WHERE timestamp >= ? ORDER BY duration_ms LIMIT 1 OFFSET ?",
+                (cutoff, max(0, math.ceil(count * 0.95) - 1)),
+            ).fetchone() if count else None
             top_tools = [
                 dict(row) for row in conn.execute(
                     """
@@ -1091,12 +1136,7 @@ class TelemetryManager:
         total = int(totals["total"] or 0)
         success = int(totals["success"] or 0)
         errors = int(totals["errors"] or 0)
-        p95 = 0
-        if durations:
-            # Nearest-rank percentile: ceil(0.95 * N) - 1. This keeps small
-            # samples honest instead of rounding the slowest call away.
-            import math
-            p95 = durations[min(len(durations) - 1, max(0, math.ceil(len(durations) * 0.95) - 1))]
+        p95 = int(p95_row[0]) if p95_row and p95_row[0] is not None else 0
         payload = {
             "window_hours": bounded_hours,
             "total_calls": total,
@@ -1112,7 +1152,11 @@ class TelemetryManager:
             "retention_days": self.retention_days,
             "max_events": self.max_events,
         }
-        self._summary_cache[cache_key] = (now, self._writes, dict(payload))
+        with self._lock:
+            self._summary_cache[cache_key] = (now, self._writes, dict(payload))
+            self._summary_cache.move_to_end(cache_key)
+            while len(self._summary_cache) > SUMMARY_CACHE_MAX:
+                self._summary_cache.popitem(last=False)
         return payload
 
 

@@ -990,8 +990,24 @@
     }, 1200);
   }
 
+  // Finished calls and security events arrive in bursts: refresh the summary and the
+  // attention card once after a burst settles, not once per event (#254).
+  function scheduleSummaryRefresh() {
+    window.clearTimeout(state.summaryRefreshTimer);
+    state.summaryRefreshTimer = window.setTimeout(refreshSummary, 2500);
+  }
+
+  function scheduleAttentionRefresh() {
+    window.clearTimeout(state.attentionRefreshTimer);
+    state.attentionRefreshTimer = window.setTimeout(refreshAttention, 800);
+  }
+
   function handleTelemetry(event) {
     if (!event || !event.kind) return;
+    if (event.kind === "security_event") {
+      scheduleAttentionRefresh();
+      return;
+    }
     if (event.kind === "connected") {
       state.active = new Map((event.active || []).map((item) => [item.event_id, item]));
       renderEvents();
@@ -1004,6 +1020,7 @@
       els.lastLatency.textContent = "running";
       renderEvents(event.event_id);
       renderActiveCount();
+      scheduleAttentionRefresh();  // a call may now wait for the owner's answer
       return;
     }
     if (event.kind === "call_finished") {
@@ -1015,7 +1032,8 @@
       renderEvents(event.event_id);
       renderActiveCount();
       announceActivity(`Completed: ${event.tool || "tool"} · ${statusLabel(event.status)}`);
-      refreshSummary();
+      scheduleSummaryRefresh();
+      scheduleAttentionRefresh();
       scheduleChangesRefresh();
       if (transactionJournalMayChange(event.tool)) scheduleTransactionRefresh();
     }
@@ -1173,7 +1191,6 @@
   }
   document.addEventListener("visibilitychange", () => {
     adaptivePolls.forEach((poll) => (document.hidden ? window.clearTimeout(poll.timer) : poll.run()));
-    if (!document.hidden) refreshAttention();
   });
 
   // --- Recipe & plan runs (#108): a run's timeline from its own telemetry rows, plus opted-in screenshots.
@@ -1371,7 +1388,8 @@
   refreshAttention();
   window.setInterval(() => { if (!document.hidden) refreshIntegrity(); }, 60000);
   window.setInterval(() => { if (!document.hidden) refreshPosture(); }, 30000);
-  window.setInterval(() => { if (!document.hidden) refreshAttention(); }, 4000);
+  // Waiting requests belong to running calls: poll often only while work runs; stream events refresh it too.
+  pollAdaptive(refreshAttention, 4000, 30000);
   // Summary and agents poll quickly only while work is running (SSE still
   // delivers every call); an idle dashboard polls slowly, a hidden one not at all.
   pollAdaptive(refreshSummary, 5000, 12000);

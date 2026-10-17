@@ -1,5 +1,10 @@
 ## Unreleased
 
+### A dashboard left open costs less (#254)
+- The security record's check no longer re-hashes every event each minute. It walks the whole record on the first check and at least every 10 minutes; checks in between read only new events (about 13 ms instead of about 3 s with 500,000 events). Any edit or delete of an earlier event is still caught on the very next check: SQLite triggers count them, and a changed count, a missing trigger or a pruned record sends the check back to a full walk.
+- The dashboard summary is recomputed at most every 5 seconds on a busy server, its cache keeps 8 time windows, and its slowest-call figure is read as one row instead of every duration. A burst of finished calls refreshes the summary once.
+- The attention card follows the live event stream and polls every 4 seconds only while work runs (30 seconds when idle), instead of 900 requests an hour.
+
 ### Cut results say so and can be continued (#252)
 - `search_files` returns about 50,000 characters of whole matching lines a call, with `total_matches` (every match, not only the ones shown) and, when more follow, `has_more` and `next_offset` to pass as `offset`. Before, it cut mid-line and the count was only of what fit.
 - `spotlight_search` returns at most 500 paths a call, says how many it found in all (`total`) and continues with `offset`.
