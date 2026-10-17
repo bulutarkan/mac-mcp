@@ -494,6 +494,10 @@ private struct TaskDetailView: View {
                 factRow("gauge.with.dots.needle.67percent", "Usage limit", "Stops at " + ScheduledTask.describeLimit(limit))
                 Divider()
             }
+            if !task.watchesFolder {
+                factRow("moon.zzz", "If the Mac is asleep", task.catchUp ? "Runs once when it’s back" : "Skipped; Run now is there")
+                Divider()
+            }
             factRow("bell", "When it finishes", task.notify ? "Notifies you" : "No notification")
         }
         .taskCard()
@@ -574,6 +578,7 @@ private struct TaskDetailView: View {
         var parts: [String] = []
         if run.trigger == "manual" { parts.append("Run now") }
         if run.trigger == "resume" { parts.append("Resumed") }
+        if run.trigger == "catch_up" { parts.append("Catch-up") }
         if let file = run.triggerFileName { parts.append(file) }
         switch run.status {
         case "running": parts.append("Running…")
@@ -675,6 +680,7 @@ final class TaskEditorModel: ObservableObject, Identifiable {
     @Published var usageKind = "none"
     @Published var usageAmount = ""
     @Published var notify = true
+    @Published var catchUp = false
     @Published var timeoutMin = 0
     @Published var showAdvanced = false
     /// The first output check (#198) is edited here; checks an AI app added beyond it are kept as they are.
@@ -710,6 +716,7 @@ final class TaskEditorModel: ObservableObject, Identifiable {
             dataInterpreter = step["interpreter"] as? String ?? ""
         }
         notify = task.notify
+        catchUp = task.catchUp
         timeoutMin = raw["timeout_min"] as? Int ?? 0
         if let checks = raw["verify"] as? [[String: Any]], let first = checks.first {
             firstCheck = first
@@ -818,6 +825,7 @@ final class TaskEditorModel: ObservableObject, Identifiable {
         var out: [String: Any] = [
             "name": name, "description": description, "kind": isAI ? "ai" : "script",
             "schedule": schedule, "notify": notify, "cwd": cwd,
+            "missed": catchUp && when != .file ? "run_once" : "skip",
         ]
         if timeoutMin > 0 { out["timeout_min"] = timeoutMin }
         var checks = otherChecks
@@ -1384,7 +1392,8 @@ private struct TaskEditorSheet: View {
                 } else if scheduleProblem.isEmpty {
                     (Text("Runs ") + Text(sentence.isEmpty ? "…" : sentence.lowercasedFirst).fontWeight(.semibold) + Text(". ")
                      + Text(firstRun.map { "First run: \(TaskTime.upcoming($0)). " } ?? "")
-                     + Text("If your Mac is asleep then, the run is skipped and shown in the history."))
+                     + Text(model.catchUp ? "If your Mac is asleep then, it runs once when the Mac is back."
+                                          : "If your Mac is asleep then, the run is skipped and shown in the history."))
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     Text(scheduleProblem).fixedSize(horizontal: false, vertical: true)
@@ -1395,6 +1404,15 @@ private struct TaskEditorSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(TaskStyle.accentStrip))
             .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.accentColor.opacity(0.35)))
+
+            if model.when != .file {
+                Toggle(isOn: $model.catchUp) {
+                    Text("Run it once when the Mac is back if it was asleep or Mac MCP was off")
+                        .font(.callout)
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            }
         }
     }
 

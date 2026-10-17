@@ -456,6 +456,49 @@ class SchedulerTests(StoreCase):
         self.assertEqual(runner.REASON_STOPPED, store.list_runs(task["id"])[0]["reason"])
         self.assertEqual([], launched)
 
+    def test_run_once_after_sleep_catches_up_with_one_run(self) -> None:
+        task = store.create_task({**self.sh(), "missed": "run_once",
+                                  "schedule": {"type": "hours", "every": 1, "start": "00:00"}}, now=ts("2026-10-13T08:30"))
+        self.assertEqual("run_once", store.get_task(task["id"])["missed"])
+        loop, launched = self.make(ts("2026-10-13T08:30"))
+        actions = loop.tick(ts("2026-10-13T11:40"))  # 09, 10 and 11 were missed; nothing is due now
+        self.assertEqual([("skipped", 2), ("started", None)], [(a["action"], a.get("count")) for a in actions])
+        self.assertEqual(1, len(launched))  # one catch-up run, never one per missed hour
+        runs = store.list_runs(task["id"])
+        caught = next(run for run in runs if run["status"] == "running")
+        self.assertEqual(("catch_up", "2026-10-13T11:00"), (caught["trigger"], local(caught["scheduled_for"])))
+        skipped = next(run for run in runs if run["status"] == "skipped")
+        self.assertEqual((2, runner.REASON_ASLEEP + runner.REASON_CAUGHT_UP), (skipped["skipped_count"], skipped["reason"]))
+        self.assertEqual("2026-10-13T12:00", local(store.get_task(task["id"])["next_run_at"]))
+
+    def test_run_once_does_not_add_a_run_when_one_is_due_now(self) -> None:
+        task = store.create_task({**self.sh(), "missed": "run_once",
+                                  "schedule": {"type": "hours", "every": 1, "start": "00:00"}}, now=ts("2026-10-13T08:30"))
+        loop, launched = self.make(ts("2026-10-13T08:30"))
+        actions = loop.tick(ts("2026-10-13T12:01"))  # 12:00 is due now: that run covers the missed ones
+        self.assertEqual([("skipped", 3), ("started", None)], [(a["action"], a.get("count")) for a in actions])
+        self.assertEqual(1, len(launched))
+        self.assertEqual("schedule", next(r for r in store.list_runs(task["id"]) if r["status"] == "running")["trigger"])
+
+    def test_skip_stays_the_default_and_run_once_is_for_timed_tasks(self) -> None:
+        plain = store.create_task(self.sh(), now=ts("2026-10-13T12:00"))
+        self.assertNotIn("missed", store.get_task(plain["id"]))
+        self.assertNotIn("missed", store.create_task({**self.sh(), "missed": "skip"}))
+        with self.assertRaises(store.TaskError) as bad:
+            store.create_task({**self.sh(), "missed": "always"})
+        self.assertEqual("missed_invalid", bad.exception.code)
+        with self.assertRaises(store.TaskError) as folder:
+            store.create_task({**self.sh(), "missed": "run_once", "schedule": {"type": "folder", "folder": str(self.folder)}})
+        self.assertEqual("missed_needs_times", folder.exception.code)
+
+    def test_a_missed_one_time_task_runs_once_when_back(self) -> None:
+        task = store.create_task({**self.sh(), "missed": "run_once",
+                                  "schedule": {"type": "once", "at": "2026-10-13T09:00"}}, now=ts("2026-10-13T08:00"))
+        loop, launched = self.make(ts("2026-10-13T08:00"))
+        loop.tick(ts("2026-10-13T14:00"))
+        self.assertEqual(1, len(launched))
+        self.assertEqual("catch_up", store.list_runs(task["id"])[0]["trigger"])
+
     def test_a_run_still_going_makes_the_next_one_skip(self) -> None:
         task = store.create_task(self.sh(), now=ts("2026-10-13T12:00"))
         store.start_run(task["id"], trigger="manual", now=ts("2026-10-13T17:00"))

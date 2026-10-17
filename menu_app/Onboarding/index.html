@@ -100,64 +100,6 @@
         </div>
       </section>
 
-      <section class="screen" data-screen="permissions" aria-labelledby="h-permissions">
-        <div class="copy">
-          <h1 id="h-permissions">Let Mac MCP see and use your apps.</h1>
-          <p>macOS asks you for each permission and names who gets it: <strong data-live="holder">Mac MCP</strong>. If System Settings opens instead, turn that name on in the list.</p>
-          <div class="perms">
-            <div class="perm" data-perm="accessibility">
-              <div><strong>Accessibility</strong><span>Click, type and read what is in an app window.</span></div>
-              <button type="button" data-action="request">Allow</button>
-            </div>
-            <div class="perm" data-perm="screen_recording">
-              <div><strong>Screen Recording</strong><span>See a window when the app’s buttons are not enough.</span></div>
-              <button type="button" data-action="request">Allow</button>
-            </div>
-          </div>
-          <p class="note" data-live="permission-hint" hidden>Turn on Mac MCP in the window macOS opened. Nothing opened? Open <button type="button" class="link" data-action="open-settings-pane" data-permission="accessibility">Accessibility</button> or <button type="button" class="link" data-action="open-settings-pane" data-permission="screen_recording">Screen Recording</button> settings. Mac MCP restarts by itself once it is allowed.</p>
-        </div>
-        <div class="stage plain" aria-hidden="true">
-          <div class="settings">
-            <div class="settings-bar"><div class="lights"><i></i><i></i><i></i></div><span>Privacy &amp; Security</span></div>
-            <div class="settings-body">
-              <h2>Accessibility</h2>
-              <div class="settings-row" data-mirror="accessibility"><img src="../Assets/AppIcon.png" alt=""><span>Mac MCP</span><i class="toggle"></i></div>
-              <h2>Screen &amp; System Audio Recording</h2>
-              <div class="settings-row" data-mirror="screen_recording"><img src="../Assets/AppIcon.png" alt=""><span>Mac MCP</span><i class="toggle"></i></div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="screen" data-screen="browsers" aria-labelledby="h-browsers">
-        <div class="copy">
-          <h1 id="h-browsers">Let it work in your browser.</h1>
-          <p>Optional. With a small companion, Mac MCP works in a Safari or Chrome tab in the background and frames the tab it touches. Set up either one now, or later in Settings.</p>
-          <div class="perms">
-            <div class="perm" data-browser="safari">
-              <div><strong>Safari</strong><span data-live="safari-detail">Checking Safari…</span></div>
-              <button type="button" data-action="setup-browser" hidden>Enable</button>
-            </div>
-            <div class="perm" data-browser="chrome">
-              <div><strong>Google Chrome</strong><span data-live="chrome-detail">Checking Chrome…</span></div>
-              <button type="button" data-action="setup-browser" hidden>Set up</button>
-            </div>
-          </div>
-        </div>
-        <div class="stage desk" aria-hidden="true">
-          <div class="wallpaper"></div>
-          <div class="menubar"><span></span><span></span><span></span></div>
-          <div class="win browser companion">
-            <div class="lights"><i></i><i></i><i></i><u class="url"></u></div>
-            <div class="form">
-              <div class="field"><small></small><div class="input"><span class="filled">Ayşe Yılmaz</span></div></div>
-              <div class="field"><small></small><div class="input"><span class="filled late">ayse@example.com</span></div></div>
-              <div class="submit"></div>
-            </div>
-          </div>
-        </div>
-      </section>
-
       <section class="screen" data-screen="connect" aria-labelledby="h-connect">
         <div class="copy">
           <h1 id="h-connect">Connect your AI app.</h1>
@@ -212,6 +154,64 @@
             <button type="button" data-action="copy-prompt">Copy request</button>
           </div>
           <div class="burst" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="permissions" aria-labelledby="h-permissions">
+        <div class="copy">
+          <h1 id="h-permissions">Let it use your Mac apps too.</h1>
+          <p>Optional. Only needed when your AI app should click, type or look inside apps such as Notes or Mail; files, the terminal and the browser work without it. macOS asks you for each permission and names who gets it: <strong data-live="holder">Mac MCP</strong>. If System Settings opens instead, turn that name on in the list.</p>
+          <div class="perms">
+            <div class="perm" data-perm="accessibility">
+              <div><strong>Accessibility</strong><span>Click, type and read what is in an app window.</span></div>
+              <button type="button" data-action="request">Allow</button>
+            </div>
+            <div class="perm" data-perm="screen_recording">
+              <div><strong>Screen Recording</strong><span>See a window when the app’s buttons are not enough.</span></div>
+              <button type="button" data-action="request">Allow</button>
+            </div>
+          </div>
+          <p class="note" data-live="permission-hint" hidden>Turn on Mac MCP in the window macOS opened. Nothing opened? Open <button type="button" class="link" data-action="open-settings-pane" data-permission="accessibility">Accessibility</button> or <button type="button" class="link" data-action="open-settings-pane" data-permission="screen_recording">Screen Recording</button> settings. Mac MCP restarts by itself once it is allowed.</p>
+        </div>
+        <div class="stage plain" aria-hidden="true">
+          <div class="settings">
+            <div class="settings-bar"><div class="lights"><i></i><i></i><i></i></div><span>Privacy &amp; Security</span></div>
+            <div class="settings-body">
+              <h2>Accessibility</h2>
+              <div class="settings-row" data-mirror="accessibility"><img src="../Assets/AppIcon.png" alt=""><span>Mac MCP</span><i class="toggle"></i></div>
+              <h2>Screen &amp; System Audio Recording</h2>
+              <div class="settings-row" data-mirror="screen_recording"><img src="../Assets/AppIcon.png" alt=""><span>Mac MCP</span><i class="toggle"></i></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="screen" data-screen="browsers" aria-labelledby="h-browsers">
+        <div class="copy">
+          <h1 id="h-browsers">Let it work in your browser.</h1>
+          <p>Optional. With a small companion, Mac MCP works in a Safari or Chrome tab in the background and frames the tab it touches. Set up either one now, or later in Settings.</p>
+          <div class="perms">
+            <div class="perm" data-browser="safari">
+              <div><strong>Safari</strong><span data-live="safari-detail">Checking Safari…</span></div>
+              <button type="button" data-action="setup-browser" hidden>Enable</button>
+            </div>
+            <div class="perm" data-browser="chrome">
+              <div><strong>Google Chrome</strong><span data-live="chrome-detail">Checking Chrome…</span></div>
+              <button type="button" data-action="setup-browser" hidden>Set up</button>
+            </div>
+          </div>
+        </div>
+        <div class="stage desk" aria-hidden="true">
+          <div class="wallpaper"></div>
+          <div class="menubar"><span></span><span></span><span></span></div>
+          <div class="win browser companion">
+            <div class="lights"><i></i><i></i><i></i><u class="url"></u></div>
+            <div class="form">
+              <div class="field"><small></small><div class="input"><span class="filled">Ayşe Yılmaz</span></div></div>
+              <div class="field"><small></small><div class="input"><span class="filled late">ayse@example.com</span></div></div>
+              <div class="submit"></div>
+            </div>
+          </div>
         </div>
       </section>
 

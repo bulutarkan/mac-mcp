@@ -230,7 +230,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 paneHeader(
                     "Get Started",
-                    subtitle: "Four steps from install to a first request that works. Everything stays on this Mac unless you turn on remote access."
+                    subtitle: "Three steps from install to a first request that works. Everything stays on this Mac unless you turn on remote access."
                 )
 
                 GroupBox {
@@ -250,6 +250,10 @@ struct SettingsView: View {
 
                 GroupBox("Optional") {
                     VStack(alignment: .leading, spacing: 12) {
+                        ForEach(checklist.optional) { step in
+                            onboardingRow(step)
+                            Divider()
+                        }
                         onboardingOptionalRow(
                             title: "Browser companions",
                             detail: browserCompanionsSummary,
@@ -334,8 +338,8 @@ struct SettingsView: View {
                 NSPasteboard.general.setString(OnboardingChecklist.firstRequestPrompt, forType: .string)
                 notice = "Copied. Paste it into your AI app."
             }
-        case .permissions:
-            Button("Review") {
+        case .appControl, .screenCapture:
+            Button("Allow…") {
                 selection = .help
                 notice = ""
             }

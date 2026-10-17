@@ -28,7 +28,8 @@ struct Harness {
     static func main() {
         // Server down: nothing is known yet, and the first step says so.
         let down = OnboardingChecklist.make(serverRunning: false, status: nil)
-        check(down.steps.map(\.id) == [.server, .client, .firstRequest, .permissions], "step order")
+        check(down.steps.map(\.id) == [.server, .client, .firstRequest], "step order")
+        check(down.optional.map(\.id) == [.appControl, .screenCapture], "permissions are optional")
         check(down.completed == 0, "nothing done while the server is down")
         check(down.nextStep?.id == .server, "start the server first")
         check(OnboardingChecklist.shouldShowReminder(down, dismissed: false), "reminder shows while unfinished")
@@ -51,7 +52,8 @@ struct Harness {
          "public_endpoint_mode": "cloudflare"}
         """)
         let partial = OnboardingChecklist.make(serverRunning: true, status: failed)
-        check(partial.steps.filter(\.done).map(\.id) == [.server, .client, .permissions], "connected, permissions granted")
+        check(partial.steps.filter(\.done).map(\.id) == [.server, .client], "connected")
+        check(partial.optional.allSatisfy(\.done), "permissions granted")
         check(partial.nextStep?.id == .firstRequest, "first request is next")
         check(!partial.steps[1].detail.contains("public HTTPS"), "no ChatGPT note once a public endpoint is set")
 
@@ -64,6 +66,18 @@ struct Harness {
         let complete = OnboardingChecklist.make(serverRunning: true, status: done)
         check(complete.isComplete && complete.nextStep == nil, "complete")
         check(!OnboardingChecklist.shouldShowReminder(complete, dismissed: false), "no reminder when complete")
+
+        // #247: a first request that worked finishes setup even with no Mac app permissions.
+        let noPermissions = status("""
+        {"ok": true, "first_call": {"at": 1791800000, "tool": "system_info", "source": "mcp", "status": "success"},
+         "first_success": {"at": 1791800000, "tool": "system_info", "source": "mcp", "status": "success"},
+         "accessibility": "not_determined", "screen_recording": "denied", "public_endpoint_mode": "none"}
+        """)
+        let filesOnly = OnboardingChecklist.make(serverRunning: true, status: noPermissions)
+        check(filesOnly.isComplete && filesOnly.completed == 3, "setup complete without permissions")
+        check(!OnboardingChecklist.shouldShowReminder(filesOnly, dismissed: false), "no reminder without permissions")
+        check(!filesOnly.optional.contains { $0.done }, "permissions stay offered")
+        check(filesOnly.optional[0].detail.contains("Files, the terminal and the browser work without it"), "says what it is for")
         check(OnboardingChecklist.firstRequestPrompt.contains("macOS version"), "safe read-only prompt")
         print("ONBOARDING_PASS")
     }

@@ -10,10 +10,11 @@ const SCREENS = [
   { id: 'browser', kind: 'tour', rail: 'Tour' },
   { id: 'safety', kind: 'tour', rail: 'Tour' },
   { id: 'start', kind: 'setup', rail: 'Start' },
-  { id: 'permissions', kind: 'setup', rail: 'Permissions' },
-  { id: 'browsers', kind: 'setup', rail: 'Permissions' },
   { id: 'connect', kind: 'setup', rail: 'Connect' },
   { id: 'request', kind: 'setup', rail: 'First request' },
+  // Optional (#247): a first request works without them; Mac app and browser work asks for them here.
+  { id: 'permissions', kind: 'setup', rail: 'Optional' },
+  { id: 'browsers', kind: 'setup', rail: 'Optional' },
   { id: 'done', kind: 'finish', rail: 'Done' },
 ];
 
@@ -125,7 +126,7 @@ function primaryAction(id, evaluation) {
     case 'start':
       return e.start ? { label: 'Continue', action: 'next' } : { label: 'Start Mac MCP', action: 'startServer' };
     case 'permissions':
-      return { label: e.permissions.done ? 'Continue' : 'Allow later', action: 'next' };
+      return { label: e.permissions.done ? 'Continue' : 'Skip for now', action: 'next' };
     case 'browsers':
       return { label: e.browsers.any ? 'Continue' : 'Skip for now', action: 'next' };
     case 'connect':

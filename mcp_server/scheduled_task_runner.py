@@ -10,6 +10,8 @@ nothing, the agent is not started and the run says why.
 
 A run whose time passed more than OVERDUE_S ago (the Mac was asleep, or Mac MCP was not
 running) is not run late: it is recorded as Skipped with the reason, and the owner can Run now.
+A task set to missed=run_once (#256) instead runs once when the Mac is back, for the latest
+missed time; any earlier missed times are recorded as skipped and covered by that one run.
 """
 from __future__ import annotations
 
@@ -47,6 +49,7 @@ REASON_STOPPED = "Mac MCP wasn't running"
 REASON_BUSY = "The previous run was still going"
 REASON_PAUSED = "Observation is paused in Settings › Privacy, so AI tasks don't run"
 REASON_RESTARTED = "Mac MCP restarted before the run finished"
+REASON_CAUGHT_UP = "; one catch-up run covers them"
 REASON_SCRIPT_STOPPED = REASON_RESTARTED + "; its script was still running and was stopped"
 REASON_SCRIPT_LEFT = REASON_RESTARTED + "; its script could not be stopped and may still be running"
 # Keys a run adds to its task's definition: the file that started it, the data a resume reuses.
@@ -697,10 +700,17 @@ class Scheduler:
             slots = [due] + schedule_rules.runs_between(definition["schedule"], due, now, limit=MAX_COUNTED_SKIPS)
             missed = [slot for slot in slots if now - slot > OVERDUE_S]
             fresh = [slot for slot in slots if now - slot <= OVERDUE_S]
+            catch_up = bool(missed) and not fresh and definition.get("missed") == "run_once"
             if missed:
                 reason = REASON_STOPPED if missed[0] < self.started_at else REASON_ASLEEP
-                store.record_skip(task["id"], scheduled_for=missed[0], reason=reason, count=len(missed), now=now)
-                actions.append({"task_id": task["id"], "action": "skipped", "count": len(missed), "reason": reason})
+                skipped = missed[:-1] if catch_up else missed
+                if skipped:
+                    store.record_skip(task["id"], scheduled_for=skipped[0],
+                                      reason=reason + (REASON_CAUGHT_UP if catch_up else ""), count=len(skipped), now=now)
+                    actions.append({"task_id": task["id"], "action": "skipped", "count": len(skipped), "reason": reason})
+            if catch_up:
+                # One run for everything missed, never one per missed time.
+                actions.append(self.start(task["id"], definition, trigger="catch_up", scheduled_for=missed[-1], now=now))
             if fresh:
                 actions.append(self.start(task["id"], definition, trigger="schedule", scheduled_for=fresh[-1], now=now))
             store.advance(task["id"], now)
@@ -715,7 +725,7 @@ class Scheduler:
         run_id = store.start_run(task_id, trigger=trigger, scheduled_for=scheduled_for, now=now,
                                  trigger_file=trigger_file, resumed_from=resumed_from)
         if run_id is None:
-            if trigger == "schedule":
+            if trigger in ("schedule", "catch_up"):
                 store.record_skip(task_id, scheduled_for=scheduled_for or (now or self.clock()), reason=REASON_BUSY, now=now)
             return {"task_id": task_id, "action": "busy"}
         self._launch(task_id, run_id, definition)

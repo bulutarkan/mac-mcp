@@ -5,6 +5,8 @@ command line). Its definition is one JSON object:
 
     {"name", "description", "kind": "ai"|"script", "schedule": {...schedule_rules...},
      "notify": bool, "timeout_min": int,
+     "missed": "run_once" (optional, #256: a run missed while the Mac slept or Mac MCP was off
+               runs once when it is back; absent: it is skipped),
      # ai:     "prompt", "provider", "model", "cwd",
      #         "data_step": {"script" or "command", "interpreter", "args"} (optional),
      #         "usage_limit": {"max_tokens", "max_cost_usd"} (optional, run_budget)
@@ -42,6 +44,7 @@ from . import paths, run_budget, run_records, schedule_rules
 from .runtime_settings import run_detail_privacy
 
 KINDS = ("ai", "script")
+MISSED_POLICIES = ("skip", "run_once")
 RUN_STATUSES = ("running", "done", "failed", "skipped", "timed_out")
 RUNS_PER_TASK = 50
 RUN_RETENTION_DAYS = 90
@@ -462,6 +465,13 @@ def validate_definition(raw: Any) -> Dict[str, Any]:
         "timeout_min": timeout,
         "cwd": _folder(raw.get("cwd")),
     }
+    missed = str(raw.get("missed") or "skip").strip().lower()
+    if missed not in MISSED_POLICIES:
+        raise TaskError("missed_invalid", "missed must be skip (the default) or run_once.")
+    if missed == "run_once":
+        if schedule["type"] == "folder":
+            raise TaskError("missed_needs_times", "run_once is for tasks that run at set times, not when a file arrives.")
+        definition["missed"] = "run_once"  # skip stays implicit, so existing definitions do not change
     if raw.get("verify"):
         definition["verify"] = _output_checks(raw["verify"], definition["cwd"])
     if kind == "ai":

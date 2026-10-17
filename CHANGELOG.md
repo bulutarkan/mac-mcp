@@ -1,5 +1,12 @@
 ## Unreleased
 
+### Setup that doesn't wait for permissions you don't need (#247)
+- Get Started is three steps: start Mac MCP, connect an AI app, try a first request. Accessibility and Screen Recording are optional rows that say what each one is for (clicking and typing in Mac apps; looking at a window), so someone who only works with files, the terminal or the browser sees "All set" and the menu stops reminding them.
+- The first-run tour asks for them after the first request, as an optional step with **Skip for now**.
+
+### Scheduled tasks can catch up after sleep (#256)
+- A task can **Run it once when the Mac is back** (a switch under When): a run missed while the Mac slept or Mac MCP was off runs once when it is back, marked **Catch-up**. A long sleep starts one run, never one per missed time; if a run is due right then, that run covers the missed ones. Off by default, so tasks skip missed runs as before. AI apps can set it too (`missed: "run_once"`).
+
 ### Fixes from the repository review (#237, #238, #239, #240, #245)
 - **Memories saved at the same moment are all kept.** Every change to the memory files now waits its turn, across threads and processes; before, two saves at once could each rewrite the day's file and one memory was lost.
 - **Secrets stay out of memory tags and sources too**, not only the text, on save and on update. The audit log now keeps a failed call's status and error code, not its message, which could hold a file path or other caller text.

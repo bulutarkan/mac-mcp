@@ -30,7 +30,9 @@ struct OnboardingStatus: Decodable, Equatable {
 }
 
 enum OnboardingStepID: String {
-    case server, client, firstRequest, permissions
+    case server, client, firstRequest
+    /// Optional (#247): only Mac app work needs them, so they never hold setup back.
+    case appControl, screenCapture
 }
 
 struct OnboardingStep: Identifiable, Equatable {
@@ -44,7 +46,10 @@ struct OnboardingChecklist: Equatable {
     /// Read-only: it asks for system information and changes nothing.
     static let firstRequestPrompt = "Use Mac MCP to tell me which macOS version this Mac is running."
 
+    /// What setup needs: a running server, a connected AI app and a first request that worked.
     let steps: [OnboardingStep]
+    /// Permissions for Mac app work; shown with the steps but never counted against setup.
+    let optional: [OnboardingStep]
 
     var completed: Int { steps.filter(\.done).count }
     var isComplete: Bool { completed == steps.count }
@@ -53,7 +58,8 @@ struct OnboardingChecklist: Equatable {
     static func make(serverRunning: Bool, status: OnboardingStatus?) -> OnboardingChecklist {
         let known = serverRunning ? status : nil
         let remote = (known?.publicEndpointMode ?? "none") != "none"
-        let permissionsGranted = known?.accessibility == "granted" && known?.screenRecording == "granted"
+        let appControl = known?.accessibility == "granted"
+        let screenCapture = known?.screenRecording == "granted"
         let connectDetail = known?.firstCall != nil
             ? "An AI app has called Mac MCP."
             : "Add Mac MCP to Claude Code, Codex or OpenCode in Connections › Client Setup. They reach this Mac directly."
@@ -74,13 +80,22 @@ struct OnboardingChecklist: Equatable {
                     : "Ask your AI app: “\(firstRequestPrompt)” It only reads; nothing on your Mac changes.",
                 done: known?.firstSuccess != nil
             ),
+        ], optional: [
             OnboardingStep(
-                id: .permissions,
-                title: "Allow Accessibility and Screen Recording",
-                detail: permissionsGranted
-                    ? "Agents can read and use your Mac apps."
-                    : "Needed when agents read or use Mac apps. Allow Mac MCP in System Settings › Privacy & Security.",
-                done: permissionsGranted
+                id: .appControl,
+                title: "Let AI apps use your Mac apps",
+                detail: appControl
+                    ? "Accessibility is on: AI apps can click, type and read in Mac app windows."
+                    : "Accessibility, only for clicking, typing and reading in Mac apps such as Notes or Mail. Files, the terminal and the browser work without it.",
+                done: appControl
+            ),
+            OnboardingStep(
+                id: .screenCapture,
+                title: "Let AI apps see a window",
+                detail: screenCapture
+                    ? "Screen Recording is on: AI apps can look at a window when its buttons are not enough."
+                    : "Screen Recording, only for looking at a window when an app’s buttons are not enough.",
+                done: screenCapture
             ),
         ])
     }

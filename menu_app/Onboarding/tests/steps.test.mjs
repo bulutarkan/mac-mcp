@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import steps from '../steps.js';
 
 const {
@@ -10,8 +10,21 @@ const {
 
 test('the tour comes first, then the setup in order', () => {
   assert.deepEqual(SCREENS.map((s) => s.id),
-    ['welcome', 'apps', 'browser', 'safety', 'start', 'permissions', 'browsers', 'connect', 'request', 'done']);
+    ['welcome', 'apps', 'browser', 'safety', 'start', 'connect', 'request', 'permissions', 'browsers', 'done']);
   assert.equal(indexOf('start'), 4);
+});
+
+test('permissions come after the first request and are optional (#247)', () => {
+  assert.ok(indexOf('permissions') > indexOf('request'));
+  assert.equal(SCREENS.find((s) => s.id === 'permissions').rail, 'Optional');
+  const running = evaluate({ server_running: true, accessibility: 'not_determined', screen_recording: 'denied' });
+  assert.deepEqual(primaryAction('permissions', running), { label: 'Skip for now', action: 'next' });
+});
+
+test('the page shows the screens in the same order', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  const order = [...html.matchAll(/data-screen="([a-z]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(order, SCREENS.map((s) => s.id));
 });
 
 test('nothing is done before the server answers', () => {
@@ -176,8 +189,8 @@ test('browser companions are read from the status and never block setup', () => 
   const live = evaluate({ server_running: true, browsers: { safari: 'on', chrome: 'reload' } });
   assert.deepEqual(live.browsers, { safari: 'on', chrome: 'reload', any: true });
   assert.equal(evaluate({ server_running: true, browsers: { safari: 'nonsense', chrome: 42 } }).browsers.safari, 'unknown');
-  // Optional: their own screen sits under Permissions on the rail and never waits for them.
-  assert.equal(SCREENS.find((s) => s.id === 'browsers').rail, 'Permissions');
+  // Optional: their own screen sits under Optional on the rail and never waits for them.
+  assert.equal(SCREENS.find((s) => s.id === 'browsers').rail, 'Optional');
   assert.deepEqual(primaryAction('browsers', none), { label: 'Skip for now', action: 'next' });
   assert.deepEqual(primaryAction('browsers', live), { label: 'Continue', action: 'next' });
 
