@@ -38,7 +38,7 @@ The macOS menu app can optionally notify you when delegated work finishes while 
 
 Standalone agents generate one terminal notification for completion or needs-attention states. Multi-agent teams are coalesced into one team-level terminal notification instead of one notification per child. Notification content is intentionally minimal: only a sanitized agent/team label is shown, never raw prompts, results, URLs, file paths, or secrets. Clicking an alert opens the local authenticated Operations dashboard focused on the relevant agent or team. Delivery timing, Do Not Disturb, Focus modes, and presentation remain under macOS control.
 
-## Scheduled Tasks (experimental)
+## Scheduled Tasks
 
 **Settings › Scheduled Tasks** runs work on its own at a set time or on a recurrence: once, daily, weekly (chosen days), monthly (a day of the month; 29–31 fall back to the month's last day), every few hours, or a 5-field cron expression under Advanced. Times are this Mac's local time and stay on the wall clock across daylight-saving changes.
 

@@ -28,7 +28,7 @@ or with Node.js: `npx @bulutarkan/mac-mcp install` (the same installer, [details
 
 2.2.0 lets your AI work on a schedule and shows what it is doing while it works.
 
-- **Scheduled Tasks (experimental):** AI tasks and scripts that run once, daily, weekly, monthly or every few hours, with a run report (result and steps) for each run. Tasks an AI app suggests wait for your approval in Settings.
+- **Scheduled Tasks:** AI tasks and scripts that run once, daily, weekly, monthly or every few hours, with a run report (result and steps) for each run. Tasks an AI app suggests wait for your approval in Settings.
 - **Live activity island:** an optional island beside the notch shows the app in use while your AI works, what needs you, recent work and the next scheduled task. Off by default (Settings › Activity & Notifications).
 - **Safer outgoing data:** the secret-egress guard also catches secrets hidden in base64, hex or percent-encoded payloads.
 
