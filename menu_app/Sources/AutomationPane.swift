@@ -40,7 +40,7 @@ struct AutomationPane: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
-                .frame(maxWidth: 360)
+                .fixedSize()
             }
             .padding(.horizontal, 22)
             .padding(.top, 22)
