@@ -855,6 +855,9 @@ def create_dashboard_routes(
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
             return denied
+        # Read before the run: a recheck that ends in between then shows as still going, never as done
+        # with the old result (#226).
+        rechecking = scheduled_task_runner.rechecking(request.query_params.get("run_id", ""))
         try:
             run = await asyncio.to_thread(task_store.get_run, request.query_params.get("run_id", ""))
         except task_store.TaskError as exc:
@@ -867,7 +870,34 @@ def create_dashboard_routes(
             run["output"] = report
             run["detail"] = {**detail, **await asyncio.to_thread(
                 scheduled_task_runner._agent_steps, str(detail["agent_id"]), report)}
-        return JSONResponse({"ok": True, "run": run})
+        # What the report offers (#226): resuming from the agent step, and whether checks are being redone.
+        resume = await asyncio.to_thread(scheduled_task_runner.resume_plan, run,
+                                         task_store.definition_of(run["task_id"]))
+        return JSONResponse({"ok": True, "run": run, "resume": resume, "rechecking": rechecking})
+
+    async def scheduled_task_resume(request: Request) -> Response:
+        """The owner resumes a failed AI run from its agent step (#226); agents have no tool for this."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        body = await _json_body(request)
+        try:
+            result = await asyncio.to_thread(scheduled_task_runner.scheduler(settings).resume,
+                                             str(body.get("run_id") or ""))
+        except task_store.TaskError as exc:
+            return _task_error(exc)
+        return JSONResponse({"ok": True, "result": result})
+
+    async def scheduled_task_check_again(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        body = await _json_body(request)
+        try:
+            result = await asyncio.to_thread(scheduled_task_runner.check_again, str(body.get("run_id") or ""))
+        except task_store.TaskError as exc:
+            return _task_error(exc)
+        return JSONResponse({"ok": True, "result": result})
 
     async def scheduled_task_finished(request: Request) -> Response:
         """Runs that ended since a time, for the app's notifications."""
@@ -1589,6 +1619,8 @@ def create_dashboard_routes(
         Route("/dashboard/api/scheduled-tasks/finished", scheduled_task_finished, methods=["GET"]),
         Route("/dashboard/api/scheduled-tasks/liveness", scheduled_task_liveness, methods=["GET"]),
         Route("/dashboard/api/scheduled-tasks/diagnose", scheduled_task_diagnose, methods=["POST"]),
+        Route("/dashboard/api/scheduled-tasks/resume", scheduled_task_resume, methods=["POST"]),
+        Route("/dashboard/api/scheduled-tasks/check-again", scheduled_task_check_again, methods=["POST"]),
         Route("/dashboard/api/scheduled-tasks/diagnosis", scheduled_task_diagnosis, methods=["GET"]),
         Route("/dashboard/api/scheduled-tasks/preview", scheduled_task_preview, methods=["POST"]),
         Route("/dashboard/api/agents/cancel", agent_cancel, methods=["POST"]),

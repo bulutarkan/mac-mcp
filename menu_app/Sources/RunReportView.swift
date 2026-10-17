@@ -16,6 +16,11 @@ struct RunReportSheet: View {
     @MacMCPState private var tab = "result"
     @MacMCPState private var diagnosis: [String: Any]?
     @MacMCPState private var diagnoseProblem: String?
+    /// #226: whether the run can go on from its agent step, and whether its checks are being looked at again.
+    @MacMCPState private var resumePlan: [String: Any]?
+    @MacMCPState private var rechecking = false
+    @MacMCPState private var confirmResume = false
+    @MacMCPState private var actionProblem: String?
 
     private var shown: TaskRun { full ?? run }
     private var steps: [[String: Any]] { shown.detail?["steps"] as? [[String: Any]] ?? [] }
@@ -44,6 +49,11 @@ struct RunReportSheet: View {
                     if let problem = fullProblem {
                         LoadProblem(message: problem) { await loadFull() }
                     }
+                    if let problem = actionProblem {
+                        Label(problem, systemImage: "exclamationmark.circle")
+                            .font(.callout).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if diagnosis != nil || diagnoseProblem != nil {
                         diagnosisBox
                     }
@@ -64,6 +74,19 @@ struct RunReportSheet: View {
                         NSPasteboard.general.setString(text, forType: .string)
                     } label: { Label("Copy", systemImage: "doc.on.doc") }
                 }
+                if (resumePlan?["ok"] as? Bool) == true {
+                    Button { confirmResume = true } label: {
+                        Label("Resume", systemImage: "arrow.uturn.forward")
+                    }
+                    .help("Runs the agent step again with the data this run already got; the data step is not run again.")
+                }
+                if shown.checkFailed {
+                    Button { Task { await checkAgain() } } label: {
+                        Label(rechecking ? "Checking…" : "Check Again", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(rechecking)
+                    .help("Looks at the checks again, read-only. Nothing is run again.")
+                }
                 if wentWrong {
                     Button { Task { await diagnose() } } label: {
                         Label(diagnosis == nil ? "Diagnose" : "Diagnose Again", systemImage: "stethoscope")
@@ -81,6 +104,47 @@ struct RunReportSheet: View {
         .frame(width: 720, height: height)
         .task { await loadFull() }
         .task { await followDiagnosis() }
+        .confirmationDialog("Resume from the agent step?", isPresented: $confirmResume) {
+            Button("Resume") { Task { await resume() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(resumeMessage)
+        }
+    }
+
+    // MARK: Resume and check again (#226)
+
+    private var resumeMessage: String {
+        var when = "this run"
+        if let at = (resumePlan?["data_at"] as? NSNumber)?.doubleValue {
+            when = TaskTime.stamp(Date(timeIntervalSince1970: at))
+        }
+        return "The data step is not run again: the agent gets the data it printed (\(when)). "
+            + "What the agent did in this run is not known, so it may do some of it again."
+    }
+
+    private func resume() async {
+        actionProblem = nil
+        let result = await state.taskAPI("dashboard/api/scheduled-tasks/resume", body: ["run_id": run.id])
+        if result.ok {
+            dismiss()  // the new run shows in Recent runs
+        } else {
+            actionProblem = result.object["message"] as? String ?? "The run could not be resumed."
+        }
+    }
+
+    private func checkAgain() async {
+        actionProblem = nil
+        let result = await state.taskAPI("dashboard/api/scheduled-tasks/check-again", body: ["run_id": run.id])
+        guard result.ok else {
+            actionProblem = result.object["message"] as? String ?? "The checks could not run again."
+            return
+        }
+        rechecking = true
+        for _ in 0..<90 where rechecking {  // URL and tool checks can wait for late text: the result comes later
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            await loadFull()
+        }
     }
 
     // MARK: Diagnosis (#227)
@@ -141,6 +205,8 @@ struct RunReportSheet: View {
         if result.ok, let raw = result.object["run"] as? [String: Any] {
             full = TaskRun(raw)
             fullProblem = nil
+            resumePlan = result.object["resume"] as? [String: Any]
+            rechecking = result.object["rechecking"] as? Bool ?? false
         } else {
             fullProblem = "Only the summary of this run could be loaded; its full report and steps are missing."
         }
@@ -279,6 +345,12 @@ struct RunReportSheet: View {
                 if shown.checks.isEmpty {
                     Text((shown.verification?["error"] as? String)
                          ?? "Private mode was on, so only the outcome of the checks was kept.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let again = (shown.verification?["rechecked_at"] as? NSNumber)?.doubleValue {
+                    let first = shown.verification?["first_state"] as? String
+                    let was = first == "verified" ? "passed" : first == "unverified" ? "couldn’t check" : "failed"
+                    Text("Checked again \(TaskTime.stamp(Date(timeIntervalSince1970: again))); right after the run it \(was).")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

@@ -557,6 +557,7 @@ private struct TaskDetailView: View {
     private func runMeta(_ run: TaskRun) -> String {
         var parts: [String] = []
         if run.trigger == "manual" { parts.append("Run now") }
+        if run.trigger == "resume" { parts.append("Resumed") }
         if let file = run.triggerFileName { parts.append(file) }
         switch run.status {
         case "running": parts.append("Running…")
@@ -662,6 +663,9 @@ final class TaskEditorModel: ObservableObject, Identifiable {
     @Published var showAdvanced = false
     /// The first output check (#198) is edited here; checks an AI app added beyond it are kept as they are.
     @Published var expectedFile = ""
+    /// For a page or an MCP tool (#228): text its answer must contain, and the tool's arguments as JSON.
+    @Published var checkContains = ""
+    @Published var checkArguments = ""
     private var firstCheck: [String: Any] = [:]
     private var otherChecks: [[String: Any]] = []
 
@@ -693,7 +697,13 @@ final class TaskEditorModel: ObservableObject, Identifiable {
         timeoutMin = raw["timeout_min"] as? Int ?? 0
         if let checks = raw["verify"] as? [[String: Any]], let first = checks.first {
             firstCheck = first
-            expectedFile = first["url"] as? String ?? TaskRun.displayPath(first["path"] as? String ?? "")
+            expectedFile = first["url"] as? String ?? first["tool"] as? String
+                ?? TaskRun.displayPath(first["path"] as? String ?? "")
+            checkContains = first["contains"] as? String ?? ""
+            if let arguments = first["arguments"] as? [String: Any], !arguments.isEmpty,
+               let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]) {
+                checkArguments = String(decoding: data, as: UTF8.self)
+            }
             otherChecks = Array(checks.dropFirst())
             showAdvanced = true
         }
@@ -771,6 +781,23 @@ final class TaskEditorModel: ObservableObject, Identifiable {
 
     var usageLimitReady: Bool { usageKind == "none" || !usageLimit.isEmpty }
 
+    /// What the "Check the result" text names: a page, one of your MCP servers' tools, or a file.
+    var checkKind: String {
+        let text = expectedFile.trimmingCharacters(in: .whitespaces)
+        if text.hasPrefix("http://") || text.hasPrefix("https://") { return "url" }
+        if text.contains("__") && !text.contains("/") && !text.contains(" ") { return "tool" }
+        return "file"
+    }
+
+    /// The tool's arguments as a JSON object, nil while what is typed isn't one.
+    var parsedCheckArguments: [String: Any]? {
+        let text = checkArguments.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return [:] }
+        return (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
+    }
+
+    var checkReady: Bool { checkKind != "tool" || parsedCheckArguments != nil }
+
     var definition: [String: Any] {
         var out: [String: Any] = [
             "name": name, "description": description, "kind": isAI ? "ai" : "script",
@@ -781,13 +808,24 @@ final class TaskEditorModel: ObservableObject, Identifiable {
         let expected = expectedFile.trimmingCharacters(in: .whitespaces)
         if !expected.isEmpty {
             var first = firstCheck
-            if expected.hasPrefix("http://") || expected.hasPrefix("https://") {
-                // A page the run should leave visible (#228); its other fields stay as an AI app set them.
-                first.removeValue(forKey: "path"); first.removeValue(forKey: "kind")
+            first.removeValue(forKey: "kind")
+            let contains = checkContains.trimmingCharacters(in: .whitespaces)
+            switch checkKind {
+            case "url":
+                // A page the run should leave visible (#228); its status stays as an AI app set it.
+                for key in ["path", "tool", "arguments", "min_bytes", "written_this_run"] { first.removeValue(forKey: key) }
                 first["url"] = expected
-            } else {
-                first.removeValue(forKey: "url"); first.removeValue(forKey: "kind")
+            case "tool":
+                // One of your MCP servers' read-only tools (#228); only called when it is read-only.
+                for key in ["path", "url", "status", "min_bytes", "written_this_run"] { first.removeValue(forKey: key) }
+                first["tool"] = expected
+                first["arguments"] = parsedCheckArguments ?? [:]
+            default:
+                for key in ["url", "tool", "arguments", "status", "contains"] { first.removeValue(forKey: key) }
                 first["path"] = expected
+            }
+            if checkKind != "file" {
+                if contains.isEmpty { first.removeValue(forKey: "contains") } else { first["contains"] = contains }
             }
             checks.insert(first, at: 0)
         }
@@ -896,10 +934,22 @@ private struct TaskEditorSheet: View {
         .task(id: model.previewKey) { await preview() }
     }
 
+    private var checkHint: String {
+        switch model.checkKind {
+        case "url":
+            return "After a run that finishes, Mac MCP opens the page (no sign-in, nothing sent) and checks it answers and shows the text. A page it can't reach is “Couldn’t check”, never a pass."
+        case "tool":
+            return "A tool from Settings › MCP Servers, named server__tool. It is called only when it is read-only; its answer must contain the text. Nothing is written."
+        default:
+            return "After a run that finishes, Mac MCP checks the file is there, is not empty and was written by that run (it never opens the file). A page (https://…) or a read-only MCP tool (server__tool) works too."
+        }
+    }
+
     private var canSave: Bool {
         guard !model.name.trimmingCharacters(in: .whitespaces).isEmpty, scheduleProblem.isEmpty else { return false }
         if model.when == .file && model.cron.isEmpty && model.watchFolder.isEmpty { return false }
         if model.isAI && (!model.usageLimitReady || (model.usageKind != "none" && limitNote.problem)) { return false }
+        if !model.checkReady { return false }
         if model.isAI {
             return !model.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && (!model.dataOn || model.dataStepReady) && (dataPreview?["ok"] as? Bool) != false
@@ -1428,10 +1478,26 @@ private struct TaskEditorSheet: View {
                     field("Works in", optional: true) { folderButton(placeholder: "The script's folder") }
                 }
                 field("Check the result", optional: true) {
-                    TextField("A file or page the run should leave, e.g. ~/Desktop/reports/weekly.csv", text: $model.expectedFile)
+                    TextField("A file, a page or an MCP tool, e.g. ~/Desktop/reports/weekly.csv", text: $model.expectedFile)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.callout, design: .monospaced))
-                    Text("After a run that finishes, Mac MCP checks the file is there, is not empty and was written by that run (it never opens the file), or that the page answers. AI apps can also check text on a page or in a read-only MCP tool.")
+                    if model.checkKind == "tool" {
+                        TextField("Arguments as JSON, e.g. {\"range\": \"A1:C20\"}", text: $model.checkArguments)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.callout, design: .monospaced))
+                        if !model.checkReady {
+                            Text("The arguments must be a JSON object.").font(.caption2).foregroundStyle(.orange)
+                        }
+                    }
+                    if model.checkKind != "file" {
+                        HStack(spacing: 6) {
+                            TextField("Text it must contain (optional)", text: $model.checkContains)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(.callout, design: .monospaced))
+                            dateMenu($model.checkContains)
+                        }
+                    }
+                    Text(checkHint)
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

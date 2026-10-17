@@ -172,7 +172,8 @@ def _db() -> Iterator[sqlite3.Connection]:
                 columns = {row["name"] for row in conn.execute("PRAGMA table_info(runs)")}
                 # Databases from before output checks (#198) and expiring contents (#199). Two
                 # processes may open an old database at once; the second finds the column there.
-                for column, kind in (("verification", "TEXT"), ("details_expired_at", "REAL"), ("trigger_file", "TEXT")):
+                for column, kind in (("verification", "TEXT"), ("details_expired_at", "REAL"), ("trigger_file", "TEXT"),
+                                     ("resumed_from", "TEXT")):
                     if column not in columns:
                         try:
                             conn.execute(f"ALTER TABLE runs ADD COLUMN {column} {kind}")
@@ -532,7 +533,8 @@ def _watches(definition: Optional[Dict[str, Any]]) -> bool:
 
 def _run_public(row: sqlite3.Row, *, brief: bool = False) -> Dict[str, Any]:
     run = {key: row[key] for key in ("id", "task_id", "trigger", "scheduled_for", "started_at", "finished_at",
-                                      "status", "reason", "exit_code", "agent_id", "skipped_count", "trigger_file")}
+                                      "status", "reason", "exit_code", "agent_id", "skipped_count", "trigger_file",
+                                      "resumed_from")}
     run["summary"] = (row["summary"] or "")[:300] if brief else row["summary"]
     if row["finished_at"] and row["status"] != "skipped":
         run["duration_s"] = round(row["finished_at"] - row["started_at"], 1)
@@ -784,17 +786,36 @@ def up_next(limit: int = 1) -> List[Dict[str, Any]]:
 # ── Runs ─────────────────────────────────────────────────────────────────────
 
 def start_run(task_id: str, *, trigger: str, scheduled_for: Optional[float] = None,
-              now: Optional[float] = None, trigger_file: Optional[str] = None) -> Optional[str]:
+              now: Optional[float] = None, trigger_file: Optional[str] = None,
+              resumed_from: Optional[str] = None) -> Optional[str]:
     """Record a run as started; None when this task already has one in progress."""
     now = time.time() if now is None else now
     run_id = _new_id("run")
     with _db() as conn:
         if conn.execute("SELECT 1 FROM runs WHERE task_id=? AND status='running'", (task_id,)).fetchone():
             return None
-        conn.execute("INSERT INTO runs (id, task_id, trigger, scheduled_for, started_at, status, trigger_file)"
-                     " VALUES (?,?,?,?,?,?,?)", (run_id, task_id, trigger, scheduled_for, now, "running", trigger_file))
+        # A run is resumed once (#226): checked in the same transaction as the insert.
+        if resumed_from and conn.execute("SELECT 1 FROM runs WHERE resumed_from=?", (resumed_from,)).fetchone():
+            raise TaskError("already_resumed", "This run was already resumed; resume the newer run instead.", 409)
+        conn.execute("INSERT INTO runs (id, task_id, trigger, scheduled_for, started_at, status, trigger_file,"
+                     " resumed_from) VALUES (?,?,?,?,?,?,?,?)",
+                     (run_id, task_id, trigger, scheduled_for, now, "running", trigger_file, resumed_from))
     _changed()
     return run_id
+
+
+def resumed_by(run_id: str) -> Optional[str]:
+    """The run that resumed this one (#226), or None."""
+    with _db() as conn:
+        row = conn.execute("SELECT id FROM runs WHERE resumed_from=?", (run_id,)).fetchone()
+    return row["id"] if row else None
+
+
+def set_verification(run_id: str, verification: Dict[str, Any]) -> None:
+    """A finished run's checks, looked at again (#226's Check Again); nothing else of the run changes."""
+    with _db() as conn:
+        conn.execute("UPDATE runs SET verification=? WHERE id=? AND status='done'", (json.dumps(verification), run_id))
+    _changed()
 
 
 def note_agent(run_id: str, agent_id: str) -> None:

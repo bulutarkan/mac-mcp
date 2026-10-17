@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import folder_triggers, paths, privacy_policy, run_budget, schedule_rules
+from . import folder_triggers, paths, privacy_policy, run_budget, run_records, schedule_rules
 from . import scheduled_tasks as store
 
 log = logging.getLogger("mac_mcp.scheduled_tasks")
@@ -46,6 +46,8 @@ REASON_STOPPED = "Mac MCP wasn't running"
 REASON_BUSY = "The previous run was still going"
 REASON_PAUSED = "Observation is paused in Settings › Privacy, so AI tasks don't run"
 REASON_RESTARTED = "Mac MCP restarted before the run finished"
+# Keys a run adds to its task's definition: the file that started it, the data a resume reuses.
+RUNTIME_KEYS = ("trigger_file", "reuse_data")
 
 
 # ── One run ──────────────────────────────────────────────────────────────────
@@ -218,10 +220,19 @@ def data_prompt(prompt: str, data: Dict[str, Any], at: float) -> str:
 
 def _data_step_view(data: Dict[str, Any]) -> Dict[str, Any]:
     """The data step as shown in the run report: first in the steps, with what it printed."""
-    return {"kind": "data", "status": "done" if data.get("ok") else "failed",
+    view = {"kind": "data", "status": "done" if data.get("ok") else "failed",
             "title": f"Got the data from {data['label']}" if data.get("ok") else "The data step failed",
             "detail": data["shown"], "output": (data.get("output") or "")[: store.OUTPUT_LIMIT],
             "duration_s": data.get("duration_s"), "exit_code": data.get("exit_code")}
+    if data.get("ok"):
+        # What the agent was given, fingerprinted before the copy kept here is cut or masked: a
+        # resume (#226) reuses the kept copy only when it is still exactly that.
+        view["data_fp"] = run_records.fingerprint(data.get("output") or "")
+        view.update({"data_at": data.get("at"), "label": data["label"]})
+    if data.get("reused_from"):
+        view["title"] = f"Used the data {data['label']} printed for the earlier run"
+        view["reused_from"] = data["reused_from"]
+    return view
 
 
 def run_ai(definition: Dict[str, Any], run_id: str, settings: Any,
@@ -229,9 +240,14 @@ def run_ai(definition: Dict[str, Any], run_id: str, settings: Any,
     """Start a delegated agent with the task's prompt (and its data step's output) and wait for its result."""
     prompt = definition["prompt"]
     data: Optional[Dict[str, Any]] = None
-    if definition.get("data_step"):
+    if definition.get("reuse_data"):
+        # A resume (#226): the data step already ran and is not run again.
+        data = dict(definition["reuse_data"])
+        prompt = data_prompt(prompt, data, data["at"])
+    elif definition.get("data_step"):
         at = time.time()
         data = run_data_step(definition, run_id, at)
+        data["at"] = at
         if not data["ok"]:
             return {"status": "failed", "reason": data["reason"], "summary": _last_line(data.get("output") or ""),
                     "output": data.get("output") or "", "exit_code": data.get("exit_code"),
@@ -499,6 +515,9 @@ def execute(task_id: str, run_id: str, definition: Dict[str, Any], settings: Any
     except Exception as exc:
         log.exception("scheduled task %s failed unexpectedly", task_id)
         result = {"status": "failed", "reason": f"Mac MCP hit an error running it: {exc}"}
+    if definition.get("data_step") and isinstance(result.get("detail"), dict):
+        # Which definition this run used, so a resume can tell that the task has not changed since (#226).
+        result["detail"]["definition_fp"] = definition_fp(definition)
     if privacy["private_mode"]:
         # Private mode: keep that it ran and how it ended, not what it printed or said.
         result = {key: result.get(key) for key in ("status", "reason", "exit_code")}
@@ -507,6 +526,80 @@ def execute(task_id: str, run_id: str, definition: Dict[str, Any], settings: Any
     return store.finish_run(run_id, result["status"], reason=result.get("reason"), summary=result.get("summary"),
                             output=result.get("output"), exit_code=result.get("exit_code"), detail=result.get("detail"),
                             verification=verification)
+
+
+# ── Resume and check again (#226) ────────────────────────────────────────────
+
+def definition_fp(definition: Dict[str, Any]) -> str:
+    return run_records.fingerprint({key: value for key, value in definition.items() if key not in RUNTIME_KEYS})
+
+
+def resume_plan(run: Dict[str, Any], definition: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Whether a failed AI run can go on from its agent step with the data its data step printed.
+
+    Only that structured boundary is resumed: the data step finished and its output is kept exactly,
+    so it is not run again; the agent step is run once more. What the agent did the first time is
+    unknown, which the owner is told before resuming. Anything uncertain refuses (fail closed)."""
+    def no(reason: str) -> Dict[str, Any]:
+        return {"ok": False, "reason": reason}
+    if run["status"] not in {"failed", "timed_out"}:
+        return no("Only a run that failed or was stopped can be resumed.")
+    detail = run.get("detail") or {}
+    data = detail.get("data") if isinstance(detail.get("data"), dict) else None
+    if not definition or definition.get("kind") != "ai" or not definition.get("data_step"):
+        return no("Only an AI task with a data step can be resumed: there is no earlier step to keep.")
+    if run.get("details_expired_at") or detail.get("private_mode"):
+        return no("This run's data is no longer kept, so run the task again from the start.")
+    if data is None or data.get("status") != "done" or not data.get("data_fp"):
+        return no("The data step didn't finish in this run, so there is nothing to resume from.")
+    used = folder_triggers.with_file(definition, run["trigger_file"]) if run.get("trigger_file") else definition
+    if detail.get("definition_fp") != definition_fp(used):
+        return no("The task changed since this run, so its data may not fit any more. Run it from the start.")
+    if run_records.fingerprint(data.get("output") or "") != data["data_fp"]:
+        return no("Only part of the data was kept (it was long, or secrets in it were masked), "
+                  "so run the task again from the start.")
+    later = store.resumed_by(run["id"])
+    if later:
+        return no("This run was already resumed; resume the newer run instead.")
+    return {"ok": True, "data_at": data.get("data_at") or run["started_at"]}
+
+
+_rechecking: set = set()
+_rechecking_lock = threading.Lock()
+
+
+def _background(work: Callable[[], None]) -> None:
+    threading.Thread(target=work, name="mac-mcp-check-again", daemon=True).start()
+
+
+def rechecking(run_id: str) -> bool:
+    with _rechecking_lock:
+        return run_id in _rechecking
+
+
+def check_again(run_id: str) -> Dict[str, Any]:
+    """Look at a finished run's checks again, read-only; nothing of the run is run again."""
+    run = store.get_run(run_id)
+    definition = store.definition_of(run["task_id"]) or {}
+    if run["status"] != "done" or not definition.get("verify"):
+        raise store.TaskError("nothing_to_check", "Only a finished run of a task with checks can be checked again.", 409)
+    with _rechecking_lock:
+        if run_id in _rechecking:
+            return {"run_id": run_id, "checking": True}
+        _rechecking.add(run_id)
+    first = (run.get("verification") or {}).get("first_state") or (run.get("verification") or {}).get("state")
+    private = bool((run.get("detail") or {}).get("private_mode"))
+
+    def work() -> None:
+        try:
+            verification = _verification(run_id, definition, "done", private) or {}
+            verification.update({"rechecked_at": time.time(), "first_state": first})
+            store.set_verification(run_id, verification)
+        finally:
+            with _rechecking_lock:
+                _rechecking.discard(run_id)
+    _background(work)
+    return {"run_id": run_id, "checking": True}
 
 
 # ── The loop ─────────────────────────────────────────────────────────────────
@@ -546,12 +639,13 @@ class Scheduler:
         return actions
 
     def start(self, task_id: str, definition: Dict[str, Any], *, trigger: str,
-              scheduled_for: Optional[float] = None, now: Optional[float] = None) -> Dict[str, Any]:
+              scheduled_for: Optional[float] = None, now: Optional[float] = None,
+              resumed_from: Optional[str] = None) -> Dict[str, Any]:
         trigger_file = definition.get("trigger_file")
         if trigger_file and privacy_policy.policy(fresh=True)["private_mode"]:
             trigger_file = None  # Private mode keeps that it ran, not which file started it
         run_id = store.start_run(task_id, trigger=trigger, scheduled_for=scheduled_for, now=now,
-                                 trigger_file=trigger_file)
+                                 trigger_file=trigger_file, resumed_from=resumed_from)
         if run_id is None:
             if trigger == "schedule":
                 store.record_skip(task_id, scheduled_for=scheduled_for or (now or self.clock()), reason=REASON_BUSY, now=now)
@@ -573,6 +667,25 @@ class Scheduler:
                 raise store.TaskError("no_file", "There is no file in the folder to run it with yet.", 409)
             definition = folder_triggers.with_file(definition, path)
         result = self.start(task_id, definition, trigger="manual")
+        if result["action"] == "busy":
+            raise store.TaskError("already_running", "This task is already running.", 409)
+        return result
+
+    def resume(self, run_id: str) -> Dict[str, Any]:
+        """Run a failed AI run's agent step again with the data its data step printed (#226)."""
+        run = store.get_run(run_id)
+        definition = store.definition_of(run["task_id"])
+        plan = resume_plan(run, definition)
+        if not plan["ok"]:
+            raise store.TaskError("cannot_resume", plan["reason"], 409)
+        data = run["detail"]["data"]
+        reuse = {"ok": True, "output": data["output"], "shown": data.get("detail") or "the data step",
+                 "label": data.get("label") or "the data step",
+                 "at": plan["data_at"], "reused_from": run_id}
+        definition = {**definition, "reuse_data": reuse}
+        if run.get("trigger_file"):
+            definition = folder_triggers.with_file(definition, run["trigger_file"])
+        result = self.start(run["task_id"], definition, trigger="resume", resumed_from=run_id)
         if result["action"] == "busy":
             raise store.TaskError("already_running", "This task is already running.", 409)
         return result
