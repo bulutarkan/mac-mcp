@@ -13,7 +13,7 @@ class InstructionRouteTests(unittest.TestCase):
     def test_each_kind_of_job_has_its_tool(self) -> None:
         for phrase in (
             "-> knowledge_search", "Mac MCP Settings > Privacy", "It limits nothing else",
-            "-> mac_app adapters before UI automation", "-> memory_search before asking the user", "never secrets",
+            "-> mac_app adapters before UI automation", "memory_search before asking the user", "Never save secrets",
             "-> lesson_search", "skill_search and skill_get", "computer_plan(save_as_recipe=...)",
             "recipe(action='run')", "-> scheduled_tasks", "wait for the owner's approval",
             "-> spawn_agents, then wait_agents", "-> ask_user", "-> browser_checkpoint", "<server>__<tool>",
@@ -25,12 +25,13 @@ class InstructionRouteTests(unittest.TestCase):
     def test_every_tool_it_names_exists(self) -> None:
         for name in ("knowledge_search", "mac_app", "memory_search", "memory_add", "lesson_search", "lesson_feedback",
                      "skill_search", "skill_get", "computer_plan", "recipe", "scheduled_tasks", "spawn_agents",
-                     "wait_agents", "ask_user", "browser_checkpoint", "search_files", "read_file", "tool_discover"):
+                     "wait_agents", "ask_user", "browser_checkpoint", "search_files", "read_file", "tool_discover",
+                     "memory_update", "lesson_record"):
             with self.subTest(tool=name):
                 self.assertIn(name, RISK_REGISTRY)
 
     def test_it_stays_compact(self) -> None:
-        self.assertLess(len(MCP_AGENT_INSTRUCTIONS.split()), 1000)
+        self.assertLess(len(MCP_AGENT_INSTRUCTIONS.split()), 1100)
 
 
 if __name__ == "__main__":

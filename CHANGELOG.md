@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Memory that learns on its own
+- Your AI apps now remember what matters without being told to: a preference you state or show, a correction, a decision, or a lasting fact about your work, people, projects or setup. They check what they already know first and update an old memory instead of adding a near-copy, and mention briefly at the end what they remembered. After solving something non-obvious they record a lesson so the next run starts from it.
+- Mac MCP itself refuses to store passwords, API keys, tokens and private keys in memory (on save and on update), keeps an identical memory once, and private mode still saves nothing. `memory_add` and `memory_update` are now in the default tool list, and the connection instructions say what to remember and what never to.
+- The instructions every AI app gets on connecting also have a short "which tool for what" map: your documents, Mac apps, memory and lessons, recipes and scheduled tasks, delegated agents, asking you, and your own MCP servers.
+
 ### Ask about what is in your folders (#197)
 - Settings › Privacy has **Folders Mac MCP can search**. Add a folder (Contracts, Invoices, Notes…) and your AI apps can ask about its contents with the new `knowledge_search` tool: answers come with the file and, for PDFs, the page. It understands meaning across languages ("when does the lease end" finds "Sözleşme 1 Ocak 2027de biter").
 - Everything happens on this Mac: text files, PDFs page by page and Word/RTF/OpenDocument/HTML files are read locally into a private index (owner-only, listed under What Mac MCP keeps, where it can be moved to the Trash). New and changed files are picked up within minutes; deleted or renamed files and removed folders leave the index. Scanned PDFs without text are counted, not read (no OCR yet).

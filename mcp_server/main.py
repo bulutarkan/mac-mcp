@@ -126,9 +126,16 @@ MCP_AGENT_INSTRUCTIONS = (
     "read_file still work anywhere. "
     "Mail, Notes, Calendar, Reminders, Contacts, Finder, Messages, Shortcuts -> mac_app adapters before UI automation "
     "(action=capabilities lists them; sending asks the person first). "
-    "Earlier preferences, facts or decisions -> memory_search before asking the user; memory_add only what the user asks "
-    "to keep or a lasting preference, never secrets. "
+    "Memory: memory_search before asking the user about earlier preferences, facts or decisions. Learn as you work, "
+    "without being asked: when the user states or shows a lasting preference, corrects you, decides something, or you "
+    "learn a stable fact about their work, people, projects, accounts or setup that will matter later, memory_search "
+    "for it and then memory_add one short self-contained sentence with tags, or memory_update the memory it changes. "
+    "Do not ask first or announce each save; mention what you remembered briefly at the end. Never save secrets, "
+    "passwords or codes, one-off task details, guesses, or other people's private details; if private mode refuses "
+    "it, go on without it. "
     "Before an unfamiliar or previously failed workflow -> lesson_search, then lesson_feedback on whether it helped; "
+    "after solving something non-obvious or being corrected on how to do a task, lesson_record it so the next run "
+    "starts from it; "
     "skill_search and skill_get for documented procedures. "
     "A multi-step UI job -> one computer_plan; a job worth repeating -> computer_plan(save_as_recipe=...) and later "
     "recipe(action='run'); work at a set time -> scheduled_tasks (tasks you create wait for the owner's approval). "
@@ -2300,8 +2307,12 @@ def create_app():
     @mcp.tool(
         name="memory_add",
         description=(
-            "Append a timestamped memory to today's Europe/Istanbul Markdown journal. "
-            "The server creates ~/.mac-mcp/memory/YYYY/MM/YYYY-MM-DD.md automatically and updates the SQLite search index."
+            "Remember something for later conversations, on your own initiative: a lasting preference, a correction "
+            "the user made, a decision, or a stable fact about their work, people, projects, accounts or setup. One "
+            "short, self-contained sentence with tags; memory_search first and memory_update an existing memory "
+            "instead of adding a near-duplicate (an identical one is kept once). Not for one-off task details. "
+            "Passwords, keys and tokens are refused; private mode refuses saving. Appends to today's Europe/Istanbul "
+            "journal in ~/.mac-mcp/memory and updates the search index."
         ),
     )
     async def _memory_add(content: str, tags: Optional[List[str]] = None,
@@ -2357,8 +2368,9 @@ def create_app():
     @mcp.tool(
         name="memory_update",
         description=(
-            "Update an exact memory by memory_id. Without memory_id, use date/date_from/date_to to list timestamped "
-            "candidate memories for selection without changing anything."
+            "Update an exact memory by memory_id, for example when the user corrects or changes something you "
+            "remembered (find it with memory_search). Without memory_id, use date/date_from/date_to to list "
+            "timestamped candidate memories for selection without changing anything. Secrets are refused."
         ),
     )
     async def _memory_update(memory_id: Optional[str] = None, content: Optional[str] = None,

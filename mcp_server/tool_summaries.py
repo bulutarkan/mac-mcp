@@ -22,7 +22,7 @@ CORE_TOOL_NAMES = frozenset({
     "browser_list_tabs", "browser_close_tab", "browser_observe", "browser_find", "browser_act", "browser_do", "browser_upload_artifact",
     "browser_checkpoint",
     "spawn_agents", "wait_agents",
-    "memory_search", "knowledge_search", "lesson_search", "lesson_feedback", "ask_user",
+    "memory_search", "memory_add", "memory_update", "knowledge_search", "lesson_search", "lesson_feedback", "ask_user",
     "tool_discover", "tool_invoke",
 })
 
@@ -116,6 +116,14 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
     "tool_discover": (
         "Find which tool to use, including less-common ones the profile allows: plain-word query, ranked results with why, "
         "short description, required fields and bounds; next_cursor pages more; include_schema=true: full schema."
+    ),
+    "memory_add": (
+        "Remember on your own initiative a lasting preference, correction, decision or stable fact, as one short "
+        "sentence with tags; memory_search first, memory_update instead of duplicating. Secrets are refused."
+    ),
+    "memory_update": (
+        "Update a memory by memory_id when the user corrects or changes it (find it with memory_search). Without "
+        "memory_id, date filters list candidates and change nothing. Secrets are refused."
     ),
     "knowledge_search": (
         "Search the owner's chosen folders (PDFs, Word, notes) locally in any language. Results give file, page, snippet and SHA-256: answer from them and cite file and page. path narrows to one folder."

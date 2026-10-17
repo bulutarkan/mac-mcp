@@ -675,6 +675,18 @@ def _tag_match(entry: MemoryEntry, tags: Sequence[str]) -> bool:
     return all(tag.casefold() in present for tag in tags)
 
 
+_SECRET_MESSAGE = (
+    "MEMORY_CONTAINS_SECRET: memories never keep passwords, API keys, tokens or private keys. Save the fact "
+    "without the secret (for example where it is kept: 'the deploy key is in the Keychain item deploy-prod')."
+)
+
+
+def _refuse_secrets(value: str) -> None:
+    from . import data_guard
+    if data_guard.contains_direct_secret(value) or data_guard.redact_sensitive_text(value) != value:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _SECRET_MESSAGE)
+
+
 def memory_add(
     content: str,
     tags: Optional[List[str]] = None,
@@ -688,6 +700,7 @@ def memory_add(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "content contains a reserved memory marker.")
     if len(value) > 100_000:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "content is too large (max 100,000 characters).")
+    _refuse_secrets(value)
     clean_tags = _clean_tags(tags)
     clean_importance = _clean_importance(importance)
     clean_source = re.sub(r"\s+", " ", str(source or "")).strip() or None
@@ -696,6 +709,12 @@ def memory_add(
 
     root = _memory_root()
     _apply_retention(root)
+    # Agents save on their own initiative; the same memory twice is kept once.
+    with closing(_connect(root)) as conn:
+        _sync_index(root, conn)
+        row = conn.execute("SELECT * FROM memories WHERE content = ? LIMIT 1", (value,)).fetchone()
+    if row is not None:
+        return {"ok": True, "action": "already_saved", **_row_entry(row).public(), "timezone": "Europe/Istanbul"}
     now = _now()
     day = now.date().isoformat()
     path = _day_path(root, day)
@@ -889,6 +908,7 @@ def memory_update(
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "content cannot be empty.")
         if ENTRY_END in value:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "content contains a reserved memory marker.")
+        _refuse_secrets(value)
         entry.content = value
     if tags is not None:
         entry.tags = _clean_tags(tags)
