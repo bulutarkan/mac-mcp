@@ -2082,9 +2082,12 @@ def _mission_control(
     else:
         result = desktops.move_windows(space_id(), window_ids or [])
     if not result.get("ok"):
-        extra = {key: value for key, value in result.items() if key not in {"ok", "error", "reason_code"}}
-        raise AppAdapterError(str(result.get("reason_code") or "DESKTOPS_FAILED"),
-                              str(result.get("error") or "The desktop change did not happen."), **extra)
+        extra = {key: value for key, value in result.items() if key not in {"ok", "error", "reason_code", "message"}}
+        # Chrome's companion explains a failure in "message"; keep it as the error text.
+        error = result.get("error") or result.get("message") or "The desktop change did not happen."
+        if result.get("message") and result.get("error") and result["message"] != result["error"]:
+            extra["detail"] = result["message"]
+        raise AppAdapterError(str(result.get("reason_code") or "DESKTOPS_FAILED"), str(error), **extra)
     # Every change is read back by the helper before it answers ok.
     return {**result, "ok": True, **({} if action == "list_desktops" else {"verified": True})}
 

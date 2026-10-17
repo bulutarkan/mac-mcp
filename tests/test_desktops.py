@@ -88,6 +88,17 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual("SPACE_NOT_EMPTY", result["reason_code"])
         self.assertEqual([{"window_id": 9, "app": "TextEdit"}], result["windows"])
 
+    def test_companion_message_becomes_the_error_text(self) -> None:
+        # The Chrome companion explains failures in "message", which must not clash with the error's own text.
+        refusal = {"ok": False, "reason_code": "CHROME_OPEN_WINDOW_FAILED", "error": "chrome_companion_update_required",
+                   "message": "Reload it once at chrome://extensions", "feature": "open_window"}
+        with patch.object(desktops, "open_on_desktop", return_value=refusal):
+            result = mac_app(SETTINGS, app="Mission Control", action="open_on_desktop", item_id="43", target_app="Chrome")
+        self.assertEqual("CHROME_OPEN_WINDOW_FAILED", result["reason_code"])
+        self.assertEqual("chrome_companion_update_required", result["error"])
+        self.assertEqual("Reload it once at chrome://extensions", result["detail"])
+        self.assertEqual("open_window", result["feature"])
+
     def test_desktop_changes_skip_the_human_active_app_guard(self) -> None:
         # They never touch a window the person is using, so an active person does not block them.
         answer = {"ok": True, "space_id": 43, "windows": [{"window_id": 9, "spaces": [43]}]}
