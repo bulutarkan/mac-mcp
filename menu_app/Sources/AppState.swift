@@ -218,7 +218,7 @@ final class AppState: ObservableObject {
     @Published private(set) var steeringGenerationID: String?
     @Published var selectedSteeringSessionID: String?
     @Published var steeringPrompt = ""
-    @Published var steeringStatus = "No agent sessions yet."
+    @Published var steeringStatus = "No conversations yet."
     @Published var steeringSending = false
     @Published var busyAction: String?
     @Published var actionNotice: ActionNotice?
@@ -1110,12 +1110,12 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// "Agent 2", as the Sessions list numbers the session, once there is more than one.
+    /// "Chat 2", as the Conversations list numbers it, once there is more than one.
     private func desktopCursorAgentLabel(_ sessionID: String?) -> String? {
         guard let sessionID, steeringSessions.count > 1,
               let session = steeringSessions.first(where: { $0.sessionID == sessionID })
         else { return nil }
-        return "Agent \(session.flowNumber)"
+        return "Chat \(session.flowNumber)"
     }
 
     private func presentToolActivityEvent(_ payload: ToolActivityStreamPayload) {
@@ -1221,7 +1221,7 @@ final class AppState: ObservableObject {
                 setIfChanged(\.steeringSnapshotStale, false)
             } catch {
                 setIfChanged(\.steeringSnapshotStale, true)
-                secondaryIssue = secondaryIssue ?? "Sessions: \(Self.issueText(for: error))"
+                secondaryIssue = secondaryIssue ?? "Conversations: \(Self.issueText(for: error))"
             }
             do {
                 if let semantics = try await securityFetch {
@@ -2113,7 +2113,7 @@ final class AppState: ObservableObject {
         do {
             try settings.save()
         } catch {
-            steeringStatus = "Could not save the session duration."
+            steeringStatus = "Could not save how long idle conversations are kept."
             return
         }
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
@@ -2141,7 +2141,7 @@ final class AppState: ObservableObject {
         pendingSteeringGenerationID = restored.generationID
         pendingSteeringText = nil
         pendingSteeringRestoredFromDisk = true
-        steeringStatus = "Checking the outcome of a steering send from the previous menu-app run…"
+        steeringStatus = "Checking whether a message sent before the menu app restarted arrived…"
     }
 
     private func persistPendingSteeringSubmission(clientInstructionID: String, sessionID: String, textHash: String, generationID: String) {
@@ -2202,7 +2202,7 @@ final class AppState: ObservableObject {
         let text = steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         guard let sessionID = selectedSteeringSessionID else {
-            steeringStatus = steeringSessions.count > 1 ? "Choose an agent session first." : "No agent sessions yet."
+            steeringStatus = steeringSessions.count > 1 ? "Choose a conversation first." : "No conversations yet."
             return
         }
         guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else { return }
@@ -2264,12 +2264,12 @@ final class AppState: ObservableObject {
                 clearPendingSteeringSubmission()
                 if message.sessionState == "idle" {
                     steeringStatus = message.idempotentReplay == true
-                        ? "Recovered queued steering. The agent's next tool will be preempted."
-                        : "Queued. The agent's next tool will be preempted."
+                        ? "Sent (recovered). This conversation will see your message before its next step."
+                        : "Sent. This conversation will see your message before its next step."
                 } else {
                     steeringStatus = message.idempotentReplay == true
-                        ? "Recovered queued steering for the running agent task."
-                        : "Queued for the running agent task."
+                        ? "Sent (recovered). This conversation will see your message with the result of the step it is on."
+                        : "Sent. This conversation will see your message with the result of the step it is on."
                 }
                 await refresh()
                 return
@@ -2288,28 +2288,28 @@ final class AppState: ObservableObject {
                             lastSteeringMessageID = recoveredID
                             steeringPrompt = ""
                             clearPendingSteeringSubmission()
-                            steeringStatus = "The agent session ended after the steering instruction was accepted."
+                            steeringStatus = "The conversation ended after your message was accepted."
                         } else {
-                            steeringStatus = "That agent session ended before the prompt could be queued."
+                            steeringStatus = "That conversation ended before your message could be sent."
                             clearPendingSteeringSubmission()
                         }
                         return
                     case "queue_full":
-                        steeringStatus = "That agent already has too many queued steering messages."
+                        steeringStatus = "That conversation already has too many messages waiting."
                         clearPendingSteeringSubmission()
                     case "stale_generation":
-                        steeringStatus = "Server restarted after the steering result became uncertain. Delivery outcome is unknown; review and send again to create a new instruction."
+                        steeringStatus = "Mac MCP restarted before it confirmed your message, so whether it arrived is unknown. Check the conversation, then send it again if needed."
                         clearPendingSteeringSubmission()
                     case "idempotency_expired":
-                        steeringStatus = "The safe retry window for that steering instruction expired. Delivery outcome is unknown; review and send again to create a new instruction."
+                        steeringStatus = "It is too late to retry that message safely, and whether it arrived is unknown. Check the conversation, then send it again if needed."
                         clearPendingSteeringSubmission()
                     case "idempotency_conflict":
                         steeringStatus = reason == "client_instruction_id_belongs_to_another_session"
-                            ? "The steering retry key no longer belongs to this agent session."
-                            : "The steering retry conflicted with an earlier instruction. Edit the prompt and send again."
+                            ? "That message belongs to another conversation now. Send it again."
+                            : "That retry clashed with an earlier message. Edit your message and send it again."
                         clearPendingSteeringSubmission()
                     default:
-                        steeringStatus = "Could not queue steering message (\(code))."
+                        steeringStatus = "Could not send your message (\(code))."
                         clearPendingSteeringSubmission()
                     }
                 }
@@ -2329,9 +2329,9 @@ final class AppState: ObservableObject {
                     lastSteeringMessageID = recoveredID
                     steeringPrompt = ""
                     clearPendingSteeringSubmission()
-                    steeringStatus = "Recovered steering after a network timeout."
+                    steeringStatus = "Your message was sent; confirmed after a network timeout."
                 } else {
-                    steeringStatus = "Network result is uncertain. Send again to retry safely without duplicating the instruction."
+                    steeringStatus = "No clear answer from Mac MCP. Send again to retry safely; it won't arrive twice."
                 }
             }
         }
@@ -2364,11 +2364,11 @@ final class AppState: ObservableObject {
     var steeringEmptyMessage: String {
         if let event = steeringRecent.first(where: { $0.kind == "session" }) {
             switch event.effectiveLifecycleState {
-            case .expired, .disconnected, .failed: return "Last session ended."
+            case .expired, .disconnected, .failed: return "The last conversation ended."
             default: break
             }
         }
-        return "No agent sessions yet."
+        return "No conversations yet."
     }
 
     func applySteeringSnapshot(_ envelope: SteeringEnvelope) {
@@ -2378,13 +2378,13 @@ final class AppState: ObservableObject {
            let currentGenerationID = envelope.generationID,
            pendingGenerationID != currentGenerationID {
             clearPendingSteeringSubmission()
-            setIfChanged(\.steeringStatus, "Server restarted while a steering result was uncertain. Delivery outcome is unknown; review and send again to create a new instruction.")
+            setIfChanged(\.steeringStatus, "Mac MCP restarted before it confirmed your message, so whether it arrived is unknown. Check the conversation, then send it again if needed.")
         } else if previousGenerationID != nil,
                   let currentGenerationID = envelope.generationID,
                   previousGenerationID != currentGenerationID,
                   lastSteeringMessageID != nil {
             lastSteeringMessageID = nil
-            setIfChanged(\.steeringStatus, "Server restarted; the previous steering lifecycle can no longer be confirmed.")
+            setIfChanged(\.steeringStatus, "Mac MCP restarted, so what happened to your last message can no longer be confirmed.")
         }
         let sessionDiff = SteeringSessionGrouping.diff(current: steeringSessions, incoming: envelope.sessions)
         if sessionDiff.hasChanges { setIfChanged(\.steeringSessions, envelope.sessions) }
@@ -2412,16 +2412,16 @@ final class AppState: ObservableObject {
                 setIfChanged(
                     \.steeringStatus,
                     restoredFromDisk
-                        ? "Recovered steering after the menu app relaunched."
-                        : "Recovered steering after a delayed response."
+                        ? "Your message was sent; confirmed after the menu app restarted."
+                        : "Your message was sent; confirmed after a slow reply."
                 )
             } else if pendingSteeringRestoredFromDisk {
                 let liveSessionStillExists = sessionsForSelection.contains(where: { $0.sessionID == pendingSessionID })
                 setIfChanged(
                     \.steeringStatus,
                     liveSessionStillExists
-                        ? "Previous steering outcome is uncertain after relaunch. Re-enter the same prompt to retry with its original idempotency key."
-                        : "Previous steering outcome could not be confirmed because that agent session is no longer active."
+                        ? "Whether your last message arrived is unknown after the restart. Type the same message again to retry it safely."
+                        : "Whether your last message arrived is unknown: that conversation is no longer open."
                 )
             }
         }
@@ -2432,24 +2432,24 @@ final class AppState: ObservableObject {
             switch recent.effectiveLifecycleState {
             case .queued:
                 let text = sessionsForSelection.first(where: { $0.sessionID == recent.sessionID })?.isWorking == true
-                    ? "Queued for the running agent task."
-                    : "Queued. The agent's next tool will be preempted."
+                    ? "Sent. This conversation will see your message with the result of the step it is on."
+                    : "Sent. This conversation will see your message before its next step."
                 setIfChanged(\.steeringStatus, text)
             case .delivered:
                 setIfChanged(\.steeringStatus, recent.status == "preempted"
-                    ? "Delivered before the next tool; that tool was not executed."
-                    : "Delivered with the running tool result.")
+                    ? "Delivered: the conversation read it and did not take the step it was about to."
+                    : "Delivered with the result of the step it was on.")
                 lastSteeringMessageID = nil
             case .acknowledged:
-                setIfChanged(\.steeringStatus, "Acknowledged by the agent.")
+                setIfChanged(\.steeringStatus, "The conversation acknowledged your message.")
                 lastSteeringMessageID = nil
             case .failed:
-                setIfChanged(\.steeringStatus, "Delivery failed; instruction will retry on the next tool call.")
+                setIfChanged(\.steeringStatus, "Not delivered yet; it will be tried again at the conversation's next step.")
             case .disconnected:
-                setIfChanged(\.steeringStatus, "Agent session ended before acknowledgement.")
+                setIfChanged(\.steeringStatus, "The conversation ended before acknowledging your message.")
                 lastSteeringMessageID = nil
             case .expired:
-                setIfChanged(\.steeringStatus, "Session expired before acknowledgement.")
+                setIfChanged(\.steeringStatus, "The conversation expired before acknowledging your message.")
                 lastSteeringMessageID = nil
             default:
                 break
@@ -2457,7 +2457,7 @@ final class AppState: ObservableObject {
         } else if sessionsForSelection.isEmpty && lastSteeringMessageID == nil {
             setIfChanged(\.steeringStatus, steeringEmptyMessage)
         } else if sessionsForSelection.count > 1 && selectedSteeringSessionID == nil {
-            setIfChanged(\.steeringStatus, "Multiple agent sessions are available — choose the one you want to steer.")
+            setIfChanged(\.steeringStatus, "Several conversations are open: choose the one to send a message to.")
         }
     }
 

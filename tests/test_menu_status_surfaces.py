@@ -138,7 +138,7 @@ class MenuPopoverStructureTests(unittest.TestCase):
         chips = self.menu[self.menu.index("private var chipsRow"):self.menu.index("private var successTint")]
         for symbol in ('"bolt.fill"', '"checkmark.seal.fill"', '"cpu"', '"rectangle.stack"'):
             self.assertIn(symbol, chips)
-        for label in ('Label("Recent activity", systemImage: "waveform.path.ecg")', 'Label("Sessions", systemImage: "rectangle.stack")'):
+        for label in ('Label("Recent activity", systemImage: "waveform.path.ecg")', 'Label("Conversations", systemImage: "rectangle.stack")'):
             self.assertIn(label, self.menu)
         self.assertEqual(2, self.menu.count(".disclosureGroupStyle(MenuDisclosureStyle())"))
 

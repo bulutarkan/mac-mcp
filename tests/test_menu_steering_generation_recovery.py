@@ -17,7 +17,7 @@ class MenuSteeringGenerationRecoveryTests(unittest.TestCase):
         self.assertIn('case "stale_generation":', source)
         self.assertIn('case "idempotency_expired":', source)
         self.assertIn('pendingSteeringGenerationID == generationID', source)
-        self.assertIn('Delivery outcome is unknown', source)
+        self.assertIn('whether it arrived is unknown', source)
 
     def test_relaunch_marker_is_invalidated_when_daemon_generation_changes(self):
         harness = r'''
@@ -47,7 +47,7 @@ struct GenerationRecoveryHarness {
         let live = decodeSession("sess-new")
         app.applySteeringSnapshot(.init(schemaVersion: 1, generationID: "gen-new", sessions: [live], recent: []))
         precondition(app.steeringGenerationID == "gen-new")
-        precondition(app.steeringStatus.contains("Delivery outcome is unknown"))
+        precondition(app.steeringStatus.contains("whether it arrived is unknown"))
         precondition(!FileManager.default.fileExists(atPath: file.path))
         print("STEERING_GENERATION_RECOVERY_PASS")
     }

@@ -315,7 +315,7 @@ struct MenuBarView: View {
                      tint: successTint, help: "Tool calls in the last hour that succeeded")
             MenuChip(symbol: "cpu", text: "\(state.activeAgents) running",
                      tint: state.activeAgents > 0 ? .accentColor : nil, help: "Agents working now")
-            MenuChip(symbol: "rectangle.stack", text: sessionsChipText, tint: nil, help: "Mac MCP sessions")
+            MenuChip(symbol: "rectangle.stack", text: sessionsChipText, tint: nil, help: "AI app conversations using Mac MCP")
             Spacer(minLength: 0)
         }
     }
@@ -486,7 +486,7 @@ struct MenuBarView: View {
                         .textFieldStyle(.roundedBorder)
                         .multilineTextAlignment(.trailing)
                         .frame(width: 48)
-                        .accessibilityLabel("Keep idle sessions, minutes")
+                        .accessibilityLabel("Keep idle conversations, minutes")
                         .onChange(of: sessionMinutesText) { value in
                             let digits = value.filter(\.isNumber)
                             if digits != value { sessionMinutesText = digits; return }
@@ -498,15 +498,15 @@ struct MenuBarView: View {
                         Image(systemName: "checkmark").font(.caption2.weight(.semibold))
                     }
                     .buttonStyle(.borderless)
-                    .help("Apply session retention")
-                    .accessibilityLabel("Apply session retention")
+                    .help("Keep idle conversations this many minutes")
+                    .accessibilityLabel("Apply how long idle conversations are kept")
                 }
 
                 if state.steeringSnapshotStale && state.hasSteeringSnapshot {
                     HStack(spacing: 7) {
                         Image(systemName: "clock.arrow.circlepath")
                             .foregroundStyle(.orange)
-                        Text("Last successful session snapshot · stale")
+                        Text("Showing the last known conversations · not current")
                             .font(.caption2.weight(.medium))
                         Spacer()
                         Button("Retry") { Task { await state.retryConnection() } }
@@ -517,7 +517,7 @@ struct MenuBarView: View {
                 } else if state.steeringSnapshotStale || state.connectionState == .disconnected {
                     HStack(spacing: 7) {
                         Image(systemName: "wifi.slash").foregroundStyle(.red)
-                        Text("Session data unavailable")
+                        Text("Conversations unavailable")
                             .font(.caption2.weight(.medium))
                         Spacer()
                         Button("Retry") { Task { await state.retryConnection() } }
@@ -558,14 +558,14 @@ struct MenuBarView: View {
                         Image(systemName: "rectangle.stack.badge.minus").foregroundStyle(.secondary)
                             .accessibilityHidden(true)
                         Text(state.steeringSnapshotStale
-                             ? (state.hasSteeringSnapshot ? "Last session snapshot contains no sessions." : "Session data unavailable.")
+                             ? (state.hasSteeringSnapshot ? "No conversations were open when last checked." : "Conversations unavailable.")
                              : state.steeringEmptyMessage)
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                     }.padding(.vertical, 3)
                 } else {
                     if state.steeringSessions.count > 1 {
-                        Text("Choose the Mac MCP logical session you want to steer.").font(.caption2).foregroundStyle(.secondary)
+                        Text("Choose the conversation to send a message to.").font(.caption2).foregroundStyle(.secondary)
                     }
                     // Inline list: the popover's single scroll view handles long lists.
                     VStack(spacing: 6) {
@@ -590,17 +590,17 @@ struct MenuBarView: View {
                 }
 
                 HStack(spacing: 7) {
-                    TextField("Prompt", text: $state.steeringPrompt)
+                    TextField("Message", text: $state.steeringPrompt)
                         .textFieldStyle(.roundedBorder)
-                        .accessibilityLabel("Steering prompt")
+                        .accessibilityLabel("Message to the selected conversation")
                         .onSubmit { state.sendSteering() }
                     Button { state.sendSteering() } label: {
                         if state.steeringSending { ProgressView().controlSize(.small) }
                         else { Image(systemName: "paperplane.fill") }
                     }
                     .buttonStyle(.borderedProminent)
-                    .help("Send to the selected session")
-                    .accessibilityLabel(state.steeringSending ? "Sending" : "Send to the selected session")
+                    .help("Send to the selected conversation")
+                    .accessibilityLabel(state.steeringSending ? "Sending" : "Send to the selected conversation")
                     .disabled(state.steeringSending || state.steeringPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || state.selectedSteeringSessionID == nil || state.steeringSnapshotStale || state.connectionState == .disconnected)
                 }
                 Text(state.steeringStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
@@ -608,9 +608,10 @@ struct MenuBarView: View {
             .padding(.top, 8)
         } label: {
             HStack {
-                Label("Sessions", systemImage: "rectangle.stack")
+                Label("Conversations", systemImage: "rectangle.stack")
                     .labelStyle(MenuTileLabelStyle(tint: MenuPalette.ember))
-                    .help("Mac MCP logical sessions; not raw provider identities")
+                    .help("AI app conversations using Mac MCP (Mac MCP logical sessions, not the app's own chat IDs). Agents you delegate work to are under Agents.")
+                    .accessibilityLabel("Conversations")
                 Spacer()
                 if !showSessions && state.hasReliableSessionSignal {
                     if state.sessionActiveCount > 0 {
@@ -1444,7 +1445,7 @@ struct MenuBarView: View {
             HStack(spacing: 8) {
                 Image(systemName: state.selectedSteeringSessionID == session.sessionID ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(state.selectedSteeringSessionID == session.sessionID ? Color.accentColor : Color.secondary)
-                Text("Agent \(session.flowNumber)")
+                Text("Chat \(session.flowNumber)")
                     .font(.caption2.weight(.semibold))
                     .padding(.horizontal, 5).padding(.vertical, 2)
                     .background(.quaternary, in: Capsule())
@@ -1472,7 +1473,7 @@ struct MenuBarView: View {
                     .accessibilityLabel(session.isWorking ? "Working" : "Idle")
             }.padding(.vertical, 3).contentShape(Rectangle())
         }.buttonStyle(.plain)
-        .accessibilityHint("Selects this session for prompts and opens its details")
+        .accessibilityHint("Selects this conversation for messages and opens its details")
         .popover(isPresented: Binding(
             get: { sessionDetailID == session.sessionID },
             set: { shown in
@@ -1490,7 +1491,7 @@ struct MenuBarView: View {
                 .foregroundStyle(sessionLifecycleColor(event.effectiveLifecycleState))
                 .font(.caption)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Ended session").font(.caption.weight(.semibold))
+                Text("Ended conversation").font(.caption.weight(.semibold))
                 HStack(spacing: 4) {
                     Text(sessionLifecycleLabel(event.effectiveLifecycleState)).font(.caption2).foregroundStyle(.secondary)
                     if let transitionedAt = event.transitionedAt {
@@ -1501,7 +1502,7 @@ struct MenuBarView: View {
             Spacer()
         }
         .padding(.vertical, 3)
-        .help("Historical session state; steering is no longer available for this session")
+        .help("This conversation has ended; messages can no longer be sent to it")
     }
 
     private func sessionLifecycleLabel(_ state: SteeringLifecycleState) -> String {

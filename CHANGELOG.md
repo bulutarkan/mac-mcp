@@ -1,5 +1,9 @@
 ## Unreleased
 
+### The menu tells conversations from agents (#248)
+- The menu's **Sessions** section is now **Conversations**, and its rows say **Chat 1**, **Chat 2** instead of "Agent 1", so they are not mixed up with the agents you hand work to under **Agents**.
+- Sending a message says what happens next in plain words: "Sent. This conversation will see your message before its next step." instead of "the agent's next tool will be preempted"; the other messages, the details popover and VoiceOver labels follow.
+
 ### Cut-off installs and updates put themselves right (#241)
 - A package install that is cut off half way (the Mac shut down, the installer was force quit) leaves a record before it moves anything. Opening the package again puts the previous version back from it and then installs, instead of refusing because Mac MCP looked half installed. The copy of the previous app a cut-off upgrade kept is not overwritten by the retry.
 - An update that stops while the menu bar app is being replaced is recovered by the next `mac-mcp update` with the app rebuilt from the restored runtime, so the app and the server end on the same version. Signature and release checks are unchanged.

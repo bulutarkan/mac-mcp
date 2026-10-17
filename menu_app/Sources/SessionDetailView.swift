@@ -19,7 +19,7 @@ struct SessionDetailView: View {
                         .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
                         .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Agent \(session.flowNumber)").font(.headline)
+                        Text("Chat \(session.flowNumber)").font(.headline)
                         Label(metrics.status, systemImage: isStale ? "clock.arrow.circlepath" : (session.isWorking ? "bolt.fill" : "pause.fill"))
                             .font(.caption.weight(.medium))
                             .foregroundStyle(isStale || !session.isWorking ? Color.secondary : Color.accentColor)
@@ -30,7 +30,7 @@ struct SessionDetailView: View {
                             .frame(width: 24, height: 24).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
-                    .accessibilityLabel("Close session details")
+                    .accessibilityLabel("Close conversation details")
                     .keyboardShortcut(.cancelAction)
                 }
                 Text(session.label).font(.subheadline.weight(.medium))
@@ -41,7 +41,7 @@ struct SessionDetailView: View {
                         metric("Started", value: Date(timeIntervalSince1970: session.createdAt)
                             .formatted(date: .omitted, time: .shortened))
                             .help(Date(timeIntervalSince1970: session.createdAt).formatted(date: .complete, time: .standard))
-                        metric("Session age", value: metrics.sessionDuration)
+                        metric("Open for", value: metrics.sessionDuration)
                     }
                     GridRow {
                         metric("Tool calls", value: metrics.callCount)
@@ -72,7 +72,7 @@ struct SessionDetailView: View {
                     Label("Last activity · \(metrics.lastActivity)", systemImage: "clock")
                         .font(.caption).foregroundStyle(.secondary)
                     if isStale {
-                        Text("Connection unavailable. Showing the last session snapshot.")
+                        Text("Connection unavailable. Showing the last known state.")
                             .font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -83,7 +83,7 @@ struct SessionDetailView: View {
         .frame(width: 320)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Agent \(session.flowNumber) session details")
+        .accessibilityLabel("Chat \(session.flowNumber) details")
     }
 
     private func metric(_ title: String, value: String) -> some View {

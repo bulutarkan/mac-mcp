@@ -24,7 +24,7 @@ Safari keeps its bundled `BrowserVisualCompanion` WebExtension. Chrome uses the 
 
 For Mac MCP, **background browser automation** means **visible, non-focus-stealing browser automation** inside a normal Safari or Chrome tab. It does not mean headless, hidden, or invisible automation.
 
-The menu bar controller shows active browser work in Sessions and Latest Tool Usage. Its compact browser context is deliberately privacy-minimized to browser name, site hostname, and action; URL paths/query strings and page content are not displayed. A **Show Tab** control is available when a stable live tab reference exists. That explicit local-user click receives a scoped internal foreground capability; model/tool parameters cannot mint the capability or bring the browser/current tab forward on their own.
+The menu bar controller shows active browser work in Conversations and Latest Tool Usage. Its compact browser context is deliberately privacy-minimized to browser name, site hostname, and action; URL paths/query strings and page content are not displayed. A **Show Tab** control is available when a stable live tab reference exists. That explicit local-user click receives a scoped internal foreground capability; model/tool parameters cannot mint the capability or bring the browser/current tab forward on their own.
 
 ## Permissions and approval
 
@@ -42,7 +42,7 @@ This optimization intentionally does **not** reduce polling frequency or delay v
 
 ## Sessions information architecture
 
-The Sessions disclosure is grouped from the server lifecycle snapshot rather than from UI-only status guesses. **Needs Attention** contains failed/unresolved lifecycle states and recent disconnected/expired session events; **Active** contains working sessions plus queued/delivered/pending steering; **Recent** contains retained idle ready/acknowledged sessions. Terminal historical rows are informational and cannot be selected for steering.
+The Conversations disclosure (Mac MCP logical sessions, labelled Chat 1, Chat 2, …) is grouped from the server lifecycle snapshot rather than from UI-only status guesses. **Needs Attention** contains failed/unresolved lifecycle states and recent disconnected/expired session events; **Active** contains working sessions plus queued/delivered/pending steering; **Recent** contains retained idle ready/acknowledged sessions. Terminal historical rows are informational and cannot be selected for steering.
 
 The menu-bar status item stays aggregate-only: it can signal attention or active work, but it does not encode individual session details. Session-level Retry/Cancel controls are intentionally absent because the backend does not expose those actions; the existing **Retry** button retries dashboard connectivity only. The list still exposes at most five session rows before internal scrolling, with compact group headers.
 

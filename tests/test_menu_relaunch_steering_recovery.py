@@ -16,8 +16,8 @@ class MenuRelaunchSteeringRecoveryTests(unittest.TestCase):
         self.assertIn('MAC_MCP_PENDING_STEERING_STATE_FILE', source)
         self.assertIn('pending-steering.json', source)
         self.assertIn('pendingSteeringTextHash == textHash', source)
-        self.assertIn('Recovered steering after the menu app relaunched.', source)
-        self.assertIn('Previous steering outcome is uncertain after relaunch.', source)
+        self.assertIn('Your message was sent; confirmed after the menu app restarted.', source)
+        self.assertIn('Whether your last message arrived is unknown after the restart.', source)
         self.assertIn('[.posixPermissions: 0o600]', source)
         persisted_block = source[source.index('struct PersistedPendingSteeringSubmission'):source.index('enum PendingSteeringSubmissionStore')]
         self.assertNotIn('text: String', persisted_block)
@@ -72,15 +72,15 @@ struct RelaunchRecoveryHarness {
         precondition(restored?.textHash == hash)
 
         let app = AppState(startBackgroundTasks: false)
-        precondition(app.steeringStatus.contains("previous menu-app run"))
+        precondition(app.steeringStatus.contains("before the menu app restarted"))
         let live = decodeSession(sessionID)
         app.applySteeringSnapshot(.init(schemaVersion: 1, sessions: [live], recent: []))
-        precondition(app.steeringStatus.contains("uncertain after relaunch"))
+        precondition(app.steeringStatus.contains("unknown after the restart"))
         precondition(FileManager.default.fileExists(atPath: file.path))
 
         let accepted = decodeRecent("st_recovered", sessionID: sessionID, clientID: clientID)
         app.applySteeringSnapshot(.init(schemaVersion: 1, sessions: [live], recent: [accepted]))
-        precondition(app.steeringStatus == "Recovered steering after the menu app relaunched.")
+        precondition(app.steeringStatus == "Your message was sent; confirmed after the menu app restarted.")
         precondition(!FileManager.default.fileExists(atPath: file.path))
 
         try! PendingSteeringSubmissionStore.save(.init(
