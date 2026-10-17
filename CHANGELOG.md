@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Faster, self-repairing document search (#242, #253)
+- Searching folders with many documents is faster: Mac MCP reads the text of only the best matches instead of every candidate (a search over 100,000 passages went from about 0.5 s to under 0.2 s), and indexing no longer counts the whole index once per file.
+- Very large folders are walked less often while nothing happens (idle scans stay near 1% of a core), and a search no longer waits for a long walk: it answers from the index and the refresh runs in the background.
+- If the index file is ever damaged, Mac MCP deletes it and rebuilds it from your folders by itself; the search that found the damage says so. A file that fails to index keeps the text it had before, instead of dropping out.
+
 ### Scanned documents are searchable (#258)
 - Folders Mac MCP can search now read scanned PDFs and photos or screenshots of pages (PNG, JPEG, HEIC, TIFF) with the Mac's own text recognition, on this Mac, in Turkish, English and other languages. Pages that already have text are read as before; a result read from an image says so (`ocr: true`) so the AI app can mention that it may hold recognition errors.
 - Scans that were found "without text" before are read once more on the next refresh, by themselves.

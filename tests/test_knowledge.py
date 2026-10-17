@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -221,6 +222,120 @@ class DocumentExtractionTests(KnowledgeTestCase):
         pdf_hit = next(item for item in hits if item["name"] == "lease.pdf")
         self.assertEqual(2, pdf_hit["page"])
         self.assertIn("lease.docx", {item["name"] for item in hits})
+
+
+class IndexRepairTests(KnowledgeTestCase):
+    """#242: a file that fails to index keeps its earlier rows; a damaged index is rebuilt from the folders."""
+
+    def test_a_file_that_fails_to_index_keeps_its_earlier_text(self) -> None:
+        note = self.write("plan.md", "The garden fence is painted green in May.")
+        self.use_folder()
+        knowledge.scan()
+        with closing(knowledge._connect()) as conn:
+            # Fails after the file's old rows were deleted, half way through writing the new ones.
+            conn.execute("CREATE TRIGGER boom BEFORE INSERT ON chunks WHEN NEW.text LIKE '%BOOM%' "
+                         "BEGIN SELECT RAISE(ABORT, 'injected'); END")
+            conn.commit()
+        note.write_text("BOOM: the fence is now blue.", encoding="utf-8")
+        os.utime(note, None)
+        with self.assertLogs("mac_mcp.knowledge", "WARNING"):
+            self.assertEqual(0, knowledge.scan()["indexed"])
+        hits = knowledge.knowledge_search("garden fence painted")["results"]
+        self.assertEqual(["plan.md"], [item["name"] for item in hits])
+        self.assertIn("green", hits[0]["snippet"])
+
+    def test_a_damaged_index_is_rebuilt_by_the_next_search(self) -> None:
+        self.write("lease.md", "The deposit is two months of rent.")
+        self.use_folder()
+        knowledge.scan()
+        index = knowledge.index_dir() / knowledge.INDEX_NAME
+        for suffix in ("-wal", "-shm"):
+            Path(str(index) + suffix).unlink(missing_ok=True)
+        index.write_bytes(b"this is not a database" * 400)
+        with self.assertLogs("mac_mcp.knowledge", "WARNING"):
+            result = knowledge.knowledge_search("deposit rent")
+        self.assertEqual(["lease.md"], [item["name"] for item in result["results"]])
+        with closing(sqlite3.connect(str(index))) as conn:
+            self.assertEqual("ok", conn.execute("PRAGMA quick_check").fetchone()[0])
+
+    def test_damage_found_while_searching_rebuilds_once(self) -> None:
+        self.write("lease.md", "The deposit is two months of rent.")
+        self.use_folder()
+        knowledge.scan()
+        real = knowledge._fts_scores
+        calls = []
+
+        def damaged_once(conn, query):
+            calls.append(query)
+            if len(calls) == 1:
+                raise sqlite3.DatabaseError("database disk image is malformed")
+            return real(conn, query)
+
+        with patch.object(knowledge, "_fts_scores", damaged_once), self.assertLogs("mac_mcp.knowledge", "WARNING"):
+            result = knowledge.knowledge_search("deposit rent")
+        self.assertTrue(result["index"]["rebuilt"])
+        self.assertEqual(["lease.md"], [item["name"] for item in result["results"]])
+        self.assertEqual(2, len(calls))
+
+    def test_other_database_errors_are_not_treated_as_damage(self) -> None:
+        self.assertFalse(knowledge._damaged(sqlite3.OperationalError("database is locked")))
+        self.assertTrue(knowledge._damaged(sqlite3.DatabaseError("file is not a database")))
+
+
+class IndexCostTests(KnowledgeTestCase):
+    """#253: search reads only the best passages, indexing keeps a running count, slow walks back off."""
+
+    def test_a_changed_file_is_counted_without_its_old_passages(self) -> None:
+        note = self.write("a.md", "first note about rent")
+        self.write("b.md", "second note about rent")
+        self.use_folder()
+        with patch.object(knowledge, "MAX_CHUNKS", 2):
+            knowledge.scan()
+            note.write_text("first note about rent, changed", encoding="utf-8")
+            os.utime(note, None)
+            self.assertEqual(1, knowledge.scan()["indexed"])
+            with closing(knowledge._connect()) as conn:
+                self.assertEqual({"indexed"}, {row[0] for row in conn.execute("SELECT status FROM files")})
+            self.write("c.md", "third note about rent")
+            knowledge.scan()
+            with closing(knowledge._connect()) as conn:
+                self.assertEqual("index is full", conn.execute(
+                    "SELECT error FROM files WHERE path LIKE '%c.md'").fetchone()[0])
+
+    def test_semantic_candidates_keep_the_best_and_every_lexical_match(self) -> None:
+        for i in range(6):
+            self.write(f"n{i}.md", f"note {i} about the garden")
+        self.use_folder()
+        knowledge.scan()
+        with closing(knowledge._connect()) as conn:
+            everything = knowledge._semantic_scores(conn, "garden note", None)
+            weakest = min(everything, key=everything.get)
+            with patch.object(knowledge, "SEMANTIC_KEEP", 2):
+                kept = knowledge._semantic_scores(conn, "garden note", None, also={weakest: 1.0})
+        best = sorted(everything, key=everything.get, reverse=True)[:2]
+        self.assertEqual(set(best) | {weakest}, set(kept))
+
+    def test_search_does_not_wait_for_a_slow_walk(self) -> None:
+        self.write("lease.md", "The deposit is two months of rent.")
+        self.use_folder()
+        knowledge.scan()
+        with closing(knowledge._connect()) as conn:
+            knowledge._set_meta(conn, "walk_s", "4.0")
+            knowledge._set_meta(conn, "last_scan_monotonic", "-1e18")
+            conn.commit()
+        with patch.object(knowledge, "scan", side_effect=AssertionError("search waited for a scan")), \
+                patch.object(knowledge, "wake") as wake:
+            result = knowledge.knowledge_search("deposit")
+        wake.assert_called_once()
+        self.assertTrue(result["index"]["refreshing"])
+        self.assertEqual(["lease.md"], [item["name"] for item in result["results"]])
+        self.assertEqual(400.0, knowledge._idle_wait())
+
+    def test_a_quick_walk_keeps_the_usual_interval(self) -> None:
+        self.write("lease.md", "rent")
+        self.use_folder()
+        knowledge.scan()
+        self.assertEqual(knowledge.SCAN_EVERY_S, knowledge._idle_wait())
 
 
 # A page of text drawn into an image: what a scanner or a phone photo of a page gives.

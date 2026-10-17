@@ -10,8 +10,12 @@
 - The index is ~/.mac-mcp/knowledge/index.sqlite3 (owner-only, secure_delete). A scan compares each
   file's size and modification time, and its SHA-256 when those changed: new and changed files are
   indexed, deleted files and files of removed folders are dropped. A background thread scans every
-  SCAN_EVERY_S, and a search first refreshes when the last scan is older than FRESH_S, within a
-  short time budget (what is left is reported as pending).
+  SCAN_EVERY_S, or less often when walking the folders takes long (at most ~1% of a core while idle),
+  and a search first refreshes when the last scan is older than FRESH_S, within a short time budget
+  (what is left is reported as pending); when walking alone takes longer than SEARCH_WALK_S, the
+  search answers from the index and the background thread refreshes it (#253).
+- A file that fails to index keeps its earlier rows. A damaged index (it is checked once a process
+  and whenever SQLite reports damage) is deleted and rebuilt from the folders, which hold all of it (#242).
 - Search is hybrid, like memory_search: SQLite FTS5 plus local vectors from the shared embedding
   worker. Every result names its file, page (PDFs), a snippet, the file's SHA-256, when it changed
   and when it was indexed. Scoped agents only get results inside their own path roots.
@@ -47,6 +51,8 @@ SCAN_EVERY_S = 300.0
 FRESH_S = 60.0
 SEARCH_REFRESH_BUDGET_S = 3.0
 BACKGROUND_BUDGET_S = 120.0
+SEARCH_WALK_S = 0.5
+IDLE_WALK_SHARE = 0.01
 MAX_FOLDERS = 20
 MAX_FILES_PER_FOLDER = 20_000
 MAX_CHUNKS = 100_000
@@ -62,6 +68,8 @@ MAX_RESULTS = 25
 MAX_PER_FILE = 3
 SNIPPET_CHARS = 420
 MIN_SEMANTIC_ALONE = 0.35
+# Semantic candidates kept besides the lexical ones: results are at most MAX_RESULTS, 3 a file.
+SEMANTIC_KEEP = 1_000
 
 TEXT_SUFFIXES = frozenset({
     ".txt", ".md", ".markdown", ".rst", ".org", ".tex", ".csv", ".tsv", ".json", ".yaml", ".yml",
@@ -134,7 +142,8 @@ function run(argv) {
 }
 """
 
-_INDEX_LOCK = threading.Lock()
+_INDEX_LOCK = threading.RLock()
+_CHECKED = False  # PRAGMA quick_check ran on this process's first open
 _WAKE = threading.Event()
 _STOP = threading.Event()
 _THREAD: Optional[threading.Thread] = None
@@ -230,12 +239,59 @@ def index_dir() -> Path:
     return paths.knowledge_dir()
 
 
+def _damaged(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return isinstance(exc, sqlite3.DatabaseError) and any(
+        word in text for word in ("malformed", "not a database", "corrupt"))
+
+
+def _rebuild(exc: BaseException) -> None:
+    """Delete a damaged index; the next scan rebuilds it from the folders, which hold all of it (#242)."""
+    global _CHECKED
+    if not _INDEX_LOCK.acquire(timeout=60):
+        raise exc
+    try:
+        index = index_dir() / INDEX_NAME
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            Path(str(index) + suffix).unlink(missing_ok=True)
+        _CHECKED = False
+    finally:
+        _INDEX_LOCK.release()
+    log.warning("knowledge: the index was damaged (%s); rebuilding it from the folders", type(exc).__name__)
+    wake()
+
+
 def _connect() -> sqlite3.Connection:
+    try:
+        return _open_index()
+    except sqlite3.DatabaseError as exc:
+        if not _damaged(exc):
+            raise
+        _rebuild(exc)
+        return _open_index()
+
+
+def _open_index() -> sqlite3.Connection:
+    global _CHECKED
     root = index_dir()
     root.mkdir(parents=True, exist_ok=True)
     os.chmod(root, 0o700)
     index = root / INDEX_NAME
     conn = sqlite3.connect(str(index), timeout=30)
+    try:
+        _prepare(conn, index)
+        if not _CHECKED:
+            verdict = str(conn.execute("PRAGMA quick_check").fetchone()[0])
+            if verdict != "ok":
+                raise sqlite3.DatabaseError("database disk image is malformed: " + verdict[:200])
+            _CHECKED = True
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
+def _prepare(conn: sqlite3.Connection, index: Path) -> None:
     conn.row_factory = sqlite3.Row
     conn.executescript(
         """
@@ -284,7 +340,6 @@ def _connect() -> sqlite3.Connection:
         candidate = Path(str(index) + suffix)
         if candidate.exists():
             os.chmod(candidate, 0o600)
-    return conn
 
 
 def _meta(conn: sqlite3.Connection, key: str) -> Optional[str]:
@@ -444,14 +499,16 @@ def _private_mode() -> bool:
     return bool(privacy_policy.policy().get("private_mode"))
 
 
-def _index_one(conn: sqlite3.Connection, folder: str, path: Path, stat: os.stat_result, digest: str) -> int:
+def _index_one(conn: sqlite3.Connection, folder: str, path: Path, stat: os.stat_result, digest: str,
+               total: int) -> int:
+    """Re-read one file; total is the index's passage count, and the new count is returned."""
     pages, error = extract(path)
     pieces: List[Tuple[Optional[int], int, str, bool]] = []
     for page, text, read_by_ocr in pages:
         for ordinal, piece in enumerate(chunk(text)):
             pieces.append((page, ordinal, piece, read_by_ocr))
-    total = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-    if total + len(pieces) > MAX_CHUNKS:
+    old = conn.execute("SELECT COUNT(*) FROM chunks WHERE path = ?", (str(path),)).fetchone()[0]
+    if total - old + len(pieces) > MAX_CHUNKS:
         error, pieces = "index is full", []
     rows: List[Tuple[Optional[int], int, str, bool, str, bytes]] = []
     for start in range(0, len(pieces), EMBED_BATCH):
@@ -472,7 +529,7 @@ def _index_one(conn: sqlite3.Connection, folder: str, path: Path, stat: os.stat_
         (str(path), folder, stat.st_size, stat.st_mtime_ns, digest, _kind(path),
          len(pages) if _kind(path) == "pdf" else None, len(rows), state, error, _now_iso()))
     conn.commit()
-    return len(rows)
+    return total - old + len(rows)
 
 
 def scan(*, budget_s: float = BACKGROUND_BUDGET_S, folders: Optional[Sequence[str]] = None) -> Dict[str, Any]:
@@ -497,6 +554,10 @@ def scan(*, budget_s: float = BACKGROUND_BUDGET_S, folders: Optional[Sequence[st
             def stale(row: sqlite3.Row) -> bool:
                 return reread and row["status"] == "no_text"
 
+            total = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            started = time.monotonic()
+            reading = 0.0  # time spent hashing and indexing, so the walk itself can be timed
+
             seen: set[str] = set()
             for folder in folders:
                 for path in _walk(folder):
@@ -513,27 +574,36 @@ def scan(*, budget_s: float = BACKGROUND_BUDGET_S, folders: Optional[Sequence[st
                     if time.monotonic() > deadline:
                         summary["pending"] += 1
                         continue
+                    read_from = time.monotonic()
                     try:
                         digest = _sha256(path)
                     except OSError:
                         continue
+                    finally:
+                        reading += time.monotonic() - read_from
                     if row and row["sha256"] == digest and not stale(row):
                         conn.execute("UPDATE files SET size = ?, mtime_ns = ? WHERE path = ?",
                                      (stat.st_size, stat.st_mtime_ns, key))
                         conn.commit()
                         summary["unchanged"] += 1
                         continue
+                    read_from = time.monotonic()
                     try:
-                        _index_one(conn, folder, path, stat, digest)
+                        total = _index_one(conn, folder, path, stat, digest, total)
                         summary["indexed"] += 1
                     except Exception as exc:  # one bad file never stops the scan
                         conn.rollback()  # and never leaves it half replaced: its earlier rows stay (#242)
+                        if _damaged(exc):
+                            raise
                         log.warning("knowledge: could not index a file: %s", type(exc).__name__)
+                    finally:
+                        reading += time.monotonic() - read_from
             # Deleted, renamed, now hidden or past the per-folder limit: no longer searchable.
             for key in set(known) - seen:
                 _delete_file_rows(conn, key)
                 summary["removed"] += 1
             conn.commit()
+            _set_meta(conn, "walk_s", f"{max(0.0, time.monotonic() - started - reading):.3f}")
             if summary["pending"] == 0:
                 _set_meta(conn, "extractor", EXTRACTOR_VERSION)
                 _set_meta(conn, "last_scan_at", _now_iso())
@@ -543,6 +613,14 @@ def scan(*, budget_s: float = BACKGROUND_BUDGET_S, folders: Optional[Sequence[st
     finally:
         _INDEX_LOCK.release()
     return summary
+
+
+def _walk_seconds(conn: sqlite3.Connection) -> float:
+    """How long the last scan took to walk the folders, without reading files."""
+    try:
+        return float(_meta(conn, "walk_s") or 0.0)
+    except ValueError:
+        return 0.0
 
 
 def _last_scan_age(conn: sqlite3.Connection) -> float:
@@ -576,7 +654,9 @@ def _fts_scores(conn: sqlite3.Connection, query: str) -> Dict[int, float]:
     return {int(row["rowid"]): 1.0 - 0.8 * (float(row["rank"]) - best) / spread for row in rows}
 
 
-def _semantic_scores(conn: sqlite3.Connection, query: str, allowed: Optional[set[str]]) -> Dict[int, float]:
+def _semantic_scores(conn: sqlite3.Connection, query: str, allowed: Optional[set[str]],
+                     also: Iterable[int] = ()) -> Dict[int, float]:
+    """Similarity of the best SEMANTIC_KEEP passages, plus those in also (the lexical matches)."""
     import numpy as np
     backend, vectors = _vectors([query])
     if not vectors:
@@ -584,8 +664,10 @@ def _semantic_scores(conn: sqlite3.Connection, query: str, allowed: Optional[set
     q = np.asarray(vectors[0], dtype=np.float32)
     norm = float(np.linalg.norm(q)) or 1.0
     q = q / norm
-    scores: Dict[int, float] = {}
-    cursor = conn.execute("SELECT chunk_id, path, vector FROM chunks WHERE vector_backend = ?", (backend,))
+    id_parts: List[Any] = []
+    sim_parts: List[Any] = []
+    columns = "chunk_id, vector" if allowed is None else "chunk_id, path, vector"  # path only when it narrows
+    cursor = conn.execute(f"SELECT {columns} FROM chunks WHERE vector_backend = ?", (backend,))
     while True:
         block = cursor.fetchmany(VECTOR_BLOCK)
         if not block:
@@ -599,10 +681,31 @@ def _semantic_scores(conn: sqlite3.Connection, query: str, allowed: Optional[set
         norms = np.linalg.norm(matrix, axis=1)
         norms[norms == 0] = 1.0
         sims = (matrix @ q) / norms
-        for row, sim in zip(rows, sims.tolist()):
-            if sim > 0.2:
-                scores[int(row["chunk_id"])] = float(sim)
-    return scores
+        id_parts.append(np.fromiter((row["chunk_id"] for row in rows), dtype=np.int64, count=len(rows)))
+        sim_parts.append(sims)
+    if not id_parts:
+        return {}
+    ids, sims = np.concatenate(id_parts), np.concatenate(sim_parts)
+    related = sims > 0.2
+    ids, sims = ids[related], sims[related]
+    if len(ids) > SEMANTIC_KEEP:
+        keep = np.isin(ids, np.fromiter(also, dtype=np.int64))
+        keep[np.argpartition(-sims, SEMANTIC_KEEP)[:SEMANTIC_KEEP]] = True
+        ids, sims = ids[keep], sims[keep]
+    return dict(zip(ids.tolist(), sims.astype(float).tolist()))
+
+
+def _rows_in_order(conn: sqlite3.Connection, scored: Sequence[Tuple[float, int]],
+                   page: int = 100) -> Iterator[Tuple[float, int, sqlite3.Row]]:
+    for start in range(0, len(scored), page):
+        part = scored[start:start + page]
+        marks = ",".join("?" * len(part))
+        rows = {int(row["chunk_id"]): row for row in conn.execute(
+            f"SELECT chunk_id, path, page, text, ocr FROM chunks WHERE chunk_id IN ({marks})",
+            [cid for _score, cid in part])}
+        for score, cid in part:
+            if cid in rows:
+                yield score, cid, rows[cid]
 
 
 def _snippet(text: str, query: str) -> str:
@@ -641,10 +744,29 @@ def knowledge_search(query: str, path: Optional[str] = None, limit: int = 8) -> 
             raise HTTPException(status.HTTP_400_BAD_REQUEST,
                                 "path must be one of the knowledge folders or inside one: " + ", ".join(folders))
     roots = _scope_roots()
+    try:
+        return _search(q, folders, within, roots, limit)
+    except sqlite3.DatabaseError as exc:
+        if not _damaged(exc):
+            raise
+        _rebuild(exc)
+        answer = _search(q, folders, within, roots, limit)
+        answer["index"]["rebuilt"] = True
+        answer["index"]["note"] = ("The index was damaged and is being rebuilt from the folders; "
+                                   "results may miss files until it is done.")
+        return answer
+
+
+def _search(q: str, folders: List[str], within: Optional[str], roots: Optional[Tuple[str, ...]],
+            limit: int) -> Dict[str, Any]:
     refresh: Dict[str, Any] = {}
     with closing(_connect()) as conn:
         stale = _last_scan_age(conn) > FRESH_S
-    if stale:
+        slow_walk = _walk_seconds(conn) > SEARCH_WALK_S
+    if stale and slow_walk:
+        wake()  # walking the folders alone takes too long to wait for: the background thread refreshes
+        refresh = {"background": True}
+    elif stale:
         refresh = scan(budget_s=SEARCH_REFRESH_BUDGET_S, folders=folders)
     with closing(_connect()) as conn:
         files = {row["path"]: row for row in conn.execute("SELECT * FROM files WHERE status = 'indexed'")}
@@ -656,23 +778,18 @@ def knowledge_search(query: str, path: Optional[str] = None, limit: int = 8) -> 
 
         allowed = {file_path for file_path in files if visible(file_path)}
         lexical = _fts_scores(conn, q)
-        semantic = _semantic_scores(conn, q, allowed)
-        ids = set(lexical) | set(semantic)
-        rows = {}
-        for start in range(0, len(ids), 500):
-            part = list(ids)[start:start + 500]
-            marks = ",".join("?" * len(part))
-            for row in conn.execute(f"SELECT chunk_id, path, page, text, ocr FROM chunks WHERE chunk_id IN ({marks})", part):
-                if row["path"] in allowed:
-                    rows[int(row["chunk_id"])] = row
-        scored = sorted(((0.6 * semantic.get(cid, 0.0) + 0.4 * lexical.get(cid, 0.0), cid) for cid in rows),
-                        reverse=True)
+        # Passages exist only for indexed files: when all of those may be searched, nothing narrows.
+        semantic = _semantic_scores(conn, q, None if len(allowed) == len(files) else allowed, also=lexical)
+        # Only loosely related and no shared word: not worth citing.
+        scored = sorted(((0.6 * semantic.get(cid, 0.0) + 0.4 * lexical.get(cid, 0.0), cid)
+                         for cid in set(lexical) | set(semantic)
+                         if lexical.get(cid) or semantic.get(cid, 0.0) >= MIN_SEMANTIC_ALONE), reverse=True)
         results: List[Dict[str, Any]] = []
         per_file: Dict[str, int] = {}
-        for score, cid in scored:
-            row = rows[cid]
-            if not lexical.get(cid) and semantic.get(cid, 0.0) < MIN_SEMANTIC_ALONE:
-                continue  # only loosely related and no shared word: not worth citing
+        # Passages are read best first, a page at a time, until the results are full.
+        for score, cid, row in _rows_in_order(conn, scored):
+            if row["path"] not in allowed:
+                continue
             if per_file.get(row["path"], 0) >= MAX_PER_FILE:
                 continue
             per_file[row["path"]] = per_file.get(row["path"], 0) + 1
@@ -704,6 +821,8 @@ def knowledge_search(query: str, path: Optional[str] = None, limit: int = 8) -> 
     }
     if refresh.get("paused"):
         answer["index"]["paused"] = refresh["paused"]
+    if refresh.get("background"):
+        answer["index"]["refreshing"] = True
     if pending:
         answer["index"]["note"] = f"{pending} new or changed file(s) are still being indexed; results may miss them."
     return answer
@@ -740,6 +859,17 @@ def wake() -> None:
     _WAKE.set()
 
 
+def _idle_wait() -> float:
+    """SCAN_EVERY_S, or longer when walking the folders takes long: idle scans stay near IDLE_WALK_SHARE of a core."""
+    if not index_dir().joinpath(INDEX_NAME).exists():
+        return SCAN_EVERY_S
+    try:
+        with closing(_connect()) as conn:
+            return max(SCAN_EVERY_S, _walk_seconds(conn) / IDLE_WALK_SHARE)
+    except Exception:
+        return SCAN_EVERY_S
+
+
 def _loop() -> None:
     while not _STOP.is_set():
         try:
@@ -748,8 +878,13 @@ def _loop() -> None:
                 if result.get("pending"):
                     _WAKE.set()  # more to do: go on right away, in budget-sized steps
         except Exception as exc:  # the indexer never takes the server down
+            if _damaged(exc):
+                try:
+                    _rebuild(exc)  # and sets _WAKE: the rebuild starts right away
+                except Exception:
+                    pass
             log.warning("knowledge: scan failed: %s", type(exc).__name__)
-        _WAKE.wait(SCAN_EVERY_S)
+        _WAKE.wait(_idle_wait())
         _WAKE.clear()
 
 
