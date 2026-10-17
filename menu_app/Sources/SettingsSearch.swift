@@ -10,7 +10,7 @@ enum SettingsSearchIndex {
         "agents": "agents subagents provider codex opencode claude code model reasoning thinking default agent history retention delete keep",
         "usage": "usage tokens payload calls errors latency heatmap activity input output top tools retention record history clear privacy data memory memories export delete",
         "permissions": "permissions safety approvals security profile read only trusted access saved logins passwords sign in keychain import",
-        "scheduled": "scheduled tasks schedule cron recurring automation automate timer daily weekly monthly script run later approval review ai task",
+        "scheduled": "scheduled tasks schedule cron recurring automation automate timer daily weekly monthly script run later approval review ai task recipe recipes saved steps shortcuts siri replay",
         "privacy": "privacy pause observation private mode incognito exclude never observe apps sites do not observe stores data kept retention where data goes recipients providers",
         "apps": "apps mail messages imessage email send confirm confirmation ask before sending xcode notes calendar shortcuts shortcut allowed",
         "mcpServers": "mcp servers server tools connect add exa github stdio remote url command json claude desktop cursor integration plugin extension",

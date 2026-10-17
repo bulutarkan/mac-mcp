@@ -1140,6 +1140,53 @@ def create_dashboard_routes(
             "run_id": result.get("run_id"),
         })
 
+    # Settings › Automation › Recipes: the owner's own view of every recipe, drafts included.
+    def _recipe_error(exc: "recipes.RecipeError") -> Response:
+        return JSONResponse({"ok": False, "error": exc.code, "message": str(exc), **exc.extra},
+                            status_code=404 if exc.code == "RECIPE_NOT_FOUND" else 409)
+
+    async def recipes_manage_list(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        listing = await asyncio.to_thread(recipes.list_recipes, include_drafts=True)
+        return JSONResponse({"ok": True, "recipes": listing["recipes"]})
+
+    async def recipes_manage_detail(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        recipe_id = request.query_params.get("recipe_id", "")
+        if not re.fullmatch(r"rcp_[0-9a-f]{12}", recipe_id):
+            return JSONResponse({"ok": False, "error": "invalid_recipe_id"}, status_code=400)
+        try:
+            return JSONResponse(await asyncio.to_thread(recipes.inspect_recipe, recipe_id))
+        except recipes.RecipeError as exc:
+            return _recipe_error(exc)
+
+    async def recipes_manage_action(request: Request) -> Response:
+        """The owner activates, pauses, resumes or deletes a recipe; clicking it in Settings is the confirmation."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        body = await _object_body(request) or {}
+        recipe_id = str(body.get("recipe_id") or "")
+        action = str(body.get("action") or "").strip().lower()
+        if not re.fullmatch(r"rcp_[0-9a-f]{12}", recipe_id):
+            return JSONResponse({"ok": False, "error": "invalid_recipe_id"}, status_code=400)
+        handlers = {
+            "activate": lambda: recipes.set_status(recipe_id, "active", confirm=True),
+            "resume": lambda: recipes.set_status(recipe_id, "active", confirm=True),
+            "pause": lambda: recipes.set_status(recipe_id, "paused"),
+            "delete": lambda: recipes.delete_recipe(recipe_id, confirm=True),
+        }
+        if action not in handlers:
+            return JSONResponse({"ok": False, "error": "invalid_action", "allowed": sorted(handlers)}, status_code=400)
+        try:
+            return JSONResponse(await asyncio.to_thread(handlers[action]))
+        except recipes.RecipeError as exc:
+            return _recipe_error(exc)
+
     async def _object_body(request: Request) -> Optional[Dict[str, Any]]:
         try:
             body = await request.json()
@@ -1631,6 +1678,9 @@ def create_dashboard_routes(
         Route("/dashboard/api/memory/settings", memory_settings, methods=["POST"]),
         Route("/dashboard/api/recipes", launcher_recipes, methods=["GET"]),
         Route("/dashboard/api/recipes/run", launcher_run_recipe, methods=["POST"]),
+        Route("/dashboard/api/recipes/manage", recipes_manage_list, methods=["GET"]),
+        Route("/dashboard/api/recipes/detail", recipes_manage_detail, methods=["GET"]),
+        Route("/dashboard/api/recipes/action", recipes_manage_action, methods=["POST"]),
         Route("/dashboard/api/runs", runs_list, methods=["GET"]),
         Route("/dashboard/api/runs/detail", run_detail, methods=["GET"]),
         Route("/dashboard/api/runs/evidence", run_evidence_image, methods=["GET"]),

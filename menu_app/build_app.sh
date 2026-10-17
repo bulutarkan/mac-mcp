@@ -49,6 +49,7 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/McpServersPane.swift"
   "${SCRIPT_DIR}/Sources/ScheduledTasksPane.swift"
   "${SCRIPT_DIR}/Sources/ScheduledTaskWatchdog.swift"
+  "${SCRIPT_DIR}/Sources/AutomationPane.swift"
   "${SCRIPT_DIR}/Sources/RunReportView.swift"
   "${SCRIPT_DIR}/Sources/LiveIsland.swift"
   "${SCRIPT_DIR}/Sources/IslandHitArea.swift"

@@ -53,7 +53,7 @@ private struct CardBackground: ViewModifier {
     }
 }
 
-private extension View {
+extension View {
     func taskCard(highlight: Color? = nil, hovering: Bool = false) -> some View {
         modifier(CardBackground(highlight: highlight, hovering: hovering))
     }
@@ -63,6 +63,8 @@ private extension View {
 
 struct ScheduledTasksPane: View {
     @ObservedObject var state: AppState
+    /// Inside Settings › Automation, which shows the title and the tab bar above it.
+    var embedded = false
 
     @MacMCPState private var tasks: [ScheduledTask] = []
     @MacMCPState private var upNext: [[String: Any]] = []
@@ -122,9 +124,11 @@ struct ScheduledTasksPane: View {
     private var list: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .top) {
+                HStack(alignment: embedded ? .center : .top) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Scheduled Tasks").font(.title2.weight(.semibold))
+                        if !embedded {
+                            Text("Scheduled Tasks").font(.title2.weight(.semibold))
+                        }
                         Text("AI tasks and scripts that run on their own: on a schedule, or when a file arrives.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
