@@ -120,3 +120,22 @@ class DiscoverToolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignInDiscoveryTests(unittest.TestCase):
+    """#251: saved-login fill and the human handoff are told apart."""
+
+    def ranked(self, query: str):
+        entries = [("browser_sign_in", "Fill the owner's saved login for this site without revealing it."),
+                   ("browser_checkpoint", "Hand a sign-in, 2FA, passkey or captcha step to the user and wait.")]
+        return [match.name for match in tool_discovery.rank(entries, query)]
+
+    def test_saved_login_goes_to_browser_sign_in(self) -> None:
+        for query in ("log in with saved password", "sign in", "fill saved login"):
+            with self.subTest(query=query):
+                self.assertEqual("browser_sign_in", self.ranked(query)[0])
+
+    def test_codes_and_captchas_go_to_the_user(self) -> None:
+        for query in ("two factor code", "captcha", "let the user log in"):
+            with self.subTest(query=query):
+                self.assertEqual("browser_checkpoint", self.ranked(query)[0])

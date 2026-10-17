@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Smaller fixes (#243, #249, #251)
+- **Tests give the same result in any terminal.** Every run starts from the same settings CI uses (a fake API key, sign-in required, shell allowed) and drops runtime settings from the shell; the test state paths always point at a throwaway folder. `MAC_MCP_TEST_AMBIENT_ENV=1` keeps the caller's environment on purpose.
+- **Settings say what they change.** Choosing the Bubble says it turns on Require Tool Descriptions and that AI apps should reconnect. Settings › Agents explains that it chooses which installed AI tools Mac MCP may hand work to, and says "Found on this Mac" instead of developer terms.
+- **Clearer tools for AI apps.** `spawn_agents` says budgets gate new starts and running agents may overshoot; `mac_app` names Contacts and Shortcuts; `computer_plan` shows what a step looks like; asking `tool_discover` how to sign in with a saved password now finds `browser_sign_in`, while 2FA codes and captchas still go to `browser_checkpoint`.
+
 ### Setup that doesn't wait for permissions you don't need (#247)
 - Get Started is three steps: start Mac MCP, connect an AI app, try a first request. Accessibility and Screen Recording are optional rows that say what each one is for (clicking and typing in Mac apps; looking at a window), so someone who only works with files, the terminal or the browser sees "All set" and the menu stops reminding them.
 - The first-run tour asks for them after the first request, as an optional step with **Skip for now**.

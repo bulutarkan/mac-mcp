@@ -33,5 +33,21 @@ class TruthfulTextTests(unittest.TestCase):
         self.assertIn("Not your AI app’s model tokens or bill.", settings)
 
 
+class PlainSettingsTextTests(unittest.TestCase):
+    """#249: choosing the bubble says what else it changes; the Agents pane uses plain words."""
+
+    def test_bubble_discloses_the_tool_description_change(self) -> None:
+        settings = read("SettingsView.swift")
+        self.assertIn("It needs Require Tool Descriptions, which turns on with it", settings)
+        self.assertIn("Bubble on, with Require Tool Descriptions. Reconnect your AI apps so they see it.", settings)
+
+    def test_agents_pane_speaks_plainly(self) -> None:
+        settings = read("SettingsView.swift")
+        for jargon in ("CLI provider", "cannot be spawned", '"Detected"', '"Not detected"'):
+            self.assertNotIn(jargon, settings)
+        self.assertIn("Choose which AI tools on this Mac Mac MCP may hand work to.", settings)
+        self.assertIn('"Found on this Mac"', settings)
+
+
 if __name__ == "__main__":
     unittest.main()

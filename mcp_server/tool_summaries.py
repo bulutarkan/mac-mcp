@@ -50,8 +50,8 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "receipts). Refuses to overwrite later changes unless force=true; partial captures never claim full undo."
     ),
     "spawn_agents": (
-        "Spawn 1-10 background delegated agents as one team; access_mode defaults to read_only. "
-        "Supports task DAGs (depends_on), reviewer gates and admission budgets. Collect results with wait_agents."
+        "Spawn 1-10 background delegated agents as one team; access_mode defaults to read_only. Task DAGs "
+        "(depends_on), reviewer gates; budgets gate new starts only, so running agents may overshoot. wait_agents."
     ),
     "wait_agents": (
         "Bounded wait for a team or agent_ids (mode all|any|majority). Returns typed result envelopes; "
@@ -78,12 +78,12 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
         "foreground-only input and risky clicks fail closed unless explicitly authorized."
     ),
     "mac_app": (
-        "Typed adapters: Finder, Notes, Mail (create_draft, send_mail), Calendar, Reminders, Preview, System Settings, "
-        "Messages (find_chats, send_message), Xcode; sends ask the person first. capabilities lists actions."
+        "Typed adapters: Finder, Notes, Mail, Calendar, Reminders, Contacts, Shortcuts, Preview, System Settings, "
+        "Messages, Xcode; prefer them to UI control. Sends ask the person first. action=capabilities lists actions."
     ),
     "computer_plan": (
-        "Run a bounded closed-loop macOS/browser plan in one call: waits, branches, bounded retries and target rebind. "
-        "Uncertain side effects are never replayed; every step keeps normal policy and verification."
+        "One bounded macOS/browser plan in a call. Step: {id:'a', tool:'mac_app', arguments:{...}}; "
+        "waits, branches, retries, rebind. Uncertain side effects never replayed; normal policy per step."
     ),
     "browser_close_tab": (
         "Close one or more browser tabs by tab_handle or tab_handles; call browser_list_tabs first to choose by title. "

@@ -3,9 +3,9 @@
 create_app() opens the telemetry/security-event database, creates the
 dashboard token, prunes file-transaction journals, reads settings.json and
 may refresh the CLI launcher. Importing this module points all of those at one throwaway
-directory for the test process (only where the caller has not chosen a path
-already), so a test run never writes into ~/.mac-mcp or ~/.local/bin and behaves the
-same as on a fresh CI machine.
+directory for the test process, so a test run never writes into ~/.mac-mcp or ~/.local/bin
+and behaves the same as on a fresh CI machine. Paths already in the environment (for example
+a shell that exported the real state directory) are replaced, unless MAC_MCP_TEST_AMBIENT_ENV=1.
 """
 from __future__ import annotations
 
@@ -25,5 +25,9 @@ DEFAULTS = {
     "MAC_MCP_CLI_PATH": os.path.join(ROOT, "bin", "mac-mcp"),
     "MAC_MCP_SKIP_MENU_APP_INSTALL": "1",
 }
+_KEEP = os.environ.get("MAC_MCP_TEST_AMBIENT_ENV") == "1"
 for _name, _value in DEFAULTS.items():
-    os.environ.setdefault(_name, _value)
+    if _KEEP:
+        os.environ.setdefault(_name, _value)
+    else:
+        os.environ[_name] = _value

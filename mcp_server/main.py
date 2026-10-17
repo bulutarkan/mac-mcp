@@ -1564,6 +1564,8 @@ def create_app():
             "resource preflight. Mutating recovery is fail-closed: ACTION_NO_EFFECT, policy deny, outcome_unknown "
             "or any ambiguous side-effect is never automatically replayed. Every nested step still passes through "
             "Mac MCP policy, scope, telemetry, leases and action verification. Use {'$ref':'step_id.path'} to reuse outputs. "
+            "A step is {'id': 'open_note', 'tool': 'mac_app', 'arguments': {'app': 'Notes', 'action': 'create_note', "
+            "'title': 'Plan'}}; kind 'wait_until' (read-only tool) and 'branch' add control flow. "
             "Every run gets a run_id (dashboard timeline). A step may set evidence: before|after|both to keep a checkpoint "
             "screenshot of its tab or window when the owner turned run evidence on; never kept while a password field shows."
         ),

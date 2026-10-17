@@ -973,19 +973,23 @@ struct SettingsView: View {
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.tertiary)
                     .tracking(0.5)
+                Text("Choose which AI tools on this Mac Mac MCP may hand work to. Each one has to be installed and signed in first.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                providerRow(id: "opencode", title: "OpenCode", subtitle: "External OpenCode CLI provider")
-                providerRow(id: "codex", title: "Codex", subtitle: "External Codex CLI provider")
-                providerRow(id: "claude", title: "Claude Code", subtitle: "External Claude Code CLI provider (your Claude sign-in)")
-                providerRow(id: "kimi", title: "Kimi Code", subtitle: "External Kimi Code CLI provider (your kimi login or model providers)")
-                providerRow(id: "grok", title: "Grok Build", subtitle: "External Grok Build CLI provider (your grok login, XAI_API_KEY or models)")
-                providerRow(id: "antigravity", title: "Antigravity", subtitle: "External Antigravity CLI provider (your agy Google sign-in)")
-                providerRow(id: "pi", title: "pi", subtitle: "External pi coding agent provider (your pi login or API keys)")
-                providerRow(id: "cline", title: "Cline", subtitle: "External Cline CLI provider (your cline sign-in or API keys)")
-                providerRow(id: "kilo", title: "Kilo Code", subtitle: "External Kilo Code CLI provider (your kilo sign-in or API keys)")
-                providerRow(id: "goose", title: "Goose", subtitle: "External Goose CLI provider (your goose provider and key)")
+                providerRow(id: "opencode", title: "OpenCode", subtitle: "Uses the OpenCode command-line tool")
+                providerRow(id: "codex", title: "Codex", subtitle: "Uses the Codex command-line tool")
+                providerRow(id: "claude", title: "Claude Code", subtitle: "Uses Claude Code, with your Claude sign-in")
+                providerRow(id: "kimi", title: "Kimi Code", subtitle: "Uses Kimi Code, with your kimi login or its model providers")
+                providerRow(id: "grok", title: "Grok Build", subtitle: "Uses Grok Build, with your grok login or xAI key")
+                providerRow(id: "antigravity", title: "Antigravity", subtitle: "Uses Antigravity, with your Google sign-in")
+                providerRow(id: "pi", title: "pi", subtitle: "Uses the pi coding agent, with your pi login or API keys")
+                providerRow(id: "cline", title: "Cline", subtitle: "Uses Cline, with your Cline sign-in or API keys")
+                providerRow(id: "kilo", title: "Kilo Code", subtitle: "Uses Kilo Code, with your Kilo sign-in or API keys")
+                providerRow(id: "goose", title: "Goose", subtitle: "Uses Goose, with its provider and key")
 
-                Text("Disabled providers are hidden from the agent catalog and cannot be spawned. Changes apply live to new agent requests.")
+                Text("A tool that is off is hidden from AI apps and never started. Changes apply to new requests right away.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3334,10 +3338,10 @@ struct SettingsView: View {
                 case .loading: return "Checking…"
                 case .stale: return "Stale"
                 case .error, .unavailable: return "Unavailable"
-                case .fresh: return "Not detected"
+                case .fresh: return "Not found on this Mac"
                 }
             }
-            return detected ? "Detected" : "Not detected"
+            return detected ? "Found on this Mac" : "Not found on this Mac"
         }()
         let detectionColor: Color = {
             guard provider != nil else {
@@ -3577,6 +3581,7 @@ struct SettingsView: View {
                 + (settings.requireToolDescriptions ? "" : " Tool steps appear when Require Tool Descriptions is on.")
         case "bubble":
             return "A speech bubble under the menu bar shows each tool step. Drag it anywhere; its position is remembered."
+                + " It needs Require Tool Descriptions, which turns on with it: reconnect your AI apps afterwards so they see it."
         default:
             return "Nothing is shown while Mac MCP works. Descriptions can stay enabled."
         }
@@ -3587,11 +3592,14 @@ struct SettingsView: View {
             get: { liveActivityStyle },
             set: { style in
                 settings.showLiveIsland = style == "island"
-                if style == "bubble" && !settings.requireToolDescriptions {
+                let turnsOnDescriptions = style == "bubble" && !settings.requireToolDescriptions
+                if turnsOnDescriptions {
                     settings.requireToolDescriptions = true  // the bubble shows tool descriptions
                 }
                 settings.showToolActivity = style == "bubble"
-                persistSettings(success: style == "island" ? "Notch island on." : style == "bubble" ? "Tool Activity bubble on." : "Live activity off.")
+                persistSettings(success: style == "island" ? "Notch island on."
+                    : turnsOnDescriptions ? "Bubble on, with Require Tool Descriptions. Reconnect your AI apps so they see it."
+                    : style == "bubble" ? "Tool Activity bubble on." : "Live activity off.")
                 state.restartToolActivityStream()
                 if style != "bubble" { ToolActivityBubbleController.shared.hideImmediately() }
             }
