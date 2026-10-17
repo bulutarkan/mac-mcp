@@ -322,11 +322,25 @@ func frontmost() -> NSRunningApplication? {
     return NSWorkspace.shared.frontmostApplication
 }
 
+/// Refuse when the app shows windows on any other desktop. Assigning a process to a desktop
+/// moves every window it has there, so the person's own windows of that app would leave
+/// their desktop (the Dock's "Assign To" does the same).
+func refuseIfShownElsewhere(_ executable: String, _ appArgument: String, target: UInt64) {
+    let running = pids(running: executable)
+    let elsewhere = appWindows().filter { running.contains($0.pid) && $0.spaces != [target] }
+    guard elsewhere.isEmpty else {
+        fail("\(appArgument) has windows on other desktops; opening it on desktop \(target) would move them there too",
+             "APP_HAS_WINDOWS_ON_OTHER_DESKTOPS",
+             ["windows": elsewhere.map { ["window_id": $0.id, "app": $0.app, "title": $0.title, "spaces": $0.spaces] }])
+    }
+}
+
 func open(on target: UInt64, app appArgument: String, files: [String]) -> Never {
     desktop(target)
     let assign = assignFunction()
     let workspace = NSWorkspace.shared
     let (appURL, bundle, executable) = resolveApp(appArgument)
+    refuseIfShownElsewhere(executable, appArgument, target: target)
     // Web addresses open as addresses; anything else is a file path.
     let fileURLs = files.map { $0.contains("://") ? (URL(string: $0) ?? URL(fileURLWithPath: $0)) : URL(fileURLWithPath: $0) }
     let frontBefore = frontmost()?.processIdentifier
@@ -394,9 +408,13 @@ func open(on target: UInt64, app appArgument: String, files: [String]) -> Never 
 /// (0), for a caller that makes the app open a window by other means, such as Chrome's own
 /// extension API. The assignment outlives this helper, so the caller must always lift it.
 func assignApp(_ appArgument: String, to target: UInt64) -> Never {
-    if target != 0 { desktop(target) }
+    let executable = resolveApp(appArgument).executable
+    if target != 0 {
+        desktop(target)
+        refuseIfShownElsewhere(executable, appArgument, target: target)
+    }
     let assign = assignFunction()
-    let found = pids(running: resolveApp(appArgument).executable)
+    let found = pids(running: executable)
     let failed = found.filter { assign(connection, $0, target) != 0 }
     emit(["ok": !found.isEmpty && failed.isEmpty, "space_id": target, "pids": found.sorted(), "failed": failed.sorted()]
         .merging(found.isEmpty ? ["error": "\(appArgument) is not running", "reason_code": "APP_NOT_RUNNING"] : [:]) { a, _ in a })
