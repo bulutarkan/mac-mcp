@@ -112,3 +112,14 @@ After a stable checkpoint is signed and verified, build the Apple Silicon packag
 `scripts/build_pkg.sh` (defaults to HEAD; refuses a commit that is not a verified checkpoint).
 It writes `dist/Mac-MCP-<version>-<release_id>-arm64.pkg` and a `.sha256` file to attach to the
 GitHub Release. The package is unsigned. Package installs update by installing the newer package.
+
+## npm package
+
+`@bulutarkan/mac-mcp` (`packaging/npm`) carries `install.sh`, so it always installs the newest
+signed stable checkpoint, and npm installs then update through `mac-mcp update` like any other
+install. Its version is the public product version (`tests/test_npm_package.py` keeps
+`packaging/npm/package.json` equal to `pyproject.toml`). Pushing a public version tag
+`v<major>.<minor>.<patch>` runs `.github/workflows/npm-publish.yml`, which publishes only when the
+newest signed stable checkpoint at that tag serves the same version, using npm Trusted Publishing
+(OIDC, with provenance; no npm token is stored). Checkpoint tags (`v<version>-r<N>`) are not
+published to npm. Running the workflow by hand is a dry run.

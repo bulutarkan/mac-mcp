@@ -1,0 +1,115 @@
+name: npm Publish
+
+# Publishes @bulutarkan/mac-mcp (#210) when a public version tag (v<major>.<minor>.<patch>) is pushed.
+# Stable checkpoints (v<version>-r<N>) are not published: the package's installer always installs the
+# newest signed stable checkpoint, and installed copies update through `mac-mcp update`.
+# Publishing uses npm Trusted Publishing (OIDC): no npm token is stored and the package gets provenance.
+# Run by hand (workflow_dispatch) it is a dry run of the same checks on the chosen branch.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish the npm package
+    runs-on: macos-15
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Decide what this run does
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ "$EVENT" == workflow_dispatch ]]; then
+            echo "mode=dry-run" >> "$GITHUB_OUTPUT"
+          elif [[ "$REF_TYPE" == tag && "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "mode=publish" >> "$GITHUB_OUTPUT"
+          else
+            echo "$REF_NAME is not a public version tag (v<major>.<minor>.<patch>); nothing to publish."
+            echo "mode=skip" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.plan.outputs.mode != 'skip'
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the version
+        if: steps.plan.outputs.mode != 'skip'
+        id: version
+        env:
+          MODE: ${{ steps.plan.outputs.mode }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          product="$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -n 1)"
+          package="$(python3 -c 'import json; print(json.load(open("packaging/npm/package.json"))["version"])')"
+          if [[ "$MODE" == publish && "$REF_NAME" != "v$product" ]]; then
+            echo "::error::Tag $REF_NAME does not match pyproject.toml $product."
+            exit 1
+          fi
+          if [[ "$package" != "$product" ]]; then
+            echo "::error::packaging/npm/package.json is $package but pyproject.toml is $product."
+            exit 1
+          fi
+          # npm only gets a version that the signed stable channel already serves.
+          verified="$(python3 scripts/verify_release_manifest.py --latest-from HEAD --branch main)"
+          set -- $verified
+          if [[ "$3" != "v$product" ]]; then
+            echo "::error::The newest signed stable checkpoint here is $2 ($3); npm $product waits for a signed $product checkpoint."
+            exit 1
+          fi
+          echo "Signed stable checkpoint $2 serves $product."
+          echo "version=$product" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.plan.outputs.mode != 'skip'
+        with:
+          node-version: "24"
+
+      - name: Use an npm with Trusted Publishing
+        if: steps.plan.outputs.mode != 'skip'
+        run: npm install -g npm@11.21.0
+
+      - name: Test and pack
+        if: steps.plan.outputs.mode != 'skip'
+        id: pack
+        run: |
+          python3 -m unittest discover -s tests -p test_npm_package.py -v
+          tarball="$(scripts/build_npm_package.sh "$RUNNER_TEMP/npm" | tail -n 1)"
+          expected="$(printf '%s\n' package/LICENSE package/README.md package/bin/mac-mcp-setup.js package/install.sh package/package.json)"
+          actual="$(tar -tzf "$tarball" | LC_ALL=C sort)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::Unexpected package contents:"$'\n'"$actual"
+            exit 1
+          fi
+          shasum -a 256 "$tarball"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        if: steps.plan.outputs.mode != 'skip'
+        env:
+          MODE: ${{ steps.plan.outputs.mode }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          if [[ "$(npm view "@bulutarkan/mac-mcp@$VERSION" version 2>/dev/null)" == "$VERSION" ]]; then
+            echo "@bulutarkan/mac-mcp@$VERSION is already on npm; nothing to publish."
+          elif [[ "$MODE" == dry-run ]]; then
+            npm publish "$TARBALL" --access public --dry-run
+          else
+            npm publish "$TARBALL" --access public --provenance
+          fi

@@ -41,6 +41,24 @@ class PackageManifestTests(unittest.TestCase):
         self.assertIn('/bin/cp "${ROOT}/install.sh" "${PKG}/install.sh"', script)
 
 
+class PublishWorkflowTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.workflow = (ROOT / ".github" / "workflows" / "npm-publish.yml").read_text(encoding="utf-8")
+
+    def test_only_public_version_tags_publish(self) -> None:
+        self.assertIn(r'"$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$', self.workflow)
+        self.assertIn('tags: ["v*"]', self.workflow)
+        self.assertNotIn("branches:", self.workflow)
+
+    def test_it_publishes_without_a_stored_token_and_only_a_signed_version(self) -> None:
+        self.assertIn("id-token: write", self.workflow)
+        self.assertNotIn("secrets.", self.workflow)
+        self.assertNotIn("NODE_AUTH_TOKEN", self.workflow)
+        self.assertIn("scripts/verify_release_manifest.py --latest-from HEAD --branch main", self.workflow)
+        self.assertIn("--provenance", self.workflow)
+        self.assertIn("scripts/build_npm_package.sh", self.workflow)
+
+
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class WrapperBehaviourTests(unittest.TestCase):
     def setUp(self) -> None:

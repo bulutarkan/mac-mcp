@@ -31,6 +31,8 @@ class WorkflowPolicyTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             if path.name == PAGES_WORKFLOW:
                 text = _without_pages_deploy_job(self, text)
+            if path.name == NPM_WORKFLOW:
+                text = _without_npm_publish_identity(self, text)
             with self.subTest(workflow=path.name):
                 self.assertRegex(text, r"(?m)^permissions:\n\s+contents:\s*read\s*$")
                 self.assertNotRegex(text, r":\s*write\b")
@@ -55,6 +57,27 @@ def _without_pages_deploy_job(test: unittest.TestCase, text: str) -> str:
     test.assertEqual(1, len(re.findall(r"(?m)^      - ", job)), "the deploy job runs only deploy-pages")
     test.assertNotIn("run:", job)
     return text[:match.start()] + text[match.end():]
+
+
+
+# npm Trusted Publishing (#210) needs `id-token: write` to prove the package comes from this
+# repository; that is the only write it may ask for, inside its publish job, on tag pushes and manual
+# dry runs only (never pull requests), and without any stored secret.
+NPM_WORKFLOW = "npm-publish.yml"
+
+
+def _without_npm_publish_identity(test: unittest.TestCase, text: str) -> str:
+    triggers = re.search(r"(?ms)^on:\n(.*?)(?=^\S)", text)
+    test.assertIsNotNone(triggers)
+    test.assertEqual(["push:", "workflow_dispatch:"],
+                     [line.strip() for line in triggers.group(1).splitlines() if re.match(r"^  \S", line)])
+    test.assertIn('tags: ["v*"]', triggers.group(1))
+    test.assertNotIn("secrets.", text)
+    permissions = re.search(r"(?m)^    permissions:\n((?:^      [^\n]*\n)+)", text)
+    test.assertIsNotNone(permissions)
+    test.assertEqual(["contents: read", "id-token: write"],
+                     sorted(line.strip() for line in permissions.group(1).splitlines()))
+    return text[:permissions.start(1)] + text[permissions.end(1):]
 
 
 if __name__ == "__main__":
