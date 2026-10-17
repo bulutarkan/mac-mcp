@@ -54,6 +54,12 @@ Earlier releases are in the [CHANGELOG](CHANGELOG.md).
 - **[Developer reference](docs/reference.md):** the MCP and REST surfaces, server commands, voice, the dashboard and tool coverage.
 - Configuration, security details and terminology: [CONFIGURATION](docs/CONFIGURATION.md), [Local API security](docs/LOCAL_API_SECURITY.md), [Security assurance](docs/security-assurance.md), [TERMINOLOGY](docs/TERMINOLOGY.md).
 
+## Agent Skills sync
+
+Mac MCP's `skill_list`, `skill_search`, and `skill_get` automatically discover user-level Agent Skills installed for CLI agents (including Claude Code, Codex, OpenCode, Gemini, Kimi, Pi, Kilo, Cline, and Goose) as well as the skills in `~/.mac-mcp/skills`. The shared `~/.agents/skills` folder is preferred over agent-specific duplicates, explicitly registered paths come next, and Mac MCP's own managed skills take final precedence on a name collision. No source files are copied or changed.
+
+The catalog refreshes when a skill tool is called: installing, editing, or removing a CLI skill is reflected on the next request without manually importing it or restarting the server. It indexes `SKILL.md` only from direct child folders of supported user-level directories; project-local skills are not imported. Set `MAC_MCP_CLI_SKILLS_DIRS` to a colon-separated list of global skills directories to override discovery, or to an empty string to disable it. When `MAC_MCP_SKILLS_DIR` is set for an isolated/custom instance, CLI discovery is off unless explicitly configured.
+
 ## Install
 
 **Package (Apple Silicon, macOS 14+):** download `Mac-MCP-…-arm64.pkg` from the [latest GitHub Release](https://github.com/bulutarkan/mac-mcp/releases/latest) and open it. It installs the menu bar app and the server for your account and starts them; nothing else is needed. It is not notarized yet, so the first open needs System Settings → Privacy & Security → **Open Anyway**.

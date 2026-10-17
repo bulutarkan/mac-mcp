@@ -19,6 +19,14 @@ SKILL_FILE = "SKILL.md"
 NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 RESOURCE_DIRS = {"scripts", "references", "assets"}
 
+# User-level CLI Agent Skills. Shared skills take precedence over agent-local copies.
+CLI_SKILL_ROOTS = (
+    ".agents/skills", ".claude/skills", ".codex/skills",
+    ".config/opencode/skills", ".config/goose/skills", ".gemini/skills",
+    ".kimi/skills", ".pi/agent/skills", ".config/kilo/skills",
+    ".kilo/skills", ".config/cline/skills", ".cline/skills",
+)
+
 
 def _skills_root() -> Path:
     raw = os.getenv("MAC_MCP_SKILLS_DIR", "").strip()
@@ -185,6 +193,31 @@ def _managed_paths(root: Path) -> List[Path]:
     return paths
 
 
+def _cli_skill_paths() -> List[Path]:
+    """Discover global CLI skills at each index refresh without copying files.
+
+    MAC_MCP_CLI_SKILLS_DIRS overrides roots (os.pathsep-separated); setting it
+    to an empty string disables discovery. Custom MAC_MCP_SKILLS_DIR instances
+    do not import home skills by default, keeping test/isolated state separate.
+    """
+    configured = os.getenv("MAC_MCP_CLI_SKILLS_DIRS")
+    if configured is not None:
+        roots = [Path(p).expanduser() for p in configured.split(os.pathsep) if p.strip()]
+    elif os.getenv("MAC_MCP_SKILLS_DIR"):
+        return []
+    else:
+        roots = [Path.home() / p for p in CLI_SKILL_ROOTS]
+
+    discovered: Dict[str, Path] = {}
+    for directory in roots:
+        if not directory.is_dir():
+            continue
+        for candidate in sorted(directory.glob(f"*/{SKILL_FILE}")):
+            if candidate.is_file():
+                discovered.setdefault(candidate.parent.name, candidate.resolve())
+    return [discovered[name] for name in sorted(discovered)]
+
+
 def _registered_paths(conn: sqlite3.Connection) -> List[Path]:
     paths = []
     for row in conn.execute("SELECT location FROM registrations ORDER BY location"):
@@ -212,8 +245,12 @@ def _unchanged_row(path: Path, managed: bool, by_location: Dict[str, sqlite3.Row
 def _sync_index(root: Path, conn: sqlite3.Connection, *, allow_start: bool = False) -> Dict[str, Any]:
     diagnostics: List[Dict[str, str]] = []
     expected: Dict[str, Tuple[Path, bool]] = {}
-    # Registered/external first; managed root wins deterministically on name collisions.
-    candidates = [(p, False) for p in _registered_paths(conn)] + [(p, True) for p in _managed_paths(root)]
+    # Registered skills override CLI defaults; Mac MCP-managed skills win all name collisions.
+    candidates = (
+        [(p, False) for p in _cli_skill_paths()]
+        + [(p, False) for p in _registered_paths(conn)]
+        + [(p, True) for p in _managed_paths(root)]
+    )
     existing = {row["name"]: row for row in conn.execute("SELECT * FROM skills")}
     by_location = {row["location"]: row for row in existing.values()}
     parsed_by_name: Dict[str, Tuple[Dict[str, Any], bool]] = {}

@@ -30,10 +30,11 @@ class SkillToolTests(unittest.TestCase):
         self.root = Path(self.temp.name) / "skills"
         self.external = Path(self.temp.name) / "external"
         self.old = {key: os.environ.get(key) for key in [
-            "MAC_MCP_SKILLS_DIR", "MAC_MCP_EMBEDDING",
+            "MAC_MCP_SKILLS_DIR", "MAC_MCP_CLI_SKILLS_DIRS", "MAC_MCP_EMBEDDING",
             "MAC_MCP_EMBEDDING_MODEL_CACHE", "MAC_MCP_EMBEDDING_IDLE_SECONDS",
         ]}
         os.environ["MAC_MCP_SKILLS_DIR"] = str(self.root)
+        os.environ["MAC_MCP_CLI_SKILLS_DIRS"] = ""
         os.environ["MAC_MCP_EMBEDDING"] = "feature_hash"
         os.environ["MAC_MCP_EMBEDDING_MODEL_CACHE"] = str(Path(self.temp.name) / "cache")
         os.environ["MAC_MCP_EMBEDDING_IDLE_SECONDS"] = "0"
@@ -154,6 +155,36 @@ class SkillToolTests(unittest.TestCase):
             row = skills.skill_get(name="wordpress-performance")
             self.assertTrue(row["location"].startswith(str(self.root.resolve())), row["location"])
             self.assertTrue(any("duplicate skill name" in d.get("warning", "") for d in result["index_sync"]["diagnostics"]))
+
+    def test_auto_import_updates_and_removes_cli_skills(self):
+        folder = self.external / "cli" / "remotion-render"
+        folder.mkdir(parents=True)
+        skill = folder / "SKILL.md"
+        os.environ["MAC_MCP_CLI_SKILLS_DIRS"] = str(folder.parent)
+        skill.write_text("---\nname: remotion-render\ndescription: Render Remotion videos.\n---\nOriginal\n")
+        self.assertEqual(2, skills.skill_update_index()["total"])
+        self.assertIn("Original", skills.skill_get(name="remotion-render")["content"])
+        skill.write_text(skill.read_text().replace("Original", "Updated"))
+        self.assertIn("Updated", skills.skill_get(name="remotion-render")["content"])
+        skill.unlink()
+        self.assertEqual(1, skills.skill_update_index()["total"])
+
+    def test_shared_cli_skill_wins_duplicate_and_managed_wins_cli(self):
+        shared = self.external / "shared"
+        claude = self.external / "claude"
+        for root, body in ((shared, "Shared"), (claude, "Claude")):
+            folder = root / "wordpress-performance"
+            folder.mkdir(parents=True)
+            (folder / "SKILL.md").write_text(SKILL_TEXT.replace("Inspect logs", body))
+        os.environ["MAC_MCP_CLI_SKILLS_DIRS"] = os.pathsep.join((str(shared), str(claude)))
+        self.assertEqual(1, skills.skill_update_index()["total"])
+        self.assertIn("Inspect logs", skills.skill_get(name="wordpress-performance")["body"])
+        for root, text in ((shared, "Shared"), (claude, "Claude")):
+            folder = root / "another-skill"
+            folder.mkdir()
+            (folder / "SKILL.md").write_text("---\nname: another-skill\ndescription: Example skill.\n---\n" + text)
+        self.assertEqual(2, skills.skill_update_index()["total"])
+        self.assertEqual("Shared", skills.skill_get(name="another-skill")["body"])
 
     def test_invalid_skill_frontmatter_is_rejected(self):
         directory = self.external / "bad"
