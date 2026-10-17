@@ -43,6 +43,7 @@ struct MenuBarView: View {
                     header
                     actionBar
                     if state.showsOnboardingReminder { onboardingReminder }
+                    if state.updateReady { updateCallout }
                     if state.serverRunning { chipsRow }
                     Divider()
                     if showsAgentSection {
@@ -192,6 +193,46 @@ struct MenuBarView: View {
         }
         .buttonStyle(.plain)
         .accessibilityHint("Opens Get Started in Settings")
+    }
+
+    /// A new release is ready (#232): the same calm row for every way Mac MCP was installed.
+    private var updateCallout: some View {
+        HStack(spacing: 11) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 30, height: 30)
+                .background(Color.accentColor.opacity(0.14), in: Circle())
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("A new update is ready")
+                    .font(.caption.weight(.semibold))
+                Text("New improvements for Mac MCP.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button {
+                state.performUpdate()
+            } label: {
+                if state.busyAction == "Updating" {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text("Update")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(!state.canInstallUpdate)
+        }
+        .padding(10)
+        .background(
+            LinearGradient(colors: [Color.accentColor.opacity(0.12), Color.accentColor.opacity(0.04)],
+                           startPoint: .leading, endPoint: .trailing),
+            in: RoundedRectangle(cornerRadius: 10)
+        )
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.accentColor.opacity(0.18)))
+        .accessibilityElement(children: .contain)
     }
 
     /// What Mac MCP is doing, in one line under its name.
@@ -1149,7 +1190,7 @@ struct MenuBarView: View {
                         Spacer()
                         Button(state.updateCheckLoading ? "Checking…" : "Check Update") { state.checkForUpdates() }
                             .disabled(!state.canCheckForUpdates)
-                        Button(state.updateActionTitle) { state.installUpdate() }
+                        Button(state.updateActionTitle) { state.performUpdate() }
                             .disabled(!state.canInstallUpdate)
                     }
                     if let progress = state.updateProgress,

@@ -228,6 +228,8 @@ final class AppState: ObservableObject {
     @Published private(set) var updateProgress: UpdateStateSnapshot?
     @Published private(set) var updateTransactionActive = false
     @Published private(set) var updateCheckLoading = false
+    /// A package install's own update answer (#232); nil for install.sh and npm installs.
+    @Published private(set) var packageUpdate: PackageInstallUpdateNotice?
     @Published var pulse = false
     @Published private(set) var safariExtensionEnabled = false
     @Published private(set) var safariExtensionRegistered = false
@@ -255,6 +257,7 @@ final class AppState: ObservableObject {
     private var pulseTask: Task<Void, Never>?
     private var noticeTask: Task<Void, Never>?
     private var updateStatePollTask: Task<Void, Never>?
+    private var updateWatchTask: Task<Void, Never>?
     private var consecutiveRefreshFailures = 0
     private var lastSteeringMessageID: String?
     private var pendingSteeringClientInstructionID: String?
@@ -287,12 +290,18 @@ final class AppState: ObservableObject {
         refreshCloudflareCredentialState()
         refreshPersistedUpdateState()
         if startBackgroundTasks {
-            AgentNotificationController.shared.configure { [weak self] kind, targetID in
-                Task { @MainActor in
-                    self?.openDashboardNotificationTarget(kind: kind, targetID: targetID)
+            AgentNotificationController.shared.configure(
+                openHandler: { [weak self] kind, targetID in
+                    Task { @MainActor in
+                        self?.openDashboardNotificationTarget(kind: kind, targetID: targetID)
+                    }
+                },
+                updateHandler: { [weak self] in
+                    Task { @MainActor in self?.showUpdate() }
                 }
-            }
+            )
             startTasks()
+            startUpdateWatch()
             observeReduceMotion()
             Task { [weak self] in
                 await self?.refreshAgentNotificationAuthorization(reconcilePreference: true)
@@ -305,6 +314,7 @@ final class AppState: ObservableObject {
         pulseTask?.cancel()
         noticeTask?.cancel()
         updateStatePollTask?.cancel()
+        updateWatchTask?.cancel()
         if let reduceMotionObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(reduceMotionObserver)
         }
@@ -1774,6 +1784,7 @@ final class AppState: ObservableObject {
 
     var canInstallUpdate: Bool {
         guard busyAction == nil, !updateTransactionActive, updateCheckInfo?.dirty != true else { return false }
+        if let packageUpdate { return packageUpdate.updateAvailable == true }
         let recoveryStatus = updateProgress?.normalizedStatus ?? ""
         let recoveryNeeded = updateProgress?.isInProgress == true
             || ["failed", "recovery_failed"].contains(recoveryStatus)
@@ -1819,10 +1830,14 @@ final class AppState: ObservableObject {
            let notice = try? JSONDecoder().decode(PackageInstallUpdateNotice.self, from: data),
            notice.installKind == "pkg" {
             setIfChanged(\.updateCheckInfo, nil)
+            setIfChanged(\.packageUpdate, notice)
             guard shouldShowNotice else { return }
-            showNotice(ActionNotice(kind: .info, message: notice.message))
-            if let url = URL(string: notice.downloadURL) {
-                NSWorkspace.shared.open(url)
+            if notice.checkFailed == true {
+                showNotice(ActionNotice(kind: .error, message: "Couldn’t check for updates. Try again later."))
+            } else if notice.updateAvailable == true {
+                showNotice(ActionNotice(kind: .update, message: "A new update is ready."))
+            } else {
+                showNotice(ActionNotice(kind: .success, message: "Mac MCP is up to date."))
             }
             return
         }
@@ -1835,11 +1850,12 @@ final class AppState: ObservableObject {
             return
         }
         setIfChanged(\.updateCheckInfo, info)
+        setIfChanged(\.packageUpdate, nil)
         guard shouldShowNotice else { return }
         if info.dirty {
             showNotice(ActionNotice(kind: .error, message: "Update is blocked by local changes."))
         } else if info.updateAvailable {
-            showNotice(ActionNotice(kind: .update, message: "Verified update available."))
+            showNotice(ActionNotice(kind: .update, message: "A new update is ready."))
         } else {
             showNotice(ActionNotice(kind: .success, message: "Mac MCP is up to date."))
         }
@@ -1864,6 +1880,93 @@ final class AppState: ObservableObject {
             updateCheckLoading = false
             applyUpdateCheckOutput(result.output, code: result.code, shouldShowNotice: true)
             refreshPersistedUpdateState()
+        }
+    }
+
+    /// One answer for every install (install.sh, npm or .pkg): a newer release is ready.
+    var updateReady: Bool {
+        if let packageUpdate { return packageUpdate.updateAvailable == true }
+        guard let info = updateCheckInfo else { return false }
+        return info.updateAvailable && !info.dirty
+    }
+
+    /// The Update button everywhere. Behind it, install.sh and npm installs run the signed updater
+    /// and a package install opens the newer package's release page.
+    func performUpdate() {
+        if let packageUpdate {
+            if packageUpdate.updateAvailable == true, let url = URL(string: packageUpdate.downloadURL) {
+                NSWorkspace.shared.open(url)
+            }
+            return
+        }
+        installUpdate()
+    }
+
+    /// Where the update alert leads: the Updates card in Settings › General (set by the app).
+    var presentUpdate: (() -> Void)?
+
+    func showUpdate() {
+        presentUpdate?()
+    }
+
+    static let updateWatchFirstDelaySeconds: Double = 120
+    static let updateWatchIntervalSeconds: Double = 6 * 60 * 60
+    private static let announcedUpdateKey = "MacMCP.announcedUpdate"
+
+    /// Looks for a new release in the background (#232): shortly after launch, then every few hours.
+    /// It only looks; installing stays one click on Update.
+    private func startUpdateWatch() {
+        guard updateWatchTask == nil else { return }
+        updateWatchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.updateWatchFirstDelaySeconds * 1_000_000_000))
+            while !Task.isCancelled {
+                await self?.checkForUpdatesQuietly()
+                try? await Task.sleep(nanoseconds: UInt64(Self.updateWatchIntervalSeconds * 1_000_000_000))
+            }
+        }
+    }
+
+    private func checkForUpdatesQuietly() async {
+        guard settings.updateAlertsEnabled else { return }
+        refreshPersistedUpdateState()
+        guard canCheckForUpdates, busyAction == nil else { return }
+        updateCheckLoading = true
+        let result = await Self.runCLI(
+            args: ["update", "--check", "--json"],
+            configuredPath: settings.cliPath,
+            settingsPath: settings.path.path
+        )
+        updateCheckLoading = false
+        applyUpdateCheckOutput(result.output, code: result.code, shouldShowNotice: false)
+        await announceUpdateIfNew()
+    }
+
+    /// Once per release: a notification when macOS allows it; the menu shows the update either way.
+    private func announceUpdateIfNew() async {
+        guard updateReady, settings.updateAlertsEnabled else {
+            if !updateReady { AgentNotificationController.shared.removeUpdateReady() }
+            return
+        }
+        let release = packageUpdate?.latestRelease ?? updateCheckInfo?.targetCommit ?? ""
+        guard !release.isEmpty, UserDefaults.standard.string(forKey: Self.announcedUpdateKey) != release else { return }
+        if await AgentNotificationController.shared.scheduleUpdateReady() {
+            UserDefaults.standard.set(release, forKey: Self.announcedUpdateKey)
+        }
+    }
+
+    func setUpdateAlertsEnabled(_ enabled: Bool) {
+        settings.updateAlertsEnabled = enabled
+        do {
+            try settings.save()
+        } catch {
+            settings.updateAlertsEnabled = !enabled
+            showNotice(ActionNotice(kind: .error, message: "Couldn’t save update settings."))
+            return
+        }
+        if enabled {
+            Task { await checkForUpdatesQuietly() }
+        } else {
+            AgentNotificationController.shared.removeUpdateReady()
         }
     }
 

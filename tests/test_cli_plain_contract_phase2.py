@@ -86,7 +86,8 @@ class PlainPhase2(unittest.TestCase):
             self.assertEqual(2 if case.dirty else 0, code)
 
     def test_update_pkg(self) -> None:
-        with patch.object(cli, "install_kind", return_value="pkg"):
+        with patch.object(cli, "install_kind", return_value="pkg"), \
+                patch("mcp_server.install_kind._fetch_latest_release", side_effect=OSError("offline in tests")):
             code, out, _ = self.capture(cli.update, argparse.Namespace(check=True, json=False))
         self.assertEqual(0, code)
         self.assertTrue(out.startswith("[mac-mcp update] "), out)

@@ -64,6 +64,8 @@ struct MenuSettings: Codable {
     }
     struct Notifications: Codable {
         var agent_completion: Bool
+        /// Background update checks and the "new update is ready" alert; absent means on.
+        var updates: Bool?
     }
     /// Per-app settings for what agents may do in Mac apps (Settings > Apps).
     struct AppSend: Codable {
@@ -178,6 +180,7 @@ final class SettingsStore: ObservableObject {
     @Published var showDesktopCursor = true
     @Published var requireToolDescriptions = false
     @Published var agentCompletionNotificationsEnabled = false
+    @Published var updateAlertsEnabled = true
     @Published var mailConfirmSend = true
     @Published var messagesConfirmSend = true
     @Published var allowedShortcuts: [String] = []
@@ -291,6 +294,7 @@ final class SettingsStore: ObservableObject {
             showToolActivity = false
         }
         agentCompletionNotificationsEnabled = current.notifications?.agent_completion ?? false
+        updateAlertsEnabled = current.notifications?.updates ?? true
         mailConfirmSend = current.apps?.mail?.confirm_send ?? true
         messagesConfirmSend = current.apps?.messages?.confirm_send ?? true
         allowedShortcuts = current.apps?.shortcuts?.allowed ?? []
@@ -350,7 +354,7 @@ final class SettingsStore: ObservableObject {
                 island: showLiveIsland,
                 desktop_cursor: showDesktopCursor
             ),
-            notifications: .init(agent_completion: agentCompletionNotificationsEnabled),
+            notifications: .init(agent_completion: agentCompletionNotificationsEnabled, updates: updateAlertsEnabled),
             decision_acceleration: .init(enabled: decisionAccelerationEnabled, scope: decisionAccelerationScope),
             subagents: .init(
                 providers: [

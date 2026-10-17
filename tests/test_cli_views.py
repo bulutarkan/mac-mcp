@@ -689,7 +689,8 @@ class UpdateScreen(ThemedTestCase):
 
     def test_pkg_install(self) -> None:
         out = FakeTTY()
-        with patch.object(cli, "install_kind", return_value="pkg"), redirect_stdout(out):
+        with patch.object(cli, "install_kind", return_value="pkg"), redirect_stdout(out), \
+                patch("mcp_server.install_kind._fetch_latest_release", side_effect=OSError("offline in tests")):
             code = cli.update(argparse.Namespace(check=True, json=False))
         text = " ".join(visible(out.getvalue()).split())
         self.assertEqual(0, code)

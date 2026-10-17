@@ -2577,6 +2577,10 @@ struct SettingsView: View {
     }
 
     private var availableUpdateText: String {
+        if let package = state.packageUpdate {
+            if package.checkFailed == true { return "Couldn’t check right now" }
+            return package.updateAvailable == true ? "A new update is ready" : "Up to date"
+        }
         guard let info = state.updateCheckInfo else { return "Check for update" }
         if info.dirty { return "Blocked by local changes" }
         if info.updateAvailable {
@@ -2603,7 +2607,7 @@ struct SettingsView: View {
                         Text(updateSummaryTitle)
                             .font(.subheadline.weight(.semibold))
                             .lineLimit(2)
-                        Text("Installed \(currentUpdateVersion) · \(currentUpdateCommit)")
+                        Text("Installed \(currentUpdateVersion)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -2624,10 +2628,21 @@ struct SettingsView: View {
 
                     if state.canInstallUpdate {
                         Button(state.updateActionTitle) {
-                            state.installUpdate()
+                            state.performUpdate()
                         }
+                        .buttonStyle(.borderedProminent)
                     }
                 }
+
+                Toggle(isOn: Binding(
+                    get: { settings.updateAlertsEnabled },
+                    set: { state.setUpdateAlertsEnabled($0) }
+                )) {
+                    Text("Let me know when an update is ready")
+                        .font(.caption)
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
 
                 DisclosureGroup(isExpanded: $showUpdateDetails) {
                     VStack(alignment: .leading, spacing: 12) {
@@ -2730,7 +2745,12 @@ struct SettingsView: View {
             || ["failed", "recovered", "recovery_failed", "rolling_back"].contains(progress.normalizedStatus) {
             return progress.statusTitle
         }
-        if state.updateCheckLoading { return "Checking verified release channel…" }
+        if state.updateCheckLoading { return "Checking for updates…" }
+        // The same words for every install; versions and commits stay under Details.
+        if state.updateReady { return "A new update is ready" }
+        if state.updateCheckInfo?.dirty != true, state.updateCheckInfo != nil || state.packageUpdate?.updateAvailable == false {
+            return "Mac MCP is up to date"
+        }
         return availableUpdateText
     }
 
@@ -2740,6 +2760,8 @@ struct SettingsView: View {
             || ["failed", "recovered", "recovery_failed", "rolling_back"].contains(progress.normalizedStatus) {
             return updateStatusSymbol(progress.statusKind)
         }
+        if state.updateReady { return "sparkles" }
+        if state.packageUpdate?.updateAvailable == false, state.packageUpdate?.checkFailed != true { return "checkmark.circle.fill" }
         guard let info = state.updateCheckInfo else { return "arrow.triangle.2.circlepath" }
         if info.dirty { return "exclamationmark.triangle.fill" }
         return info.updateAvailable ? "arrow.down.circle.fill" : "checkmark.circle.fill"
@@ -2751,6 +2773,8 @@ struct SettingsView: View {
             || ["failed", "recovered", "recovery_failed", "rolling_back"].contains(progress.normalizedStatus) {
             return updateStatusColor(progress.statusKind)
         }
+        if state.updateReady { return .accentColor }
+        if state.packageUpdate?.updateAvailable == false, state.packageUpdate?.checkFailed != true { return .green }
         guard let info = state.updateCheckInfo else { return .secondary }
         if info.dirty { return .orange }
         return info.updateAvailable ? .accentColor : .green

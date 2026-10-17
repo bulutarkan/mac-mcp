@@ -38,11 +38,18 @@ struct PackageInstallUpdateNotice: Decodable, Equatable {
     let installKind: String
     let message: String
     let downloadURL: String
+    /// Whether GitHub Releases has a newer .pkg than the installed checkpoint (absent: not checked).
+    let updateAvailable: Bool?
+    let latestRelease: String?
+    let checkFailed: Bool?
 
     enum CodingKeys: String, CodingKey {
         case message
         case installKind = "install_kind"
         case downloadURL = "download_url"
+        case updateAvailable = "update_available"
+        case latestRelease = "latest_release"
+        case checkFailed = "check_failed"
     }
 }
 

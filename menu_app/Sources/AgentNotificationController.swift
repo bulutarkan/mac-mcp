@@ -207,13 +207,19 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
 
     private let center = UNUserNotificationCenter.current()
     private var openHandler: ((AgentTerminalNotification.TargetKind, String) -> Void)?
+    private var updateHandler: (() -> Void)?
+    static let updateReadyIdentifier = "mac-mcp.update-ready"
 
     private override init() {
         super.init()
     }
 
-    func configure(openHandler: @escaping (AgentTerminalNotification.TargetKind, String) -> Void) {
+    func configure(
+        openHandler: @escaping (AgentTerminalNotification.TargetKind, String) -> Void,
+        updateHandler: @escaping () -> Void
+    ) {
         self.openHandler = openHandler
+        self.updateHandler = updateHandler
         center.delegate = self
     }
 
@@ -291,6 +297,26 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
         }
     }
 
+    /// One calm alert, the same for every way Mac MCP was installed; a newer one replaces it.
+    func scheduleUpdateReady() async -> Bool {
+        guard await authorizationState() == .authorized else { return false }
+        let content = UNMutableNotificationContent()
+        content.title = "A new update is ready"
+        content.body = "Mac MCP has new improvements waiting. Open it to update."
+        content.userInfo = ["kind": "update"]
+        let request = UNNotificationRequest(identifier: Self.updateReadyIdentifier, content: content, trigger: nil)
+        do {
+            try await center.add(request)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    func removeUpdateReady() {
+        center.removeDeliveredNotifications(withIdentifiers: [Self.updateReadyIdentifier])
+    }
+
     func removeDeliveredNotifications() {
         center.removeAllDeliveredNotifications()
         center.removeAllPendingNotificationRequests()
@@ -310,6 +336,10 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         defer { completionHandler() }
+        if response.notification.request.content.userInfo["kind"] as? String == "update" {
+            DispatchQueue.main.async { [weak self] in self?.updateHandler?() }
+            return
+        }
         guard
             let rawKind = response.notification.request.content.userInfo["target_kind"] as? String,
             let kind = AgentTerminalNotification.TargetKind(rawValue: rawKind),

@@ -13,7 +13,9 @@ class MenuPackageUpdateNoticeTests(unittest.TestCase):
         body = state[state.index("private func applyUpdateCheckOutput"):state.index("func checkForUpdates()")]
         self.assertLess(body.index("PackageInstallUpdateNotice.self"), body.index("UpdateCheckInfo.self"))
         self.assertIn('notice.installKind == "pkg"', body)
-        self.assertIn("NSWorkspace.shared.open(url)", body)
+        # A check never opens the browser by itself (#232); Update opens the release page.
+        self.assertNotIn("NSWorkspace.shared.open", body)
+        self.assertIn("setIfChanged(\\.packageUpdate, notice)", body)
 
 
 if __name__ == "__main__":

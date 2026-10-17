@@ -20,9 +20,20 @@ class InstallKindTests(unittest.TestCase):
         self.env = patch.dict(os.environ, {"MAC_MCP_STATE_DIR": str(self.state)})
         self.env.start()
 
+        # No test reaches GitHub; each one that needs a release answer sets it.
+        self.fetch = patch.object(ik, "_fetch_latest_release", side_effect=OSError("offline in tests"))
+        self.fetch.start()
+
     def tearDown(self) -> None:
+        self.fetch.stop()
         self.env.stop()
         self.td.cleanup()
+
+    def answer(self, tag: str, assets=("Mac-MCP-2.2.0-stable-2.2.0-r3-arm64.pkg",), installed="stable-2.2.0-r2"):
+        release = {"tag_name": tag, "html_url": f"{ik.RELEASES_URL}/tag/{tag}",
+                   "assets": [{"name": name} for name in assets]}
+        return patch.object(ik, "_fetch_latest_release", return_value=release), \
+            patch.object(ik, "installed_release_id", return_value=installed)
 
     def test_source_when_marker_missing_or_other(self) -> None:
         self.assertEqual("source", ik.install_kind())
@@ -34,11 +45,55 @@ class InstallKindTests(unittest.TestCase):
         self.assertEqual("pkg", ik.install_kind())
 
     def test_payload_points_to_releases(self) -> None:
-        payload = ik.package_update_payload()
+        with patch.object(ik, "installed_release_id", return_value=""):
+            payload = ik.package_update_payload()
         self.assertEqual("pkg", payload["install_kind"])
         self.assertEqual(ik.RELEASES_URL, payload["download_url"])
         self.assertFalse(payload["update_available"])
         self.assertIn(".pkg", payload["message"])
+
+    def test_a_newer_release_with_a_package_is_an_update(self) -> None:
+        fetch, installed = self.answer("v2.2.0-r3")
+        with fetch, installed:
+            payload = ik.package_update_payload()
+        self.assertTrue(payload["update_available"])
+        self.assertEqual("v2.2.0-r3", payload["latest_release"])
+        self.assertEqual(f"{ik.RELEASES_URL}/tag/v2.2.0-r3", payload["download_url"])
+        self.assertIn("A new update is ready", payload["message"])
+
+    def test_versions_compare_by_number_and_a_bare_tag_is_r1(self) -> None:
+        for tag, installed, expected in [("v2.10.0", "stable-2.9.9-r12", True), ("v2.3.0", "stable-2.2.0-r9", True),
+                                         ("v2.2.0", "stable-2.2.0-r1", False), ("v2.2.0-r2", "stable-2.2.0-r2", False),
+                                         ("v2.2.0-r1", "stable-2.2.0-r2", False)]:
+            fetch, current = self.answer(tag, installed=installed)
+            with self.subTest(tag=tag, installed=installed), fetch, current:
+                self.assertIs(expected, ik.package_update_payload()["update_available"])
+
+    def test_a_release_without_a_package_or_an_odd_tag_is_not_an_update(self) -> None:
+        for tag, assets in [("v2.3.0", ("source.tar.gz",)), ("nightly", ("x.pkg",)), ("v2.3.0-beta", ("x.pkg",))]:
+            fetch, installed = self.answer(tag, assets=assets)
+            with self.subTest(tag=tag), fetch, installed:
+                payload = ik.package_update_payload()
+            self.assertFalse(payload["update_available"])
+            self.assertEqual(ik.RELEASES_URL, payload["download_url"])
+
+    def test_only_this_repositorys_release_pages_are_opened(self) -> None:
+        release = {"tag_name": "v9.0.0", "html_url": "https://example.com/evil", "assets": [{"name": "a.pkg"}]}
+        with patch.object(ik, "_fetch_latest_release", return_value=release), \
+                patch.object(ik, "installed_release_id", return_value="stable-2.2.0-r2"):
+            payload = ik.package_update_payload()
+        self.assertTrue(payload["update_available"])
+        self.assertEqual(ik.RELEASES_URL, payload["download_url"])
+
+    def test_no_network_is_said_not_hidden(self) -> None:
+        with patch.object(ik, "installed_release_id", return_value="stable-2.2.0-r2"):
+            payload = ik.package_update_payload()
+        self.assertTrue(payload["check_failed"])
+        self.assertFalse(payload["update_available"])
+
+    def test_the_installed_release_comes_from_the_signed_manifest(self) -> None:
+        manifest = json.loads((Path(ik.__file__).resolve().parents[1] / "release/stable-manifest.json").read_text())
+        self.assertEqual(manifest["release_id"], ik.installed_release_id())
 
     def test_cli_update_check_json_for_pkg_install(self) -> None:
         (self.state / "install-kind").write_text("pkg\n")

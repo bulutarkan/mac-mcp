@@ -60,7 +60,7 @@ class SettingsInformationArchitectureTests(unittest.TestCase):
         update = self.view[self.view.index("private var updateCard"):self.view.index("private var updateSummaryTitle")]
         self.assertIn("DisclosureGroup(isExpanded: $showUpdateDetails)", update)
         self.assertIn("state.checkForUpdates()", update)
-        self.assertIn("state.installUpdate()", update)
+        self.assertIn("state.performUpdate()", update)
 
         advanced_start = self.view.index("private var advancedPane")
         update_helpers = self.view.index("private var currentUpdateCommit", advanced_start)

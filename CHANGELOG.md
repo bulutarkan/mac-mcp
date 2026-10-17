@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Know when an update is ready (#232)
+- Mac MCP now looks for a new release in the background, a couple of minutes after the app starts and then every six hours, and says so the same way however it was installed (install.sh, npm or the .pkg): one "A new update is ready" notification per release, a row at the top of the menu with an **Update** button, and the same words in Settings › General. It only looks; nothing installs until you click Update.
+- Behind the button, install.sh and npm installs run the signed updater as before; a package install opens the newer package's release page. A package install's check now really compares its signed checkpoint with the newest GitHub Release that has a .pkg (before, it only pointed at the Releases page), and checking no longer opens the browser by itself.
+- Settings › General › Updates has **Let me know when an update is ready** (on by default); turning it off stops the background check. The Updates card shows the installed version without the commit; versions and commits stay under Details.
+
 ### Install with npm (#210)
 - `npx @bulutarkan/mac-mcp install` installs Mac MCP with the repository's own installer (signed-release verification included). The npm package runs nothing when it is installed, leaves an existing install alone, and passes `update`, `status` and the other commands to the installed `mac-mcp` CLI by its full path; its command is `mac-mcp-setup`, so it never shadows `mac-mcp`.
 - `scripts/build_npm_package.sh` packs it with a fresh copy of `install.sh` and refuses a version that differs from the product's or any npm script.
