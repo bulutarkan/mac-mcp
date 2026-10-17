@@ -50,6 +50,7 @@ typealias CurrentSpaceFn = @convention(c) (Int32, CFString) -> UInt64
 typealias CopySpacesForWindowsFn = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
 typealias WindowIsOrderedInFn = @convention(c) (Int32, UInt32, UnsafeMutablePointer<UInt8>) -> Int32
 typealias ProcessAssignToSpaceFn = @convention(c) (Int32, Int32, UInt64) -> Int32
+typealias GetActiveSpaceFn = @convention(c) (Int32) -> UInt64
 typealias PerformOperationFn = @convention(c) (AnyObject) -> Int64
 typealias InitMoveFn = @convention(c) (AnyObject, Selector, NSArray, UInt64) -> AnyObject?
 typealias CoreDockSendFn = @convention(c) (CFString, Int32) -> Void
@@ -140,6 +141,13 @@ func readDisplays() -> [Display] {
     }
 }
 
+/// The display the person is working on: where macOS puts a new window of any app.
+func activeDisplay(_ displays: [Display] = readDisplays()) -> String? {
+    guard let getActiveSpace = exported("SLSGetActiveSpace", as: GetActiveSpaceFn.self) else { return nil }
+    let active = getActiveSpace(connection)
+    return displays.first { $0.spaces.contains { $0.id == active } }?.id
+}
+
 func spacesFor(_ window: UInt32) -> [UInt64] {
     // 0x7 = every space kind (current, other, user and full-screen).
     let list = copySpacesForWindows(connection, 0x7, [NSNumber(value: window)] as CFArray)?.takeRetainedValue() as? [NSNumber]
@@ -206,7 +214,9 @@ func describe() -> [[String: Any]] {
     let screens = screenInfo()
     let windows = appWindows()
     var number = 0
-    return readDisplays().map { display in
+    let displays = readDisplays()
+    let active = activeDisplay(displays)
+    return displays.map { display in
         let spaces = display.spaces.enumerated().map { offset, space -> [String: Any] in
             if space.kind == "desktop" { number += 1 }
             let own = windows.filter { $0.spaces == [space.id] }
@@ -223,6 +233,8 @@ func describe() -> [[String: Any]] {
         let shared = windows.filter { $0.spaces.count > 1 && !ids.isDisjoint(with: $0.spaces) }
         var out: [String: Any] = [
             "display": display.id, "visible_space": display.visibleSpace, "spaces": spaces,
+            // Where new windows appear; see refuseIfOnOtherDisplay.
+            "active": display.id == active,
             "all_desktop_windows": shared.map { ["window_id": $0.id, "app": $0.app, "title": $0.title] },
         ]
         out.merge(screens[display.id] ?? [:]) { a, _ in a }
@@ -341,6 +353,21 @@ func shownElsewhere(_ executable: String, target: UInt64) -> [WindowInfo] {
 func switchesToAppDesktop() -> Bool {
     CFPreferencesAppSynchronize("com.apple.dock" as CFString)
     return (CFPreferencesCopyAppValue("workspaces-auto-swoosh" as CFString, "com.apple.dock" as CFString) as? Bool) ?? true
+}
+
+/// Refuse to catch a window for a desktop on another display than the one the person is
+/// working on. A new window appears on that display, and macOS ignores a move to another
+/// display's desktop made before the window is first shown: it would show there first.
+func refuseIfOnOtherDisplay(target: UInt64, _ appArgument: String) {
+    let displays = readDisplays()
+    guard let active = activeDisplay(displays),
+          let targetDisplay = displays.first(where: { $0.spaces.contains { $0.id == target } })?.id,
+          targetDisplay != active else { return }
+    let name = screenInfo()[active]?["name"] as? String ?? active
+    fail("\(appArgument) already shows windows on the owner's desktops, so its new window has to be caught, and it "
+         + "would appear on the display the owner is working on (\(name)) before reaching desktop \(target) on "
+         + "another display. Use an empty desktop on \(name), or Google Chrome.", "TARGET_ON_OTHER_DISPLAY",
+         ["active_display": active, "target_display": targetDisplay])
 }
 
 /// Refuse to catch a window of the app the person is using while that setting is on.
@@ -464,6 +491,7 @@ func appleScriptString(_ text: String) -> String {
 
 /// Open by catching the new window, for an app that already shows windows elsewhere.
 func openByCatching(on target: UInt64, appArgument: String, appURL: URL, bundle: Bundle, executable: String, items: [URL]) -> Never {
+    refuseIfOnOtherDisplay(target: target, appArgument)
     refuseIfFrontAndSwitching(executable, appArgument)
     let frontBefore = frontmost()?.processIdentifier
     let trigger: () -> Bool
@@ -518,6 +546,7 @@ func finishOpen(target: UInt64, appArgument: String, bundle: Bundle, executable:
 func catchCommand(on target: UInt64, appArgument: String, seconds: Double) -> Never {
     desktop(target)
     let (_, bundle, executable) = resolveApp(appArgument)
+    refuseIfOnOtherDisplay(target: target, appArgument)
     refuseIfFrontAndSwitching(executable, appArgument)
     let frontBefore = frontmost()?.processIdentifier
     let moved = catchNewWindows(of: executable, onto: target, within: seconds) {

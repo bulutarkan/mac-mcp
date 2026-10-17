@@ -76,6 +76,13 @@ SWITCH_SETTING_ON_NOTE = (
     "and is the browser to use. Turning the setting off lets Safari and other apps open there too; in exchange, "
     "switching to an app with Command-Tab or the Dock no longer moves the owner to the desktop with its windows."
 )
+# New windows appear on the display the owner is working on, and a caught window cannot
+# reach another display's desktop unseen (spaces_helper refuseIfOnOtherDisplay).
+DISPLAY_NOTE = (
+    "New windows appear on the display marked active, the one the owner is working on. An app that already shows "
+    "windows on the owner's desktops (their Safari or Chrome) opens only on a desktop of that display, so prefer an "
+    "empty desktop there; other apps open on any display's desktop."
+)
 SWITCH_SETTING_OFF_NOTE = (
     f"{SWITCH_SETTING} is off, so any app, Safari included, can open on the agent's desktop while the owner uses "
     "it. With it off, switching to an app with Command-Tab or the Dock does not move the owner to the desktop "
@@ -89,7 +96,8 @@ def list_desktops() -> Dict[str, Any]:
     owner's desktop-switching setting means for opening apps on an agent's desktop."""
     result = _run(["spaces"])
     if result.get("ok") and "switches_to_app_desktop" in result:
-        result["note"] = SWITCH_SETTING_ON_NOTE if result["switches_to_app_desktop"] else SWITCH_SETTING_OFF_NOTE
+        switching = SWITCH_SETTING_ON_NOTE if result["switches_to_app_desktop"] else SWITCH_SETTING_OFF_NOTE
+        result["note"] = f"{DISPLAY_NOTE} {switching}"
     return result
 
 

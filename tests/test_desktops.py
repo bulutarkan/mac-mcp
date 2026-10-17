@@ -99,6 +99,14 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual("Reload it once at chrome://extensions", result["detail"])
         self.assertEqual("open_window", result["feature"])
 
+    def test_other_display_refusal_reaches_the_agent(self) -> None:
+        refusal = {"ok": False, "reason_code": "TARGET_ON_OTHER_DISPLAY", "error": "use an empty desktop on LG",
+                   "active_display": "LG", "target_display": "LAPTOP"}
+        with patch.object(desktops, "open_on_desktop", return_value=refusal):
+            result = mac_app(SETTINGS, app="Mission Control", action="open_on_desktop", item_id="43", target_app="Safari")
+        self.assertEqual("TARGET_ON_OTHER_DISPLAY", result["reason_code"])
+        self.assertEqual(("LG", "LAPTOP"), (result["active_display"], result["target_display"]))
+
     def test_desktop_changes_skip_the_human_active_app_guard(self) -> None:
         # They never touch a window the person is using, so an active person does not block them.
         answer = {"ok": True, "space_id": 43, "windows": [{"window_id": 9, "spaces": [43]}]}
@@ -230,7 +238,9 @@ class SwitchSettingNoteTests(unittest.TestCase):
     def test_listing_explains_the_desktop_switching_setting(self) -> None:
         for switching, expected in ((True, desktops.SWITCH_SETTING_ON_NOTE), (False, desktops.SWITCH_SETTING_OFF_NOTE)):
             with patch.object(desktops, "_run", return_value={**_listing(), "switches_to_app_desktop": switching}):
-                self.assertEqual(expected, desktops.list_desktops()["note"])
+                note = desktops.list_desktops()["note"]
+            self.assertTrue(note.startswith(desktops.DISPLAY_NOTE), note)
+            self.assertTrue(note.endswith(expected), note)
         self.assertIn("Google Chrome", desktops.SWITCH_SETTING_ON_NOTE)
         self.assertIn("Command-Tab", desktops.SWITCH_SETTING_OFF_NOTE)
 

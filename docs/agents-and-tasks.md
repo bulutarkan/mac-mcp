@@ -49,6 +49,8 @@ Agents work alongside you on your desktops by default. When you ask one to work 
 
 Turn the setting off and Safari, like any other app, opens on the agent's desktop even while you use it. The trade-off: when you switch to an app with Command-Tab or the Dock, macOS no longer moves you to the desktop where that app's windows are.
 
+**With two or more displays.** A new window always appears on the display you are working on. So an app whose windows you also have open, like your Safari, opens only on an agent desktop of that display; agents prefer an empty desktop there. Apps you are not using open on an agent desktop on any display.
+
 ## Scheduled Tasks
 
 **Settings › Scheduled Tasks** runs work on its own at a set time or on a recurrence: once, daily, weekly (chosen days), monthly (a day of the month; 29–31 fall back to the month's last day), every few hours, or a 5-field cron expression under Advanced. Times are this Mac's local time and stay on the wall clock across daylight-saving changes.
