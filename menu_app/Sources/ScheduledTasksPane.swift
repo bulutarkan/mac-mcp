@@ -282,6 +282,11 @@ struct ScheduledTasksPane: View {
         let schedule = Text(task.scheduleText).foregroundColor(.secondary)
         if task.paused { return schedule + Text(" · Paused").foregroundColor(.secondary) }
         if task.state == "running" { return schedule + Text(" · Running now").foregroundColor(.accentColor) }
+        // Past its time with no start and no skip recorded: the scheduler did not start it (#225).
+        if task.state == "active", let next = task.nextRunAt, Date().timeIntervalSince(next) > 300 {
+            let clock = next.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+            return schedule + Text(" · Didn't start at \(clock)").foregroundColor(.orange)
+        }
         if let run = task.lastRun {
             return schedule + Text(" · ").foregroundColor(.secondary) + Text(run.shortLine).foregroundColor(run.color)
         }
@@ -489,6 +494,12 @@ private struct TaskDetailView: View {
     static func checks(_ value: Any?) -> String? {
         guard let checks = value as? [[String: Any]], !checks.isEmpty else { return nil }
         return checks.map { check in
+            if let url = check["url"] as? String {
+                return url + ((check["contains"] as? String).map { " · shows “\($0)”" } ?? "")
+            }
+            if let tool = check["tool"] as? String {
+                return tool + " (read-only)" + ((check["contains"] as? String).map { " · shows “\($0)”" } ?? "")
+            }
             var line = tilde(check["path"] as? String ?? "")
             let least = check["min_bytes"] as? Int ?? 1
             if least > 1 { line += " · at least \(ByteCountFormatter.string(fromByteCount: Int64(least), countStyle: .file))" }
@@ -552,7 +563,8 @@ private struct TaskDetailView: View {
         case "skipped": parts.append(run.skippedCount > 1 ? "Skipped \(run.skippedCount) runs" : "Skipped")
         case "done":
             if let d = run.duration { parts.append(TaskTime.duration(d)) }
-            if run.checkFailed { parts.append("Check failed") } else if run.verificationState == "verified" { parts.append("Checked") }
+            if run.verificationState == "unverified" { parts.append("Couldn’t check") }
+            else if run.checkFailed { parts.append("Check failed") } else if run.verificationState == "verified" { parts.append("Checked") }
         case "timed_out": parts.append("Stopped at the time limit")
         default: parts.append("Failed" + (run.duration.map { " after \(TaskTime.duration($0))" } ?? ""))
         }
@@ -681,7 +693,7 @@ final class TaskEditorModel: ObservableObject, Identifiable {
         timeoutMin = raw["timeout_min"] as? Int ?? 0
         if let checks = raw["verify"] as? [[String: Any]], let first = checks.first {
             firstCheck = first
-            expectedFile = TaskRun.displayPath(first["path"] as? String ?? "")
+            expectedFile = first["url"] as? String ?? TaskRun.displayPath(first["path"] as? String ?? "")
             otherChecks = Array(checks.dropFirst())
             showAdvanced = true
         }
@@ -769,7 +781,14 @@ final class TaskEditorModel: ObservableObject, Identifiable {
         let expected = expectedFile.trimmingCharacters(in: .whitespaces)
         if !expected.isEmpty {
             var first = firstCheck
-            first["path"] = expected
+            if expected.hasPrefix("http://") || expected.hasPrefix("https://") {
+                // A page the run should leave visible (#228); its other fields stay as an AI app set them.
+                first.removeValue(forKey: "path"); first.removeValue(forKey: "kind")
+                first["url"] = expected
+            } else {
+                first.removeValue(forKey: "url"); first.removeValue(forKey: "kind")
+                first["path"] = expected
+            }
             checks.insert(first, at: 0)
         }
         out["verify"] = checks  // empty removes the checks on an edit
@@ -1409,10 +1428,10 @@ private struct TaskEditorSheet: View {
                     field("Works in", optional: true) { folderButton(placeholder: "The script's folder") }
                 }
                 field("Check the result", optional: true) {
-                    TextField("A file the run should leave, e.g. ~/Desktop/reports/weekly.csv", text: $model.expectedFile)
+                    TextField("A file or page the run should leave, e.g. ~/Desktop/reports/weekly.csv", text: $model.expectedFile)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.callout, design: .monospaced))
-                    Text("After a run that finishes, Mac MCP checks the file is there, is not empty and was written by that run. It never opens the file.")
+                    Text("After a run that finishes, Mac MCP checks the file is there, is not empty and was written by that run (it never opens the file), or that the page answers. AI apps can also check text on a page or in a read-only MCP tool.")
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }

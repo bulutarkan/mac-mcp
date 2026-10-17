@@ -21,6 +21,7 @@ FEATURES = {
         "AppModels+Live.swift",
         "OnboardingChecklist.swift",
         "DesktopCursorOverlay.swift",
+        "ScheduledTaskWatchdog.swift",
     ),
 }
 

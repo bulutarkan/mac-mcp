@@ -14,10 +14,15 @@ struct RunReportSheet: View {
     @MacMCPState private var full: TaskRun?
     @MacMCPState private var fullProblem: String?
     @MacMCPState private var tab = "result"
+    @MacMCPState private var diagnosis: [String: Any]?
+    @MacMCPState private var diagnoseProblem: String?
 
     private var shown: TaskRun { full ?? run }
     private var steps: [[String: Any]] { shown.detail?["steps"] as? [[String: Any]] ?? [] }
     private var isAgent: Bool { shown.detail?["agent_id"] != nil }
+    /// A run the owner can ask about (#227): it failed, was stopped, or its check failed.
+    private var wentWrong: Bool { shown.status == "failed" || shown.status == "timed_out" || shown.checkFailed }
+    private var diagnosing: Bool { (diagnosis?["status"] as? String) == "running" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -39,6 +44,9 @@ struct RunReportSheet: View {
                     if let problem = fullProblem {
                         LoadProblem(message: problem) { await loadFull() }
                     }
+                    if diagnosis != nil || diagnoseProblem != nil {
+                        diagnosisBox
+                    }
                     if tab == "steps" && isAgent {
                         StepsTimeline(steps: steps)
                     } else {
@@ -56,6 +64,13 @@ struct RunReportSheet: View {
                         NSPasteboard.general.setString(text, forType: .string)
                     } label: { Label("Copy", systemImage: "doc.on.doc") }
                 }
+                if wentWrong {
+                    Button { Task { await diagnose() } } label: {
+                        Label(diagnosis == nil ? "Diagnose" : "Diagnose Again", systemImage: "stethoscope")
+                    }
+                    .disabled(diagnosing)
+                    .help("A read-only agent looks into why this run went wrong and suggests a fix. It changes nothing.")
+                }
                 Spacer()
                 Button("Done") { dismiss() }
                     .buttonStyle(.borderedProminent)
@@ -65,6 +80,60 @@ struct RunReportSheet: View {
         }
         .frame(width: 720, height: height)
         .task { await loadFull() }
+        .task { await followDiagnosis() }
+    }
+
+    // MARK: Diagnosis (#227)
+
+    private func diagnose() async {
+        diagnoseProblem = nil
+        let result = await state.taskAPI("dashboard/api/scheduled-tasks/diagnose", body: ["run_id": run.id])
+        if result.ok, let raw = result.object["diagnosis"] as? [String: Any] {
+            diagnosis = raw
+            await followDiagnosis()
+        } else {
+            diagnoseProblem = result.object["message"] as? String ?? "The diagnosis could not start."
+        }
+    }
+
+    /// Reads the latest diagnosis, then again every few seconds while its agent is still working.
+    private func followDiagnosis() async {
+        repeat {
+            let result = await state.taskAPI("dashboard/api/scheduled-tasks/diagnosis?run_id=\(run.id)")
+            if result.ok { diagnosis = result.object["diagnosis"] as? [String: Any] }
+            guard diagnosing else { return }
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+        } while !Task.isCancelled
+    }
+
+    @ViewBuilder
+    private var diagnosisBox: some View {
+        let status = diagnosis?["status"] as? String
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Label("Diagnosis", systemImage: "stethoscope").font(.callout.weight(.semibold))
+                if diagnosing { ProgressView().controlSize(.small) }
+                Spacer()
+                if let finished = (diagnosis?["finished_at"] as? NSNumber)?.doubleValue {
+                    Text(TaskTime.stamp(Date(timeIntervalSince1970: finished))).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let problem = diagnoseProblem {
+                Text(problem).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else if diagnosing {
+                Text("A read-only agent is looking into this run. It changes nothing; this can take a few minutes.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else if let report = (diagnosis?["report"] as? String)?.nilIfEmpty ?? (diagnosis?["summary"] as? String) {
+                MarkdownText(source: report).textSelection(.enabled)
+            } else if let reason = diagnosis?["reason"] as? String {
+                Text(reason).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else if status != nil {
+                Text("The diagnosis left no report.").font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.accentColor.opacity(0.07)))
     }
 
     private func loadFull() async {
@@ -155,6 +224,11 @@ struct RunReportSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(shown.color.opacity(0.10)))
         }
+        if let line = shown.evidenceLine {
+            Label(line, systemImage: "questionmark.circle")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
         checksBox
         if shown.detailsExpiredAt != nil {
             Label("The details of this run were removed after the time set in Settings › Privacy. How it ended, when, and its usage are kept.",
@@ -187,7 +261,7 @@ struct RunReportSheet: View {
             let passed = state == "verified"
             let tint: Color = passed ? .green : .orange
             VStack(alignment: .leading, spacing: 6) {
-                Label(passed ? "Checks passed" : "Check failed",
+                Label(passed ? "Checks passed" : state == "unverified" ? "Couldn’t check" : "Check failed",
                       systemImage: passed ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                     .font(.callout.weight(.semibold)).foregroundStyle(tint)
                 ForEach(Array(shown.checks.enumerated()), id: \.offset) { _, check in

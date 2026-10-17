@@ -54,6 +54,19 @@ struct TaskRun: Identifiable {
     var triggerFileName: String? { triggerFile.map { URL(fileURLWithPath: $0).lastPathComponent } }
     /// The usage limit and what the run used (#211); "stopped" names the limit it reached.
     var usageLimit: [String: Any]? { detail?["usage_limit"] as? [String: Any] }
+    /// A run that did not finish (#226): its steps are partial and what it changed elsewhere is unknown.
+    var evidence: [String: Any]? { detail?["evidence"] as? [String: Any] }
+
+    var evidenceLine: String? {
+        guard let evidence else { return nil }
+        var line = "It stopped before it finished, so the steps below are only what was seen"
+        if let tokens = evidence["observed_tokens"] as? Int {
+            line += ", at least \(tokens.formatted()) tokens were used"
+        } else if (evidence["usage"] as? String) == "unavailable" {
+            line += ", its usage was not reported"
+        }
+        return line + ", and whether it changed anything outside this Mac is not known."
+    }
     var skippedCount: Int { raw["skipped_count"] as? Int ?? 0 }
     var exitCode: Int? { raw["exit_code"] as? Int }
     var duration: Double? { raw["duration_s"] as? Double }
@@ -65,7 +78,8 @@ struct TaskRun: Identifiable {
     /// The owner's output checks (#198): "verified" or "failed"; nil when the task has none or the run did not finish.
     var verification: [String: Any]? { raw["verification"] as? [String: Any] }
     var verificationState: String? { verification?["state"] as? String }
-    var checkFailed: Bool { status == "done" && verificationState == "failed" }
+    /// "unverified": a check could not look (a page unreachable, an MCP server not connected, #228).
+    var checkFailed: Bool { status == "done" && (verificationState == "failed" || verificationState == "unverified") }
     var checks: [[String: Any]] { verification?["checks"] as? [[String: Any]] ?? [] }
 
     /// "report.csv is missing"; in Private mode only the outcome is kept.
@@ -75,6 +89,7 @@ struct TaskRun: Identifiable {
     }
 
     static func checkLine(_ check: [String: Any]) -> String {
+        if let kind = check["kind"] as? String, kind == "url" || kind == "tool" { return outsideCheckLine(check) }
         let name = (check["path"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent } ?? "The file"
         if (check["ok"] as? Bool) == true {
             let size = ByteCountFormatter.string(fromByteCount: Int64(check["size"] as? Int ?? 0), countStyle: .file)
@@ -87,6 +102,22 @@ struct TaskRun: Identifiable {
         case "link": return "\(name) is a link, not a file"
         case "not_a_file": return "\(name) is not a file"
         case "unreadable": return "\(name) could not be checked"
+        default: return "\(name) did not pass its check"
+        }
+    }
+
+    /// A page or MCP tool check (#228), by its host or tool name.
+    static func outsideCheckLine(_ check: [String: Any]) -> String {
+        let name = (check["url"] as? String).flatMap { URL(string: $0)?.host } ?? check["tool"] as? String ?? "The check"
+        if (check["ok"] as? Bool) == true { return "\(name) shows what it should" }
+        switch check["problem"] as? String {
+        case "missing_text": return "\(name) doesn't show the expected text"
+        case "status": return "\(name) answered with status \(check["status"] as? Int ?? 0)"
+        case "unreachable": return "\(name) could not be reached"
+        case "server_unavailable": return "\(name)'s MCP server is not connected"
+        case "not_read_only": return "\(name) is not a read-only tool, so it was not used"
+        case "timeout": return "\(name) did not answer in time"
+        case "tool_error": return "\(name) returned an error"
         default: return "\(name) did not pass its check"
         }
     }

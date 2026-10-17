@@ -238,6 +238,10 @@ final class AppState: ObservableObject {
 
     let settings = SettingsStore()
     private var pollTask: Task<Void, Never>?
+    /// Scheduled runs that never started (#225), checked once a minute apart from the main poll.
+    private var scheduleWatchdog = ScheduledTaskWatchdog()
+    private var scheduleWatchdogTask: Task<Void, Never>?
+    private var wakeObserver: NSObjectProtocol?
     /// The poll loop's current wait; cancelling it runs the next poll now.
     private var pollSleepTask: Task<Void, Never>?
     private var securitySemanticsFetchedAt: Date?
@@ -572,7 +576,8 @@ final class AppState: ObservableObject {
             let body: String
             switch run.status {
             case "done" where run.checkFailed:
-                title = "\(name) finished, but its check failed"
+                title = run.verificationState == "unverified" ? "\(name) finished, but couldn’t be checked"
+                    : "\(name) finished, but its check failed"
                 let problem = run.checkProblem ?? "its check failed"
                 body = problem.prefix(1).uppercased() + problem.dropFirst() + ". Details are in Scheduled Tasks."
             case "done":
@@ -876,6 +881,7 @@ final class AppState: ObservableObject {
 
     func startTasks() {
         restartToolActivityStream()
+        startScheduleWatchdog()
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
             var first = true
@@ -892,6 +898,53 @@ final class AppState: ObservableObject {
                 await sleeper.value
                 self.pollSleepTask = nil
             }
+        }
+    }
+
+    private func startScheduleWatchdog() {
+        guard scheduleWatchdogTask == nil else { return }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.scheduleWatchdog.lastWakeAt = Date() }
+        }
+        scheduleWatchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(ScheduledTaskWatchdog.checkEvery * 1_000_000_000))
+                guard let self else { return }
+                await self.checkScheduledRunsStarted()
+            }
+        }
+    }
+
+    /// Asks Mac MCP which runs are past their time without starting; when it does not answer, uses what
+    /// it said was due. Says so once per run and never starts anything itself.
+    private func checkScheduledRunsStarted() async {
+        let now = Date()
+        let result = await taskAPI("dashboard/api/scheduled-tasks/liveness")
+        let alerts: [ScheduledTaskWatchdog.Alert]
+        if result.ok {
+            func items(_ key: String, _ field: String) -> [ScheduledTaskWatchdog.Due] {
+                (result.object[key] as? [[String: Any]] ?? []).compactMap { row in
+                    guard let id = row["id"] as? String, let at = row[field] as? Double else { return nil }
+                    return .init(id: id, name: row["name"] as? String ?? "A scheduled task",
+                                 at: Date(timeIntervalSince1970: at), notify: row["notify"] as? Bool ?? true)
+                }
+            }
+            alerts = scheduleWatchdog.answered(now: now, overdue: items("overdue", "expected_at"),
+                                               dueSoon: items("due_soon", "at"),
+                                               tolerance: result.object["tolerance_s"] as? Double ?? 300)
+        } else {
+            alerts = scheduleWatchdog.unanswered(now: now, intendedRunning: Self.serverIntentIsRunning(), tolerance: 300)
+        }
+        for alert in alerts where alert.task.notify {
+            let clock = alert.task.at.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits))
+            let (title, body): (String, String) = alert.kind == .notStarted
+                ? ("\(alert.task.name) didn't start",
+                   "It was due at \(clock), but Mac MCP's scheduler did not start it. Run it now from Scheduled Tasks.")
+                : ("\(alert.task.name) may not have run",
+                   "It was due at \(clock), but Mac MCP isn't answering.")
+            _ = await AgentNotificationController.shared.scheduleMessage(title: title, body: body)
         }
     }
 

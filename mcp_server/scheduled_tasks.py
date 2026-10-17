@@ -149,6 +149,19 @@ def _db() -> Iterator[sqlite3.Connection]:
                         detail TEXT
                     );
                     CREATE INDEX IF NOT EXISTS runs_by_task ON runs(task_id, started_at DESC);
+                    CREATE TABLE IF NOT EXISTS diagnoses (
+                        id TEXT PRIMARY KEY,
+                        run_id TEXT NOT NULL,
+                        task_id TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        agent_id TEXT,
+                        started_at REAL NOT NULL,
+                        finished_at REAL,
+                        summary TEXT,
+                        report TEXT,
+                        reason TEXT
+                    );
+                    CREATE INDEX IF NOT EXISTS diagnoses_by_run ON diagnoses(run_id, started_at DESC);
                     CREATE TABLE IF NOT EXISTS folder_watch (
                         task_id TEXT PRIMARY KEY,
                         state TEXT NOT NULL,
@@ -224,6 +237,17 @@ def _output_checks(raw: Any, cwd: Optional[str]) -> List[Dict[str, Any]]:
     checks = []
     for item in raw:
         item = item if isinstance(item, dict) else {"path": item}
+        if item.get("url") is not None or item.get("tool") is not None:
+            # A page or one of the owner's read-only MCP tools, checked after the run (#228).
+            from .run_postconditions import CheckError, validate
+            try:
+                check = validate(item)
+            except CheckError as exc:
+                raise TaskError(exc.code, str(exc)) from exc
+            for field in ("url", "contains"):
+                check_dates(str(check.get(field) or ""), "verify_" + field)
+            checks.append(check)
+            continue
         text = _text(item.get("path"), "verify_path", 1024, required=True)
         path = Path(text).expanduser()
         if not path.is_absolute():
@@ -682,6 +706,7 @@ def delete_task(task_id: str) -> Dict[str, Any]:
         found = conn.execute("DELETE FROM tasks WHERE id=?", (task_id,)).rowcount
         conn.execute("DELETE FROM runs WHERE task_id=?", (task_id,))
         conn.execute("DELETE FROM folder_watch WHERE task_id=?", (task_id,))
+        conn.execute("DELETE FROM diagnoses WHERE task_id=?", (task_id,))
     if not found:
         raise TaskError("task_not_found", "That task no longer exists.", 404)
     _changed()
@@ -694,6 +719,43 @@ def due_tasks(now: float) -> List[Dict[str, Any]]:
         rows = conn.execute("SELECT id, definition, next_run_at FROM tasks WHERE paused=0 AND definition IS NOT NULL"
                             " AND next_run_at IS NOT NULL AND next_run_at<=? ORDER BY next_run_at", (now,)).fetchall()
     return [{"id": row["id"], "definition": _load(row["definition"]), "next_run_at": row["next_run_at"]} for row in rows]
+
+
+# A run this long past its time with no start and no skip recorded did not start (#225). The scheduler
+# wakes at least once a minute while tasks are active and records a late run as skipped after two.
+OVERDUE_TOLERANCE_S = 300.0
+
+
+def overdue(now: Optional[float] = None) -> List[Dict[str, Any]]:
+    """Approved, unpaused timed tasks whose run time passed beyond the tolerance and that never started.
+
+    Read from the task store by whoever asks (the HTTP side, the app), not by the scheduler loop,
+    so a scheduler that stopped waking is still noticed."""
+    now = time.time() if now is None else now
+    with _db() as conn:
+        running = _running_ids(conn)
+        rows = conn.execute("SELECT id, definition, next_run_at FROM tasks WHERE paused=0 AND definition IS NOT NULL"
+                            " AND next_run_at IS NOT NULL AND next_run_at<? ORDER BY next_run_at",
+                            (now - OVERDUE_TOLERANCE_S,)).fetchall()
+    out = []
+    for row in rows:
+        definition = _load(row["definition"]) or {}
+        if row["id"] in running or _watches(definition):
+            continue
+        out.append({"id": row["id"], "name": definition.get("name"), "expected_at": row["next_run_at"],
+                    "notify": definition.get("notify", True)})
+    return out
+
+
+def due_soon(now: Optional[float] = None, within_s: float = 6 * 3600) -> List[Dict[str, Any]]:
+    """Timed runs due in the next hours, so the app can still say one was due if Mac MCP stops answering."""
+    now = time.time() if now is None else now
+    with _db() as conn:
+        rows = conn.execute("SELECT id, definition, next_run_at FROM tasks WHERE paused=0 AND definition IS NOT NULL"
+                            " AND next_run_at IS NOT NULL AND next_run_at>=? AND next_run_at<=? ORDER BY next_run_at"
+                            " LIMIT 50", (now, now + within_s)).fetchall()
+    return [{"id": row["id"], "name": (_load(row["definition"]) or {}).get("name"), "at": row["next_run_at"],
+             "notify": (_load(row["definition"]) or {}).get("notify", True)} for row in rows]
 
 
 def earliest_next_run() -> Optional[float]:
@@ -832,6 +894,7 @@ def apply_retention(now: Optional[float] = None) -> None:
 
 def _expire(conn: sqlite3.Connection, now: float) -> None:
     conn.execute("DELETE FROM runs WHERE status!='running' AND started_at<?", (now - RUN_RETENTION_DAYS * 86400,))
+    conn.execute("DELETE FROM diagnoses WHERE run_id NOT IN (SELECT id FROM runs)")  # gone with their run
     _expire_contents(conn, now)
 
 
@@ -845,6 +908,52 @@ def _expire_contents(conn: sqlite3.Connection, now: float) -> None:
         skeleton = run_records.skeleton(_load(row["detail"]))
         conn.execute("UPDATE runs SET summary=NULL, output=NULL, detail=?, details_expired_at=? WHERE id=?",
                      (json.dumps(skeleton) if skeleton else None, now, row["id"]))
+        # A diagnosis quotes the run, so its text goes with the run's contents (#227).
+        conn.execute("UPDATE diagnoses SET summary=NULL, report=NULL WHERE run_id=?", (row["id"],))
+
+
+# ── Diagnoses (#227) ─────────────────────────────────────────────────────────
+
+_DIAGNOSIS_FIELDS = ("id", "run_id", "task_id", "status", "agent_id", "started_at", "finished_at", "summary",
+                     "report", "reason")
+
+
+def diagnosis_for(run_id: str) -> Optional[Dict[str, Any]]:
+    """The latest diagnosis of a run, or None."""
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM diagnoses WHERE run_id=? ORDER BY started_at DESC LIMIT 1",
+                           (run_id,)).fetchone()
+    return {key: row[key] for key in _DIAGNOSIS_FIELDS} if row else None
+
+
+def create_diagnosis(run_id: str, task_id: str, *, status: str, report: Optional[str] = None,
+                     reason: Optional[str] = None, now: Optional[float] = None) -> str:
+    diagnosis_id = _new_id("dgn")
+    now = time.time() if now is None else now
+    report, _, _ = run_records.prepare(report, None, None)
+    with _db() as conn:
+        conn.execute("INSERT INTO diagnoses (id, run_id, task_id, status, started_at, finished_at, report, reason)"
+                     " VALUES (?,?,?,?,?,?,?,?)",
+                     (diagnosis_id, run_id, task_id, status, now, None if status == "running" else now, report, reason))
+    _changed()
+    return diagnosis_id
+
+
+def update_diagnosis(diagnosis_id: str, *, now: Optional[float] = None, **fields: Any) -> None:
+    allowed = {"status", "agent_id", "summary", "report", "reason"}
+    values = {key: value for key, value in fields.items() if key in allowed}
+    if "summary" in values or "report" in values:
+        # Masked for known secrets before it is written, like run contents (#199).
+        summary, report, _ = run_records.prepare(values.get("summary"), values.get("report"), None)
+        values.update({key: value for key, value in (("summary", summary), ("report", report)) if key in values})
+    if values.get("status") not in (None, "running"):
+        values["finished_at"] = time.time() if now is None else now
+    if not values:
+        return
+    with _db() as conn:
+        conn.execute(f"UPDATE diagnoses SET {', '.join(f'{key}=?' for key in values)} WHERE id=?",
+                     (*values.values(), diagnosis_id))
+    _changed()
 
 
 # ── Folder triggers (#193) ───────────────────────────────────────────────────

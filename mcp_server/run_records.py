@@ -33,7 +33,8 @@ _FINGERPRINT_HEX = 24
 _SKELETON_STEP_KEYS = ("kind", "status", "fp")
 # What a run's detail keeps once its contents are gone. Artifacts become a count: their
 # names and paths are contents too.
-_SKELETON_DETAIL_KEYS = ("agent_id", "provider", "model", "outcome", "usage", "private_mode", "steps_fp")
+_SKELETON_DETAIL_KEYS = ("agent_id", "provider", "model", "outcome", "usage", "private_mode", "steps_fp",
+                         "usage_limit", "evidence")
 _key_cache: Dict[str, bytes] = {}
 _key_lock = threading.Lock()
 

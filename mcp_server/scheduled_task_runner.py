@@ -37,6 +37,8 @@ AGENT_POLL_S = 5.0
 # With a usage limit the agent's usage is checked this often, so it stops soon after the limit.
 LIMIT_POLL_S = 2.0
 LIMIT_STOP_WAIT_S = 30.0
+# After the time limit the agent is stopped and given this long to write out what it did (#226).
+CANCEL_SETTLE_S = 10.0
 KILL_GRACE_S = 5.0
 MAX_COUNTED_SKIPS = 500
 REASON_ASLEEP = "Your Mac was asleep"
@@ -307,6 +309,7 @@ def wait_for_agent(agent_id: str, settings: Any, *, deadline: float,
     meter = run_budget.Meter(tools_agents._agent_dir(agent_id) / "stdout.log", provider or "") if usage_limit else None
     stopped: Optional[str] = None
     stop_by = 0.0
+    deadline_hit = False
     while True:
         try:
             state = tools_agents.get_agent(settings, agent_id, result_mode="full")
@@ -321,12 +324,13 @@ def wait_for_agent(agent_id: str, settings: Any, *, deadline: float,
             if stopped:
                 _cancel(settings, agent_id)
                 stop_by = time.time() + LIMIT_STOP_WAIT_S
-        if stopped and time.time() > stop_by:
+        if (stopped or deadline_hit) and time.time() > stop_by:
             break  # asked to stop and still reporting running: the run ends here all the same
-        if time.time() > deadline:
+        if time.time() > deadline and not deadline_hit:
+            # Stopped, then read like any other end: the steps and usage seen so far are kept (#226).
             _cancel(settings, agent_id)
-            return {"status": "timed_out", "reason": "The agent ran past the time limit and was stopped",
-                    "detail": {"agent_id": agent_id}}
+            deadline_hit = True
+            stop_by = time.time() + CANCEL_SETTLE_S
         time.sleep(min(AGENT_POLL_S, LIMIT_POLL_S) if meter is not None else AGENT_POLL_S)
     envelope = state.get("result_envelope") or {}
     report = str((state.get("result_full") or {}).get("text") or state.get("result") or "")
@@ -341,6 +345,12 @@ def wait_for_agent(agent_id: str, settings: Any, *, deadline: float,
     }
     detail.update(_agent_steps(agent_id, report))
     summary = str(envelope.get("summary") or _last_line(report) or "")
+    finished = status == "completed" and envelope.get("outcome") != "failure" and not stopped
+    if not finished:
+        detail["evidence"] = _partial_evidence(agent_id, detail, provider or state.get("provider"))
+    if deadline_hit and status != "completed":
+        return {"status": "timed_out", "reason": "The agent ran past the time limit and was stopped",
+                "summary": summary, "output": report, "detail": detail}
     if meter is not None:
         used = meter.read()
         detail["usage_limit"] = {**usage_limit, "used_tokens": used["tokens"], "used_cost_usd": used["cost_usd"],
@@ -360,6 +370,22 @@ def wait_for_agent(agent_id: str, settings: Any, *, deadline: float,
 
 
 MAX_STEPS_BYTES = 400_000
+
+
+def _partial_evidence(agent_id: str, detail: Dict[str, Any], provider: Optional[str]) -> Dict[str, Any]:
+    """What a run that did not finish can and cannot show: never 'no usage' or 'nothing changed'."""
+    from . import tools_agents
+
+    usage = detail.get("usage") or {}
+    observed = int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+    if not observed and provider:
+        # Some agents total their usage only at the end; count what was reported along the way.
+        observed = int(run_budget.Meter(tools_agents._agent_dir(agent_id) / "stdout.log", provider).read()["tokens"])
+    evidence: Dict[str, Any] = {"steps": "partial", "usage": "partial" if observed else "unavailable"}
+    if observed:
+        evidence["observed_tokens"] = observed
+    evidence["external_effects"] = "unknown"  # a step may have changed something before the stop
+    return evidence
 
 
 def _reported_problem(detail: Dict[str, Any], report: str) -> Optional[str]:
@@ -401,8 +427,13 @@ _MTIME_SLACK_S = 2.0
 
 def check_outputs(checks: List[Dict[str, Any]], started_at: float, now: Optional[float] = None) -> Dict[str, Any]:
     """The owner's expected files, checked by metadata only: never opened, links not followed."""
+    from . import run_postconditions
+
     results = []
     for check in checks:
+        if check.get("kind") in {"url", "tool"}:
+            results.append(run_postconditions.run_check(check, lambda text: store.expand_dates(text, now)))
+            continue
         entry: Dict[str, Any] = {"path": check["path"], "min_bytes": check["min_bytes"],
                                  "written_this_run": check["written_this_run"], "ok": False}
         try:
@@ -430,8 +461,15 @@ def check_outputs(checks: List[Dict[str, Any]], started_at: float, now: Optional
         else:
             entry["ok"] = True
         results.append(entry)
-    return {"state": "verified" if all(item["ok"] for item in results) else "failed",
-            "checks": results, "checked_at": time.time() if now is None else now}
+    # A check that could not look (unreachable, server not connected) leaves the run unverified, never
+    # verified; a check that looked and did not find what it should fails it.
+    if all(item["ok"] for item in results):
+        state = "verified"
+    elif any(not item["ok"] and not item.get("unknown") for item in results):
+        state = "failed"
+    else:
+        state = "unverified"
+    return {"state": state, "checks": results, "checked_at": time.time() if now is None else now}
 
 
 def _verification(run_id: str, definition: Dict[str, Any], status: str, private: bool) -> Optional[Dict[str, Any]]:
@@ -484,6 +522,7 @@ class Scheduler:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self.wakeups = 0
+        self.last_wake_at: Optional[float] = None
         self.folders = folder_triggers.FolderTriggers(self._start_for_file, clock=clock)
 
     # Decisions (pure enough to test with a fake clock and launcher)
@@ -587,6 +626,7 @@ class Scheduler:
             log.exception("scheduled tasks: recovery failed")
         while not self._stop.is_set():
             self.wakeups += 1
+            self.last_wake_at = self.clock()
             try:
                 store.apply_retention()  # also on start: contents expire with no run finishing (#199)
                 self.tick()
@@ -599,6 +639,10 @@ class Scheduler:
 
     def poke(self) -> None:
         self._wake.set()
+
+    def liveness(self) -> Dict[str, Any]:
+        """Whether the loop thread is alive and when it last woke (#225), for observers outside it."""
+        return {"running": bool(self._thread and self._thread.is_alive()), "last_wake_at": self.last_wake_at}
 
     def begin(self) -> None:
         if self._thread and self._thread.is_alive():

@@ -44,7 +44,7 @@ from .policy import (
 )
 from . import privacy_inventory, privacy_policy, schedule_rules
 from . import scheduled_tasks as task_store
-from . import run_budget, scheduled_task_runner
+from . import run_budget, run_diagnosis, scheduled_task_runner
 from .runtime_settings import (
     MEMORY_RETENTION_CHOICES, RUN_DETAIL_RETENTION_CHOICES, USAGE_RETENTION_CHOICES, run_detail_privacy, server_setting,
     update_runtime_setting, usage_privacy,
@@ -878,6 +878,36 @@ def create_dashboard_routes(
         runs = await asyncio.to_thread(task_store.finished_since, since)
         return JSONResponse({"ok": True, "runs": runs, "now": time.time()})
 
+    async def scheduled_task_liveness(request: Request) -> Response:
+        """Runs that never started, checked outside the scheduler loop, and what is due soon (#225)."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        overdue = await asyncio.to_thread(task_store.overdue)
+        due_soon = await asyncio.to_thread(task_store.due_soon)
+        return JSONResponse({"ok": True, "now": time.time(), "tolerance_s": task_store.OVERDUE_TOLERANCE_S,
+                             "scheduler": scheduled_task_runner.scheduler(settings).liveness(),
+                             "overdue": overdue, "due_soon": due_soon})
+
+    async def scheduled_task_diagnose(request: Request) -> Response:
+        """The owner asks a read-only agent why a run went wrong (#227); agents have no tool for this."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        body = await _json_body(request)
+        try:
+            diagnosis = await asyncio.to_thread(run_diagnosis.start, str(body.get("run_id") or ""), settings)
+        except task_store.TaskError as exc:
+            return _task_error(exc)
+        return JSONResponse({"ok": True, "diagnosis": diagnosis})
+
+    async def scheduled_task_diagnosis(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        diagnosis = await asyncio.to_thread(task_store.diagnosis_for, request.query_params.get("run_id", ""))
+        return JSONResponse({"ok": True, "diagnosis": diagnosis})
+
     async def scheduled_task_preview(request: Request) -> Response:
         """The New Task sheet's live sentence: when it runs, the next runs, and what runs a script."""
         denied = _dashboard_guard(request, dashboard_token)
@@ -1557,6 +1587,9 @@ def create_dashboard_routes(
         Route("/dashboard/api/scheduled-tasks/runs", scheduled_task_runs, methods=["GET"]),
         Route("/dashboard/api/scheduled-tasks/run", scheduled_task_run, methods=["GET"]),
         Route("/dashboard/api/scheduled-tasks/finished", scheduled_task_finished, methods=["GET"]),
+        Route("/dashboard/api/scheduled-tasks/liveness", scheduled_task_liveness, methods=["GET"]),
+        Route("/dashboard/api/scheduled-tasks/diagnose", scheduled_task_diagnose, methods=["POST"]),
+        Route("/dashboard/api/scheduled-tasks/diagnosis", scheduled_task_diagnosis, methods=["GET"]),
         Route("/dashboard/api/scheduled-tasks/preview", scheduled_task_preview, methods=["POST"]),
         Route("/dashboard/api/agents/cancel", agent_cancel, methods=["POST"]),
         Route("/dashboard/api/memory", memory_view, methods=["GET"]),

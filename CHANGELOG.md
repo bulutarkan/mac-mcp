@@ -1,5 +1,11 @@
 ## Unreleased
 
+### Scheduled Tasks: know when a run went wrong, and why (#225, #226, #227, #228)
+- **Runs that never started:** the app asks Mac MCP once a minute, outside the scheduler, and says "<task> didn't start" once when a run is more than 5 minutes late; the card shows "Didn't start at 09:00". After the Mac wakes or Mac MCP comes back, the scheduler gets those minutes to catch up first. If Mac MCP stops answering while it should be running, a run that came due gets "<task> may not have run".
+- **A run stopped at its time limit keeps its steps and usage** (they were lost before), and every run that didn't finish says what is partial and that outside effects are unknown.
+- **Checks outside this Mac:** a check can now fetch a URL (a status and, optionally, text, with no headers) or call one of your MCP servers' tools that is read-only by both its own annotation and Mac MCP's risk entry. Late text is looked for twice more; what couldn't be looked at is "Couldn't check", never a pass. Nothing is written or sent again.
+- **Diagnose:** a failed, stopped or check-failed run's report has a Diagnose button. A read-only agent answers with the likely cause, the evidence, what is unknown and the smallest fix, without applying it (10 minutes, 300k tokens where the agent can keep that). Only you can start one; agents have no tool for it. Without the run's contents (private mode, expired) no agent starts.
+
 ### Your own MCP servers (Settings › MCP Servers)
 - Mac MCP now also connects to MCP servers you add: remote ones by URL (Streamable HTTP or SSE, with optional headers) and local ones by command (stdio, with optional env). Paste the `mcpServers` block from Claude Desktop, Cursor or Claude Code to add several at once.
 - Each of their tools becomes a Mac MCP tool named `<server>__<tool>` (e.g. `exa__web_search_exa`), so every AI app and agent connected to Mac MCP can use it, through `tool_discover`/`tool_invoke` or directly in the tool list ("Show in tool list", on by default). Calls pass the same permission profile, scope, Tool Activity, idempotency and error rules as Mac MCP's own tools before they are forwarded.
