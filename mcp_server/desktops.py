@@ -28,6 +28,10 @@ _executable: Optional[str] = None
 
 CHROME_BUNDLE_ID = "com.google.Chrome"
 _CHROME_NAMES = {"chrome", "google chrome", CHROME_BUNDLE_ID.lower()}
+# Launched with no document, TextEdit shows its Open panel instead of a page to write on,
+# and the panel's New Document button does not respond to Accessibility in the background.
+_TEXTEDIT_NAMES = {"textedit", "com.apple.textedit", "/system/applications/textedit.app"}
+_AGENT_DOCUMENTS = Path("~/.mac-mcp/agent-desktop").expanduser()
 
 
 def _helper() -> str:
@@ -90,11 +94,32 @@ def is_chrome(app: str) -> bool:
 def open_on_desktop(space_id: int, app: str, targets: Iterable[str] = ()) -> Dict[str, Any]:
     """Open an app, or files or web addresses with it, straight onto a desktop."""
     items = [str(item) for item in targets if str(item or "").strip()]
+    created: Optional[str] = None
+    if not items and str(app or "").strip().lower() in _TEXTEDIT_NAMES:
+        created = _new_text_document()
+        items = [created]
     if is_chrome(app):
         if len(items) > 1:
             return {"ok": False, "error": "Chrome opens one address per window", "reason_code": "INVALID_ARGUMENT"}
         return _open_chrome_window(int(space_id), items[0] if items else None)
-    return _run(["open", str(int(space_id)), str(app), *items], timeout_s=20.0)
+    result = _run(["open", str(int(space_id)), str(app), *items], timeout_s=20.0)
+    if created:
+        result["created_document"] = created
+    return result
+
+
+def _new_text_document() -> str:
+    """An empty, uniquely named plain-text file for an agent to write in."""
+    _AGENT_DOCUMENTS.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y-%m-%d %H.%M.%S")
+    for suffix in ("", *(f" {n}" for n in range(2, 100))):
+        path = _AGENT_DOCUMENTS / f"Untitled {stamp}{suffix}.txt"
+        try:
+            with path.open("x", encoding="utf-8"):
+                return str(path)
+        except FileExistsError:
+            continue
+    raise RuntimeError("could not create a new document")
 
 
 def _chrome_window_ids(listing: Dict[str, Any]) -> Dict[int, List[int]]:

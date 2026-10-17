@@ -102,6 +102,23 @@ class UnshownDesktopActTests(unittest.TestCase):
         self.assertEqual("NATIVE_HELPER_UNAVAILABLE", result["reason_code"])
 
 
+class PostActionRefreshTests(unittest.TestCase):
+    def test_refresh_reads_as_deep_as_the_observation(self) -> None:
+        # A shallower re-read reported a calculator's display (depth 6) as removed.
+        stored = {"active_app": "Calculator", "app_pid": 4321, "max_depth": 8, "max_children": 40, "window_index": 1,
+                  "nodes": {"w1/1/7": {"element_id": "w1/1/7", "role": "AXButton", "title": "", "description": "7"}}}
+        target = {"app": "Calculator", "pid": 4321, "window_index": 1, "app_handle": "a", "window_handle": "w",
+                  "on_shown_desktop": False}
+        with patch.object(tools_ui, "_get_observation", return_value=stored), \
+             patch.object(tools_ui, "_resolve_action_native_target", return_value=(target, None)), \
+             patch.object(tools_ui, "_resolve_registered_native_target", return_value=("Calculator", 4321, 1, {}, None)), \
+             patch.object(ax_native, "act", return_value={"ok": True, "performed": "AXPress", "effect_observed": True}), \
+             patch.object(tools_ui, "_collect_observation", side_effect=TimeoutError("stop")) as collect:
+            tools_ui.act_ui(load_settings(), [{"type": "click", "element_id": "w1/1/7"}], observation_id="obs",
+                            state_mode="full")
+        self.assertEqual((8, 40), (collect.call_args.kwargs["max_depth"], collect.call_args.kwargs["max_children"]))
+
+
 class NativeActRequestTests(unittest.TestCase):
     def test_act_builds_helper_arguments(self) -> None:
         with patch.object(ax_native, "_executable", return_value="/bin/ax-observe"), \

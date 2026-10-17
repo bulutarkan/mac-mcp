@@ -447,7 +447,21 @@ func spacesBar(_ display: AXUIElement) -> (list: [AXUIElement], add: AXUIElement
 /// Open Mission Control, run `body` on its displays as soon as every desktop bar is filled
 /// in (`spacesPerDisplay`, in SkyLight's display order), retrying while Mission Control is
 /// still settling, and close it right away: it is on screen only while the press happens.
-func withMissionControl(_ spacesPerDisplay: [Int], _ body: ([AXUIElement]) -> Bool) -> (ran: Bool, onScreenMs: Int) {
+/// What Mission Control showed: per display, each desktop button's title and actions, and
+/// whether it offered "add desktop". Returned with a refusal so a failure explains itself.
+func describeMissionControl(_ displays: [AXUIElement]) -> [[String: Any]] {
+    displays.map { display in
+        guard let bar = spacesBar(display) else { return ["spaces_bar": false] }
+        let buttons = bar.list.map { button -> [String: Any] in
+            var names: CFArray?
+            AXUIElementCopyActionNames(button, &names)
+            return ["title": attribute(button, "AXTitle") as? String ?? "", "actions": (names as? [String]) ?? []]
+        }
+        return ["desktops": buttons, "add_button": bar.add != nil]
+    }
+}
+
+func withMissionControl(_ spacesPerDisplay: [Int], _ body: ([AXUIElement]) -> Bool) -> (ran: Bool, onScreenMs: Int, seen: [[String: Any]]) {
     guard AXIsProcessTrusted() else { fail("Accessibility permission is not granted", "ACCESSIBILITY_REQUIRED") }
     guard let send = exported("CoreDockSendNotification", as: CoreDockSendFn.self, from: appServices),
           let dockApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else {
@@ -459,8 +473,11 @@ func withMissionControl(_ spacesPerDisplay: [Int], _ body: ([AXUIElement]) -> Bo
     let started = Date()
     send("com.apple.expose.awake" as CFString, 0)
     var ran = false
-    let deadline = started.addingTimeInterval(2)
+    var seen: [[String: Any]] = []
+    // Mission Control is ready within ~0.1 s; a failure keeps it on screen for at most a second.
+    let deadline = started.addingTimeInterval(1)
     while Date() < deadline {
+        if let displays = missionControlDisplays(dock) { seen = describeMissionControl(displays) }
         if let displays = missionControlDisplays(dock), displays.count == spacesPerDisplay.count,
            zip(displays, spacesPerDisplay).allSatisfy({ display, count in
                guard let bar = spacesBar(display) else { return false }
@@ -476,17 +493,20 @@ func withMissionControl(_ spacesPerDisplay: [Int], _ body: ([AXUIElement]) -> Bo
     if missionControlDisplays(dock) != nil { send("com.apple.expose.awake" as CFString, 0) }
     let closeDeadline = Date().addingTimeInterval(2)
     while Date() < closeDeadline, missionControlDisplays(dock) != nil { usleep(5_000) }
-    return (ran, Int(Date().timeIntervalSince(started) * 1000))
+    return (ran, Int(Date().timeIntervalSince(started) * 1000), seen)
 }
 
 func create(onDisplay displayID: String) -> Never {
     let before = readDisplays()
     guard let index = before.firstIndex(where: { $0.id == displayID }) else { fail("no display has id \(displayID)", "DISPLAY_NOT_FOUND") }
-    let (ran, ms) = withMissionControl(before.map { $0.spaces.count }) { displays in
+    let (ran, ms, seen) = withMissionControl(before.map { $0.spaces.count }) { displays in
         guard let add = spacesBar(displays[index])?.add else { return false }
         return AXUIElementPerformAction(add, "AXPress" as CFString) == .success
     }
-    guard ran else { fail("Mission Control did not offer to add a desktop", "SPACE_CREATE_NOT_APPLIED", ["mission_control_ms": ms]) }
+    guard ran else {
+        fail("Mission Control did not offer to add a desktop", "SPACE_CREATE_NOT_APPLIED",
+             ["mission_control_ms": ms, "mission_control": seen, "expected_desktops": before.map { $0.spaces.count }])
+    }
     let deadline = Date().addingTimeInterval(2)
     var added: [Space] = []
     repeat {
@@ -514,7 +534,7 @@ func remove(_ target: UInt64) -> Never {
         fail("desktop \(target) still has windows", "SPACE_NOT_EMPTY",
              ["windows": own.map { ["window_id": $0.id, "app": $0.app, "title": $0.title] }])
     }
-    let (ran, ms) = withMissionControl(before.map { $0.spaces.count }) { displays in
+    let (ran, ms, seen) = withMissionControl(before.map { $0.spaces.count }) { displays in
         guard let list = spacesBar(displays[index])?.list, position < list.count else { return false }
         let button = list[position]
         var names: CFArray?
@@ -522,7 +542,11 @@ func remove(_ target: UInt64) -> Never {
         guard ((names as? [String]) ?? []).contains("AXRemoveDesktop") else { return false }
         return AXUIElementPerformAction(button, "AXRemoveDesktop" as CFString) == .success
     }
-    guard ran else { fail("Mission Control did not offer to remove that desktop", "SPACE_REMOVE_NOT_APPLIED", ["mission_control_ms": ms]) }
+    guard ran else {
+        fail("Mission Control did not offer to remove that desktop", "SPACE_REMOVE_NOT_APPLIED",
+             ["mission_control_ms": ms, "mission_control": seen, "expected_desktops": before.map { $0.spaces.count },
+              "display_index": index, "desktop_position": position + 1])
+    }
     let deadline = Date().addingTimeInterval(2)
     var gone = false
     repeat {

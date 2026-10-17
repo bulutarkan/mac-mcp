@@ -129,6 +129,24 @@ class HelperWrapperTests(unittest.TestCase):
     def test_move_requires_window_ids(self) -> None:
         self.assertEqual("INVALID_ARGUMENT", desktops.move_windows(43, [])["reason_code"])
 
+    def test_textedit_without_a_document_gets_a_new_file(self) -> None:
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(desktops, "_AGENT_DOCUMENTS", Path(folder)), \
+             patch.object(desktops, "_run", return_value={"ok": True}) as run:
+            result = desktops.open_on_desktop(43, "TextEdit", [])
+            created = result["created_document"]
+            self.assertTrue(Path(created).is_file())
+            self.assertEqual("", Path(created).read_text())
+        self.assertEqual(["open", "43", "TextEdit", created], run.call_args.args[0])
+
+    def test_textedit_with_a_document_opens_it(self) -> None:
+        with patch.object(desktops, "_run", return_value={"ok": True}) as run:
+            result = desktops.open_on_desktop(43, "com.apple.TextEdit", ["/tmp/a.txt"])
+        self.assertNotIn("created_document", result)
+        self.assertEqual(["open", "43", "com.apple.TextEdit", "/tmp/a.txt"], run.call_args.args[0])
+
     def test_non_chrome_apps_use_the_helper_open(self) -> None:
         with patch.object(desktops, "_run", return_value={"ok": True}) as run:
             desktops.open_on_desktop(43, "com.apple.TextEdit", ["/tmp/a.txt"])

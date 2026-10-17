@@ -5973,8 +5973,10 @@ def act_ui(
                 settings,
                 post_app,
                 post_window_index,
-                max_depth=5,
-                max_children=30,
+                # Re-read as deep and wide as the observation acted on: a shallower read
+                # reports every node below its depth as removed.
+                max_depth=int((stored or {}).get("max_depth") or 5),
+                max_children=int((stored or {}).get("max_children") or 30),
                 include_screenshot=effective_screenshot,
                 ocr=False,
                 deadline=deadline,
