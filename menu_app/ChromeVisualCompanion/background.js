@@ -9,7 +9,7 @@ const RECONNECT_MS = Math.max(250, Math.min(Number(CONFIG.reconnect_ms || 1000),
 // While the server is down, wait longer after each failed attempt, up to the alarm period.
 const MAX_RECONNECT_MS = 30000;
 // Capabilities the server may rely on; an older companion simply does not list them.
-const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory', 'dialog_session_hold', 'keys', 'frames'];
+const FEATURES = ['dialogs', 'gestures', 'alarm_reconnect', 'tab_queue', 'dialog_memory', 'dialog_session_hold', 'keys', 'frames', 'open_window'];
 const MAX_GESTURE_STEPS = 80;
 const DIALOG_TEXT_LIMIT = 300;
 let socket = null;
@@ -42,6 +42,32 @@ function send(payload) {
   if (!socket || socket.readyState !== WebSocket.OPEN) return false;
   socket.send(JSON.stringify(payload));
   return true;
+}
+
+// A new window that does not bring Chrome to the front: Chrome activates itself for every
+// window opened from outside (AppleScript, --new-window, a cold launch), which on macOS
+// also switches the person's display to that window's desktop.
+async function handleOpenWindow(message) {
+  const requestId = String(message.request_id || '');
+  const url = String(message.url || '');
+  if (!requestId || (url && !/^https?:\/\//i.test(url))) {
+    send({type: 'result', request_id: requestId, ok: false, error: 'invalid_request'});
+    return;
+  }
+  try {
+    const win = await chrome.windows.create({url: url || undefined, focused: false, type: 'normal'});
+    const tab = win && Array.isArray(win.tabs) ? win.tabs[0] : null;
+    send({
+      type: 'result', request_id: requestId, ok: true,
+      chrome_window_id: win.id, chrome_tab_id: tab ? tab.id : null, focused: win.focused === true,
+      url: (tab && (tab.pendingUrl || tab.url)) || url
+    });
+  } catch (error) {
+    send({
+      type: 'result', request_id: requestId, ok: false,
+      error: 'chrome_windows_create_failed', message: String(error && error.message || error || 'unknown')
+    });
+  }
 }
 
 async function handleOpenTab(message) {
@@ -551,6 +577,7 @@ function connect(trigger) {
     // Only a server that accepted the token resets the backoff.
     if (message && message.type === 'hello_ack') { accepted = true; failedAttempts = 0; return; }
     if (message && message.type === 'open_tab') { void handleOpenTab(message); return; }
+    if (message && message.type === 'open_window') { void handleOpenWindow(message); return; }
     const handlers = {
       execute_js: handleExecuteJs, dispatch_mouse: handleDispatchMouse, set_file_input: handleSetFileInput,
       handle_dialog: handleDialog, gesture: handleGesture

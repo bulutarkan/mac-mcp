@@ -47,6 +47,7 @@ _READ_ONLY_MAC_APP_ACTIONS = frozenset({
     "list_documents",
     "list_panes",
     "list_reminders",
+    "list_desktops",
 })
 _MAX_STEPS = 8
 _MAX_EXPANDED_STEPS = 16

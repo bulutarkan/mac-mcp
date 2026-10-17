@@ -9,6 +9,7 @@
 //
 // Usage: ax_observe (--pid N | --name NAME | --frontmost) --window W
 //                   --max-depth D --max-children C --max-nodes N
+//        ax_observe --mode act --pid N --element ID --op OP ...   (see act())
 //        ax_observe --serve
 //
 // --serve keeps one process for many observations (#185): each stdin line is a JSON
@@ -87,6 +88,90 @@ func attributes(_ element: AXUIElement, _ names: [String]) -> [String: AnyObject
         out[name] = item
     }
     return out
+}
+
+// MARK: Windows on desktops the person is not looking at
+//
+// AXWindows lists only the windows on the desktop each display shows, so a window an agent
+// keeps on a desktop of its own (Mission Control) is invisible to it. Accessibility still
+// answers for such a window when asked by its element id, which a remote token names; the
+// ids are small integers, so the missing windows are found by trying ids until every one
+// the window server reports is matched (the technique yabai and AltTab use).
+
+typealias CreateWithRemoteTokenFn = @convention(c) (CFData) -> Unmanaged<AXUIElement>?
+typealias GetWindowFn = @convention(c) (AXUIElement, UnsafeMutablePointer<UInt32>) -> AXError
+typealias WindowIsOrderedInFn = @convention(c) (Int32, UInt32, UnsafeMutablePointer<UInt8>) -> Int32
+typealias MainConnectionFn = @convention(c) () -> Int32
+
+let axLibrary = dlopen("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices", RTLD_LAZY)
+let skyLight = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight", RTLD_LAZY)
+let createWithRemoteToken = axLibrary.flatMap { dlsym($0, "_AXUIElementCreateWithRemoteToken") }
+    .map { unsafeBitCast($0, to: CreateWithRemoteTokenFn.self) }
+let getWindow = axLibrary.flatMap { dlsym($0, "_AXUIElementGetWindow") }.map { unsafeBitCast($0, to: GetWindowFn.self) }
+let windowIsOrderedIn = skyLight.flatMap { dlsym($0, "SLSWindowIsOrderedIn") }.map { unsafeBitCast($0, to: WindowIsOrderedInFn.self) }
+let mainConnection = skyLight.flatMap { dlsym($0, "SLSMainConnectionID") }.map { unsafeBitCast($0, to: MainConnectionFn.self) }
+
+func windowID(_ window: AXUIElement) -> UInt32 {
+    var id: UInt32 = 0
+    guard let getWindow, getWindow(window, &id) == .success else { return 0 }
+    return id
+}
+
+/// Shown, ordinary windows of a process by window-server id: what the person or an agent
+/// could look at on some desktop. Closed-but-kept and minimized windows are not shown.
+func shownWindowIDs(pid: pid_t) -> Set<UInt32> {
+    guard let windowIsOrderedIn, let mainConnection else { return [] }
+    let connection = mainConnection()
+    let rows = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+    var out = Set<UInt32>()
+    for row in rows {
+        guard (row[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
+              (row[kCGWindowLayer as String] as? Int) == 0,
+              let id = (row[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+              let bounds = row[kCGWindowBounds as String] as? [String: Any],
+              ((bounds["Width"] as? NSNumber)?.doubleValue ?? 0) >= 50,
+              ((bounds["Height"] as? NSNumber)?.doubleValue ?? 0) >= 50 else { continue }
+        var shown: UInt8 = 0
+        if windowIsOrderedIn(connection, id, &shown) == 0, shown != 0 { out.insert(id) }
+    }
+    return out
+}
+
+/// Accessibility elements for shown windows of `pid` that AXWindows left out, in window-id order.
+func offSpaceWindows(pid: pid_t, known: Set<UInt32>) -> [AXUIElement] {
+    guard let createWithRemoteToken else { return [] }
+    var missing = shownWindowIDs(pid: pid).subtracting(known)
+    if missing.isEmpty { return [] }
+    var found: [(UInt32, AXUIElement)] = []
+    // The app's main and focused windows are answered wherever they are. Asking also makes
+    // the app register a window that opened straight onto another desktop: until some
+    // client has touched it, no element id names it and the search below cannot find it.
+    let appElement = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(appElement, 1.0)
+    for name in ["AXMainWindow", "AXFocusedWindow"] {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, name as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { continue }
+        let window = value as! AXUIElement
+        let id = windowID(window)
+        if missing.remove(id) != nil { found.append((id, window)) }
+    }
+    var token = Data(count: 0x14)
+    token.withUnsafeMutableBytes { bytes in
+        bytes.storeBytes(of: UInt32(bitPattern: pid), toByteOffset: 0x0, as: UInt32.self)
+        bytes.storeBytes(of: UInt32(0x636f636f), toByteOffset: 0x8, as: UInt32.self)
+    }
+    for elementID in UInt64(0)..<0x7fff where !missing.isEmpty {
+        token.withUnsafeMutableBytes { $0.storeBytes(of: elementID, toByteOffset: 0xc, as: UInt64.self) }
+        guard let element = createWithRemoteToken(token as CFData)?.takeRetainedValue() else { continue }
+        AXUIElementSetMessagingTimeout(element, 0.5)
+        var role: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, "AXRole" as CFString, &role) == .success,
+              (role as? String) == "AXWindow" else { continue }
+        let id = windowID(element)
+        if missing.remove(id) != nil { found.append((id, element)) }
+    }
+    return found.sorted { $0.0 < $1.0 }.map { $0.1 }
 }
 
 let nodeAttributes = [
@@ -197,7 +282,11 @@ func observe(_ options: [String: String], frontmost: Bool) -> (Int32, String, St
     var windowsValue: CFTypeRef?
     AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString, &windowsValue)
     // System Events lists only real windows (Finder's desktop is an AXScrollArea).
-    let windows = ((windowsValue as? [AXUIElement]) ?? []).filter { text(attributes($0, ["AXRole"])["AXRole"]) == "AXWindow" }
+    let onSpace = ((windowsValue as? [AXUIElement]) ?? []).filter { text(attributes($0, ["AXRole"])["AXRole"]) == "AXWindow" }
+    // Windows on other desktops come after, so the numbers of on-screen windows (the ones
+    // System Events also numbers) never change.
+    let offSpace = offSpaceWindows(pid: app.processIdentifier, known: Set(onSpace.map(windowID)))
+    let windows = onSpace + offSpace
     var names: [String] = []
     var windowRecords: [(Int, AXUIElement, [String])] = []
     for (offset, window) in windows.enumerated() {
@@ -210,6 +299,8 @@ func observe(_ options: [String: String], frontmost: Bool) -> (Int32, String, St
         windowRecords.append((wi, window, [
             "__WINDOW__", String(wi), clean(title), clean(text(a["AXDocument"])), clean(text(a["AXIdentifier"])),
             x, y, w, h, clean(text(a["AXSubrole"])), bool(a["AXFocused"]), bool(a["AXMain"]),
+            // Trailing fields older parsers ignore: on the shown desktop, and the window-server id.
+            offset < onSpace.count ? "true" : "false", String(windowID(window)),
         ]))
     }
 
@@ -240,6 +331,137 @@ func observe(_ options: [String: String], frontmost: Bool) -> (Int32, String, St
     return (0, out, "")
 }
 
+// MARK: Acting on a window no display shows
+//
+// System Events reaches only windows on a shown desktop, so mac_act sends element-bound
+// Accessibility actions for a window on another desktop (an agent's own) here instead:
+//   --mode act --pid N --element wW/i/j --op press|action|set_text [--name AXName]
+//   [--text T --replace true|false]
+// Windows are numbered as in observe() (shown desktop first, then the others), and each
+// path step is an AXChildren index, so an element_id from an observation names the same
+// element. The answer is JSON: whether it ran, and what changed.
+
+/// Every window of the app in observe()'s order.
+func allWindows(_ app: NSRunningApplication) -> [AXUIElement] {
+    let appElement = AXUIElementCreateApplication(app.processIdentifier)
+    AXUIElementSetMessagingTimeout(appElement, 2.0)
+    var windowsValue: CFTypeRef?
+    AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString, &windowsValue)
+    let onSpace = ((windowsValue as? [AXUIElement]) ?? []).filter { text(attributes($0, ["AXRole"])["AXRole"]) == "AXWindow" }
+    return onSpace + offSpaceWindows(pid: app.processIdentifier, known: Set(onSpace.map(windowID)))
+}
+
+func resolve(_ elementID: String, in windows: [AXUIElement]) -> AXUIElement? {
+    let parts = elementID.split(separator: "/").map(String.init)
+    guard let first = parts.first, first.hasPrefix("w"), let wi = Int(first.dropFirst()), wi >= 1, wi <= windows.count else {
+        return nil
+    }
+    var element = windows[wi - 1]
+    for part in parts.dropFirst() {
+        guard let index = Int(part), index >= 1 else { return nil }
+        let children = (attributes(element, ["AXChildren"])["AXChildren"] as? [AXUIElement]) ?? []
+        guard index <= children.count else { return nil }
+        element = children[index - 1]
+    }
+    return element
+}
+
+/// A cheap summary of a window's visible structure and values, to tell whether an action did anything.
+func fingerprint(_ element: AXUIElement, depth: Int = 0, budget: inout Int) -> String {
+    if budget <= 0 || depth > 8 { return "" }
+    budget -= 1
+    let a = attributes(element, ["AXRole", "AXTitle", "AXValue", "AXSelected", "AXEnabled", "AXChildren"])
+    var out = "\(text(a["AXRole"]))|\(text(a["AXTitle"]))|\(text(a["AXValue"]).prefix(200))|\(bool(a["AXSelected"]))|\(bool(a["AXEnabled"]))"
+    let children = (a["AXChildren"] as? [AXUIElement]) ?? []
+    out += "[\(children.count)]"
+    for child in children.prefix(40) { out += "(" + fingerprint(child, depth: depth + 1, budget: &budget) + ")" }
+    return out
+}
+
+func windowFingerprint(_ app: NSRunningApplication, _ elementID: String) -> String {
+    guard let windowPart = elementID.split(separator: "/").first, let window = resolve(String(windowPart), in: allWindows(app)) else {
+        return ""
+    }
+    var budget = 400
+    return fingerprint(window, budget: &budget)
+}
+
+func act(_ options: [String: String]) -> (Int32, String, String) {
+    guard AXIsProcessTrusted() else { return (3, "", "Accessibility permission is not granted (-25211)") }
+    guard let pidText = options["--pid"], let pid = Int32(pidText), let app = NSRunningApplication(processIdentifier: pid) else {
+        return (4, "", "Target application not found (-1728)")
+    }
+    let elementID = options["--element"] ?? ""
+    let op = options["--op"] ?? ""
+    func answer(_ object: [String: Any]) -> (Int32, String, String) {
+        let data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
+        return (0, String(decoding: data, as: UTF8.self), "")
+    }
+    guard let element = resolve(elementID, in: allWindows(app)) else {
+        return answer(["ok": false, "reason_code": "STALE_ELEMENT_PATH", "error": "\(elementID) no longer exists; observe again"])
+    }
+    AXUIElementSetMessagingTimeout(element, 5.0)
+    // A path names a position, and positions shift when the app rearranges its window (a
+    // calculator's AC becoming C moves every key): act only on the element that was observed.
+    let current = attributes(element, ["AXRole", "AXTitle", "AXDescription", "AXRoleDescription"])
+    var currentDescription = text(current["AXDescription"])
+    if currentDescription.isEmpty { currentDescription = text(current["AXRoleDescription"]) }
+    let expected: [(String, String, String)] = [
+        ("--expect-role", "role", text(current["AXRole"])),
+        ("--expect-title", "title", clean(text(current["AXTitle"]))),
+        ("--expect-description", "description", clean(currentDescription)),
+    ]
+    for (option, label, actual) in expected {
+        if let wanted = options[option], wanted != actual {
+            return answer(["ok": false, "reason_code": "STALE_ELEMENT_PATH",
+                           "error": "\(elementID) is now a different element (\(label) '\(actual)', observed '\(wanted)'); observe again"])
+        }
+    }
+    switch op {
+    case "press", "action":
+        let name = op == "press" ? "AXPress" : (options["--name"] ?? "")
+        var names: CFArray?
+        AXUIElementCopyActionNames(element, &names)
+        guard ((names as? [String]) ?? []).contains(name) else {
+            return answer(["ok": false, "reason_code": "ACCESSIBILITY_ACTION_UNAVAILABLE",
+                           "error": "\(elementID) does not offer \(name)", "actions": (names as? [String]) ?? []])
+        }
+        let before = windowFingerprint(app, elementID)
+        let status = AXUIElementPerformAction(element, name as CFString)
+        guard status == .success else {
+            return answer(["ok": false, "reason_code": "ACCESSIBILITY_ACTION_FAILED", "error": "\(name) failed (\(status.rawValue))"])
+        }
+        // Let the app react, then compare; a press that closes or replaces the window also counts.
+        var changed = false
+        let deadline = Date().addingTimeInterval(1.0)
+        repeat {
+            usleep(80_000)
+            changed = windowFingerprint(app, elementID) != before
+        } while !changed && Date() < deadline
+        return answer(["ok": true, "performed": name, "effect_observed": changed])
+    case "set_text":
+        let replace = (options["--replace"] ?? "true") == "true"
+        let attribute = replace ? "AXValue" : "AXSelectedText"
+        var settable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(element, attribute as CFString, &settable) == .success, settable.boolValue else {
+            return answer(["ok": false, "reason_code": "SEMANTIC_ATTRIBUTE_UNAVAILABLE", "error": "\(attribute) cannot be set on \(elementID)"])
+        }
+        let wanted = options["--text"] ?? ""
+        let before = text(attributes(element, ["AXValue"])["AXValue"])
+        let status = AXUIElementSetAttributeValue(element, attribute as CFString, wanted as CFString)
+        guard status == .success else {
+            return answer(["ok": false, "reason_code": "SEMANTIC_TEXT_WRITE_FAILED", "error": "\(attribute) write failed (\(status.rawValue))"])
+        }
+        let after = text(attributes(element, ["AXValue"])["AXValue"])
+        // Replacing must leave exactly the text; inserting must leave it somewhere in the value.
+        let verified = replace ? after == wanted : (after != before && after.contains(wanted))
+        return answer(["ok": verified, "attribute": attribute, "effect_observed": after != before, "verified": verified]
+            .merging(verified ? [:] : ["reason_code": "ACTION_NO_EFFECT", "error": "the text did not read back as written"]) { a, _ in a })
+    default:
+        return (2, "", "unknown op \(op)")
+    }
+}
+
 /// --serve: one JSON request per stdin line, one JSON answer per stdout line, until stdin closes.
 func serve() -> Never {
     while let line = readLine(strippingNewline: true) {
@@ -260,7 +482,7 @@ func answer(_ line: String) {
         // that never runs it would keep the list from its launch. Let pending updates in.
         RunLoop.current.run(mode: .default, before: Date())
         let (options, frontmost) = parseArguments(args)
-        let (code, out, err) = observe(options, frontmost: frontmost)
+        let (code, out, err) = options["--mode"] == "act" ? act(options) : observe(options, frontmost: frontmost)
         response["code"] = Int(code)
         response["out"] = out
         response["err"] = err
@@ -274,7 +496,7 @@ func answer(_ line: String) {
 let arguments = Array(CommandLine.arguments.dropFirst())
 if arguments.first == "--serve" { serve() }
 let (cliOptions, cliFrontmost) = parseArguments(arguments)
-let (exitCode, output, errorText) = observe(cliOptions, frontmost: cliFrontmost)
+let (exitCode, output, errorText) = cliOptions["--mode"] == "act" ? act(cliOptions) : observe(cliOptions, frontmost: cliFrontmost)
 if exitCode != 0 {
     FileHandle.standardError.write((errorText + "\n").data(using: .utf8)!)
     exit(exitCode)

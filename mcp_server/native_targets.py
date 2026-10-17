@@ -235,6 +235,7 @@ def public_window_rows(metadata: Dict[str, Any]) -> list[Dict[str, Any]]:
             "window_handle": row.get("window_handle"),
             "identity_kind": row.get("identity_kind"),
             "identity_status": row.get("identity_status"),
+            **({"on_shown_desktop": row["on_shown_desktop"]} if "on_shown_desktop" in row else {}),
         })
     return public
 

@@ -151,6 +151,7 @@ def ensure_chrome_companion_config(runtime_root: Optional[Path] = None) -> Optio
 # version number matches (same-version checkpoints add features too).
 EXPECTED_COMPANION_FEATURES = frozenset({
     "dialogs", "gestures", "alarm_reconnect", "tab_queue", "dialog_memory", "dialog_session_hold", "keys", "frames",
+    "open_window",
 })
 
 
@@ -301,6 +302,11 @@ class ChromeBackgroundBridge:
 
     def request_open_tab(self, url: str, *, timeout_s: float = 6.0) -> Dict[str, Any]:
         return self._request("open_tab", {"url": str(url)}, timeout_s=timeout_s)
+
+    def request_open_window(self, url: Optional[str] = None, *, timeout_s: float = 6.0) -> Dict[str, Any]:
+        """A new Chrome window that does not take focus (a new tab page when url is empty)."""
+        self.require("open_window")
+        return self._request("open_window", {"url": str(url or "")}, timeout_s=timeout_s)
 
     def request_execute_js(
         self, chrome_tab_id: str | int, js: str, *, timeout_s: float = 20.0, frame: Optional[str] = None,

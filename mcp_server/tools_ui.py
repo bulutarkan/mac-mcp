@@ -390,6 +390,10 @@ def _parse_observation(raw: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
                 "subrole": _ax_text(fields[9]),
                 "focused": _parse_bool(fields[10]),
                 "main": _parse_bool(fields[11]),
+                # The native observer also lists windows on desktops no display shows
+                # (an agent's own desktop); System Events cannot reach those.
+                **({"on_shown_desktop": _parse_bool(fields[12]), "window_id": _parse_number(fields[13])}
+                   if len(fields) >= 14 else {}),
             })
             continue
         if fields[0] == "__BUDGET__":
@@ -4887,6 +4891,7 @@ def _resolve_action_native_target(
         )
         if error is not None:
             return None, error
+        window_row = _window_by_handle(metadata or {}, str(effective_window_handle)) or {}
         return {
             "app": target_app,
             "pid": target_pid,
@@ -4894,6 +4899,8 @@ def _resolve_action_native_target(
             "app_handle": (metadata or {}).get("app_handle") or effective_app_handle,
             "window_handle": effective_window_handle,
             "bundle_id": (metadata or {}).get("bundle_id") or "",
+            # False for a window on a desktop no display shows (an agent's own desktop).
+            "on_shown_desktop": window_row.get("on_shown_desktop", True),
         }, None
 
     if effective_app_handle:
@@ -4919,6 +4926,102 @@ def _resolve_action_native_target(
         retryable=True,
         observe_again=True,
     )
+
+
+_UNSHOWN_DESKTOP_ACTIONS_TEXT = (
+    "This window is on a desktop no display shows (an agent's own desktop), where only element-bound "
+    "Accessibility actions work: click (single left click; a right click shows its menu), "
+    "accessibility_action/menu with an AX name, and type/paste in the default semantic input mode."
+)
+
+
+def _act_on_unshown_desktop(
+    target: Dict[str, Any],
+    action_type: str,
+    action: Dict[str, Any],
+    node: Optional[Dict[str, Any]],
+    original_element_id: Optional[str],
+    resolved_element_id: Optional[str],
+    index: int,
+    preserve_focus: bool,
+) -> Dict[str, Any]:
+    """One mac_act action on a window System Events cannot reach, through the native helper.
+
+    Such a window is never on screen, so nothing here can take focus or reach the person:
+    keyboard, drag and coordinate input, which go to whatever is in front, are refused."""
+    started = time.perf_counter()
+    result: Dict[str, Any] = {
+        "index": index, "type": action_type, "element_id": original_element_id,
+        "target_app": target.get("app"), "target_bundle_id": target.get("bundle_id") or "",
+        "effect_kind": _native_action_effect_kind(action_type),
+        "app_handle": target.get("app_handle"), "window_handle": target.get("window_handle"),
+        "resolved_window_index": target.get("window_index"), "focus_mode": "background_ax",
+        "preserve_focus": bool(preserve_focus), "on_shown_desktop": False,
+    }
+    if resolved_element_id != original_element_id:
+        result["resolved_element_id"] = resolved_element_id
+
+    def finish(**fields: Any) -> Dict[str, Any]:
+        result.update(fields)
+        result["duration_ms"] = int((time.perf_counter() - started) * 1000)
+        return result
+
+    def unsupported() -> Dict[str, Any]:
+        return finish(ok=False, reason_code="UNSHOWN_DESKTOP_ACTION_UNSUPPORTED", error="unshown_desktop_action_unsupported",
+                      message=_UNSHOWN_DESKTOP_ACTIONS_TEXT, automatic_retry=False)
+
+    if resolved_element_id is None:
+        return unsupported()
+    op, name, text, replace = "", None, None, True
+    if action_type == "click":
+        count = int(action.get("click_count", 1))
+        button = str(action.get("button", "left")).lower()
+        if count != 1 or button not in {"left", "right"}:
+            return unsupported()
+        op, name = ("press", None) if button == "left" else ("action", "AXShowMenu")
+    elif action_type in {"action", "accessibility_action", "menu"}:
+        name = str(action.get("name", "")).strip()
+        if not re.fullmatch(r"AX[A-Za-z0-9]+", name):
+            return finish(ok=False, reason_code="ACCESSIBILITY_ACTION_INVALID", automatic_retry=False,
+                          message="name must be an Accessibility action such as AXPress or AXShowMenu")
+        op = "action"
+    elif action_type in {"type", "type_text", "paste"}:
+        if _native_input_mode(action) == "foreground":
+            return unsupported()
+        text = action.get("text", "")
+        if not isinstance(text, str) or len(text) > _MAX_TEXT_CHARS:
+            return finish(ok=False, reason_code="INVALID_TEXT", automatic_retry=False,
+                          message=f"text must be a string of at most {_MAX_TEXT_CHARS} characters")
+        op, replace = "set_text", action_type != "paste" and bool(action.get("clear", True))
+    else:
+        return unsupported()
+
+    expect = None
+    if isinstance(node, dict):
+        expect = {"role": node.get("role"), "title": node.get("title"), "description": node.get("description")}
+    answer = ax_native.act(
+        app_pid=int(target.get("pid") or 0), element_id=str(resolved_element_id), op=op, name=name,
+        text=text, replace=replace, expect=expect,
+    )
+    if answer is None:
+        return finish(ok=False, reason_code="NATIVE_HELPER_UNAVAILABLE", automatic_retry=False,
+                      message="The native Accessibility helper is unavailable, and System Events cannot reach "
+                              "a window on a desktop no display shows.")
+    if not answer.get("ok"):
+        return finish(ok=False, reason_code=answer.get("reason_code") or "ACTION_FAILED", automatic_retry=False,
+                      observe_again=True, message=str(answer.get("error") or "the action did not happen"))
+    effect = bool(answer.get("effect_observed"))
+    if op == "set_text":
+        return finish(ok=True, effect_observed=True, verification="native_value_readback",
+                      message=f"text {'replace' if replace else 'insert'} completed via {answer.get('attribute')} "
+                              "on a desktop no display shows")
+    if not effect and _native_verification_required(action_type, resolved_element_id):
+        return finish(ok=False, reason_code="ACTION_NO_EFFECT", error="action_no_effect", automatic_retry=False,
+                      observe_again=True, effect_observed=False, verification="native_window_unchanged",
+                      message="action executed but the window did not change")
+    return finish(ok=True, effect_observed=effect,
+                  verification="native_window_changed" if effect else "native_window_unchanged",
+                  message=f"{answer.get('performed')} completed on a desktop no display shows")
 
 
 def _risky_refusal(element_id: Any, index: int, done: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -5090,7 +5193,13 @@ def act_ui(
                 return blocked
             last_target = target
 
-            human_guard = _delegated_native_human_guard(target, deadline)
+            # A window on a desktop no display shows is not one the person can be using, and
+            # actions there never take focus, so the person working in the same app elsewhere
+            # does not block it.
+            human_guard = (
+                None if target.get("on_shown_desktop") is False
+                else _delegated_native_human_guard(target, deadline)
+            )
             if human_guard is not None:
                 reason_code = str(
                     human_guard.get("reason_code") or "HUMAN_ACTIVE_RESOURCE"
@@ -5134,6 +5243,25 @@ def act_ui(
                     original_element_id, int(target["window_index"])
                 )
                 resolved_action["element_id"] = resolved_element_id
+
+            if target.get("on_shown_desktop") is False:
+                result = _act_on_unshown_desktop(
+                    target, action_type, resolved_action, node, original_element_id, resolved_element_id,
+                    index, preserve_focus,
+                )
+                results.append(result)
+                delta_structural_refresh = True
+                delta_refresh_reasons.append("unshown_desktop_action")
+                if not result.get("ok"):
+                    response = {
+                        "ok": False, "active_app": target.get("app"), "app_handle": target.get("app_handle"),
+                        "window_handle": target.get("window_handle"), "actions": results,
+                        "reason_code": result.get("reason_code"),
+                    }
+                    if result.get("automatic_retry") is False:
+                        response["automatic_retry"] = False
+                    return response
+                continue
 
             handoff_id = str(resolved_action.get("handoff_id") or "").strip() or None
             handoff_payload: Optional[Dict[str, Any]] = None

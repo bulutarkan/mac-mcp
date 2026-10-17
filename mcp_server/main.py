@@ -1412,7 +1412,7 @@ def create_app():
         name="mac_app",
         title="Use semantic first-party macOS app adapter",
         description=(
-            "Use typed semantic adapters for Finder, Notes, Mail, Calendar, Reminders, Contacts, Shortcuts, Preview, System Settings, Messages and Xcode. "
+            "Use typed semantic adapters for Finder, Notes, Mail, Calendar, Reminders, Contacts, Shortcuts, Preview, System Settings, Messages, Xcode and Mission Control. "
             "Common action=capabilities reports app-specific actions; app='all' lists every app's support with the "
             "reliable path per task (Slack and VS Code use generic AX). Messages: find_chats (query matches chat name, "
             "person or handle; message text is not exposed)|send_message (body, plus item_id = a chat_id from find_chats "
@@ -1447,6 +1447,13 @@ def create_app():
             "Data actions return the item's stable id and a read-back verification; a replayed create returns the "
             "existing item instead of a duplicate, and an uncertain result says outcome_unknown and must not be retried blindly. "
             "Preview: list_documents|open_document. System Settings: list_panes|open_pane. "
+            "Mission Control (desktops): only when the owner asks you to work on a separate desktop or in your own "
+            "workspace; otherwise work alongside them as usual. list_desktops (each display's desktops with the "
+            "apps on each, which one is on screen, which are empty; pick an empty desktop that is not on screen)|"
+            "create_desktop (item_id = display id)|remove_desktop (item_id = desktop id; only an empty desktop not "
+            "on screen)|open_on_desktop (item_id = desktop id, target_app = app name or bundle id, optional path or "
+            "url: the app's new window opens straight on that desktop without showing on the owner's screens or "
+            "taking focus; Chrome needs its Mac MCP companion)|move_to_desktop (item_id, window_ids). "
             "Unsupported apps/actions return an explicit mac_observe/mac_act fallback; no generic AX action runs automatically. "
             "Mutating/open adapter actions preserve the user's current focus by default. preserve_focus=false is foreground intent only and fails closed for normal MCP/model calls; only a trusted local-user foreground capability can authorize it. "
             "Use item_id returned by find/list actions for deterministic open actions when available."
@@ -1488,6 +1495,9 @@ def create_app():
         flagged: Optional[bool] = None,
         move_to: Optional[str] = None,
         attachments: Optional[List[str]] = None,
+        target_app: Optional[str] = None,
+        url: Optional[str] = None,
+        window_ids: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         return _log(
             audit_logger,
@@ -1528,6 +1538,9 @@ def create_app():
                 flagged=flagged,
                 move_to=move_to,
                 attachments=attachments,
+                target_app=target_app,
+                url=url,
+                window_ids=window_ids,
             ),
         )
 

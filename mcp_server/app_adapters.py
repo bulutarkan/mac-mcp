@@ -28,6 +28,7 @@ from .app_adapter_core import (  # noqa: F401  (re-exported: tests and app_adapt
     _plain_text, _run, _single_line,
 )
 from . import app_adapters_more as more
+from . import desktops
 _ADAPTER_VERSION = 1
 _MAX_LIMIT = 25
 _DEFAULT_LIMIT = 10
@@ -49,6 +50,10 @@ _APP_ALIASES = {
     "contacts": "Contacts",
     "address book": "Contacts",
     "shortcuts": "Shortcuts",
+    "mission control": "Mission Control",
+    "desktops": "Mission Control",
+    "desktop": "Mission Control",
+    "spaces": "Mission Control",
 }
 
 _ACTIONS = {
@@ -63,6 +68,7 @@ _ACTIONS = {
     "Xcode": ("list_workspaces",),
     "Contacts": ("find_contacts",),
     "Shortcuts": ("list_shortcuts", "run_shortcut"),
+    "Mission Control": ("list_desktops", "create_desktop", "remove_desktop", "open_on_desktop", "move_to_desktop"),
 }
 
 _READ_ACTIONS = {
@@ -80,6 +86,7 @@ _READ_ACTIONS = {
     "plan_day",
     "find_contacts",
     "list_shortcuts",
+    "list_desktops",
 }
 
 # Change app data through the app's own scripting model; they never drive the UI,
@@ -94,6 +101,9 @@ _RUN_TIMEOUT_S = 120.0
 # Reach other people through the app's scripting model; the person confirms each
 # one in a native panel unless they turned that off (send_approval).
 _SEND_ACTIONS = {"send_mail", "send_message"}
+# Work on desktops the person is not looking at (or Mission Control for a moment) and never
+# take focus, so a person using some app's window does not block them.
+_DESKTOP_ACTIONS = {"create_desktop", "remove_desktop", "open_on_desktop", "move_to_desktop"}
 
 
 # Apps people ask for that have no first-party adapter yet (#129). Each entry
@@ -2041,6 +2051,44 @@ end tell'''
     return result
 
 
+def _mission_control(
+    action: str, *, item_id: Optional[str], target_app: Optional[str], path: Optional[str],
+    url: Optional[str], window_ids: Optional[List[int]],
+) -> Dict[str, Any]:
+    """Desktops for an agent the owner asked to work apart; desktops.py does the work."""
+    def space_id() -> int:
+        try:
+            return int(str(item_id or "").strip())
+        except ValueError:
+            raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID",
+                                  f"{action} requires item_id = a desktop id from list_desktops.") from None
+
+    if action == "list_desktops":
+        result = desktops.list_desktops()
+    elif action == "create_desktop":
+        display = str(item_id or "").strip()
+        if not display:
+            raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID",
+                                  "create_desktop requires item_id = a display id from list_desktops.")
+        result = desktops.create_desktop(display)
+    elif action == "remove_desktop":
+        result = desktops.remove_desktop(space_id())
+    elif action == "open_on_desktop":
+        if not str(target_app or "").strip():
+            raise AppAdapterError("APP_ADAPTER_ARGUMENT_INVALID",
+                                  "open_on_desktop requires target_app (an app name or bundle id).")
+        targets = [str(Path(path).expanduser()) if path else "", str(url or "")]
+        result = desktops.open_on_desktop(space_id(), str(target_app), [item for item in targets if item])
+    else:
+        result = desktops.move_windows(space_id(), window_ids or [])
+    if not result.get("ok"):
+        extra = {key: value for key, value in result.items() if key not in {"ok", "error", "reason_code"}}
+        raise AppAdapterError(str(result.get("reason_code") or "DESKTOPS_FAILED"),
+                              str(result.get("error") or "The desktop change did not happen."), **extra)
+    # Every change is read back by the helper before it answers ok.
+    return {**result, "ok": True, **({} if action == "list_desktops" else {"verified": True})}
+
+
 def mac_app(
     settings: Settings,
     *,
@@ -2078,6 +2126,9 @@ def mac_app(
     flagged: Optional[bool] = None,
     move_to: Optional[str] = None,
     attachments: Optional[List[str]] = None,
+    target_app: Optional[str] = None,
+    url: Optional[str] = None,
+    window_ids: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     canonical = normalize_app_name(app)
     normalized_action = _normalized_action(action)
@@ -2128,7 +2179,7 @@ def mac_app(
                      "shortcut is allowed in Settings › Apps.",
         }
 
-    if normalized_action not in _READ_ACTIONS | _DATA_WRITE_ACTIONS | _SEND_ACTIONS | _RUN_ACTIONS:
+    if normalized_action not in _READ_ACTIONS | _DATA_WRITE_ACTIONS | _SEND_ACTIONS | _RUN_ACTIONS | _DESKTOP_ACTIONS:
         human_guard = native_app_human_takeover(canonical)
         if human_guard is not None:
             reason_code = str(
@@ -2301,6 +2352,10 @@ def mac_app(
                 _settings_list(limit=bounded, timeout_s=timeout)
                 if normalized_action == "list_panes"
                 else _settings_open(item_id, query, exact=exact, preserve_focus=preserve_focus, timeout_s=timeout)
+            )
+        elif canonical == "Mission Control":
+            payload = _mission_control(
+                normalized_action, item_id=item_id, target_app=target_app, path=path, url=url, window_ids=window_ids,
             )
         else:  # pragma: no cover - canonical registry is closed above.
             return _fallback(canonical, normalized_action, "Adapter implementation is unavailable.")

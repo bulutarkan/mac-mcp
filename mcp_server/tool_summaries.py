@@ -79,7 +79,7 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
     ),
     "mac_app": (
         "Typed adapters: Finder, Notes, Mail, Calendar, Reminders, Contacts, Shortcuts, Preview, System Settings, "
-        "Messages, Xcode; prefer them to UI control. Sends ask the person first. action=capabilities lists actions."
+        "Messages, Xcode, Mission Control; prefer them to UI control. Sends ask first. action=capabilities lists actions."
     ),
     "computer_plan": (
         "One bounded macOS/browser plan in a call. Step: {id:'a', tool:'mac_app', arguments:{...}}; "

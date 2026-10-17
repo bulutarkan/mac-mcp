@@ -26,7 +26,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import swift_build
 from .tool_cancellation import (
@@ -245,6 +245,50 @@ def observe(
         *target, "--window", str(int(window_index)), "--max-depth", str(int(max_depth)),
         "--max-children", str(int(max_children)), "--max-nodes", str(int(max_nodes)),
     ]
+    return _call(executable, args, timeout_s)
+
+
+def act(
+    *,
+    app_pid: int,
+    element_id: str,
+    op: str,
+    name: Optional[str] = None,
+    text: Optional[str] = None,
+    replace: bool = True,
+    expect: Optional[Dict[str, str]] = None,
+    timeout_s: float = 10.0,
+) -> Optional[Dict[str, Any]]:
+    """Run one element-bound Accessibility action natively (press, a named action, or a text
+    write), for windows System Events cannot reach: those on a desktop no display shows.
+
+    `expect` holds the observed role/title/description; the helper refuses an element that
+    no longer matches. Returns the helper's JSON answer, or None when the helper is unavailable."""
+    executable = _executable()
+    if executable is None:
+        return None
+    args = ["--mode", "act", "--pid", str(int(app_pid)), "--element", str(element_id), "--op", str(op)]
+    if name:
+        args += ["--name", str(name)]
+    if text is not None:
+        args += ["--text", str(text), "--replace", "true" if replace else "false"]
+    for key, value in (expect or {}).items():
+        if value is not None:
+            args += [f"--expect-{key}", str(value)]
+    answer = _call(executable, args, timeout_s)
+    if answer is None:
+        return None
+    ok, out, error = answer
+    if not ok:
+        return {"ok": False, "reason_code": "NATIVE_ACTION_TIMEOUT", "error": error}
+    try:
+        parsed = json.loads(out)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _call(executable: str, args: List[str], timeout_s: float) -> Optional[Tuple[bool, str, str]]:
     cancellation_checkpoint()
     limit = max(0.5, float(timeout_s))
     if _worker_enabled():
