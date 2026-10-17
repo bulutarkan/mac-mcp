@@ -157,12 +157,18 @@ def _vector_text(parsed: Dict[str, Any]) -> str:
     return "\n".join([parsed["name"], parsed["description"], parsed["body"]])
 
 
-def _upsert(conn: sqlite3.Connection, parsed: Dict[str, Any], *, managed: bool, allow_start: bool = False) -> None:
+def _upsert(
+    conn: sqlite3.Connection, parsed: Dict[str, Any], *, managed: bool,
+    allow_start: bool = False, vector_override: Optional[Tuple[str, List[float]]] = None,
+) -> None:
     path = Path(parsed["location"])
     stat = path.stat()
     digest = hashlib.sha256(parsed["content"].encode("utf-8")).hexdigest()
-    backend, _, vectors = embeddings.semantic_vectors([_vector_text(parsed)], allow_start=allow_start)
-    vector = vectors[0]
+    if vector_override is None:
+        backend, _, vectors = embeddings.semantic_vectors([_vector_text(parsed)], allow_start=allow_start)
+        vector = vectors[0]
+    else:
+        backend, vector = vector_override
     old = conn.execute("SELECT location FROM skills WHERE name=?", (parsed["name"],)).fetchone()
     if old:
         conn.execute("DELETE FROM skill_fts WHERE name=?", (parsed["name"],))
@@ -183,6 +189,24 @@ def _upsert(conn: sqlite3.Connection, parsed: Dict[str, Any], *, managed: bool, 
         (parsed["name"], parsed["description"], parsed["body"]),
     )
     conn.commit()
+
+
+def _upsert_batch(conn: sqlite3.Connection, records: Sequence[Tuple[Dict[str, Any], bool]], *, allow_start: bool) -> None:
+    """Keep imported CLI skill indexing cheap; native managed skills keep their existing embeddings."""
+    managed_records = [(parsed, managed) for parsed, managed in records if managed]
+    for parsed, managed in records:
+        if not managed:
+            _upsert(
+                conn, parsed, managed=False,
+                vector_override=(embeddings.FEATURE_VECTOR_BACKEND, embeddings.feature_vector(_vector_text(parsed))),
+            )
+    for start in range(0, len(managed_records), 16):
+        batch = managed_records[start:start + 16]
+        backend, _, vectors = embeddings.semantic_vectors(
+            [_vector_text(parsed) for parsed, _ in batch], allow_start=allow_start,
+        )
+        for (parsed, managed), vector in zip(batch, vectors):
+            _upsert(conn, parsed, managed=managed, vector_override=(backend, vector))
 
 
 def _managed_paths(root: Path) -> List[Path]:
@@ -232,6 +256,8 @@ def _unchanged_row(path: Path, managed: bool, by_location: Dict[str, sqlite3.Row
     row = by_location.get(str(path))
     if row is None or int(row["managed"]) != int(managed):
         return None
+    if not managed and row["vector_backend"] != embeddings.FEATURE_VECTOR_BACKEND:
+        return None  # One-time migration of externally imported skills to fast feature vectors.
     try:
         stat = path.stat()
         if int(row["mtime_ns"]) != stat.st_mtime_ns or int(row["size"]) != stat.st_size:
@@ -279,6 +305,7 @@ def _sync_index(root: Path, conn: sqlite3.Connection, *, allow_start: bool = Fal
             removed += 1
     conn.commit()
 
+    pending: List[Tuple[Dict[str, Any], bool]] = []
     for name, (parsed, managed) in parsed_by_name.items():
         row = existing.get(name)
         if parsed.get("unchanged"):
@@ -296,24 +323,24 @@ def _sync_index(root: Path, conn: sqlite3.Connection, *, allow_start: bool = Fal
             and int(row["size"]) == stat.st_size
             and row["content_hash"] == digest
             and int(row["managed"]) == int(managed)
+            and (managed or row["vector_backend"] == embeddings.FEATURE_VECTOR_BACKEND)
         ):
             continue
-        _upsert(conn, parsed, managed=managed, allow_start=allow_start)
+        pending.append((parsed, managed))
         updated += 1
+    _upsert_batch(conn, pending, allow_start=allow_start)
     return {"updated": updated, "removed": removed, "diagnostics": diagnostics}
 
 
 def _ensure_vector_backend(conn: sqlite3.Connection, backend: str) -> int:
-    rows = conn.execute("SELECT * FROM skills WHERE vector_backend<>?", (backend,)).fetchall()
-    updated = 0
+    rows = conn.execute("SELECT * FROM skills WHERE managed=1 AND vector_backend<>?", (backend,)).fetchall()
+    pending: List[Tuple[Dict[str, Any], bool]] = []
     for row in rows:
         path = Path(row["location"])
-        if not path.exists():
-            continue
-        parsed = _parse_skill(path)
-        _upsert(conn, parsed, managed=bool(row["managed"]), allow_start=True)
-        updated += 1
-    return updated
+        if path.exists():
+            pending.append((_parse_skill(path), bool(row["managed"])))
+    _upsert_batch(conn, pending, allow_start=True)
+    return len(pending)
 
 
 def _row_public(row: sqlite3.Row, *, include_body: bool = False) -> Dict[str, Any]:
@@ -441,13 +468,19 @@ def skill_search(query: str, limit: int = 10) -> Dict[str, Any]:
             fts_scores = {row["name"]: 1.0 - (idx / denom) * 0.45 for idx, row in enumerate(ordered)}
 
         qnorm = embeddings.normalize(q)
+        feature_query = embeddings.feature_vector(q)
         scored = []
         for row in rows:
             try:
                 vector = json.loads(row["vector_json"])
             except Exception:
                 vector = embeddings.feature_vector(row["description"])
-            semantic = embeddings.cosine(query_vector, vector) if row["vector_backend"] == backend else 0.0
+            if row["vector_backend"] == embeddings.FEATURE_VECTOR_BACKEND:
+                semantic = embeddings.cosine(feature_query, vector)
+            elif row["vector_backend"] == backend:
+                semantic = embeddings.cosine(query_vector, vector)
+            else:
+                semantic = 0.0
             hay = embeddings.normalize(f"{row['name']} {row['description']} {row['body']}")
             overlap = len(set(qnorm.split()) & set(hay.split())) / max(1, len(set(qnorm.split())))
             lexical = max(fts_scores.get(row["name"], 0.0), overlap * 0.72, 0.88 if qnorm and qnorm in hay else 0.0)

@@ -156,6 +156,27 @@ class SkillToolTests(unittest.TestCase):
             self.assertTrue(row["location"].startswith(str(self.root.resolve())), row["location"])
             self.assertTrue(any("duplicate skill name" in d.get("warning", "") for d in result["index_sync"]["diagnostics"]))
 
+    def test_batch_embeddings_on_bulk_skill_discovery(self):
+        from unittest.mock import patch
+        folder = self.external / "cli"
+        for n in range(25):
+            d = folder / f"skill-{n}"
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: skill-{n}\ndescription: Test skill number {n}.\n---\nSkill {n}\n"
+            )
+        os.environ["MAC_MCP_CLI_SKILLS_DIRS"] = str(folder)
+        with patch.object(skills.embeddings, "semantic_vectors", wraps=skills.embeddings.semantic_vectors) as embed:
+            result = skills.skill_update_index()
+        self.assertEqual(26, result["total"])
+        self.assertEqual(1, embed.call_count, "Only the managed skill should need a semantic embedding")
+        self.assertEqual(0, skills.skill_update_index()["index_sync"]["updated"])
+        from contextlib import closing
+        from sqlite3 import connect
+        with closing(connect(skills._index_path())) as db:
+            result = db.execute("SELECT DISTINCT vector_backend FROM skills WHERE managed=0").fetchall()
+        self.assertEqual([(embeddings.FEATURE_VECTOR_BACKEND,)], result)
+
     def test_auto_import_updates_and_removes_cli_skills(self):
         folder = self.external / "cli" / "remotion-render"
         folder.mkdir(parents=True)
