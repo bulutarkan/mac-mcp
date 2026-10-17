@@ -1187,6 +1187,35 @@ def create_dashboard_routes(
         except recipes.RecipeError as exc:
             return _recipe_error(exc)
 
+    # Settings › Privacy › Folders Mac MCP can search (#197): only the owner adds or removes folders.
+    async def knowledge_overview(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from . import knowledge
+        return JSONResponse(await asyncio.to_thread(knowledge.overview))
+
+    async def knowledge_folders(request: Request) -> Response:
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        from . import knowledge
+        body = await _object_body(request) or {}
+        action = str(body.get("action") or "").strip().lower()
+        folder = str(body.get("path") or "")
+        handlers = {
+            "add": lambda: knowledge.add_folder(folder),
+            "remove": lambda: knowledge.remove_folder(folder),
+            "rescan": lambda: (knowledge.wake(), knowledge.overview())[1],
+        }
+        if action not in handlers:
+            return JSONResponse({"ok": False, "error": "invalid_action", "allowed": sorted(handlers)}, status_code=400)
+        try:
+            return JSONResponse(await asyncio.to_thread(handlers[action]))
+        except HTTPException as exc:
+            return JSONResponse({"ok": False, "error": "invalid_folder", "message": str(exc.detail)},
+                                status_code=exc.status_code)
+
     async def _object_body(request: Request) -> Optional[Dict[str, Any]]:
         try:
             body = await request.json()
@@ -1681,6 +1710,8 @@ def create_dashboard_routes(
         Route("/dashboard/api/recipes/manage", recipes_manage_list, methods=["GET"]),
         Route("/dashboard/api/recipes/detail", recipes_manage_detail, methods=["GET"]),
         Route("/dashboard/api/recipes/action", recipes_manage_action, methods=["POST"]),
+        Route("/dashboard/api/knowledge", knowledge_overview, methods=["GET"]),
+        Route("/dashboard/api/knowledge/folders", knowledge_folders, methods=["POST"]),
         Route("/dashboard/api/runs", runs_list, methods=["GET"]),
         Route("/dashboard/api/runs/detail", run_detail, methods=["GET"]),
         Route("/dashboard/api/runs/evidence", run_evidence_image, methods=["GET"]),

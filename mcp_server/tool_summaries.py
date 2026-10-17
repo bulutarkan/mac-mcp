@@ -22,7 +22,7 @@ CORE_TOOL_NAMES = frozenset({
     "browser_list_tabs", "browser_close_tab", "browser_observe", "browser_find", "browser_act", "browser_do", "browser_upload_artifact",
     "browser_checkpoint",
     "spawn_agents", "wait_agents",
-    "memory_search", "lesson_search", "lesson_feedback", "ask_user",
+    "memory_search", "knowledge_search", "lesson_search", "lesson_feedback", "ask_user",
     "tool_discover", "tool_invoke",
 })
 
@@ -116,6 +116,9 @@ CORE_TOOL_SUMMARIES: Dict[str, str] = {
     "tool_discover": (
         "Find which tool to use, including less-common ones the profile allows: plain-word query, ranked results with why, "
         "short description, required fields and bounds; next_cursor pages more; include_schema=true: full schema."
+    ),
+    "knowledge_search": (
+        "Search the owner's chosen folders (PDFs, Word, notes) locally in any language. Results give file, page, snippet and SHA-256: answer from them and cite file and page. path narrows to one folder."
     ),
     "ask_user": (
         "Ask the local user a question in a native macOS dialog and return their typed answer; skip or timeout returns "

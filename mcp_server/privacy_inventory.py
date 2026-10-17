@@ -146,6 +146,8 @@ def stores(*, measure: bool = True) -> List[Dict[str, Any]]:
          f"{usage['retention_days']} days" if usage["enabled"] else "not recorded"),
         ("scheduled_tasks", "Scheduled Tasks", "Your scheduled tasks and the results of their last runs.",
          [paths.scheduled_tasks_db()], f"last 50 runs per task, 90 days; contents {run_detail['retention_days']} days"),
+        ("knowledge", "Knowledge folder index", "Text from the folders you chose to search, so answers can name their sources.",
+         [paths.knowledge_dir()], "while the folder is listed; removing it drops its text"),
         ("saved_logins", "Saved logins", "Sites and usernames; passwords are in your login Keychain.", [paths.vault_dir()],
          "until deleted"),
         ("audit_log", "Audit log", "Tool names, outcomes and timing, for security review.", [paths.audit_log()],
@@ -203,7 +205,7 @@ def recipients() -> List[Dict[str, Any]]:
 # Stores the owner can move to the Trash from Settings > Privacy (or mac-mcp privacy delete).
 # Settings, the saved-login index, the audit log and logs are not: they run Mac MCP itself.
 DELETABLE = ("tool_activity", "memory", "lessons", "run_evidence", "agents", "jobs", "file_history", "provider_usage",
-             "backups")
+             "backups", "knowledge")
 # The package installer keeps its own rollback copy (backups/pkg-*) and prunes it itself.
 _KEPT_BACKUPS = "pkg-*"
 

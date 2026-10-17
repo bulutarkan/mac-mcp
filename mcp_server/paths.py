@@ -62,6 +62,11 @@ def vault_dir() -> Path:
     return state_dir() / "vault"
 
 
+def knowledge_dir() -> Path:
+    """The index of the folders the owner chose to search (#197)."""
+    return _env_path("MAC_MCP_KNOWLEDGE_DIR", state_dir() / "knowledge")
+
+
 def provider_usage_db() -> Path:
     return state_dir() / "state" / "provider_usage.sqlite3"
 

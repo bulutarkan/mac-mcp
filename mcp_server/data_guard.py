@@ -37,7 +37,7 @@ _SOURCE_TOOLS = frozenset({
     "run_commands_parallel", "get_job_output", "wait_jobs", "search_files",
     # Other tools that hand host content to the model: AppleScript output, process
     # command lines, delegated-agent reports and stored memories.
-    "run_applescript", "process_list", "get_agent", "memory_get", "memory_search",
+    "run_applescript", "process_list", "get_agent", "memory_get", "memory_search", "knowledge_search",
 })
 # grep -rn output: "path:line:content".
 _SEARCH_LINE_RE = re.compile(r"^(?P<path>[^\n:]+):(?P<line>\d+):(?P<content>.*)$")
@@ -671,7 +671,8 @@ def redact_sensitive_source_result(tool: str, arguments: Mapping[str, Any], resu
     for key in ("stdout", "stderr", "output", "content", "text", "result", "results"):
         if key in safe and isinstance(safe[key], str):
             safe[key] = "[SENSITIVE OUTPUT REDACTED]"
-    if name in {"run_commands_parallel", "wait_jobs", "process_list", "get_agent", "memory_get", "memory_search"}:
+    if name in {"run_commands_parallel", "wait_jobs", "process_list", "get_agent", "memory_get", "memory_search",
+                "knowledge_search"}:
         # Nested command/job outputs can vary by provider; once a result is known
         # sensitive, do not persist nested free-form strings.
         def scrub(value: Any, depth: int = 0) -> Any:

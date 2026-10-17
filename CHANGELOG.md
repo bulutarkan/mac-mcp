@@ -1,5 +1,10 @@
 ## Unreleased
 
+### Ask about what is in your folders (#197)
+- Settings › Privacy has **Folders Mac MCP can search**. Add a folder (Contracts, Invoices, Notes…) and your AI apps can ask about its contents with the new `knowledge_search` tool: answers come with the file and, for PDFs, the page. It understands meaning across languages ("when does the lease end" finds "Sözleşme 1 Ocak 2027de biter").
+- Everything happens on this Mac: text files, PDFs page by page and Word/RTF/OpenDocument/HTML files are read locally into a private index (owner-only, listed under What Mac MCP keeps, where it can be moved to the Trash). New and changed files are picked up within minutes; deleted or renamed files and removed folders leave the index. Scanned PDFs without text are counted, not read (no OCR yet).
+- The whole home folder, the disk, system folders, ~/Library and Mac MCP's own data can't be added. Agents with a limited scope only get results from inside it, and private mode pauses indexing.
+
 ### Know when an update is ready (#232)
 - Mac MCP now looks for a new release in the background, a couple of minutes after the app starts and then every six hours, and says so the same way however it was installed (install.sh, npm or the .pkg): one "A new update is ready" notification per release, a row at the top of the menu with an **Update** button, and the same words in Settings › General. It only looks; nothing installs until you click Update.
 - Behind the button, install.sh and npm installs run the signed updater as before; a package install opens the newer package's release page. A package install's check now really compares its signed checkpoint with the newest GitHub Release that has a .pkg (before, it only pointed at the Releases page), and checking no longer opens the browser by itself.

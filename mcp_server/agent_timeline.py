@@ -45,6 +45,7 @@ _TOOL_WORDS = {
     "get_system_info": "Read system information",
     "system_info": "Read system information",
     "memory_search": "Searched memories",
+    "knowledge_search": "Searched your folders",
     "screenshot": "Took a screenshot",
 }
 _CLAUDE_TOOLS = {

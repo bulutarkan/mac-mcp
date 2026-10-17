@@ -24,6 +24,10 @@ struct PrivacyPane: View {
     @MacMCPState private var runDetailDays = 30
     @MacMCPState private var runDetailChoices: [Int] = [7, 30, 90]
     @MacMCPState private var message = ""
+    @MacMCPState private var knowledgeFolders: [[String: Any]] = []
+    @MacMCPState private var knowledgePending = 0
+    @MacMCPState private var knowledgeMessage = ""
+    @MacMCPState private var knowledgeBusy = false
 
     var body: some View {
         ScrollView {
@@ -96,6 +100,8 @@ struct PrivacyPane: View {
                     key: "excluded_sites"
                 )
 
+                knowledgeBox
+
                 GroupBox("What Mac MCP keeps on this Mac") {
                     VStack(alignment: .leading, spacing: 0) {
                         atRestRow
@@ -162,6 +168,97 @@ struct PrivacyPane: View {
         } message: {
             Text("Mac MCP stops for a moment, moves the files into one dated folder in the Trash, and starts again. Running agents and jobs stop. Nothing is erased until you empty the Trash.")
         }
+    }
+
+    /// Folders Mac MCP can search (#197): the owner picks them; agents answer from them with sources.
+    private var knowledgeBox: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Folders Mac MCP can search").font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Button("Add Folder…") { chooseKnowledgeFolder() }
+                        .disabled(!loaded || knowledgeBusy)
+                }
+                Text("Your AI apps can ask about what is in these folders — contracts, invoices, notes, PDFs and Word files — and answer with the file and page. Mac MCP reads them on this Mac and keeps a private index here; nothing is uploaded.")
+                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if knowledgeFolders.isEmpty {
+                    Text("No folders yet.").font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(Array(knowledgeFolders.enumerated()), id: \.offset) { _, folder in
+                    knowledgeRow(folder)
+                }
+                if knowledgePending > 0 {
+                    Label("Reading \(knowledgePending) new or changed file\(knowledgePending == 1 ? "" : "s")…", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                if !knowledgeMessage.isEmpty {
+                    Text(knowledgeMessage).font(.caption2).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(6)
+        }
+        .disabled(!loaded)
+    }
+
+    private func knowledgeRow(_ folder: [String: Any]) -> some View {
+        let path = folder["path"] as? String ?? ""
+        let files = folder["files"] as? Int ?? 0
+        let indexed = folder["indexed"] as? Int ?? 0
+        let noText = folder["no_text"] as? Int ?? 0
+        var detail = files == 0 ? "Not read yet" : "\(indexed) of \(files) file\(files == 1 ? "" : "s") searchable"
+        if noText > 0 { detail += " · \(noText) without text (scanned)" }
+        return HStack(spacing: 10) {
+            Image(systemName: "folder.fill").foregroundStyle(Color.accentColor).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(URL(fileURLWithPath: path).lastPathComponent).font(.callout.weight(.medium))
+                Text((path as NSString).abbreviatingWithTildeInPath + " · " + detail)
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+            } label: { Image(systemName: "magnifyingglass") }
+                .buttonStyle(.borderless)
+                .help("Show in Finder")
+                .accessibilityLabel("Show \(URL(fileURLWithPath: path).lastPathComponent) in Finder")
+            Button("Remove") { changeKnowledge(["action": "remove", "path": path]) }
+                .controlSize(.small)
+                .disabled(knowledgeBusy)
+                .accessibilityLabel("Stop searching \(URL(fileURLWithPath: path).lastPathComponent)")
+        }
+    }
+
+    private func chooseKnowledgeFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Add"
+        panel.message = "Choose a folder Mac MCP may search, such as Documents/Contracts."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        changeKnowledge(["action": "add", "path": url.path])
+    }
+
+    private func changeKnowledge(_ body: [String: Any]) {
+        knowledgeBusy = true
+        Task {
+            let result = await state.taskAPI("dashboard/api/knowledge/folders", body: body)
+            if result.ok {
+                applyKnowledge(result.object)
+                knowledgeMessage = ""
+                await load()  // the stores list shows the index size
+            } else {
+                knowledgeMessage = result.object["message"] as? String ?? "Couldn’t change the folders."
+            }
+            knowledgeBusy = false
+        }
+    }
+
+    private func applyKnowledge(_ object: [String: Any]) {
+        knowledgeFolders = object["folders"] as? [[String: Any]] ?? []
+        knowledgePending = object["pending_files"] as? Int ?? 0
     }
 
     private func categoryToggle(_ key: String, _ title: String) -> some View {
@@ -347,6 +444,8 @@ struct PrivacyPane: View {
                 loaded = true
                 message = ""
             }
+            let knowledge = await state.taskAPI("dashboard/api/knowledge")
+            if knowledge.ok { applyKnowledge(knowledge.object) }
         } catch {
             message = "Start Mac MCP to see and change privacy settings."
         }

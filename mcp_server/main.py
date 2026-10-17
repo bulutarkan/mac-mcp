@@ -96,6 +96,7 @@ from .tools_voice import ask_user_voice
 from . import applescript_host, ax_native, ax_watch
 from .tools_update import mac_mcp_update
 from .tools_memory import memory_add, memory_search, memory_get, memory_update, memory_delete
+from . import knowledge
 from .tools_lessons import (
     lesson_consolidate, lesson_delete, lesson_export, lesson_feedback, lesson_record, lesson_search,
 )
@@ -2311,6 +2312,23 @@ def create_app():
         )
 
     @mcp.tool(
+        name="knowledge_search",
+        description=(
+            "Search the owner's knowledge folders: the folders they chose in Mac MCP (contracts, invoices, notes, "
+            "PDFs, Word and text files), with local hybrid full-text + vector search in any language. Each result "
+            "names the file, the page for PDFs, a snippet, its SHA-256 and when it changed. Answer from the snippets "
+            "and cite file name and page; read_file the file for more. path narrows to one folder. Only folders the "
+            "owner added are searched; when there are none, tell them to add one in Settings > Privacy."
+        ),
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    )
+    async def _knowledge_search(query: str, path: Optional[str] = None, limit: int = 8) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            _log, audit_logger, "knowledge_search",
+            lambda: knowledge.knowledge_search(query=query, path=path, limit=limit),
+        )
+
+    @mcp.tool(
         name="memory_get",
         description="Get one exact memory by stable memory_id without running semantic search.",
         annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False),
@@ -2872,6 +2890,8 @@ if os.getenv("MAC_MCP_MANAGED_SERVER") == "1":
     start_agent_history_expiry()
     # Scheduled Tasks: sleeps until the next due run; no wakeups without active tasks.
     scheduled_task_runner.start(load_settings())
+    # Knowledge folders (#197): keeps the index of the owner's chosen folders current.
+    knowledge.start_indexer()
     # Owner-only store directories (agents, teams, jobs, telemetry, memory, lessons).
     secure_content_stores([AGENTS_DIR, AGENTS_DIR.parent / "agent_teams", AGENTS_DIR.parent / "jobs"])
     if privacy_policy.privacy_setting("exclude_from_backups", False) is True:

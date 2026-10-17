@@ -68,6 +68,7 @@ TOOL_USE_CASES: Dict[str, Tuple[str, ...]] = {
     "spawn_agents": ("start subagents", "delegate task", "parallel agents", "team of agents"),
     "wait_agents": ("wait for agents", "collect agent results"),
     "memory_search": ("recall memory", "remember fact", "search memory"),
+    "knowledge_search": ("search my documents", "what does the contract say", "find in pdfs", "search folder contents"),
     "lesson_search": ("past lessons", "what worked before"),
     "ask_user": ("ask the user", "question to human", "get confirmation"),
     "set_reminder": ("create reminder", "remind me"),
