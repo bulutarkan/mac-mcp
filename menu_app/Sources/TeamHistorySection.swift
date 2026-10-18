@@ -56,9 +56,14 @@ enum TeamHistoryFormat {
     static func spokenDuration(_ milliseconds: Int?) -> String {
         guard let milliseconds else { return "duration unknown" }
         let seconds = max(0, milliseconds / 1000)
-        if seconds < 60 { return "\(seconds) seconds" }
-        if seconds < 3600 { return "\(seconds / 60) minutes \(seconds % 60) seconds" }
-        return "\(seconds / 3600) hours \((seconds % 3600) / 60) minutes"
+        if seconds < 60 { return count(seconds, "second") }
+        if seconds < 3600 { return "\(count(seconds / 60, "minute")) \(count(seconds % 60, "second"))" }
+        return "\(count(seconds / 3600, "hour")) \(count((seconds % 3600) / 60, "minute"))"
+    }
+
+    /// "1 tool call", "2 tool calls".
+    static func count(_ value: Int, _ noun: String) -> String {
+        "\(value) \(noun)\(value == 1 ? "" : "s")"
     }
 
     static func tokens(_ value: Int?) -> String {
@@ -222,7 +227,7 @@ private struct TeamHistoryCard: View {
                     }
                     Spacer(minLength: 8)
                     statColumn(TeamHistoryFormat.tokens(team.tokens.total), "tokens")
-                    statColumn("\(team.toolCalls)", "tool calls")
+                    statColumn("\(team.toolCalls)", team.toolCalls == 1 ? "tool call" : "tool calls")
                     statColumn(TeamHistoryFormat.duration(team.durationMS), "time")
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
@@ -233,11 +238,10 @@ private struct TeamHistoryCard: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityElement(children: .ignore)
+            // On the button itself, so it keeps its press action for VoiceOver.
             .accessibilityLabel(teamSpokenSummary)
             .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
             .accessibilityHint("Shows or hides this team's agents")
-            .accessibilityAddTraits(.isButton)
 
             if isExpanded {
                 Divider().padding(.horizontal, 12)
@@ -280,7 +284,8 @@ private struct TeamHistoryCard: View {
 
     private var teamSpokenSummary: String {
         let tokens = team.tokens.total.map { "\($0) tokens" } ?? "tokens unknown"
-        return "\(team.title.isEmpty ? "Untitled team" : team.title), \(started), \(outcome.text), \(succeeded) of \(team.agentCount) agents succeeded, \(team.toolCalls) tool calls, \(tokens), \(TeamHistoryFormat.spokenDuration(team.durationMS))"
+        let agents = team.agentCount == 1 ? "\(succeeded) of 1 agent succeeded" : "\(succeeded) of \(team.agentCount) agents succeeded"
+        return "\(team.title.isEmpty ? "Untitled team" : team.title), \(started), \(outcome.text), \(agents), \(TeamHistoryFormat.count(team.toolCalls, "tool call")), \(tokens), \(TeamHistoryFormat.spokenDuration(team.durationMS))"
     }
 
     private func statColumn(_ value: String, _ caption: String) -> some View {
@@ -379,7 +384,7 @@ private struct TeamHistoryAgentRow: View {
                 Text(TeamHistoryFormat.tokens(agent.tokens.total))
                     .font(.caption.weight(.semibold))
                     .monospacedDigit()
-                Text("\(agent.toolCalls) calls · \(TeamHistoryFormat.duration(agent.durationMS))")
+                Text("\(TeamHistoryFormat.count(agent.toolCalls, "call")) · \(TeamHistoryFormat.duration(agent.durationMS))")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
@@ -432,7 +437,7 @@ private struct TeamHistoryAgentRow: View {
             }
         }
         .frame(height: 4)
-        .help("\(agent.toolCalls) tool calls")
+        .help(TeamHistoryFormat.count(agent.toolCalls, "tool call"))
     }
 
     private var tokenHelp: String {
@@ -443,6 +448,6 @@ private struct TeamHistoryAgentRow: View {
     private var spokenSummary: String {
         let tokens = agent.tokens.total.map { "\($0) tokens" } ?? "tokens not reported"
         let model = agent.model.map { ", \($0)" } ?? ""
-        return "\(agent.label)\(model), \(outcome.text), \(agent.toolCalls) tool calls, \(tokens), \(TeamHistoryFormat.spokenDuration(agent.durationMS))"
+        return "\(agent.label)\(model), \(outcome.text), \(TeamHistoryFormat.count(agent.toolCalls, "tool call")), \(tokens), \(TeamHistoryFormat.spokenDuration(agent.durationMS))"
     }
 }

@@ -207,6 +207,9 @@ class TeamHistoryAppSourceTests(unittest.TestCase):
         self.assertIn("No agent team has run yet.", source)
         self.assertIn("Tokens not reported", source)
         self.assertNotRegex(source, re.compile(r"(?<![A-Za-z0-9_])@State\b"))
+        # A team card must stay a pressable button for VoiceOver: no ignore-children element on it.
+        card = source[source.index("private struct TeamHistoryCard"):source.index("private struct TeamHistoryLegend")]
+        self.assertNotIn(".accessibilityElement(children: .ignore)", card)
 
     def test_build_script_and_search_know_the_section(self) -> None:
         script = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")
