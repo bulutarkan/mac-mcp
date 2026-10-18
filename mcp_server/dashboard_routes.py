@@ -62,7 +62,7 @@ from .steering import (
     SteeringIdempotencyExpired,
     SteeringManager,
 )
-from .tools_agents import agent_action, agent_catalog, dashboard_team_summary, list_agents, provider_overview
+from .tools_agents import agent_action, agent_catalog, dashboard_team_summary, list_agents, provider_overview, team_history
 from .tools_browser import browser_activate_tab
 from .version import __version__
 
@@ -1361,6 +1361,23 @@ def create_dashboard_routes(
             return JSONResponse({"ok": False, "error": "run_evidence_settings_persist_failed"}, status_code=500)
         return JSONResponse({"ok": True, **run_evidence_privacy()})
 
+    async def agents_history(request: Request) -> Response:
+        """Past agent teams as counts only, for Settings › Agents › Team History (#263)."""
+        denied = _dashboard_guard(request, dashboard_token)
+        if denied:
+            return denied
+        limit = max(1, min(_int_query(request, "limit", 10), 50))
+        offset = max(0, min(_int_query(request, "offset", 0), 10_000))
+        try:
+            payload = await asyncio.to_thread(team_history, limit=limit, offset=offset)
+        except Exception as exc:
+            return JSONResponse(
+                {"ok": False, "teams": [], "total": 0, "limit": limit, "offset": offset,
+                 "error": str(sanitize_value(exc))},
+                status_code=500,
+            )
+        return JSONResponse(payload)
+
     async def provider_usage(request: Request) -> Response:
         denied = _dashboard_guard(request, dashboard_token)
         if denied:
@@ -1739,6 +1756,7 @@ def create_dashboard_routes(
         Route("/dashboard/api/browser/show-tab", show_browser_tab, methods=["POST"]),
         Route("/dashboard/api/providers", providers, methods=["GET"]),
         Route("/dashboard/api/agent-catalog", agent_catalog_data, methods=["GET"]),
+        Route("/dashboard/api/agents/history", agents_history, methods=["GET"]),
         Route("/dashboard/api/agents", agents, methods=["GET"]),
         Route("/dashboard/api/steering", steering_state, methods=["GET"]),
         Route("/dashboard/api/steering", steering_send, methods=["POST"]),

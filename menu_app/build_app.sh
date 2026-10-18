@@ -69,6 +69,7 @@ APP_SOURCES=(
   "${SCRIPT_DIR}/Sources/SettingsStore.swift"
   "${SCRIPT_DIR}/Sources/SettingsView.swift"
   "${SCRIPT_DIR}/Sources/ProviderUsageSection.swift"
+  "${SCRIPT_DIR}/Sources/TeamHistorySection.swift"
   "${SCRIPT_DIR}/Sources/UsageOverview.swift"
   "${SCRIPT_DIR}/Sources/SavedLoginsView.swift"
   "${SCRIPT_DIR}/Sources/SettingsSearch.swift"

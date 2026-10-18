@@ -171,6 +171,9 @@ final class AppState: ObservableObject {
     @Published private(set) var providerUsageSummary: ProviderUsageSummaryEnvelope?
     @Published private(set) var providerUsageLoading = false
     @Published private(set) var providerUsageIssue: String?
+    @Published private(set) var teamHistory: TeamHistoryEnvelope?
+    @Published private(set) var teamHistoryLoading = false
+    @Published private(set) var teamHistoryIssue: String?
     @Published private(set) var decisionAcceleration: DecisionAccelerationEnvelope?
     @Published private(set) var decisionVerifying = false
     @Published private(set) var decisionIssue: String?
@@ -1473,6 +1476,27 @@ final class AppState: ObservableObject {
                 \.providerUsageIssue,
                 "Could not refresh Provider Tokens: \(Self.issueText(for: error))"
             )
+        }
+    }
+
+    /// Past agent teams for Settings › Agents › Team History (#263): the newest `limit` teams, counts only.
+    func refreshTeamHistory(limit: Int = 10) async {
+        guard let base = URL(string: "http://127.0.0.1:\(settings.serverPort)") else {
+            setIfChanged(\.teamHistoryIssue, "Could not load Team History because the server URL is invalid.")
+            return
+        }
+        setIfChanged(\.teamHistoryLoading, true)
+        defer { setIfChanged(\.teamHistoryLoading, false) }
+        do {
+            let history: TeamHistoryEnvelope = try await fetch(
+                base.appendingPathComponent("dashboard/api/agents/history"),
+                query: ["limit": String(max(1, min(limit, 50)))],
+                timeout: 4.0
+            )
+            setIfChanged(\.teamHistory, history)
+            setIfChanged(\.teamHistoryIssue, nil)
+        } catch {
+            setIfChanged(\.teamHistoryIssue, "Could not load Team History: \(Self.issueText(for: error))")
         }
     }
 

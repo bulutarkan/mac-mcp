@@ -202,6 +202,9 @@ struct SettingsView: View {
             if selection == .voice {
                 settings.refreshVoiceConsent()
             }
+            if selection == .agents {
+                await state.refreshTeamHistory(limit: max(10, state.teamHistory?.teams.count ?? 0))
+            }
             if selection == .usage {
                 await state.refreshUsage(actorClass: usageActor.apiValue)
                 await state.refreshProviderUsage(days: providerUsagePeriod.days)
@@ -972,31 +975,40 @@ struct SettingsView: View {
 
                 retentionCard
 
-                Text("PROVIDERS")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .tracking(0.5)
-                Text("Choose which AI tools on this Mac Mac MCP may hand work to. Each one has to be installed and signed in first.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                AgentsFoldingSection(title: "Providers") {
+                    Text("Choose which AI tools on this Mac Mac MCP may hand work to. Each one has to be installed and signed in first.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
 
-                providerRow(id: "opencode", title: "OpenCode", subtitle: "Uses the OpenCode command-line tool")
-                providerRow(id: "codex", title: "Codex", subtitle: "Uses the Codex command-line tool")
-                providerRow(id: "claude", title: "Claude Code", subtitle: "Uses Claude Code, with your Claude sign-in")
-                providerRow(id: "kimi", title: "Kimi Code", subtitle: "Uses Kimi Code, with your kimi login or its model providers")
-                providerRow(id: "grok", title: "Grok Build", subtitle: "Uses Grok Build, with your grok login or xAI key")
-                providerRow(id: "antigravity", title: "Antigravity", subtitle: "Uses Antigravity, with your Google sign-in")
-                providerRow(id: "pi", title: "pi", subtitle: "Uses the pi coding agent, with your pi login or API keys")
-                providerRow(id: "cline", title: "Cline", subtitle: "Uses Cline, with your Cline sign-in or API keys")
-                providerRow(id: "kilo", title: "Kilo Code", subtitle: "Uses Kilo Code, with your Kilo sign-in or API keys")
-                providerRow(id: "goose", title: "Goose", subtitle: "Uses Goose, with its provider and key")
+                    providerRow(id: "opencode", title: "OpenCode", subtitle: "Uses the OpenCode command-line tool")
+                    providerRow(id: "codex", title: "Codex", subtitle: "Uses the Codex command-line tool")
+                    providerRow(id: "claude", title: "Claude Code", subtitle: "Uses Claude Code, with your Claude sign-in")
+                    providerRow(id: "kimi", title: "Kimi Code", subtitle: "Uses Kimi Code, with your kimi login or its model providers")
+                    providerRow(id: "grok", title: "Grok Build", subtitle: "Uses Grok Build, with your grok login or xAI key")
+                    providerRow(id: "antigravity", title: "Antigravity", subtitle: "Uses Antigravity, with your Google sign-in")
+                    providerRow(id: "pi", title: "pi", subtitle: "Uses the pi coding agent, with your pi login or API keys")
+                    providerRow(id: "cline", title: "Cline", subtitle: "Uses Cline, with your Cline sign-in or API keys")
+                    providerRow(id: "kilo", title: "Kilo Code", subtitle: "Uses Kilo Code, with your Kilo sign-in or API keys")
+                    providerRow(id: "goose", title: "Goose", subtitle: "Uses Goose, with its provider and key")
 
-                Text("A tool that is off is hidden from AI apps and never started. Changes apply to new requests right away.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 2)
+                    Text("A tool that is off is hidden from AI apps and never started. Changes apply to new requests right away.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
+
+                AgentsFoldingSection(title: "Team History") {
+                    TeamHistorySection(
+                        history: state.teamHistory,
+                        loading: state.teamHistoryLoading,
+                        issue: state.teamHistoryIssue
+                    ) {
+                        let shown = state.teamHistory?.teams.count ?? 0
+                        Task { await state.refreshTeamHistory(limit: shown + 10) }
+                    }
+                }
             }
             .padding(22)
         }

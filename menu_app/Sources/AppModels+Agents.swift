@@ -250,3 +250,90 @@ struct MobileRevokeEnvelope: Decodable {
     let ok: Bool
     let revoked: Bool
 }
+
+// MARK: Team History (#263): past agent teams as counts only, from dashboard/api/agents/history.
+
+/// Tokens by kind; nil means the provider did not report that kind (shown as unknown, never 0).
+struct TeamHistoryTokens: Decodable, Equatable {
+    let input: Int?
+    let output: Int?
+    let cacheRead: Int?
+    let cacheWrite: Int?
+    let reasoning: Int?
+    let total: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case input, output, reasoning, total
+        case cacheRead = "cache_read"
+        case cacheWrite = "cache_write"
+    }
+}
+
+struct TeamHistoryAgent: Decodable, Identifiable, Equatable {
+    let agentID: String
+    let label: String
+    let provider: String?
+    let model: String?
+    let status: String?
+    let outcome: String?
+    let toolCalls: Int
+    let durationMS: Int?
+    let tokens: TeamHistoryTokens
+
+    var id: String { agentID }
+
+    enum CodingKeys: String, CodingKey {
+        case label, provider, model, status, outcome, tokens
+        case agentID = "agent_id"
+        case toolCalls = "tool_calls"
+        case durationMS = "duration_ms"
+    }
+}
+
+struct TeamHistoryTeam: Decodable, Identifiable, Equatable {
+    let teamID: String
+    let title: String
+    let provider: String?
+    let model: String?
+    let status: String?
+    let outcome: String?
+    let successfulCount: Int?
+    let failureCount: Int?
+    let createdAt: Double?
+    let endedAt: Double?
+    let durationMS: Int?
+    let agentCount: Int
+    let toolCalls: Int
+    let tokens: TeamHistoryTokens
+    let tokensUnknownAgents: Int
+    let agents: [TeamHistoryAgent]
+
+    var id: String { teamID }
+
+    enum CodingKeys: String, CodingKey {
+        case title, provider, model, status, outcome, tokens, agents
+        case teamID = "team_id"
+        case successfulCount = "successful_count"
+        case failureCount = "failure_count"
+        case createdAt = "created_at"
+        case endedAt = "ended_at"
+        case durationMS = "duration_ms"
+        case agentCount = "agent_count"
+        case toolCalls = "tool_calls"
+        case tokensUnknownAgents = "tokens_unknown_agents"
+    }
+}
+
+struct TeamHistoryEnvelope: Decodable, Equatable {
+    let ok: Bool
+    let teams: [TeamHistoryTeam]
+    let total: Int
+    let limit: Int
+    let offset: Int
+    let retentionDays: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, teams, total, limit, offset
+        case retentionDays = "retention_days"
+    }
+}

@@ -8,7 +8,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from .runtime_settings import usage_privacy
 from . import privacy_policy
@@ -629,6 +629,17 @@ class ProviderUsageStore:
         }
 
 
+_AGENT_TOKEN_KINDS = ("input", "output", "reasoning", "cache_read", "cache_write", "total")
+
+
+def _agent_totals_query(count: int) -> str:
+    sums = ", ".join(
+        f"SUM({kind}_tokens) {kind}, COUNT({kind}_tokens) {kind}_known" for kind in _AGENT_TOKEN_KINDS
+    )
+    return (f"SELECT agent_id, {sums} FROM provider_usage_events "
+            f"WHERE agent_id IN ({', '.join('?' for _ in range(count))}) GROUP BY agent_id")
+
+
 _STORE_LOCK = threading.Lock()
 _STORE: Optional[ProviderUsageStore] = None
 _STORE_PATH: Optional[Path] = None
@@ -646,6 +657,23 @@ def get_store() -> ProviderUsageStore:
 
 def summary(*, days: int = 365) -> Dict[str, Any]:
     return get_store().summary(days=days)
+
+
+def agent_totals(agent_ids: List[str]) -> Dict[str, Dict[str, Optional[int]]]:
+    """Token totals by kind for each agent that has usage rows; a kind no row reported is None."""
+    ids = [str(agent_id) for agent_id in dict.fromkeys(agent_ids) if agent_id][:500]
+    if not ids:
+        return {}
+    store = get_store()
+    with store._lock, closing(store._connect()) as conn:
+        store._schema(conn)
+        rows = conn.execute(_agent_totals_query(len(ids)), ids).fetchall()
+    return {
+        str(row["agent_id"]): {
+            kind: (int(row[kind] or 0) if row[f"{kind}_known"] else None) for kind in _AGENT_TOKEN_KINDS
+        }
+        for row in rows
+    }
 
 
 def clear() -> int:

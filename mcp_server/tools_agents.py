@@ -1895,6 +1895,133 @@ def dashboard_team_summary(team_id: str) -> Dict[str, Any]:
     return public
 
 
+_HISTORY_TITLE_CHARS = 96
+_HISTORY_ROLE_CHARS = 40
+
+
+def _history_label(value: Any, limit: int) -> str:
+    """One line of caller-written text, secrets redacted, cut to `limit` characters."""
+    from .telemetry_sanitize import sanitize_value
+
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    text = str(sanitize_value(text, preview_chars=max(limit * 4, 400))).split("\n", 1)[0]
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _history_agent(agent_id: str, label: str, usage_rows: Dict[str, Dict[str, Optional[int]]]) -> Optional[Dict[str, Any]]:
+    try:
+        meta = _read_meta(agent_id)
+    except HTTPException:
+        return None
+    started = meta.get("started_at")
+    ended = meta.get("ended_at")
+    duration_ms = None
+    if started:
+        end = float(ended) if ended else (_now() if str(meta.get("status") or "") not in TERMINAL_STATUSES else float(started))
+        duration_ms = int(max(0.0, end - float(started)) * 1000)
+    total, known = _agent_token_usage(meta)
+    by_kind = usage_rows.get(agent_id) or {}
+    tokens = {kind: by_kind.get(kind) for kind in ("input", "output", "cache_read", "cache_write", "reasoning")}
+    if by_kind.get("total") is not None:
+        total, known = int(by_kind["total"] or 0), True
+    return {
+        "agent_id": agent_id,
+        "label": label,
+        "provider": meta.get("provider"),
+        "model": meta.get("effective_model") or meta.get("model"),
+        "status": meta.get("status"),
+        "outcome": meta.get("result_outcome"),
+        "tool_calls": max(0, int(meta.get("tool_call_count") or 0)),
+        "duration_ms": duration_ms,
+        "started_at": started,
+        "ended_at": ended,
+        # Unknown usage is null, never 0: a provider that reports nothing did not use nothing.
+        "tokens": {**tokens, "total": total if known else None},
+    }
+
+
+def team_history(*, limit: int = 10, offset: int = 0) -> Dict[str, Any]:
+    """Past agent teams with their agents, newest first, for Settings › Agents (#263).
+
+    Counts only: tool calls, tokens by kind, durations, models, outcomes. Prompts, task
+    text, agent titles (an agent's title is its prompt's first line) and reports are never
+    included, and a team leaves this history when the agent history retention removes it."""
+    limit = max(1, min(int(limit), 50))
+    offset = max(0, int(offset))
+    teams: List[Dict[str, Any]] = []
+    if TEAMS_DIR.exists():
+        for path in TEAMS_DIR.iterdir():
+            if not (path / "meta.json").exists():
+                continue
+            try:
+                teams.append(_read_team(path.name))
+            except HTTPException:
+                continue
+    teams.sort(key=lambda team: float(team.get("created_at") or 0), reverse=True)
+    page = teams[offset: offset + limit]
+    labels: Dict[str, str] = {}
+    for team in page:
+        for index, task in enumerate(team.get("tasks") or []):
+            label = _history_label(task.get("role"), _HISTORY_ROLE_CHARS) or str(task.get("id") or f"task {index + 1}")
+            for agent_id in task.get("agent_ids") or []:
+                labels[str(agent_id)] = label[:_HISTORY_ROLE_CHARS]
+    all_ids = [str(agent_id) for team in page for agent_id in (team.get("agent_ids") or [])]
+    try:
+        from .provider_usage import agent_totals
+
+        usage_rows = agent_totals(all_ids)
+    except Exception:
+        usage_rows = {}
+    rows: List[Dict[str, Any]] = []
+    for team in page:
+        team_id = str(team.get("team_id") or "")
+        agents = [
+            row for index, agent_id in enumerate(team.get("agent_ids") or [])
+            if (row := _history_agent(str(agent_id), labels.get(str(agent_id)) or f"Agent {index + 1}", usage_rows))
+        ]
+        try:
+            summary = _team_summary(team_id, team)
+        except Exception:
+            summary = {}
+        finished = bool(agents) and all(str(agent["status"] or "") in TERMINAL_STATUSES for agent in agents)
+        ended_at = max((float(agent["ended_at"]) for agent in agents if agent["ended_at"]), default=None) if finished else None
+        created = float(team.get("created_at") or 0) or None
+        known = [agent["tokens"]["total"] for agent in agents if agent["tokens"]["total"] is not None]
+        kinds = {
+            kind: (sum(value for agent in agents if (value := agent["tokens"][kind]) is not None)
+                   if any(agent["tokens"][kind] is not None for agent in agents) else None)
+            for kind in ("input", "output", "cache_read", "cache_write", "reasoning")
+        }
+        rows.append({
+            "team_id": team_id,
+            "title": _history_label(team.get("title"), _HISTORY_TITLE_CHARS),
+            "provider": team.get("provider"),
+            "model": team.get("model"),
+            "status": summary.get("status"),
+            "outcome": summary.get("outcome"),
+            "successful_count": summary.get("successful_count"),
+            "failure_count": summary.get("failure_count"),
+            "created_at": created,
+            "ended_at": ended_at,
+            "duration_ms": int(max(0.0, (ended_at or _now()) - created) * 1000) if created else None,
+            "agent_count": len(agents),
+            "tool_calls": sum(agent["tool_calls"] for agent in agents),
+            "tokens": {**kinds, "total": sum(known) if known else None},
+            "tokens_unknown_agents": len(agents) - len(known),
+            "agents": agents,
+        })
+    return {
+        "ok": True,
+        "teams": rows,
+        "total": len(teams),
+        "limit": limit,
+        "offset": offset,
+        "retention_days": agent_retention_days(),
+    }
+
+
 def _tail_text(path: Path, max_lines: int = 40, max_chars: int = 6000) -> str:
     if not path.exists():
         return ""
