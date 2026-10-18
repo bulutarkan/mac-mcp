@@ -38,6 +38,7 @@ class SettingsInformationArchitectureTests(unittest.TestCase):
             self.assertIn(f".{name}", mapping, name)
         sidebar = self.view[self.view.index("private var sidebar"):self.view.index("private func sidebarRow")]
         self.assertIn("ScrollView", sidebar)
+        self.assertIn("proxy.scrollTo(selection)", sidebar)
         self.assertIn(".accessibilityAddTraits(.isHeader)", sidebar)
 
     def test_connections_owns_endpoint_browser_and_mobile_navigation(self) -> None:

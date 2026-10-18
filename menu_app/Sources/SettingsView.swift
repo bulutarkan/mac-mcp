@@ -896,29 +896,35 @@ struct SettingsView: View {
                 .padding(.top, 4)
             }
 
-            // Scrolls on its own, so every destination stays reachable in the smallest window.
-            ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(SettingsSectionGroup.allCases) { group in
-                        let items = filteredSections.filter { $0.group == group }
-                        if !items.isEmpty {
-                            if let title = group.title {
-                                Text(title.uppercased())
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundStyle(.tertiary)
-                                    .tracking(0.5)
-                                    .padding(.horizontal, 17)
-                                    .padding(.top, 10)
-                                    .padding(.bottom, 2)
-                                    .accessibilityAddTraits(.isHeader)
-                            }
-                            ForEach(items) { item in
-                                sidebarRow(item)
+            // Scrolls on its own, so every destination stays reachable in the smallest window,
+            // and brings the open section into view when a link opens one further down.
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(SettingsSectionGroup.allCases) { group in
+                            let items = filteredSections.filter { $0.group == group }
+                            if !items.isEmpty {
+                                if let title = group.title {
+                                    Text(title.uppercased())
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundStyle(.tertiary)
+                                        .tracking(0.5)
+                                        .padding(.horizontal, 17)
+                                        .padding(.top, 10)
+                                        .padding(.bottom, 2)
+                                        .accessibilityAddTraits(.isHeader)
+                                }
+                                ForEach(items) { item in
+                                    sidebarRow(item)
+                                        .id(item)
+                                }
                             }
                         }
                     }
+                    .padding(.bottom, 8)
                 }
-                .padding(.bottom, 8)
+                .onAppear { proxy.scrollTo(selection) }
+                .onChange(of: selection) { item in proxy.scrollTo(item) }
             }
 
             if !notice.isEmpty {
