@@ -229,10 +229,23 @@ def saved_token(name: str) -> Optional[str]:
     return _STORE.read(_token_account(name))
 
 
+def _pending_account(name: str) -> str:
+    return f"{name}.oauth.pending"
+
+
 def forget(name: str) -> None:
     """Delete every Keychain item of one connected service."""
     _STORE.delete(_token_account(name))
     _STORE.delete(_oauth_account(name))
+    _STORE.delete(_pending_account(name))
+
+
+def _keep_pending(name: str) -> None:
+    """A finished sign-in replaces the service's saved one; until then the old one keeps working."""
+    value = _STORE.read(_pending_account(name))
+    if value:
+        _STORE.write(_oauth_account(name), value)
+    _STORE.delete(_pending_account(name))
 
 
 # ---------------------------------------------------------------------------
@@ -246,8 +259,8 @@ class KeychainTokenStorage:
     instead of asking for a new sign-in.
     """
 
-    def __init__(self, name: str) -> None:
-        self.account = _oauth_account(name)
+    def __init__(self, name: str, *, pending: bool = False) -> None:
+        self.account = _pending_account(name) if pending else _oauth_account(name)
         self.provider: Any = None
         self._cache: Optional[Dict[str, Any]] = None
 
@@ -416,7 +429,11 @@ def _check_name_free(item: Connector) -> None:
 
 
 def _save_server(item: Connector, auth: str) -> None:
-    external_mcp.upsert_server(item.id, {"url": item.url, "catalog": item.id, "auth": auth})
+    # A service brings dozens of tools: agents find them with tool_discover unless the owner
+    # shows them in the tool list. Signing in again keeps that choice.
+    previous = external_mcp.read_raw_config()["mcpServers"].get(item.id) or {}
+    external_mcp.upsert_server(item.id, {"url": item.url, "catalog": item.id, "auth": auth,
+                                         "listed": previous.get("listed", False) is True})
 
 
 async def _reload() -> None:
@@ -468,8 +485,8 @@ async def start_sign_in(connector_id: str, port: Optional[int], *, client_id: st
     await cancel_sign_in(item.id)
 
     redirect = redirect_uri(port)
-    storage = KeychainTokenStorage(item.id)
-    await asyncio.to_thread(_STORE.delete, _oauth_account(item.id))  # a fresh sign-in starts clean
+    storage = KeychainTokenStorage(item.id, pending=True)
+    await asyncio.to_thread(_STORE.delete, _pending_account(item.id))  # a fresh sign-in starts clean
     storage._cache = {}
     auth_method = "none"
     if item.auth == "oauth_app":
@@ -512,20 +529,23 @@ async def _finish_sign_in(flow: SignIn, item: Connector, provider: Any) -> None:
             _, tools, _ = await asyncio.wait_for(
                 external_mcp._open_session(stack, server, auth=provider), SIGN_IN_TIMEOUT_S + 60,
             )
+        await asyncio.to_thread(_keep_pending, item.id)
         await asyncio.to_thread(_save_server, item, "oauth")
         flow.tools, flow.state = len(tools), "connected"
         await _reload()
     except asyncio.CancelledError:
         flow.state = "cancelled"
+        await asyncio.to_thread(_STORE.delete, _pending_account(item.id))
         raise
     except BaseException as exc:  # anyio task groups raise ExceptionGroup
         if isinstance(exc, (KeyboardInterrupt, SystemExit)):
             raise
+        await asyncio.to_thread(_STORE.delete, _pending_account(item.id))
         if flow.state != "cancelled":
-            flow.state = "failed"
             timed_out = external_mcp.find_exception(exc, asyncio.TimeoutError) is not None
             flow.error = ("The sign-in was not finished in time. Start it again." if timed_out
                           else external_mcp._short_error(exc))
+            flow.state = "failed"
             LOG.warning("connector %s sign-in failed: %s", item.id, flow.error)
     finally:
         flow.url_ready.set()

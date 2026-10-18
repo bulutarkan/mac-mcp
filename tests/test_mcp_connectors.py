@@ -255,7 +255,7 @@ class TokenConnectorTests(ConnectorFixture):
         self.assertEqual(1, response["result"]["tools"])
         config = (self.dir / "mcp_servers.json").read_text()
         self.assertNotIn("static-good-token", config)
-        self.assertEqual({"url": f"{self.service.base}/mcp", "catalog": "tokensvc", "auth": "token"},
+        self.assertEqual({"url": f"{self.service.base}/mcp", "catalog": "tokensvc", "auth": "token", "listed": False},
                          json.loads(config)["mcpServers"]["tokensvc"])
         self.assertEqual("static-good-token", self.store.items["tokensvc.token"])
         self.assertTrue(self.probe_saved("tokensvc")["ok"])
@@ -314,8 +314,25 @@ class BrowserSignInTests(ConnectorFixture):
         self.assertTrue(saved["tokens"]["access_token"].startswith("access-"))
         self.assertEqual(f"{self.service.base}/oauth/token", saved["oauth_metadata"]["token_endpoint"])
         config = external_mcp.read_raw_config()["mcpServers"]["oauthsvc"]
-        self.assertEqual({"url": f"{self.service.base}/mcp", "catalog": "oauthsvc", "auth": "oauth"}, config)
+        self.assertEqual({"url": f"{self.service.base}/mcp", "catalog": "oauthsvc", "auth": "oauth", "listed": False},
+                         config)
+        self.assertEqual({"oauthsvc.oauth"}, set(self.store.items))
         self.assertNotIn("access-", json.dumps(self.status()))
+
+    def test_signing_in_again_keeps_the_tool_list_choice(self) -> None:
+        self.sign_in()
+        external_mcp.set_server_fields("oauthsvc", listed=True)
+        self.sign_in()
+        self.assertTrue(external_mcp.read_raw_config()["mcpServers"]["oauthsvc"]["listed"])
+
+    def test_a_cancelled_sign_in_again_keeps_the_working_one(self) -> None:
+        self.sign_in()
+        working = self.store.items["oauthsvc.oauth"]
+        self.act(action="connect", connector="oauthsvc")
+        self.assertIn("oauthsvc.oauth.pending", self.store.items)
+        self.act(action="cancel_sign_in", name="oauthsvc")
+        self.assertEqual({"oauthsvc.oauth": working}, self.store.items)
+        self.assertTrue(self.probe_saved("oauthsvc")["ok"])
 
     def test_a_restart_with_unknown_expiry_refreshes_at_the_saved_token_endpoint(self) -> None:
         self.sign_in()
@@ -369,6 +386,7 @@ class BrowserSignInTests(ConnectorFixture):
         self.assertEqual("failed", flow["state"])
         self.assertIn("access_denied", flow["error"])
         self.assertNotIn("oauthsvc", external_mcp.read_raw_config()["mcpServers"])
+        self.assertEqual({}, self.store.items)
 
     def test_disconnect_revokes_at_the_service_and_forgets_tokens(self) -> None:
         self.sign_in()
