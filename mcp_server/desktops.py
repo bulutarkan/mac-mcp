@@ -79,9 +79,10 @@ SWITCH_SETTING_ON_NOTE = (
 # New windows appear on the display the owner is working on, and a caught window cannot
 # reach another display's desktop unseen (spaces_helper refuseIfOnOtherDisplay).
 DISPLAY_NOTE = (
-    "New windows appear on the display marked active, the one the owner is working on. An app that already shows "
-    "windows on the owner's desktops (their Safari or Chrome) opens only on a desktop of that display, so prefer an "
-    "empty desktop there; other apps open on any display's desktop."
+    "New windows appear on the display marked active, the one the owner is working on; Chrome's appear on the main "
+    "display. An app that already shows windows on the owner's desktops (their Safari, or their Chrome) opens only "
+    "on a desktop of that display, so prefer an empty desktop there; other apps, and Chrome while the owner has no "
+    "Chrome window open, open on any display's desktop."
 )
 SWITCH_SETTING_OFF_NOTE = (
     f"{SWITCH_SETTING} is off, so any app, Safari included, can open on the agent's desktop while the owner uses "

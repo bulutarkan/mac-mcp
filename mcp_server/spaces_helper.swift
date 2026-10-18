@@ -355,19 +355,32 @@ func switchesToAppDesktop() -> Bool {
     return (CFPreferencesCopyAppValue("workspaces-auto-swoosh" as CFString, "com.apple.dock" as CFString) as? Bool) ?? true
 }
 
-/// Refuse to catch a window for a desktop on another display than the one the person is
-/// working on. A new window appears on that display, and macOS ignores a move to another
-/// display's desktop made before the window is first shown: it would show there first.
-func refuseIfOnOtherDisplay(target: UInt64, _ appArgument: String) {
+/// The display (SkyLight id) holding the menu bar, where (0, 0) is.
+func mainDisplay() -> String? {
+    guard let uuid = CGDisplayCreateUUIDFromDisplayID(CGMainDisplayID())?.takeRetainedValue() else { return nil }
+    return CFUUIDCreateString(nil, uuid) as String
+}
+
+/// Where the app's next window is born: Chrome makes every window at (0, 0) on the main
+/// display before sizing it; other apps open new windows on the display the person is
+/// working on.
+func birthDisplay(of bundleID: String?, _ displays: [Display]) -> String? {
+    bundleID == "com.google.Chrome" ? mainDisplay() : activeDisplay(displays)
+}
+
+/// Refuse to catch a window for a desktop on another display than the one it is born on:
+/// macOS ignores a move to another display's desktop made before the window is first
+/// shown, so it would show there first (measured: 2-129 ms on the owner's screen).
+func refuseIfOnOtherDisplay(target: UInt64, _ appArgument: String, bundleID: String?) {
     let displays = readDisplays()
-    guard let active = activeDisplay(displays),
+    guard let birth = birthDisplay(of: bundleID, displays),
           let targetDisplay = displays.first(where: { $0.spaces.contains { $0.id == target } })?.id,
-          targetDisplay != active else { return }
-    let name = screenInfo()[active]?["name"] as? String ?? active
-    fail("\(appArgument) already shows windows on the owner's desktops, so its new window has to be caught, and it "
-         + "would appear on the display the owner is working on (\(name)) before reaching desktop \(target) on "
-         + "another display. Use an empty desktop on \(name), or Google Chrome.", "TARGET_ON_OTHER_DISPLAY",
-         ["active_display": active, "target_display": targetDisplay])
+          targetDisplay != birth else { return }
+    let name = screenInfo()[birth]?["name"] as? String ?? birth
+    let where_ = bundleID == "com.google.Chrome" ? "on the main display (\(name))" : "on the display the owner is working on (\(name))"
+    fail("\(appArgument) already shows windows on the owner's desktops, so its new window has to be caught; it is born "
+         + "\(where_) and would show there before reaching desktop \(target) on another display. Use an empty desktop "
+         + "on \(name).", "TARGET_ON_OTHER_DISPLAY", ["birth_display": birth, "target_display": targetDisplay])
 }
 
 /// Refuse to catch a window of the app the person is using while that setting is on.
@@ -491,7 +504,7 @@ func appleScriptString(_ text: String) -> String {
 
 /// Open by catching the new window, for an app that already shows windows elsewhere.
 func openByCatching(on target: UInt64, appArgument: String, appURL: URL, bundle: Bundle, executable: String, items: [URL]) -> Never {
-    refuseIfOnOtherDisplay(target: target, appArgument)
+    refuseIfOnOtherDisplay(target: target, appArgument, bundleID: bundle.bundleIdentifier)
     refuseIfFrontAndSwitching(executable, appArgument)
     let frontBefore = frontmost()?.processIdentifier
     let trigger: () -> Bool
@@ -546,7 +559,7 @@ func finishOpen(target: UInt64, appArgument: String, bundle: Bundle, executable:
 func catchCommand(on target: UInt64, appArgument: String, seconds: Double) -> Never {
     desktop(target)
     let (_, bundle, executable) = resolveApp(appArgument)
-    refuseIfOnOtherDisplay(target: target, appArgument)
+    refuseIfOnOtherDisplay(target: target, appArgument, bundleID: bundle.bundleIdentifier)
     refuseIfFrontAndSwitching(executable, appArgument)
     let frontBefore = frontmost()?.processIdentifier
     let moved = catchNewWindows(of: executable, onto: target, within: seconds) {

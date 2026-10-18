@@ -49,7 +49,7 @@ Agents work alongside you on your desktops by default. When you ask one to work 
 
 Turn the setting off and Safari, like any other app, opens on the agent's desktop even while you use it. The trade-off: when you switch to an app with Command-Tab or the Dock, macOS no longer moves you to the desktop where that app's windows are.
 
-**With two or more displays.** A new window always appears on the display you are working on. So an app whose windows you also have open, like your Safari, opens only on an agent desktop of that display; agents prefer an empty desktop there. Apps you are not using open on an agent desktop on any display.
+**With two or more displays.** A new window appears on the display you are working on (Chrome's on your main display, the one with the menu bar). So an app whose windows you also have open, like your Safari or your Chrome, opens only on an agent desktop of that display; agents prefer an empty desktop there. Apps you have no windows of open on an agent desktop on any display.
 
 ## Scheduled Tasks
 
