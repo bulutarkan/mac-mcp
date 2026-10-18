@@ -449,6 +449,11 @@ class ConnectorPaneSourceTests(unittest.TestCase):
         self.assertNotRegex(pane, r"(?<![A-Za-z0-9_])@State\b")
         script = (ROOT / "menu_app" / "build_app.sh").read_text(encoding="utf-8")
         self.assertIn('"${SCRIPT_DIR}/Sources/McpConnectorsSection.swift"', script)
+        # Each catalog service ships its own logo in the app; none is fetched from the web.
+        self.assertIn('"${SCRIPT_DIR}/Assets/Connectors/"*.png', script)
+        for item in mcp_connectors.CATALOG:
+            self.assertTrue((ROOT / "menu_app" / "Assets" / "Connectors" / f"{item.id}.png").is_file(), item.id)
+        self.assertIn('subdirectory: "Assets/Connectors"', pane)
 
 
 if __name__ == "__main__":

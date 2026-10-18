@@ -120,6 +120,9 @@ fi
 for art in BrandMark.png BrandMark.svg BrandMarkBronze.svg BrandMarkLight.png MenuBarMark.png MenuBarMark@2x.png; do
   /bin/cp "${SCRIPT_DIR}/Assets/${art}" "${RESOURCES}/Assets/${art}"
 done
+# The logos of the services in Settings › MCP Servers › Connect a Service (#260).
+/bin/mkdir -p "${RESOURCES}/Assets/Connectors"
+/bin/cp "${SCRIPT_DIR}/Assets/Connectors/"*.png "${RESOURCES}/Assets/Connectors/"
 
 # Safari Web Extension: built with the same command-line Swift toolchain so installing
 # Mac MCP from GitHub does not require generating or shipping an Xcode project.

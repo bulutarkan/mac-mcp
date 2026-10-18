@@ -66,11 +66,7 @@ struct McpConnectorsSection: View {
         let server = servers.first { $0.catalog == connector.id }
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 9) {
-                Image(systemName: connector.symbol)
-                    .font(.system(size: 15, weight: .medium))
-                    .frame(width: 28, height: 28)
-                    .background(RoundedRectangle(cornerRadius: 7).fill(Color.accentColor.opacity(0.14)))
-                    .accessibilityHidden(true)
+                McpConnectorLogo(connector: connector, size: 32)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(connector.title).font(.subheadline.weight(.semibold))
                     Text(connector.summary).font(.caption).foregroundStyle(.secondary)
@@ -104,6 +100,39 @@ struct McpConnectorsSection: View {
     }
 }
 
+/// The service's own logo (bundled in Assets/Connectors, so showing it reaches no website), as a
+/// small app-icon tile. Logos drawn on a transparent ground sit on white so they read in Dark Mode.
+struct McpConnectorLogo: View {
+    let connector: McpConnector
+    let size: CGFloat
+
+    private static let ownGround: Set<String> = ["github", "slack"]
+
+    var body: some View {
+        Group {
+            if let url = Bundle.main.url(forResource: connector.id, withExtension: "png", subdirectory: "Assets/Connectors"),
+               let image = NSImage(contentsOf: url) {
+                if Self.ownGround.contains(connector.id) {
+                    Image(nsImage: image).resizable().interpolation(.high).scaledToFit()
+                } else {
+                    Image(nsImage: image).resizable().interpolation(.high).scaledToFit()
+                        .padding(size * 0.14)
+                        .background(Color.white)
+                }
+            } else {
+                Image(systemName: connector.symbol)
+                    .font(.system(size: size * 0.5, weight: .medium))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.accentColor.opacity(0.14))
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.225, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: size * 0.225, style: .continuous).strokeBorder(Color.primary.opacity(0.1)))
+        .accessibilityHidden(true)
+    }
+}
+
 // MARK: - Connect sheet
 
 struct McpConnectorSheet: View {
@@ -122,7 +151,7 @@ struct McpConnectorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
-                Image(systemName: connector.symbol).font(.title2).accessibilityHidden(true)
+                McpConnectorLogo(connector: connector, size: 36)
                 Text("Connect \(connector.title)").font(.title3.weight(.semibold))
             }
             Text(connector.summary).font(.caption).foregroundStyle(.secondary)
