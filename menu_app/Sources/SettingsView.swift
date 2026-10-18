@@ -926,6 +926,10 @@ struct SettingsView: View {
                 // On a new window the rows are not laid out yet when onAppear runs.
                 .onAppear { DispatchQueue.main.async { proxy.scrollTo(selection) } }
                 .onChange(of: selection) { item in proxy.scrollTo(item) }
+                // A link to the section already open changes no selection; the window is reused.
+                .onChange(of: navigation.requestedSection) { section in
+                    if let section { DispatchQueue.main.async { proxy.scrollTo(section) } }
+                }
             }
 
             if !notice.isEmpty {
