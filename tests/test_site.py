@@ -137,6 +137,18 @@ class PageTests(unittest.TestCase):
         for value in re.findall(r'\ssrc="([^"]+)"', self.page):
             self.assertFalse(value.startswith(("http:", "https:", "//")), value)
         self.assertNotIn("offers", self.page)
+        # The typeface is served from the site itself, with its licence beside it.
+        self.assertIn("font-src 'self'", self.page)
+        self.assertTrue((SITE / "assets" / "fonts" / "OFL.txt").exists())
+        self.assertNotIn("fonts.googleapis", (SITE / "css" / "site.css").read_text())
+
+    def test_scenes_follow_the_video(self) -> None:
+        # Each scene starts where its caption starts in the demo video, with the caption as its title.
+        cues = re.findall(r"^00:(\d\d)\.000 --> .*\n(.+)$", (SITE / "assets" / "media" / "demo.en.vtt").read_text(), re.M)
+        scenes = re.findall(r'<li class="chapter" data-at="(\d+)"[^>]*>.*?<h3>(.+?)</h3>', self.page, re.S)
+        self.assertEqual(6, len(scenes))
+        self.assertEqual([(str(int(start)), html.escape(text, quote=False)) for start, text in cues[:6]],
+                         [(start, title) for start, title in scenes])
 
     def test_links_resolve(self) -> None:
         ids = set(re.findall(r'\sid="([^"]+)"', self.page))
@@ -162,7 +174,11 @@ class PageTests(unittest.TestCase):
         css = sum(path.stat().st_size for path in (SITE / "css").glob("*.css"))
         self.assertLessEqual(css, 25_000)
         self.assertLessEqual((SITE / "js" / "site.js").stat().st_size, 3_000)
-        first_load = css + (SITE / "index.html").stat().st_size + (SITE / "js" / "site.js").stat().st_size
+        scripts = sum(path.stat().st_size for path in (SITE / "js").glob("*.js"))
+        self.assertLessEqual(scripts, 8_000)
+        font = (SITE / "assets" / "fonts" / "mona-sans.woff2").stat().st_size
+        self.assertLessEqual(font, 120_000)
+        first_load = css + (SITE / "index.html").stat().st_size + scripts + font
         first_load += sum((SITE / "assets" / "img" / name).stat().st_size for name in ("app-icon-256.png",))
         first_load += (SITE / "assets" / "media" / "demo-poster.jpg").stat().st_size
         self.assertLessEqual(first_load, 350_000)

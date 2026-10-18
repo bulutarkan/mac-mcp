@@ -132,9 +132,14 @@ class SiteBrandTests(unittest.TestCase):
         self.page = (ROOT / "site" / "index.html").read_text(encoding="utf-8")
 
     def test_the_brand_mark_follows_the_page_theme(self) -> None:
+        # Bronze on the light page, champagne on the dark one; the theme switch can override the
+        # Mac's setting, so the swap is done in CSS rather than with a media-query <picture>.
         brand = self.page[self.page.index('<a class="brand"'):][:400]
-        self.assertIn('<source srcset="assets/img/mark-bronze.svg" media="(prefers-color-scheme: light)">', brand)
-        self.assertIn('<img src="assets/img/mark.svg" alt="" width="28" height="28">', brand)
+        self.assertIn('<img class="on-light" src="assets/img/mark-bronze.svg"', brand)
+        self.assertIn('<img class="on-dark" src="assets/img/mark.svg"', brand)
+        css = (ROOT / "site" / "css" / "site.css").read_text(encoding="utf-8")
+        self.assertIn(".on-light { display: var(--show-light); }", css)
+        self.assertIn(".on-dark { display: var(--show-dark); }", css)
 
     def test_the_island_uses_the_champagne_mark(self) -> None:
         self.assertIn('<img class="island-mark" src="assets/img/mark.svg"', self.page)
