@@ -36,6 +36,11 @@ FAKE_SERVER = textwrap.dedent('''
         return "deleted " + thing_id
 
     @server.tool()
+    def make_repo(name: str, description: str = "", idempotency_key: str = "") -> str:
+        """Create a repository (its own description and idempotency_key parameters)."""
+        return f"{name}|{description}|{idempotency_key}"
+
+    @server.tool()
     def boom() -> str:
         """Always fails."""
         raise ValueError("kaboom")
@@ -134,7 +139,7 @@ class LiveRegistrationTests(unittest.TestCase):
     def test_status_reports_connected_tools(self) -> None:
         server = self.manager.status()["servers"][0]
         self.assertEqual(("fake", "connected"), (server["name"], server["status"]))
-        self.assertEqual({"fake__echo", "fake__delete_thing", "fake__boom"}, {tool["name"] for tool in server["tools"]})
+        self.assertEqual({"fake__echo", "fake__delete_thing", "fake__make_repo", "fake__boom"}, {tool["name"] for tool in server["tools"]})
 
     def test_tools_are_registered_with_central_risk(self) -> None:
         self.assertEqual("external_mcp", RISK_REGISTRY["fake__echo"].family)
@@ -150,6 +155,17 @@ class LiveRegistrationTests(unittest.TestCase):
         payload = self._call("fake__echo", {"text": "hi", "times": 2})
         self.assertEqual({"ok": True, "server": "fake", "tool": "echo"}, {k: payload[k] for k in ("ok", "server", "tool")})
         self.assertEqual("hi hi", payload["text"])
+
+    def test_remote_parameters_named_like_reserved_fields_are_renamed(self) -> None:
+        # GitHub's create_repository has a "description"; it must not break the tool list (#260).
+        tools = {tool.name: tool for tool in asyncio.run(self.mcp.list_available_tools(compact=False))}
+        schema = tools["fake__make_repo"].inputSchema
+        self.assertIn("arg_description", schema["properties"])
+        self.assertIn("arg_idempotency_key", schema["properties"])
+        self.assertIn("Sent to fake as `description`", schema["properties"]["arg_description"]["description"])
+        payload = self._call("fake__make_repo", {"name": "r", "arg_description": "my repo",
+                                                  "arg_idempotency_key": "k1"})
+        self.assertEqual("r|my repo|k1", payload["text"])
 
     def test_remote_error_is_a_tool_error(self) -> None:
         self._profile("standard")

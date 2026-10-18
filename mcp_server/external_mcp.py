@@ -738,6 +738,32 @@ async def probe(server: ServerConfig, timeout: float = CONNECT_TIMEOUT_S) -> Dic
 
 _MANAGER: Optional[Manager] = None
 _LISTED: set[str] = set()
+# Fields Mac MCP adds to every tool (the intent description, idempotency_key). A remote tool
+# with a parameter of the same name (GitHub's create_repository has "description") shows it as
+# arg_<name>, and the call sends it back under its own name.
+RESERVED_FIELDS = ("description", "idempotency_key")
+RENAMED_PREFIX = "arg_"
+
+
+def _rename_reserved(schema: Dict[str, Any], server: str) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """The schema with reserved names renamed, and {shown name: remote name}."""
+    properties = dict(schema.get("properties") or {})
+    renamed: Dict[str, str] = {}
+    for field_name in RESERVED_FIELDS:
+        if field_name not in properties:
+            continue
+        shown = RENAMED_PREFIX + field_name
+        while shown in properties:
+            shown = RENAMED_PREFIX + shown
+        spec = dict(properties.pop(field_name)) if isinstance(properties[field_name], dict) else {}
+        spec["description"] = (f"Sent to {server} as `{field_name}`. " + str(spec.get("description") or "")).strip()
+        properties[shown] = spec
+        renamed[shown] = field_name
+    if not renamed:
+        return schema, renamed
+    required = [renamed_name for item in (schema.get("required") or [])
+                for renamed_name in [next((k for k, v in renamed.items() if v == item), item)]]
+    return {**schema, "properties": properties, "required": required}, renamed
 
 
 def manager() -> Optional[Manager]:
@@ -765,10 +791,16 @@ def _proxy_tool(mcp: Any, manager_: Manager, server: ServerConfig, remote: Any) 
             return {"arguments": dict(self.model_extra or {})}
 
     remote_name = str(remote.name)
+    schema = remote.inputSchema if isinstance(getattr(remote, "inputSchema", None), dict) else {}
+    schema, renamed = _rename_reserved({"type": "object", "properties": {}, **schema}, server.name)
 
     async def call(arguments: Dict[str, Any]) -> Dict[str, Any]:
         from mcp.server.fastmcp.exceptions import ToolError
 
+        if renamed:
+            # A leftover reserved key is Mac MCP's own field, never the remote parameter.
+            arguments = {renamed.get(key, key): value for key, value in arguments.items()
+                         if key not in RESERVED_FIELDS}
         result = await manager_.call_async(server.name, remote_name, arguments)
         payload = result_payload(server.name, remote_name, result)
         if not payload["ok"]:
@@ -776,8 +808,6 @@ def _proxy_tool(mcp: Any, manager_: Manager, server: ServerConfig, remote: Any) 
         return payload
 
     name = tool_name(server.name, remote_name)
-    schema = remote.inputSchema if isinstance(getattr(remote, "inputSchema", None), dict) else {}
-    schema = {"type": "object", "properties": {}, **schema}
     central = annotations_for_tool(name)
     title = getattr(remote, "title", None) or getattr(getattr(remote, "annotations", None), "title", None)
     description = (remote.description or remote_name).strip()
