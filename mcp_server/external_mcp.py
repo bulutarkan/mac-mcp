@@ -55,6 +55,21 @@ class ConfigError(ValueError):
     """A server entry or the config file is not usable."""
 
 
+class SignInRequired(RuntimeError):
+    """A catalog service's saved sign-in is missing or expired; the owner signs in again in Settings."""
+
+
+# How a catalog service's credential is read (headers, httpx auth). mcp_connectors registers it
+# when it loads, so this lower layer never imports it.
+CredentialProvider = Callable[["ServerConfig"], Tuple[Dict[str, str], Any]]
+_CREDENTIALS: Optional[CredentialProvider] = None
+
+
+def register_credentials(provider: Optional[CredentialProvider]) -> None:
+    global _CREDENTIALS
+    _CREDENTIALS = provider
+
+
 def config_path() -> Path:
     return paths.state_dir() / CONFIG_NAME
 
@@ -79,6 +94,9 @@ class ServerConfig:
     enabled: bool = True
     listed: bool = True
     timeout_s: float = CALL_TIMEOUT_S
+    # A service connected from the catalog (mcp_connectors.py): its credential is in the Keychain.
+    catalog: Optional[str] = None
+    auth: Optional[str] = None  # token | oauth
 
     def public(self) -> Dict[str, Any]:
         """What Settings and status reads may show: no header or env values."""
@@ -86,7 +104,7 @@ class ServerConfig:
             "name": self.name, "transport": self.transport, "enabled": self.enabled, "listed": self.listed,
             "command": self.command, "args": list(self.args), "cwd": self.cwd, "url": _redact_url(self.url),
             "env_keys": [key for key, _ in self.env], "header_keys": [key for key, _ in self.headers],
-            "timeout_s": self.timeout_s,
+            "timeout_s": self.timeout_s, "catalog": self.catalog, "auth": self.auth,
         }
 
 
@@ -145,7 +163,12 @@ def parse_server(name: str, raw: Any) -> ServerConfig:
     url = str(raw.get("url") or "").strip()
     if not re.match(r"^https?://", url):
         raise ConfigError(f"{name}: url must start with https:// (or http:// for a local server)")
-    return ServerConfig(url=url, headers=_string_map(raw.get("headers"), "headers", name), **common)
+    auth = str(raw.get("auth") or "").strip().lower() or None
+    if auth not in (None, "token", "oauth"):
+        raise ConfigError(f"{name}: auth is token or oauth (a service connected in Settings)")
+    catalog = str(raw.get("catalog") or "").strip() or None
+    return ServerConfig(url=url, headers=_string_map(raw.get("headers"), "headers", name), catalog=catalog,
+                        auth=auth, **common)
 
 
 def read_raw_config(path: Optional[Path] = None) -> Dict[str, Any]:
@@ -353,8 +376,18 @@ class _Connection:
         }
 
 
+def _auth_for(server: ServerConfig) -> Tuple[Dict[str, str], Any]:
+    """Headers and httpx auth of a remote server; a catalog service's credential comes from the Keychain."""
+    if not server.auth:
+        return dict(server.headers), None
+    if _CREDENTIALS is None:
+        raise SignInRequired(f"{server.name} is a connected service, but its sign-in cannot be read here.")
+    return _CREDENTIALS(server)
+
+
 async def _open_session(stack: contextlib.AsyncExitStack, server: ServerConfig,
-                        message_handler: Optional[Callable[..., Any]] = None, *, log_name: Optional[str] = None):
+                        message_handler: Optional[Callable[..., Any]] = None, *, log_name: Optional[str] = None,
+                        auth: Any = None):
     from mcp import ClientSession, types
 
     if server.transport == "stdio":
@@ -369,13 +402,16 @@ async def _open_session(stack: contextlib.AsyncExitStack, server: ServerConfig,
     elif server.transport == "sse":
         from mcp.client.sse import sse_client
 
-        read, write = await stack.enter_async_context(sse_client(server.url, headers=dict(server.headers) or None))
+        headers, saved_auth = await asyncio.to_thread(_auth_for, server)
+        read, write = await stack.enter_async_context(sse_client(server.url, headers=headers or None,
+                                                                 auth=auth or saved_auth))
     else:
         import httpx
         from mcp.client.streamable_http import streamable_http_client
 
+        headers, saved_auth = await asyncio.to_thread(_auth_for, server)
         client = await stack.enter_async_context(httpx.AsyncClient(
-            headers=dict(server.headers), follow_redirects=True,
+            headers=headers, follow_redirects=True, auth=auth or saved_auth,
             timeout=httpx.Timeout(30.0, read=max(300.0, server.timeout_s)),
         ))
         read, write, _ = await stack.enter_async_context(streamable_http_client(server.url, http_client=client))
@@ -400,7 +436,29 @@ async def _open_session(stack: contextlib.AsyncExitStack, server: ServerConfig,
     return session, tools, server_info
 
 
+def find_exception(exc: BaseException, kind: type) -> Optional[BaseException]:
+    """The first ``kind`` inside exception groups, causes and contexts."""
+    seen: set[int] = set()
+    stack: List[BaseException] = [exc]
+    while stack:
+        item = stack.pop()
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        if isinstance(item, kind):
+            return item
+        if isinstance(item, BaseExceptionGroup):
+            stack.extend(item.exceptions)
+        for linked in (item.__cause__, item.__context__):
+            if linked is not None:
+                stack.append(linked)
+    return None
+
+
 def _short_error(exc: BaseException) -> str:
+    needs_sign_in = find_exception(exc, SignInRequired)
+    if needs_sign_in is not None:
+        return str(needs_sign_in)
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
     text = str(exc) or type(exc).__name__
@@ -557,7 +615,7 @@ class Manager:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
             if not connection.stop.is_set():
-                connection.status = "error"
+                connection.status = "sign_in_required" if find_exception(exc, SignInRequired) else "error"
                 tail = _stderr_tail(server) if server.transport == "stdio" else ""
                 connection.error = _short_error(exc) + (f"\n{tail}" if tail else "")
                 LOG.warning("external MCP %s failed: %s", server.name, connection.error)

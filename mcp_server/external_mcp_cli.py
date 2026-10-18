@@ -8,7 +8,7 @@ import json
 import sys
 from typing import Any, Callable, Dict, List, Tuple
 
-from . import external_mcp
+from . import external_mcp, mcp_connectors  # noqa: F401  (registers how connected services sign in)
 
 Request = Callable[..., Tuple[int, Dict[str, Any]]]
 

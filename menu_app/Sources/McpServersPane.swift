@@ -14,6 +14,8 @@ struct McpServer: Identifiable {
     let target: String
     let error: String?
     let tools: [(name: String, description: String)]
+    /// The catalog service this server was connected as (#260); nil for one added by hand.
+    let catalog: String?
     var id: String { name }
 
     init(_ object: [String: Any]) {
@@ -28,6 +30,7 @@ struct McpServer: Identifiable {
             target = ([object["command"] as? String ?? ""] + (object["args"] as? [String] ?? [])).joined(separator: " ")
         }
         error = object["error"] as? String
+        catalog = object["catalog"] as? String
         tools = (object["tools"] as? [[String: Any]] ?? []).map {
             ($0["name"] as? String ?? "", $0["description"] as? String ?? "")
         }
@@ -39,6 +42,7 @@ struct McpServer: Identifiable {
         case "connecting": return "Connecting…"
         case "disabled": return "Off"
         case "error": return "Can’t connect"
+        case "sign_in_required": return "Sign in again"
         case "not_started": return "Starts with Mac MCP"
         default: return status.capitalized
         }
@@ -48,7 +52,7 @@ struct McpServer: Identifiable {
         switch status {
         case "connected": return .green
         case "error": return .red
-        case "connecting": return .orange
+        case "connecting", "sign_in_required": return .orange
         default: return .secondary
         }
     }
@@ -66,6 +70,8 @@ struct McpServersPane: View {
     @MacMCPState private var testResult: [String: String] = [:]
     @MacMCPState private var adding = false
     @MacMCPState private var removing: McpServer?
+    @MacMCPState private var connectors: [McpConnector] = []
+    @MacMCPState private var connecting: McpConnector?
 
     var body: some View {
         ScrollView {
@@ -79,6 +85,11 @@ struct McpServersPane: View {
                     LoadProblem(message: message) { await load() }
                 } else if !message.isEmpty {
                     Text(message).font(.caption).foregroundStyle(.secondary)
+                }
+
+                if !connectors.isEmpty {
+                    McpConnectorsSection(state: state, connectors: connectors, servers: servers,
+                                         connecting: $connecting) { await load() }
                 }
 
                 HStack {
@@ -101,7 +112,7 @@ struct McpServersPane: View {
                 }
 
                 GroupBox("How agents use them") {
-                    Text("Each tool is named server__tool, for example exa__web_search_exa. Tools with “Show in tool list” on appear directly in the AI app’s tool list; the others are found with tool_discover and run with tool_invoke. Tools a server marks read-only also work in the Read Only profile; tools it marks destructive need the Trusted profile. API keys stay in ~/.mac-mcp/mcp_servers.json, readable only by you.")
+                    Text("Each tool is named server__tool, for example exa__web_search_exa. Tools with “Show in tool list” on appear directly in the AI app’s tool list; the others are found with tool_discover and run with tool_invoke. Tools a server marks read-only also work in the Read Only profile; tools it marks destructive need the Trusted profile. Services connected above keep their sign-in in your Keychain; keys of servers you add by hand stay in ~/.mac-mcp/mcp_servers.json, readable only by you.")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -125,7 +136,15 @@ struct McpServersPane: View {
             }
         }
         .alert(item: Binding(get: { removing }, set: { removing = $0 })) { server in
-            Alert(
+            if let connector = connectors.first(where: { $0.id == server.catalog }) {
+                return Alert(
+                    title: Text("Disconnect \(connector.title)?"),
+                    message: Text("Agents lose its \(server.tools.count) tools. Mac MCP deletes the sign-in from your Keychain and asks \(connector.title) to revoke it where it can. \(connector.manageHint)"),
+                    primaryButton: .destructive(Text("Disconnect")) { Task { await act("disconnect", server.name) } },
+                    secondaryButton: .cancel()
+                )
+            }
+            return Alert(
                 title: Text("Remove \(server.name)?"),
                 message: Text("Agents lose its \(server.tools.count) tools. Its saved keys are deleted too."),
                 primaryButton: .destructive(Text("Remove")) { Task { await act("remove", server.name) } },
@@ -175,8 +194,12 @@ struct McpServersPane: View {
                     .help("Off: agents find these tools with tool_discover instead, keeping the AI app’s tool list short.")
                     Spacer()
                     if busy == server.name { ProgressView().controlSize(.small) }
+                    if server.status == "sign_in_required", let connector = connectors.first(where: { $0.id == server.catalog }) {
+                        Button("Sign In Again") { connecting = connector }.disabled(busy != nil)
+                    }
                     Button("Test") { Task { await test(server.name) } }.disabled(busy != nil)
-                    Button("Remove", role: .destructive) { removing = server }.disabled(busy != nil)
+                    Button(server.catalog == nil ? "Remove" : "Disconnect", role: .destructive) { removing = server }
+                        .disabled(busy != nil)
                 }
                 if !server.tools.isEmpty {
                     DisclosureGroup(isExpanded: Binding(
@@ -211,6 +234,7 @@ struct McpServersPane: View {
             return
         }
         servers = (result.object["servers"] as? [[String: Any]] ?? []).map(McpServer.init)
+        connectors = (result.object["connectors"] as? [[String: Any]] ?? []).map(McpConnector.init)
         configErrors = result.object["config_errors"] as? [String: String] ?? [:]
         loaded = true
         message = ""
