@@ -25,7 +25,20 @@ class SettingsInformationArchitectureTests(unittest.TestCase):
         self.assertNotIn("case browser", section)
         self.assertNotIn("case mobile", section)
         self.assertIn('TextField("Search Settings"', self.view)
-        self.assertIn("ForEach(filteredSections)", self.view)
+        self.assertIn("filteredSections.filter { $0.group == group }", self.view)
+
+    def test_sidebar_groups_every_section_under_a_few_headings(self) -> None:
+        # #250: fourteen destinations under four headings (the first group has none), no new entries.
+        groups = self.view[self.view.index("enum SettingsSectionGroup"):self.view.index("private enum ConnectionsTab")]
+        for title in ('"Agents"', '"Safety"', '"Connect"', '"Support"'):
+            self.assertIn(f"return {title}", groups)
+        mapping = self.view[self.view.index("var group: SettingsSectionGroup"):self.view.index("enum SettingsSectionGroup")]
+        cases = self.view[self.view.index("enum SettingsSection: String"):self.view.index("var id: String { rawValue }")]
+        for name in [line.strip()[5:] for line in cases.splitlines() if line.strip().startswith("case ")]:
+            self.assertIn(f".{name}", mapping, name)
+        sidebar = self.view[self.view.index("private var sidebar"):self.view.index("private func sidebarRow")]
+        self.assertIn("ScrollView", sidebar)
+        self.assertIn(".accessibilityAddTraits(.isHeader)", sidebar)
 
     def test_connections_owns_endpoint_browser_and_mobile_navigation(self) -> None:
         self.assertIn("private enum ConnectionsTab", self.view)

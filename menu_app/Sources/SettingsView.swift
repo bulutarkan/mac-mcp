@@ -64,6 +64,39 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var searchTerms: String {
         SettingsSearchIndex.terms[rawValue] ?? ""
     }
+
+    /// The sidebar group this section sits in (#250).
+    var group: SettingsSectionGroup {
+        switch self {
+        case .start, .general: return .overview
+        case .agents, .scheduled, .activity, .usage: return .agents
+        case .permissions, .privacy: return .safety
+        case .apps, .mcpServers, .connections, .voice: return .connect
+        case .advanced, .help: return .support
+        }
+    }
+}
+
+/// A few plain headings so fourteen sidebar destinations scan quickly (#250). The first
+/// group has no heading, like the top of System Settings.
+enum SettingsSectionGroup: String, CaseIterable, Identifiable {
+    case overview
+    case agents
+    case safety
+    case connect
+    case support
+
+    var id: String { rawValue }
+
+    var title: String? {
+        switch self {
+        case .overview: return nil
+        case .agents: return "Agents"
+        case .safety: return "Safety"
+        case .connect: return "Connect"
+        case .support: return "Support"
+        }
+    }
 }
 
 private enum ConnectionsTab: String, CaseIterable, Identifiable {
@@ -863,33 +896,30 @@ struct SettingsView: View {
                 .padding(.top, 4)
             }
 
-            ForEach(filteredSections) { item in
-                Button {
-                    selection = item
-                    notice = ""
-                } label: {
-                    HStack(spacing: 9) {
-                        Image(systemName: item.symbol)
-                            .frame(width: 17)
-                            .accessibilityHidden(true)
-                        Text(item.title)
-                        Spacer()
+            // Scrolls on its own, so every destination stays reachable in the smallest window.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(SettingsSectionGroup.allCases) { group in
+                        let items = filteredSections.filter { $0.group == group }
+                        if !items.isEmpty {
+                            if let title = group.title {
+                                Text(title.uppercased())
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
+                                    .tracking(0.5)
+                                    .padding(.horizontal, 17)
+                                    .padding(.top, 10)
+                                    .padding(.bottom, 2)
+                                    .accessibilityAddTraits(.isHeader)
+                            }
+                            ForEach(items) { item in
+                                sidebarRow(item)
+                            }
+                        }
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .background(
-                    selection == item ? Color.accentColor.opacity(0.16) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                )
-                .accessibilityLabel(item.title)
-                .accessibilityAddTraits(selection == item ? .isSelected : [])
-                .padding(.horizontal, 7)
+                .padding(.bottom, 8)
             }
-
-            Spacer()
 
             if !notice.isEmpty {
                 Text(notice)
@@ -902,6 +932,32 @@ struct SettingsView: View {
         }
         .frame(width: 224)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.38))
+    }
+
+    private func sidebarRow(_ item: SettingsSection) -> some View {
+        Button {
+            selection = item
+            notice = ""
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: item.symbol)
+                    .frame(width: 17)
+                    .accessibilityHidden(true)
+                Text(item.title)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            selection == item ? Color.accentColor.opacity(0.16) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .accessibilityLabel(item.title)
+        .accessibilityAddTraits(selection == item ? .isSelected : [])
+        .padding(.horizontal, 7)
     }
 
     @ViewBuilder
