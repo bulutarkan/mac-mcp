@@ -88,8 +88,8 @@ class SettingsInformationArchitectureTests(unittest.TestCase):
     def test_settings_window_is_resizable_with_bounded_size(self) -> None:
         self.assertIn('.styleMask = [.titled, .closable, .resizable]', self.window)
         self.assertIn('NSSize(width: 920, height: 640)', self.window)
-        self.assertIn('NSSize(width: 820, height: 560)', self.window)
-        self.assertIn('NSSize(width: 1240, height: 860)', self.window)
+        self.assertIn('window.contentMinSize = NSSize(width: 820, height: 560)', self.window)
+        self.assertIn('window.contentMaxSize = NSSize(width: 1240, height: 860)', self.window)
         self.assertIn('setFrameAutosaveName("MacMCPSettingsWindow")', self.window)
 
     def test_settings_can_open_on_a_requested_pane(self) -> None:

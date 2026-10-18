@@ -35,8 +35,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.title = "Mac MCP Settings"
         window.styleMask = [.titled, .closable, .resizable]
         window.setContentSize(NSSize(width: 920, height: 640))
-        window.minSize = NSSize(width: 820, height: 560)
-        window.maxSize = NSSize(width: 1240, height: 860)
+        // Content sizes, like SettingsView's own frame: a frame size would count the title bar
+        // and let the smallest window cut off the bottom of both panes.
+        window.contentMinSize = NSSize(width: 820, height: 560)
+        window.contentMaxSize = NSSize(width: 1240, height: 860)
         window.setFrameAutosaveName("MacMCPSettingsWindow")
         window.center()
         window.isReleasedWhenClosed = false
